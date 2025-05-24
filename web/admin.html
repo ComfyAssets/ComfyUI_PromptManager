@@ -358,32 +358,40 @@
 
     <!-- Image Viewer Modal -->
     <div id="imageViewerModal" class="fixed inset-0 bg-black bg-opacity-90 hidden items-center justify-center" style="z-index: 9999;">
-        <div class="relative max-w-[95vw] max-h-[95vh] flex items-center justify-center">
+        <div class="relative w-full h-full flex items-center justify-center">
             <!-- Close button -->
-            <button onclick="window.admin.closeImageViewer()" class="absolute -top-10 right-0 p-2 rounded-lg bg-black/50 hover:bg-black/70 transition-colors">
+            <button onclick="window.admin.closeImageViewer()" class="absolute top-4 right-4 p-2 rounded-lg bg-black/50 hover:bg-black/70 transition-colors z-10">
                 <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                 </svg>
             </button>
             
             <!-- Previous button -->
-            <button onclick="window.admin.previousImage()" class="absolute left-4 top-1/2 transform -translate-y-1/2 p-3 rounded-full bg-black/50 hover:bg-black/70 transition-colors">
+            <button onclick="window.admin.previousImage()" class="absolute left-4 top-1/2 transform -translate-y-1/2 p-3 rounded-full bg-black/50 hover:bg-black/70 transition-colors z-10">
                 <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
                 </svg>
             </button>
             
             <!-- Next button -->
-            <button onclick="window.admin.nextImage()" class="absolute right-4 top-1/2 transform -translate-y-1/2 p-3 rounded-full bg-black/50 hover:bg-black/70 transition-colors">
+            <button onclick="window.admin.nextImage()" class="absolute right-4 top-1/2 transform -translate-y-1/2 p-3 rounded-full bg-black/50 hover:bg-black/70 transition-colors z-10">
                 <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
                 </svg>
             </button>
             
-            <img id="viewerImage" src="" alt="Generated image" class="max-w-full max-h-full object-contain rounded-lg">
+            <!-- View mode indicator -->
+            <div id="viewModeIndicator" class="absolute top-4 left-4 text-white text-sm bg-black/50 px-3 py-1 rounded-full z-10">
+                Fit to Window
+            </div>
+            
+            <!-- Image container -->
+            <div class="w-full h-full flex items-center justify-center p-4">
+                <img id="viewerImage" src="" alt="Generated image" class="rounded-lg cursor-pointer transition-all duration-300" onclick="window.admin.toggleImageSize()">
+            </div>
             
             <!-- Image counter -->
-            <div id="imageCounter" class="absolute -bottom-10 left-1/2 transform -translate-x-1/2 text-white text-sm bg-black/50 px-3 py-1 rounded-full">
+            <div id="imageCounter" class="absolute bottom-4 left-1/2 transform -translate-x-1/2 text-white text-sm bg-black/50 px-3 py-1 rounded-full z-10">
                 1 / 1
             </div>
         </div>
@@ -400,6 +408,8 @@
                 };
                 this.categories = [];
                 this.tags = [];
+                this.imageViewMode = 'fit'; // 'fit' or 'full'
+                this.naturalImageSize = { width: 0, height: 0 };
 
                 this.init();
             }
@@ -1190,6 +1200,16 @@
                 this.currentImageIndex = imageIndex;
                 this.currentGalleryImages = this.currentGalleryImages || [];
                 
+                // Reset to fit mode when opening a new image
+                this.imageViewMode = 'fit';
+                
+                // Load the image and get its natural dimensions
+                img.onload = () => {
+                    this.naturalImageSize.width = img.naturalWidth;
+                    this.naturalImageSize.height = img.naturalHeight;
+                    this.applyImageSizing();
+                };
+                
                 img.src = imageUrl;
                 this.updateImageCounter();
                 this.showModal("imageViewerModal");
@@ -1202,7 +1222,17 @@
                 
                 this.currentImageIndex = (this.currentImageIndex + 1) % this.currentGalleryImages.length;
                 const nextImageUrl = `/prompt_manager/images/${this.currentGalleryImages[this.currentImageIndex].id}/file`;
-                document.getElementById("viewerImage").src = nextImageUrl;
+                const img = document.getElementById("viewerImage");
+                
+                // Reset view mode and apply sizing when new image loads
+                this.imageViewMode = 'fit';
+                img.onload = () => {
+                    this.naturalImageSize.width = img.naturalWidth;
+                    this.naturalImageSize.height = img.naturalHeight;
+                    this.applyImageSizing();
+                };
+                
+                img.src = nextImageUrl;
                 this.updateImageCounter();
             }
 
@@ -1211,7 +1241,17 @@
                 
                 this.currentImageIndex = (this.currentImageIndex - 1 + this.currentGalleryImages.length) % this.currentGalleryImages.length;
                 const prevImageUrl = `/prompt_manager/images/${this.currentGalleryImages[this.currentImageIndex].id}/file`;
-                document.getElementById("viewerImage").src = prevImageUrl;
+                const img = document.getElementById("viewerImage");
+                
+                // Reset view mode and apply sizing when new image loads
+                this.imageViewMode = 'fit';
+                img.onload = () => {
+                    this.naturalImageSize.width = img.naturalWidth;
+                    this.naturalImageSize.height = img.naturalHeight;
+                    this.applyImageSizing();
+                };
+                
+                img.src = prevImageUrl;
                 this.updateImageCounter();
             }
 
@@ -1230,6 +1270,37 @@
                 this.hideModal("imageViewerModal");
                 document.getElementById("viewerImage").src = "";
                 this.currentImageIndex = 0;
+                this.imageViewMode = 'fit';
+            }
+
+            applyImageSizing() {
+                const img = document.getElementById("viewerImage");
+                const indicator = document.getElementById("viewModeIndicator");
+                
+                if (!img || !indicator) return;
+                
+                if (this.imageViewMode === 'fit') {
+                    // Fit to viewport with padding
+                    img.style.maxWidth = 'calc(100vw - 8rem)';
+                    img.style.maxHeight = 'calc(100vh - 8rem)';
+                    img.style.width = 'auto';
+                    img.style.height = 'auto';
+                    img.style.objectFit = 'contain';
+                    indicator.textContent = 'Fit to Window';
+                } else {
+                    // Show at full size
+                    img.style.maxWidth = 'none';
+                    img.style.maxHeight = 'none';
+                    img.style.width = this.naturalImageSize.width + 'px';
+                    img.style.height = this.naturalImageSize.height + 'px';
+                    img.style.objectFit = 'none';
+                    indicator.textContent = 'Full Size';
+                }
+            }
+
+            toggleImageSize() {
+                this.imageViewMode = this.imageViewMode === 'fit' ? 'full' : 'fit';
+                this.applyImageSizing();
             }
 
             formatFileSize(bytes) {
@@ -1451,6 +1522,14 @@
                     e.preventDefault();
                     admin.nextImage();
                 }
+            }
+        });
+
+        // Window resize listener for responsive image sizing
+        window.addEventListener('resize', function() {
+            // Only apply resize adjustments if image viewer is open and in fit mode
+            if (!document.getElementById('imageViewerModal').classList.contains('hidden') && admin.imageViewMode === 'fit') {
+                admin.applyImageSizing();
             }
         });
     </script>
