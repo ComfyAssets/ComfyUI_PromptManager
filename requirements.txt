@@ -1,0 +1,26 @@
+# Core dependencies for PromptManager
+# Note: Most dependencies are already included with ComfyUI
+
+# Already included with Python standard library:
+# - sqlite3
+# - hashlib
+# - json
+# - datetime
+# - os
+# - typing
+# - threading
+# - uuid
+
+# Required for gallery functionality:
+watchdog>=2.1.0              # For file system monitoring
+Pillow>=8.0.0                # For image metadata extraction (usually included with ComfyUI)
+
+# Optional dependencies for enhanced search functionality:
+# fuzzywuzzy[speedup]>=0.18.0  # For fuzzy string matching (optional)
+# sqlalchemy>=1.4.0            # For advanced ORM features (optional)
+
+# Development dependencies (optional):
+# pytest>=6.0.0                # For running tests
+# black>=22.0.0                # For code formatting
+# flake8>=4.0.0                # For linting
+# mypy>=0.910                   # For type checking
