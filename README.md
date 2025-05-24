@@ -4,6 +4,8 @@ A powerful ComfyUI custom node that extends the standard text encoder with persi
 
 ## Overview
 
+![Prompt Manager Interface](images/pm-01.png)
+
 ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard `CLIPTextEncode` node while adding comprehensive prompt management and automatic image tracking features:
 
 - **🔄 Drop-in Replacement**: Works exactly like the standard text encoder
@@ -15,6 +17,8 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
 - **🌐 Web Interface**: Beautiful browser-based management interface
 - **📊 Analytics**: Track prompt usage patterns and effectiveness over time
 
+![Image Gallery](images/pm-02.png) 
+
 ## Features
 
 ### Core Functionality
@@ -24,6 +28,9 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
 - **Hash-based Deduplication**: Prevents storing identical prompts multiple times
 
 ### 🖼️ Automatic Image Gallery
+
+![Prompt Editor](images/pm-03.jpg)
+
 - **Smart Image Detection**: Automatically monitors ComfyUI output directory for new images
 - **Intelligent Linking**: Links generated images to their corresponding prompts based on execution timing
 - **Metadata Extraction**: Extracts and stores ComfyUI workflow data and generation parameters
