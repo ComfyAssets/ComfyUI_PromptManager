@@ -9,7 +9,7 @@ A powerful ComfyUI custom node that extends the standard text encoder with persi
 ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard `CLIPTextEncode` node while adding comprehensive prompt management and automatic image tracking features:
 
 - **🔄 Drop-in Replacement**: Works exactly like the standard text encoder
-- **💾 Persistent Storage**: Automatically saves all prompts to a local SQLite database  
+- **💾 Persistent Storage**: Automatically saves all prompts to a local SQLite database
 - **🔍 Advanced Search**: Query past prompts with text search, category filtering, and metadata
 - **🖼️ Automatic Image Gallery**: Automatically links generated images to their prompts
 - **🏷️ Rich Metadata**: Add categories, tags, ratings, notes, and workflow names to prompts
@@ -17,11 +17,12 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
 - **🌐 Web Interface**: Beautiful browser-based management interface
 - **📊 Analytics**: Track prompt usage patterns and effectiveness over time
 
-![Image Gallery](images/pm-02.png) 
+![Image Gallery](images/pm-02.png)
 
 ## Features
 
 ### Core Functionality
+
 - **Text Encoding**: Standard CLIP text encoding for ComfyUI workflows
 - **Auto-Save**: Every prompt is automatically saved to the database
 - **Metadata Support**: Optional categories, tags, ratings (1-5), notes, and workflow names
@@ -40,6 +41,7 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
 - **Image Counter**: Shows current position in gallery (e.g., "3 / 7")
 
 ### Search & Retrieval
+
 - **Full-text search** across all stored prompts
 - **Category filtering** for organized prompt collections
 - **Tag-based search** with support for multiple tags
@@ -50,6 +52,7 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
 - **Image search** by file properties and metadata
 
 ### 🌐 Web Interface
+
 - **Admin Dashboard**: Comprehensive browser-based management interface
 - **Responsive Design**: Works on desktop, tablet, and mobile devices
 - **Real-time Search**: Instant search results as you type
@@ -59,6 +62,7 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
 - **Export Tools**: Download prompts and metadata in various formats
 
 ### Database Management
+
 - **SQLite backend** for reliable local storage
 - **Automatic schema creation** and management
 - **Database optimization** with proper indexing
@@ -71,13 +75,15 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
 ### For ComfyUI Users
 
 1. **Clone the repository** into your ComfyUI custom_nodes directory:
+
    ```bash
    cd ComfyUI/custom_nodes/
-   git clone https://github.com/yourusername/ComfyUI_PromptManager.git
+   git clone https://github.com/ComfyAssets/ComfyUI_PromptManager
    cd ComfyUI_PromptManager
    ```
 
 2. **Install dependencies**:
+
    ```bash
    pip install -r requirements.txt
    ```
@@ -85,6 +91,7 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
 3. **Restart ComfyUI** to load the new node
 
 4. **Add the node** to your workflow:
+
    - Look for "Prompt Manager" in the conditioning category
    - Use it exactly like the standard "CLIP Text Encode" node
 
@@ -93,6 +100,7 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
    - Or use the built-in ComfyUI interface at `http://localhost:8188/prompt_manager/`
 
 ### Prerequisites
+
 - ComfyUI installation
 - Python 3.8 or higher
 - SQLite3 (included with Python)
@@ -161,7 +169,7 @@ results = db.search_prompts(rating_min=4)
 
 # Search by category and tags
 results = db.search_prompts(
-    category="portraits", 
+    category="portraits",
     tags=["anime", "detailed"]
 )
 
@@ -188,7 +196,7 @@ Notes: "Perfect for peaceful scenes"
 
 ```
 Input: "Portrait of a cyberpunk hacker with neon implants"
-Category: "characters"  
+Category: "characters"
 Tags: "cyberpunk, portrait, sci-fi, neon"
 Rating: 4
 Workflow: "character_generator_v2"
@@ -365,6 +373,7 @@ python -m pytest tests/ -v
 ### Code Style
 
 The project follows PEP 8 guidelines with:
+
 - Black formatter (88 character line limit)
 - Type hints for all functions
 - Comprehensive docstrings
@@ -383,14 +392,17 @@ The project follows PEP 8 guidelines with:
 ### Common Issues
 
 **Database Permission Errors**
+
 - Ensure the ComfyUI process has write permissions to the node directory
 - Check that the database file isn't locked by another process
 
 **Import Errors**
+
 - Verify ComfyUI is properly installed
 - Check that all required dependencies are available
 
 **Performance Issues**
+
 - Run `VACUUM` on the database occasionally
 - Consider archiving old prompts if the database becomes very large
 
@@ -435,6 +447,7 @@ MIT License - see LICENSE file for details.
 ## Changelog
 
 ### v2.0.0 (Gallery Release)
+
 - **🖼️ Automatic Image Gallery**: Complete image tracking and gallery system
 - **🌐 Advanced Web Interface**: Comprehensive admin dashboard with responsive design
 - **📱 Image Viewer**: Full-screen modal with navigation and keyboard shortcuts
@@ -444,6 +457,7 @@ MIT License - see LICENSE file for details.
 - **📊 Bulk Operations**: Multi-select prompt editing and management
 
 ### v1.0.0 (Initial Release)
+
 - Core text encoding with database storage
 - Search and filtering functionality
 - Metadata support (categories, tags, ratings, notes)
