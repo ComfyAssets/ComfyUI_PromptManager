@@ -1,0 +1,1458 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PromptManager - Admin Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        gray: {
+                            850: '#1f2937',
+                            875: '#1a202c',
+                            925: '#0f172a'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 8px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #374151;
+            border-radius: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #6b7280;
+            border-radius: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #9ca3af;
+        }
+    </style>
+</head>
+<body class="bg-gray-925 text-gray-100 min-h-screen">
+    <div class="min-h-screen flex flex-col">
+        <!-- Header -->
+        <header class="bg-gradient-to-r from-gray-850 to-gray-800 border-b border-gray-700 px-6 py-4">
+            <div class="max-w-7xl mx-auto">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-3">
+                        <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
+                            <span class="text-xl">🔍</span>
+                        </div>
+                        <div>
+                            <h1 class="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+                                PromptManager Admin Dashboard
+                            </h1>
+                            <p class="text-gray-400 text-sm">Manage and organize your AI prompts with powerful search and editing tools</p>
+                        </div>
+                    </div>
+                    <div class="hidden sm:flex items-center space-x-2">
+                        <div class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+                        <span class="text-green-400 text-sm font-medium">Online</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Stats Grid -->
+        <div class="px-6 py-6">
+            <div class="max-w-7xl mx-auto">
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                    <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl p-6 border border-gray-700">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-gray-400 text-sm font-medium">Total Prompts</p>
+                                <p class="text-3xl font-bold text-blue-400" id="totalPrompts">-</p>
+                            </div>
+                            <div class="w-12 h-12 bg-blue-500/20 rounded-lg flex items-center justify-center">
+                                <span class="text-2xl">📝</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl p-6 border border-gray-700">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-gray-400 text-sm font-medium">Categories</p>
+                                <p class="text-3xl font-bold text-purple-400" id="totalCategories">-</p>
+                            </div>
+                            <div class="w-12 h-12 bg-purple-500/20 rounded-lg flex items-center justify-center">
+                                <span class="text-2xl">📁</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl p-6 border border-gray-700">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-gray-400 text-sm font-medium">Unique Tags</p>
+                                <p class="text-3xl font-bold text-green-400" id="totalTags">-</p>
+                            </div>
+                            <div class="w-12 h-12 bg-green-500/20 rounded-lg flex items-center justify-center">
+                                <span class="text-2xl">🏷️</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl p-6 border border-gray-700">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-gray-400 text-sm font-medium">Avg Rating</p>
+                                <p class="text-3xl font-bold text-yellow-400" id="avgRating">-</p>
+                            </div>
+                            <div class="w-12 h-12 bg-yellow-500/20 rounded-lg flex items-center justify-center">
+                                <span class="text-2xl">⭐</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Search Controls -->
+                <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl p-6 border border-gray-700 mb-8">
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+                        <div class="lg:col-span-2">
+                            <label class="block text-sm font-medium text-gray-400 mb-2">Search Text</label>
+                            <input type="text" id="searchText" placeholder="Search prompt content..." 
+                                   class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100 placeholder-gray-400">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-400 mb-2">Category</label>
+                            <select id="searchCategory" 
+                                    class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                                <option value="">All Categories</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-400 mb-2">Tags</label>
+                            <input type="text" id="searchTags" placeholder="tag1, tag2..." 
+                                   class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100 placeholder-gray-400">
+                        </div>
+                        <div class="flex items-end">
+                            <button id="searchBtn" 
+                                    class="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-medium py-3 px-6 rounded-lg transition-all duration-200 flex items-center justify-center space-x-2">
+                                <span>🔍</span>
+                                <span>Search</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Bulk Actions -->
+                    <div class="flex flex-wrap items-center gap-3 pt-4 border-t border-gray-700">
+                        <label class="flex items-center space-x-2 text-gray-300">
+                            <input type="checkbox" id="selectAll" class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500">
+                            <span class="text-sm font-medium">Select All</span>
+                        </label>
+                        <button id="bulkDeleteBtn" disabled 
+                                class="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors">
+                            🗑️ Delete Selected
+                        </button>
+                        <button id="bulkTagBtn" disabled 
+                                class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors">
+                            🏷️ Add Tags
+                        </button>
+                        <button id="bulkCategoryBtn" disabled 
+                                class="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors">
+                            📁 Set Category
+                        </button>
+                        <button id="statsBtn" 
+                                class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            📊 Stats
+                        </button>
+                        <button id="exportBtn" 
+                                class="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            📄 Export
+                        </button>
+                        <button id="settingsBtn" 
+                                class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            ⚙️ Settings
+                        </button>
+                        <button id="diagnosticsBtn" 
+                                class="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            🔍 Diagnostics
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Results Section -->
+        <div class="flex-1 px-6 pb-6">
+            <div class="max-w-7xl mx-auto h-full">
+                <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl border border-gray-700 h-full flex flex-col">
+                    <!-- Results Header -->
+                    <div class="flex items-center justify-between p-6 border-b border-gray-700">
+                        <h2 class="text-xl font-semibold text-gray-100" id="resultsTitle">Recent Prompts</h2>
+                        <span class="text-sm font-medium text-gray-400 bg-gray-700 px-3 py-1 rounded-full" id="resultsCount">Loading...</span>
+                    </div>
+
+                    <!-- Loading State -->
+                    <div id="loadingState" class="flex-1 flex items-center justify-center">
+                        <div class="text-center">
+                            <div class="w-12 h-12 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mx-auto mb-4"></div>
+                            <p class="text-gray-400">Loading prompts...</p>
+                        </div>
+                    </div>
+
+                    <!-- Results List -->
+                    <div id="resultsList" class="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-4 hidden">
+                        <!-- Prompts will be inserted here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700">
+            <h3 class="text-xl font-semibold text-gray-100 mb-6">⚙️ Settings</h3>
+            
+            <div class="space-y-6">
+                <div>
+                    <label class="block text-sm font-medium text-gray-400 mb-2">Search Results Auto-Hide (seconds)</label>
+                    <input type="number" id="resultTimeout" min="0" max="300" value="30" 
+                           class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                    <p class="text-xs text-gray-500 mt-2">Set to 0 to disable auto-hide. Controls how long search results stay visible in the ComfyUI node.</p>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-400 mb-2">Web UI Display Mode</label>
+                    <select id="webuiDisplayMode" 
+                            class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                        <option value="popup">Popup Window (Current)</option>
+                        <option value="newtab">New Tab</option>
+                    </select>
+                    <p class="text-xs text-gray-500 mt-2">Choose how the Web UI opens when clicked from ComfyUI nodes.</p>
+                </div>
+            </div>
+
+            <div class="flex justify-end space-x-3 mt-8">
+                <button id="cancelSettings" 
+                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                    Cancel
+                </button>
+                <button id="saveSettings" 
+                        class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors">
+                    Save Settings
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bulk Tag Modal -->
+    <div id="bulkTagModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700">
+            <h3 class="text-xl font-semibold text-gray-100 mb-6">🏷️ Add Tags to Selected Prompts</h3>
+            
+            <div>
+                <label class="block text-sm font-medium text-gray-400 mb-2">Tags (comma-separated)</label>
+                <input type="text" id="bulkTagInput" placeholder="tag1, tag2, tag3..." 
+                       class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+            </div>
+
+            <div class="flex justify-end space-x-3 mt-6">
+                <button id="cancelBulkTag" 
+                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                    Cancel
+                </button>
+                <button id="confirmBulkTag" 
+                        class="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition-colors">
+                    Add Tags
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bulk Category Modal -->
+    <div id="bulkCategoryModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700">
+            <h3 class="text-xl font-semibold text-gray-100 mb-6">📁 Set Category for Selected Prompts</h3>
+            
+            <div>
+                <label class="block text-sm font-medium text-gray-400 mb-2">Category</label>
+                <input type="text" id="bulkCategoryInput" placeholder="Enter category name..." 
+                       class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+            </div>
+
+            <div class="flex justify-end space-x-3 mt-6">
+                <button id="cancelBulkCategory" 
+                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                    Cancel
+                </button>
+                <button id="confirmBulkCategory" 
+                        class="px-6 py-2 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-lg transition-colors">
+                    Set Category
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Diagnostics Modal -->
+    <div id="diagnosticsModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl max-w-4xl w-full max-h-[90vh] overflow-hidden mx-4 border border-gray-700">
+            <div class="p-6 border-b border-gray-700">
+                <div class="flex items-center justify-between">
+                    <h3 class="text-xl font-semibold text-gray-100">🔍 Gallery System Diagnostics</h3>
+                    <button onclick="window.admin.closeDiagnostics()" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
+                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="p-6 overflow-y-auto max-h-[calc(90vh-120px)] custom-scrollbar">
+                <div class="flex items-center justify-between mb-4">
+                    <button id="runDiagnosticsBtn" class="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white font-medium rounded-lg transition-colors">
+                        🔍 Run Diagnostics
+                    </button>
+                    <button id="testImageLinkBtn" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors">
+                        🧪 Test Image Link
+                    </button>
+                </div>
+                <div id="diagnosticsContent" class="space-y-4">
+                    <div class="text-center py-8 text-gray-400">
+                        Click "Run Diagnostics" to check the gallery system status
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Gallery Modal -->
+    <div id="galleryModal" class="fixed inset-0 bg-black bg-opacity-75 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl max-w-6xl w-full max-h-[90vh] overflow-hidden mx-4 border border-gray-700">
+            <div class="p-6 border-b border-gray-700">
+                <div class="flex items-center justify-between">
+                    <h3 class="text-xl font-semibold text-gray-100" id="galleryTitle">Generated Images</h3>
+                    <button onclick="window.admin.closeGallery()" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
+                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="p-6 overflow-y-auto max-h-[calc(90vh-120px)] custom-scrollbar">
+                <div id="galleryContent" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <!-- Gallery images will be loaded here -->
+                </div>
+                <div id="galleryEmpty" class="text-center py-12 hidden">
+                    <div class="w-16 h-16 bg-gray-700 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <span class="text-2xl">🖼️</span>
+                    </div>
+                    <h4 class="text-lg font-medium text-gray-300 mb-2">No images found</h4>
+                    <p class="text-gray-500">No images have been generated with this prompt yet.</p>
+                </div>
+                <div id="galleryLoading" class="text-center py-12">
+                    <div class="w-12 h-12 border-4 border-purple-500/30 border-t-purple-500 rounded-full animate-spin mx-auto mb-4"></div>
+                    <p class="text-gray-400">Loading images...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Image Viewer Modal -->
+    <div id="imageViewerModal" class="fixed inset-0 bg-black bg-opacity-90 hidden items-center justify-center" style="z-index: 9999;">
+        <div class="relative max-w-[95vw] max-h-[95vh] flex items-center justify-center">
+            <!-- Close button -->
+            <button onclick="window.admin.closeImageViewer()" class="absolute -top-10 right-0 p-2 rounded-lg bg-black/50 hover:bg-black/70 transition-colors">
+                <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                </svg>
+            </button>
+            
+            <!-- Previous button -->
+            <button onclick="window.admin.previousImage()" class="absolute left-4 top-1/2 transform -translate-y-1/2 p-3 rounded-full bg-black/50 hover:bg-black/70 transition-colors">
+                <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
+                </svg>
+            </button>
+            
+            <!-- Next button -->
+            <button onclick="window.admin.nextImage()" class="absolute right-4 top-1/2 transform -translate-y-1/2 p-3 rounded-full bg-black/50 hover:bg-black/70 transition-colors">
+                <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                </svg>
+            </button>
+            
+            <img id="viewerImage" src="" alt="Generated image" class="max-w-full max-h-full object-contain rounded-lg">
+            
+            <!-- Image counter -->
+            <div id="imageCounter" class="absolute -bottom-10 left-1/2 transform -translate-x-1/2 text-white text-sm bg-black/50 px-3 py-1 rounded-full">
+                1 / 1
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class PromptAdmin {
+            constructor() {
+                this.prompts = [];
+                this.selectedPrompts = new Set();
+                this.settings = {
+                    resultTimeout: 5,
+                    webuiDisplayMode: 'popup',
+                };
+                this.categories = [];
+                this.tags = [];
+
+                this.init();
+            }
+
+            init() {
+                this.bindEvents();
+                this.loadInitialData();
+            }
+
+            bindEvents() {
+                // Search
+                document.getElementById("searchBtn").addEventListener("click", () => this.search());
+                document.getElementById("searchText").addEventListener("keyup", (e) => {
+                    if (e.key === "Enter") this.search();
+                });
+
+                // Bulk actions
+                document.getElementById("selectAll").addEventListener("change", (e) =>
+                    this.toggleSelectAll(e.target.checked)
+                );
+                document.getElementById("bulkDeleteBtn").addEventListener("click", () => this.bulkDelete());
+                document.getElementById("bulkTagBtn").addEventListener("click", () => this.showBulkTagModal());
+                document.getElementById("bulkCategoryBtn").addEventListener("click", () => this.showBulkCategoryModal());
+                document.getElementById("exportBtn").addEventListener("click", () => this.exportPrompts());
+                document.getElementById("settingsBtn").addEventListener("click", () => this.showSettingsModal());
+                document.getElementById("statsBtn").addEventListener("click", () => this.showStats());
+                document.getElementById("diagnosticsBtn").addEventListener("click", () => this.showDiagnosticsModal());
+
+                // Modals
+                this.bindModalEvents();
+
+                // Auto-search on filter changes
+                ["searchCategory"].forEach((id) => {
+                    document.getElementById(id).addEventListener("change", () => this.search());
+                });
+            }
+
+            bindModalEvents() {
+                // Settings modal
+                document.getElementById("saveSettings").addEventListener("click", () => this.saveSettings());
+                document.getElementById("cancelSettings").addEventListener("click", () => this.hideModal("settingsModal"));
+
+                // Bulk tag modal
+                document.getElementById("confirmBulkTag").addEventListener("click", () => this.confirmBulkTag());
+                document.getElementById("cancelBulkTag").addEventListener("click", () => this.hideModal("bulkTagModal"));
+
+                // Bulk category modal
+                document.getElementById("confirmBulkCategory").addEventListener("click", () => this.confirmBulkCategory());
+                document.getElementById("cancelBulkCategory").addEventListener("click", () => this.hideModal("bulkCategoryModal"));
+
+                // Diagnostics modal
+                document.getElementById("runDiagnosticsBtn").addEventListener("click", () => this.runDiagnostics());
+                document.getElementById("testImageLinkBtn").addEventListener("click", () => this.testImageLink());
+
+                // Close modals on backdrop click
+                document.querySelectorAll("[id$='Modal']").forEach((modal) => {
+                    modal.addEventListener("click", (e) => {
+                        if (e.target === modal) {
+                            modal.classList.add("hidden");
+                        }
+                    });
+                });
+            }
+
+            async loadInitialData() {
+                try {
+                    await Promise.all([
+                        this.loadStatistics(),
+                        this.loadCategories(),
+                        this.loadTags(),
+                        this.loadRecentPrompts(),
+                        this.loadSettings(),
+                    ]);
+                } catch (error) {
+                    this.showNotification("Failed to load initial data", "error");
+                    console.error("Load error:", error);
+                }
+            }
+
+            async loadSettings() {
+                try {
+                    const response = await fetch("/prompt_manager/settings");
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success && data.settings) {
+                            this.settings.resultTimeout = data.settings.result_timeout || 5;
+                            this.settings.webuiDisplayMode = data.settings.webui_display_mode || 'popup';
+                        }
+                    }
+                } catch (error) {
+                    console.error("Settings load error:", error);
+                }
+            }
+
+            async loadStatistics() {
+                try {
+                    const response = await fetch("/prompt_manager/stats");
+                    if (response.ok) {
+                        const data = await response.json();
+                        console.log("Stats response:", data); // Debug log
+                        
+                        if (data.success) {
+                            // Try different possible response structures
+                            const stats = data.stats || data;
+                            document.getElementById("totalPrompts").textContent = stats.total_prompts || data.total_prompts || 0;
+                            document.getElementById("totalCategories").textContent = stats.total_categories || data.total_categories || 0;
+                            document.getElementById("totalTags").textContent = stats.total_tags || data.total_tags || 0;
+                            document.getElementById("avgRating").textContent = 
+                                (stats.avg_rating || data.avg_rating) ? (stats.avg_rating || data.avg_rating).toFixed(1) : "N/A";
+                        } else {
+                            console.error("Stats API returned success=false:", data);
+                        }
+                    } else {
+                        console.error("Stats API HTTP error:", response.status, response.statusText);
+                    }
+                } catch (error) {
+                    console.error("Stats error:", error);
+                    // Set some default values if API fails
+                    document.getElementById("totalPrompts").textContent = this.prompts.length || 0;
+                    document.getElementById("totalCategories").textContent = this.categories.length || 0;
+                    document.getElementById("totalTags").textContent = this.tags.length || 0;
+                    document.getElementById("avgRating").textContent = "N/A";
+                }
+            }
+
+            async loadCategories() {
+                try {
+                    const response = await fetch("/prompt_manager/categories");
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success) {
+                            this.categories = data.categories;
+                            this.populateCategoryDropdown();
+                        }
+                    }
+                } catch (error) {
+                    console.error("Categories error:", error);
+                }
+            }
+
+            async loadTags() {
+                try {
+                    const response = await fetch("/prompt_manager/tags");
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success) {
+                            this.tags = data.tags;
+                        }
+                    }
+                } catch (error) {
+                    console.error("Tags error:", error);
+                }
+            }
+
+            populateCategoryDropdown() {
+                const select = document.getElementById("searchCategory");
+                select.innerHTML = '<option value="">All Categories</option>';
+                this.categories.forEach((category) => {
+                    const option = document.createElement("option");
+                    option.value = category;
+                    option.textContent = category;
+                    select.appendChild(option);
+                });
+            }
+
+            async loadRecentPrompts() {
+                try {
+                    const response = await fetch("/prompt_manager/recent?limit=50");
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success) {
+                            this.prompts = data.results;
+                            this.renderPrompts();
+                            // Update stats based on loaded data
+                            this.updateLocalStats();
+                        }
+                    }
+                } catch (error) {
+                    console.error("Recent prompts error:", error);
+                } finally {
+                    document.getElementById("loadingState").classList.add("hidden");
+                    document.getElementById("resultsList").classList.remove("hidden");
+                }
+            }
+
+            updateLocalStats() {
+                // Fallback stats calculation from loaded data
+                if (this.prompts.length > 0) {
+                    document.getElementById("totalPrompts").textContent = this.prompts.length;
+                    
+                    const uniqueCategories = new Set(this.prompts.map(p => p.category).filter(Boolean));
+                    document.getElementById("totalCategories").textContent = uniqueCategories.size;
+                    
+                    const allTags = this.prompts.flatMap(p => Array.isArray(p.tags) ? p.tags : []);
+                    const uniqueTags = new Set(allTags.filter(Boolean));
+                    document.getElementById("totalTags").textContent = uniqueTags.size;
+                    
+                    const ratings = this.prompts.map(p => p.rating).filter(r => r && r > 0);
+                    if (ratings.length > 0) {
+                        const avgRating = ratings.reduce((a, b) => a + b, 0) / ratings.length;
+                        document.getElementById("avgRating").textContent = avgRating.toFixed(1);
+                    }
+                }
+            }
+
+            async search() {
+                const searchText = document.getElementById("searchText").value;
+                const category = document.getElementById("searchCategory").value;
+                const tags = document.getElementById("searchTags").value;
+
+                document.getElementById("loadingState").classList.remove("hidden");
+                document.getElementById("resultsList").classList.add("hidden");
+
+                try {
+                    const params = new URLSearchParams();
+                    if (searchText) params.append("text", searchText);
+                    if (category) params.append("category", category);
+                    if (tags) params.append("tags", tags);
+                    params.append("limit", "100");
+
+                    const response = await fetch(`/prompt_manager/search?${params}`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success) {
+                            this.prompts = data.results;
+                            this.renderPrompts();
+                            this.updateLocalStats();
+                            document.getElementById("resultsTitle").textContent = "Search Results";
+                        }
+                    }
+                } catch (error) {
+                    this.showNotification("Search failed", "error");
+                    console.error("Search error:", error);
+                } finally {
+                    document.getElementById("loadingState").classList.add("hidden");
+                    document.getElementById("resultsList").classList.remove("hidden");
+                }
+            }
+
+            renderPrompts() {
+                const container = document.getElementById("resultsList");
+                const count = document.getElementById("resultsCount");
+
+                count.textContent = `${this.prompts.length} prompts`;
+
+                if (this.prompts.length === 0) {
+                    container.innerHTML = `
+                        <div class="text-center py-12">
+                            <div class="w-16 h-16 bg-gray-700 rounded-full flex items-center justify-center mx-auto mb-4">
+                                <span class="text-2xl">📭</span>
+                            </div>
+                            <h3 class="text-lg font-medium text-gray-300 mb-2">No prompts found</h3>
+                            <p class="text-gray-500">Try adjusting your search criteria or create some prompts in ComfyUI</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = this.prompts.map((prompt) => this.renderPromptItem(prompt)).join("");
+                this.selectedPrompts.clear();
+                this.updateBulkActionButtons();
+            }
+
+            renderPromptItem(prompt) {
+                const tags = Array.isArray(prompt.tags) ? prompt.tags : [];
+                const category = prompt.category || "No category";
+                const rating = prompt.rating || 0;
+                const created = new Date(prompt.created_at).toLocaleDateString();
+
+                return `
+                    <div class="bg-gray-700/50 rounded-xl border border-gray-600 hover:border-gray-500 transition-all duration-200" data-id="${prompt.id}">
+                        <div class="p-6">
+                            <div class="flex items-start space-x-4">
+                                <input type="checkbox" class="prompt-checkbox w-5 h-5 text-blue-600 bg-gray-600 border-gray-500 rounded focus:ring-blue-500 mt-1" data-id="${prompt.id}">
+                                
+                                <div class="flex-1 min-w-0">
+                                    <div class="bg-gray-800 rounded-lg p-4 mb-4">
+                                        <div class="prompt-text text-gray-100 leading-relaxed whitespace-pre-wrap" data-id="${prompt.id}">${this.escapeHtml(prompt.text)}</div>
+                                    </div>
+                                    
+                                    <div class="flex flex-wrap items-center gap-4 text-sm text-gray-400 mb-3">
+                                        <div class="flex items-center space-x-1">
+                                            <span>📁</span>
+                                            <span class="category-text" data-id="${prompt.id}">${category}</span>
+                                        </div>
+                                        <div class="flex items-center space-x-1">
+                                            <span>📅</span>
+                                            <span>${created}</span>
+                                        </div>
+                                        <div class="flex items-center space-x-1">
+                                            <div class="rating flex space-x-1" data-id="${prompt.id}" data-rating="${rating}">
+                                                ${this.renderStars(rating, prompt.id)}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        ${tags.map(tag => `
+                                            <span class="inline-flex items-center space-x-1 bg-blue-600/20 text-blue-300 px-3 py-1 rounded-full text-sm border border-blue-600/30">
+                                                <span>${this.escapeHtml(tag)}</span>
+                                                <button class="text-blue-300 hover:text-blue-100 ml-1" onclick="window.admin.removeTag(${prompt.id}, '${this.escapeHtml(tag)}')">&times;</button>
+                                            </span>
+                                        `).join("")}
+                                        <button class="inline-flex items-center space-x-1 bg-gray-600 hover:bg-gray-500 text-gray-300 px-3 py-1 rounded-full text-sm transition-colors" onclick="window.admin.addTag(${prompt.id})">
+                                            <span>+</span>
+                                            <span>Add Tag</span>
+                                        </button>
+                                    </div>
+                                </div>
+                                
+                                <div class="flex flex-col space-y-2">
+                                    <button class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-lg transition-colors" onclick="window.admin.viewGallery(${prompt.id})">
+                                        🖼️ Gallery
+                                    </button>
+                                    <button class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors" onclick="window.admin.editPrompt(${prompt.id})">
+                                        ✏️ Edit
+                                    </button>
+                                    <button class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors" onclick="window.admin.deletePrompt(${prompt.id})">
+                                        🗑️ Delete
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderStars(rating, promptId) {
+                console.log(`Rendering stars for prompt ${promptId} with rating ${rating}`);
+                return Array.from({ length: 5 }, (_, i) => {
+                    const starNum = i + 1;
+                    const isActive = starNum <= rating;
+                    console.log(`Star ${starNum}: ${isActive ? 'active' : 'inactive'}`);
+                    const color = isActive ? '#fbbf24' : '#6b7280'; // yellow-400 : gray-500
+                    return `<button style="font-size: 1.125rem; color: ${color}; background: none; border: none; cursor: pointer; transition: color 0.2s;" onmouseover="this.style.color='#fcd34d'" onmouseout="this.style.color='${color}'" onclick="window.admin.setRating(${promptId}, ${starNum})">⭐</button>`;
+                }).join("");
+            }
+
+            escapeHtml(text) {
+                const div = document.createElement("div");
+                div.textContent = text;
+                return div.innerHTML;
+            }
+
+            showNotification(message, type = "info") {
+                const notification = document.createElement("div");
+                notification.className = `fixed top-4 right-4 px-6 py-4 rounded-lg shadow-lg z-50 transition-all duration-300 transform translate-x-full`;
+                
+                const colors = {
+                    success: "bg-green-600 text-white",
+                    error: "bg-red-600 text-white",
+                    warning: "bg-yellow-600 text-white",
+                    info: "bg-blue-600 text-white"
+                };
+                
+                notification.className += ` ${colors[type] || colors.info}`;
+                notification.textContent = message;
+                
+                document.body.appendChild(notification);
+                
+                setTimeout(() => notification.classList.remove("translate-x-full"), 100);
+                setTimeout(() => {
+                    notification.classList.add("translate-x-full");
+                    setTimeout(() => document.body.removeChild(notification), 300);
+                }, 3000);
+            }
+
+            showModal(modalId) {
+                document.getElementById(modalId).classList.remove("hidden");
+                document.getElementById(modalId).classList.add("flex");
+            }
+
+            hideModal(modalId) {
+                document.getElementById(modalId).classList.add("hidden");
+                document.getElementById(modalId).classList.remove("flex");
+            }
+
+            showSettingsModal() {
+                document.getElementById("resultTimeout").value = this.settings.resultTimeout;
+                document.getElementById("webuiDisplayMode").value = this.settings.webuiDisplayMode;
+                this.showModal("settingsModal");
+            }
+
+            async saveSettings() {
+                const timeout = parseInt(document.getElementById("resultTimeout").value);
+                const displayMode = document.getElementById("webuiDisplayMode").value;
+                
+                this.settings.resultTimeout = timeout;
+                this.settings.webuiDisplayMode = displayMode;
+
+                try {
+                    const response = await fetch("/prompt_manager/settings", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ 
+                            result_timeout: timeout,
+                            webui_display_mode: displayMode 
+                        }),
+                    });
+
+                    if (response.ok) {
+                        this.showNotification("Settings saved successfully", "success");
+                        this.hideModal("settingsModal");
+                    } else {
+                        throw new Error("Failed to save settings");
+                    }
+                } catch (error) {
+                    this.showNotification("Failed to save settings", "error");
+                }
+            }
+
+            toggleSelectAll(checked) {
+                document.querySelectorAll(".prompt-checkbox").forEach((checkbox) => {
+                    checkbox.checked = checked;
+                    if (checked) {
+                        this.selectedPrompts.add(parseInt(checkbox.dataset.id));
+                    } else {
+                        this.selectedPrompts.clear();
+                    }
+                });
+                this.updateBulkActionButtons();
+            }
+
+            updateBulkActionButtons() {
+                const hasSelected = this.selectedPrompts.size > 0;
+                document.getElementById("bulkDeleteBtn").disabled = !hasSelected;
+                document.getElementById("bulkTagBtn").disabled = !hasSelected;
+                document.getElementById("bulkCategoryBtn").disabled = !hasSelected;
+            }
+
+            async setRating(promptId, rating) {
+                console.log(`Setting rating for prompt ${promptId} to ${rating}`);
+                
+                // Update UI immediately for better UX
+                const ratingElement = document.querySelector(`[data-id="${promptId}"][data-rating]`);
+                if (ratingElement) {
+                    ratingElement.dataset.rating = rating;
+                    ratingElement.innerHTML = this.renderStars(rating, promptId);
+                }
+
+                try {
+                    const response = await fetch(`/prompt_manager/prompts/${promptId}/rating`, {
+                        method: "PUT",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ rating }),
+                    });
+
+                    if (response.ok) {
+                        this.showNotification("Rating updated", "success");
+                        
+                        // Update the prompt data in memory
+                        const promptIndex = this.prompts.findIndex(p => p.id === promptId);
+                        if (promptIndex !== -1) {
+                            this.prompts[promptIndex].rating = rating;
+                        }
+                        
+                        // Update stats
+                        this.updateLocalStats();
+                    } else {
+                        // Revert UI change on API failure
+                        const originalPrompt = this.prompts.find(p => p.id === promptId);
+                        const originalRating = originalPrompt ? originalPrompt.rating : 0;
+                        if (ratingElement) {
+                            ratingElement.dataset.rating = originalRating;
+                            ratingElement.innerHTML = this.renderStars(originalRating, promptId);
+                        }
+                        this.showNotification("Failed to update rating", "error");
+                    }
+                } catch (error) {
+                    console.error("Rating update error:", error);
+                    // Revert UI change on error
+                    const originalPrompt = this.prompts.find(p => p.id === promptId);
+                    const originalRating = originalPrompt ? originalPrompt.rating : 0;
+                    if (ratingElement) {
+                        ratingElement.dataset.rating = originalRating;
+                        ratingElement.innerHTML = this.renderStars(originalRating, promptId);
+                    }
+                    this.showNotification("Failed to update rating", "error");
+                }
+            }
+
+            async addTag(promptId) {
+                const tag = prompt("Enter new tag:");
+                if (!tag) return;
+
+                try {
+                    const response = await fetch(`/prompt_manager/prompts/${promptId}/tags`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ tag: tag.trim() }),
+                    });
+
+                    if (response.ok) {
+                        this.showNotification("Tag added", "success");
+                        this.search();
+                    }
+                } catch (error) {
+                    this.showNotification("Failed to add tag", "error");
+                }
+            }
+
+            async removeTag(promptId, tag) {
+                try {
+                    const response = await fetch(`/prompt_manager/prompts/${promptId}/tags`, {
+                        method: "DELETE",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ tag }),
+                    });
+
+                    if (response.ok) {
+                        this.showNotification("Tag removed", "success");
+                        this.search();
+                    }
+                } catch (error) {
+                    this.showNotification("Failed to remove tag", "error");
+                }
+            }
+
+            async editPrompt(promptId) {
+                const promptElement = document.querySelector(`[data-id="${promptId}"].prompt-text`);
+                if (!promptElement) return;
+
+                const originalText = promptElement.textContent;
+                promptElement.contentEditable = true;
+                promptElement.focus();
+                promptElement.classList.add("bg-gray-700", "border", "border-blue-500", "rounded-lg", "p-3");
+
+                const saveEdit = async () => {
+                    const newText = promptElement.textContent.trim();
+                    if (newText !== originalText && newText) {
+                        try {
+                            const response = await fetch(`/prompt_manager/prompts/${promptId}`, {
+                                method: "PUT",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ text: newText }),
+                            });
+
+                            if (response.ok) {
+                                this.showNotification("Prompt updated", "success");
+                            } else {
+                                throw new Error("Update failed");
+                            }
+                        } catch (error) {
+                            this.showNotification("Failed to update prompt", "error");
+                            promptElement.textContent = originalText;
+                        }
+                    }
+                    promptElement.contentEditable = false;
+                    promptElement.classList.remove("bg-gray-700", "border", "border-blue-500", "rounded-lg", "p-3");
+                };
+
+                promptElement.addEventListener("blur", saveEdit, { once: true });
+                promptElement.addEventListener("keydown", (e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        saveEdit();
+                    }
+                    if (e.key === "Escape") {
+                        promptElement.textContent = originalText;
+                        promptElement.contentEditable = false;
+                        promptElement.classList.remove("bg-gray-700", "border", "border-blue-500", "rounded-lg", "p-3");
+                    }
+                });
+            }
+
+            async deletePrompt(promptId) {
+                if (!confirm("Are you sure you want to delete this prompt?")) return;
+
+                try {
+                    const response = await fetch(`/prompt_manager/delete/${promptId}`, {
+                        method: "DELETE",
+                    });
+
+                    if (response.ok) {
+                        this.showNotification("Prompt deleted", "success");
+                        this.search();
+                    }
+                } catch (error) {
+                    this.showNotification("Failed to delete prompt", "error");
+                }
+            }
+
+            showBulkTagModal() {
+                this.showModal("bulkTagModal");
+            }
+
+            showBulkCategoryModal() {
+                this.showModal("bulkCategoryModal");
+            }
+
+            async confirmBulkTag() {
+                const tags = document.getElementById("bulkTagInput").value.split(",")
+                    .map((tag) => tag.trim()).filter((tag) => tag);
+
+                if (tags.length === 0) return;
+
+                try {
+                    const response = await fetch("/prompt_manager/bulk/tags", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            prompt_ids: Array.from(this.selectedPrompts),
+                            tags,
+                        }),
+                    });
+
+                    if (response.ok) {
+                        this.showNotification(`Tags added to ${this.selectedPrompts.size} prompts`, "success");
+                        this.hideModal("bulkTagModal");
+                        this.search();
+                    }
+                } catch (error) {
+                    this.showNotification("Failed to add tags", "error");
+                }
+            }
+
+            async confirmBulkCategory() {
+                const category = document.getElementById("bulkCategoryInput").value.trim();
+                if (!category) return;
+
+                try {
+                    const response = await fetch("/prompt_manager/bulk/category", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            prompt_ids: Array.from(this.selectedPrompts),
+                            category,
+                        }),
+                    });
+
+                    if (response.ok) {
+                        this.showNotification(`Category set for ${this.selectedPrompts.size} prompts`, "success");
+                        this.hideModal("bulkCategoryModal");
+                        this.search();
+                    }
+                } catch (error) {
+                    this.showNotification("Failed to set category", "error");
+                }
+            }
+
+            async bulkDelete() {
+                if (!confirm(`Are you sure you want to delete ${this.selectedPrompts.size} prompts?`)) return;
+
+                try {
+                    const response = await fetch("/prompt_manager/bulk/delete", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            prompt_ids: Array.from(this.selectedPrompts),
+                        }),
+                    });
+
+                    if (response.ok) {
+                        this.showNotification(`${this.selectedPrompts.size} prompts deleted`, "success");
+                        this.search();
+                    }
+                } catch (error) {
+                    this.showNotification("Failed to delete prompts", "error");
+                }
+            }
+
+            async exportPrompts() {
+                try {
+                    const response = await fetch("/prompt_manager/export");
+                    if (response.ok) {
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = `prompts-${new Date().toISOString().split("T")[0]}.json`;
+                        document.body.appendChild(a);
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                        document.body.removeChild(a);
+                        this.showNotification("Prompts exported", "success");
+                    }
+                } catch (error) {
+                    this.showNotification("Failed to export prompts", "error");
+                }
+            }
+
+            async showStats() {
+                await this.loadStatistics();
+                this.showNotification("📊 Stats refreshed successfully!", "success");
+            }
+
+            // Gallery functionality
+            async viewGallery(promptId) {
+                this.showModal("galleryModal");
+                
+                // Show loading state
+                document.getElementById("galleryLoading").classList.remove("hidden");
+                document.getElementById("galleryContent").classList.add("hidden");
+                document.getElementById("galleryEmpty").classList.add("hidden");
+                
+                try {
+                    const response = await fetch(`/prompt_manager/prompts/${promptId}/images`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success) {
+                            this.renderGallery(data.images, promptId);
+                        } else {
+                            throw new Error(data.error || 'Failed to load images');
+                        }
+                    } else {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                } catch (error) {
+                    console.error('Gallery load error:', error);
+                    this.showNotification('Failed to load gallery', 'error');
+                    this.closeGallery();
+                } finally {
+                    document.getElementById("galleryLoading").classList.add("hidden");
+                }
+            }
+
+            renderGallery(images, promptId) {
+                const content = document.getElementById("galleryContent");
+                const empty = document.getElementById("galleryEmpty");
+                
+                // Update title
+                const prompt = this.prompts.find(p => p.id === promptId);
+                const promptText = prompt ? prompt.text.substring(0, 50) + (prompt.text.length > 50 ? '...' : '') : 'Unknown Prompt';
+                document.getElementById("galleryTitle").textContent = `Gallery: ${promptText}`;
+                
+                if (!images || images.length === 0) {
+                    content.classList.add("hidden");
+                    empty.classList.remove("hidden");
+                    return;
+                }
+                
+                content.classList.remove("hidden");
+                empty.classList.add("hidden");
+                
+                content.innerHTML = images.map(image => `
+                    <div class="group cursor-pointer bg-gray-700 rounded-xl overflow-hidden border border-gray-600 hover:border-gray-500 transition-all duration-200" data-image-url="/prompt_manager/images/${image.id}/file">
+                        <div class="aspect-square bg-gray-800 overflow-hidden relative">
+                            <img src="/prompt_manager/images/${image.id}/file" 
+                                 alt="Generated image" 
+                                 class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                 onerror="this.parentElement.innerHTML='<div class=\\'flex items-center justify-center h-full text-gray-400\\'>⚠️ Image not found</div>'">
+                            <div class="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-opacity duration-300 flex items-center justify-center">
+                                <svg class="w-8 h-8 text-white opacity-0 group-hover:opacity-100 transition-opacity duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                                </svg>
+                            </div>
+                        </div>
+                        <div class="p-3">
+                            <div class="text-xs text-gray-400 mb-1">
+                                ${new Date(image.generation_time).toLocaleDateString()} ${new Date(image.generation_time).toLocaleTimeString()}
+                            </div>
+                            <div class="text-xs text-gray-500">
+                                ${image.width && image.height ? `${image.width}×${image.height}` : 'Unknown size'}
+                                ${image.file_size ? ` • ${this.formatFileSize(image.file_size)}` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+                
+                // Store images for navigation
+                this.currentGalleryImages = images;
+                
+                // Add click event listeners to gallery items
+                content.querySelectorAll('[data-image-url]').forEach((item, index) => {
+                    item.addEventListener('click', (e) => {
+                        const imageUrl = item.dataset.imageUrl;
+                        console.log("Gallery item clicked, imageUrl:", imageUrl, "index:", index);
+                        this.viewImage(imageUrl, index);
+                    });
+                });
+            }
+
+            viewImage(imageUrl, imageIndex = 0) {
+                console.log("viewImage called with:", imageUrl);
+                const img = document.getElementById("viewerImage");
+                const modal = document.getElementById("imageViewerModal");
+                
+                if (!img) {
+                    console.error("viewerImage element not found");
+                    return;
+                }
+                if (!modal) {
+                    console.error("imageViewerModal element not found");
+                    return;
+                }
+                
+                // Store current gallery images and index
+                this.currentImageIndex = imageIndex;
+                this.currentGalleryImages = this.currentGalleryImages || [];
+                
+                img.src = imageUrl;
+                this.updateImageCounter();
+                this.showModal("imageViewerModal");
+                
+                console.log("Image viewer modal opened");
+            }
+
+            nextImage() {
+                if (!this.currentGalleryImages || this.currentGalleryImages.length === 0) return;
+                
+                this.currentImageIndex = (this.currentImageIndex + 1) % this.currentGalleryImages.length;
+                const nextImageUrl = `/prompt_manager/images/${this.currentGalleryImages[this.currentImageIndex].id}/file`;
+                document.getElementById("viewerImage").src = nextImageUrl;
+                this.updateImageCounter();
+            }
+
+            previousImage() {
+                if (!this.currentGalleryImages || this.currentGalleryImages.length === 0) return;
+                
+                this.currentImageIndex = (this.currentImageIndex - 1 + this.currentGalleryImages.length) % this.currentGalleryImages.length;
+                const prevImageUrl = `/prompt_manager/images/${this.currentGalleryImages[this.currentImageIndex].id}/file`;
+                document.getElementById("viewerImage").src = prevImageUrl;
+                this.updateImageCounter();
+            }
+
+            updateImageCounter() {
+                const counter = document.getElementById("imageCounter");
+                if (counter && this.currentGalleryImages) {
+                    counter.textContent = `${this.currentImageIndex + 1} / ${this.currentGalleryImages.length}`;
+                }
+            }
+
+            closeGallery() {
+                this.hideModal("galleryModal");
+            }
+
+            closeImageViewer() {
+                this.hideModal("imageViewerModal");
+                document.getElementById("viewerImage").src = "";
+                this.currentImageIndex = 0;
+            }
+
+            formatFileSize(bytes) {
+                if (!bytes) return 'Unknown';
+                const units = ['B', 'KB', 'MB', 'GB'];
+                let size = bytes;
+                let unitIndex = 0;
+                
+                while (size >= 1024 && unitIndex < units.length - 1) {
+                    size /= 1024;
+                    unitIndex++;
+                }
+                
+                return `${size.toFixed(1)} ${units[unitIndex]}`;
+            }
+
+            // Diagnostics functionality
+            showDiagnosticsModal() {
+                this.showModal("diagnosticsModal");
+            }
+
+            closeDiagnostics() {
+                this.hideModal("diagnosticsModal");
+            }
+
+            async runDiagnostics() {
+                const content = document.getElementById("diagnosticsContent");
+                content.innerHTML = `
+                    <div class="text-center py-8">
+                        <div class="w-12 h-12 border-4 border-orange-500/30 border-t-orange-500 rounded-full animate-spin mx-auto mb-4"></div>
+                        <p class="text-gray-400">Running diagnostics...</p>
+                    </div>
+                `;
+
+                try {
+                    const response = await fetch('/prompt_manager/diagnostics');
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success) {
+                            this.renderDiagnostics(data.diagnostics);
+                        } else {
+                            throw new Error(data.error || 'Diagnostics failed');
+                        }
+                    } else {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                } catch (error) {
+                    console.error('Diagnostics error:', error);
+                    content.innerHTML = `
+                        <div class="bg-red-900/20 border border-red-600 rounded-lg p-4">
+                            <h4 class="text-red-400 font-medium mb-2">❌ Diagnostics Failed</h4>
+                            <p class="text-gray-300">${error.message}</p>
+                        </div>
+                    `;
+                }
+            }
+
+            renderDiagnostics(diagnostics) {
+                const content = document.getElementById("diagnosticsContent");
+                
+                let html = '<div class="space-y-4">';
+                
+                // Summary
+                html += '<div class="bg-gray-700 rounded-lg p-4">';
+                html += '<h4 class="text-white font-medium mb-3">📋 Diagnostic Summary</h4>';
+                html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-3">';
+                
+                for (const [category, result] of Object.entries(diagnostics)) {
+                    const status = result.status === 'ok' ? '✅ PASS' : (result.status === 'warning' ? '⚠️ WARNING' : '❌ FAIL');
+                    const statusColor = result.status === 'ok' ? 'text-green-400' : (result.status === 'warning' ? 'text-yellow-400' : 'text-red-400');
+                    
+                    html += `
+                        <div class="flex justify-between items-center p-2 bg-gray-600 rounded">
+                            <span class="text-gray-300 capitalize">${category}</span>
+                            <span class="${statusColor} font-mono text-sm">${status}</span>
+                        </div>
+                    `;
+                }
+                
+                html += '</div></div>';
+                
+                // Detailed results
+                for (const [category, result] of Object.entries(diagnostics)) {
+                    const bgColor = result.status === 'ok' ? 'bg-green-900/20 border-green-600' : 
+                                   (result.status === 'warning' ? 'bg-yellow-900/20 border-yellow-600' : 'bg-red-900/20 border-red-600');
+                    
+                    html += `<div class="${bgColor} border rounded-lg p-4">`;
+                    html += `<h4 class="text-white font-medium mb-2 capitalize">${category}</h4>`;
+                    
+                    if (result.message) {
+                        html += `<p class="text-gray-300 mb-2">${result.message}</p>`;
+                    }
+                    
+                    // Show specific details based on category
+                    if (category === 'database' && result.status === 'ok') {
+                        html += `<div class="text-sm text-gray-400">`;
+                        html += `<p>Prompts: ${result.prompt_count || 0}</p>`;
+                        html += `<p>Images table: ${result.has_images_table ? 'Yes' : 'No'}</p>`;
+                        html += `</div>`;
+                    }
+                    
+                    if (category === 'images_table' && result.status === 'ok') {
+                        html += `<div class="text-sm text-gray-400">`;
+                        html += `<p>Images: ${result.image_count || 0}</p>`;
+                        if (result.recent_images && result.recent_images.length > 0) {
+                            html += `<p>Recent images:</p>`;
+                            html += `<ul class="ml-4 list-disc">`;
+                            result.recent_images.slice(0, 3).forEach(img => {
+                                html += `<li>${img.filename} → Prompt ${img.prompt_id}</li>`;
+                            });
+                            html += `</ul>`;
+                        }
+                        html += `</div>`;
+                    }
+                    
+                    if (category === 'comfyui_output' && result.output_dirs) {
+                        html += `<div class="text-sm text-gray-400">`;
+                        html += `<p>Output directories found:</p>`;
+                        html += `<ul class="ml-4 list-disc">`;
+                        result.output_dirs.forEach(dir => {
+                            html += `<li>${dir}</li>`;
+                        });
+                        html += `</ul>`;
+                        html += `</div>`;
+                    }
+                    
+                    if (category === 'dependencies' && result.dependencies) {
+                        html += `<div class="text-sm text-gray-400">`;
+                        for (const [dep, available] of Object.entries(result.dependencies)) {
+                            const status = available ? '✅' : '❌';
+                            html += `<p>${status} ${dep}</p>`;
+                        }
+                        html += `</div>`;
+                    }
+                    
+                    html += '</div>';
+                }
+                
+                html += '</div>';
+                content.innerHTML = html;
+            }
+
+            async testImageLink() {
+                if (this.prompts.length === 0) {
+                    this.showNotification('No prompts available for testing', 'warning');
+                    return;
+                }
+                
+                // Use the first prompt for testing
+                const testPrompt = this.prompts[0];
+                
+                try {
+                    const response = await fetch('/prompt_manager/diagnostics/test-link', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            prompt_id: testPrompt.id,
+                            image_path: '/test/fake/image.png'
+                        })
+                    });
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success) {
+                            this.showNotification('✅ Test image link created successfully!', 'success');
+                            // Refresh the gallery to show the test image
+                            setTimeout(() => this.search(), 1000);
+                        } else {
+                            throw new Error(data.result?.message || 'Test failed');
+                        }
+                    } else {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                } catch (error) {
+                    console.error('Test link error:', error);
+                    this.showNotification(`❌ Test failed: ${error.message}`, 'error');
+                }
+            }
+        }
+
+        // Initialize the admin interface
+        const admin = new PromptAdmin();
+        window.admin = admin;
+
+        // Add event listeners for prompt selection
+        document.addEventListener("change", function (e) {
+            if (e.target.classList.contains("prompt-checkbox")) {
+                const promptId = parseInt(e.target.dataset.id);
+                if (e.target.checked) {
+                    admin.selectedPrompts.add(promptId);
+                } else {
+                    admin.selectedPrompts.delete(promptId);
+                }
+                admin.updateBulkActionButtons();
+
+                const allCheckboxes = document.querySelectorAll(".prompt-checkbox");
+                const checkedCheckboxes = document.querySelectorAll(".prompt-checkbox:checked");
+                const selectAllCheckbox = document.getElementById("selectAll");
+                selectAllCheckbox.checked = allCheckboxes.length === checkedCheckboxes.length;
+                selectAllCheckbox.indeterminate = checkedCheckboxes.length > 0 && checkedCheckboxes.length < allCheckboxes.length;
+            }
+        });
+
+        // Keyboard shortcuts for modals
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                // Close any open modals
+                if (!document.getElementById('galleryModal').classList.contains('hidden')) {
+                    admin.closeGallery();
+                } else if (!document.getElementById('imageViewerModal').classList.contains('hidden')) {
+                    admin.closeImageViewer();
+                }
+            } else if (!document.getElementById('imageViewerModal').classList.contains('hidden')) {
+                // Handle arrow keys in image viewer
+                if (e.key === 'ArrowLeft') {
+                    e.preventDefault();
+                    admin.previousImage();
+                } else if (e.key === 'ArrowRight') {
+                    e.preventDefault();
+                    admin.nextImage();
+                }
+            }
+        });
+    </script>
+</body>
+</html>
