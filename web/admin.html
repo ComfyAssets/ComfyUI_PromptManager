@@ -686,8 +686,11 @@
                                 <input type="checkbox" class="prompt-checkbox w-5 h-5 text-blue-600 bg-gray-600 border-gray-500 rounded focus:ring-blue-500 mt-1" data-id="${prompt.id}">
                                 
                                 <div class="flex-1 min-w-0">
-                                    <div class="bg-gray-800 rounded-lg p-4 mb-4">
+                                    <div class="bg-gray-800 rounded-lg p-4 mb-4 relative group">
                                         <div class="prompt-text text-gray-100 leading-relaxed whitespace-pre-wrap" data-id="${prompt.id}">${this.escapeHtml(prompt.text)}</div>
+                                        <button class="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white p-2 rounded-lg text-sm" onclick="window.admin.copyPromptToClipboard(${prompt.id})">
+                                            📋 Copy
+                                        </button>
                                     </div>
                                     
                                     <div class="flex flex-wrap items-center gap-4 text-sm text-gray-400 mb-3">
@@ -1478,6 +1481,81 @@
                     console.error('Test link error:', error);
                     this.showNotification(`❌ Test failed: ${error.message}`, 'error');
                 }
+            }
+
+            // Copy prompt to clipboard functionality
+            async copyPromptToClipboard(promptId) {
+                // Find the prompt text from the prompts array
+                const prompt = this.prompts.find(p => p.id === promptId);
+                if (!prompt) {
+                    this.showNotification('❌ Prompt not found', 'error');
+                    return;
+                }
+                
+                const promptText = prompt.text;
+                
+                try {
+                    // Use the modern Clipboard API if available
+                    if (navigator.clipboard && window.isSecureContext) {
+                        await navigator.clipboard.writeText(promptText);
+                        this.showNotification('📋 Prompt copied to clipboard!', 'success');
+                    } else {
+                        // Fallback for older browsers or non-secure contexts
+                        const textArea = document.createElement('textarea');
+                        textArea.value = promptText;
+                        textArea.style.position = 'fixed';
+                        textArea.style.left = '-999999px';
+                        textArea.style.top = '-999999px';
+                        document.body.appendChild(textArea);
+                        textArea.focus();
+                        textArea.select();
+                        
+                        if (document.execCommand('copy')) {
+                            this.showNotification('📋 Prompt copied to clipboard!', 'success');
+                        } else {
+                            throw new Error('Copy command failed');
+                        }
+                        
+                        document.body.removeChild(textArea);
+                    }
+                } catch (error) {
+                    console.error('Copy to clipboard failed:', error);
+                    this.showNotification('❌ Failed to copy prompt to clipboard', 'error');
+                    
+                    // Show a fallback modal with the text for manual copying
+                    this.showCopyFallbackModal(promptText);
+                }
+            }
+
+            showCopyFallbackModal(text) {
+                // Create a temporary modal for manual copy
+                const modal = document.createElement('div');
+                modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
+                modal.innerHTML = `
+                    <div class="bg-gray-800 rounded-xl p-6 max-w-2xl w-full mx-4 border border-gray-700">
+                        <h3 class="text-xl font-semibold text-gray-100 mb-4">📋 Copy Prompt Text</h3>
+                        <p class="text-gray-400 mb-4">Please manually copy the text below:</p>
+                        <textarea readonly class="w-full h-32 px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 resize-none" style="font-family: monospace;">${text}</textarea>
+                        <div class="flex justify-end mt-4">
+                            <button class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors" onclick="this.closest('[class*=fixed]').remove()">
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+                
+                // Auto-select the text in the textarea
+                const textarea = modal.querySelector('textarea');
+                textarea.focus();
+                textarea.select();
+                
+                // Close modal when clicking outside
+                modal.addEventListener('click', (e) => {
+                    if (e.target === modal) {
+                        modal.remove();
+                    }
+                });
             }
         }
 
