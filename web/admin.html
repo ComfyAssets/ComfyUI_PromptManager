@@ -176,6 +176,10 @@
                                 class="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white text-sm font-medium rounded-lg transition-colors">
                             🔍 Diagnostics
                         </button>
+                        <button id="maintenanceBtn" 
+                                class="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            🔧 Maintenance
+                        </button>
                     </div>
                 </div>
             </div>
@@ -324,6 +328,99 @@
         </div>
     </div>
 
+    <!-- Maintenance Modal -->
+    <div id="maintenanceModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl max-w-4xl w-full max-h-[90vh] overflow-hidden mx-4 border border-gray-700">
+            <div class="p-6 border-b border-gray-700">
+                <div class="flex items-center justify-between">
+                    <h3 class="text-xl font-semibold text-gray-100">🔧 Database Maintenance</h3>
+                    <button onclick="window.admin.closeMaintenance()" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
+                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="p-6 overflow-y-auto max-h-[calc(90vh-120px)] custom-scrollbar">
+                <!-- Maintenance Options -->
+                <div class="space-y-4 mb-6">
+                    <h4 class="text-lg font-medium text-gray-100 mb-4">Select Maintenance Operations:</h4>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <label class="flex items-center space-x-3 p-4 bg-gray-700 rounded-lg hover:bg-gray-600 cursor-pointer">
+                            <input type="checkbox" id="cleanup_duplicates" class="maintenance-option w-4 h-4 text-teal-600 bg-gray-600 border-gray-500 rounded focus:ring-teal-500" checked>
+                            <div class="flex-1">
+                                <div class="text-white font-medium">🗑️ Remove Duplicates</div>
+                                <div class="text-sm text-gray-400">Find and remove duplicate prompts based on text content</div>
+                            </div>
+                        </label>
+                        
+                        <label class="flex items-center space-x-3 p-4 bg-gray-700 rounded-lg hover:bg-gray-600 cursor-pointer">
+                            <input type="checkbox" id="vacuum" class="maintenance-option w-4 h-4 text-teal-600 bg-gray-600 border-gray-500 rounded focus:ring-teal-500" checked>
+                            <div class="flex-1">
+                                <div class="text-white font-medium">⚡ Vacuum Database</div>
+                                <div class="text-sm text-gray-400">Optimize database file size and performance</div>
+                            </div>
+                        </label>
+                        
+                        <label class="flex items-center space-x-3 p-4 bg-gray-700 rounded-lg hover:bg-gray-600 cursor-pointer">
+                            <input type="checkbox" id="cleanup_orphaned_images" class="maintenance-option w-4 h-4 text-teal-600 bg-gray-600 border-gray-500 rounded focus:ring-teal-500" checked>
+                            <div class="flex-1">
+                                <div class="text-white font-medium">🖼️ Clean Orphaned Images</div>
+                                <div class="text-sm text-gray-400">Remove image records for files that no longer exist</div>
+                            </div>
+                        </label>
+                        
+                        <label class="flex items-center space-x-3 p-4 bg-gray-700 rounded-lg hover:bg-gray-600 cursor-pointer">
+                            <input type="checkbox" id="check_hash_duplicates" class="maintenance-option w-4 h-4 text-teal-600 bg-gray-600 border-gray-500 rounded focus:ring-teal-500">
+                            <div class="flex-1">
+                                <div class="text-white font-medium">🔍 Check Hash Duplicates</div>
+                                <div class="text-sm text-gray-400">Identify prompts with duplicate hash values</div>
+                            </div>
+                        </label>
+                        
+                        <label class="flex items-center space-x-3 p-4 bg-gray-700 rounded-lg hover:bg-gray-600 cursor-pointer">
+                            <input type="checkbox" id="check_consistency" class="maintenance-option w-4 h-4 text-teal-600 bg-gray-600 border-gray-500 rounded focus:ring-teal-500">
+                            <div class="flex-1">
+                                <div class="text-white font-medium">🔧 Consistency Check</div>
+                                <div class="text-sm text-gray-400">Verify database integrity and data consistency</div>
+                            </div>
+                        </label>
+                        
+                        <label class="flex items-center space-x-3 p-4 bg-gray-700 rounded-lg hover:bg-gray-600 cursor-pointer">
+                            <input type="checkbox" id="statistics" class="maintenance-option w-4 h-4 text-teal-600 bg-gray-600 border-gray-500 rounded focus:ring-teal-500">
+                            <div class="flex-1">
+                                <div class="text-white font-medium">📊 Database Statistics</div>
+                                <div class="text-sm text-gray-400">Generate detailed database statistics report</div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+                
+                <!-- Action Buttons -->
+                <div class="flex items-center justify-between mb-6">
+                    <div class="flex space-x-3">
+                        <button id="runMaintenanceBtn" class="px-6 py-3 bg-teal-600 hover:bg-teal-700 text-white font-medium rounded-lg transition-colors">
+                            🔧 Run Maintenance
+                        </button>
+                        <button id="selectAllMaintenanceBtn" class="px-4 py-3 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                            ✅ Select All
+                        </button>
+                        <button id="clearAllMaintenanceBtn" class="px-4 py-3 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                            ❌ Clear All
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Results -->
+                <div id="maintenanceResults" class="space-y-4">
+                    <div class="text-center py-8 text-gray-400">
+                        Click "Run Maintenance" to perform selected operations
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Gallery Modal -->
     <div id="galleryModal" class="fixed inset-0 bg-black bg-opacity-75 hidden items-center justify-center z-50">
         <div class="bg-gray-800 rounded-xl max-w-6xl w-full max-h-[90vh] overflow-hidden mx-4 border border-gray-700">
@@ -437,6 +534,7 @@
                 document.getElementById("settingsBtn").addEventListener("click", () => this.showSettingsModal());
                 document.getElementById("statsBtn").addEventListener("click", () => this.showStats());
                 document.getElementById("diagnosticsBtn").addEventListener("click", () => this.showDiagnosticsModal());
+                document.getElementById("maintenanceBtn").addEventListener("click", () => this.showMaintenanceModal());
 
                 // Modals
                 this.bindModalEvents();
@@ -463,6 +561,11 @@
                 // Diagnostics modal
                 document.getElementById("runDiagnosticsBtn").addEventListener("click", () => this.runDiagnostics());
                 document.getElementById("testImageLinkBtn").addEventListener("click", () => this.testImageLink());
+
+                // Maintenance modal
+                document.getElementById("runMaintenanceBtn").addEventListener("click", () => this.runMaintenance());
+                document.getElementById("selectAllMaintenanceBtn").addEventListener("click", () => this.selectAllMaintenance());
+                document.getElementById("clearAllMaintenanceBtn").addEventListener("click", () => this.clearAllMaintenance());
 
                 // Close modals on backdrop click
                 document.querySelectorAll("[id$='Modal']").forEach((modal) => {
@@ -1327,6 +1430,175 @@
 
             closeDiagnostics() {
                 this.hideModal("diagnosticsModal");
+            }
+
+            // Maintenance functionality
+            showMaintenanceModal() {
+                this.showModal("maintenanceModal");
+            }
+
+            closeMaintenance() {
+                this.hideModal("maintenanceModal");
+            }
+
+            selectAllMaintenance() {
+                document.querySelectorAll('.maintenance-option').forEach(checkbox => {
+                    checkbox.checked = true;
+                });
+            }
+
+            clearAllMaintenance() {
+                document.querySelectorAll('.maintenance-option').forEach(checkbox => {
+                    checkbox.checked = false;
+                });
+            }
+
+            async runMaintenance() {
+                const resultsContainer = document.getElementById("maintenanceResults");
+                const runButton = document.getElementById("runMaintenanceBtn");
+                
+                // Get selected operations
+                const selectedOps = Array.from(document.querySelectorAll('.maintenance-option:checked'))
+                    .map(checkbox => checkbox.id);
+                
+                if (selectedOps.length === 0) {
+                    this.showNotification('Please select at least one maintenance operation', 'warning');
+                    return;
+                }
+                
+                // Show loading state
+                runButton.disabled = true;
+                runButton.innerHTML = '🔄 Running...';
+                resultsContainer.innerHTML = `
+                    <div class="text-center py-8">
+                        <div class="w-12 h-12 border-4 border-teal-500/30 border-t-teal-500 rounded-full animate-spin mx-auto mb-4"></div>
+                        <p class="text-gray-400">Running maintenance operations...</p>
+                        <p class="text-sm text-gray-500 mt-2">Operations: ${selectedOps.map(op => op.replace(/_/g, ' ')).join(', ')}</p>
+                    </div>
+                `;
+                
+                try {
+                    const response = await fetch('/prompt_manager/maintenance', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ operations: selectedOps })
+                    });
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success) {
+                            this.renderMaintenanceResults(data);
+                            
+                            // Show overall success notification
+                            if (data.all_successful) {
+                                this.showNotification('✅ All maintenance operations completed successfully!', 'success');
+                            } else {
+                                this.showNotification('⚠️ Some maintenance operations had issues', 'warning');
+                            }
+                            
+                            // Refresh stats after maintenance
+                            setTimeout(() => this.loadStatistics(), 1000);
+                        } else {
+                            throw new Error(data.error || 'Maintenance failed');
+                        }
+                    } else {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                } catch (error) {
+                    console.error('Maintenance error:', error);
+                    resultsContainer.innerHTML = `
+                        <div class="bg-red-900/20 border border-red-600 rounded-lg p-4">
+                            <h4 class="text-red-400 font-medium mb-2">❌ Maintenance Failed</h4>
+                            <p class="text-gray-300">${error.message}</p>
+                        </div>
+                    `;
+                    this.showNotification('❌ Maintenance failed', 'error');
+                } finally {
+                    runButton.disabled = false;
+                    runButton.innerHTML = '🔧 Run Maintenance';
+                }
+            }
+
+            renderMaintenanceResults(data) {
+                const resultsContainer = document.getElementById("maintenanceResults");
+                
+                let html = '<div class="space-y-4">';
+                
+                // Summary
+                html += '<div class="bg-gray-700 rounded-lg p-4">';
+                html += '<h4 class="text-white font-medium mb-3">📋 Maintenance Summary</h4>';
+                html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-3">';
+                html += `
+                    <div class="flex justify-between items-center p-2 bg-gray-600 rounded">
+                        <span class="text-gray-300">Operations Completed</span>
+                        <span class="text-green-400 font-mono text-sm">${data.operations_completed}</span>
+                    </div>
+                `;
+                html += `
+                    <div class="flex justify-between items-center p-2 bg-gray-600 rounded">
+                        <span class="text-gray-300">Overall Success</span>
+                        <span class="${data.all_successful ? 'text-green-400' : 'text-yellow-400'} font-mono text-sm">
+                            ${data.all_successful ? '✅ ALL PASSED' : '⚠️ SOME ISSUES'}
+                        </span>
+                    </div>
+                `;
+                html += '</div></div>';
+                
+                // Detailed results
+                for (const [operation, result] of Object.entries(data.results)) {
+                    const bgColor = result.success ? 'bg-green-900/20 border-green-600' : 'bg-red-900/20 border-red-600';
+                    const statusIcon = result.success ? '✅' : '❌';
+                    const statusText = result.success ? 'SUCCESS' : 'FAILED';
+                    
+                    html += `<div class="${bgColor} border rounded-lg p-4">`;
+                    html += `<h4 class="text-white font-medium mb-2 flex items-center space-x-2">`;
+                    html += `<span>${statusIcon}</span>`;
+                    html += `<span class="capitalize">${operation.replace(/_/g, ' ')}</span>`;
+                    html += `<span class="text-sm font-mono ${result.success ? 'text-green-400' : 'text-red-400'}">${statusText}</span>`;
+                    html += `</h4>`;
+                    
+                    if (result.message) {
+                        html += `<p class="text-gray-300 mb-2">${result.message}</p>`;
+                    }
+                    
+                    // Show specific details
+                    if (result.removed_count !== undefined) {
+                        html += `<div class="text-sm text-gray-400">Items removed: ${result.removed_count}</div>`;
+                    }
+                    
+                    if (result.duplicate_hashes !== undefined) {
+                        html += `<div class="text-sm text-gray-400">Duplicate hash groups found: ${result.duplicate_hashes}</div>`;
+                    }
+                    
+                    if (result.issues_found !== undefined) {
+                        html += `<div class="text-sm text-gray-400">Issues found: ${result.issues_found}</div>`;
+                        if (result.issues && result.issues.length > 0) {
+                            html += `<ul class="ml-4 list-disc text-xs text-gray-500 mt-1">`;
+                            result.issues.forEach(issue => {
+                                html += `<li>${issue}</li>`;
+                            });
+                            html += `</ul>`;
+                        }
+                    }
+                    
+                    if (result.info) {
+                        html += `<div class="text-sm text-gray-400 mt-2">`;
+                        html += `<p>Total prompts: ${result.info.total_prompts || 'N/A'}</p>`;
+                        html += `<p>Database size: ${result.info.database_size_bytes ? this.formatFileSize(result.info.database_size_bytes) : 'N/A'}</p>`;
+                        html += `</div>`;
+                    }
+                    
+                    if (result.error) {
+                        html += `<div class="text-sm text-red-300 mt-2 font-mono bg-red-900/20 p-2 rounded">`;
+                        html += `Error: ${result.error}`;
+                        html += `</div>`;
+                    }
+                    
+                    html += '</div>';
+                }
+                
+                html += '</div>';
+                resultsContainer.innerHTML = html;
             }
 
             async runDiagnostics() {
