@@ -70,6 +70,10 @@ class PromptManagerAPI:
         async def cleanup_duplicates_route(request):
             return await self.cleanup_duplicates_endpoint(request)
 
+        @routes.post("/prompt_manager/maintenance")
+        async def maintenance_route(request):
+            return await self.run_maintenance(request)
+
         @routes.post("/prompt_manager/save")
         async def save_prompt_route(request):
             return await self.save_prompt(request)
@@ -1263,4 +1267,162 @@ class PromptManagerAPI:
             return web.json_response({
                 'success': False,
                 'error': str(e)
+            }, status=500)
+
+    async def run_maintenance(self, request):
+        """
+        Comprehensive database maintenance endpoint.
+        POST /prompt_manager/maintenance
+        """
+        try:
+            data = await request.json() if request.content_type == 'application/json' else {}
+            operations = data.get('operations', ['cleanup_duplicates', 'vacuum', 'cleanup_orphaned_images'])
+            
+            results = {}
+            
+            # Clean up duplicate prompts
+            if 'cleanup_duplicates' in operations:
+                try:
+                    duplicates_removed = self.db.cleanup_duplicates()
+                    results['cleanup_duplicates'] = {
+                        'success': True,
+                        'removed_count': duplicates_removed,
+                        'message': f'Removed {duplicates_removed} duplicate prompts'
+                    }
+                except Exception as e:
+                    results['cleanup_duplicates'] = {
+                        'success': False,
+                        'error': str(e),
+                        'message': 'Failed to cleanup duplicates'
+                    }
+            
+            # Vacuum database
+            if 'vacuum' in operations:
+                try:
+                    self.db.model.vacuum_database()
+                    results['vacuum'] = {
+                        'success': True,
+                        'message': 'Database vacuum completed successfully'
+                    }
+                except Exception as e:
+                    results['vacuum'] = {
+                        'success': False,
+                        'error': str(e),
+                        'message': 'Failed to vacuum database'
+                    }
+            
+            # Clean up orphaned image records
+            if 'cleanup_orphaned_images' in operations:
+                try:
+                    orphaned_removed = self.db.cleanup_missing_images()
+                    results['cleanup_orphaned_images'] = {
+                        'success': True,
+                        'removed_count': orphaned_removed,
+                        'message': f'Removed {orphaned_removed} orphaned image records'
+                    }
+                except Exception as e:
+                    results['cleanup_orphaned_images'] = {
+                        'success': False,
+                        'error': str(e),
+                        'message': 'Failed to cleanup orphaned images'
+                    }
+            
+            # Check for potential duplicate hashes
+            if 'check_hash_duplicates' in operations:
+                try:
+                    with self.db.model.get_connection() as conn:
+                        cursor = conn.execute("""
+                            SELECT hash, COUNT(*) as count 
+                            FROM prompts 
+                            WHERE hash IS NOT NULL 
+                            GROUP BY hash 
+                            HAVING COUNT(*) > 1
+                        """)
+                        hash_duplicates = cursor.fetchall()
+                        
+                        results['check_hash_duplicates'] = {
+                            'success': True,
+                            'duplicate_hashes': len(hash_duplicates),
+                            'message': f'Found {len(hash_duplicates)} duplicate hash groups'
+                        }
+                except Exception as e:
+                    results['check_hash_duplicates'] = {
+                        'success': False,
+                        'error': str(e),
+                        'message': 'Failed to check hash duplicates'
+                    }
+            
+            # Get database statistics
+            if 'statistics' in operations:
+                try:
+                    db_info = self.db.model.get_database_info()
+                    results['statistics'] = {
+                        'success': True,
+                        'info': db_info,
+                        'message': 'Database statistics retrieved'
+                    }
+                except Exception as e:
+                    results['statistics'] = {
+                        'success': False,
+                        'error': str(e),
+                        'message': 'Failed to get database statistics'
+                    }
+            
+            # Check for consistency issues
+            if 'check_consistency' in operations:
+                try:
+                    consistency_issues = []
+                    
+                    with self.db.model.get_connection() as conn:
+                        # Check for prompts with invalid JSON in tags
+                        cursor = conn.execute("SELECT id, tags FROM prompts WHERE tags IS NOT NULL")
+                        for row in cursor.fetchall():
+                            try:
+                                if row['tags']:
+                                    json.loads(row['tags'])
+                            except json.JSONDecodeError:
+                                consistency_issues.append(f"Prompt {row['id']} has invalid JSON in tags")
+                        
+                        # Check for orphaned foreign key references
+                        cursor = conn.execute("""
+                            SELECT gi.id, gi.prompt_id 
+                            FROM generated_images gi 
+                            LEFT JOIN prompts p ON gi.prompt_id = p.id 
+                            WHERE p.id IS NULL
+                        """)
+                        orphaned_refs = cursor.fetchall()
+                        for ref in orphaned_refs:
+                            consistency_issues.append(f"Image {ref['id']} references non-existent prompt {ref['prompt_id']}")
+                    
+                    results['check_consistency'] = {
+                        'success': True,
+                        'issues_found': len(consistency_issues),
+                        'issues': consistency_issues[:10],  # Limit to first 10 issues
+                        'message': f'Found {len(consistency_issues)} consistency issues'
+                    }
+                except Exception as e:
+                    results['check_consistency'] = {
+                        'success': False,
+                        'error': str(e),
+                        'message': 'Failed to check database consistency'
+                    }
+            
+            # Overall success status
+            all_successful = all(result.get('success', False) for result in results.values())
+            
+            return web.json_response({
+                'success': True,
+                'operations_completed': len(results),
+                'all_successful': all_successful,
+                'results': results,
+                'message': f'Maintenance completed: {len(results)} operations processed'
+            })
+            
+        except Exception as e:
+            print(f"[PromptManager API] Maintenance error: {e}")
+            import traceback
+            traceback.print_exc()
+            return web.json_response({
+                'success': False,
+                'error': f'Maintenance failed: {str(e)}'
             }, status=500)
