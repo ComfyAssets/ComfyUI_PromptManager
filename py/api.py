@@ -738,6 +738,9 @@ class PromptManagerAPI:
             deleted_count = 0
             with self.db.model.get_connection() as conn:
                 for prompt_id in prompt_ids:
+                    # First delete related images to avoid foreign key constraint
+                    conn.execute("DELETE FROM generated_images WHERE prompt_id = ?", (prompt_id,))
+                    # Then delete the prompt
                     cursor = conn.execute(
                         "DELETE FROM prompts WHERE id = ?", (prompt_id,)
                     )
