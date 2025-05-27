@@ -373,8 +373,29 @@ class PromptManagerAPI:
             import hashlib
 
             prompt_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            
+            # Check if prompt already exists
+            existing = self.db.get_prompt_by_hash(prompt_hash)
+            if existing:
+                # Update metadata if this is a duplicate with new info
+                if any([category, tags, rating, notes]):
+                    self.db.update_prompt_metadata(
+                        prompt_id=existing['id'],
+                        category=category,
+                        tags=tags,
+                        rating=rating,
+                        notes=notes
+                    )
+                return web.json_response(
+                    {
+                        "success": True,
+                        "prompt_id": existing['id'],
+                        "message": "Prompt already exists, metadata updated",
+                        "is_duplicate": True
+                    }
+                )
 
-            # Save prompt
+            # Save new prompt
             prompt_id = self.db.save_prompt(
                 text=text,
                 category=category,
