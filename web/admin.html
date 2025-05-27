@@ -180,6 +180,14 @@
                                 class="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-sm font-medium rounded-lg transition-colors">
                             🔧 Maintenance
                         </button>
+                        <button id="backupBtn" 
+                                class="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            💾 Backup DB
+                        </button>
+                        <button id="restoreBtn" 
+                                class="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            📁 Restore DB
+                        </button>
                     </div>
                 </div>
             </div>
@@ -292,6 +300,40 @@
                 <button id="confirmBulkCategory" 
                         class="px-6 py-2 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-lg transition-colors">
                     Set Category
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Database Restore Modal -->
+    <div id="restoreModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700">
+            <h3 class="text-xl font-semibold text-gray-100 mb-6">📁 Restore Database</h3>
+            
+            <div class="mb-4">
+                <div class="bg-yellow-900/20 border border-yellow-600 rounded-lg p-4 mb-4">
+                    <div class="flex items-start space-x-2">
+                        <span class="text-yellow-400 text-xl">⚠️</span>
+                        <div>
+                            <h4 class="text-yellow-400 font-medium">Warning</h4>
+                            <p class="text-gray-300 text-sm">This will replace your current database. A backup will be created automatically.</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <label class="block text-sm font-medium text-gray-400 mb-2">Select Database File (.db)</label>
+                <input type="file" id="restoreFileInput" accept=".db" 
+                       class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+            </div>
+
+            <div class="flex justify-end space-x-3 mt-6">
+                <button id="cancelRestore" 
+                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                    Cancel
+                </button>
+                <button id="confirmRestore" 
+                        class="px-6 py-2 bg-amber-600 hover:bg-amber-700 text-white font-medium rounded-lg transition-colors">
+                    Restore Database
                 </button>
             </div>
         </div>
@@ -535,6 +577,8 @@
                 document.getElementById("statsBtn").addEventListener("click", () => this.showStats());
                 document.getElementById("diagnosticsBtn").addEventListener("click", () => this.showDiagnosticsModal());
                 document.getElementById("maintenanceBtn").addEventListener("click", () => this.showMaintenanceModal());
+                document.getElementById("backupBtn").addEventListener("click", () => this.backupDatabase());
+                document.getElementById("restoreBtn").addEventListener("click", () => this.showRestoreModal());
 
                 // Modals
                 this.bindModalEvents();
@@ -557,6 +601,10 @@
                 // Bulk category modal
                 document.getElementById("confirmBulkCategory").addEventListener("click", () => this.confirmBulkCategory());
                 document.getElementById("cancelBulkCategory").addEventListener("click", () => this.hideModal("bulkCategoryModal"));
+
+                // Restore modal
+                document.getElementById("confirmRestore").addEventListener("click", () => this.confirmRestore());
+                document.getElementById("cancelRestore").addEventListener("click", () => this.hideModal("restoreModal"));
 
                 // Diagnostics modal
                 document.getElementById("runDiagnosticsBtn").addEventListener("click", () => this.runDiagnostics());
@@ -1752,6 +1800,118 @@
                 } catch (error) {
                     console.error('Test link error:', error);
                     this.showNotification(`❌ Test failed: ${error.message}`, 'error');
+                }
+            }
+
+            // Database backup and restore functionality
+            async backupDatabase() {
+                try {
+                    const response = await fetch('/prompt_manager/backup');
+                    
+                    if (response.ok) {
+                        // Get the filename from the Content-Disposition header
+                        const contentDisposition = response.headers.get('Content-Disposition');
+                        let filename = 'prompts_backup.db';
+                        
+                        if (contentDisposition) {
+                            const filenameMatch = contentDisposition.match(/filename="(.+)"/);
+                            if (filenameMatch) {
+                                filename = filenameMatch[1];
+                            }
+                        }
+                        
+                        // Create blob and download
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = filename;
+                        document.body.appendChild(a);
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                        document.body.removeChild(a);
+                        
+                        this.showNotification('💾 Database backup downloaded successfully!', 'success');
+                    } else {
+                        const errorData = await response.json();
+                        throw new Error(errorData.error || 'Backup failed');
+                    }
+                } catch (error) {
+                    console.error('Backup error:', error);
+                    this.showNotification(`❌ Backup failed: ${error.message}`, 'error');
+                }
+            }
+
+            showRestoreModal() {
+                // Clear previous file selection
+                document.getElementById('restoreFileInput').value = '';
+                this.showModal('restoreModal');
+            }
+
+            async confirmRestore() {
+                const fileInput = document.getElementById('restoreFileInput');
+                const file = fileInput.files[0];
+                
+                if (!file) {
+                    this.showNotification('Please select a database file to restore', 'warning');
+                    return;
+                }
+                
+                if (!file.name.endsWith('.db')) {
+                    this.showNotification('Please select a valid .db file', 'warning');
+                    return;
+                }
+                
+                // Show confirmation
+                const confirmed = confirm(
+                    `Are you sure you want to restore from "${file.name}"?\n\n` +
+                    'This will replace your current database. A backup will be created automatically.\n\n' +
+                    'This action cannot be undone.'
+                );
+                
+                if (!confirmed) {
+                    return;
+                }
+                
+                try {
+                    // Disable the restore button and show loading
+                    const confirmBtn = document.getElementById('confirmRestore');
+                    confirmBtn.disabled = true;
+                    confirmBtn.innerHTML = '🔄 Restoring...';
+                    
+                    // Create FormData for file upload
+                    const formData = new FormData();
+                    formData.append('database_file', file);
+                    
+                    const response = await fetch('/prompt_manager/restore', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (response.ok && data.success) {
+                        this.showNotification(
+                            `✅ Database restored successfully! Found ${data.prompt_count} prompts.`, 
+                            'success'
+                        );
+                        this.hideModal('restoreModal');
+                        
+                        // Refresh the interface to show new data
+                        setTimeout(() => {
+                            window.location.reload();
+                        }, 2000);
+                    } else {
+                        throw new Error(data.error || 'Restore failed');
+                    }
+                } catch (error) {
+                    console.error('Restore error:', error);
+                    this.showNotification(`❌ Restore failed: ${error.message}`, 'error');
+                } finally {
+                    // Re-enable the restore button
+                    const confirmBtn = document.getElementById('confirmRestore');
+                    confirmBtn.disabled = false;
+                    confirmBtn.innerHTML = 'Restore Database';
                 }
             }
 
