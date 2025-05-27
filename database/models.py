@@ -52,7 +52,7 @@ class PromptModel:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS generated_images (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                prompt_id TEXT NOT NULL,
+                prompt_id INTEGER NOT NULL,
                 image_path TEXT NOT NULL,
                 filename TEXT NOT NULL,
                 generation_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -63,12 +63,15 @@ class PromptModel:
                 workflow_data TEXT,
                 prompt_metadata TEXT,
                 parameters TEXT,
-                FOREIGN KEY (prompt_id) REFERENCES prompts(id)
+                FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE
             )
         """)
         
         # Check if we need to migrate from old schema with workflow_name
         self._migrate_workflow_name_removal(conn)
+        
+        # Fix foreign key data type mismatch
+        self._migrate_foreign_key_types(conn)
     
     def _create_indexes(self, conn: sqlite3.Connection) -> None:
         """Create indexes for better query performance."""
@@ -139,6 +142,57 @@ class PromptModel:
         except Exception as e:
             print(f"[KikoTextEncode] Migration error: {e}")
             # If migration fails, the table creation will handle it
+    
+    def _migrate_foreign_key_types(self, conn: sqlite3.Connection) -> None:
+        """Fix foreign key data type mismatch in generated_images table."""
+        try:
+            # Check if generated_images table exists and has TEXT prompt_id
+            cursor = conn.execute("PRAGMA table_info(generated_images)")
+            columns = {column[1]: column[2] for column in cursor.fetchall()}
+            
+            if 'prompt_id' in columns and columns['prompt_id'] == 'TEXT':
+                print("[KikoTextEncode] Migrating foreign key types: prompt_id TEXT -> INTEGER")
+                
+                # Create new table with correct types
+                conn.execute("""
+                    CREATE TABLE generated_images_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        prompt_id INTEGER NOT NULL,
+                        image_path TEXT NOT NULL,
+                        filename TEXT NOT NULL,
+                        generation_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        file_size INTEGER,
+                        width INTEGER,
+                        height INTEGER,
+                        format TEXT,
+                        workflow_data TEXT,
+                        prompt_metadata TEXT,
+                        parameters TEXT,
+                        FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE
+                    )
+                """)
+                
+                # Copy data, converting prompt_id from TEXT to INTEGER
+                conn.execute("""
+                    INSERT INTO generated_images_new 
+                    (id, prompt_id, image_path, filename, generation_time, file_size, 
+                     width, height, format, workflow_data, prompt_metadata, parameters)
+                    SELECT id, CAST(prompt_id AS INTEGER), image_path, filename, generation_time, 
+                           file_size, width, height, format, workflow_data, prompt_metadata, parameters
+                    FROM generated_images
+                    WHERE prompt_id != '' AND prompt_id IS NOT NULL
+                    AND CAST(prompt_id AS INTEGER) IN (SELECT id FROM prompts)
+                """)
+                
+                # Drop old table and rename new one
+                conn.execute("DROP TABLE generated_images")
+                conn.execute("ALTER TABLE generated_images_new RENAME TO generated_images")
+                
+                print("[KikoTextEncode] Foreign key migration completed")
+                
+        except Exception as e:
+            print(f"[KikoTextEncode] Foreign key migration error: {e}")
+            # If migration fails, continue with existing schema
     
     def migrate_database(self) -> None:
         """Apply any pending database migrations."""
