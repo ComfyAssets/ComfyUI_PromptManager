@@ -188,6 +188,10 @@
                                 class="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg transition-colors">
                             📁 Restore DB
                         </button>
+                        <button id="scanBtn" 
+                                class="px-4 py-2 bg-pink-600 hover:bg-pink-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            📸 Scan Images
+                        </button>
                     </div>
                 </div>
             </div>
@@ -536,6 +540,68 @@
         </div>
     </div>
 
+    <!-- Scan Modal -->
+    <div id="scanModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl p-6 max-w-lg w-full mx-4 border border-gray-700">
+            <h3 class="text-xl font-semibold text-gray-100 mb-6">📸 Scan ComfyUI Output Images</h3>
+            
+            <div class="space-y-4">
+                <div class="bg-orange-900/30 border border-orange-600 rounded-lg p-4">
+                    <div class="flex items-start space-x-3">
+                        <span class="text-orange-400 text-xl">⚠️</span>
+                        <div>
+                            <h4 class="text-orange-300 font-medium mb-2">Important Information</h4>
+                            <ul class="text-orange-200 text-sm space-y-1">
+                                <li>• This will scan all PNG files in your ComfyUI output directory</li>
+                                <li>• Depending on the size of your output folder, this could take several minutes</li>
+                                <li>• This is an experimental feature - we recommend backing up your database first</li>
+                                <li>• Only images with ComfyUI metadata will be processed</li>
+                                <li>• Duplicate prompts will be automatically detected and skipped</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-blue-900/30 border border-blue-600 rounded-lg p-4">
+                    <div class="flex items-center justify-between">
+                        <span class="text-blue-300 font-medium">Backup Database First (Recommended)</span>
+                        <button id="quickBackupBtn" 
+                                class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            💾 Backup Now
+                        </button>
+                    </div>
+                </div>
+                
+                <div id="scanProgress" class="hidden space-y-3">
+                    <div class="bg-gray-700 rounded-lg p-4">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-gray-300 text-sm font-medium">Scanning Progress</span>
+                            <span id="scanStatusText" class="text-gray-400 text-sm">Preparing...</span>
+                        </div>
+                        <div class="w-full bg-gray-600 rounded-full h-2">
+                            <div id="scanProgressBar" class="bg-pink-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                        <div class="flex justify-between text-xs text-gray-400 mt-2">
+                            <span id="scanCount">0 files processed</span>
+                            <span id="scanFound">0 prompts found</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex justify-end space-x-3 mt-6">
+                <button id="cancelScan" 
+                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                    Cancel
+                </button>
+                <button id="startScan" 
+                        class="px-6 py-2 bg-pink-600 hover:bg-pink-700 text-white font-medium rounded-lg transition-colors">
+                    Start Scan
+                </button>
+            </div>
+        </div>
+    </div>
+
     <script>
         class PromptAdmin {
             constructor() {
@@ -579,6 +645,7 @@
                 document.getElementById("maintenanceBtn").addEventListener("click", () => this.showMaintenanceModal());
                 document.getElementById("backupBtn").addEventListener("click", () => this.backupDatabase());
                 document.getElementById("restoreBtn").addEventListener("click", () => this.showRestoreModal());
+                document.getElementById("scanBtn").addEventListener("click", () => this.showScanModal());
 
                 // Modals
                 this.bindModalEvents();
@@ -614,6 +681,11 @@
                 document.getElementById("runMaintenanceBtn").addEventListener("click", () => this.runMaintenance());
                 document.getElementById("selectAllMaintenanceBtn").addEventListener("click", () => this.selectAllMaintenance());
                 document.getElementById("clearAllMaintenanceBtn").addEventListener("click", () => this.clearAllMaintenance());
+
+                // Scan modal
+                document.getElementById("startScan").addEventListener("click", () => this.startScan());
+                document.getElementById("cancelScan").addEventListener("click", () => this.hideModal("scanModal"));
+                document.getElementById("quickBackupBtn").addEventListener("click", () => this.quickBackup());
 
                 // Close modals on backdrop click
                 document.querySelectorAll("[id$='Modal']").forEach((modal) => {
@@ -1988,6 +2060,119 @@
                         modal.remove();
                     }
                 });
+            }
+
+            // Scan functionality
+            showScanModal() {
+                // Reset progress display
+                document.getElementById("scanProgress").classList.add("hidden");
+                document.getElementById("startScan").disabled = false;
+                document.getElementById("startScan").textContent = "Start Scan";
+                this.showModal("scanModal");
+            }
+
+            async quickBackup() {
+                try {
+                    const response = await fetch("/prompt_manager/backup");
+                    if (response.ok) {
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = `prompts-backup-${new Date().toISOString().split("T")[0]}.db`;
+                        document.body.appendChild(a);
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                        document.body.removeChild(a);
+                        this.showNotification("Database backup created successfully!", "success");
+                    } else {
+                        throw new Error("Backup failed");
+                    }
+                } catch (error) {
+                    this.showNotification("Failed to create backup", "error");
+                }
+            }
+
+            async startScan() {
+                // Show progress section
+                document.getElementById("scanProgress").classList.remove("hidden");
+                document.getElementById("startScan").disabled = true;
+                document.getElementById("startScan").textContent = "Scanning...";
+                
+                // Reset progress
+                this.updateScanProgress(0, "Initializing scan...", 0, 0);
+                
+                try {
+                    const response = await fetch("/prompt_manager/scan", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({})
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+
+                    // Handle streaming response
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+
+                        const chunk = decoder.decode(value);
+                        const lines = chunk.split('\n');
+                        
+                        for (const line of lines) {
+                            if (line.trim().startsWith('data: ')) {
+                                try {
+                                    const data = JSON.parse(line.substring(6));
+                                    if (data.type === 'progress') {
+                                        this.updateScanProgress(
+                                            data.progress,
+                                            data.status,
+                                            data.processed,
+                                            data.found
+                                        );
+                                    } else if (data.type === 'complete') {
+                                        this.completeScan(data.processed, data.found, data.added);
+                                        return;
+                                    } else if (data.type === 'error') {
+                                        throw new Error(data.message);
+                                    }
+                                } catch (e) {
+                                    console.log('Non-JSON line:', line);
+                                }
+                            }
+                        }
+                    }
+                } catch (error) {
+                    this.showNotification(`Scan failed: ${error.message}`, "error");
+                    document.getElementById("startScan").disabled = false;
+                    document.getElementById("startScan").textContent = "Start Scan";
+                }
+            }
+
+            updateScanProgress(progress, status, processed, found) {
+                document.getElementById("scanProgressBar").style.width = `${progress}%`;
+                document.getElementById("scanStatusText").textContent = status;
+                document.getElementById("scanCount").textContent = `${processed} files processed`;
+                document.getElementById("scanFound").textContent = `${found} prompts found`;
+            }
+
+            completeScan(processed, found, added) {
+                this.updateScanProgress(100, "Scan completed!", processed, found);
+                document.getElementById("startScan").disabled = false;
+                document.getElementById("startScan").textContent = "Start New Scan";
+                
+                this.showNotification(
+                    `Scan completed! Processed ${processed} files, found ${found} prompts, added ${added} new prompts to database.`,
+                    "success"
+                );
+                
+                // Refresh the data
+                this.loadInitialData();
             }
         }
 
