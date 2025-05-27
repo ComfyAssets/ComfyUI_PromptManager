@@ -89,7 +89,8 @@ class PromptTracker:
         with self.lock:
             self.active_prompts[execution_id] = execution_context
         
-        print(f"[PromptManager] Set current prompt: {execution_id} -> {prompt_text[:50]}...")
+        print(f"[PromptManager] Set current prompt: {execution_id} -> {prompt_text[:50]}... (thread: {threading.current_thread().ident})")
+        print(f"[PromptManager] Active prompts count: {len(self.active_prompts)}")
         return execution_id
     
     def get_current_prompt(self) -> Optional[Dict[str, Any]]:
@@ -110,20 +111,38 @@ class PromptTracker:
                 self.clear_current_prompt()
         
         # Fallback: try to find recent prompt from global tracking
-        return self._find_recent_prompt()
+        # This is crucial for image monitoring which runs in different threads
+        recent_prompt = self._find_recent_prompt()
+        if recent_prompt:
+            print(f"[PromptManager] Using recent prompt from global tracking: {recent_prompt['execution_id']}")
+            return recent_prompt
+            
+        print(f"[PromptManager] No prompt context found (thread: {threading.current_thread().ident})")
+        return None
     
     def _find_recent_prompt(self) -> Optional[Dict[str, Any]]:
         """Find the most recent prompt that's still valid."""
         with self.lock:
             current_time = time.time()
-            recent_prompts = [
-                prompt for prompt in self.active_prompts.values()
-                if current_time - prompt['timestamp'] < self.prompt_timeout
-            ]
+            print(f"[PromptManager] Searching for recent prompt among {len(self.active_prompts)} active prompts")
+            
+            recent_prompts = []
+            for exec_id, prompt in self.active_prompts.items():
+                age_seconds = current_time - prompt['timestamp']
+                print(f"[PromptManager] Prompt {exec_id}: age={age_seconds:.1f}s, timeout={self.prompt_timeout}s")
+                
+                if age_seconds < self.prompt_timeout:
+                    recent_prompts.append(prompt)
+                else:
+                    print(f"[PromptManager] Prompt {exec_id} is expired")
             
             if recent_prompts:
                 # Return the most recent one
-                return max(recent_prompts, key=lambda p: p['timestamp'])
+                most_recent = max(recent_prompts, key=lambda p: p['timestamp'])
+                print(f"[PromptManager] Found recent prompt: {most_recent['execution_id']}")
+                return most_recent
+            else:
+                print(f"[PromptManager] No recent prompts found")
         
         return None
     
@@ -132,14 +151,21 @@ class PromptTracker:
         current = getattr(self._local, 'current_prompt', None)
         if current:
             execution_id = current['execution_id']
-            print(f"[PromptManager] Clearing current prompt: {execution_id}")
+            print(f"[PromptManager] Clearing current prompt: {execution_id} (thread: {threading.current_thread().ident})")
             
             # Clear from thread-local storage
             self._local.current_prompt = None
             
             # Remove from global tracking
             with self.lock:
-                self.active_prompts.pop(execution_id, None)
+                removed = self.active_prompts.pop(execution_id, None)
+                if removed:
+                    print(f"[PromptManager] Removed prompt from global tracking: {execution_id}")
+                    print(f"[PromptManager] Remaining active prompts: {len(self.active_prompts)}")
+                else:
+                    print(f"[PromptManager] Prompt {execution_id} was not in global tracking")
+        else:
+            print(f"[PromptManager] No current prompt to clear (thread: {threading.current_thread().ident})")
     
     def extend_prompt_timeout(self, execution_id: str, additional_seconds: int = 60):
         """
