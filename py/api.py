@@ -200,6 +200,15 @@ class PromptManagerAPI:
         async def export_prompts_route(request):
             return await self.export_prompts(request)
 
+        # Database backup and restore
+        @routes.get("/prompt_manager/backup")
+        async def backup_database_route(request):
+            return await self.backup_database(request)
+
+        @routes.post("/prompt_manager/restore")
+        async def restore_database_route(request):
+            return await self.restore_database(request)
+
         # Gallery endpoints
         @routes.get("/prompt_manager/prompts/{prompt_id}/images")
         async def get_prompt_images_route(request):
@@ -1446,4 +1455,165 @@ class PromptManagerAPI:
             return web.json_response({
                 'success': False,
                 'error': f'Maintenance failed: {str(e)}'
+            }, status=500)
+
+    async def backup_database(self, request):
+        """
+        Backup the entire prompts.db database file.
+        GET /prompt_manager/backup
+        """
+        try:
+            import os
+            import shutil
+            import tempfile
+            from pathlib import Path
+
+            # Get the database path
+            db_path = "prompts.db"
+            
+            if not os.path.exists(db_path):
+                return web.json_response({
+                    'success': False,
+                    'error': 'Database file not found'
+                }, status=404)
+
+            # Create a temporary copy of the database
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as temp_file:
+                temp_path = temp_file.name
+                
+            # Copy the database file
+            shutil.copy2(db_path, temp_path)
+            
+            # Read the file content
+            with open(temp_path, 'rb') as f:
+                file_data = f.read()
+            
+            # Clean up temporary file
+            os.unlink(temp_path)
+            
+            # Generate filename with timestamp
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"prompts_backup_{timestamp}.db"
+            
+            return web.Response(
+                body=file_data,
+                content_type='application/octet-stream',
+                headers={
+                    'Content-Disposition': f'attachment; filename="{filename}"',
+                    'Content-Length': str(len(file_data))
+                }
+            )
+
+        except Exception as e:
+            print(f"[PromptManager API] Backup error: {e}")
+            import traceback
+            traceback.print_exc()
+            return web.json_response({
+                'success': False,
+                'error': f'Failed to backup database: {str(e)}'
+            }, status=500)
+
+    async def restore_database(self, request):
+        """
+        Restore the prompts.db database from uploaded file.
+        POST /prompt_manager/restore
+        """
+        try:
+            import os
+            import shutil
+            import tempfile
+            import sqlite3
+            from pathlib import Path
+
+            # Get the uploaded file
+            reader = await request.multipart()
+            field = await reader.next()
+            
+            if not field or field.name != 'database_file':
+                return web.json_response({
+                    'success': False,
+                    'error': 'No database file uploaded. Expected field name: database_file'
+                }, status=400)
+
+            # Read the uploaded file content
+            file_data = await field.read()
+            
+            if not file_data:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Uploaded file is empty'
+                }, status=400)
+
+            # Create a temporary file to validate the database
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as temp_file:
+                temp_path = temp_file.name
+                temp_file.write(file_data)
+
+            try:
+                # Validate that it's a valid SQLite database with expected structure
+                with sqlite3.connect(temp_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    
+                    # Check if it has the prompts table
+                    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='prompts'")
+                    if not cursor.fetchone():
+                        raise ValueError("Database does not contain a 'prompts' table")
+                    
+                    # Check basic structure of prompts table
+                    cursor = conn.execute("PRAGMA table_info(prompts)")
+                    columns = [row['name'] for row in cursor.fetchall()]
+                    required_columns = ['id', 'text', 'created_at']
+                    
+                    for col in required_columns:
+                        if col not in columns:
+                            raise ValueError(f"Database missing required column: {col}")
+                    
+                    # Get basic stats for validation
+                    cursor = conn.execute("SELECT COUNT(*) as count FROM prompts")
+                    prompt_count = cursor.fetchone()['count']
+
+                # If validation passes, backup current database and restore
+                db_path = "prompts.db"
+                backup_path = f"{db_path}.backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                
+                # Create backup of current database if it exists
+                if os.path.exists(db_path):
+                    shutil.copy2(db_path, backup_path)
+                    print(f"[PromptManager] Current database backed up to: {backup_path}")
+
+                # Replace current database with uploaded one
+                shutil.copy2(temp_path, db_path)
+                
+                # Reinitialize the database connection
+                self.db = PromptDatabase()
+                
+                return web.json_response({
+                    'success': True,
+                    'message': f'Database restored successfully. Found {prompt_count} prompts.',
+                    'prompt_count': prompt_count,
+                    'backup_created': backup_path if os.path.exists(db_path) else None
+                })
+
+            except sqlite3.Error as e:
+                return web.json_response({
+                    'success': False,
+                    'error': f'Invalid SQLite database: {str(e)}'
+                }, status=400)
+            except ValueError as e:
+                return web.json_response({
+                    'success': False,
+                    'error': str(e)
+                }, status=400)
+            finally:
+                # Clean up temporary file
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+
+        except Exception as e:
+            print(f"[PromptManager API] Restore error: {e}")
+            import traceback
+            traceback.print_exc()
+            return web.json_response({
+                'success': False,
+                'error': f'Failed to restore database: {str(e)}'
             }, status=500)
