@@ -61,7 +61,17 @@ class ImageGenerationHandler(FileSystemEventHandler):
             
             if not current_prompt:
                 print(f"[PromptManager] No active prompt context for image: {image_path}")
-                return
+                # Fallback: try to link to the most recent prompt in database
+                current_prompt = self._get_fallback_prompt()
+                if current_prompt:
+                    print(f"[PromptManager] Using fallback prompt: {current_prompt['id']}")
+                else:
+                    print(f"[PromptManager] No fallback prompt available, skipping image")
+                    return
+            else:
+                # Extend the timeout for this prompt since we're still getting images
+                if 'execution_id' in current_prompt:
+                    self.prompt_tracker.extend_prompt_timeout(current_prompt['execution_id'], 300)  # Add 5 more minutes
             
             # Extract ComfyUI metadata
             try:
@@ -110,6 +120,22 @@ class ImageGenerationHandler(FileSystemEventHandler):
             print(f"[PromptManager] Error getting file info: {e}")
             return {}
     
+    def _get_fallback_prompt(self) -> Optional[Dict[str, Any]]:
+        """Get the most recent prompt from database as fallback."""
+        try:
+            recent_prompts = self.db_manager.get_recent_prompts(limit=1)
+            if recent_prompts:
+                prompt = recent_prompts[0]
+                return {
+                    'id': prompt['id'],
+                    'text': prompt['text'],
+                    'timestamp': prompt.get('created_at'),
+                    'fallback': True
+                }
+        except Exception as e:
+            print(f"[PromptManager] Error getting fallback prompt: {e}")
+        return None
+    
     def link_image_to_prompt(self, image_path: str, prompt_context: Dict, metadata: Dict):
         """Link an image to a prompt in the database."""
         try:
@@ -118,7 +144,8 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 image_path=image_path,
                 metadata=metadata
             )
-            print(f"[PromptManager] Successfully linked image {image_id} to prompt {prompt_context['id']}")
+            fallback_note = " (fallback)" if prompt_context.get('fallback') else ""
+            print(f"[PromptManager] Successfully linked image {image_id} to prompt {prompt_context['id']}{fallback_note}")
         except Exception as e:
             print(f"[PromptManager] Failed to link image to prompt: {e}")
 
