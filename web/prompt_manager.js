@@ -24,7 +24,7 @@ app.registerExtension({
         this.properties.selectedPromptIndex = -1;
         this.properties.resultTimeout = 3; // Default 3 seconds
         this.properties.showTestButton = false; // Default hide test button
-        this.properties.webuiDisplayMode = 'popup'; // Default popup mode
+        this.properties.webuiDisplayMode = "popup"; // Default popup mode
         this.resultHideTimer = null;
 
         // Load settings from API
@@ -48,12 +48,12 @@ app.registerExtension({
 
         // Set initial node size, but preserve user resizes
         if (!this._userHasResized) {
-          this.size = [400, 300];  // width=400, height=300 pixels
+          this.size = [400, 400]; // width=400, height=300 pixels
         }
-        
+
         // Hook into resize to track user changes
         const originalOnResize = this.onResize;
-        this.onResize = function(size) {
+        this.onResize = function (size) {
           this._userHasResized = true;
           console.log("[PromptManager] User resized to:", size);
           if (originalOnResize) {
@@ -63,7 +63,7 @@ app.registerExtension({
 
         // Hook into serialization to preserve resize flag
         const originalSerialize = this.serialize;
-        this.serialize = function() {
+        this.serialize = function () {
           const data = originalSerialize ? originalSerialize.call(this) : {};
           data._userHasResized = this._userHasResized;
           return data;
@@ -71,7 +71,7 @@ app.registerExtension({
 
         // Hook into configure to restore resize flag
         const originalConfigure = this.configure;
-        this.configure = function(data) {
+        this.configure = function (data) {
           if (originalConfigure) {
             originalConfigure.call(this, data);
           }
@@ -259,8 +259,8 @@ app.registerExtension({
               this.properties.resultTimeout = data.settings.result_timeout || 3;
               this.properties.showTestButton =
                 data.settings.show_test_button || false;
-              this.properties.webuiDisplayMode = 
-                data.settings.webui_display_mode || 'popup';
+              this.properties.webuiDisplayMode =
+                data.settings.webui_display_mode || "popup";
             }
           }
         } catch (error) {
@@ -625,16 +625,21 @@ app.registerExtension({
           const currentOrigin = window.location.origin;
           const webUrl = `${currentOrigin}/prompt_manager/web`;
 
-          if (this.properties.webuiDisplayMode === 'newtab') {
+          if (this.properties.webuiDisplayMode === "newtab") {
             // Open in new tab without window options
             const newWindow = window.open(webUrl, "_blank");
-            
+
             if (newWindow) {
               console.log("[PromptManager] Web interface opened in new tab");
-              this.showNotification("Web interface opened in new tab", "success");
+              this.showNotification(
+                "Web interface opened in new tab",
+                "success",
+              );
             } else {
               // Fallback if popup was blocked
-              console.log("[PromptManager] Popup blocked, trying alternative method");
+              console.log(
+                "[PromptManager] Popup blocked, trying alternative method",
+              );
               window.location.href = webUrl;
             }
           } else {
@@ -650,7 +655,9 @@ app.registerExtension({
               this.showNotification("Web interface opened in popup", "success");
             } else {
               // Fallback if popup was blocked
-              console.log("[PromptManager] Popup blocked, trying alternative method");
+              console.log(
+                "[PromptManager] Popup blocked, trying alternative method",
+              );
               window.location.href = webUrl;
             }
           }
