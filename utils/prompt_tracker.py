@@ -26,7 +26,7 @@ class PromptTracker:
         self.active_prompts = {}  # Global tracking for multiple threads
         self.lock = threading.Lock()
         self.cleanup_interval = 300  # 5 minutes
-        self.prompt_timeout = 120    # 2 minutes
+        self.prompt_timeout = 600    # 10 minutes (increased for longer generations)
         
         # Start cleanup thread
         self.cleanup_thread = threading.Thread(target=self._cleanup_expired_prompts, daemon=True)
