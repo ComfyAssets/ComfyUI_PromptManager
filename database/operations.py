@@ -440,6 +440,9 @@ class PromptDatabase:
                     ids_to_delete = ids[1:]  # Skip the first ID
                     
                     for id_to_delete in ids_to_delete:
+                        # First delete related images to avoid foreign key constraint
+                        conn.execute("DELETE FROM generated_images WHERE prompt_id = ?", (id_to_delete,))
+                        # Then delete the prompt
                         conn.execute("DELETE FROM prompts WHERE id = ?", (int(id_to_delete),))
                         total_removed += 1
                 
