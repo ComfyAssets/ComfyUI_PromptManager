@@ -34,43 +34,41 @@ class PromptTracker:
     
     def set_current_prompt(self, prompt_text: str, additional_data: Optional[Dict[str, Any]] = None) -> str:
         """
-        Set the current prompt for this thread and store in database.
+        Set the current prompt for this thread for image tracking.
+        Note: Prompt saving is handled by PromptManager to avoid duplicates.
         
         Args:
             prompt_text: The prompt text being executed
-            additional_data: Additional prompt metadata
+            additional_data: Additional prompt metadata (should include prompt_id from PromptManager)
             
         Returns:
             Execution ID for this prompt
         """
         execution_id = self.generate_execution_id()
         
-        # Save prompt to database first
-        prompt_hash = hashlib.sha256(prompt_text.encode('utf-8')).hexdigest()
+        # Get prompt_id from additional_data (passed from PromptManager)
+        # PromptTracker should NOT save prompts to avoid duplicates
+        prompt_id = additional_data.get('prompt_id') if additional_data else None
         
-        try:
-            # Check if prompt already exists
-            existing_prompt = self.db_manager.get_prompt_by_hash(prompt_hash)
-            
-            if existing_prompt:
-                prompt_id = existing_prompt['id']
-                print(f"[PromptManager] Using existing prompt ID: {prompt_id}")
-            else:
-                # Save new prompt
-                prompt_id = self.db_manager.save_prompt(
-                    text=prompt_text,
-                    prompt_hash=prompt_hash,
-                    category=additional_data.get('category') if additional_data else None,
-                    tags=additional_data.get('tags') if additional_data else None,
-                    rating=additional_data.get('rating') if additional_data else None,
-                    notes=additional_data.get('notes') if additional_data else None
-                )
-                print(f"[PromptManager] Created new prompt ID: {prompt_id}")
-        
-        except Exception as e:
-            print(f"[PromptManager] Error saving prompt: {e}")
-            # Generate a temporary ID for tracking
-            prompt_id = f"temp_{int(time.time())}"
+        if not prompt_id:
+            # Fallback: try to find existing prompt using consistent hash calculation
+            try:
+                # Use consistent hash calculation (same as PromptManager)
+                import hashlib
+                normalized_text = prompt_text.strip().lower()
+                prompt_hash = hashlib.sha256(normalized_text.encode('utf-8')).hexdigest()
+                existing_prompt = self.db_manager.get_prompt_by_hash(prompt_hash)
+                
+                if existing_prompt:
+                    prompt_id = existing_prompt['id']
+                    print(f"[PromptManager] Found existing prompt ID: {prompt_id}")
+                else:
+                    # Generate a temporary ID for tracking (prompt should be saved by PromptManager)
+                    prompt_id = f"temp_{int(time.time())}"
+                    print(f"[PromptManager] Using temporary ID for tracking: {prompt_id}")
+            except Exception as e:
+                print(f"[PromptManager] Error finding prompt: {e}")
+                prompt_id = f"temp_{int(time.time())}"
         
         # Create execution context
         execution_context = {
