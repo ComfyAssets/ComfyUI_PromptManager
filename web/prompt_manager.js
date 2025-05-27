@@ -46,8 +46,40 @@ app.registerExtension({
           container,
         );
 
-        // Recompute size
-        this.size = this.computeSize();
+        // Set initial node size, but preserve user resizes
+        if (!this._userHasResized) {
+          this.size = [400, 300];  // width=400, height=300 pixels
+        }
+        
+        // Hook into resize to track user changes
+        const originalOnResize = this.onResize;
+        this.onResize = function(size) {
+          this._userHasResized = true;
+          console.log("[PromptManager] User resized to:", size);
+          if (originalOnResize) {
+            originalOnResize.call(this, size);
+          }
+        };
+
+        // Hook into serialization to preserve resize flag
+        const originalSerialize = this.serialize;
+        this.serialize = function() {
+          const data = originalSerialize ? originalSerialize.call(this) : {};
+          data._userHasResized = this._userHasResized;
+          return data;
+        };
+
+        // Hook into configure to restore resize flag
+        const originalConfigure = this.configure;
+        this.configure = function(data) {
+          if (originalConfigure) {
+            originalConfigure.call(this, data);
+          }
+          if (data._userHasResized) {
+            this._userHasResized = data._userHasResized;
+          }
+        };
+
         this.setDirtyCanvas(true, true);
       };
 
