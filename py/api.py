@@ -2,11 +2,13 @@
 
 import datetime
 import json
+import os
 import traceback
 from typing import Any, Dict, List, Optional
 
 import server
 from aiohttp import web
+from PIL import Image
 
 # Import database operations
 try:
@@ -242,6 +244,11 @@ class PromptManagerAPI:
         @routes.post("/prompt_manager/diagnostics/test-link")
         async def test_image_link_route(request):
             return await self.test_image_link(request)
+
+        # Scan endpoint
+        @routes.post("/prompt_manager/scan")
+        async def scan_images_route(request):
+            return await self.scan_images(request)
 
         print("[PromptManager] All routes registered with decorator pattern")
 
@@ -1617,3 +1624,265 @@ class PromptManagerAPI:
                 'success': False,
                 'error': f'Failed to restore database: {str(e)}'
             }, status=500)
+
+    async def scan_images(self, request):
+        """
+        Scan ComfyUI output images for prompt metadata and add them to the database.
+        Streams progress updates to the client.
+        """
+        import json
+        import asyncio
+        from pathlib import Path
+        from aiohttp import web
+        
+        async def stream_response():
+            try:
+                # Find ComfyUI output directory
+                output_dir = self._find_comfyui_output_dir()
+                if not output_dir:
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'ComfyUI output directory not found'})}\n\n"
+                    return
+                
+                yield f"data: {json.dumps({'type': 'progress', 'progress': 0, 'status': 'Scanning for PNG files...', 'processed': 0, 'found': 0})}\n\n"
+                
+                # Find all PNG files
+                png_files = list(Path(output_dir).rglob("*.png"))
+                total_files = len(png_files)
+                
+                if total_files == 0:
+                    yield f"data: {json.dumps({'type': 'complete', 'processed': 0, 'found': 0, 'added': 0})}\n\n"
+                    return
+                
+                yield f"data: {json.dumps({'type': 'progress', 'progress': 5, 'status': f'Found {total_files} PNG files to process...', 'processed': 0, 'found': 0})}\n\n"
+                
+                processed_count = 0
+                found_count = 0
+                added_count = 0
+                
+                for i, png_file in enumerate(png_files):
+                    try:
+                        # Extract metadata from PNG
+                        metadata = self._extract_comfyui_metadata(str(png_file))
+                        processed_count += 1
+                        
+                        if metadata:
+                            print(f"[PromptManager] Found metadata in {os.path.basename(png_file)}: {list(metadata.keys())}")
+                            
+                            # Parse ComfyUI prompt data
+                            parsed_data = self._parse_comfyui_prompt(metadata)
+                            print(f"[PromptManager] Parsed data keys: {list(parsed_data.keys())}, has prompt: {bool(parsed_data.get('prompt'))}, has parameters: {bool(parsed_data.get('parameters'))}")
+                            
+                            # Check if we found any meaningful prompt data
+                            if parsed_data.get('prompt') or parsed_data.get('parameters'):
+                                found_count += 1
+                                
+                                # Extract readable prompt text
+                                prompt_text = self._extract_readable_prompt(parsed_data)
+                                
+                                # Debug: print what we found and its type
+                                if prompt_text:
+                                    print(f"[PromptManager] Found prompt in {os.path.basename(png_file)} (type: {type(prompt_text)}): {str(prompt_text)[:100]}...")
+                                else:
+                                    print(f"[PromptManager] No readable prompt found in {os.path.basename(png_file)}, parsed_data keys: {list(parsed_data.keys())}")
+                                
+                                # Ensure prompt_text is a string
+                                if prompt_text and not isinstance(prompt_text, str):
+                                    print(f"[PromptManager] Converting prompt_text from {type(prompt_text)} to string")
+                                    prompt_text = str(prompt_text)
+                                
+                                if prompt_text and prompt_text.strip():
+                                    # Try to save to database (will skip duplicates)
+                                    try:
+                                        # Generate hash for duplicate detection
+                                        try:
+                                            from ..utils.hashing import generate_prompt_hash
+                                        except ImportError:
+                                            import sys
+                                            current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                                            sys.path.insert(0, current_dir)
+                                            from utils.hashing import generate_prompt_hash
+                                        
+                                        prompt_hash = generate_prompt_hash(prompt_text.strip())
+                                        
+                                        # Check if prompt already exists
+                                        existing = self.db.get_prompt_by_hash(prompt_hash)
+                                        if existing:
+                                            # Link image to existing prompt
+                                            try:
+                                                self.db.link_image_to_prompt(existing['id'], str(png_file))
+                                            except Exception as e:
+                                                print(f"[PromptManager] Failed to link image {png_file}: {e}")
+                                        else:
+                                            # Save new prompt
+                                            prompt_id = self.db.save_prompt(
+                                                text=prompt_text.strip(),
+                                                category='scanned',
+                                                tags=['auto-scanned'],
+                                                notes=f'Auto-scanned from {os.path.basename(png_file)}',
+                                                prompt_hash=prompt_hash
+                                            )
+                                            
+                                            if prompt_id:
+                                                added_count += 1
+                                                
+                                                # Link image to new prompt
+                                                try:
+                                                    self.db.link_image_to_prompt(prompt_id, str(png_file))
+                                                except Exception as e:
+                                                    print(f"[PromptManager] Failed to link image {png_file}: {e}")
+                                        
+                                    except Exception as e:
+                                        print(f"[PromptManager] Failed to save prompt from {png_file}: {e}")
+                        
+                        # Update progress every 10 files or so
+                        if i % 10 == 0 or i == total_files - 1:
+                            progress = int((i + 1) / total_files * 100)
+                            status = f"Processing file {i + 1}/{total_files}..."
+                            
+                            yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'status': status, 'processed': processed_count, 'found': found_count})}\n\n"
+                            
+                            # Small delay to allow UI updates
+                            await asyncio.sleep(0.01)
+                    
+                    except Exception as e:
+                        print(f"[PromptManager] Error processing {png_file}: {e}")
+                        continue
+                
+                # Send completion message
+                yield f"data: {json.dumps({'type': 'complete', 'processed': processed_count, 'found': found_count, 'added': added_count})}\n\n"
+                
+            except Exception as e:
+                print(f"[PromptManager] Scan error: {e}")
+                import traceback
+                traceback.print_exc()
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        
+        # Return streaming response
+        response = web.StreamResponse(
+            status=200,
+            reason='OK',
+            headers={
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive'
+            }
+        )
+        
+        await response.prepare(request)
+        
+        async for chunk in stream_response():
+            await response.write(chunk.encode('utf-8'))
+        
+        await response.write_eof()
+        return response
+    
+    def _find_comfyui_output_dir(self):
+        """Find the ComfyUI output directory."""
+        
+        # Common ComfyUI installation paths
+        possible_paths = [
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "..", "..", "output"),
+            os.path.join(os.path.expanduser("~"), "ComfyUI", "output"),
+            os.path.join(os.getcwd(), "output"),
+            os.path.join(os.getcwd(), "..", "output"),
+            os.path.join(os.getcwd(), "..", "..", "output"),
+        ]
+        
+        for path in possible_paths:
+            abs_path = os.path.abspath(path)
+            if os.path.exists(abs_path) and os.path.isdir(abs_path):
+                print(f"[PromptManager] Found ComfyUI output directory: {abs_path}")
+                return abs_path
+        
+        print("[PromptManager] ComfyUI output directory not found")
+        return None
+    
+    def _extract_comfyui_metadata(self, image_path):
+        """Extract ComfyUI metadata from a PNG file."""
+        try:
+            with Image.open(image_path) as img:
+                metadata = {}
+                if hasattr(img, 'text'):
+                    for key, value in img.text.items():
+                        metadata[key] = value
+                return metadata
+        except Exception as e:
+            print(f"[PromptManager] Error reading {image_path}: {e}")
+            return {}
+    
+    def _parse_comfyui_prompt(self, metadata):
+        """Parse ComfyUI prompt data from metadata."""
+        result = {
+            'prompt': None,
+            'workflow': None,
+            'parameters': {}
+        }
+        
+        # Check for direct prompt field
+        if 'prompt' in metadata:
+            try:
+                prompt_data = json.loads(metadata['prompt'])
+                result['prompt'] = prompt_data
+            except json.JSONDecodeError:
+                result['prompt'] = metadata['prompt']
+        
+        # Check for workflow
+        if 'workflow' in metadata:
+            try:
+                workflow_data = json.loads(metadata['workflow'])
+                result['workflow'] = workflow_data
+            except json.JSONDecodeError:
+                result['workflow'] = metadata['workflow']
+        
+        # Check for other common ComfyUI fields
+        common_fields = ['parameters', 'positive', 'negative', 'steps', 'cfg', 'sampler', 'scheduler', 'seed']
+        for field in common_fields:
+            if field in metadata:
+                try:
+                    result['parameters'][field] = json.loads(metadata[field])
+                except json.JSONDecodeError:
+                    result['parameters'][field] = metadata[field]
+        
+        return result
+    
+    def _extract_readable_prompt(self, parsed_data):
+        """Extract human-readable prompt text from ComfyUI JSON structure."""
+        # Helper function to convert any value to string safely
+        def safe_to_string(value):
+            if isinstance(value, str):
+                return value
+            elif isinstance(value, list):
+                # Join list elements with spaces
+                return ' '.join(str(item) for item in value if item)
+            elif value is not None:
+                return str(value)
+            return None
+        
+        # Check if prompt is already a string
+        if isinstance(parsed_data.get('prompt'), str):
+            return parsed_data['prompt']
+        
+        # Check if prompt is a simple value that can be converted
+        if parsed_data.get('prompt') and not isinstance(parsed_data.get('prompt'), dict):
+            return safe_to_string(parsed_data['prompt'])
+        
+        prompt_data = parsed_data.get('prompt')
+        if isinstance(prompt_data, dict):
+            # ComfyUI stores prompts in various node types
+            for node_id, node_data in prompt_data.items():
+                if isinstance(node_data, dict):
+                    class_type = node_data.get('class_type', '')
+                    inputs = node_data.get('inputs', {})
+                    
+                    # Common prompt node types in ComfyUI
+                    if class_type in ['CLIPTextEncode', 'CLIPTextEncodeSDXL', 'PromptText']:
+                        if 'text' in inputs:
+                            return safe_to_string(inputs['text'])
+                    elif 'text' in inputs:
+                        return safe_to_string(inputs['text'])
+        
+        # Check parameters for positive prompt
+        if parsed_data.get('parameters', {}).get('positive'):
+            return safe_to_string(parsed_data['parameters']['positive'])
+        
+        return None
