@@ -431,18 +431,19 @@ class PromptDatabase:
     
     def cleanup_duplicates(self) -> int:
         """
-        Remove duplicate prompts based on text content.
+        Remove duplicate prompts based on text content, preserving all image links.
+        Merges metadata and transfers images to the retained prompt.
         
         Returns:
             int: Number of duplicates removed
         """
-        self.logger.info("Starting duplicate cleanup process")
+        self.logger.info("Starting duplicate cleanup process with image preservation")
         try:
             with self.model.get_connection() as conn:
                 # Find duplicates by text content (case-insensitive)
                 cursor = conn.execute("""
                     SELECT LOWER(TRIM(text)) as normalized_text, COUNT(*) as count, 
-                           GROUP_CONCAT(id) as ids
+                           GROUP_CONCAT(id ORDER BY created_at ASC) as ids
                     FROM prompts 
                     GROUP BY LOWER(TRIM(text))
                     HAVING COUNT(*) > 1
@@ -451,30 +452,50 @@ class PromptDatabase:
                 duplicates = cursor.fetchall()
                 self.logger.debug(f"Found {len(duplicates)} groups of duplicate prompts")
                 total_removed = 0
+                total_images_transferred = 0
                 
                 for duplicate in duplicates:
                     ids = duplicate['ids'].split(',')
-                    # Keep the first one (oldest), delete the rest
-                    ids_to_delete = ids[1:]  # Skip the first ID
+                    # Keep the oldest one (first), merge and delete the rest
+                    primary_id = int(ids[0])  # Keep the oldest
+                    duplicate_ids = [int(id_str) for id_str in ids[1:]]
                     
-                    for id_to_delete in ids_to_delete:
-                        # First delete related images to avoid foreign key constraint
-                        conn.execute("DELETE FROM generated_images WHERE prompt_id = ?", (id_to_delete,))
-                        # Then delete the prompt
-                        conn.execute("DELETE FROM prompts WHERE id = ?", (int(id_to_delete),))
+                    self.logger.debug(f"Merging duplicates: keeping {primary_id}, removing {duplicate_ids}")
+                    
+                    # Get primary prompt details
+                    cursor = conn.execute("SELECT * FROM prompts WHERE id = ?", (primary_id,))
+                    primary_prompt = cursor.fetchone()
+                    if not primary_prompt:
+                        continue
+                    
+                    # Collect and merge metadata from all duplicates
+                    merged_metadata = self._merge_duplicate_metadata(conn, primary_id, duplicate_ids)
+                    
+                    # Transfer all images from duplicates to primary prompt
+                    images_transferred = self._transfer_images_to_primary(conn, primary_id, duplicate_ids)
+                    total_images_transferred += images_transferred
+                    
+                    # Update primary prompt with merged metadata
+                    if merged_metadata:
+                        self._update_primary_with_merged_metadata(conn, primary_id, merged_metadata)
+                    
+                    # Delete duplicate prompts (images already transferred)
+                    for duplicate_id in duplicate_ids:
+                        conn.execute("DELETE FROM prompts WHERE id = ?", (duplicate_id,))
                         total_removed += 1
+                        self.logger.debug(f"Removed duplicate prompt {duplicate_id}")
                 
                 conn.commit()
                 
                 if total_removed > 0:
-                    self.logger.info(f"Removed {total_removed} duplicate prompts")
+                    self.logger.info(f"Removed {total_removed} duplicate prompts, transferred {total_images_transferred} images")
                 else:
                     self.logger.info("No duplicate prompts found")
                 
                 return total_removed
                 
         except Exception as e:
-            self.logger.error(f"Error cleaning up duplicates: {e}")
+            self.logger.error(f"Error cleaning up duplicates: {e}", exc_info=True)
             return 0
 
     # Gallery-related methods
@@ -666,6 +687,132 @@ class PromptDatabase:
         else:
             return obj
 
+    def _merge_duplicate_metadata(self, conn: sqlite3.Connection, primary_id: int, duplicate_ids: List[int]) -> Dict[str, Any]:
+        """
+        Merge metadata from duplicate prompts, prioritizing non-empty values.
+        
+        Args:
+            conn: Database connection
+            primary_id: ID of the prompt to keep
+            duplicate_ids: List of duplicate prompt IDs
+            
+        Returns:
+            Dict containing merged metadata
+        """
+        try:
+            # Get primary prompt metadata
+            cursor = conn.execute("SELECT category, tags, rating, notes FROM prompts WHERE id = ?", (primary_id,))
+            primary_data = cursor.fetchone()
+            if not primary_data:
+                return {}
+            
+            merged = {
+                'category': primary_data['category'],
+                'tags': json.loads(primary_data['tags']) if primary_data['tags'] else [],
+                'rating': primary_data['rating'],
+                'notes': primary_data['notes'] or ''
+            }
+            
+            # Merge data from duplicates
+            for dup_id in duplicate_ids:
+                cursor = conn.execute("SELECT category, tags, rating, notes FROM prompts WHERE id = ?", (dup_id,))
+                dup_data = cursor.fetchone()
+                if not dup_data:
+                    continue
+                
+                # Merge category (keep first non-empty)
+                if not merged['category'] and dup_data['category']:
+                    merged['category'] = dup_data['category']
+                
+                # Merge tags (combine unique tags)
+                if dup_data['tags']:
+                    try:
+                        dup_tags = json.loads(dup_data['tags'])
+                        if isinstance(dup_tags, list):
+                            for tag in dup_tags:
+                                if tag not in merged['tags']:
+                                    merged['tags'].append(tag)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                
+                # Keep highest rating
+                if dup_data['rating'] and (not merged['rating'] or dup_data['rating'] > merged['rating']):
+                    merged['rating'] = dup_data['rating']
+                
+                # Combine notes
+                if dup_data['notes'] and dup_data['notes'].strip():
+                    if merged['notes']:
+                        merged['notes'] += f" | {dup_data['notes']}"
+                    else:
+                        merged['notes'] = dup_data['notes']
+            
+            return merged
+            
+        except Exception as e:
+            self.logger.error(f"Error merging metadata: {e}", exc_info=True)
+            return {}
+    
+    def _transfer_images_to_primary(self, conn: sqlite3.Connection, primary_id: int, duplicate_ids: List[int]) -> int:
+        """
+        Transfer all images from duplicate prompts to the primary prompt.
+        
+        Args:
+            conn: Database connection
+            primary_id: ID of the prompt to keep
+            duplicate_ids: List of duplicate prompt IDs
+            
+        Returns:
+            Number of images transferred
+        """
+        transferred_count = 0
+        try:
+            for dup_id in duplicate_ids:
+                # Update all images to point to primary prompt
+                cursor = conn.execute(
+                    "UPDATE generated_images SET prompt_id = ? WHERE prompt_id = ?",
+                    (primary_id, dup_id)
+                )
+                transferred_count += cursor.rowcount
+                
+                if cursor.rowcount > 0:
+                    self.logger.debug(f"Transferred {cursor.rowcount} images from prompt {dup_id} to {primary_id}")
+            
+            return transferred_count
+            
+        except Exception as e:
+            self.logger.error(f"Error transferring images: {e}", exc_info=True)
+            return 0
+    
+    def _update_primary_with_merged_metadata(self, conn: sqlite3.Connection, primary_id: int, merged_metadata: Dict[str, Any]) -> None:
+        """
+        Update the primary prompt with merged metadata.
+        
+        Args:
+            conn: Database connection
+            primary_id: ID of the prompt to update
+            merged_metadata: Merged metadata dictionary
+        """
+        try:
+            conn.execute(
+                """
+                UPDATE prompts 
+                SET category = ?, tags = ?, rating = ?, notes = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    merged_metadata.get('category'),
+                    json.dumps(merged_metadata.get('tags', [])),
+                    merged_metadata.get('rating'),
+                    merged_metadata.get('notes'),
+                    datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    primary_id
+                )
+            )
+            self.logger.debug(f"Updated primary prompt {primary_id} with merged metadata")
+            
+        except Exception as e:
+            self.logger.error(f"Error updating primary prompt metadata: {e}", exc_info=True)
+    
     def _image_row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
         """
         Convert an image database row to a dictionary with parsed JSON fields.
