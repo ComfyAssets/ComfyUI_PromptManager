@@ -332,17 +332,39 @@ class PromptManagerAPI:
 
     async def get_recent_prompts(self, request):
         """
-        Get recent prompts endpoint.
-        GET /prompt_manager/recent?limit=...
+        Get recent prompts endpoint with pagination support.
+        GET /prompt_manager/recent?limit=50&page=2&offset=100
         """
         try:
-            limit = int(request.query.get("limit", 20))
+            limit = int(request.query.get("limit", 50))
+            page = int(request.query.get("page", 1))
+            offset = int(request.query.get("offset", 0))
+            
+            # If page is provided, calculate offset from page
+            if page > 1 and offset == 0:
+                offset = (page - 1) * limit
+            
+            # Ensure reasonable limits
+            if limit > 1000:
+                limit = 1000
+            elif limit < 1:
+                limit = 1
 
-            results = self.db.get_recent_prompts(limit=limit)
+            results = self.db.get_recent_prompts(limit=limit, offset=offset)
 
-            return web.json_response(
-                {"success": True, "results": results, "count": len(results)}
-            )
+            return web.json_response({
+                "success": True, 
+                "results": results['prompts'],
+                "pagination": {
+                    "total": results['total'],
+                    "limit": results['limit'],
+                    "offset": results['offset'],
+                    "page": results['page'],
+                    "total_pages": results['total_pages'],
+                    "has_more": results['has_more'],
+                    "count": len(results['prompts'])
+                }
+            })
 
         except Exception as e:
             self.logger.error(f"Recent prompts error: {e}", exc_info=True)
@@ -351,6 +373,7 @@ class PromptManagerAPI:
                     "success": False,
                     "error": f"Failed to get recent prompts: {str(e)}",
                     "results": [],
+                    "pagination": {"total": 0, "page": 1, "total_pages": 0}
                 },
                 status=500,
             )
@@ -1851,42 +1874,61 @@ class PromptManagerAPI:
             return {}
     
     def _parse_comfyui_prompt(self, metadata):
-        """Parse ComfyUI prompt data from metadata."""
+        """Parse ComfyUI and A1111 prompt data from metadata."""
         result = {
             'prompt': None,
             'workflow': None,
-            'parameters': {}
+            'parameters': {},
+            'positive_prompt': None,
+            'negative_prompt': None
         }
         
-        # Check for direct prompt field
-        if 'prompt' in metadata:
-            try:
-                prompt_data = json.loads(metadata['prompt'])
-                result['prompt'] = prompt_data
-            except json.JSONDecodeError:
-                result['prompt'] = metadata['prompt']
+        # Check for A1111 style parameters first (like parse-metadata.py)
+        if "parameters" in metadata:
+            params = metadata["parameters"]
+            lines = params.splitlines()
+            if lines:
+                result['positive_prompt'] = lines[0].strip()
+            for line in lines:
+                if line.lower().startswith("negative prompt:"):
+                    result['negative_prompt'] = line.split(":", 1)[1].strip()
+                    break
+            # Store raw parameters too
+            result['parameters']['parameters'] = params
         
-        # Check for workflow
-        if 'workflow' in metadata:
-            try:
-                workflow_data = json.loads(metadata['workflow'])
-                result['workflow'] = workflow_data
-            except json.JSONDecodeError:
-                result['workflow'] = metadata['workflow']
-        
-        # Check for other common ComfyUI fields
-        common_fields = ['parameters', 'positive', 'negative', 'steps', 'cfg', 'sampler', 'scheduler', 'seed']
-        for field in common_fields:
-            if field in metadata:
+        # If no A1111 format found, proceed with ComfyUI parsing
+        if result['positive_prompt'] is None:
+            # Check for direct prompt field
+            if 'prompt' in metadata:
                 try:
-                    result['parameters'][field] = json.loads(metadata[field])
+                    prompt_data = json.loads(metadata['prompt'])
+                    result['prompt'] = prompt_data
                 except json.JSONDecodeError:
-                    result['parameters'][field] = metadata[field]
+                    result['prompt'] = metadata['prompt']
+            
+            # Check for workflow
+            if 'workflow' in metadata:
+                try:
+                    workflow_data = json.loads(metadata['workflow'])
+                    result['workflow'] = workflow_data
+                except json.JSONDecodeError:
+                    result['workflow'] = metadata['workflow']
+            
+            # Check for other common ComfyUI fields
+            common_fields = ['positive', 'negative', 'steps', 'cfg', 'sampler', 'scheduler', 'seed']
+            for field in common_fields:
+                if field in metadata:
+                    try:
+                        result['parameters'][field] = json.loads(metadata[field])
+                    except json.JSONDecodeError:
+                        result['parameters'][field] = metadata[field]
         
         return result
     
     def _extract_readable_prompt(self, parsed_data):
-        """Extract human-readable prompt text from ComfyUI JSON structure."""
+        """Extract human-readable prompt text from ComfyUI/A1111 data using improved logic."""
+        import json
+        
         # Helper function to convert any value to string safely
         def safe_to_string(value):
             if isinstance(value, str):
@@ -1898,6 +1940,10 @@ class PromptManagerAPI:
                 return str(value)
             return None
         
+        # First check if we already extracted a positive prompt (A1111 format)
+        if parsed_data.get('positive_prompt'):
+            return parsed_data['positive_prompt']
+        
         # Check if prompt is already a string
         if isinstance(parsed_data.get('prompt'), str):
             return parsed_data['prompt']
@@ -1908,22 +1954,97 @@ class PromptManagerAPI:
         
         prompt_data = parsed_data.get('prompt')
         if isinstance(prompt_data, dict):
-            # ComfyUI stores prompts in various node types
-            for node_id, node_data in prompt_data.items():
-                if isinstance(node_data, dict):
-                    class_type = node_data.get('class_type', '')
-                    inputs = node_data.get('inputs', {})
-                    
-                    # Common prompt node types in ComfyUI
-                    if class_type in ['CLIPTextEncode', 'CLIPTextEncodeSDXL', 'PromptText']:
-                        if 'text' in inputs:
-                            return safe_to_string(inputs['text'])
-                    elif 'text' in inputs:
-                        return safe_to_string(inputs['text'])
+            # Use the enhanced logic from parse-metadata.py
+            positive_prompt = self._extract_positive_prompt_from_comfyui_data(prompt_data)
+            if positive_prompt:
+                return positive_prompt
+        
+        # Check workflow data if available
+        workflow_data = parsed_data.get('workflow')
+        if isinstance(workflow_data, dict):
+            positive_prompt = self._extract_positive_prompt_from_comfyui_data(workflow_data)
+            if positive_prompt:
+                return positive_prompt
         
         # Check parameters for positive prompt
         if parsed_data.get('parameters', {}).get('positive'):
             return safe_to_string(parsed_data['parameters']['positive'])
+        
+        return None
+    
+    def _extract_positive_prompt_from_comfyui_data(self, data):
+        """Extract positive prompt from ComfyUI data using the logic from parse-metadata.py."""
+        if not isinstance(data, dict):
+            return None
+        
+        # Build nodes dictionary similar to parse-metadata.py
+        nodes_by_id = {}
+        if "nodes" in data:
+            # Handle nodes array format
+            for node in data["nodes"]:
+                nid = node.get("id")
+                if nid is not None:
+                    nodes_by_id[nid] = node
+        else:
+            # Handle flat dictionary format (node_id -> node_data)
+            for nid_str, node in data.items():
+                try:
+                    nid = int(nid_str)
+                except:
+                    nid = nid_str
+                if isinstance(node, dict):
+                    if "id" in node:
+                        nid = node["id"]
+                    nodes_by_id[nid] = node
+        
+        if not nodes_by_id:
+            return None
+        
+        # First, try to find positive/negative connection pattern
+        pos_id = None
+        for node in nodes_by_id.values():
+            inputs = node.get("inputs", {})
+            if "positive" in inputs and "negative" in inputs:
+                try:
+                    pos_id = int(inputs["positive"][0])
+                    break
+                except:
+                    continue
+        
+        # Get text from the positive node
+        if pos_id is not None and pos_id in nodes_by_id:
+            text_val = nodes_by_id[pos_id].get("inputs", {}).get("text")
+            if isinstance(text_val, str):
+                return text_val
+        
+        # Fallback: find any text encoder node with text content
+        text_encoder_types = [
+            'CLIPTextEncode', 'CLIPTextEncodeSDXL', 'CLIPTextEncodeSDXLRefiner',
+            'PromptManager', 'BNK_CLIPTextEncoder', 'Text Encoder', 'CLIP Text Encode'
+        ]
+        
+        for node in nodes_by_id.values():
+            if isinstance(node, dict):
+                class_type = node.get('class_type', '')
+                inputs = node.get('inputs', {})
+                
+                # Check if this is a text encoder node
+                if any(encoder_type.lower() in class_type.lower() for encoder_type in text_encoder_types):
+                    if 'text' in inputs and isinstance(inputs['text'], str):
+                        return inputs['text']
+        
+        # Final fallback: collect all text fields and return the first non-empty one
+        text_fields = []
+        for node in nodes_by_id.values():
+            if isinstance(node, dict):
+                inputs = node.get("inputs", {})
+                text_val = inputs.get("text")
+                if isinstance(text_val, str) and text_val.strip():
+                    text_fields.append(text_val)
+        
+        # Return the first text field (likely positive prompt)
+        if text_fields:
+            return text_fields[0]
         
         return None
 

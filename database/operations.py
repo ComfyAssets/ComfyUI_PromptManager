@@ -201,22 +201,39 @@ class PromptDatabase:
             rows = cursor.fetchall()
             return [self._row_to_dict(row) for row in rows]
     
-    def get_recent_prompts(self, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_recent_prompts(self, limit: int = 10, offset: int = 0) -> Dict[str, Any]:
         """
-        Get the most recent prompts.
+        Get the most recent prompts with pagination support.
         
         Args:
             limit: Maximum number of prompts to return
+            offset: Number of prompts to skip (for pagination)
             
         Returns:
-            List of dictionaries containing prompt data
+            Dictionary containing prompt data and pagination info
         """
         with self.model.get_connection() as conn:
+            # Get total count
+            cursor = conn.execute("SELECT COUNT(*) as total FROM prompts")
+            total_count = cursor.fetchone()["total"]
+            
+            # Get paginated results
             cursor = conn.execute(
-                "SELECT * FROM prompts ORDER BY created_at DESC LIMIT ?", (limit,)
+                "SELECT * FROM prompts ORDER BY created_at DESC LIMIT ? OFFSET ?", 
+                (limit, offset)
             )
             rows = cursor.fetchall()
-            return [self._row_to_dict(row) for row in rows]
+            prompts = [self._row_to_dict(row) for row in rows]
+            
+            return {
+                'prompts': prompts,
+                'total': total_count,
+                'limit': limit,
+                'offset': offset,
+                'has_more': (offset + limit) < total_count,
+                'page': (offset // limit) + 1,
+                'total_pages': (total_count + limit - 1) // limit  # Ceiling division
+            }
     
     def get_prompts_by_category(self, category: str, limit: int = 100) -> List[Dict[str, Any]]:
         """
