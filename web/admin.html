@@ -1022,8 +1022,9 @@
                 // This prevents overwriting the correct total counts from the API
                 const currentTotal = document.getElementById("totalPrompts").textContent;
                 
-                // Only update if the current total is still the default "-" or if we have more prompts locally than the API count
-                if (currentTotal === "-" || (this.prompts.length > parseInt(currentTotal) && this.prompts.length > 0)) {
+                // Only update if the current total is still the default "-"
+                if (currentTotal === "-") {
+                    // Show local counts as fallback only when API hasn't loaded yet
                     document.getElementById("totalPrompts").textContent = this.prompts.length;
                     
                     const uniqueCategories = new Set(this.prompts.map(p => p.category).filter(Boolean));
@@ -1062,7 +1063,6 @@
                         if (data.success) {
                             this.prompts = data.results;
                             this.renderPrompts();
-                            this.updateLocalStats();
                             document.getElementById("resultsTitle").textContent = "Search Results";
                         }
                     }
@@ -1335,6 +1335,8 @@
 
                     if (response.ok) {
                         this.showNotification("Tag added", "success");
+                        // Refresh both stats and results
+                        await this.loadStatistics();
                         this.search();
                     }
                 } catch (error) {
@@ -1352,6 +1354,8 @@
 
                     if (response.ok) {
                         this.showNotification("Tag removed", "success");
+                        // Refresh both stats and results
+                        await this.loadStatistics();
                         this.search();
                     }
                 } catch (error) {
@@ -1459,6 +1463,8 @@
                     if (response.ok) {
                         this.showNotification(`Tags added to ${this.selectedPrompts.size} prompts`, "success");
                         this.hideModal("bulkTagModal");
+                        // Refresh both stats and results
+                        await this.loadStatistics();
                         this.search();
                     }
                 } catch (error) {
@@ -1483,6 +1489,8 @@
                     if (response.ok) {
                         this.showNotification(`Category set for ${this.selectedPrompts.size} prompts`, "success");
                         this.hideModal("bulkCategoryModal");
+                        // Refresh both stats and results
+                        await this.loadStatistics();
                         this.search();
                     }
                 } catch (error) {

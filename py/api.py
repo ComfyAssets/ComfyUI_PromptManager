@@ -168,9 +168,6 @@ class PromptManagerAPI:
         async def save_settings_route(request):
             return await self.save_settings(request)
 
-        @routes.get("/prompt_manager/stats")
-        async def get_statistics_route(request):
-            return await self.get_statistics(request)
 
         # Individual prompt management
         @routes.put("/prompt_manager/prompts/{prompt_id}")
@@ -557,7 +554,7 @@ class PromptManagerAPI:
                 total_prompts = cursor.fetchone()["total"]
 
                 cursor = conn.execute(
-                    "SELECT COUNT(DISTINCT category) as total FROM prompts WHERE category IS NOT NULL"
+                    "SELECT COUNT(DISTINCT TRIM(category)) as total FROM prompts WHERE category IS NOT NULL AND TRIM(category) != ''"
                 )
                 total_categories = cursor.fetchone()["total"]
 
@@ -577,16 +574,36 @@ class PromptManagerAPI:
                     except:
                         continue
 
+                # Get all categories for debugging (including raw data)
+                cursor = conn.execute(
+                    "SELECT DISTINCT category FROM prompts WHERE category IS NOT NULL ORDER BY category"
+                )
+                raw_categories = [row['category'] for row in cursor.fetchall()]
+                
+                cursor = conn.execute(
+                    "SELECT DISTINCT TRIM(category) as category FROM prompts WHERE category IS NOT NULL AND TRIM(category) != '' ORDER BY category"
+                )
+                filtered_categories = [row['category'] for row in cursor.fetchall()]
+                
+                # Debug logging with detailed category info
+                self.logger.debug(f"Statistics calculated - Prompts: {total_prompts}, Categories: {total_categories}, Tags: {len(all_tags)}, Avg Rating: {avg_rating}")
+                self.logger.debug(f"Raw categories from DB: {[(cat, len(cat), repr(cat)) for cat in raw_categories]}")
+                self.logger.debug(f"Filtered categories: {[(cat, len(cat), repr(cat)) for cat in filtered_categories]}")
+
                 return web.json_response(
                     {
                         "success": True,
                         "stats": {
                             "total_prompts": total_prompts,
-                            "unique_categories": total_categories,
+                            "total_categories": total_categories,
+                            "unique_categories": total_categories,  # Keep both for compatibility
                             "total_tags": len(all_tags),
                             "average_rating": (
                                 round(avg_rating, 2) if avg_rating else None
                             ),
+                            "avg_rating": (
+                                round(avg_rating, 2) if avg_rating else None
+                            ),  # Keep both for compatibility
                             "recent_prompts": total_prompts,  # For now, use total as recent count
                         },
                     }
