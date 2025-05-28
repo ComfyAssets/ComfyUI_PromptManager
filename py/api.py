@@ -13,6 +13,7 @@ from PIL import Image
 # Import database operations
 try:
     from ..database.operations import PromptDatabase
+    from ..utils.logging_config import get_logger
 except ImportError:
     # Fallback for when module isn't imported as package
     import os
@@ -20,23 +21,27 @@ except ImportError:
 
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from database.operations import PromptDatabase
+    from utils.logging_config import get_logger
 
 
 class PromptManagerAPI:
     """API class for PromptManager database operations."""
 
     def __init__(self):
+        self.logger = get_logger('prompt_manager.api')
+        self.logger.info("Initializing PromptManager API")
+        
         self.db = PromptDatabase()
 
         # Run cleanup on initialization to remove any existing duplicates
         try:
             removed = self.db.cleanup_duplicates()
             if removed > 0:
-                print(
-                    f"[PromptManager] Startup cleanup: removed {removed} duplicate prompts"
-                )
+                self.logger.info(f"Startup cleanup: removed {removed} duplicate prompts")
         except Exception as e:
-            print(f"[PromptManager] Startup cleanup failed: {e}")
+            self.logger.error(f"Startup cleanup failed: {e}")
+        
+        self.logger.info("PromptManager API initialization completed")
 
     def add_routes(self, routes):
         """Add API routes to ComfyUI server using decorator pattern."""
@@ -250,7 +255,36 @@ class PromptManagerAPI:
         async def scan_images_route(request):
             return await self.scan_images(request)
 
-        print("[PromptManager] All routes registered with decorator pattern")
+        # Logging endpoints
+        @routes.get("/prompt_manager/logs")
+        async def get_logs_route(request):
+            return await self.get_logs(request)
+
+        @routes.get("/prompt_manager/logs/files")
+        async def get_log_files_route(request):
+            return await self.get_log_files(request)
+
+        @routes.get("/prompt_manager/logs/download/{filename}")
+        async def download_log_route(request):
+            return await self.download_log_file(request)
+
+        @routes.post("/prompt_manager/logs/truncate")
+        async def truncate_logs_route(request):
+            return await self.truncate_logs(request)
+
+        @routes.get("/prompt_manager/logs/config")
+        async def get_log_config_route(request):
+            return await self.get_log_config(request)
+
+        @routes.post("/prompt_manager/logs/config")
+        async def update_log_config_route(request):
+            return await self.update_log_config(request)
+
+        @routes.get("/prompt_manager/logs/stats")
+        async def get_log_stats_route(request):
+            return await self.get_log_stats(request)
+
+        self.logger.info("All routes registered with decorator pattern")
 
     async def search_prompts(self, request):
         """
@@ -290,8 +324,7 @@ class PromptManagerAPI:
             )
 
         except Exception as e:
-            print(f"[PromptManager API] Search error: {e}")
-            print(traceback.format_exc())
+            self.logger.error(f"Search error: {e}", exc_info=True)
             return web.json_response(
                 {"success": False, "error": f"Search failed: {str(e)}", "results": []},
                 status=500,
@@ -312,8 +345,7 @@ class PromptManagerAPI:
             )
 
         except Exception as e:
-            print(f"[PromptManager API] Recent prompts error: {e}")
-            print(traceback.format_exc())
+            self.logger.error(f"Recent prompts error: {e}", exc_info=True)
             return web.json_response(
                 {
                     "success": False,
@@ -334,7 +366,7 @@ class PromptManagerAPI:
             return web.json_response({"success": True, "categories": categories})
 
         except Exception as e:
-            print(f"[PromptManager API] Categories error: {e}")
+            self.logger.error(f"Categories error: {e}")
             return web.json_response(
                 {
                     "success": False,
@@ -355,7 +387,7 @@ class PromptManagerAPI:
             return web.json_response({"success": True, "tags": tags})
 
         except Exception as e:
-            print(f"[PromptManager API] Tags error: {e}")
+            self.logger.error(f"Tags error: {e}")
             return web.json_response(
                 {
                     "success": False,
@@ -430,8 +462,7 @@ class PromptManagerAPI:
             )
 
         except Exception as e:
-            print(f"[PromptManager API] Save error: {e}")
-            print(traceback.format_exc())
+            self.logger.error(f"Save error: {e}", exc_info=True)
             return web.json_response(
                 {"success": False, "error": f"Failed to save prompt: {str(e)}"},
                 status=500,
@@ -465,7 +496,7 @@ class PromptManagerAPI:
                 {"success": False, "error": "Invalid prompt ID"}, status=400
             )
         except Exception as e:
-            print(f"[PromptManager API] Delete error: {e}")
+            self.logger.error(f"Delete error: {e}")
             return web.json_response(
                 {"success": False, "error": f"Failed to delete prompt: {str(e)}"},
                 status=500,
@@ -488,7 +519,7 @@ class PromptManagerAPI:
             )
 
         except Exception as e:
-            print(f"[PromptManager API] Cleanup error: {e}")
+            self.logger.error(f"Cleanup error: {e}")
             return web.json_response(
                 {"success": False, "error": f"Failed to cleanup duplicates: {str(e)}"},
                 status=500,
@@ -539,7 +570,7 @@ class PromptManagerAPI:
                 )
 
         except Exception as e:
-            print(f"[PromptManager API] Stats error: {e}")
+            self.logger.error(f"Stats error: {e}")
             return web.json_response(
                 {"success": False, "error": f"Failed to get statistics: {str(e)}"},
                 status=500,
@@ -611,7 +642,7 @@ class PromptManagerAPI:
                 {"success": False, "error": "Invalid prompt ID"}, status=400
             )
         except Exception as e:
-            print(f"[PromptManager API] Update prompt error: {e}")
+            self.logger.error(f"Update prompt error: {e}")
             return web.json_response(
                 {"success": False, "error": f"Failed to update prompt: {str(e)}"},
                 status=500,
@@ -655,7 +686,7 @@ class PromptManagerAPI:
                 {"success": False, "error": "Invalid prompt ID"}, status=400
             )
         except Exception as e:
-            print(f"[PromptManager API] Update rating error: {e}")
+            self.logger.error(f"Update rating error: {e}")
             return web.json_response(
                 {"success": False, "error": f"Failed to update rating: {str(e)}"},
                 status=500,
@@ -710,7 +741,7 @@ class PromptManagerAPI:
                 {"success": False, "error": "Invalid prompt ID"}, status=400
             )
         except Exception as e:
-            print(f"[PromptManager API] Add tag error: {e}")
+            self.logger.error(f"Add tag error: {e}")
             return web.json_response(
                 {"success": False, "error": f"Failed to add tag: {str(e)}"}, status=500
             )
@@ -759,7 +790,7 @@ class PromptManagerAPI:
                 {"success": False, "error": "Invalid prompt ID"}, status=400
             )
         except Exception as e:
-            print(f"[PromptManager API] Remove tag error: {e}")
+            self.logger.error(f"Remove tag error: {e}")
             return web.json_response(
                 {"success": False, "error": f"Failed to remove tag: {str(e)}"},
                 status=500,
@@ -798,7 +829,7 @@ class PromptManagerAPI:
             )
 
         except Exception as e:
-            print(f"[PromptManager API] Bulk delete error: {e}")
+            self.logger.error(f"Bulk delete error: {e}")
             return web.json_response(
                 {"success": False, "error": f"Failed to delete prompts: {str(e)}"},
                 status=500,
@@ -865,7 +896,7 @@ class PromptManagerAPI:
             )
 
         except Exception as e:
-            print(f"[PromptManager API] Bulk add tags error: {e}")
+            self.logger.error(f"Bulk add tags error: {e}")
             return web.json_response(
                 {"success": False, "error": f"Failed to add tags: {str(e)}"}, status=500
             )
@@ -906,7 +937,7 @@ class PromptManagerAPI:
             )
 
         except Exception as e:
-            print(f"[PromptManager API] Bulk set category error: {e}")
+            self.logger.error(f"Bulk set category error: {e}")
             return web.json_response(
                 {"success": False, "error": f"Failed to set category: {str(e)}"},
                 status=500,
@@ -937,7 +968,7 @@ class PromptManagerAPI:
             )
 
         except Exception as e:
-            print(f"[PromptManager API] Export error: {e}")
+            self.logger.error(f"Export error: {e}")
             return web.json_response(
                 {"success": False, "error": f"Failed to export prompts: {str(e)}"},
                 status=500,
@@ -987,7 +1018,7 @@ class PromptManagerAPI:
                 
                 return web.json_response(cleaned_data)
             except Exception as json_error:
-                print(f"[PromptManager API] JSON cleaning error: {json_error}")
+                self.logger.error(f"JSON cleaning error: {json_error}")
                 # Fallback to original response
                 return web.json_response({
                     'success': True,
@@ -995,7 +1026,7 @@ class PromptManagerAPI:
                 })
             
         except Exception as e:
-            print(f"[PromptManager API] Get prompt images error: {e}")
+            self.logger.error(f"Get prompt images error: {e}")
             return web.json_response({
                 'success': False,
                 'error': str(e)
@@ -1012,7 +1043,7 @@ class PromptManagerAPI:
                 'images': images
             })
         except Exception as e:
-            print(f"[PromptManager API] Get recent images error: {e}")
+            self.logger.error(f"Get recent images error: {e}")
             return web.json_response({
                 'success': False,
                 'error': str(e)
@@ -1036,7 +1067,7 @@ class PromptManagerAPI:
                 'query': query
             })
         except Exception as e:
-            print(f"[PromptManager API] Search images error: {e}")
+            self.logger.error(f"Search images error: {e}")
             return web.json_response({
                 'success': False,
                 'error': str(e)
@@ -1083,7 +1114,7 @@ class PromptManagerAPI:
         except ValueError:
             return web.json_response({'error': 'Invalid image ID'}, status=400)
         except Exception as e:
-            print(f"[PromptManager API] Serve image error: {e}")
+            self.logger.error(f"Serve image error: {e}")
             return web.json_response({'error': str(e)}, status=500)
 
     async def link_image_to_prompt(self, request):
@@ -1118,7 +1149,7 @@ class PromptManagerAPI:
             })
             
         except Exception as e:
-            print(f"[PromptManager API] Link image error: {e}")
+            self.logger.error(f"Link image error: {e}")
             return web.json_response({
                 'success': False,
                 'error': str(e)
@@ -1144,7 +1175,7 @@ class PromptManagerAPI:
         except ValueError:
             return web.json_response({'error': 'Invalid image ID'}, status=400)
         except Exception as e:
-            print(f"[PromptManager API] Delete image error: {e}")
+            self.logger.error(f"Delete image error: {e}")
             return web.json_response({
                 'success': False,
                 'error': str(e)
@@ -1241,9 +1272,7 @@ class PromptManagerAPI:
             })
             
         except Exception as e:
-            print(f"[PromptManager API] Diagnostics error: {e}")
-            import traceback
-            traceback.print_exc()
+            self.logger.error(f"Diagnostics error: {e}", exc_info=True)
             return web.json_response({
                 'success': False,
                 'error': str(e)
@@ -1298,9 +1327,7 @@ class PromptManagerAPI:
                 })
                 
         except Exception as e:
-            print(f"[PromptManager API] Test link error: {e}")
-            import traceback
-            traceback.print_exc()
+            self.logger.error(f"Test link error: {e}", exc_info=True)
             return web.json_response({
                 'success': False,
                 'error': str(e)
@@ -1456,9 +1483,7 @@ class PromptManagerAPI:
             })
             
         except Exception as e:
-            print(f"[PromptManager API] Maintenance error: {e}")
-            import traceback
-            traceback.print_exc()
+            self.logger.error(f"Maintenance error: {e}", exc_info=True)
             return web.json_response({
                 'success': False,
                 'error': f'Maintenance failed: {str(e)}'
@@ -1512,9 +1537,7 @@ class PromptManagerAPI:
             )
 
         except Exception as e:
-            print(f"[PromptManager API] Backup error: {e}")
-            import traceback
-            traceback.print_exc()
+            self.logger.error(f"Backup error: {e}", exc_info=True)
             return web.json_response({
                 'success': False,
                 'error': f'Failed to backup database: {str(e)}'
@@ -1586,7 +1609,7 @@ class PromptManagerAPI:
                 # Create backup of current database if it exists
                 if os.path.exists(db_path):
                     shutil.copy2(db_path, backup_path)
-                    print(f"[PromptManager] Current database backed up to: {backup_path}")
+                    self.logger.info(f"Current database backed up to: {backup_path}")
 
                 # Replace current database with uploaded one
                 shutil.copy2(temp_path, db_path)
@@ -1617,9 +1640,7 @@ class PromptManagerAPI:
                     os.unlink(temp_path)
 
         except Exception as e:
-            print(f"[PromptManager API] Restore error: {e}")
-            import traceback
-            traceback.print_exc()
+            self.logger.error(f"Restore error: {e}", exc_info=True)
             return web.json_response({
                 'success': False,
                 'error': f'Failed to restore database: {str(e)}'
@@ -1637,9 +1658,17 @@ class PromptManagerAPI:
         
         async def stream_response():
             try:
+                self.logger.info("Starting image scan operation")
+                
+                # Clear any active prompt tracking timers to avoid conflicts
+                # Note: For now we'll skip this since we don't have easy access to the tracker instance
+                # This is mainly important if scans are run during active generation, which is rare
+                self.logger.info("Starting scan (timer clearing not implemented yet)")
+                
                 # Find ComfyUI output directory
                 output_dir = self._find_comfyui_output_dir()
                 if not output_dir:
+                    self.logger.error("ComfyUI output directory not found")
                     yield f"data: {json.dumps({'type': 'error', 'message': 'ComfyUI output directory not found'})}\n\n"
                     return
                 
@@ -1658,6 +1687,7 @@ class PromptManagerAPI:
                 processed_count = 0
                 found_count = 0
                 added_count = 0
+                linked_count = 0  # Count of images linked to existing prompts
                 
                 for i, png_file in enumerate(png_files):
                     try:
@@ -1666,11 +1696,11 @@ class PromptManagerAPI:
                         processed_count += 1
                         
                         if metadata:
-                            print(f"[PromptManager] Found metadata in {os.path.basename(png_file)}: {list(metadata.keys())}")
+                            self.logger.debug(f"Found metadata in {os.path.basename(png_file)}: {list(metadata.keys())}")
                             
                             # Parse ComfyUI prompt data
                             parsed_data = self._parse_comfyui_prompt(metadata)
-                            print(f"[PromptManager] Parsed data keys: {list(parsed_data.keys())}, has prompt: {bool(parsed_data.get('prompt'))}, has parameters: {bool(parsed_data.get('parameters'))}")
+                            self.logger.debug(f"Parsed data keys: {list(parsed_data.keys())}, has prompt: {bool(parsed_data.get('prompt'))}, has parameters: {bool(parsed_data.get('parameters'))}")
                             
                             # Check if we found any meaningful prompt data
                             if parsed_data.get('prompt') or parsed_data.get('parameters'):
@@ -1681,13 +1711,13 @@ class PromptManagerAPI:
                                 
                                 # Debug: print what we found and its type
                                 if prompt_text:
-                                    print(f"[PromptManager] Found prompt in {os.path.basename(png_file)} (type: {type(prompt_text)}): {str(prompt_text)[:100]}...")
+                                    self.logger.debug(f"Found prompt in {os.path.basename(png_file)} (type: {type(prompt_text)}): {str(prompt_text)[:100]}...")
                                 else:
-                                    print(f"[PromptManager] No readable prompt found in {os.path.basename(png_file)}, parsed_data keys: {list(parsed_data.keys())}")
+                                    self.logger.debug(f"No readable prompt found in {os.path.basename(png_file)}, parsed_data keys: {list(parsed_data.keys())}")
                                 
                                 # Ensure prompt_text is a string
                                 if prompt_text and not isinstance(prompt_text, str):
-                                    print(f"[PromptManager] Converting prompt_text from {type(prompt_text)} to string")
+                                    self.logger.debug(f"Converting prompt_text from {type(prompt_text)} to string")
                                     prompt_text = str(prompt_text)
                                 
                                 if prompt_text and prompt_text.strip():
@@ -1703,17 +1733,22 @@ class PromptManagerAPI:
                                             from utils.hashing import generate_prompt_hash
                                         
                                         prompt_hash = generate_prompt_hash(prompt_text.strip())
+                                        self.logger.debug(f"Generated hash for prompt: {prompt_hash[:16]}...")
                                         
                                         # Check if prompt already exists
                                         existing = self.db.get_prompt_by_hash(prompt_hash)
                                         if existing:
+                                            self.logger.debug(f"Found existing prompt ID {existing['id']} for image {os.path.basename(png_file)}")
                                             # Link image to existing prompt
                                             try:
                                                 self.db.link_image_to_prompt(existing['id'], str(png_file))
+                                                linked_count += 1
+                                                self.logger.debug(f"Linked image {os.path.basename(png_file)} to existing prompt {existing['id']}")
                                             except Exception as e:
-                                                print(f"[PromptManager] Failed to link image {png_file}: {e}")
+                                                self.logger.error(f"Failed to link image {png_file} to existing prompt: {e}")
                                         else:
                                             # Save new prompt
+                                            self.logger.debug(f"Saving new prompt from {os.path.basename(png_file)}")
                                             prompt_id = self.db.save_prompt(
                                                 text=prompt_text.strip(),
                                                 category='scanned',
@@ -1724,15 +1759,19 @@ class PromptManagerAPI:
                                             
                                             if prompt_id:
                                                 added_count += 1
+                                                self.logger.info(f"Successfully saved new prompt with ID {prompt_id} from {os.path.basename(png_file)}")
                                                 
                                                 # Link image to new prompt
                                                 try:
                                                     self.db.link_image_to_prompt(prompt_id, str(png_file))
+                                                    self.logger.debug(f"Linked image {os.path.basename(png_file)} to new prompt {prompt_id}")
                                                 except Exception as e:
-                                                    print(f"[PromptManager] Failed to link image {png_file}: {e}")
+                                                    self.logger.error(f"Failed to link image {png_file} to new prompt: {e}")
+                                            else:
+                                                self.logger.error(f"Failed to save prompt from {os.path.basename(png_file)} - no ID returned")
                                         
                                     except Exception as e:
-                                        print(f"[PromptManager] Failed to save prompt from {png_file}: {e}")
+                                        self.logger.error(f"Failed to save prompt from {png_file}: {e}")
                         
                         # Update progress every 10 files or so
                         if i % 10 == 0 or i == total_files - 1:
@@ -1745,16 +1784,17 @@ class PromptManagerAPI:
                             await asyncio.sleep(0.01)
                     
                     except Exception as e:
-                        print(f"[PromptManager] Error processing {png_file}: {e}")
+                        self.logger.error(f"Error processing {png_file}: {e}")
                         continue
                 
                 # Send completion message
-                yield f"data: {json.dumps({'type': 'complete', 'processed': processed_count, 'found': found_count, 'added': added_count})}\n\n"
+                self.logger.info(f"Scan completed: processed={processed_count}, found={found_count}, new_prompts_added={added_count}, images_linked_to_existing={linked_count}")
+                yield f"data: {json.dumps({'type': 'complete', 'processed': processed_count, 'found': found_count, 'added': added_count, 'linked': linked_count})}\n\n"
                 
             except Exception as e:
-                print(f"[PromptManager] Scan error: {e}")
+                self.logger.error(f"Scan error: {e}")
                 import traceback
-                traceback.print_exc()
+                self.logger.error(f"Scan error traceback: {traceback.format_exc()}")
                 yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
         
         # Return streaming response
@@ -1791,10 +1831,10 @@ class PromptManagerAPI:
         for path in possible_paths:
             abs_path = os.path.abspath(path)
             if os.path.exists(abs_path) and os.path.isdir(abs_path):
-                print(f"[PromptManager] Found ComfyUI output directory: {abs_path}")
+                self.logger.info(f"Found ComfyUI output directory: {abs_path}")
                 return abs_path
         
-        print("[PromptManager] ComfyUI output directory not found")
+        self.logger.warning("ComfyUI output directory not found")
         return None
     
     def _extract_comfyui_metadata(self, image_path):
@@ -1807,7 +1847,7 @@ class PromptManagerAPI:
                         metadata[key] = value
                 return metadata
         except Exception as e:
-            print(f"[PromptManager] Error reading {image_path}: {e}")
+            self.logger.error(f"Error reading {image_path}: {e}")
             return {}
     
     def _parse_comfyui_prompt(self, metadata):
@@ -1886,3 +1926,267 @@ class PromptManagerAPI:
             return safe_to_string(parsed_data['parameters']['positive'])
         
         return None
+
+    # Logging API endpoints
+    async def get_logs(self, request):
+        """
+        Get recent log entries.
+        GET /prompt_manager/logs?limit=100&level=INFO
+        """
+        try:
+            # Import logger here to avoid circular imports
+            try:
+                from ..utils.logging_config import get_logger_manager
+            except ImportError:
+                import sys
+                current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                sys.path.insert(0, current_dir)
+                from utils.logging_config import get_logger_manager
+            
+            logger_manager = get_logger_manager()
+            
+            # Get query parameters
+            limit = int(request.query.get('limit', 100))
+            level = request.query.get('level', None)
+            
+            # Validate limit
+            if limit > 1000:
+                limit = 1000
+            elif limit < 1:
+                limit = 1
+            
+            # Get logs from memory buffer
+            logs = logger_manager.get_recent_logs(limit=limit, level=level)
+            
+            return web.json_response({
+                'success': True,
+                'logs': logs,
+                'count': len(logs),
+                'level_filter': level,
+                'limit': limit
+            })
+            
+        except Exception as e:
+            self.logger.error(f"Get logs error: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e),
+                'logs': []
+            }, status=500)
+
+    async def get_log_files(self, request):
+        """
+        Get information about available log files.
+        GET /prompt_manager/logs/files
+        """
+        try:
+            try:
+                from ..utils.logging_config import get_logger_manager
+            except ImportError:
+                import sys
+                current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                sys.path.insert(0, current_dir)
+                from utils.logging_config import get_logger_manager
+            
+            logger_manager = get_logger_manager()
+            log_files = logger_manager.get_log_files()
+            
+            return web.json_response({
+                'success': True,
+                'files': log_files,
+                'count': len(log_files)
+            })
+            
+        except Exception as e:
+            self.logger.error(f"Get log files error: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e),
+                'files': []
+            }, status=500)
+
+    async def download_log_file(self, request):
+        """
+        Download a specific log file.
+        GET /prompt_manager/logs/download/{filename}
+        """
+        try:
+            filename = request.match_info['filename']
+            
+            try:
+                from ..utils.logging_config import get_logger_manager
+            except ImportError:
+                import sys
+                current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                sys.path.insert(0, current_dir)
+                from utils.logging_config import get_logger_manager
+            
+            logger_manager = get_logger_manager()
+            
+            # Validate filename for security
+            if not filename or '..' in filename or '/' in filename or '\\' in filename:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Invalid filename'
+                }, status=400)
+            
+            # Get the file content
+            log_file_path = logger_manager.log_dir / filename
+            
+            if not log_file_path.exists():
+                return web.json_response({
+                    'success': False,
+                    'error': 'Log file not found'
+                }, status=404)
+            
+            # Read file content
+            with open(log_file_path, 'rb') as f:
+                file_content = f.read()
+            
+            return web.Response(
+                body=file_content,
+                content_type='text/plain',
+                headers={
+                    'Content-Disposition': f'attachment; filename="{filename}"',
+                    'Content-Length': str(len(file_content))
+                }
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Download log file error: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def truncate_logs(self, request):
+        """
+        Truncate all log files.
+        POST /prompt_manager/logs/truncate
+        """
+        try:
+            try:
+                from ..utils.logging_config import get_logger_manager
+            except ImportError:
+                import sys
+                current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                sys.path.insert(0, current_dir)
+                from utils.logging_config import get_logger_manager
+            
+            logger_manager = get_logger_manager()
+            results = logger_manager.truncate_logs()
+            
+            return web.json_response({
+                'success': True,
+                'message': f"Truncated {len(results['truncated'])} log files",
+                'results': results
+            })
+            
+        except Exception as e:
+            self.logger.error(f"Truncate logs error: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def get_log_config(self, request):
+        """
+        Get current logging configuration.
+        GET /prompt_manager/logs/config
+        """
+        try:
+            try:
+                from ..utils.logging_config import get_logger_manager
+            except ImportError:
+                import sys
+                current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                sys.path.insert(0, current_dir)
+                from utils.logging_config import get_logger_manager
+            
+            logger_manager = get_logger_manager()
+            config = logger_manager.get_config()
+            
+            return web.json_response({
+                'success': True,
+                'config': config
+            })
+            
+        except Exception as e:
+            self.logger.error(f"Get log config error: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def update_log_config(self, request):
+        """
+        Update logging configuration.
+        POST /prompt_manager/logs/config
+        Body: {"level": "DEBUG", "console_logging": true, ...}
+        """
+        try:
+            data = await request.json()
+            
+            try:
+                from ..utils.logging_config import get_logger_manager
+            except ImportError:
+                import sys
+                current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                sys.path.insert(0, current_dir)
+                from utils.logging_config import get_logger_manager
+            
+            logger_manager = get_logger_manager()
+            
+            # Validate level if provided
+            if 'level' in data:
+                valid_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+                if data['level'].upper() not in valid_levels:
+                    return web.json_response({
+                        'success': False,
+                        'error': f'Invalid log level. Must be one of: {valid_levels}'
+                    }, status=400)
+                data['level'] = data['level'].upper()
+            
+            logger_manager.update_config(data)
+            
+            return web.json_response({
+                'success': True,
+                'message': 'Logging configuration updated',
+                'config': logger_manager.get_config()
+            })
+            
+        except Exception as e:
+            self.logger.error(f"Update log config error: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def get_log_stats(self, request):
+        """
+        Get logging statistics.
+        GET /prompt_manager/logs/stats
+        """
+        try:
+            try:
+                from ..utils.logging_config import get_logger_manager
+            except ImportError:
+                import sys
+                current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                sys.path.insert(0, current_dir)
+                from utils.logging_config import get_logger_manager
+            
+            logger_manager = get_logger_manager()
+            stats = logger_manager.get_log_stats()
+            
+            return web.json_response({
+                'success': True,
+                'stats': stats
+            })
+            
+        except Exception as e:
+            self.logger.error(f"Get log stats error: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)

@@ -13,6 +13,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from .metadata_extractor import ComfyUIMetadataExtractor
+from .logging_config import get_logger
 
 
 class ImageGenerationHandler(FileSystemEventHandler):
@@ -30,11 +31,12 @@ class ImageGenerationHandler(FileSystemEventHandler):
         self.prompt_tracker = prompt_tracker
         self.metadata_extractor = ComfyUIMetadataExtractor()
         self.processing_delay = 2.0  # Wait 2 seconds before processing
+        self.logger = get_logger('prompt_manager.image_monitor')
         
     def on_created(self, event):
         """Handle file creation events."""
         if not event.is_directory and self.is_image_file(event.src_path):
-            print(f"[PromptManager] New image detected: {event.src_path}")
+            self.logger.info(f"New image detected: {event.src_path}")
             # Small delay to ensure file is fully written
             threading.Timer(
                 self.processing_delay, 
@@ -49,24 +51,24 @@ class ImageGenerationHandler(FileSystemEventHandler):
     def process_new_image(self, image_path: str):
         """Process a newly created image file."""
         try:
-            print(f"[PromptManager] Processing image: {image_path}")
+            self.logger.info(f"Processing image: {image_path}")
             
             if not os.path.exists(image_path):
-                print(f"[PromptManager] Image file no longer exists: {image_path}")
+                self.logger.warning(f"Image file no longer exists: {image_path}")
                 return
             
             # Get current prompt context first
             current_prompt = self.prompt_tracker.get_current_prompt()
-            print(f"[PromptManager] Current prompt context: {current_prompt['id'] if current_prompt else 'None'}")
+            self.logger.debug(f"Current prompt context: {current_prompt['id'] if current_prompt else 'None'}")
             
             if not current_prompt:
-                print(f"[PromptManager] No active prompt context for image: {image_path}")
+                self.logger.info(f"No active prompt context for image: {image_path}")
                 # Fallback: try to link to the most recent prompt in database
                 current_prompt = self._get_fallback_prompt()
                 if current_prompt:
-                    print(f"[PromptManager] Using fallback prompt: {current_prompt['id']}")
+                    self.logger.info(f"Using fallback prompt: {current_prompt['id']}")
                 else:
-                    print(f"[PromptManager] No fallback prompt available, skipping image")
+                    self.logger.warning(f"No fallback prompt available, skipping image")
                     return
             else:
                 # Extend the timeout for this prompt since we're still getting images
@@ -76,24 +78,24 @@ class ImageGenerationHandler(FileSystemEventHandler):
             # Extract ComfyUI metadata
             try:
                 metadata = self.metadata_extractor.extract_metadata(image_path)
-                print(f"[PromptManager] Extracted metadata: {bool(metadata)}")
+                self.logger.debug(f"Extracted metadata: {bool(metadata)}")
             except Exception as meta_error:
-                print(f"[PromptManager] Metadata extraction failed: {meta_error}")
+                self.logger.warning(f"Metadata extraction failed: {meta_error}")
                 metadata = None
             
             if metadata:
-                print(f"[PromptManager] Linking image with full metadata to prompt {current_prompt['id']}")
+                self.logger.info(f"Linking image with full metadata to prompt {current_prompt['id']}")
                 self.link_image_to_prompt(image_path, current_prompt, metadata)
             else:
-                print(f"[PromptManager] Linking image with basic info to prompt {current_prompt['id']}")
+                self.logger.info(f"Linking image with basic info to prompt {current_prompt['id']}")
                 # Link with basic file info even without metadata
                 basic_metadata = self.get_basic_file_info(image_path)
                 self.link_image_to_prompt(image_path, current_prompt, {'file_info': basic_metadata})
                 
         except Exception as e:
-            print(f"[PromptManager] Error processing image {image_path}: {e}")
+            self.logger.error(f"Error processing image {image_path}: {e}")
             import traceback
-            traceback.print_exc()
+            self.logger.error(traceback.format_exc())
     
     def get_basic_file_info(self, image_path: str) -> Dict[str, Any]:
         """Get basic file information when metadata extraction fails."""
@@ -117,7 +119,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 
             return file_info
         except Exception as e:
-            print(f"[PromptManager] Error getting file info: {e}")
+            self.logger.error(f"Error getting file info: {e}")
             return {}
     
     def _get_fallback_prompt(self) -> Optional[Dict[str, Any]]:
@@ -133,7 +135,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
                     'fallback': True
                 }
         except Exception as e:
-            print(f"[PromptManager] Error getting fallback prompt: {e}")
+            self.logger.error(f"Error getting fallback prompt: {e}")
         return None
     
     def link_image_to_prompt(self, image_path: str, prompt_context: Dict, metadata: Dict):
@@ -145,9 +147,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 metadata=metadata
             )
             fallback_note = " (fallback)" if prompt_context.get('fallback') else ""
-            print(f"[PromptManager] Successfully linked image {image_id} to prompt {prompt_context['id']}{fallback_note}")
+            self.logger.info(f"Successfully linked image {image_id} to prompt {prompt_context['id']}{fallback_note}")
         except Exception as e:
-            print(f"[PromptManager] Failed to link image to prompt: {e}")
+            self.logger.error(f"Failed to link image to prompt: {e}")
 
 
 class ImageMonitor:
@@ -166,6 +168,7 @@ class ImageMonitor:
         self.observer = None
         self.handler = None
         self.monitored_directories = []
+        self.logger = get_logger('prompt_manager.image_monitor')
         
     def start_monitoring(self, output_directories: Optional[list] = None):
         """
@@ -175,7 +178,7 @@ class ImageMonitor:
             output_directories: List of directories to monitor. If None, auto-detect.
         """
         if self.observer:
-            print("[PromptManager] Image monitoring already running")
+            self.logger.warning("Image monitoring already running")
             return
         
         # Auto-detect ComfyUI output directory if none provided
@@ -183,7 +186,7 @@ class ImageMonitor:
             output_directories = self.detect_comfyui_output_dirs()
         
         if not output_directories:
-            print("[PromptManager] No output directories found to monitor")
+            self.logger.warning("No output directories found to monitor")
             return
         
         # Create event handler
@@ -196,15 +199,15 @@ class ImageMonitor:
             if os.path.exists(output_dir):
                 self.observer.schedule(self.handler, output_dir, recursive=True)
                 self.monitored_directories.append(output_dir)
-                print(f"[PromptManager] Monitoring directory: {output_dir}")
+                self.logger.info(f"Monitoring directory: {output_dir}")
             else:
-                print(f"[PromptManager] Directory does not exist: {output_dir}")
+                self.logger.warning(f"Directory does not exist: {output_dir}")
         
         if self.monitored_directories:
             self.observer.start()
-            print(f"[PromptManager] Image monitoring started for {len(self.monitored_directories)} directories")
+            self.logger.info(f"Image monitoring started for {len(self.monitored_directories)} directories")
         else:
-            print("[PromptManager] No valid directories to monitor")
+            self.logger.warning("No valid directories to monitor")
     
     def stop_monitoring(self):
         """Stop the image monitoring system."""
@@ -214,7 +217,7 @@ class ImageMonitor:
             self.observer = None
             self.handler = None
             self.monitored_directories = []
-            print("[PromptManager] Image monitoring stopped")
+            self.logger.info("Image monitoring stopped")
     
     def detect_comfyui_output_dirs(self) -> list:
         """Auto-detect ComfyUI output directories."""
@@ -226,9 +229,9 @@ class ImageMonitor:
             output_dir = folder_paths.get_output_directory()
             if output_dir and os.path.exists(output_dir):
                 potential_dirs.append(output_dir)
-                print(f"[PromptManager] Detected ComfyUI output directory: {output_dir}")
+                self.logger.info(f"Detected ComfyUI output directory: {output_dir}")
         except ImportError:
-            print("[PromptManager] ComfyUI folder_paths not available, using fallback detection")
+            self.logger.debug("ComfyUI folder_paths not available, using fallback detection")
         
         # Fallback: Look for common ComfyUI directory structures
         fallback_paths = [
@@ -243,7 +246,7 @@ class ImageMonitor:
             abs_path = os.path.abspath(path)
             if os.path.exists(abs_path) and abs_path not in potential_dirs:
                 potential_dirs.append(abs_path)
-                print(f"[PromptManager] Found output directory: {abs_path}")
+                self.logger.debug(f"Found output directory: {abs_path}")
         
         return potential_dirs
     
