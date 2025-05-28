@@ -9,13 +9,15 @@ from typing import Optional, Dict, Any
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
+from .logging_config import get_logger
+
 
 class ComfyUIMetadataExtractor:
     """Extracts ComfyUI metadata from generated images."""
     
     def __init__(self):
         """Initialize the metadata extractor."""
-        pass
+        self.logger = get_logger('prompt_manager.metadata_extractor')
     
     def extract_metadata(self, image_path: str) -> Optional[Dict[str, Any]]:
         """
@@ -48,7 +50,7 @@ class ComfyUIMetadataExtractor:
                                 metadata['text_encoder_nodes'] = text_encoder_nodes
                                 
                         except json.JSONDecodeError as e:
-                            print(f"[PromptManager] Failed to parse workflow JSON: {e}")
+                            self.logger.warning(f"Failed to parse workflow JSON: {e}")
                     
                     # Look for prompt data
                     if 'prompt' in image.text:
@@ -56,7 +58,7 @@ class ComfyUIMetadataExtractor:
                             prompt_data = json.loads(image.text['prompt'])
                             metadata['prompt'] = prompt_data
                         except json.JSONDecodeError as e:
-                            print(f"[PromptManager] Failed to parse prompt JSON: {e}")
+                            self.logger.warning(f"Failed to parse prompt JSON: {e}")
                     
                     # Extract other common metadata fields
                     metadata_fields = [
@@ -76,7 +78,7 @@ class ComfyUIMetadataExtractor:
                 return metadata if any(key != 'file_info' for key in metadata.keys()) else None
                 
         except Exception as e:
-            print(f"[PromptManager] Error extracting metadata from {image_path}: {e}")
+            self.logger.error(f"Error extracting metadata from {image_path}: {e}")
             return None
     
     def get_file_info(self, image_path: str, image: Image.Image) -> Dict[str, Any]:
@@ -101,7 +103,7 @@ class ComfyUIMetadataExtractor:
                 'modified_time': stat.st_mtime
             }
         except Exception as e:
-            print(f"[PromptManager] Error getting file info: {e}")
+            self.logger.error(f"Error getting file info: {e}")
             return {}
     
     def find_text_encoder_nodes(self, workflow_data: Dict) -> list:

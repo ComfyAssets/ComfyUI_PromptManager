@@ -10,6 +10,16 @@ import hashlib
 from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 
+# Import logging system
+try:
+    from .logging_config import get_logger
+except ImportError:
+    import sys
+    import os
+    current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, current_dir)
+    from utils.logging_config import get_logger
+
 
 class PromptTracker:
     """Thread-safe tracking of current prompt executions."""
@@ -21,6 +31,9 @@ class PromptTracker:
         Args:
             db_manager: Database manager instance
         """
+        self.logger = get_logger('prompt_manager.prompt_tracker')
+        self.logger.info("Initializing PromptTracker")
+        
         self.db_manager = db_manager
         self._local = threading.local()
         self.active_prompts = {}  # Global tracking for multiple threads
@@ -31,6 +44,7 @@ class PromptTracker:
         # Start cleanup thread
         self.cleanup_thread = threading.Thread(target=self._cleanup_expired_prompts, daemon=True)
         self.cleanup_thread.start()
+        self.logger.debug("PromptTracker initialization completed")
     
     def set_current_prompt(self, prompt_text: str, additional_data: Optional[Dict[str, Any]] = None) -> str:
         """
@@ -61,13 +75,13 @@ class PromptTracker:
                 
                 if existing_prompt:
                     prompt_id = existing_prompt['id']
-                    print(f"[PromptManager] Found existing prompt ID: {prompt_id}")
+                    self.logger.debug(f"Found existing prompt ID: {prompt_id}")
                 else:
                     # Generate a temporary ID for tracking (prompt should be saved by PromptManager)
                     prompt_id = f"temp_{int(time.time())}"
-                    print(f"[PromptManager] Using temporary ID for tracking: {prompt_id}")
+                    self.logger.debug(f"Using temporary ID for tracking: {prompt_id}")
             except Exception as e:
-                print(f"[PromptManager] Error finding prompt: {e}")
+                self.logger.error(f"Error finding prompt: {e}")
                 prompt_id = f"temp_{int(time.time())}"
         
         # Create execution context
@@ -87,8 +101,8 @@ class PromptTracker:
         with self.lock:
             self.active_prompts[execution_id] = execution_context
         
-        print(f"[PromptManager] Set current prompt: {execution_id} -> {prompt_text[:50]}... (thread: {threading.current_thread().ident})")
-        print(f"[PromptManager] Active prompts count: {len(self.active_prompts)}")
+        self.logger.debug(f"Set current prompt: {execution_id} -> {prompt_text[:50]}... (thread: {threading.current_thread().ident})")
+        self.logger.debug(f"Active prompts count: {len(self.active_prompts)}")
         return execution_id
     
     def get_current_prompt(self) -> Optional[Dict[str, Any]]:
@@ -105,42 +119,42 @@ class PromptTracker:
             if time.time() - current['timestamp'] < self.prompt_timeout:
                 return current
             else:
-                print(f"[PromptManager] Current prompt expired: {current['execution_id']}")
+                self.logger.debug(f"Current prompt expired: {current['execution_id']}")
                 self.clear_current_prompt()
         
         # Fallback: try to find recent prompt from global tracking
         # This is crucial for image monitoring which runs in different threads
         recent_prompt = self._find_recent_prompt()
         if recent_prompt:
-            print(f"[PromptManager] Using recent prompt from global tracking: {recent_prompt['execution_id']}")
+            self.logger.debug(f"Using recent prompt from global tracking: {recent_prompt['execution_id']}")
             return recent_prompt
             
-        print(f"[PromptManager] No prompt context found (thread: {threading.current_thread().ident})")
+        self.logger.debug(f"No prompt context found (thread: {threading.current_thread().ident})")
         return None
     
     def _find_recent_prompt(self) -> Optional[Dict[str, Any]]:
         """Find the most recent prompt that's still valid."""
         with self.lock:
             current_time = time.time()
-            print(f"[PromptManager] Searching for recent prompt among {len(self.active_prompts)} active prompts")
+            self.logger.debug(f"Searching for recent prompt among {len(self.active_prompts)} active prompts")
             
             recent_prompts = []
             for exec_id, prompt in self.active_prompts.items():
                 age_seconds = current_time - prompt['timestamp']
-                print(f"[PromptManager] Prompt {exec_id}: age={age_seconds:.1f}s, timeout={self.prompt_timeout}s")
+                self.logger.debug(f"Prompt {exec_id}: age={age_seconds:.1f}s, timeout={self.prompt_timeout}s")
                 
                 if age_seconds < self.prompt_timeout:
                     recent_prompts.append(prompt)
                 else:
-                    print(f"[PromptManager] Prompt {exec_id} is expired")
+                    self.logger.debug(f"Prompt {exec_id} is expired")
             
             if recent_prompts:
                 # Return the most recent one
                 most_recent = max(recent_prompts, key=lambda p: p['timestamp'])
-                print(f"[PromptManager] Found recent prompt: {most_recent['execution_id']}")
+                self.logger.debug(f"Found recent prompt: {most_recent['execution_id']}")
                 return most_recent
             else:
-                print(f"[PromptManager] No recent prompts found")
+                self.logger.debug(f"No recent prompts found")
         
         return None
     
@@ -149,7 +163,7 @@ class PromptTracker:
         current = getattr(self._local, 'current_prompt', None)
         if current:
             execution_id = current['execution_id']
-            print(f"[PromptManager] Clearing current prompt: {execution_id} (thread: {threading.current_thread().ident})")
+            self.logger.debug(f"Clearing current prompt: {execution_id} (thread: {threading.current_thread().ident})")
             
             # Clear from thread-local storage
             self._local.current_prompt = None
@@ -158,12 +172,12 @@ class PromptTracker:
             with self.lock:
                 removed = self.active_prompts.pop(execution_id, None)
                 if removed:
-                    print(f"[PromptManager] Removed prompt from global tracking: {execution_id}")
-                    print(f"[PromptManager] Remaining active prompts: {len(self.active_prompts)}")
+                    self.logger.debug(f"Removed prompt from global tracking: {execution_id}")
+                    self.logger.debug(f"Remaining active prompts: {len(self.active_prompts)}")
                 else:
-                    print(f"[PromptManager] Prompt {execution_id} was not in global tracking")
+                    self.logger.debug(f"Prompt {execution_id} was not in global tracking")
         else:
-            print(f"[PromptManager] No current prompt to clear (thread: {threading.current_thread().ident})")
+            self.logger.debug(f"No current prompt to clear (thread: {threading.current_thread().ident})")
     
     def extend_prompt_timeout(self, execution_id: str, additional_seconds: int = 60):
         """
@@ -176,7 +190,7 @@ class PromptTracker:
         with self.lock:
             if execution_id in self.active_prompts:
                 self.active_prompts[execution_id]['timestamp'] = time.time()
-                print(f"[PromptManager] Extended timeout for prompt: {execution_id}")
+                self.logger.debug(f"Extended timeout for prompt: {execution_id}")
     
     def generate_execution_id(self) -> str:
         """Generate a unique execution ID."""
@@ -198,12 +212,12 @@ class PromptTracker:
                         self.active_prompts.pop(exec_id, None)
                 
                 if expired_ids:
-                    print(f"[PromptManager] Cleaned up {len(expired_ids)} expired prompts")
+                    self.logger.info(f"Cleaned up {len(expired_ids)} expired prompts")
                 
                 time.sleep(self.cleanup_interval)
                 
             except Exception as e:
-                print(f"[PromptManager] Error in cleanup thread: {e}")
+                self.logger.error(f"Error in cleanup thread: {e}")
                 time.sleep(60)  # Wait a minute before retrying
     
     def get_active_prompts(self) -> Dict[str, Dict[str, Any]]:
@@ -215,6 +229,23 @@ class PromptTracker:
         """
         with self.lock:
             return self.active_prompts.copy()
+    
+    def clear_all_active_prompts(self) -> int:
+        """
+        Clear all active prompts (useful before scanning to avoid conflicts).
+        
+        Returns:
+            Number of prompts that were cleared
+        """
+        with self.lock:
+            cleared_count = len(self.active_prompts)
+            self.active_prompts.clear()
+            
+        # Clear thread-local storage as well
+        self._local.current_prompt = None
+        
+        self.logger.info(f"Cleared {cleared_count} active prompts")
+        return cleared_count
     
     def get_status(self) -> Dict[str, Any]:
         """

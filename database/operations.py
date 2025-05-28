@@ -10,6 +10,15 @@ from typing import Optional, List, Dict, Any, Union
 
 from .models import PromptModel
 
+# Import logging system
+try:
+    from ..utils.logging_config import get_logger
+except ImportError:
+    import sys
+    current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, current_dir)
+    from utils.logging_config import get_logger
+
 
 class PromptDatabase:
     """Database operations class for managing prompts."""
@@ -21,7 +30,10 @@ class PromptDatabase:
         Args:
             db_path: Path to the SQLite database file
         """
+        self.logger = get_logger('prompt_manager.database')
+        self.logger.info(f"Initializing database operations with path: {db_path}")
         self.model = PromptModel(db_path)
+        self.logger.debug("Database operations initialized successfully")
     
     def save_prompt(
         self,
@@ -58,6 +70,8 @@ class PromptDatabase:
         
         tags_json = json.dumps(tags) if tags else None
         
+        self.logger.debug(f"Saving prompt: text_length={len(text)}, category={category}, tags={tags}, rating={rating}")
+        
         with self.model.get_connection() as conn:
             cursor = conn.execute(
                 """
@@ -77,7 +91,9 @@ class PromptDatabase:
                 )
             )
             conn.commit()
-            return cursor.lastrowid
+            prompt_id = cursor.lastrowid
+            self.logger.info(f"Successfully saved prompt with ID: {prompt_id}")
+            return prompt_id
     
     def get_prompt_by_id(self, prompt_id: int) -> Optional[Dict[str, Any]]:
         """
@@ -410,7 +426,7 @@ class PromptDatabase:
             
             return True
         except Exception as e:
-            print(f"Error exporting prompts: {e}")
+            self.logger.error(f"Error exporting prompts: {e}")
             return False
     
     def cleanup_duplicates(self) -> int:
@@ -420,6 +436,7 @@ class PromptDatabase:
         Returns:
             int: Number of duplicates removed
         """
+        self.logger.info("Starting duplicate cleanup process")
         try:
             with self.model.get_connection() as conn:
                 # Find duplicates by text content (case-insensitive)
@@ -432,6 +449,7 @@ class PromptDatabase:
                 """)
                 
                 duplicates = cursor.fetchall()
+                self.logger.debug(f"Found {len(duplicates)} groups of duplicate prompts")
                 total_removed = 0
                 
                 for duplicate in duplicates:
@@ -449,12 +467,14 @@ class PromptDatabase:
                 conn.commit()
                 
                 if total_removed > 0:
-                    print(f"[KikoTextEncode] Removed {total_removed} duplicate prompts")
+                    self.logger.info(f"Removed {total_removed} duplicate prompts")
+                else:
+                    self.logger.info("No duplicate prompts found")
                 
                 return total_removed
                 
         except Exception as e:
-            print(f"Error cleaning up duplicates: {e}")
+            self.logger.error(f"Error cleaning up duplicates: {e}")
             return 0
 
     # Gallery-related methods

@@ -7,18 +7,21 @@ import sqlite3
 from pathlib import Path
 from typing import Dict, Any, List
 
+from .logging_config import get_logger
+
 
 class GalleryDiagnostics:
     """Diagnostics for the gallery system."""
     
     def __init__(self, db_path: str = "prompts.db"):
         self.db_path = db_path
+        self.logger = get_logger('prompt_manager.diagnostics')
     
     def run_full_diagnostic(self) -> Dict[str, Any]:
         """Run a complete diagnostic check."""
-        print("\n" + "="*60)
-        print("🔍 PROMPTMANAGER GALLERY DIAGNOSTICS")
-        print("="*60)
+        self.logger.info("\n" + "="*60)
+        self.logger.info("🔍 PROMPTMANAGER GALLERY DIAGNOSTICS")
+        self.logger.info("="*60)
         
         results = {
             'database': self.check_database(),
@@ -28,22 +31,22 @@ class GalleryDiagnostics:
             'dependencies': self.check_dependencies()
         }
         
-        print("\n" + "="*60)
-        print("📋 DIAGNOSTIC SUMMARY")
-        print("="*60)
+        self.logger.info("\n" + "="*60)
+        self.logger.info("📋 DIAGNOSTIC SUMMARY")
+        self.logger.info("="*60)
         
         for category, result in results.items():
             status = "✅ PASS" if result['status'] == 'ok' else "❌ FAIL"
-            print(f"{category.upper():<20} {status}")
+            self.logger.info(f"{category.upper():<20} {status}")
             if result['status'] != 'ok':
-                print(f"  Issue: {result['message']}")
+                self.logger.warning(f"  Issue: {result['message']}")
         
-        print("\n" + "="*60)
+        self.logger.info("\n" + "="*60)
         return results
     
     def check_database(self) -> Dict[str, Any]:
         """Check database connection and structure."""
-        print("\n🗄️  Checking Database...")
+        self.logger.info("\n🗄️  Checking Database...")
         
         try:
             if not os.path.exists(self.db_path):
@@ -58,7 +61,7 @@ class GalleryDiagnostics:
                 # Check prompts table
                 cursor = conn.execute("SELECT COUNT(*) as count FROM prompts")
                 prompt_count = cursor.fetchone()['count']
-                print(f"   📝 Prompts in database: {prompt_count}")
+                self.logger.info(f"   📝 Prompts in database: {prompt_count}")
                 
                 # Check if generated_images table exists
                 cursor = conn.execute("""
@@ -67,7 +70,7 @@ class GalleryDiagnostics:
                 """)
                 
                 has_images_table = cursor.fetchone() is not None
-                print(f"   🖼️  Images table exists: {has_images_table}")
+                self.logger.info(f"   🖼️  Images table exists: {has_images_table}")
                 
                 return {
                     'status': 'ok',
@@ -83,7 +86,7 @@ class GalleryDiagnostics:
     
     def check_images_table(self) -> Dict[str, Any]:
         """Check the generated_images table specifically."""
-        print("\n🖼️  Checking Images Table...")
+        self.logger.info("\n🖼️  Checking Images Table...")
         
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -104,7 +107,7 @@ class GalleryDiagnostics:
                 # Check image records
                 cursor = conn.execute("SELECT COUNT(*) as count FROM generated_images")
                 image_count = cursor.fetchone()['count']
-                print(f"   📊 Images in database: {image_count}")
+                self.logger.info(f"   📊 Images in database: {image_count}")
                 
                 # Get recent images
                 cursor = conn.execute("""
@@ -116,9 +119,9 @@ class GalleryDiagnostics:
                 """)
                 recent_images = [dict(row) for row in cursor.fetchall()]
                 
-                print(f"   🕒 Recent images: {len(recent_images)}")
+                self.logger.info(f"   🕒 Recent images: {len(recent_images)}")
                 for img in recent_images:
-                    print(f"      - {img['filename']} -> Prompt {img['prompt_id']}")
+                    self.logger.info(f"      - {img['filename']} -> Prompt {img['prompt_id']}")
                 
                 return {
                     'status': 'ok',
@@ -134,12 +137,12 @@ class GalleryDiagnostics:
     
     def check_file_system(self) -> Dict[str, Any]:
         """Check file system and permissions."""
-        print("\n📁 Checking File System...")
+        self.logger.info("\n📁 Checking File System...")
         
         try:
             # Check current directory
             current_dir = os.getcwd()
-            print(f"   📂 Current directory: {current_dir}")
+            self.logger.info(f"   📂 Current directory: {current_dir}")
             
             # Check if we can write to current directory
             test_file = "test_write.tmp"
@@ -151,7 +154,7 @@ class GalleryDiagnostics:
             except:
                 can_write = False
             
-            print(f"   ✏️  Can write to directory: {can_write}")
+            self.logger.info(f"   ✏️  Can write to directory: {can_write}")
             
             return {
                 'status': 'ok',
@@ -167,7 +170,7 @@ class GalleryDiagnostics:
     
     def check_comfyui_output(self) -> Dict[str, Any]:
         """Check ComfyUI output directories."""
-        print("\n🎨 Checking ComfyUI Output...")
+        self.logger.info("\n🎨 Checking ComfyUI Output...")
         
         output_dirs = []
         
@@ -185,16 +188,16 @@ class GalleryDiagnostics:
             abs_path = os.path.abspath(dir_path)
             if os.path.exists(abs_path):
                 output_dirs.append(abs_path)
-                print(f"   📁 Found output dir: {abs_path}")
+                self.logger.info(f"   📁 Found output dir: {abs_path}")
                 
                 # Count images in this directory
                 try:
                     image_files = []
                     for ext in ['.png', '.jpg', '.jpeg', '.webp']:
                         image_files.extend(Path(abs_path).rglob(f'*{ext}'))
-                    print(f"      🖼️  Images found: {len(image_files)}")
+                    self.logger.info(f"      🖼️  Images found: {len(image_files)}")
                 except Exception as e:
-                    print(f"      ❌ Error scanning: {e}")
+                    self.logger.error(f"      ❌ Error scanning: {e}")
         
         # Try ComfyUI's folder_paths
         try:
@@ -202,9 +205,9 @@ class GalleryDiagnostics:
             comfyui_output = folder_paths.get_output_directory()
             if comfyui_output and comfyui_output not in output_dirs:
                 output_dirs.append(comfyui_output)
-                print(f"   📁 ComfyUI output dir: {comfyui_output}")
+                self.logger.info(f"   📁 ComfyUI output dir: {comfyui_output}")
         except ImportError:
-            print("   ⚠️  ComfyUI folder_paths not available")
+            self.logger.warning("   ⚠️  ComfyUI folder_paths not available")
         
         return {
             'status': 'ok' if output_dirs else 'warning',
@@ -214,7 +217,7 @@ class GalleryDiagnostics:
     
     def check_dependencies(self) -> Dict[str, Any]:
         """Check required dependencies."""
-        print("\n📦 Checking Dependencies...")
+        self.logger.info("\n📦 Checking Dependencies...")
         
         dependencies = {
             'watchdog': False,
@@ -226,25 +229,25 @@ class GalleryDiagnostics:
         try:
             import watchdog
             dependencies['watchdog'] = True
-            print(f"   ✅ watchdog: {watchdog.__version__}")
+            self.logger.info(f"   ✅ watchdog: {watchdog.__version__}")
         except ImportError:
-            print("   ❌ watchdog: NOT INSTALLED")
+            self.logger.error("   ❌ watchdog: NOT INSTALLED")
         
         # Check PIL
         try:
             from PIL import Image
             dependencies['PIL'] = True
-            print(f"   ✅ PIL (Pillow): Available")
+            self.logger.info(f"   ✅ PIL (Pillow): Available")
         except ImportError:
-            print("   ❌ PIL (Pillow): NOT AVAILABLE")
+            self.logger.error("   ❌ PIL (Pillow): NOT AVAILABLE")
         
         # Check sqlite3
         try:
             import sqlite3
             dependencies['sqlite3'] = True
-            print(f"   ✅ sqlite3: {sqlite3.sqlite_version}")
+            self.logger.info(f"   ✅ sqlite3: {sqlite3.sqlite_version}")
         except ImportError:
-            print("   ❌ sqlite3: NOT AVAILABLE")
+            self.logger.error("   ❌ sqlite3: NOT AVAILABLE")
         
         all_deps_ok = all(dependencies.values())
         
@@ -256,7 +259,7 @@ class GalleryDiagnostics:
     
     def create_test_image_link(self, prompt_id: int, test_image_path: str = None) -> Dict[str, Any]:
         """Create a test image link to verify the system works."""
-        print(f"\n🧪 Creating test image link for prompt {prompt_id}...")
+        self.logger.info(f"\n🧪 Creating test image link for prompt {prompt_id}...")
         
         try:
             # Import database operations
@@ -289,7 +292,7 @@ class GalleryDiagnostics:
                 metadata=test_metadata
             )
             
-            print(f"   ✅ Test image linked with ID: {image_id}")
+            self.logger.info(f"   ✅ Test image linked with ID: {image_id}")
             
             return {
                 'status': 'ok',
