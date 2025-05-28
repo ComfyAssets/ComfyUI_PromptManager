@@ -10,6 +10,14 @@ import webbrowser
 import os
 from typing import Optional, Dict, Any, Tuple, List
 
+# Import logging system
+try:
+    from .utils.logging_config import get_logger
+except ImportError:
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from utils.logging_config import get_logger
+
 try:
     from comfy.comfy_types import IO, ComfyNodeABC, InputTypeDict
 except ImportError:
@@ -48,12 +56,16 @@ class PromptManager(ComfyNodeABC):
     """
     
     def __init__(self):
+        self.logger = get_logger('prompt_manager.node')
+        self.logger.info("Initializing PromptManager node")
+        
         self.db = PromptDatabase()
         self.prompt_tracker = PromptTracker(self.db)
         self.image_monitor = ImageMonitor(self.db, self.prompt_tracker)
         
         # Start image monitoring automatically
         self._start_gallery_system()
+        self.logger.info("PromptManager node initialization completed")
     
     @classmethod
     def INPUT_TYPES(cls) -> InputTypeDict:
@@ -125,15 +137,18 @@ class PromptManager(ComfyNodeABC):
         
         # Validate CLIP model
         if clip is None:
-            raise RuntimeError(
+            error_msg = (
                 "ERROR: clip input is invalid: None\n\n"
                 "If the clip is from a checkpoint loader node your checkpoint does not "
                 "contain a valid clip or text encoder model."
             )
+            self.logger.error("CLIP validation failed: clip input is None")
+            raise RuntimeError(error_msg)
         
         # Save prompt to database and set execution context for gallery tracking
         prompt_id = None
         if text and text.strip():
+            self.logger.debug(f"Processing prompt text: {text[:100]}...")
             try:
                 prompt_id = self._save_prompt_to_database(
                     text=text.strip(),  # Always strip whitespace
@@ -151,16 +166,19 @@ class PromptManager(ComfyNodeABC):
                             'prompt_id': prompt_id
                         }
                     )
-                    print(f"[PromptManager] Set execution context: {execution_id}")
+                    self.logger.info(f"Set execution context: {execution_id} for prompt ID: {prompt_id}")
                 
             except Exception as e:
                 # Log error but don't fail the encoding
-                print(f"Warning: Failed to save prompt to database: {e}")
+                self.logger.warning(f"Failed to save prompt to database: {e}")
+                # Already logged above, no need for additional print
         
         # Perform standard CLIP text encoding
+        self.logger.debug("Performing CLIP text encoding")
         tokens = clip.tokenize(text)
         conditioning = clip.encode_from_tokens_scheduled(tokens)
         
+        self.logger.debug("CLIP encoding completed successfully")
         return (conditioning,)
     
     def _save_prompt_to_database(
@@ -183,10 +201,12 @@ class PromptManager(ComfyNodeABC):
         try:
             # Generate hash for duplicate detection
             prompt_hash = self._generate_hash(text)
+            self.logger.debug(f"Generated hash for prompt: {prompt_hash[:16]}...")
             
             # Check if prompt already exists
             existing = self.db.get_prompt_by_hash(prompt_hash)
             if existing:
+                self.logger.info(f"Found existing prompt with ID {existing['id']}, updating metadata")
                 # Update metadata if this is a duplicate with new info
                 if any([category, tags]):
                     self.db.update_prompt_metadata(
@@ -194,9 +214,11 @@ class PromptManager(ComfyNodeABC):
                         category=category,
                         tags=tags
                     )
+                    self.logger.debug("Updated metadata for existing prompt")
                 return existing['id']
             
             # Save new prompt
+            self.logger.debug(f"Saving new prompt with category: {category}, tags: {tags}")
             prompt_id = self.db.save_prompt(
                 text=text,
                 category=category,
@@ -204,10 +226,16 @@ class PromptManager(ComfyNodeABC):
                 prompt_hash=prompt_hash
             )
             
+            if prompt_id:
+                self.logger.info(f"Successfully saved new prompt with ID: {prompt_id}")
+            else:
+                self.logger.warning("Failed to save prompt - no ID returned")
+            
             return prompt_id
             
         except Exception as e:
-            print(f"Error saving prompt to database: {e}")
+            self.logger.error(f"Error saving prompt to database: {e}")
+            # Already logged above, no need for additional print
             return None
     
     def _generate_hash(self, text: str) -> str:
@@ -241,7 +269,7 @@ class PromptManager(ComfyNodeABC):
             return results
             
         except Exception as e:
-            print(f"Error searching prompts: {e}")
+            self.logger.error(f"Error searching prompts: {e}")
             return []
     
     def _open_web_interface(self):
@@ -256,17 +284,14 @@ class PromptManager(ComfyNodeABC):
                 index_path = os.path.join(web_dir, "index.html")
                 if os.path.exists(index_path):
                     webbrowser.open(f"file://{index_path}")
-                    print("\n=== Web interface opened in browser ===")
+                    self.logger.info("Web interface opened in browser")
                 else:
-                    print("\n=== Web interface directory found but no index.html ===")
-                    print(f"Please check {web_dir} for setup instructions")
+                    self.logger.warning(f"Web interface directory found but no index.html. Please check {web_dir} for setup instructions")
             else:
-                print("\n=== Web interface not yet implemented ===")
-                print("This feature will open a web-based prompt management interface")
-                print("when the web_interface directory is created.")
+                self.logger.info("Web interface not yet implemented. This feature will open a web-based prompt management interface when the web_interface directory is created.")
                 
         except Exception as e:
-            print(f"Error opening web interface: {e}")
+            self.logger.error(f"Error opening web interface: {e}")
     
     def search_prompts_api(self, search_text: str = "") -> List[Dict[str, Any]]:
         """API method for JavaScript UI to search prompts."""
@@ -277,22 +302,22 @@ class PromptManager(ComfyNodeABC):
         try:
             return self.db.get_recent_prompts(limit=limit)
         except Exception as e:
-            print(f"Error getting recent prompts: {e}")
+            self.logger.error(f"Error getting recent prompts: {e}")
             return []
     
     def _start_gallery_system(self):
         """Initialize and start the gallery monitoring system."""
         try:
-            print("[PromptManager] Starting gallery system...")
+            self.logger.info("Starting gallery system...")
             
             # Start image monitoring
             self.image_monitor.start_monitoring()
             
-            print("[PromptManager] Gallery system started successfully")
+            self.logger.info("Gallery system started successfully")
             
         except Exception as e:
-            print(f"[PromptManager] Failed to start gallery system: {e}")
-            print("[PromptManager] Gallery features will be disabled")
+            self.logger.error(f"Failed to start gallery system: {e}")
+            self.logger.warning("Gallery features will be disabled")
     
     def get_gallery_status(self) -> Dict[str, Any]:
         """Get status of the gallery system."""
@@ -306,9 +331,9 @@ class PromptManager(ComfyNodeABC):
         try:
             if hasattr(self, 'image_monitor'):
                 self.image_monitor.stop_monitoring()
-            print("[PromptManager] Gallery system cleaned up")
+            self.logger.info("Gallery system cleaned up")
         except Exception as e:
-            print(f"[PromptManager] Error cleaning up gallery system: {e}")
+            self.logger.error(f"Error cleaning up gallery system: {e}")
     
     def __del__(self):
         """Cleanup when object is destroyed."""
