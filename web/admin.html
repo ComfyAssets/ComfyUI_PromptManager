@@ -207,7 +207,20 @@
                 <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl border border-gray-700 h-full flex flex-col">
                     <!-- Results Header -->
                     <div class="flex items-center justify-between p-6 border-b border-gray-700">
-                        <h2 class="text-xl font-semibold text-gray-100" id="resultsTitle">Recent Prompts</h2>
+                        <div class="flex items-center space-x-4">
+                            <h2 class="text-xl font-semibold text-gray-100" id="resultsTitle">Recent Prompts</h2>
+                            <div class="flex items-center space-x-2">
+                                <label class="text-sm text-gray-400">Show:</label>
+                                <select id="limitSelector" class="px-3 py-1 bg-gray-700 border border-gray-600 rounded text-gray-100 text-sm">
+                                    <option value="25">25</option>
+                                    <option value="50" selected>50</option>
+                                    <option value="100">100</option>
+                                    <option value="200">200</option>
+                                    <option value="500">500</option>
+                                </select>
+                                <span class="text-sm text-gray-400">per page</span>
+                            </div>
+                        </div>
                         <span class="text-sm font-medium text-gray-400 bg-gray-700 px-3 py-1 rounded-full" id="resultsCount">Loading...</span>
                     </div>
 
@@ -222,6 +235,32 @@
                     <!-- Results List -->
                     <div id="resultsList" class="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-4 hidden">
                         <!-- Prompts will be inserted here -->
+                    </div>
+
+                    <!-- Pagination Controls -->
+                    <div id="paginationControls" class="border-t border-gray-700 p-4 hidden">
+                        <div class="flex items-center justify-between">
+                            <div class="text-sm text-gray-400">
+                                Showing <span id="showingStart">1</span> to <span id="showingEnd">50</span> of <span id="totalResults">0</span> prompts
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                <button id="firstPageBtn" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded disabled:opacity-50 disabled:cursor-not-allowed text-sm">
+                                    First
+                                </button>
+                                <button id="prevPageBtn" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded disabled:opacity-50 disabled:cursor-not-allowed text-sm">
+                                    Previous
+                                </button>
+                                <span class="text-sm text-gray-400">
+                                    Page <span id="currentPage">1</span> of <span id="totalPages">1</span>
+                                </span>
+                                <button id="nextPageBtn" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded disabled:opacity-50 disabled:cursor-not-allowed text-sm">
+                                    Next
+                                </button>
+                                <button id="lastPageBtn" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded disabled:opacity-50 disabled:cursor-not-allowed text-sm">
+                                    Last
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -744,6 +783,14 @@
                 this.tags = [];
                 this.imageViewMode = 'fit'; // 'fit' or 'full'
                 this.naturalImageSize = { width: 0, height: 0 };
+                
+                // Pagination state
+                this.pagination = {
+                    currentPage: 1,
+                    limit: 50,
+                    total: 0,
+                    totalPages: 1
+                };
 
                 this.init();
             }
@@ -776,6 +823,13 @@
                 document.getElementById("restoreBtn").addEventListener("click", () => this.showRestoreModal());
                 document.getElementById("scanBtn").addEventListener("click", () => this.showScanModal());
                 document.getElementById("logsBtn").addEventListener("click", () => this.showLogsModal());
+
+                // Pagination controls
+                document.getElementById("limitSelector").addEventListener("change", (e) => this.changeLimit(parseInt(e.target.value)));
+                document.getElementById("firstPageBtn").addEventListener("click", () => this.goToPage(1));
+                document.getElementById("prevPageBtn").addEventListener("click", () => this.goToPage(this.pagination.currentPage - 1));
+                document.getElementById("nextPageBtn").addEventListener("click", () => this.goToPage(this.pagination.currentPage + 1));
+                document.getElementById("lastPageBtn").addEventListener("click", () => this.goToPage(this.pagination.totalPages));
 
                 // Modals
                 this.bindModalEvents();
@@ -934,14 +988,23 @@
                 });
             }
 
-            async loadRecentPrompts() {
+            async loadRecentPrompts(page = 1) {
                 try {
-                    const response = await fetch("/prompt_manager/recent?limit=50");
+                    this.pagination.currentPage = page;
+                    const offset = (page - 1) * this.pagination.limit;
+                    const response = await fetch(`/prompt_manager/recent?limit=${this.pagination.limit}&offset=${offset}&page=${page}`);
                     if (response.ok) {
                         const data = await response.json();
                         if (data.success) {
                             this.prompts = data.results;
+                            this.pagination = {
+                                ...this.pagination,
+                                total: data.pagination.total,
+                                totalPages: data.pagination.total_pages,
+                                currentPage: data.pagination.page
+                            };
                             this.renderPrompts();
+                            this.updatePaginationControls();
                             // Don't update stats from local data as it's only a subset of prompts
                         }
                     }
@@ -950,6 +1013,7 @@
                 } finally {
                     document.getElementById("loadingState").classList.add("hidden");
                     document.getElementById("resultsList").classList.remove("hidden");
+                    document.getElementById("paginationControls").classList.remove("hidden");
                 }
             }
 
@@ -2606,6 +2670,44 @@
                 const sizes = ['B', 'KB', 'MB', 'GB'];
                 const i = Math.floor(Math.log(bytes) / Math.log(k));
                 return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+            }
+
+            // Pagination methods
+            updatePaginationControls() {
+                const { currentPage, totalPages, total, limit } = this.pagination;
+                
+                // Update pagination info
+                document.getElementById("currentPage").textContent = currentPage;
+                document.getElementById("totalPages").textContent = totalPages;
+                document.getElementById("totalResults").textContent = total;
+                
+                // Calculate showing range
+                const start = ((currentPage - 1) * limit) + 1;
+                const end = Math.min(currentPage * limit, total);
+                document.getElementById("showingStart").textContent = start;
+                document.getElementById("showingEnd").textContent = end;
+                
+                // Update results count
+                document.getElementById("resultsCount").textContent = `${this.prompts.length} of ${total}`;
+                
+                // Update button states
+                document.getElementById("firstPageBtn").disabled = currentPage === 1;
+                document.getElementById("prevPageBtn").disabled = currentPage === 1;
+                document.getElementById("nextPageBtn").disabled = currentPage === totalPages;
+                document.getElementById("lastPageBtn").disabled = currentPage === totalPages;
+            }
+
+            async goToPage(page) {
+                if (page < 1 || page > this.pagination.totalPages || page === this.pagination.currentPage) {
+                    return;
+                }
+                await this.loadRecentPrompts(page);
+            }
+
+            async changeLimit(newLimit) {
+                this.pagination.limit = newLimit;
+                this.pagination.currentPage = 1; // Reset to first page
+                await this.loadRecentPrompts(1);
             }
         }
 
