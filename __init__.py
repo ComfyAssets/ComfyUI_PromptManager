@@ -69,4 +69,4 @@ except Exception as e:
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
-log_message("✅ PromptManager custom node loaded successfully!")
+log_message("[SUCCESS] PromptManager custom node loaded successfully!")
