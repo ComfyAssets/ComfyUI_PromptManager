@@ -6,6 +6,15 @@ import sqlite3
 import os
 from typing import Optional
 
+# Import logging system
+try:
+    from ..utils.logging_config import get_logger
+except ImportError:
+    import sys
+    current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, current_dir)
+    from utils.logging_config import get_logger
+
 
 class PromptModel:
     """Database model for prompt storage and schema management."""
@@ -17,6 +26,8 @@ class PromptModel:
         Args:
             db_path: Path to the SQLite database file
         """
+        self.logger = get_logger('prompt_manager.database.models')
+        self.logger.info(f"Initializing database model with path: {db_path}")
         self.db_path = db_path
         self._ensure_database_exists()
     
@@ -29,7 +40,7 @@ class PromptModel:
                 self._create_indexes(conn)
                 conn.commit()
         except Exception as e:
-            print(f"Error creating database: {e}")
+            self.logger.error(f"Error creating database: {e}")
             raise
     
     def _create_tables(self, conn: sqlite3.Connection) -> None:
@@ -109,7 +120,7 @@ class PromptModel:
             columns = [column[1] for column in cursor.fetchall()]
             
             if 'workflow_name' in columns:
-                print("[KikoTextEncode] Migrating database: removing workflow_name column")
+                self.logger.info("Migrating database: removing workflow_name column")
                 
                 # Create new table without workflow_name
                 conn.execute("""
@@ -137,10 +148,10 @@ class PromptModel:
                 conn.execute("DROP TABLE prompts")
                 conn.execute("ALTER TABLE prompts_new RENAME TO prompts")
                 
-                print("[KikoTextEncode] Database migration completed")
+                self.logger.info("Database migration completed")
                 
         except Exception as e:
-            print(f"[KikoTextEncode] Migration error: {e}")
+            self.logger.error(f"Migration error: {e}")
             # If migration fails, the table creation will handle it
     
     def _migrate_foreign_key_types(self, conn: sqlite3.Connection) -> None:
@@ -151,7 +162,7 @@ class PromptModel:
             columns = {column[1]: column[2] for column in cursor.fetchall()}
             
             if 'prompt_id' in columns and columns['prompt_id'] == 'TEXT':
-                print("[KikoTextEncode] Migrating foreign key types: prompt_id TEXT -> INTEGER")
+                self.logger.info("Migrating foreign key types: prompt_id TEXT -> INTEGER")
                 
                 # Create new table with correct types
                 conn.execute("""
@@ -188,10 +199,10 @@ class PromptModel:
                 conn.execute("DROP TABLE generated_images")
                 conn.execute("ALTER TABLE generated_images_new RENAME TO generated_images")
                 
-                print("[KikoTextEncode] Foreign key migration completed")
+                self.logger.info("Foreign key migration completed")
                 
         except Exception as e:
-            print(f"[KikoTextEncode] Foreign key migration error: {e}")
+            self.logger.error(f"Foreign key migration error: {e}")
             # If migration fails, continue with existing schema
     
     def migrate_database(self) -> None:
@@ -206,7 +217,7 @@ class PromptModel:
                 conn.execute("VACUUM")
                 conn.commit()
         except Exception as e:
-            print(f"Error vacuuming database: {e}")
+            self.logger.error(f"Error vacuuming database: {e}")
     
     def get_database_info(self) -> dict:
         """
@@ -241,7 +252,7 @@ class PromptModel:
                     'database_path': os.path.abspath(self.db_path)
                 }
         except Exception as e:
-            print(f"Error getting database info: {e}")
+            self.logger.error(f"Error getting database info: {e}")
             return {}
     
     def backup_database(self, backup_path: str) -> bool:
@@ -259,5 +270,5 @@ class PromptModel:
             shutil.copy2(self.db_path, backup_path)
             return True
         except Exception as e:
-            print(f"Error creating database backup: {e}")
+            self.logger.error(f"Error creating database backup: {e}")
             return False
