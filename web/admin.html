@@ -192,6 +192,10 @@
                                 class="px-4 py-2 bg-pink-600 hover:bg-pink-700 text-white text-sm font-medium rounded-lg transition-colors">
                             📸 Scan Images
                         </button>
+                        <button id="logsBtn" 
+                                class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            📋 View Logs
+                        </button>
                     </div>
                 </div>
             </div>
@@ -602,6 +606,131 @@
         </div>
     </div>
 
+    <!-- Logs Modal -->
+    <div id="logsModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl max-w-6xl w-full max-h-[90vh] overflow-hidden mx-4 border border-gray-700">
+            <div class="p-6 border-b border-gray-700">
+                <div class="flex items-center justify-between">
+                    <h3 class="text-xl font-semibold text-gray-100">📋 System Logs</h3>
+                    <button onclick="window.admin.closeLogs()" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
+                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Log Controls -->
+            <div class="p-6 border-b border-gray-700">
+                <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-400 mb-2">Log Level</label>
+                        <select id="logLevel" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                            <option value="">All Levels</option>
+                            <option value="DEBUG">Debug</option>
+                            <option value="INFO">Info</option>
+                            <option value="WARNING">Warning</option>
+                            <option value="ERROR">Error</option>
+                            <option value="CRITICAL">Critical</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-400 mb-2">Limit</label>
+                        <select id="logLimit" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                            <option value="50">Last 50</option>
+                            <option value="100" selected>Last 100</option>
+                            <option value="200">Last 200</option>
+                            <option value="500">Last 500</option>
+                        </select>
+                    </div>
+                    <div class="flex items-end">
+                        <button id="refreshLogsBtn" class="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors">
+                            🔄 Refresh
+                        </button>
+                    </div>
+                    <div class="flex items-end">
+                        <button id="downloadLogsBtn" class="w-full px-4 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors">
+                            📥 Download
+                        </button>
+                    </div>
+                    <div class="flex items-end">
+                        <button id="clearLogsBtn" class="w-full px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors">
+                            🗑️ Clear Logs
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Log Stats -->
+                <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-4">
+                    <div class="bg-gray-700 rounded-lg p-3">
+                        <div class="text-xs text-gray-400">Total Logs</div>
+                        <div class="text-lg font-semibold text-blue-400" id="logStatsTotal">-</div>
+                    </div>
+                    <div class="bg-gray-700 rounded-lg p-3">
+                        <div class="text-xs text-gray-400">Errors</div>
+                        <div class="text-lg font-semibold text-red-400" id="logStatsErrors">-</div>
+                    </div>
+                    <div class="bg-gray-700 rounded-lg p-3">
+                        <div class="text-xs text-gray-400">Warnings</div>
+                        <div class="text-lg font-semibold text-yellow-400" id="logStatsWarnings">-</div>
+                    </div>
+                    <div class="bg-gray-700 rounded-lg p-3">
+                        <div class="text-xs text-gray-400">Current Level</div>
+                        <div class="text-lg font-semibold text-green-400" id="logStatsLevel">-</div>
+                    </div>
+                    <div class="bg-gray-700 rounded-lg p-3">
+                        <div class="text-xs text-gray-400">Log Size</div>
+                        <div class="text-lg font-semibold text-purple-400" id="logStatsSize">-</div>
+                    </div>
+                </div>
+                
+                <!-- Log Settings -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-400 mb-2">Set Log Level</label>
+                        <select id="setLogLevel" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                            <option value="DEBUG">Debug</option>
+                            <option value="INFO" selected>Info</option>
+                            <option value="WARNING">Warning</option>
+                            <option value="ERROR">Error</option>
+                            <option value="CRITICAL">Critical</option>
+                        </select>
+                    </div>
+                    <div class="flex items-center">
+                        <label class="flex items-center space-x-2 text-gray-300">
+                            <input type="checkbox" id="consoleLogging" checked class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500">
+                            <span class="text-sm">Console Logging</span>
+                        </label>
+                    </div>
+                    <div class="flex items-end">
+                        <button id="updateLogConfigBtn" class="w-full px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition-colors">
+                            💾 Update Config
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Log Viewer -->
+            <div class="flex-1 overflow-hidden">
+                <div class="h-96 overflow-y-auto custom-scrollbar bg-gray-900 font-mono text-sm">
+                    <div id="logsContainer" class="p-4 space-y-1">
+                        <div class="text-center py-8 text-gray-500">
+                            Click "Refresh" to load logs
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Log Files -->
+            <div class="p-6 border-t border-gray-700">
+                <h4 class="text-lg font-medium text-gray-100 mb-4">Log Files</h4>
+                <div id="logFilesList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    <!-- Log files will be inserted here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         class PromptAdmin {
             constructor() {
@@ -646,6 +775,7 @@
                 document.getElementById("backupBtn").addEventListener("click", () => this.backupDatabase());
                 document.getElementById("restoreBtn").addEventListener("click", () => this.showRestoreModal());
                 document.getElementById("scanBtn").addEventListener("click", () => this.showScanModal());
+                document.getElementById("logsBtn").addEventListener("click", () => this.showLogsModal());
 
                 // Modals
                 this.bindModalEvents();
@@ -686,6 +816,12 @@
                 document.getElementById("startScan").addEventListener("click", () => this.startScan());
                 document.getElementById("cancelScan").addEventListener("click", () => this.hideModal("scanModal"));
                 document.getElementById("quickBackupBtn").addEventListener("click", () => this.quickBackup());
+
+                // Logs modal
+                document.getElementById("refreshLogsBtn").addEventListener("click", () => this.refreshLogs());
+                document.getElementById("downloadLogsBtn").addEventListener("click", () => this.downloadLogs());
+                document.getElementById("clearLogsBtn").addEventListener("click", () => this.clearLogs());
+                document.getElementById("updateLogConfigBtn").addEventListener("click", () => this.updateLogConfig());
 
                 // Close modals on backdrop click
                 document.querySelectorAll("[id$='Modal']").forEach((modal) => {
@@ -806,8 +942,7 @@
                         if (data.success) {
                             this.prompts = data.results;
                             this.renderPrompts();
-                            // Update stats based on loaded data
-                            this.updateLocalStats();
+                            // Don't update stats from local data as it's only a subset of prompts
                         }
                     }
                 } catch (error) {
@@ -819,8 +954,12 @@
             }
 
             updateLocalStats() {
-                // Fallback stats calculation from loaded data
-                if (this.prompts.length > 0) {
+                // Only update local stats if we haven't loaded proper statistics yet
+                // This prevents overwriting the correct total counts from the API
+                const currentTotal = document.getElementById("totalPrompts").textContent;
+                
+                // Only update if the current total is still the default "-" or if we have more prompts locally than the API count
+                if (currentTotal === "-" || (this.prompts.length > parseInt(currentTotal) && this.prompts.length > 0)) {
                     document.getElementById("totalPrompts").textContent = this.prompts.length;
                     
                     const uniqueCategories = new Set(this.prompts.map(p => p.category).filter(Boolean));
@@ -1092,8 +1231,10 @@
                             this.prompts[promptIndex].rating = rating;
                         }
                         
-                        // Update stats
-                        this.updateLocalStats();
+                        // Refresh stats
+                        setTimeout(() => {
+                            this.loadStatistics();
+                        }, 500);
                     } else {
                         // Revert UI change on API failure
                         const originalPrompt = this.prompts.find(p => p.id === promptId);
@@ -1175,6 +1316,11 @@
 
                             if (response.ok) {
                                 this.showNotification("Prompt updated", "success");
+                                // Refresh the page to show updated content
+                                setTimeout(() => {
+                                    this.loadStatistics();
+                                    setTimeout(() => window.location.reload(), 500);
+                                }, 1000);
                             } else {
                                 throw new Error("Update failed");
                             }
@@ -1211,7 +1357,11 @@
 
                     if (response.ok) {
                         this.showNotification("Prompt deleted", "success");
-                        this.search();
+                        // Refresh stats and reload page
+                        setTimeout(() => {
+                            this.loadStatistics();
+                            setTimeout(() => window.location.reload(), 500);
+                        }, 1000);
                     }
                 } catch (error) {
                     this.showNotification("Failed to delete prompt", "error");
@@ -1290,7 +1440,11 @@
 
                     if (response.ok) {
                         this.showNotification(`${this.selectedPrompts.size} prompts deleted`, "success");
-                        this.search();
+                        // Refresh stats and reload page
+                        setTimeout(() => {
+                            this.loadStatistics();
+                            setTimeout(() => window.location.reload(), 500);
+                        }, 1000);
                     }
                 } catch (error) {
                     this.showNotification("Failed to delete prompts", "error");
@@ -2136,7 +2290,7 @@
                                             data.found
                                         );
                                     } else if (data.type === 'complete') {
-                                        this.completeScan(data.processed, data.found, data.added);
+                                        this.completeScan(data.processed, data.found, data.added, data.linked);
                                         return;
                                     } else if (data.type === 'error') {
                                         throw new Error(data.message);
@@ -2161,18 +2315,297 @@
                 document.getElementById("scanFound").textContent = `${found} prompts found`;
             }
 
-            completeScan(processed, found, added) {
+            completeScan(processed, found, added, linked = 0) {
                 this.updateScanProgress(100, "Scan completed!", processed, found);
                 document.getElementById("startScan").disabled = false;
                 document.getElementById("startScan").textContent = "Start New Scan";
                 
+                // Show detailed notification with all counts
+                const linkedText = linked > 0 ? `, linked ${linked} images to existing prompts` : '';
                 this.showNotification(
-                    `Scan completed! Processed ${processed} files, found ${found} prompts, added ${added} new prompts to database.`,
+                    `Scan completed! Processed ${processed} files, found ${found} prompts, added ${added} new prompts to database${linkedText}.`,
                     "success"
                 );
                 
-                // Refresh the data
-                this.loadInitialData();
+                // Auto-close modal after a short delay to let user see the completion message
+                setTimeout(() => {
+                    this.hideModal("scanModal");
+                    
+                    // Refresh the statistics immediately
+                    this.loadStatistics();
+                    
+                    // Also reload the page after a short delay to ensure everything is fully updated
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1000);
+                }, 2000);
+            }
+
+            // Logs functionality
+            showLogsModal() {
+                this.showModal("logsModal");
+                this.loadLogStats();
+                this.loadLogFiles();
+                this.loadLogConfig();
+            }
+
+            closeLogs() {
+                this.hideModal("logsModal");
+            }
+
+            async loadLogStats() {
+                try {
+                    const response = await fetch('/prompt_manager/logs/stats');
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        const stats = data.stats;
+                        document.getElementById("logStatsTotal").textContent = stats.buffer_count || 0;
+                        document.getElementById("logStatsErrors").textContent = stats.level_counts?.ERROR || 0;
+                        document.getElementById("logStatsWarnings").textContent = stats.level_counts?.WARNING || 0;
+                        document.getElementById("logStatsLevel").textContent = stats.current_level || "INFO";
+                        document.getElementById("logStatsSize").textContent = this.formatBytes(stats.total_log_size || 0);
+                    }
+                } catch (error) {
+                    console.error("Failed to load log stats:", error);
+                }
+            }
+
+            async loadLogConfig() {
+                try {
+                    const response = await fetch('/prompt_manager/logs/config');
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        const config = data.config;
+                        document.getElementById("setLogLevel").value = config.level || "INFO";
+                        document.getElementById("consoleLogging").checked = config.console_logging !== false;
+                    }
+                } catch (error) {
+                    console.error("Failed to load log config:", error);
+                }
+            }
+
+            async loadLogFiles() {
+                try {
+                    const response = await fetch('/prompt_manager/logs/files');
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        const container = document.getElementById("logFilesList");
+                        
+                        if (data.files.length === 0) {
+                            container.innerHTML = '<div class="col-span-full text-center text-gray-500">No log files found</div>';
+                            return;
+                        }
+                        
+                        container.innerHTML = data.files.map(file => `
+                            <div class="bg-gray-700 rounded-lg p-3">
+                                <div class="flex items-center justify-between mb-2">
+                                    <span class="text-sm font-medium text-gray-200">${file.filename}</span>
+                                    ${file.is_main ? '<span class="bg-blue-500 text-xs px-2 py-1 rounded">Active</span>' : ''}
+                                </div>
+                                <div class="text-xs text-gray-400 mb-2">
+                                    Size: ${this.formatBytes(file.size)} | Modified: ${new Date(file.modified).toLocaleString()}
+                                </div>
+                                <button onclick="window.admin.downloadLogFile('${file.filename}')" 
+                                        class="w-full px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-xs rounded transition-colors">
+                                    📥 Download
+                                </button>
+                            </div>
+                        `).join('');
+                    }
+                } catch (error) {
+                    console.error("Failed to load log files:", error);
+                }
+            }
+
+            async refreshLogs() {
+                const level = document.getElementById("logLevel").value;
+                const limit = parseInt(document.getElementById("logLimit").value);
+                
+                try {
+                    const url = new URL('/prompt_manager/logs', window.location.origin);
+                    if (level) url.searchParams.set('level', level);
+                    url.searchParams.set('limit', limit.toString());
+                    
+                    const response = await fetch(url);
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        this.displayLogs(data.logs);
+                        this.showNotification(`Loaded ${data.logs.length} log entries`, "success");
+                    } else {
+                        this.showNotification(`Failed to load logs: ${data.error}`, "error");
+                    }
+                } catch (error) {
+                    console.error("Failed to refresh logs:", error);
+                    this.showNotification("Failed to refresh logs", "error");
+                }
+            }
+
+            displayLogs(logs) {
+                const container = document.getElementById("logsContainer");
+                
+                if (logs.length === 0) {
+                    container.innerHTML = '<div class="text-center py-8 text-gray-500">No logs found</div>';
+                    return;
+                }
+                
+                container.innerHTML = logs.map(log => {
+                    const levelColors = {
+                        DEBUG: 'text-gray-400',
+                        INFO: 'text-blue-400',
+                        WARNING: 'text-yellow-400',
+                        ERROR: 'text-red-400',
+                        CRITICAL: 'text-red-600'
+                    };
+                    
+                    const levelColor = levelColors[log.level] || 'text-gray-400';
+                    const timestamp = new Date(log.timestamp).toLocaleString();
+                    
+                    return `
+                        <div class="border-l-2 border-gray-600 pl-3 py-1 hover:bg-gray-800 transition-colors">
+                            <div class="flex items-start space-x-2 text-sm">
+                                <span class="text-gray-500 text-xs font-mono w-24 flex-shrink-0">${timestamp.split(' ')[1]}</span>
+                                <span class="${levelColor} font-semibold w-16 flex-shrink-0">${log.level}</span>
+                                <span class="text-purple-400 text-xs w-32 flex-shrink-0">${log.logger}</span>
+                                <span class="text-gray-300 flex-1">${log.message}</span>
+                            </div>
+                            <div class="text-xs text-gray-500 ml-44">
+                                ${log.filename}:${log.lineno}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                
+                // Auto-scroll to bottom
+                container.scrollTop = container.scrollHeight;
+            }
+
+            async downloadLogs() {
+                const level = document.getElementById("logLevel").value;
+                const limit = parseInt(document.getElementById("logLimit").value);
+                
+                try {
+                    const url = new URL('/prompt_manager/logs', window.location.origin);
+                    if (level) url.searchParams.set('level', level);
+                    url.searchParams.set('limit', limit.toString());
+                    
+                    const response = await fetch(url);
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        const logText = data.logs.map(log => 
+                            `${log.timestamp} [${log.level}] ${log.logger}: ${log.message} (${log.filename}:${log.lineno})`
+                        ).join('\n');
+                        
+                        const blob = new Blob([logText], { type: 'text/plain' });
+                        const url2 = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url2;
+                        a.download = `prompt_manager_logs_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url2);
+                        
+                        this.showNotification("Logs downloaded successfully", "success");
+                    } else {
+                        this.showNotification(`Failed to download logs: ${data.error}`, "error");
+                    }
+                } catch (error) {
+                    console.error("Failed to download logs:", error);
+                    this.showNotification("Failed to download logs", "error");
+                }
+            }
+
+            async downloadLogFile(filename) {
+                try {
+                    const response = await fetch(`/prompt_manager/logs/download/${encodeURIComponent(filename)}`);
+                    
+                    if (response.ok) {
+                        const blob = await response.blob();
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = filename;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                        
+                        this.showNotification(`Downloaded ${filename}`, "success");
+                    } else {
+                        this.showNotification(`Failed to download ${filename}`, "error");
+                    }
+                } catch (error) {
+                    console.error("Failed to download log file:", error);
+                    this.showNotification("Failed to download log file", "error");
+                }
+            }
+
+            async clearLogs() {
+                if (!confirm("Are you sure you want to clear all log files? This cannot be undone.")) {
+                    return;
+                }
+                
+                try {
+                    const response = await fetch('/prompt_manager/logs/truncate', {
+                        method: 'POST'
+                    });
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        this.showNotification(data.message, "success");
+                        this.refreshLogs();
+                        this.loadLogStats();
+                        this.loadLogFiles();
+                    } else {
+                        this.showNotification(`Failed to clear logs: ${data.error}`, "error");
+                    }
+                } catch (error) {
+                    console.error("Failed to clear logs:", error);
+                    this.showNotification("Failed to clear logs", "error");
+                }
+            }
+
+            async updateLogConfig() {
+                const level = document.getElementById("setLogLevel").value;
+                const consoleLogging = document.getElementById("consoleLogging").checked;
+                
+                try {
+                    const response = await fetch('/prompt_manager/logs/config', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            level: level,
+                            console_logging: consoleLogging
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        this.showNotification("Log configuration updated", "success");
+                        this.loadLogStats();
+                    } else {
+                        this.showNotification(`Failed to update config: ${data.error}`, "error");
+                    }
+                } catch (error) {
+                    console.error("Failed to update log config:", error);
+                    this.showNotification("Failed to update log configuration", "error");
+                }
+            }
+
+            formatBytes(bytes) {
+                if (bytes === 0) return '0 B';
+                const k = 1024;
+                const sizes = ['B', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
             }
         }
 
