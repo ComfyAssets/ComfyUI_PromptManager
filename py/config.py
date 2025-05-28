@@ -18,6 +18,18 @@ Configuration settings for PromptManager gallery and monitoring system.
 import os
 from typing import Dict, Any, List
 
+# Import logging system
+try:
+    from ..utils.logging_config import get_logger
+except ImportError:
+    import sys
+    current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, current_dir)
+    from utils.logging_config import get_logger
+
+# Initialize logger for config operations
+config_logger = get_logger('prompt_manager.config')
+
 
 class GalleryConfig:
     """Configuration for the gallery monitoring system."""
@@ -127,11 +139,11 @@ class PromptManagerConfig:
                 with open(config_path, 'r') as f:
                     config = json.load(f)
                 cls.update_config(config)
-                print(f"[PromptManager] Loaded configuration from {config_path}")
+                config_logger.info(f"Loaded configuration from {config_path}")
             except Exception as e:
-                print(f"[PromptManager] Error loading config from {config_path}: {e}")
+                config_logger.error(f"Error loading config from {config_path}: {e}")
         else:
-            print(f"[PromptManager] Config file not found: {config_path}, using defaults")
+            config_logger.info(f"Config file not found: {config_path}, using defaults")
     
     @classmethod
     def save_to_file(cls, config_path: str):
@@ -145,9 +157,9 @@ class PromptManagerConfig:
             with open(config_path, 'w') as f:
                 json.dump(config, f, indent=2)
             
-            print(f"[PromptManager] Saved configuration to {config_path}")
+            config_logger.info(f"Saved configuration to {config_path}")
         except Exception as e:
-            print(f"[PromptManager] Error saving config to {config_path}: {e}")
+            config_logger.error(f"Error saving config to {config_path}: {e}")
     
     @classmethod
     def update_config(cls, new_config: Dict[str, Any]):
@@ -187,4 +199,4 @@ try:
     config_file = os.path.join(config_dir, 'config.json')
     PromptManagerConfig.load_from_file(config_file)
 except Exception as e:
-    print(f"[PromptManager] Error during config initialization: {e}")
+    config_logger.error(f"Error during config initialization: {e}")
