@@ -3,15 +3,30 @@ PromptManager: A ComfyUI custom node that extends the standard text encoder
 with persistent prompt storage and advanced search capabilities using SQLite.
 """
 
-print("[PromptManager] Starting to load PromptManager custom node...")
+# Import logging system
+try:
+    from .utils.logging_config import get_logger
+    init_logger = get_logger('prompt_manager.init')
+    init_logger.info("Starting to load PromptManager custom node...")
+except ImportError:
+    # Fallback to print if logging isn't available yet
+    init_logger = None
+    print("[PromptManager] Starting to load PromptManager custom node...")
+
+def log_message(message, level='info'):
+    """Helper to log messages with fallback to print."""
+    if init_logger:
+        getattr(init_logger, level)(message.replace("[PromptManager] ", ""))
+    else:
+        print(f"[PromptManager] {message}")
 
 try:
     from .prompt_manager import PromptManager
-    print("[PromptManager] Successfully imported PromptManager class")
+    log_message("Successfully imported PromptManager class")
 except Exception as e:
-    print(f"[PromptManager] ERROR: Failed to import PromptManager class: {e}")
+    log_message(f"ERROR: Failed to import PromptManager class: {e}", 'error')
     import traceback
-    print(traceback.format_exc())
+    log_message(f"Traceback: {traceback.format_exc()}", 'error')
     raise
 
 NODE_CLASS_MAPPINGS = {
@@ -22,8 +37,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptManager": "Prompt Manager",
 }
 
-print(f"[PromptManager] NODE_CLASS_MAPPINGS: {NODE_CLASS_MAPPINGS}")
-print(f"[PromptManager] NODE_DISPLAY_NAME_MAPPINGS: {NODE_DISPLAY_NAME_MAPPINGS}")
+log_message(f"NODE_CLASS_MAPPINGS: {NODE_CLASS_MAPPINGS}")
+log_message(f"NODE_DISPLAY_NAME_MAPPINGS: {NODE_DISPLAY_NAME_MAPPINGS}")
 
 # Define path to web directory for UI components
 WEB_DIRECTORY = "web"
@@ -43,15 +58,15 @@ try:
     api = PromptManagerAPI()
     api.add_routes(routes)
     
-    print("[PromptManager] API routes registered successfully")
-    print(f"[PromptManager] Server instance: {config.server_instance}")
-    print(f"[PromptManager] Routes object: {routes}")
+    log_message("API routes registered successfully")
+    log_message(f"Server instance: {config.server_instance}")
+    log_message(f"Routes object: {routes}")
     
 except Exception as e:
-    print(f"[PromptManager] Failed to register API routes: {e}")
+    log_message(f"Failed to register API routes: {e}", 'error')
     import traceback
-    print(traceback.format_exc())
+    log_message(f"Traceback: {traceback.format_exc()}", 'error')
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
-print("[PromptManager] ✅ PromptManager custom node loaded successfully!")
+log_message("✅ PromptManager custom node loaded successfully!")
