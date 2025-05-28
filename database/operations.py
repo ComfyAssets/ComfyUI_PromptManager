@@ -361,7 +361,7 @@ class PromptDatabase:
         """
         with self.model.get_connection() as conn:
             cursor = conn.execute(
-                "SELECT DISTINCT category FROM prompts WHERE category IS NOT NULL ORDER BY category"
+                "SELECT DISTINCT TRIM(category) as category FROM prompts WHERE category IS NOT NULL AND TRIM(category) != '' ORDER BY category"
             )
             return [row['category'] for row in cursor.fetchall()]
     
