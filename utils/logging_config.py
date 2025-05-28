@@ -88,13 +88,15 @@ class PromptManagerLogger:
             console_handler.setFormatter(formatter)
             self.logger.addHandler(console_handler)
         
-        # File handler with rotation
+        # File handler with rotation and safe encoding for Windows
         if self.config['file_logging']:
             log_file = self.log_dir / "prompt_manager.log"
             file_handler = logging.handlers.RotatingFileHandler(
                 log_file,
                 maxBytes=self.config['max_file_size'],
-                backupCount=self.config['backup_count']
+                backupCount=self.config['backup_count'],
+                encoding='utf-8',
+                errors='replace'  # Replace problematic characters instead of crashing
             )
             file_handler.setFormatter(formatter)
             self.logger.addHandler(file_handler)
@@ -196,7 +198,8 @@ class PromptManagerLogger:
             raise ValueError("Invalid log file path")
         
         try:
-            with open(log_file, 'r', encoding='utf-8') as f:
+            # Use UTF-8 encoding with error handling for Windows compatibility
+            with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
                 all_lines = f.readlines()
                 return all_lines[-lines:] if lines > 0 else all_lines
         except Exception as e:
@@ -213,8 +216,8 @@ class PromptManagerLogger:
         for log_file in self.log_dir.glob("prompt_manager.log*"):
             try:
                 if log_file.name == 'prompt_manager.log':
-                    # For main log file, just clear it
-                    with open(log_file, 'w') as f:
+                    # For main log file, just clear it with safe encoding
+                    with open(log_file, 'w', encoding='utf-8', errors='replace') as f:
                         f.write("")
                 else:
                     # For rotated files, delete them
