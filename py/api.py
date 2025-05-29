@@ -186,6 +186,10 @@ class PromptManagerAPI:
         async def remove_tag_route(request):
             return await self.remove_prompt_tag(request)
 
+        @routes.post("/prompt_manager/prompts/tags")
+        async def add_tags_to_prompt_route(request):
+            return await self.add_tags_to_prompt(request)
+
         # Bulk operations
         @routes.post("/prompt_manager/bulk/delete")
         async def bulk_delete_route(request):
@@ -784,6 +788,74 @@ class PromptManagerAPI:
             self.logger.error(f"Add tag error: {e}")
             return web.json_response(
                 {"success": False, "error": f"Failed to add tag: {str(e)}"}, status=500
+            )
+
+    async def add_tags_to_prompt(self, request):
+        """Add multiple tags to a single prompt."""
+        try:
+            data = await request.json()
+            prompt_id = data.get("prompt_id")
+            new_tags = data.get("tags", [])
+
+            if not prompt_id:
+                return web.json_response(
+                    {"success": False, "error": "Prompt ID is required"}, status=400
+                )
+
+            if not new_tags or not isinstance(new_tags, list):
+                return web.json_response(
+                    {"success": False, "error": "Tags must be a non-empty list"}, status=400
+                )
+
+            # Get current prompt
+            prompt = self.db.get_prompt_by_id(prompt_id)
+            if not prompt:
+                return web.json_response(
+                    {"success": False, "error": "Prompt not found"}, status=404
+                )
+
+            # Get current tags
+            current_tags = prompt.get("tags", [])
+            if not isinstance(current_tags, list):
+                current_tags = []
+
+            # Add new tags if not already present
+            tags_added = 0
+            for new_tag in new_tags:
+                new_tag = new_tag.strip()
+                if new_tag and new_tag not in current_tags:
+                    current_tags.append(new_tag)
+                    tags_added += 1
+
+            # Update database if any tags were added
+            if tags_added > 0:
+                with self.db.model.get_connection() as conn:
+                    cursor = conn.execute(
+                        "UPDATE prompts SET tags = ?, updated_at = ? WHERE id = ?",
+                        (
+                            json.dumps(current_tags),
+                            datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                            prompt_id,
+                        ),
+                    )
+                    conn.commit()
+
+            message = f"{tags_added} tag(s) added successfully"
+            if tags_added == 0:
+                message = "No new tags to add (all tags already exist)"
+
+            return web.json_response(
+                {"success": True, "message": message, "tags_added": tags_added}
+            )
+
+        except ValueError:
+            return web.json_response(
+                {"success": False, "error": "Invalid prompt ID"}, status=400
+            )
+        except Exception as e:
+            self.logger.error(f"Add tags error: {e}")
+            return web.json_response(
+                {"success": False, "error": f"Failed to add tags: {str(e)}"}, status=500
             )
 
     async def remove_prompt_tag(self, request):
