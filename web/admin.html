@@ -328,6 +328,30 @@
         </div>
     </div>
 
+    <!-- Individual Tag Modal -->
+    <div id="individualTagModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700">
+            <h3 class="text-xl font-semibold text-gray-100 mb-6">🏷️ Add Tags to Prompt</h3>
+            
+            <div>
+                <label class="block text-sm font-medium text-gray-400 mb-2">Tags (comma-separated)</label>
+                <input type="text" id="individualTagInput" placeholder="tag1, tag2, tag3..." 
+                       class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+            </div>
+
+            <div class="flex justify-end space-x-3 mt-6">
+                <button id="cancelIndividualTag" 
+                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                    Cancel
+                </button>
+                <button id="confirmIndividualTag" 
+                        class="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition-colors">
+                    Add Tags
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Bulk Category Modal -->
     <div id="bulkCategoryModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
         <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700">
@@ -849,6 +873,10 @@
                 document.getElementById("confirmBulkTag").addEventListener("click", () => this.confirmBulkTag());
                 document.getElementById("cancelBulkTag").addEventListener("click", () => this.hideModal("bulkTagModal"));
 
+                // Individual tag modal
+                document.getElementById("confirmIndividualTag").addEventListener("click", () => this.confirmIndividualTag());
+                document.getElementById("cancelIndividualTag").addEventListener("click", () => this.hideModal("individualTagModal"));
+
                 // Bulk category modal
                 document.getElementById("confirmBulkCategory").addEventListener("click", () => this.confirmBulkCategory());
                 document.getElementById("cancelBulkCategory").addEventListener("click", () => this.hideModal("bulkCategoryModal"));
@@ -1144,7 +1172,7 @@
                                         `).join("")}
                                         <button class="inline-flex items-center space-x-1 bg-gray-600 hover:bg-gray-500 text-gray-300 px-3 py-1 rounded-full text-sm transition-colors" onclick="window.admin.addTag(${prompt.id})">
                                             <span>+</span>
-                                            <span>Add Tag</span>
+                                            <span>Add Tags</span>
                                         </button>
                                     </div>
                                 </div>
@@ -1322,25 +1350,39 @@
                 }
             }
 
-            async addTag(promptId) {
-                const tag = prompt("Enter new tag:");
-                if (!tag) return;
+            addTag(promptId) {
+                // Store the prompt ID for later use
+                this.currentTagPromptId = promptId;
+                // Clear the input and show the modal
+                document.getElementById("individualTagInput").value = "";
+                this.showModal("individualTagModal");
+            }
+
+            async confirmIndividualTag() {
+                const tags = document.getElementById("individualTagInput").value.split(",")
+                    .map((tag) => tag.trim()).filter((tag) => tag);
+
+                if (tags.length === 0) return;
 
                 try {
-                    const response = await fetch(`/prompt_manager/prompts/${promptId}/tags`, {
+                    const response = await fetch("/prompt_manager/prompts/tags", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ tag: tag.trim() }),
+                        body: JSON.stringify({
+                            prompt_id: this.currentTagPromptId,
+                            tags: tags,
+                        }),
                     });
 
                     if (response.ok) {
-                        this.showNotification("Tag added", "success");
+                        this.showNotification(`Tags added to prompt`, "success");
+                        this.hideModal("individualTagModal");
                         // Refresh both stats and results
                         await this.loadStatistics();
                         this.search();
                     }
                 } catch (error) {
-                    this.showNotification("Failed to add tag", "error");
+                    this.showNotification("Failed to add tags", "error");
                 }
             }
 
