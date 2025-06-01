@@ -100,7 +100,7 @@ class PromptManagerConfig:
     # Web UI settings
     RESULT_TIMEOUT = 5  # Seconds to auto-hide results in ComfyUI node
     SHOW_TEST_BUTTON = False  # Show API test button in node UI
-    WEBUI_DISPLAY_MODE = 'popup'  # 'popup' or 'newtab'
+    WEBUI_DISPLAY_MODE = 'newtab'  # 'popup' or 'newtab'
     
     # Performance settings
     MAX_SEARCH_RESULTS = 100
