@@ -80,7 +80,7 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
 ### 🌐 Advanced Web Interface
 
 - **Admin Dashboard**: Comprehensive browser-based management interface with modern dark theme
-- **Responsive Design**: Works on desktop, tablet, and mobile devices  
+- **Responsive Design**: Works on desktop, tablet, and mobile devices
 - **Real-time Search**: Instant search results as you type
 - **Bulk Operations**: Edit multiple prompts simultaneously with batch tools
 - **Settings Panel**: Configure behavior and display options
