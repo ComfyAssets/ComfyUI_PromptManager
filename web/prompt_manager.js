@@ -18,13 +18,15 @@ app.registerExtension({
           onNodeCreated.apply(this, arguments);
         }
 
-        // Initialize properties for search state
+        // Initialize properties for search state (non-serialized runtime state)
         this.properties = this.properties || {};
-        this.properties.searchResults = [];
-        this.properties.selectedPromptIndex = -1;
         this.properties.resultTimeout = 3; // Default 3 seconds
         this.properties.showTestButton = false; // Default hide test button
         this.properties.webuiDisplayMode = "popup"; // Default popup mode
+        
+        // Runtime-only state (not serialized to workflow)
+        this._searchResults = [];
+        this._selectedPromptIndex = -1;
         this.resultHideTimer = null;
 
         // Load settings from API
@@ -61,11 +63,20 @@ app.registerExtension({
           }
         };
 
-        // Hook into serialization to preserve resize flag
+        // Hook into serialization to preserve resize flag and prevent runtime data from being saved
         const originalSerialize = this.serialize;
         this.serialize = function () {
           const data = originalSerialize ? originalSerialize.call(this) : {};
           data._userHasResized = this._userHasResized;
+          
+          // Ensure search results are never saved to workflow
+          if (data.properties && data.properties.searchResults) {
+            delete data.properties.searchResults;
+          }
+          if (data.properties && data.properties.selectedPromptIndex) {
+            delete data.properties.selectedPromptIndex;
+          }
+          
           return data;
         };
 
@@ -353,7 +364,7 @@ app.registerExtension({
           return;
         }
 
-        this.properties.searchResults = results;
+        this._searchResults = results;
         this.resultsSection.innerHTML = "";
 
         // Ensure results are visible
