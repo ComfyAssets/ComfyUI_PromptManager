@@ -1,6 +1,6 @@
 # ComfyUI Prompt Manager
 
-A powerful ComfyUI custom node that extends the standard text encoder with persistent prompt storage, advanced search capabilities, and an automatic image gallery system using SQLite.
+A comprehensive ComfyUI custom node that extends the standard text encoder with persistent prompt storage, advanced search capabilities, automatic image gallery system, and powerful ComfyUI workflow metadata analysis using SQLite.
 
 ## Overview
 
@@ -14,8 +14,11 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
 - **🖼️ Automatic Image Gallery**: Automatically links generated images to their prompts
 - **🏷️ Rich Metadata**: Add categories, tags, ratings, notes, and workflow names to prompts
 - **🚫 Duplicate Prevention**: Uses SHA256 hashing to detect and prevent duplicate storage
-- **🌐 Web Interface**: Beautiful browser-based management interface
+- **🌐 Advanced Web Interface**: Comprehensive admin dashboard with metadata analysis
 - **📊 Analytics**: Track prompt usage patterns and effectiveness over time
+- **🔬 Workflow Analysis**: Extract and analyze ComfyUI workflow data from PNG images
+- **📋 Metadata Viewer**: Standalone tool for analyzing ComfyUI-generated images
+- **🛠️ System Management**: Built-in diagnostics, backup/restore, and maintenance tools
 
 ![Image Gallery](images/pm-02.png)
 
@@ -39,6 +42,29 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
 - **Full-size Image Viewer**: Modal overlay with navigation controls and keyboard shortcuts
 - **Image Navigation**: Browse through images with arrow keys or navigation buttons
 - **Image Counter**: Shows current position in gallery (e.g., "3 / 7")
+- **Integrated Metadata Panel**: View workflow data directly in the image viewer
+- **File Path Display**: Shows actual file paths in output directory for easy access
+
+### 🔬 ComfyUI Workflow Analysis
+
+- **PNG Metadata Parsing**: Advanced PNG chunk analysis to extract embedded ComfyUI data
+- **Workflow Data Extraction**: Complete ComfyUI workflow JSON recovery from images
+- **Prompt Recovery**: Extract positive/negative prompts from any ComfyUI-generated image
+- **Generation Parameters**: Recover steps, CFG scale, sampler, seed, and model information
+- **Multi-Node Support**: Handles PromptManager, CLIPTextEncode, and other node types
+- **Copy & Export**: One-click copying of prompts and workflow JSON download
+- **Standalone Viewer**: Dedicated metadata analysis tool at `/prompt_manager/gallery.html`
+- **Drag & Drop Interface**: Easy analysis by dropping PNG files directly into the viewer
+- **Error Handling**: Robust parsing with NaN value cleaning and malformed JSON recovery
+
+### 📋 Standalone Metadata Viewer
+
+- **Independent Tool**: Access at `http://localhost:8188/prompt_manager/gallery.html`
+- **Real-time Analysis**: Instant PNG metadata extraction and display
+- **Comprehensive Display**: Shows all discoverable ComfyUI workflow information
+- **Export Capabilities**: Download workflow JSON files for reuse
+- **File Path Integration**: Click to reveal file locations in your system
+- **Visual Interface**: Clean, organized presentation of complex workflow data
 
 ### Search & Retrieval
 
@@ -51,15 +77,23 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
 - **Top-rated prompts** for quality discovery
 - **Image search** by file properties and metadata
 
-### 🌐 Web Interface
+### 🌐 Advanced Web Interface
 
-- **Admin Dashboard**: Comprehensive browser-based management interface
-- **Responsive Design**: Works on desktop, tablet, and mobile devices
+- **Admin Dashboard**: Comprehensive browser-based management interface with modern dark theme
+- **Responsive Design**: Works on desktop, tablet, and mobile devices  
 - **Real-time Search**: Instant search results as you type
-- **Bulk Operations**: Edit multiple prompts simultaneously
+- **Bulk Operations**: Edit multiple prompts simultaneously with batch tools
 - **Settings Panel**: Configure behavior and display options
-- **Diagnostics**: Built-in system diagnostics and health checks
+- **System Management**: Complete toolset for database operations:
+  - **🔍 Metadata Viewer**: Launch standalone PNG analysis tool
+  - **📸 Scan Images**: Bulk scan output directories for ComfyUI images
+  - **💾 Backup/Restore**: Database backup and recovery operations
+  - **🔧 Maintenance**: Database optimization and cleanup tools
+  - **📋 Logs**: Comprehensive logging system with download capability
+  - **🔍 Diagnostics**: System health checks and troubleshooting
 - **Export Tools**: Download prompts and metadata in various formats
+- **Progress Tracking**: Real-time progress indicators for long operations
+- **Error Handling**: Graceful error display with recovery suggestions
 
 ### Database Management
 
@@ -96,8 +130,9 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
    - Use it exactly like the standard "CLIP Text Encode" node
 
 5. **Access the web interface**:
-   - Open `http://localhost:8188/prompt_manager/admin` in your browser
-   - Or use the built-in ComfyUI interface at `http://localhost:8188/prompt_manager/`
+   - **Admin Dashboard**: `http://localhost:8188/prompt_manager/admin` - Full management interface
+   - **Metadata Viewer**: `http://localhost:8188/prompt_manager/gallery.html` - Standalone PNG analysis tool
+   - **Simple Interface**: `http://localhost:8188/prompt_manager/` - Basic prompt browser
 
 ### Prerequisites
 
@@ -131,11 +166,44 @@ The image gallery automatically captures and links generated images:
 1. **Generate images** using workflows with the Prompt Manager node
 2. **Open the admin interface** at `http://localhost:8188/prompt_manager/admin`
 3. **Click the "🖼️ Gallery" button** on any prompt to view its images
-4. **Click any thumbnail** to open the full-size image viewer
+4. **Click any thumbnail** to open the full-size image viewer with integrated metadata panel
 5. **Navigate images** using:
    - **Arrow keys** (←/→) for keyboard navigation
    - **Navigation buttons** for mouse control
    - **ESC key** to close the viewer
+6. **View metadata** in the right panel showing:
+   - **File path** in output directory
+   - **Model/checkpoint** information
+   - **Prompts** (positive and negative)
+   - **Generation parameters** (steps, CFG, sampler, seed)
+   - **Raw workflow data** with download option
+
+### 🔬 Analyzing ComfyUI Images
+
+Use the standalone metadata viewer to analyze any ComfyUI-generated PNG:
+
+1. **Open the metadata viewer** at `http://localhost:8188/prompt_manager/gallery.html`
+2. **Drag and drop** any PNG file with ComfyUI workflow data
+3. **View extracted information**:
+   - **Prompts**: Copy positive/negative prompts with one click
+   - **Parameters**: See all generation settings used
+   - **Model Info**: Identify checkpoint and settings
+   - **Workflow**: Download complete workflow JSON
+4. **Copy data** using the built-in copy buttons
+5. **Export workflow** as JSON file for reuse in ComfyUI
+
+### 📸 Bulk Image Scanning
+
+Import existing ComfyUI images into your database:
+
+1. **Open admin dashboard** and click **"📸 Scan Images"**
+2. **Start scan** to analyze your entire output directory
+3. **Monitor progress** with real-time status updates
+4. **Review results** showing:
+   - Images found and processed
+   - Prompts extracted and linked
+   - Any errors or issues encountered
+5. **Access imported data** through the normal gallery interface
 
 ### 🌐 Web Interface Features
 
@@ -260,9 +328,13 @@ CREATE TABLE generated_images (
 - **`utils/validators.py`** - Input validation and sanitization
 - **`utils/image_monitor.py`** - Automatic image detection system
 - **`utils/prompt_tracker.py`** - Prompt execution tracking
-- **`web/admin.html`** - Comprehensive web management interface
+- **`utils/metadata_extractor.py`** - PNG metadata analysis engine
+- **`utils/logging_config.py`** - Comprehensive logging system
+- **`utils/diagnostics.py`** - System diagnostics and health checks
+- **`web/admin.html`** - Advanced admin dashboard with metadata panel
 - **`web/index.html`** - Simple web interface
 - **`web/prompt_manager.js`** - JavaScript functionality
+- **`gallery.html`** - Standalone PNG metadata viewer
 
 ### File Structure
 
@@ -283,11 +355,15 @@ ComfyUI_PromptManager/
 │   ├── hashing.py               # Hashing utilities
 │   ├── validators.py            # Input validation
 │   ├── image_monitor.py         # Automatic image detection
-│   └── prompt_tracker.py        # Prompt execution tracking
+│   ├── prompt_tracker.py        # Prompt execution tracking
+│   ├── metadata_extractor.py    # PNG metadata analysis
+│   ├── logging_config.py        # Logging system
+│   └── diagnostics.py           # System diagnostics
 ├── web/
-│   ├── admin.html               # Advanced web interface
+│   ├── admin.html               # Advanced admin dashboard
 │   ├── index.html               # Simple web interface
 │   └── prompt_manager.js        # JavaScript functionality
+├── gallery.html                # Standalone metadata viewer
 ├── tests/
 │   ├── __init__.py
 │   └── test_basic.py            # Test suite
@@ -308,18 +384,35 @@ You can customize the database path by modifying the configuration:
 DATABASE_PATH = "custom_path/prompts.db"
 ```
 
-### Image Monitoring Settings
+### Gallery & Monitoring Settings
 
-Configure the automatic image detection system:
+Configure the automatic image detection and gallery system:
 
 ```python
-# Image monitoring configuration
-OUTPUT_DIRS = [
-    "/path/to/ComfyUI/output",
-    "/additional/output/directory"
-]
+# Gallery monitoring configuration (GalleryConfig class)
+MONITORING_ENABLED = True
+MONITORING_DIRECTORIES = []  # Auto-detect ComfyUI output if empty
+SUPPORTED_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif']
 PROCESSING_DELAY = 2.0  # Delay before processing new images
-PROMPT_EXECUTION_TIMEOUT = 120  # Seconds to wait for prompt linking
+PROMPT_TIMEOUT = 120  # Seconds to keep prompt context active
+CLEANUP_INTERVAL = 300  # Seconds between cleanup of expired prompts
+
+# Performance settings
+MAX_CONCURRENT_PROCESSING = 3
+METADATA_EXTRACTION_TIMEOUT = 10  # Seconds for PNG analysis
+IMAGES_PER_PAGE = 20
+THUMBNAIL_SIZE = 256
+```
+
+### Web Interface Settings
+
+Configure the web interface behavior:
+
+```python
+# Web UI settings (PromptManagerConfig class)
+RESULT_TIMEOUT = 5  # Seconds to auto-hide results in ComfyUI node
+WEBUI_DISPLAY_MODE = 'newtab'  # 'popup' or 'newtab' for Web UI button
+SHOW_TEST_BUTTON = False  # Show API test button in node UI
 ```
 
 ### Performance Tuning
@@ -428,14 +521,26 @@ MIT License - see LICENSE file for details.
 
 ## Roadmap
 
+### Completed in v3.0.0
+
+- **✅ PNG Metadata Analysis**: Complete ComfyUI workflow extraction from images
+- **✅ Standalone Metadata Viewer**: Dedicated tool for analyzing any ComfyUI image
+- **✅ Advanced Admin Dashboard**: Comprehensive management interface with modern UI
+- **✅ Integrated Metadata Panel**: Real-time workflow analysis in image viewer
+- **✅ Bulk Image Scanning**: Mass import of existing ComfyUI images
+- **✅ System Management Tools**: Backup, restore, diagnostics, and maintenance
+- **✅ Enhanced Error Handling**: Robust PNG parsing with NaN value cleaning
+
 ### Planned Features
 
 - **☁️ Cloud Sync**: Optional cloud backup and sync
 - **🤝 Collaboration**: Share prompt collections with other users
-- **🧠 AI Suggestions**: Recommend similar prompts based on usage
-- **📈 Advanced Analytics**: Detailed usage statistics and trends
-- **🔌 Plugin System**: Support for third-party extensions
-- **🎨 Batch Processing**: Bulk image operations and metadata editing
+- **🧠 AI Suggestions**: Recommend similar prompts based on metadata analysis
+- **📈 Advanced Analytics**: Detailed usage statistics and trends with workflow insights
+- **🔌 Plugin System**: Support for third-party extensions and custom analyzers
+- **🎨 Enhanced Batch Processing**: Advanced bulk operations with metadata editing
+- **🔄 Workflow Templates**: Save and reuse common workflow patterns
+- **📊 Visual Analytics**: Charts and graphs for prompt effectiveness analysis
 
 ### Integration Ideas
 
@@ -446,14 +551,27 @@ MIT License - see LICENSE file for details.
 
 ## Changelog
 
+### v3.0.0 (Metadata Analysis Release)
+
+- **🔬 PNG Metadata Analysis**: Advanced ComfyUI workflow extraction from PNG images
+- **📋 Standalone Metadata Viewer**: Dedicated tool at `/gallery.html` for analyzing any ComfyUI image
+- **🖼️ Integrated Metadata Panel**: Real-time workflow analysis in the image viewer
+- **📸 Bulk Image Scanning**: Mass import and analysis of existing ComfyUI output directories
+- **🛠️ System Management Suite**: Complete backup, restore, maintenance, and diagnostic tools
+- **📋 Advanced Logging**: Comprehensive logging system with web-based log viewer
+- **🎨 Enhanced Admin Dashboard**: Modern dark theme with improved UX and management tools
+- **🔧 Robust Error Handling**: Advanced PNG parsing with NaN value cleaning and error recovery
+- **📁 File Path Integration**: Direct file path display and system integration
+- **⚡ Performance Optimizations**: Improved metadata extraction and database operations
+
 ### v2.0.0 (Gallery Release)
 
 - **🖼️ Automatic Image Gallery**: Complete image tracking and gallery system
 - **🌐 Advanced Web Interface**: Comprehensive admin dashboard with responsive design
 - **📱 Image Viewer**: Full-screen modal with navigation and keyboard shortcuts
 - **🔍 Enhanced Search**: Real-time search with advanced filtering options
-- **⚡ Performance Improvements**: Optimized database operations and NaN value handling
-- **🛠️ Diagnostics**: Built-in system diagnostics and health monitoring
+- **⚡ Performance Improvements**: Optimized database operations
+- **🛠️ Basic Diagnostics**: Initial system diagnostics and health monitoring
 - **📊 Bulk Operations**: Multi-select prompt editing and management
 
 ### v1.0.0 (Initial Release)

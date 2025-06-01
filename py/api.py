@@ -122,6 +122,38 @@ class PromptManagerAPI:
                     status=500,
                 )
 
+        # Serve the gallery interface
+        @routes.get("/prompt_manager/gallery.html")
+        async def serve_gallery_ui(request):
+            try:
+                import os
+
+                current_dir = os.path.dirname(
+                    os.path.dirname(os.path.abspath(__file__))
+                )
+                html_path = os.path.join(current_dir, "gallery.html")
+
+                if os.path.exists(html_path):
+                    with open(html_path, "r", encoding="utf-8") as f:
+                        html_content = f.read()
+
+                    return web.Response(
+                        text=html_content, content_type="text/html", charset="utf-8"
+                    )
+                else:
+                    return web.Response(
+                        text="<h1>Gallery not found</h1><p>gallery.html file not located at expected path.</p>",
+                        content_type="text/html",
+                        status=404,
+                    )
+
+            except Exception as e:
+                return web.Response(
+                    text=f"<h1>Error</h1><p>Failed to load gallery: {str(e)}</p>",
+                    content_type="text/html",
+                    status=500,
+                )
+
         # Serve the admin interface
         @routes.get("/prompt_manager/admin")
         async def serve_admin_ui(request):
@@ -623,10 +655,16 @@ class PromptManagerAPI:
     async def get_settings(self, request):
         """Get current settings."""
         try:
-            # For now, return default settings
-            return web.json_response(
-                {"success": True, "settings": {"result_timeout": 5}}
-            )
+            from .config import PromptManagerConfig
+            
+            # Return actual configuration settings
+            return web.json_response({
+                "success": True, 
+                "settings": {
+                    "result_timeout": PromptManagerConfig.RESULT_TIMEOUT,
+                    "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE
+                }
+            })
         except Exception as e:
             return web.json_response(
                 {"success": False, "error": f"Failed to get settings: {str(e)}"},
