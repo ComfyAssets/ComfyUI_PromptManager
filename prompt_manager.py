@@ -96,9 +96,10 @@ class PromptManager(ComfyNodeABC):
             }
         }
     
-    RETURN_TYPES = (IO.CONDITIONING,)
+    RETURN_TYPES = (IO.CONDITIONING, IO.STRING)
     OUTPUT_TOOLTIPS = (
         "A conditioning containing the embedded text used to guide the diffusion model.",
+        "The original text prompt as a string output for chaining to other nodes."
     )
     FUNCTION = "encode"
     CATEGORY = "PromptManager/Text"
@@ -115,7 +116,7 @@ class PromptManager(ComfyNodeABC):
         category: str = "",
         tags: str = "",
         search_text: str = ""
-    ) -> Tuple[Any]:
+    ) -> Tuple[Any, str]:
         """
         Encode the text prompt and save it to the database.
         
@@ -127,7 +128,7 @@ class PromptManager(ComfyNodeABC):
             search_text: Text to search for in past prompts
             
         Returns:
-            Tuple containing the conditioning for the diffusion model
+            Tuple containing the conditioning for the diffusion model and the original text string
             
         Raises:
             RuntimeError: If clip input is invalid
@@ -179,7 +180,7 @@ class PromptManager(ComfyNodeABC):
         conditioning = clip.encode_from_tokens_scheduled(tokens)
         
         self.logger.debug("CLIP encoding completed successfully")
-        return (conditioning,)
+        return (conditioning, text)
     
     def _save_prompt_to_database(
         self,
