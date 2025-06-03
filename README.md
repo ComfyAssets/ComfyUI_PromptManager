@@ -9,6 +9,7 @@ A comprehensive ComfyUI custom node that extends the standard text encoder with 
 ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard `CLIPTextEncode` node while adding comprehensive prompt management and automatic image tracking features:
 
 - **🔄 Drop-in Replacement**: Works exactly like the standard text encoder
+- **🔀 Dual Output**: Provides both conditioning output and original text string for flexible workflow chaining
 - **💾 Persistent Storage**: Automatically saves all prompts to a local SQLite database
 - **🔍 Advanced Search**: Query past prompts with text search, category filtering, and metadata
 - **🖼️ Automatic Image Gallery**: Automatically links generated images to their prompts
@@ -27,6 +28,7 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
 ### Core Functionality
 
 - **Text Encoding**: Standard CLIP text encoding for ComfyUI workflows
+- **Dual Output Support**: Outputs both conditioning (for diffusion models) and original text string (for workflow chaining)
 - **Auto-Save**: Every prompt is automatically saved to the database
 - **Metadata Support**: Optional categories, tags, ratings (1-5), notes, and workflow names
 - **Hash-based Deduplication**: Prevents storing identical prompts multiple times
@@ -150,14 +152,17 @@ Replace any `CLIPTextEncode` node with `PromptManager`:
 1. **Add the node** to your workflow
 2. **Connect CLIP model** (same as standard text encoder)
 3. **Enter your prompt** in the text field
-4. **Optionally add metadata**:
+4. **Connect outputs as needed**:
+   - **Conditioning output**: Connect to samplers/diffusion models (first output)
+   - **String output**: Connect to other text processing nodes (second output)
+5. **Optionally add metadata**:
    - Category: "portraits", "landscapes", "abstract", etc.
    - Tags: "detailed, anime, masterpiece" (comma-separated)
    - Rating: 1-5 stars for prompt quality
    - Notes: Any additional information
    - Workflow Name: Name of your workflow for organization
 
-The node will encode your text, automatically save it to the database, and link any generated images to the prompt.
+The node will encode your text, automatically save it to the database, and link any generated images to the prompt. The dual outputs allow you to use the conditioning for generation while also passing the original text to other nodes for further processing.
 
 ### 🖼️ Using the Image Gallery
 
@@ -557,6 +562,7 @@ MIT License - see LICENSE file for details.
 - **📋 Standalone Metadata Viewer**: Dedicated tool at `/gallery.html` for analyzing any ComfyUI image
 - **🖼️ Integrated Metadata Panel**: Real-time workflow analysis in the image viewer
 - **📸 Bulk Image Scanning**: Mass import and analysis of existing ComfyUI output directories
+- **🔀 Dual Output Support**: Added string output alongside conditioning for flexible workflow chaining
 - **🛠️ System Management Suite**: Complete backup, restore, maintenance, and diagnostic tools
 - **📋 Advanced Logging**: Comprehensive logging system with web-based log viewer
 - **🎨 Enhanced Admin Dashboard**: Modern dark theme with improved UX and management tools
