@@ -131,7 +131,7 @@ class PromptManagerAPI:
                 current_dir = os.path.dirname(
                     os.path.dirname(os.path.abspath(__file__))
                 )
-                html_path = os.path.join(current_dir, "gallery.html")
+                html_path = os.path.join(current_dir, "web", "metadata.html")
 
                 if os.path.exists(html_path):
                     with open(html_path, "r", encoding="utf-8") as f:
