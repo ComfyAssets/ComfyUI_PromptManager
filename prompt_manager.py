@@ -92,6 +92,12 @@ class PromptManager(ComfyNodeABC):
                 "search_text": (IO.STRING, {
                     "default": "",
                     "tooltip": "Search for past prompts containing this text"
+                }),
+                "prepend_text": (IO.STRING, {
+                    "tooltip": "Text to prepend to the main prompt (connected STRING nodes will be added before the main text)"
+                }),
+                "append_text": (IO.STRING, {
+                    "tooltip": "Text to append to the main prompt (connected STRING nodes will be added after the main text)"
                 })
             }
         }
@@ -114,7 +120,9 @@ class PromptManager(ComfyNodeABC):
         text: str,
         category: str = "",
         tags: str = "",
-        search_text: str = ""
+        search_text: str = "",
+        prepend_text: str = "",
+        append_text: str = ""
     ) -> Tuple[Any]:
         """
         Encode the text prompt and save it to the database.
@@ -125,6 +133,8 @@ class PromptManager(ComfyNodeABC):
             category: Optional category for organization
             tags: Comma-separated tags
             search_text: Text to search for in past prompts
+            prepend_text: Text to prepend to the main prompt
+            append_text: Text to append to the main prompt
             
         Returns:
             Tuple containing the conditioning for the diffusion model
@@ -132,6 +142,20 @@ class PromptManager(ComfyNodeABC):
         Raises:
             RuntimeError: If clip input is invalid
         """
+        # Combine prepend, main text, and append text
+        final_text = ""
+        if prepend_text and prepend_text.strip():
+            final_text += prepend_text.strip() + " "
+        final_text += text
+        if append_text and append_text.strip():
+            final_text += " " + append_text.strip()
+        
+        # Use the combined text for encoding
+        encoding_text = final_text
+        
+        # For database storage, save the original main text with metadata about prepend/append
+        storage_text = text
+        
         # Search functionality is now handled by the JavaScript UI
         # The search parameters are still available for backend processing if needed
         
@@ -147,23 +171,33 @@ class PromptManager(ComfyNodeABC):
         
         # Save prompt to database and set execution context for gallery tracking
         prompt_id = None
-        if text and text.strip():
-            self.logger.debug(f"Processing prompt text: {text[:100]}...")
+        if storage_text and storage_text.strip():
+            self.logger.debug(f"Processing prompt text: {storage_text[:100]}...")
+            
+            # Add prepend/append info to tags if they exist
+            extended_tags = self._parse_tags(tags) or []
+            if prepend_text and prepend_text.strip():
+                extended_tags.append(f"prepend:{prepend_text.strip()[:50]}")
+            if append_text and append_text.strip():
+                extended_tags.append(f"append:{append_text.strip()[:50]}")
+            
             try:
                 prompt_id = self._save_prompt_to_database(
-                    text=text.strip(),  # Always strip whitespace
+                    text=storage_text.strip(),  # Always strip whitespace
                     category=category.strip() if category else None,
-                    tags=self._parse_tags(tags)
+                    tags=extended_tags if extended_tags else None
                 )
                 
                 # Set current prompt for image tracking
                 if prompt_id:
                     execution_id = self.prompt_tracker.set_current_prompt(
-                        prompt_text=text.strip(),
+                        prompt_text=encoding_text.strip(),  # Use final combined text for tracking
                         additional_data={
                             'category': category.strip() if category else None,
-                            'tags': self._parse_tags(tags),
-                            'prompt_id': prompt_id
+                            'tags': extended_tags,
+                            'prompt_id': prompt_id,
+                            'prepend_text': prepend_text.strip() if prepend_text else None,
+                            'append_text': append_text.strip() if append_text else None
                         }
                     )
                     self.logger.info(f"Set execution context: {execution_id} for prompt ID: {prompt_id}")
@@ -173,9 +207,9 @@ class PromptManager(ComfyNodeABC):
                 self.logger.warning(f"Failed to save prompt to database: {e}")
                 # Already logged above, no need for additional print
         
-        # Perform standard CLIP text encoding
-        self.logger.debug("Performing CLIP text encoding")
-        tokens = clip.tokenize(text)
+        # Perform standard CLIP text encoding using the combined text
+        self.logger.debug(f"Performing CLIP text encoding on combined text: {encoding_text[:100]}...")
+        tokens = clip.tokenize(encoding_text)
         conditioning = clip.encode_from_tokens_scheduled(tokens)
         
         self.logger.debug("CLIP encoding completed successfully")
