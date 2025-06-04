@@ -1582,6 +1582,42 @@ class PromptManagerAPI:
                         'message': 'Failed to get database statistics'
                     }
             
+            # Prune orphaned prompts (prompts with no linked images)
+            if 'prune_orphaned_prompts' in operations:
+                try:
+                    with self.db.model.get_connection() as conn:
+                        # Find prompts that have no images linked to them
+                        cursor = conn.execute("""
+                            SELECT p.id 
+                            FROM prompts p 
+                            LEFT JOIN generated_images gi ON p.id = gi.prompt_id 
+                            WHERE gi.prompt_id IS NULL
+                        """)
+                        orphaned_prompts = cursor.fetchall()
+                        orphaned_count = len(orphaned_prompts)
+                        
+                        if orphaned_count > 0:
+                            # Delete the orphaned prompts
+                            orphaned_ids = [row['id'] for row in orphaned_prompts]
+                            placeholders = ','.join(['?'] * len(orphaned_ids))
+                            cursor = conn.execute(f"DELETE FROM prompts WHERE id IN ({placeholders})", orphaned_ids)
+                            conn.commit()
+                            removed_count = cursor.rowcount
+                        else:
+                            removed_count = 0
+                    
+                    results['prune_orphaned_prompts'] = {
+                        'success': True,
+                        'removed_count': removed_count,
+                        'message': f'Removed {removed_count} orphaned prompts (prompts with no linked images)'
+                    }
+                except Exception as e:
+                    results['prune_orphaned_prompts'] = {
+                        'success': False,
+                        'error': str(e),
+                        'message': 'Failed to prune orphaned prompts'
+                    }
+            
             # Check for consistency issues
             if 'check_consistency' in operations:
                 try:
