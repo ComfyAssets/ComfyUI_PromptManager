@@ -31,19 +31,27 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
 - **Metadata Support**: Optional categories, tags, ratings (1-5), notes, and workflow names
 - **Hash-based Deduplication**: Prevents storing identical prompts multiple times
 
-### 🖼️ Automatic Image Gallery
+### 🖼️ Advanced Image Gallery with ViewerJS Integration
 
 ![Prompt Editor](images/pm-03.jpg)
 
+The image gallery has been completely redesigned with professional image viewing capabilities powered by [ViewerJS](https://fengyuanchen.github.io/viewerjs/):
+
+- **Professional Image Viewer**: Full-featured image viewing experience with zoom, rotation, and slideshow modes
+- **Advanced Navigation**: Smooth transitions, thumbnail navigation, and keyboard shortcuts
+- **Zoom Controls**: Mouse wheel zoom, drag to pan, and touch gesture support
+- **Toolbar Features**: Comprehensive toolbar with zoom, rotate, flip, reset, and fullscreen options
+- **Dark Theme Integration**: Seamless dark mode styling that matches the admin interface
 - **Smart Image Detection**: Automatically monitors ComfyUI output directory for new images
 - **Intelligent Linking**: Links generated images to their corresponding prompts based on execution timing
-- **Metadata Extraction**: Extracts and stores ComfyUI workflow data and generation parameters
-- **Gallery Interface**: Beautiful web-based gallery with thumbnail grid view
-- **Full-size Image Viewer**: Modal overlay with navigation controls and keyboard shortcuts
-- **Image Navigation**: Browse through images with arrow keys or navigation buttons
-- **Image Counter**: Shows current position in gallery (e.g., "3 / 7")
-- **Integrated Metadata Panel**: View workflow data directly in the image viewer
-- **File Path Display**: Shows actual file paths in output directory for easy access
+- **Real-time Metadata Extraction**: Advanced PNG parsing with ComfyUI workflow analysis
+- **Integrated Metadata Sidebar**: Live workflow data panel with copy functionality for prompts and parameters
+- **Generation Parameter Display**: CFG scale, steps, sampler, seed, and model information
+- **One-click Copying**: Copy prompts, parameters, and workflow data directly from the viewer
+- **File Path Integration**: Direct access to image files in your output directory
+- **Responsive Design**: Works seamlessly across desktop, tablet, and mobile devices
+
+*Image viewing powered by [ViewerJS](https://github.com/fengyuanchen/viewerjs) - A powerful JavaScript image viewer with zoom, rotation, and slideshow features.*
 
 ### 🔬 ComfyUI Workflow Analysis
 
@@ -566,6 +574,18 @@ MIT License - see LICENSE file for details.
 - **Version control**: Track prompt iterations and effectiveness
 
 ## Changelog
+
+### v3.0.3 (ViewerJS Integration & Enhanced Gallery)
+
+- **🖼️ Professional Image Viewer**: Complete gallery redesign with [ViewerJS](https://github.com/fengyuanchen/viewerjs) integration
+- **⚡ Advanced Image Navigation**: Zoom, rotation, slideshow, and professional viewing controls
+- **🎨 Dark Theme Integration**: Seamless ViewerJS styling that matches the admin interface
+- **🔬 Enhanced Metadata Parsing**: Improved ComfyUI workflow parameter extraction with targeted parsing
+- **📊 Real-time Parameter Display**: Live CFG, steps, sampler, and seed extraction from workflow nodes
+- **📋 Integrated Copy Functionality**: One-click copying of prompts and generation parameters
+- **🛠️ Robust Value Detection**: Smart parsing that targets specific node types and validates parameters
+- **⌨️ Keyboard Navigation**: Full keyboard support for gallery navigation and viewer controls
+- **📱 Responsive Design**: Enhanced mobile and tablet compatibility
 
 ### v3.0.0 (Metadata Analysis Release)
 
