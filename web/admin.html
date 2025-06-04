@@ -1256,7 +1256,13 @@
 
             showNotification(message, type = "info") {
                 const notification = document.createElement("div");
-                notification.className = `fixed top-4 right-4 px-6 py-4 rounded-lg shadow-lg z-50 transition-all duration-300 transform translate-x-full`;
+                
+                // Check if image viewer is open and use higher z-index
+                const imageViewerModal = document.getElementById('imageViewerModal');
+                const isImageViewerOpen = imageViewerModal && !imageViewerModal.classList.contains('hidden');
+                const zIndex = isImageViewerOpen ? 'z-[10000]' : 'z-50';
+                
+                notification.className = `fixed top-4 right-4 px-6 py-4 rounded-lg shadow-lg ${zIndex} transition-all duration-300 transform translate-x-full`;
                 
                 const colors = {
                     success: "bg-green-600 text-white",
@@ -1273,7 +1279,11 @@
                 setTimeout(() => notification.classList.remove("translate-x-full"), 100);
                 setTimeout(() => {
                     notification.classList.add("translate-x-full");
-                    setTimeout(() => document.body.removeChild(notification), 300);
+                    setTimeout(() => {
+                        if (notification.parentNode) {
+                            document.body.removeChild(notification);
+                        }
+                    }, 300);
                 }, 3000);
             }
 
@@ -2843,7 +2853,9 @@
                     this.updateMetadataPanel(comfyData, imageSrc);
                 } catch (error) {
                     console.error('Error extracting metadata:', error);
-                    this.showMetadataError();
+                    
+                    // Try fallback: get prompt from database using current image
+                    await this.tryFallbackMetadata(imageSrc);
                 }
             }
 
@@ -3129,10 +3141,75 @@
             }
 
             async copyPrompt(type) {
-                if (!this.currentMetadata) return;
+                if (!this.currentMetadata) {
+                    this.showNotification('❌ No metadata available for copying', 'error');
+                    return;
+                }
                 
                 const text = type === 'positive' ? this.currentMetadata.positivePrompt : this.currentMetadata.negativePrompt;
+                
+                if (!text || text === 'No prompt found' || text === 'No negative prompt found') {
+                    this.showNotification(`❌ No ${type} prompt available`, 'error');
+                    return;
+                }
+                
                 await this.copyToClipboard(text);
+            }
+
+            async tryFallbackMetadata(imageSrc) {
+                console.log('Trying fallback metadata extraction for:', imageSrc);
+                
+                try {
+                    // Try to get prompt from current gallery image data
+                    let fallbackPrompt = 'No prompt found';
+                    
+                    if (this.currentGalleryImages && this.currentImageIndex !== null && this.currentGalleryImages[this.currentImageIndex]) {
+                        const currentImage = this.currentGalleryImages[this.currentImageIndex];
+                        console.log('Current image data:', currentImage);
+                        
+                        // If we have prompt_id, try to get the prompt from our local prompts array
+                        if (currentImage.prompt_id && this.prompts) {
+                            const prompt = this.prompts.find(p => p.id === currentImage.prompt_id);
+                            if (prompt) {
+                                fallbackPrompt = prompt.text;
+                                console.log('Found prompt from database:', fallbackPrompt.substring(0, 100));
+                            }
+                        }
+                    }
+                    
+                    // Set fallback metadata
+                    this.currentMetadata = {
+                        positivePrompt: fallbackPrompt,
+                        negativePrompt: 'No negative prompt found',
+                        checkpoint: 'Unknown',
+                        steps: 'Unknown',
+                        cfgScale: 'Unknown',
+                        sampler: 'Unknown',
+                        seed: 'Unknown',
+                        workflow: null,
+                        prompt: null
+                    };
+                    
+                    // Update metadata panel with fallback data
+                    this.updateMetadataPanel({}, imageSrc);
+                    
+                } catch (error) {
+                    console.error('Fallback metadata extraction failed:', error);
+                    this.showMetadataError();
+                    
+                    // Set empty metadata as last resort
+                    this.currentMetadata = {
+                        positivePrompt: 'No prompt found',
+                        negativePrompt: 'No negative prompt found',
+                        checkpoint: 'Unknown',
+                        steps: 'Unknown',
+                        cfgScale: 'Unknown',
+                        sampler: 'Unknown',
+                        seed: 'Unknown',
+                        workflow: null,
+                        prompt: null
+                    };
+                }
             }
 
             async copyAllMetadata() {
