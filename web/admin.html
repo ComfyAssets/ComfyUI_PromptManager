@@ -1256,7 +1256,13 @@
 
             showNotification(message, type = "info") {
                 const notification = document.createElement("div");
-                notification.className = `fixed top-4 right-4 px-6 py-4 rounded-lg shadow-lg z-50 transition-all duration-300 transform translate-x-full`;
+                
+                // Check if image viewer is open and use higher z-index
+                const imageViewerModal = document.getElementById('imageViewerModal');
+                const isImageViewerOpen = imageViewerModal && !imageViewerModal.classList.contains('hidden');
+                const zIndex = isImageViewerOpen ? 'z-[10000]' : 'z-50';
+                
+                notification.className = `fixed top-4 right-4 px-6 py-4 rounded-lg shadow-lg ${zIndex} transition-all duration-300 transform translate-x-full`;
                 
                 const colors = {
                     success: "bg-green-600 text-white",
@@ -1273,7 +1279,11 @@
                 setTimeout(() => notification.classList.remove("translate-x-full"), 100);
                 setTimeout(() => {
                     notification.classList.add("translate-x-full");
-                    setTimeout(() => document.body.removeChild(notification), 300);
+                    setTimeout(() => {
+                        if (notification.parentNode) {
+                            document.body.removeChild(notification);
+                        }
+                    }, 300);
                 }, 3000);
             }
 
@@ -3131,17 +3141,12 @@
             }
 
             async copyPrompt(type) {
-                console.log('copyPrompt called with type:', type);
-                console.log('currentMetadata:', this.currentMetadata);
-                
                 if (!this.currentMetadata) {
-                    console.error('No metadata available for copying');
                     this.showNotification('❌ No metadata available for copying', 'error');
                     return;
                 }
                 
                 const text = type === 'positive' ? this.currentMetadata.positivePrompt : this.currentMetadata.negativePrompt;
-                console.log('Copying text:', text?.substring(0, 100));
                 
                 if (!text || text === 'No prompt found' || text === 'No negative prompt found') {
                     this.showNotification(`❌ No ${type} prompt available`, 'error');
