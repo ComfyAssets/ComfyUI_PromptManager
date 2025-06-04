@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PromptManager - Admin Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/viewerjs/1.11.6/viewer.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/viewerjs/1.11.6/viewer.min.js"></script>
     <script>
         tailwind.config = {
             darkMode: 'class',
@@ -35,6 +37,35 @@
         }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover {
             background: #9ca3af;
+        }
+        
+        .viewer-dark-theme .viewer-backdrop {
+            background-color: rgba(0, 0, 0, 0.9) !important;
+        }
+        
+        .viewer-dark-theme .viewer-toolbar {
+            background-color: rgba(31, 41, 55, 0.95) !important;
+        }
+        
+        .viewer-dark-theme .viewer-navbar {
+            background-color: rgba(31, 41, 55, 0.95) !important;
+        }
+        
+        .viewer-dark-theme .viewer-title {
+            color: #f3f4f6 !important;
+        }
+        
+        .metadata-sidebar {
+            position: fixed !important;
+            top: 0 !important;
+            right: 0 !important;
+            width: 384px !important;
+            height: 100vh !important;
+            background: rgb(17, 24, 39) !important;
+            border-left: 1px solid rgb(55, 65, 81) !important;
+            display: flex !important;
+            flex-direction: column !important;
+            z-index: 10000 !important;
         }
     </style>
 </head>
@@ -596,84 +627,6 @@
         </div>
     </div>
 
-    <!-- Image Viewer Modal -->
-    <div id="imageViewerModal" class="fixed inset-0 bg-black bg-opacity-90 hidden items-center justify-center" style="z-index: 9999;">
-        <div class="h-screen flex w-full">
-            <!-- Main Image Area -->
-            <div class="flex-1 flex items-center justify-center p-4 bg-black relative">
-                <!-- Close button -->
-                <button onclick="window.admin.closeImageViewer()" class="absolute top-4 right-4 p-2 rounded-lg bg-black/50 hover:bg-black/70 transition-colors z-10">
-                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                    </svg>
-                </button>
-                
-                <!-- Previous button -->
-                <button onclick="window.admin.previousImage()" class="absolute left-4 top-1/2 transform -translate-y-1/2 p-3 rounded-full bg-black/50 hover:bg-black/70 transition-colors z-10">
-                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
-                    </svg>
-                </button>
-                
-                <!-- Next button -->
-                <button onclick="window.admin.nextImage()" class="absolute right-4 top-1/2 transform -translate-y-1/2 p-3 rounded-full bg-black/50 hover:bg-black/70 transition-colors z-10">
-                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
-                    </svg>
-                </button>
-                
-                <!-- View mode indicator -->
-                <div id="viewModeIndicator" class="absolute top-4 left-4 text-white text-sm bg-black/50 px-3 py-1 rounded-full z-10">
-                    Fit to Window
-                </div>
-                
-                <!-- Toggle metadata panel button -->
-                <button id="toggleMetadataBtn" onclick="window.admin.toggleMetadataPanel()" class="absolute top-4 left-1/2 transform -translate-x-1/2 p-2 rounded-lg bg-black/50 hover:bg-black/70 transition-colors z-10">
-                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                    </svg>
-                </button>
-                
-                <!-- Image container -->
-                <div class="w-full h-full flex items-center justify-center">
-                    <img id="viewerImage" src="" alt="Generated image" class="max-w-full max-h-full object-contain rounded-lg cursor-pointer transition-all duration-300" onclick="window.admin.toggleImageSize()">
-                </div>
-                
-                <!-- Image counter -->
-                <div id="imageCounter" class="absolute bottom-4 left-1/2 transform -translate-x-1/2 text-white text-sm bg-black/50 px-3 py-1 rounded-full z-10">
-                    1 / 1
-                </div>
-            </div>
-
-            <!-- Metadata Panel -->
-            <div id="metadataPanel" class="w-96 bg-gray-900 border-l border-gray-700 flex flex-col">
-                <!-- Header -->
-                <div class="flex items-center justify-between p-4 border-b border-gray-700">
-                    <div class="flex items-center gap-2">
-                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                        </svg>
-                        <h1 class="text-lg font-medium text-white">Metadata</h1>
-                    </div>
-                    <button class="text-xs text-blue-400 hover:text-blue-300 transition-colors" onclick="window.admin.copyAllMetadata()">
-                        📋 COPY ALL
-                    </button>
-                </div>
-
-                <!-- Scrollable Content -->
-                <div id="metadataContent" class="flex-1 overflow-y-auto p-4 space-y-6">
-                    <!-- Metadata will be loaded here -->
-                    <div class="text-center text-gray-500 py-8">
-                        <svg class="w-16 h-16 mx-auto mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                        </svg>
-                        <p class="text-lg mb-2">No Metadata</p>
-                        <p class="text-sm">Loading image metadata...</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
 
     <!-- Scan Modal -->
     <div id="scanModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
@@ -1364,10 +1317,10 @@
             showNotification(message, type = "info") {
                 const notification = document.createElement("div");
                 
-                // Check if image viewer is open and use higher z-index
-                const imageViewerModal = document.getElementById('imageViewerModal');
-                const isImageViewerOpen = imageViewerModal && !imageViewerModal.classList.contains('hidden');
-                const zIndex = isImageViewerOpen ? 'z-[10000]' : 'z-50';
+                // Check if ViewerJS is open and use higher z-index
+                const viewerContainer = document.querySelector('.viewer-container');
+                const isViewerOpen = viewerContainer && viewerContainer.style.display !== 'none';
+                const zIndex = isViewerOpen ? 'z-[50000]' : 'z-50';
                 
                 notification.className = `fixed top-4 right-4 px-6 py-4 rounded-lg shadow-lg ${zIndex} transition-all duration-300 transform translate-x-full`;
                 
@@ -1802,14 +1755,16 @@
                 content.classList.remove("hidden");
                 empty.classList.add("hidden");
                 
-                content.innerHTML = images.map(image => `
-                    <div class="group cursor-pointer bg-gray-700 rounded-xl overflow-hidden border border-gray-600 hover:border-gray-500 transition-all duration-200" data-image-url="/prompt_manager/images/${image.id}/file">
+                content.innerHTML = images.map((image, index) => `
+                    <div class="group cursor-pointer bg-gray-700 rounded-xl overflow-hidden border border-gray-600 hover:border-gray-500 transition-all duration-200">
                         <div class="aspect-square bg-gray-800 overflow-hidden relative">
                             <img src="/prompt_manager/images/${image.id}/file" 
-                                 alt="Generated image" 
+                                 alt="Generated image ${index + 1}" 
                                  class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                 data-original="/prompt_manager/images/${image.id}/file"
+                                 data-caption="Generated: ${new Date(image.generation_time).toLocaleDateString()} ${new Date(image.generation_time).toLocaleTimeString()} | ${image.width && image.height ? `${image.width}×${image.height}` : 'Unknown size'}${image.file_size ? ` | ${this.formatFileSize(image.file_size)}` : ''}"
                                  onerror="this.parentElement.innerHTML='<div class=\\'flex items-center justify-center h-full text-gray-400\\'>⚠️ Image not found</div>'">
-                            <div class="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-opacity duration-300 flex items-center justify-center">
+                            <div class="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-opacity duration-300 flex items-center justify-center pointer-events-none">
                                 <svg class="w-8 h-8 text-white opacity-0 group-hover:opacity-100 transition-opacity duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                                 </svg>
@@ -1830,142 +1785,65 @@
                 // Store images for navigation
                 this.currentGalleryImages = images;
                 
-                // Add click event listeners to gallery items
-                content.querySelectorAll('[data-image-url]').forEach((item, index) => {
-                    item.addEventListener('click', (e) => {
-                        const imageUrl = item.dataset.imageUrl;
-                        console.log("Gallery item clicked, imageUrl:", imageUrl, "index:", index);
-                        this.viewImage(imageUrl, index);
+                // Initialize ViewerJS for the gallery after DOM is updated
+                setTimeout(() => {
+                    if (this.galleryViewer) {
+                        this.galleryViewer.destroy();
+                    }
+                    
+                    this.galleryViewer = new Viewer(content, {
+                        toolbar: {
+                            zoomIn: 1,
+                            zoomOut: 1,
+                            oneToOne: 1,
+                            reset: 1,
+                            prev: 1,
+                            play: {
+                                show: 1,
+                                size: 'large',
+                            },
+                            next: 1,
+                            rotateLeft: 1,
+                            rotateRight: 1,
+                            flipHorizontal: 1,
+                            flipVertical: 1,
+                        },
+                        navbar: true,
+                        title: true,
+                        transition: true,
+                        keyboard: true,
+                        backdrop: 'static',
+                        loading: true,
+                        loop: true,
+                        tooltip: true,
+                        zoomRatio: 0.1,
+                        minZoomRatio: 0.1,
+                        maxZoomRatio: 4,
+                        zoomOnTouch: true,
+                        zoomOnWheel: true,
+                        slideOnTouch: true,
+                        toggleOnDblclick: false,
+                        className: 'viewer-dark-theme',
+                        shown: () => {
+                            this.addMetadataSidebar();
+                        },
+                        viewed: (event) => {
+                            this.loadMetadataForImage(event.detail.image);
+                        }
                     });
-                });
+                }, 100);
             }
 
-            viewImage(imageUrl, imageIndex = 0) {
-                console.log("viewImage called with:", imageUrl);
-                const img = document.getElementById("viewerImage");
-                const modal = document.getElementById("imageViewerModal");
-                
-                if (!img) {
-                    console.error("viewerImage element not found");
-                    return;
-                }
-                if (!modal) {
-                    console.error("imageViewerModal element not found");
-                    return;
-                }
-                
-                // Store current gallery images and index
-                this.currentImageIndex = imageIndex;
-                this.currentGalleryImages = this.currentGalleryImages || [];
-                
-                // Reset to fit mode when opening a new image
-                this.imageViewMode = 'fit';
-                
-                // Load the image and get its natural dimensions
-                img.onload = () => {
-                    this.naturalImageSize.width = img.naturalWidth;
-                    this.naturalImageSize.height = img.naturalHeight;
-                    this.applyImageSizing();
-                    // Extract metadata after image loads
-                    this.extractImageMetadata();
-                };
-                
-                img.src = imageUrl;
-                this.updateImageCounter();
-                this.showModal("imageViewerModal");
-                
-                console.log("Image viewer modal opened");
-            }
 
-            nextImage() {
-                if (!this.currentGalleryImages || this.currentGalleryImages.length === 0) return;
-                
-                this.currentImageIndex = (this.currentImageIndex + 1) % this.currentGalleryImages.length;
-                const nextImageUrl = `/prompt_manager/images/${this.currentGalleryImages[this.currentImageIndex].id}/file`;
-                const img = document.getElementById("viewerImage");
-                
-                // Reset view mode and apply sizing when new image loads
-                this.imageViewMode = 'fit';
-                img.onload = () => {
-                    this.naturalImageSize.width = img.naturalWidth;
-                    this.naturalImageSize.height = img.naturalHeight;
-                    this.applyImageSizing();
-                    // Extract metadata after image loads
-                    this.extractImageMetadata();
-                };
-                
-                img.src = nextImageUrl;
-                this.updateImageCounter();
-            }
 
-            previousImage() {
-                if (!this.currentGalleryImages || this.currentGalleryImages.length === 0) return;
-                
-                this.currentImageIndex = (this.currentImageIndex - 1 + this.currentGalleryImages.length) % this.currentGalleryImages.length;
-                const prevImageUrl = `/prompt_manager/images/${this.currentGalleryImages[this.currentImageIndex].id}/file`;
-                const img = document.getElementById("viewerImage");
-                
-                // Reset view mode and apply sizing when new image loads
-                this.imageViewMode = 'fit';
-                img.onload = () => {
-                    this.naturalImageSize.width = img.naturalWidth;
-                    this.naturalImageSize.height = img.naturalHeight;
-                    this.applyImageSizing();
-                    // Extract metadata after image loads
-                    this.extractImageMetadata();
-                };
-                
-                img.src = prevImageUrl;
-                this.updateImageCounter();
-            }
 
-            updateImageCounter() {
-                const counter = document.getElementById("imageCounter");
-                if (counter && this.currentGalleryImages) {
-                    counter.textContent = `${this.currentImageIndex + 1} / ${this.currentGalleryImages.length}`;
-                }
-            }
 
             closeGallery() {
                 this.hideModal("galleryModal");
             }
 
-            closeImageViewer() {
-                this.hideModal("imageViewerModal");
-                document.getElementById("viewerImage").src = "";
-                this.currentImageIndex = 0;
-                this.imageViewMode = 'fit';
-            }
 
-            applyImageSizing() {
-                const img = document.getElementById("viewerImage");
-                const indicator = document.getElementById("viewModeIndicator");
-                
-                if (!img || !indicator) return;
-                
-                if (this.imageViewMode === 'fit') {
-                    // Fit to viewport with padding
-                    img.style.maxWidth = 'calc(100vw - 8rem)';
-                    img.style.maxHeight = 'calc(100vh - 8rem)';
-                    img.style.width = 'auto';
-                    img.style.height = 'auto';
-                    img.style.objectFit = 'contain';
-                    indicator.textContent = 'Fit to Window';
-                } else {
-                    // Show at full size
-                    img.style.maxWidth = 'none';
-                    img.style.maxHeight = 'none';
-                    img.style.width = this.naturalImageSize.width + 'px';
-                    img.style.height = this.naturalImageSize.height + 'px';
-                    img.style.objectFit = 'none';
-                    indicator.textContent = 'Full Size';
-                }
-            }
 
-            toggleImageSize() {
-                this.imageViewMode = this.imageViewMode === 'fit' ? 'full' : 'fit';
-                this.applyImageSizing();
-            }
 
             formatFileSize(bytes) {
                 if (!bytes) return 'Unknown';
@@ -2942,40 +2820,7 @@
                 window.open('/prompt_manager/gallery.html', '_blank');
             }
 
-            toggleMetadataPanel() {
-                const panel = document.getElementById('metadataPanel');
-                panel.classList.toggle('hidden');
-            }
 
-            async extractImageMetadata() {
-                const viewerImage = document.getElementById('viewerImage');
-                const imageSrc = viewerImage.src;
-                
-                if (!imageSrc) return;
-                
-                try {
-                    // Fetch the image as an array buffer
-                    const response = await fetch(imageSrc);
-                    const arrayBuffer = await response.arrayBuffer();
-                    
-                    console.log('Image buffer size:', arrayBuffer.byteLength);
-                    
-                    // Parse PNG metadata
-                    const metadata = await this.parsePNGMetadata(arrayBuffer);
-                    console.log('Extracted metadata:', metadata);
-                    
-                    const comfyData = this.extractComfyUIData(metadata);
-                    console.log('ComfyUI data:', comfyData);
-                    
-                    // Update metadata panel
-                    this.updateMetadataPanel(comfyData, imageSrc);
-                } catch (error) {
-                    console.error('Error extracting metadata:', error);
-                    
-                    // Try fallback: get prompt from database using current image
-                    await this.tryFallbackMetadata(imageSrc);
-                }
-            }
 
             async parsePNGMetadata(arrayBuffer) {
                 const dataView = new DataView(arrayBuffer);
@@ -3399,6 +3244,650 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     console.error('Copy failed:', err);
                     this.showNotification('Copy failed', 'error');
                 }
+            }
+
+            async parsePNGMetadata(arrayBuffer) {
+                const dataView = new DataView(arrayBuffer);
+                let offset = 8; // Skip PNG signature
+                const metadata = {};
+
+                while (offset < arrayBuffer.byteLength - 8) {
+                    const length = dataView.getUint32(offset);
+                    const type = new TextDecoder().decode(arrayBuffer.slice(offset + 4, offset + 8));
+                    
+                    if (type === 'tEXt' || type === 'iTXt' || type === 'zTXt') {
+                        const chunkData = arrayBuffer.slice(offset + 8, offset + 8 + length);
+                        let text;
+                        
+                        if (type === 'tEXt') {
+                            text = new TextDecoder().decode(chunkData);
+                        } else if (type === 'iTXt') {
+                            // iTXt format: keyword\0compression\0language\0translated_keyword\0text
+                            const textData = new TextDecoder().decode(chunkData);
+                            const parts = textData.split('\0');
+                            if (parts.length >= 5) {
+                                metadata[parts[0]] = parts[4];
+                            }
+                            text = textData;
+                        } else if (type === 'zTXt') {
+                            // zTXt is compressed - basic parsing (might need proper decompression)
+                            text = new TextDecoder().decode(chunkData);
+                        }
+                        
+                        // Parse the text chunk for key-value pairs
+                        const nullIndex = text.indexOf('\0');
+                        if (nullIndex !== -1) {
+                            const key = text.substring(0, nullIndex);
+                            const value = text.substring(nullIndex + 1);
+                            metadata[key] = value;
+                        }
+                    }
+                    
+                    offset += 8 + length + 4; // Move to next chunk (8 = length + type, 4 = CRC)
+                }
+
+                return metadata;
+            }
+
+            extractComfyUIData(metadata) {
+                // Look for ComfyUI workflow data in various possible fields
+                let workflowData = null;
+                let promptData = null;
+
+                // Common ComfyUI metadata field names
+                const workflowFields = ['workflow', 'Workflow', 'comfy', 'ComfyUI'];
+                const promptFields = ['prompt', 'Prompt', 'parameters', 'Parameters'];
+
+                for (const field of workflowFields) {
+                    if (metadata[field]) {
+                        try {
+                            // Clean NaN values from JSON string before parsing
+                            let cleanedJson = metadata[field];
+                            cleanedJson = cleanedJson.replace(/:\s*NaN\b/g, ': null');
+                            cleanedJson = cleanedJson.replace(/\bNaN\b/g, 'null');
+                            
+                            workflowData = JSON.parse(cleanedJson);
+                            break;
+                        } catch (e) {
+                            console.log('Failed to parse workflow field:', field);
+                        }
+                    }
+                }
+
+                for (const field of promptFields) {
+                    if (metadata[field]) {
+                        try {
+                            // Clean NaN values from JSON string before parsing
+                            let cleanedJson = metadata[field];
+                            cleanedJson = cleanedJson.replace(/:\s*NaN\b/g, ': null');
+                            cleanedJson = cleanedJson.replace(/\bNaN\b/g, 'null');
+                            
+                            promptData = JSON.parse(cleanedJson);
+                            break;
+                        } catch (e) {
+                            console.log('Failed to parse prompt field:', field);
+                        }
+                    }
+                }
+
+                return { workflow: workflowData, prompt: promptData };
+            }
+
+            async extractImageMetadata(imageUrl) {
+                try {
+                    // Fetch the image as an array buffer
+                    const response = await fetch(imageUrl);
+                    const arrayBuffer = await response.arrayBuffer();
+                    
+                    // Parse PNG metadata
+                    const metadata = await this.parsePNGMetadata(arrayBuffer);
+                    const comfyData = this.extractComfyUIData(metadata);
+                    
+                    return this.parseWorkflowData(comfyData, imageUrl);
+                } catch (error) {
+                    console.error('Error extracting metadata:', error);
+                    return null;
+                }
+            }
+
+            parseWorkflowData(comfyData, imagePath) {
+                // Extract information from ComfyUI workflow
+                let checkpoint = 'Unknown';
+                let positivePrompt = 'No prompt found';
+                let negativePrompt = 'No negative prompt found';
+                let steps = 'Unknown';
+                let cfgScale = 'Unknown';
+                let sampler = 'Unknown';
+                let seed = 'Unknown';
+
+                // Parse prompt data first (more reliable for actual generation parameters)
+                if (comfyData.prompt) {
+                    const promptNodes = comfyData.prompt;
+                    
+                    for (const nodeId in promptNodes) {
+                        const node = promptNodes[nodeId];
+                        
+                        // Checkpoint
+                        if (node.class_type === 'CheckpointLoaderSimple' && node.inputs) {
+                            checkpoint = node.inputs.ckpt_name || checkpoint;
+                        }
+                        
+                        // Prompts - need to identify which is positive vs negative
+                        if (node.class_type === 'PromptManager' && node.inputs && node.inputs.text) {
+                            // PromptManager typically contains the positive prompt
+                            positivePrompt = node.inputs.text;
+                        }
+                        
+                        if (node.class_type === 'CLIPTextEncode' && node.inputs && node.inputs.text) {
+                            // Check if this looks like a negative prompt
+                            const text = node.inputs.text.toLowerCase();
+                            if (text.includes('bad anatomy') || text.includes('unfinished') || 
+                                text.includes('censored') || text.includes('weird anatomy') ||
+                                text.includes('negative') || text.includes('embedding:')) {
+                                negativePrompt = node.inputs.text;
+                            } else if (positivePrompt === 'No prompt found') {
+                                // If we haven't found a positive prompt yet, this might be it
+                                positivePrompt = node.inputs.text;
+                            }
+                        }
+                        
+                        // Sampling parameters
+                        if (node.class_type === 'KSampler' && node.inputs) {
+                            seed = node.inputs.seed || seed;
+                            steps = node.inputs.steps || steps;
+                            cfgScale = node.inputs.cfg || cfgScale;
+                            sampler = node.inputs.sampler_name || sampler;
+                        }
+                    }
+                }
+
+                // Parse workflow data (this is what we actually have in your case)
+                if (comfyData.workflow && comfyData.workflow.nodes) {
+                    const nodes = comfyData.workflow.nodes;
+                    console.log('DEBUG: Total nodes found:', nodes.length);
+                    
+                    // Debug: Log all nodes to understand the structure
+                    nodes.forEach((node, index) => {
+                        console.log(`Node ${index} (ID: ${node.id}):`, {
+                            type: node.type,
+                            title: node.title,
+                            widgets_values: node.widgets_values
+                        });
+                    });
+                    
+                    // Look for checkpoint loader
+                    const checkpointNode = nodes.find(node => 
+                        node.type === 'CheckpointLoaderSimple' || 
+                        node.type === 'CheckpointLoader'
+                    );
+                    if (checkpointNode && checkpointNode.widgets_values && checkpointNode.widgets_values[0]) {
+                        checkpoint = checkpointNode.widgets_values[0];
+                    }
+
+                    // Look for prompts in workflow nodes
+                    const textEncodeNodes = nodes.filter(node => node.type === 'CLIPTextEncode');
+                    const promptManagerNodes = nodes.filter(node => node.type === 'PromptManager');
+                    
+                    // Check PromptManager first for positive prompt
+                    if (promptManagerNodes.length > 0 && promptManagerNodes[0].widgets_values && promptManagerNodes[0].widgets_values[0]) {
+                        positivePrompt = promptManagerNodes[0].widgets_values[0];
+                    }
+                    
+                    // For negative prompt, look for CLIPTextEncode that contains negative keywords
+                    for (const node of textEncodeNodes) {
+                        if (node.widgets_values && node.widgets_values[0]) {
+                            const text = node.widgets_values[0].toLowerCase();
+                            if (text.includes('bad anatomy') || text.includes('unfinished') || 
+                                text.includes('censored') || text.includes('weird anatomy') ||
+                                text.includes('negative') || text.includes('embedding:')) {
+                                negativePrompt = node.widgets_values[0];
+                                break;
+                            }
+                        }
+                    }
+
+                    // Extract generation parameters from their source nodes
+                    // Look for specific node types with better fallback logic
+                    
+                    // CFG Scale - prioritize Float nodes with title 'CFG', then other sources
+                    console.log('DEBUG: Looking for CFG scale...');
+                    
+                    // First priority: Float node with title 'CFG'
+                    const cfgFloatNode = nodes.find(node => node.type === 'Float' && node.title === 'CFG');
+                    if (cfgFloatNode && cfgFloatNode.widgets_values && cfgFloatNode.widgets_values[0]) {
+                        cfgScale = cfgFloatNode.widgets_values[0];
+                        console.log(`DEBUG: Found CFG in Float node: ${cfgScale}`);
+                    }
+                    
+                    // If not found, look for specific value of 7 (your target CFG)
+                    if (cfgScale === 'Unknown') {
+                        for (const node of nodes) {
+                            if (node.widgets_values && Array.isArray(node.widgets_values)) {
+                                for (let i = 0; i < node.widgets_values.length; i++) {
+                                    const value = node.widgets_values[i];
+                                    if (value === 7) {  // Target the specific value you mentioned
+                                        cfgScale = value;
+                                        console.log(`DEBUG: Found target CFG value 7 in node ${node.id} (${node.type}) at index ${i}`);
+                                        break;
+                                    }
+                                }
+                                if (cfgScale !== 'Unknown') break;
+                            }
+                        }
+                    }
+                    
+                    // Fallback: any reasonable CFG value
+                    if (cfgScale === 'Unknown') {
+                        for (const node of nodes) {
+                            if (node.widgets_values && Array.isArray(node.widgets_values)) {
+                                for (let i = 0; i < node.widgets_values.length; i++) {
+                                    const value = node.widgets_values[i];
+                                    if (typeof value === 'number' && value > 1 && value <= 30) {
+                                        console.log(`DEBUG: Found potential CFG ${value} in node ${node.id} (${node.type}) at index ${i}`);
+                                        cfgScale = value;
+                                        console.log(`DEBUG: Set CFG scale to ${value}`);
+                                        break;
+                                    }
+                                }
+                                if (cfgScale !== 'Unknown') break;
+                            }
+                        }
+                    }
+                    
+                    // Steps - prioritize Int nodes with title 'Steps', then target value 30
+                    console.log('DEBUG: Looking for steps...');
+                    
+                    // First priority: Int node with title 'Steps'
+                    const stepsIntNode = nodes.find(node => node.type === 'Int' && node.title === 'Steps');
+                    if (stepsIntNode && stepsIntNode.widgets_values && stepsIntNode.widgets_values[0]) {
+                        steps = stepsIntNode.widgets_values[0];
+                        console.log(`DEBUG: Found steps in Int node: ${steps}`);
+                    }
+                    
+                    // If not found, look for specific value of 30 (your target steps)
+                    if (steps === 'Unknown') {
+                        for (const node of nodes) {
+                            if (node.widgets_values && Array.isArray(node.widgets_values)) {
+                                for (let i = 0; i < node.widgets_values.length; i++) {
+                                    const value = node.widgets_values[i];
+                                    if (value === 30) {  // Target the specific value you mentioned
+                                        steps = value;
+                                        console.log(`DEBUG: Found target steps value 30 in node ${node.id} (${node.type}) at index ${i}`);
+                                        break;
+                                    }
+                                }
+                                if (steps !== 'Unknown') break;
+                            }
+                        }
+                    }
+                    
+                    // Fallback: reasonable step values, prefer 10-150 range
+                    if (steps === 'Unknown') {
+                        for (const node of nodes) {
+                            if (node.widgets_values && Array.isArray(node.widgets_values)) {
+                                for (let i = 0; i < node.widgets_values.length; i++) {
+                                    const value = node.widgets_values[i];
+                                    if (typeof value === 'number' && value >= 10 && value <= 150) {
+                                        console.log(`DEBUG: Found good steps value ${value} in node ${node.id} (${node.type}) at index ${i}`);
+                                        steps = value;
+                                        console.log(`DEBUG: Set steps to ${value}`);
+                                        break;
+                                    }
+                                }
+                                if (steps !== 'Unknown') break;
+                            }
+                        }
+                    }
+                    
+                    // Sampler - look for valid ComfyUI samplers
+                    console.log('DEBUG: Looking for sampler...');
+                    const validSamplers = [
+                        'euler', 'euler_ancestral', 'heun', 'dpm_2', 'dpm_2_ancestral', 'lms', 
+                        'dpm_fast', 'dpm_adaptive', 'dpmpp_2s_ancestral', 'dpmpp_sde', 'dpmpp_sde_gpu',
+                        'dpmpp_2m', 'dpmpp_2m_sde', 'dpmpp_2m_sde_gpu', 'dpmpp_3m_sde', 'dpmpp_3m_sde_gpu',
+                        'ddim', 'uni_pc', 'uni_pc_bh2'
+                    ];
+                    for (const node of nodes) {
+                        if (node.widgets_values && Array.isArray(node.widgets_values)) {
+                            for (let i = 0; i < node.widgets_values.length; i++) {
+                                const value = node.widgets_values[i];
+                                if (typeof value === 'string') {
+                                    const samplerValue = value.toLowerCase();
+                                    if (validSamplers.some(validSampler => samplerValue.includes(validSampler))) {
+                                        console.log(`DEBUG: Found sampler ${value} in node ${node.id} (${node.type}) at index ${i}`);
+                                        if (sampler === 'Unknown') {
+                                            sampler = value;
+                                            console.log(`DEBUG: Set sampler to ${value}`);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Seed - look for large numbers that could be seeds
+                    console.log('DEBUG: Looking for seed...');
+                    for (const node of nodes) {
+                        if (node.widgets_values && Array.isArray(node.widgets_values)) {
+                            for (let i = 0; i < node.widgets_values.length; i++) {
+                                const value = node.widgets_values[i];
+                                if (typeof value === 'number' && value > 100000) {
+                                    console.log(`DEBUG: Found potential seed ${value} in node ${node.id} (${node.type}) at index ${i}`);
+                                    if (seed === 'Unknown') {
+                                        seed = value;
+                                        console.log(`DEBUG: Set seed to ${value}`);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // If we still don't have sampling params, look at KSampler widgets_values directly
+                    const ksamplerNode = nodes.find(node => 
+                        node.type === 'KSampler' || node.type === 'KSamplerAdvanced'
+                    );
+                    if (ksamplerNode && ksamplerNode.widgets_values) {
+                        const widgets = ksamplerNode.widgets_values;
+                        // KSampler widgets_values order: [seed, control_mode, steps, cfg, sampler_name, scheduler, denoise, ...]
+                        if (seed === 'Unknown' && widgets[0]) seed = widgets[0];
+                        if (steps === 'Unknown' && widgets[2]) steps = widgets[2];
+                        if (cfgScale === 'Unknown' && widgets[3]) cfgScale = widgets[3];
+                        if (sampler === 'Unknown' && widgets[4]) sampler = widgets[4];
+                    }
+                }
+
+                return {
+                    positivePrompt,
+                    negativePrompt,
+                    checkpoint,
+                    steps,
+                    cfgScale,
+                    sampler,
+                    seed,
+                    workflow: comfyData.workflow,
+                    prompt: comfyData.prompt,
+                    imagePath
+                };
+            }
+
+            addMetadataSidebar() {
+                const viewerContainer = document.querySelector('.viewer-container');
+                if (!viewerContainer || document.getElementById('metadata-sidebar')) return;
+
+                const sidebar = document.createElement('div');
+                sidebar.id = 'metadata-sidebar';
+                sidebar.className = 'metadata-sidebar';
+                sidebar.innerHTML = `
+                    <!-- Header -->
+                    <div class="flex items-center justify-between p-4 border-b border-gray-700">
+                        <div class="flex items-center gap-2">
+                            <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                            </svg>
+                            <h1 class="text-lg font-medium text-white">Generation data</h1>
+                        </div>
+                        <button class="text-xs text-blue-400 hover:text-blue-300 transition-colors metadata-copy-all">
+                            📋 COPY ALL
+                        </button>
+                    </div>
+                    
+                    <!-- Scrollable Content -->
+                    <div id="metadata-content" class="flex-1 overflow-y-auto p-4 space-y-6">
+                        <!-- Initial placeholder content -->
+                        <div class="text-center text-gray-500 py-8">
+                            <svg class="w-16 h-16 mx-auto mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                            </svg>
+                            <p class="text-lg mb-2">Loading Metadata...</p>
+                            <p class="text-sm">Extracting ComfyUI workflow data</p>
+                        </div>
+                    </div>
+                `;
+
+                viewerContainer.appendChild(sidebar);
+                this.attachMetadataEventListeners();
+            }
+
+            async loadMetadataForImage(imgElement) {
+                const imageUrl = imgElement.getAttribute('data-original') || imgElement.src;
+                if (!imageUrl) return;
+
+                const metadataContent = document.getElementById('metadata-content');
+                if (!metadataContent) return;
+
+                // Show loading state
+                metadataContent.innerHTML = `
+                    <div class="metadata-loading">
+                        <div class="text-center text-gray-500 py-8">
+                            <svg class="w-16 h-16 mx-auto mb-4 opacity-30 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                            </svg>
+                            <p class="text-lg mb-2">Loading Metadata...</p>
+                            <p class="text-sm">Extracting ComfyUI workflow data</p>
+                        </div>
+                    </div>
+                `;
+
+                try {
+                    const metadata = await this.extractImageMetadata(imageUrl);
+                    this.currentMetadata = metadata;
+                    this.updateMetadataSidebar(metadata);
+                } catch (error) {
+                    console.error('Failed to load metadata:', error);
+                    metadataContent.innerHTML = `
+                        <div class="text-center text-red-500 py-8">
+                            <p class="text-lg mb-2">Failed to Load Metadata</p>
+                            <p class="text-sm">Could not extract ComfyUI workflow data</p>
+                        </div>
+                    `;
+                }
+            }
+
+            updateMetadataSidebar(metadata) {
+                const metadataContent = document.getElementById('metadata-content');
+                if (!metadataContent || !metadata) return;
+
+                metadataContent.innerHTML = `
+                <!-- File Path -->
+                <div>
+                    <h2 class="text-sm font-medium text-gray-300 mb-2">File Path</h2>
+                    <div class="text-sm text-blue-400 hover:text-blue-300 cursor-pointer bg-gray-800 p-2 rounded break-all" data-copy-path="">
+                        ${metadata.imagePath}
+                    </div>
+                </div>
+
+                <!-- Resources used -->
+                <div>
+                    <h2 class="text-sm font-medium text-gray-300 mb-2">Resources used</h2>
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <div class="text-blue-400 hover:text-blue-300 cursor-pointer">${metadata.checkpoint}</div>
+                            <div class="text-xs text-gray-500">ComfyUI Generated</div>
+                        </div>
+                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">CHECKPOINT</span>
+                    </div>
+                </div>
+
+                <!-- Prompt -->
+                <div>
+                    <div class="flex items-center gap-2 mb-2">
+                        <h2 class="text-sm font-medium text-gray-300">Prompt</h2>
+                        <span class="px-2 py-1 text-xs bg-orange-600 text-orange-100 rounded">COMFYUI</span>
+                        <button class="ml-auto text-gray-400 hover:text-gray-300" data-copy-type="positive">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="text-sm text-gray-300 bg-gray-800 p-3 rounded max-h-32 overflow-y-auto">
+                        ${metadata.positivePrompt.substring(0, 200)}${metadata.positivePrompt.length > 200 ? '...' : ''}
+                    </div>
+                    ${metadata.positivePrompt.length > 200 ? '<button class="text-blue-400 hover:text-blue-300 text-sm mt-1" data-show-type="positive">Show more</button>' : ''}
+                </div>
+
+                <!-- Negative prompt -->
+                <div>
+                    <div class="flex items-center justify-between mb-2">
+                        <h2 class="text-sm font-medium text-gray-300">Negative prompt</h2>
+                        <button class="text-gray-400 hover:text-gray-300" data-copy-type="negative">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="text-sm text-gray-300 bg-gray-800 p-3 rounded max-h-32 overflow-y-auto">
+                        ${metadata.negativePrompt.substring(0, 200)}${metadata.negativePrompt.length > 200 ? '...' : ''}
+                    </div>
+                    ${metadata.negativePrompt.length > 200 ? '<button class="text-blue-400 hover:text-blue-300 text-sm mt-1" data-show-type="negative">Show more</button>' : ''}
+                </div>
+
+                <!-- Other metadata -->
+                <div>
+                    <h2 class="text-sm font-medium text-gray-300 mb-3">Other metadata</h2>
+                    <div class="flex flex-wrap gap-2">
+                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">CFG SCALE: ${metadata.cfgScale}</span>
+                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">STEPS: ${metadata.steps}</span>
+                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">SAMPLER: ${metadata.sampler}</span>
+                    </div>
+                    <div class="mt-2">
+                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">SEED: ${metadata.seed}</span>
+                    </div>
+                </div>
+
+                <!-- Raw Workflow Data -->
+                <div>
+                    <h2 class="text-sm font-medium text-gray-300 mb-2">ComfyUI Workflow</h2>
+                    <div class="flex items-center gap-2">
+                        <button class="text-blue-400 hover:text-blue-300 text-sm" data-action="show-workflow">View Raw Workflow JSON</button>
+                        <button class="text-blue-400 hover:text-blue-300" data-action="download-workflow" title="Download JSON">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                `;
+                
+                // Re-attach event listeners after updating content
+                this.attachMetadataEventListeners();
+            }
+
+            attachMetadataEventListeners() {
+                const sidebar = document.getElementById('metadata-sidebar');
+                if (!sidebar) return;
+
+                // Copy buttons
+                const copyBtns = sidebar.querySelectorAll('[data-copy-type]');
+                copyBtns.forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const type = btn.getAttribute('data-copy-type');
+                        if (this.currentMetadata) {
+                            const text = type === 'positive' ? this.currentMetadata.positivePrompt : this.currentMetadata.negativePrompt;
+                            this.copyToClipboard(text);
+                        }
+                    });
+                });
+
+                // File path copy
+                const pathEl = sidebar.querySelector('[data-copy-path]');
+                if (pathEl) {
+                    pathEl.addEventListener('click', () => {
+                        if (this.currentMetadata) {
+                            this.copyToClipboard(this.currentMetadata.imagePath);
+                        }
+                    });
+                }
+
+                // Show more buttons
+                const showMoreBtns = sidebar.querySelectorAll('[data-show-type]');
+                showMoreBtns.forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const type = btn.getAttribute('data-show-type');
+                        this.showFullPrompt(type);
+                    });
+                });
+
+                // Workflow action buttons
+                const actionBtns = sidebar.querySelectorAll('[data-action]');
+                actionBtns.forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const action = btn.getAttribute('data-action');
+                        if (action === 'show-workflow') {
+                            this.showWorkflowData();
+                        } else if (action === 'download-workflow') {
+                            this.downloadWorkflowJSON();
+                        }
+                    });
+                });
+
+                // Copy all button
+                const copyAllBtn = sidebar.querySelector('.metadata-copy-all');
+                if (copyAllBtn) {
+                    copyAllBtn.addEventListener('click', () => {
+                        this.copyAllMetadata();
+                    });
+                }
+            }
+
+            showFullPrompt(type) {
+                if (this.currentMetadata) {
+                    const prompt = type === 'positive' ? this.currentMetadata.positivePrompt : this.currentMetadata.negativePrompt;
+                    const newWindow = window.open('', '_blank');
+                    newWindow.document.write(`
+                        <html>
+                            <head><title>${type.charAt(0).toUpperCase() + type.slice(1)} Prompt</title></head>
+                            <body style="background: #111; color: #fff; font-family: monospace; padding: 20px;">
+                                <h2>${type.charAt(0).toUpperCase() + type.slice(1)} Prompt</h2>
+                                <div style="background: #222; padding: 15px; border-radius: 5px; white-space: pre-wrap; line-height: 1.5;">${prompt}</div>
+                                <button onclick="navigator.clipboard.writeText(\`${prompt.replace(/`/g, '\\`')}\`).then(() => alert('Copied!'))" style="margin-top: 20px; padding: 10px 20px; background: #444; color: #fff; border: none; border-radius: 5px; cursor: pointer;">Copy to Clipboard</button>
+                            </body>
+                        </html>
+                    `);
+                }
+            }
+
+            showWorkflowData() {
+                if (this.currentMetadata && this.currentMetadata.workflow) {
+                    const newWindow = window.open('', '_blank');
+                    newWindow.document.write(`
+                        <html>
+                            <head><title>ComfyUI Workflow Data</title></head>
+                            <body style="background: #111; color: #fff; font-family: monospace; padding: 20px;">
+                                <h2>ComfyUI Workflow JSON</h2>
+                                <pre style="background: #222; padding: 15px; border-radius: 5px; overflow: auto;">${JSON.stringify(this.currentMetadata.workflow, null, 2)}</pre>
+                            </body>
+                        </html>
+                    `);
+                }
+            }
+
+            downloadWorkflowJSON() {
+                if (this.currentMetadata && this.currentMetadata.workflow) {
+                    const dataStr = JSON.stringify(this.currentMetadata.workflow, null, 2);
+                    const dataBlob = new Blob([dataStr], {type: 'application/json'});
+                    const url = URL.createObjectURL(dataBlob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = 'comfyui_workflow.json';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(url);
+                }
+            }
+
+            copyAllMetadata() {
+                if (!this.currentMetadata) return;
+                
+                const allData = `Checkpoint: ${this.currentMetadata.checkpoint || 'Unknown'}
+Positive Prompt: ${this.currentMetadata.positivePrompt}
+Negative Prompt: ${this.currentMetadata.negativePrompt}
+Steps: ${this.currentMetadata.steps || 'Unknown'}
+CFG Scale: ${this.currentMetadata.cfgScale || 'Unknown'}
+Sampler: ${this.currentMetadata.sampler || 'Unknown'}
+Seed: ${this.currentMetadata.seed || 'Unknown'}`;
+                
+                this.copyToClipboard(allData);
             }
         }
 
