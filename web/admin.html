@@ -2843,7 +2843,9 @@
                     this.updateMetadataPanel(comfyData, imageSrc);
                 } catch (error) {
                     console.error('Error extracting metadata:', error);
-                    this.showMetadataError();
+                    
+                    // Try fallback: get prompt from database using current image
+                    await this.tryFallbackMetadata(imageSrc);
                 }
             }
 
@@ -3129,10 +3131,80 @@
             }
 
             async copyPrompt(type) {
-                if (!this.currentMetadata) return;
+                console.log('copyPrompt called with type:', type);
+                console.log('currentMetadata:', this.currentMetadata);
+                
+                if (!this.currentMetadata) {
+                    console.error('No metadata available for copying');
+                    this.showNotification('❌ No metadata available for copying', 'error');
+                    return;
+                }
                 
                 const text = type === 'positive' ? this.currentMetadata.positivePrompt : this.currentMetadata.negativePrompt;
+                console.log('Copying text:', text?.substring(0, 100));
+                
+                if (!text || text === 'No prompt found' || text === 'No negative prompt found') {
+                    this.showNotification(`❌ No ${type} prompt available`, 'error');
+                    return;
+                }
+                
                 await this.copyToClipboard(text);
+            }
+
+            async tryFallbackMetadata(imageSrc) {
+                console.log('Trying fallback metadata extraction for:', imageSrc);
+                
+                try {
+                    // Try to get prompt from current gallery image data
+                    let fallbackPrompt = 'No prompt found';
+                    
+                    if (this.currentGalleryImages && this.currentImageIndex !== null && this.currentGalleryImages[this.currentImageIndex]) {
+                        const currentImage = this.currentGalleryImages[this.currentImageIndex];
+                        console.log('Current image data:', currentImage);
+                        
+                        // If we have prompt_id, try to get the prompt from our local prompts array
+                        if (currentImage.prompt_id && this.prompts) {
+                            const prompt = this.prompts.find(p => p.id === currentImage.prompt_id);
+                            if (prompt) {
+                                fallbackPrompt = prompt.text;
+                                console.log('Found prompt from database:', fallbackPrompt.substring(0, 100));
+                            }
+                        }
+                    }
+                    
+                    // Set fallback metadata
+                    this.currentMetadata = {
+                        positivePrompt: fallbackPrompt,
+                        negativePrompt: 'No negative prompt found',
+                        checkpoint: 'Unknown',
+                        steps: 'Unknown',
+                        cfgScale: 'Unknown',
+                        sampler: 'Unknown',
+                        seed: 'Unknown',
+                        workflow: null,
+                        prompt: null
+                    };
+                    
+                    // Update metadata panel with fallback data
+                    this.updateMetadataPanel({}, imageSrc);
+                    
+                } catch (error) {
+                    console.error('Fallback metadata extraction failed:', error);
+                    this.showMetadataError();
+                    
+                    // Set empty metadata as last resort
+                    this.currentMetadata = {
+                        positivePrompt: 'No prompt found',
+                        negativePrompt: 'No negative prompt found',
+                        checkpoint: 'Unknown',
+                        steps: 'Unknown',
+                        cfgScale: 'Unknown',
+                        sampler: 'Unknown',
+                        seed: 'Unknown',
+                        workflow: null,
+                        prompt: null
+                    };
+                }
             }
 
             async copyAllMetadata() {
