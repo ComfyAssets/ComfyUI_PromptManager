@@ -88,7 +88,7 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
   - **🔍 Metadata Viewer**: Launch standalone PNG analysis tool
   - **📸 Scan Images**: Bulk scan output directories for ComfyUI images
   - **💾 Backup/Restore**: Database backup and recovery operations
-  - **🔧 Maintenance**: Database optimization and cleanup tools
+  - **🔧 Maintenance**: Database optimization and cleanup tools including orphaned prompt removal
   - **📋 Logs**: Comprehensive logging system with download capability
   - **🔍 Diagnostics**: System health checks and troubleshooting
 - **Export Tools**: Download prompts and metadata in various formats
@@ -99,10 +99,11 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
 
 - **SQLite backend** for reliable local storage
 - **Automatic schema creation** and management
-- **Database optimization** with proper indexing
+- **Database optimization** with proper indexing and maintenance tools
 - **Export functionality** to JSON or CSV formats
 - **Backup and restore** capabilities
 - **Relationship tracking** between prompts and generated images
+- **Orphaned prompt cleanup** to remove prompts without linked images
 
 ## Installation
 
@@ -215,6 +216,21 @@ The comprehensive web interface provides:
 - **Export Tools**: Download your prompt collection
 - **Settings Panel**: Configure auto-save and display options
 - **Diagnostics**: System health checks and troubleshooting
+
+### 🔧 Database Maintenance
+
+Keep your database optimized with built-in maintenance tools:
+
+1. **Open the admin dashboard** and click **"🔧 Maintenance"**
+2. **Select maintenance operations**:
+   - **Remove Duplicates**: Find and merge duplicate prompts while preserving images
+   - **Vacuum Database**: Optimize database file size and performance
+   - **Clean Orphaned Images**: Remove image records for missing files
+   - **🚮 Prune Orphaned Prompts**: Remove prompts that have no linked images
+   - **Check Consistency**: Verify database integrity and relationships
+   - **Database Statistics**: Generate detailed database reports
+3. **Run selected operations** and monitor progress in real-time
+4. **Review results** showing detailed information about each operation
 
 ### Database Location
 
@@ -558,6 +574,7 @@ MIT License - see LICENSE file for details.
 - **🖼️ Integrated Metadata Panel**: Real-time workflow analysis in the image viewer
 - **📸 Bulk Image Scanning**: Mass import and analysis of existing ComfyUI output directories
 - **🛠️ System Management Suite**: Complete backup, restore, maintenance, and diagnostic tools
+- **🚮 Orphaned Prompt Cleanup**: Remove prompts that have no linked images for database optimization
 - **📋 Advanced Logging**: Comprehensive logging system with web-based log viewer
 - **🎨 Enhanced Admin Dashboard**: Modern dark theme with improved UX and management tools
 - **🔧 Robust Error Handling**: Advanced PNG parsing with NaN value cleaning and error recovery

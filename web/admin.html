@@ -112,9 +112,14 @@
                         </div>
                     </div>
                 </div>
+            </div>
+        </div>
 
-                <!-- Search Controls -->
-                <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl p-6 border border-gray-700 mb-8">
+        <!-- Search Controls (Sticky) -->
+        <div class="sticky top-0 z-50 bg-gray-925 bg-opacity-95 backdrop-blur-sm border-b border-gray-700/50">
+            <div class="px-6 py-4">
+                <div class="max-w-7xl mx-auto">
+                    <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl p-6 border border-gray-700">
                     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
                         <div class="lg:col-span-2">
                             <label class="block text-sm font-medium text-gray-400 mb-2">Search Text</label>
@@ -200,6 +205,7 @@
                                 class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors">
                             🔍 Metadata
                         </button>
+                    </div>
                     </div>
                 </div>
             </div>
@@ -508,6 +514,14 @@
                             <div class="flex-1">
                                 <div class="text-white font-medium">📊 Database Statistics</div>
                                 <div class="text-sm text-gray-400">Generate detailed database statistics report</div>
+                            </div>
+                        </label>
+                        
+                        <label class="flex items-center space-x-3 p-4 bg-gray-700 rounded-lg hover:bg-gray-600 cursor-pointer">
+                            <input type="checkbox" id="prune_orphaned_prompts" class="maintenance-option w-4 h-4 text-teal-600 bg-gray-600 border-gray-500 rounded focus:ring-teal-500">
+                            <div class="flex-1">
+                                <div class="text-white font-medium">🚮 Prune Orphaned Prompts</div>
+                                <div class="text-sm text-gray-400">Remove prompts that have no linked images</div>
                             </div>
                         </label>
                     </div>
@@ -953,6 +967,8 @@
                     modal.addEventListener("click", (e) => {
                         if (e.target === modal) {
                             modal.classList.add("hidden");
+                            modal.classList.remove("flex");
+                            document.body.style.overflow = "";
                         }
                     });
                 });
@@ -1290,11 +1306,13 @@
             showModal(modalId) {
                 document.getElementById(modalId).classList.remove("hidden");
                 document.getElementById(modalId).classList.add("flex");
+                document.body.style.overflow = "hidden";
             }
 
             hideModal(modalId) {
                 document.getElementById(modalId).classList.add("hidden");
                 document.getElementById(modalId).classList.remove("flex");
+                document.body.style.overflow = "";
             }
 
             showSettingsModal() {
@@ -2375,6 +2393,7 @@
                     </div>
                 `;
                 document.body.appendChild(modal);
+                document.body.style.overflow = "hidden";
                 
                 // Auto-select the text in the textarea
                 const textarea = modal.querySelector('textarea');
@@ -2385,7 +2404,13 @@
                 modal.addEventListener('click', (e) => {
                     if (e.target === modal) {
                         modal.remove();
+                        document.body.style.overflow = "";
                     }
+                });
+                
+                // Also handle the close button
+                modal.querySelector('button').addEventListener('click', () => {
+                    document.body.style.overflow = "";
                 });
             }
 
