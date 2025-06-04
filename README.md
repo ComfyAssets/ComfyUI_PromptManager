@@ -53,13 +53,13 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
 - **Generation Parameters**: Recover steps, CFG scale, sampler, seed, and model information
 - **Multi-Node Support**: Handles PromptManager, CLIPTextEncode, and other node types
 - **Copy & Export**: One-click copying of prompts and workflow JSON download
-- **Standalone Viewer**: Dedicated metadata analysis tool at `/prompt_manager/gallery.html`
+- **Standalone Viewer**: Dedicated metadata analysis tool at `/prompt_manager/metadata.html`
 - **Drag & Drop Interface**: Easy analysis by dropping PNG files directly into the viewer
 - **Error Handling**: Robust parsing with NaN value cleaning and malformed JSON recovery
 
 ### 📋 Standalone Metadata Viewer
 
-- **Independent Tool**: Access at `http://localhost:8188/prompt_manager/gallery.html`
+- **Independent Tool**: Access at `http://localhost:8188/prompt_manager/metadata.html`
 - **Real-time Analysis**: Instant PNG metadata extraction and display
 - **Comprehensive Display**: Shows all discoverable ComfyUI workflow information
 - **Export Capabilities**: Download workflow JSON files for reuse
@@ -131,7 +131,7 @@ ComfyUI Prompt Manager functions as a drop-in replacement for ComfyUI's standard
 
 5. **Access the web interface**:
    - **Admin Dashboard**: `http://localhost:8188/prompt_manager/admin` - Full management interface
-   - **Metadata Viewer**: `http://localhost:8188/prompt_manager/gallery.html` - Standalone PNG analysis tool
+   - **Metadata Viewer**: `http://localhost:8188/prompt_manager/metadata.html` - Standalone PNG analysis tool
    - **Simple Interface**: `http://localhost:8188/prompt_manager/` - Basic prompt browser
 
 ### Prerequisites
@@ -182,7 +182,7 @@ The image gallery automatically captures and links generated images:
 
 Use the standalone metadata viewer to analyze any ComfyUI-generated PNG:
 
-1. **Open the metadata viewer** at `http://localhost:8188/prompt_manager/gallery.html`
+1. **Open the metadata viewer** at `http://localhost:8188/prompt_manager/metadata.html`
 2. **Drag and drop** any PNG file with ComfyUI workflow data
 3. **View extracted information**:
    - **Prompts**: Copy positive/negative prompts with one click
@@ -334,7 +334,7 @@ CREATE TABLE generated_images (
 - **`web/admin.html`** - Advanced admin dashboard with metadata panel
 - **`web/index.html`** - Simple web interface
 - **`web/prompt_manager.js`** - JavaScript functionality
-- **`gallery.html`** - Standalone PNG metadata viewer
+- **`web/metadata.html`** - Standalone PNG metadata viewer
 
 ### File Structure
 
@@ -362,8 +362,8 @@ ComfyUI_PromptManager/
 ├── web/
 │   ├── admin.html               # Advanced admin dashboard
 │   ├── index.html               # Simple web interface
+│   ├── metadata.html            # Standalone metadata viewer
 │   └── prompt_manager.js        # JavaScript functionality
-├── gallery.html                # Standalone metadata viewer
 ├── tests/
 │   ├── __init__.py
 │   └── test_basic.py            # Test suite
@@ -554,7 +554,7 @@ MIT License - see LICENSE file for details.
 ### v3.0.0 (Metadata Analysis Release)
 
 - **🔬 PNG Metadata Analysis**: Advanced ComfyUI workflow extraction from PNG images
-- **📋 Standalone Metadata Viewer**: Dedicated tool at `/gallery.html` for analyzing any ComfyUI image
+- **📋 Standalone Metadata Viewer**: Dedicated tool at `/web/metadata.html` for analyzing any ComfyUI image
 - **🖼️ Integrated Metadata Panel**: Real-time workflow analysis in the image viewer
 - **📸 Bulk Image Scanning**: Mass import and analysis of existing ComfyUI output directories
 - **🛠️ System Management Suite**: Complete backup, restore, maintenance, and diagnostic tools
