@@ -120,7 +120,7 @@
             <div class="px-6 py-4">
                 <div class="max-w-7xl mx-auto">
                     <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl p-6 border border-gray-700">
-                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
                         <div class="lg:col-span-2">
                             <label class="block text-sm font-medium text-gray-400 mb-2">Search Text</label>
                             <input type="text" id="searchText" placeholder="Search prompt content..." 
@@ -137,6 +137,18 @@
                             <label class="block text-sm font-medium text-gray-400 mb-2">Tags</label>
                             <input type="text" id="searchTags" placeholder="tag1, tag2..." 
                                    class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100 placeholder-gray-400">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-400 mb-2">Sort By</label>
+                            <select id="sortBy" 
+                                    class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                                <option value="created_desc">Newest First</option>
+                                <option value="created_asc">Oldest First</option>
+                                <option value="rating_desc">Highest Rated</option>
+                                <option value="rating_asc">Lowest Rated</option>
+                                <option value="text_asc">A-Z</option>
+                                <option value="text_desc">Z-A</option>
+                            </select>
                         </div>
                         <div class="flex items-end">
                             <button id="searchBtn" 
@@ -919,6 +931,9 @@
                 ["searchCategory"].forEach((id) => {
                     document.getElementById(id).addEventListener("change", () => this.search());
                 });
+                
+                // Sort dropdown change
+                document.getElementById("sortBy").addEventListener("change", () => this.renderPrompts());
             }
 
             bindModalEvents() {
@@ -1162,6 +1177,38 @@
                 }
             }
 
+            sortPrompts(prompts) {
+                const sortBy = document.getElementById("sortBy")?.value || "created_desc";
+                const [field, direction] = sortBy.split("_");
+                
+                return [...prompts].sort((a, b) => {
+                    let aVal, bVal;
+                    
+                    switch (field) {
+                        case "rating":
+                            aVal = a.rating || 0;
+                            bVal = b.rating || 0;
+                            break;
+                        case "created":
+                            aVal = new Date(a.created_at);
+                            bVal = new Date(b.created_at);
+                            break;
+                        case "text":
+                            aVal = a.text.toLowerCase();
+                            bVal = b.text.toLowerCase();
+                            break;
+                        default:
+                            return 0;
+                    }
+                    
+                    if (direction === "asc") {
+                        return aVal > bVal ? 1 : aVal < bVal ? -1 : 0;
+                    } else {
+                        return aVal < bVal ? 1 : aVal > bVal ? -1 : 0;
+                    }
+                });
+            }
+
             renderPrompts() {
                 const container = document.getElementById("resultsList");
                 const count = document.getElementById("resultsCount");
@@ -1181,9 +1228,16 @@
                     return;
                 }
 
-                container.innerHTML = this.prompts.map((prompt) => this.renderPromptItem(prompt)).join("");
+                // Sort prompts before rendering
+                const sortedPrompts = this.sortPrompts(this.prompts);
+                container.innerHTML = sortedPrompts.map((prompt) => this.renderPromptItem(prompt)).join("");
                 this.selectedPrompts.clear();
                 this.updateBulkActionButtons();
+                
+                // Add hover behavior to all star ratings
+                sortedPrompts.forEach(prompt => {
+                    this.addStarHoverBehavior(prompt.id);
+                });
             }
 
             renderPromptItem(prompt) {
@@ -1259,9 +1313,46 @@
                     const starNum = i + 1;
                     const isActive = starNum <= rating;
                     console.log(`Star ${starNum}: ${isActive ? 'active' : 'inactive'}`);
-                    const color = isActive ? '#fbbf24' : '#6b7280'; // yellow-400 : gray-500
-                    return `<button style="font-size: 1.125rem; color: ${color}; background: none; border: none; cursor: pointer; transition: color 0.2s;" onmouseover="this.style.color='#fcd34d'" onmouseout="this.style.color='${color}'" onclick="window.admin.setRating(${promptId}, ${starNum})">⭐</button>`;
+                    const starIcon = isActive ? '⭐' : '☆'; // filled star vs outline star
+                    const color = isActive ? '#fbbf24' : '#9ca3af'; // yellow-400 : gray-400
+                    return `<button class="star-btn" data-star="${starNum}" data-prompt-id="${promptId}" style="font-size: 1.125rem; color: ${color}; background: none; border: none; cursor: pointer; transition: all 0.2s;" onclick="window.admin.setRating(${promptId}, ${starNum})">${starIcon}</button>`;
                 }).join("");
+            }
+
+            addStarHoverBehavior(promptId) {
+                const starButtons = document.querySelectorAll(`[data-prompt-id="${promptId}"].star-btn`);
+                const ratingElement = document.querySelector(`[data-id="${promptId}"][data-rating]`);
+                const currentRating = parseInt(ratingElement?.dataset.rating || 0);
+
+                starButtons.forEach((starBtn, index) => {
+                    const starNum = index + 1;
+                    
+                    starBtn.addEventListener('mouseenter', () => {
+                        // Light up all stars up to this one on hover
+                        starButtons.forEach((btn, i) => {
+                            if (i < starNum) {
+                                btn.textContent = '⭐';
+                                btn.style.color = '#fcd34d'; // bright yellow on hover
+                            } else {
+                                btn.textContent = '☆';
+                                btn.style.color = '#9ca3af'; // gray
+                            }
+                        });
+                    });
+                    
+                    starBtn.addEventListener('mouseleave', () => {
+                        // Reset to current rating
+                        starButtons.forEach((btn, i) => {
+                            if (i < currentRating) {
+                                btn.textContent = '⭐';
+                                btn.style.color = '#fbbf24'; // yellow
+                            } else {
+                                btn.textContent = '☆';
+                                btn.style.color = '#9ca3af'; // gray
+                            }
+                        });
+                    });
+                });
             }
 
             escapeHtml(text) {
@@ -1376,6 +1467,8 @@
                 if (ratingElement) {
                     ratingElement.dataset.rating = rating;
                     ratingElement.innerHTML = this.renderStars(rating, promptId);
+                    // Add hover behavior to new stars
+                    this.addStarHoverBehavior(promptId);
                 }
 
                 try {
