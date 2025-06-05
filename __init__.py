@@ -29,12 +29,23 @@ except Exception as e:
     log_message(f"Traceback: {traceback.format_exc()}", 'error')
     raise
 
+try:
+    from .prompt_manager_text import PromptManagerText
+    log_message("Successfully imported PromptManagerText class")
+except Exception as e:
+    log_message(f"ERROR: Failed to import PromptManagerText class: {e}", 'error')
+    import traceback
+    log_message(f"Traceback: {traceback.format_exc()}", 'error')
+    raise
+
 NODE_CLASS_MAPPINGS = {
     "PromptManager": PromptManager,
+    "PromptManagerText": PromptManagerText,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptManager": "Prompt Manager",
+    "PromptManagerText": "Prompt Manager Text",
 }
 
 log_message(f"NODE_CLASS_MAPPINGS: {NODE_CLASS_MAPPINGS}")
