@@ -6,8 +6,8 @@ app.registerExtension({
   name: "PromptManager.UI",
 
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
-    if (nodeData.name === "PromptManager") {
-      console.log("[PromptManager] Patching node type for custom UI");
+    if (nodeData.name === "PromptManager" || nodeData.name === "PromptManagerText") {
+      console.log(`[PromptManager] Patching node type for custom UI: ${nodeData.name}`);
 
       // Store original methods
       const onNodeCreated = nodeType.prototype.onNodeCreated;
@@ -28,6 +28,9 @@ app.registerExtension({
         this._searchResults = [];
         this._selectedPromptIndex = -1;
         this.resultHideTimer = null;
+        
+        // Store node type for conditional behavior
+        this.nodeTypeName = nodeData.name;
 
         // Load settings from API
         this.loadSettings();
