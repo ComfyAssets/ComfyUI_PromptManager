@@ -2003,24 +2003,70 @@ class PromptManagerAPI:
         return response
     
     def _find_comfyui_output_dir(self):
-        """Find the ComfyUI output directory."""
+        """Find the ComfyUI output directory with improved detection logic."""
+        import os
+        from pathlib import Path
         
-        # Common ComfyUI installation paths
+        current_file = Path(__file__).resolve()
+        self.logger.debug(f"Starting ComfyUI output search from: {current_file}")
+        
+        # Method 1: Search upward from current file location
+        current_dir = current_file.parent
+        max_depth = 10  # Prevent infinite loops
+        
+        for i in range(max_depth):
+            # Check if current directory contains ComfyUI markers
+            comfyui_markers = ['main.py', 'nodes.py', 'server.py']
+            if any((current_dir / marker).exists() for marker in comfyui_markers):
+                output_dir = current_dir / "output"
+                if output_dir.exists() and output_dir.is_dir():
+                    self.logger.info(f"Found ComfyUI output directory via upward search: {output_dir}")
+                    return str(output_dir)
+            
+            # Move up one directory
+            parent = current_dir.parent
+            if parent == current_dir:  # Reached filesystem root
+                break
+            current_dir = parent
+        
+        # Method 2: Try common installation patterns relative to this file
+        base_dir = current_file.parent  # /path/to/ComfyUI/custom_nodes/ComfyUI_PromptManager/py
         possible_paths = [
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "..", "..", "output"),
-            os.path.join(os.path.expanduser("~"), "ComfyUI", "output"),
-            os.path.join(os.getcwd(), "output"),
-            os.path.join(os.getcwd(), "..", "output"),
-            os.path.join(os.getcwd(), "..", "..", "output"),
+            # Standard custom node installation: custom_nodes/ComfyUI_PromptManager/py -> output
+            base_dir.parent.parent.parent / "output",  # ../../../output
+            # Nested custom node: custom_nodes/promptmanager/py -> output  
+            base_dir.parent.parent / "output",  # ../../output
+            # Direct in ComfyUI root
+            base_dir.parent / "output",  # ../output
+            base_dir / "output",  # ./output
         ]
         
-        for path in possible_paths:
-            abs_path = os.path.abspath(path)
-            if os.path.exists(abs_path) and os.path.isdir(abs_path):
-                self.logger.info(f"Found ComfyUI output directory: {abs_path}")
-                return abs_path
+        # Method 3: Add common ComfyUI installation locations
+        common_locations = [
+            Path.home() / "ComfyUI" / "output",
+            Path.cwd() / "output",
+            Path.cwd() / ".." / "output", 
+            Path.cwd() / ".." / ".." / "output",
+        ]
         
-        self.logger.warning("ComfyUI output directory not found")
+        all_paths = possible_paths + common_locations
+        
+        for path in all_paths:
+            try:
+                abs_path = path.resolve()
+                if abs_path.exists() and abs_path.is_dir():
+                    self.logger.info(f"Found ComfyUI output directory: {abs_path}")
+                    return str(abs_path)
+            except (OSError, RuntimeError):
+                continue  # Skip invalid paths
+        
+        self.logger.warning("ComfyUI output directory not found. Searched paths:")
+        for path in all_paths:
+            try:
+                self.logger.warning(f"  - {path.resolve()} (exists: {path.exists()})")
+            except (OSError, RuntimeError):
+                self.logger.warning(f"  - {path} (invalid path)")
+        
         return None
     
     def _extract_comfyui_metadata(self, image_path):
