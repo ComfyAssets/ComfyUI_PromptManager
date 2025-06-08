@@ -9,18 +9,24 @@ A comprehensive ComfyUI custom node that extends the standard text encoder with 
 ComfyUI Prompt Manager provides two powerful node types for comprehensive prompt management:
 
 ### **PromptManager** (CLIP Encoding Node)
+
 A drop-in replacement for ComfyUI's standard `CLIPTextEncode` node with database features:
+
 - **🔄 Drop-in Replacement**: Works exactly like the standard text encoder
 - **🤖 CLIP Encoding**: Outputs CONDITIONING for use with samplers and other CLIP-dependent nodes
 
 ### **PromptManagerText** (Text-Only Node)
+
 A text-focused variant that outputs raw STRING for maximum flexibility:
+
 - **📝 Pure Text Output**: Outputs STRING type for use with any text-accepting node
 - **🔗 Text Concatenation**: Built-in prepend/append functionality for dynamic text assembly
 - **⚡ Lightweight Processing**: No CLIP encoding overhead for text-only workflows
 
 ### **Shared Features**
+
 Both nodes include the complete PromptManager feature set:
+
 - **💾 Persistent Storage**: Automatically saves all prompts to a local SQLite database
 - **🔍 Advanced Search**: Query past prompts with text search, category filtering, and metadata
 - **🖼️ Automatic Image Gallery**: Automatically links generated images to their prompts
@@ -39,17 +45,20 @@ Both nodes include the complete PromptManager feature set:
 ### Core Functionality
 
 #### PromptManager (CLIP Encoding)
+
 - **Text Encoding**: Standard CLIP text encoding for ComfyUI workflows
 - **Conditioning Output**: Produces CONDITIONING for samplers and generation nodes
 - **Full Compatibility**: Drop-in replacement for CLIPTextEncode nodes
 
 #### PromptManagerText (Text-Only)
-- **String Output**: Produces STRING for use with any text-accepting node  
+
+- **String Output**: Produces STRING for use with any text-accepting node
 - **Text Concatenation**: Prepend and append fields for dynamic text assembly
 - **Lightweight**: No CLIP encoding overhead for pure text workflows
 - **Flexible Integration**: Works with custom nodes, text processors, and other STRING inputs
 
 #### Shared Features
+
 - **Auto-Save**: Every prompt is automatically saved to the database
 - **Metadata Support**: Optional categories, tags, ratings (1-5), notes, and workflow names
 - **Hash-based Deduplication**: Prevents storing identical prompts multiple times
@@ -74,7 +83,7 @@ The image gallery has been completely redesigned with professional image viewing
 - **File Path Integration**: Direct access to image files in your output directory
 - **Responsive Design**: Works seamlessly across desktop, tablet, and mobile devices
 
-*Image viewing powered by [ViewerJS](https://github.com/fengyuanchen/viewerjs) - A powerful JavaScript image viewer with zoom, rotation, and slideshow features.*
+_Image viewing powered by [ViewerJS](https://github.com/fengyuanchen/viewerjs) - A powerful JavaScript image viewer with zoom, rotation, and slideshow features._
 
 ### 🔬 ComfyUI Workflow Analysis
 
@@ -178,6 +187,7 @@ The image gallery has been completely redesigned with professional image viewing
 ### Basic Usage
 
 #### Using PromptManager (CLIP Encoding)
+
 Replace any `CLIPTextEncode` node with `PromptManager`:
 
 1. **Add the PromptManager node** to your workflow
@@ -186,6 +196,7 @@ Replace any `CLIPTextEncode` node with `PromptManager`:
 4. **Connect the CONDITIONING output** to your sampler node
 
 #### Using PromptManagerText (Text-Only)
+
 For text-only workflows or when you need STRING output:
 
 1. **Add the PromptManagerText node** to your workflow
@@ -196,7 +207,9 @@ For text-only workflows or when you need STRING output:
 4. **Connect the STRING output** to any node that accepts text input
 
 #### Shared Metadata Options
+
 Both nodes support the same metadata fields:
+
 - **Category**: "portraits", "landscapes", "abstract", etc.
 - **Tags**: "detailed, anime, masterpiece" (comma-separated)
 - **Rating**: 1-5 stars for prompt quality (web interface only)
@@ -314,6 +327,7 @@ images = db.get_prompt_images(prompt_id="123")
 ### PromptManager (CLIP Encoding) Examples
 
 #### Example 1: Basic Prompt Storage
+
 ```
 Input: "A beautiful sunset over a mountain lake"
 Category: "landscapes"
@@ -322,6 +336,7 @@ Tags: "nature, sunset, mountains, water"
 ```
 
 #### Example 2: Character Prompt
+
 ```
 Input: "Portrait of a cyberpunk hacker with neon implants"
 Category: "characters"
@@ -332,6 +347,7 @@ Tags: "cyberpunk, portrait, sci-fi, neon"
 ### PromptManagerText (Text-Only) Examples
 
 #### Example 3: Dynamic Text Assembly
+
 ```
 Main Text: "beautiful landscape"
 Prepend Text: "masterpiece, ultra detailed,"
@@ -340,6 +356,7 @@ Append Text: ", 8k resolution, trending on artstation"
 ```
 
 #### Example 4: Text Processing Pipeline
+
 ```
 Input: "A serene mountain lake at sunset"
 Category: "landscapes"
@@ -348,6 +365,7 @@ Tags: "nature, peaceful, golden hour"
 ```
 
 #### Example 5: Multi-Node Text Workflow
+
 ```
 PromptManagerText → Text Processor → Style Applicator → Final Text Node
 "cyberpunk city" → style processing → "neon-lit cyberpunk metropolis at night"
@@ -356,6 +374,7 @@ PromptManagerText → Text Processor → Style Applicator → Final Text Node
 ### Traditional Examples
 
 #### Example 6: Abstract Art
+
 ```
 Input: "Swirling colors in an abstract geometric pattern"
 Category: "abstract"
@@ -645,6 +664,7 @@ MIT License - see LICENSE file for details.
 - **🔄 Dual Node Architecture**: Choose between CLIP encoding (PromptManager) or text-only (PromptManagerText)
 - **🏷️ Shared Metadata System**: Both nodes use the same database and metadata features
 - **🖼️ Unified Gallery**: Images from both node types appear in the same gallery system
+- **📊 Enhanced Tracking**: Improved prompt tracking with prepend/append context preservation
 - **📊 Enhanced Tracking**: Improved prompt tracking with prepend/append context preservation
 
 ### v3.0.3 (ViewerJS Integration & Enhanced Gallery)
