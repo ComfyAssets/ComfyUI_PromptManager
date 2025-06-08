@@ -1,6 +1,6 @@
 """
-PromptManager: Main custom node implementation that extends CLIPTextEncode
-with persistent prompt storage and search capabilities.
+PromptManagerText: A text-only version of PromptManager that outputs STRING 
+without CLIP encoding, while maintaining all database and search features.
 """
 
 import hashlib
@@ -46,18 +46,20 @@ except ImportError:
     from utils.image_monitor import ImageMonitor
 
 
-class PromptManager(ComfyNodeABC):
+class PromptManagerText(ComfyNodeABC):
     """
-    A ComfyUI custom node that functions like CLIPTextEncode but adds:
+    A ComfyUI custom node that provides all PromptManager features but outputs
+    only a STRING without CLIP encoding. Includes:
     - Persistent storage of all prompts in SQLite database
     - Search and retrieval capabilities
     - Metadata management (categories, tags, ratings, notes)
     - Duplicate detection via SHA256 hashing
+    - Text concatenation with prepend/append functionality
     """
     
     def __init__(self):
-        self.logger = get_logger('prompt_manager.node')
-        self.logger.info("Initializing PromptManager node")
+        self.logger = get_logger('prompt_manager_text.node')
+        self.logger.info("Initializing PromptManagerText node")
         
         self.db = PromptDatabase()
         self.prompt_tracker = PromptTracker(self.db)
@@ -65,7 +67,7 @@ class PromptManager(ComfyNodeABC):
         
         # Start image monitoring automatically
         self._start_gallery_system()
-        self.logger.info("PromptManager node initialization completed")
+        self.logger.info("PromptManagerText node initialization completed")
     
     @classmethod
     def INPUT_TYPES(cls) -> InputTypeDict:
@@ -74,10 +76,7 @@ class PromptManager(ComfyNodeABC):
                 "text": (IO.STRING, {
                     "multiline": True, 
                     "dynamicPrompts": True, 
-                    "tooltip": "The text prompt to be encoded and saved to database."
-                }),
-                "clip": (IO.CLIP, {
-                    "tooltip": "The CLIP model used for encoding the text."
+                    "tooltip": "The text prompt to be processed and saved to database."
                 })
             },
             "optional": {
@@ -94,43 +93,42 @@ class PromptManager(ComfyNodeABC):
                     "tooltip": "Search for past prompts containing this text"
                 }),
                 "prepend_text": (IO.STRING, {
+                    "default": "",
                     "tooltip": "Text to prepend to the main prompt (connected STRING nodes will be added before the main text)"
                 }),
                 "append_text": (IO.STRING, {
+                    "default": "",
                     "tooltip": "Text to append to the main prompt (connected STRING nodes will be added after the main text)"
                 })
             }
         }
     
-    RETURN_TYPES = (IO.CONDITIONING, IO.STRING)
+    RETURN_TYPES = (IO.STRING,)
     OUTPUT_TOOLTIPS = (
-        "A conditioning containing the embedded text used to guide the diffusion model.",
-        "The final combined text string (with prepend/append applied) that was encoded."
+        "The final combined text string (with prepend/append applied) ready for use in other nodes.",
     )
-    FUNCTION = "encode"
+    FUNCTION = "process_text"
     CATEGORY = "PromptManager/Text"
     DESCRIPTION = (
-        "Encodes a text prompt using a CLIP model into an embedding that can be used to guide "
-        "the diffusion model towards generating specific images. Additionally saves all prompts "
-        "to a local SQLite database with optional metadata for search and retrieval."
+        "Processes and manages text prompts with database storage and search capabilities. "
+        "Outputs a plain STRING that can be used with any node that accepts text input. "
+        "Includes all PromptManager features: categorization, tagging, search, and prepend/append functionality."
     )
     
-    def encode(
+    def process_text(
         self, 
-        clip, 
         text: str,
         category: str = "",
         tags: str = "",
         search_text: str = "",
         prepend_text: str = "",
         append_text: str = ""
-    ) -> Tuple[Any]:
+    ) -> Tuple[str]:
         """
-        Encode the text prompt and save it to the database.
+        Process the text prompt and save it to the database.
         
         Args:
-            clip: The CLIP model for encoding
-            text: The text prompt to encode
+            text: The text prompt to process
             category: Optional category for organization
             tags: Comma-separated tags
             search_text: Text to search for in past prompts
@@ -138,10 +136,7 @@ class PromptManager(ComfyNodeABC):
             append_text: Text to append to the main prompt
             
         Returns:
-            Tuple containing the conditioning for the diffusion model and the final text string
-            
-        Raises:
-            RuntimeError: If clip input is invalid
+            Tuple containing the final processed text string
         """
         # Combine prepend, main text, and append text
         final_text = ""
@@ -151,24 +146,11 @@ class PromptManager(ComfyNodeABC):
         if append_text and append_text.strip():
             final_text += " " + append_text.strip()
         
-        # Use the combined text for encoding
-        encoding_text = final_text
-        
         # For database storage, save the original main text with metadata about prepend/append
         storage_text = text
         
         # Search functionality is now handled by the JavaScript UI
         # The search parameters are still available for backend processing if needed
-        
-        # Validate CLIP model
-        if clip is None:
-            error_msg = (
-                "ERROR: clip input is invalid: None\n\n"
-                "If the clip is from a checkpoint loader node your checkpoint does not "
-                "contain a valid clip or text encoder model."
-            )
-            self.logger.error("CLIP validation failed: clip input is None")
-            raise RuntimeError(error_msg)
         
         # Save prompt to database and set execution context for gallery tracking
         prompt_id = None
@@ -192,7 +174,7 @@ class PromptManager(ComfyNodeABC):
                 # Set current prompt for image tracking
                 if prompt_id:
                     execution_id = self.prompt_tracker.set_current_prompt(
-                        prompt_text=encoding_text.strip(),  # Use final combined text for tracking
+                        prompt_text=final_text.strip(),  # Use final combined text for tracking
                         additional_data={
                             'category': category.strip() if category else None,
                             'tags': extended_tags,
@@ -204,17 +186,11 @@ class PromptManager(ComfyNodeABC):
                     self.logger.info(f"Set execution context: {execution_id} for prompt ID: {prompt_id}")
                 
             except Exception as e:
-                # Log error but don't fail the encoding
+                # Log error but don't fail the processing
                 self.logger.warning(f"Failed to save prompt to database: {e}")
-                # Already logged above, no need for additional print
         
-        # Perform standard CLIP text encoding using the combined text
-        self.logger.debug(f"Performing CLIP text encoding on combined text: {encoding_text[:100]}...")
-        tokens = clip.tokenize(encoding_text)
-        conditioning = clip.encode_from_tokens_scheduled(tokens)
-        
-        self.logger.debug("CLIP encoding completed successfully")
-        return (conditioning, encoding_text)
+        self.logger.debug(f"Text processing completed: {final_text[:100]}...")
+        return (final_text,)
     
     def _save_prompt_to_database(
         self,
@@ -270,7 +246,6 @@ class PromptManager(ComfyNodeABC):
             
         except Exception as e:
             self.logger.error(f"Error saving prompt to database: {e}")
-            # Already logged above, no need for additional print
             return None
     
     def _generate_hash(self, text: str) -> str:
