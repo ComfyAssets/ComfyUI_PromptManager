@@ -63,27 +63,50 @@ Both nodes include the complete PromptManager feature set:
 - **Metadata Support**: Optional categories, tags, ratings (1-5), notes, and workflow names
 - **Hash-based Deduplication**: Prevents storing identical prompts multiple times
 
-### 🖼️ Advanced Image Gallery with ViewerJS Integration
+### 🖼️ Advanced Output-Wide Gallery with Full Media Support
 
 ![Prompt Editor](images/pm-03.jpg)
 
-The image gallery has been completely redesigned with professional image viewing capabilities powered by [ViewerJS](https://fengyuanchen.github.io/viewerjs/):
+The comprehensive gallery system provides complete management of all ComfyUI output with professional viewing capabilities:
 
-- **Professional Image Viewer**: Full-featured image viewing experience with zoom, rotation, and slideshow modes
-- **Advanced Navigation**: Smooth transitions, thumbnail navigation, and keyboard shortcuts
+#### **📁 Output-Wide Gallery Mode**
+- **Complete Output Monitoring**: Automatically scans and displays ALL content from your ComfyUI output directory
+- **Multi-Format Support**: Handles images (.png, .jpg, .jpeg, .webp, .gif) and videos (.mp4, .webm, .avi, .mov, .mkv, .m4v, .wmv)
+- **Intelligent Organization**: View all generated content regardless of which workflow created it
+- **Advanced Filtering**: Filter by media type, date range, file size, and generation parameters
+- **Performance Optimized**: Efficient scanning with thumbnail generation and lazy loading
+
+#### **🎬 Full Video Support**
+- **Native Video Playback**: HTML5 video player with custom controls for all supported formats
+- **Video Thumbnails**: Automatic thumbnail generation with OpenCV, ffmpeg, or placeholder fallback
+- **Playback Controls**: Autoplay, mute, loop settings with persistent preferences
+- **Video Navigation**: Seamless navigation between videos with keyboard shortcuts
+- **Video Metadata**: Display duration, resolution, aspect ratio, and file information
+- **Mixed Media Gallery**: Videos and images integrated seamlessly in the same interface
+
+#### **🔍 Professional Image Viewer (ViewerJS Integration)**
+- **Full-Featured Viewing**: Zoom, rotation, slideshow modes with professional controls
+- **Advanced Navigation**: Smooth transitions, thumbnail strip, and keyboard shortcuts
 - **Zoom Controls**: Mouse wheel zoom, drag to pan, and touch gesture support
-- **Toolbar Features**: Comprehensive toolbar with zoom, rotate, flip, reset, and fullscreen options
-- **Dark Theme Integration**: Seamless dark mode styling that matches the admin interface
-- **Smart Image Detection**: Automatically monitors ComfyUI output directory for new images
-- **Intelligent Linking**: Links generated images to their corresponding prompts based on execution timing
-- **Real-time Metadata Extraction**: Advanced PNG parsing with ComfyUI workflow analysis
-- **Integrated Metadata Sidebar**: Live workflow data panel with copy functionality for prompts and parameters
-- **Generation Parameter Display**: CFG scale, steps, sampler, seed, and model information
-- **One-click Copying**: Copy prompts, parameters, and workflow data directly from the viewer
-- **File Path Integration**: Direct access to image files in your output directory
-- **Responsive Design**: Works seamlessly across desktop, tablet, and mobile devices
+- **Toolbar Features**: Comprehensive toolbar with zoom, rotate, flip, reset, and fullscreen
+- **Dark Theme Integration**: Seamless styling that matches the admin interface
 
-_Image viewing powered by [ViewerJS](https://github.com/fengyuanchen/viewerjs) - A powerful JavaScript image viewer with zoom, rotation, and slideshow features._
+#### **🔬 Advanced Metadata Analysis**
+- **Real-time PNG Parsing**: Extract ComfyUI workflow data from any generated image
+- **Integrated Metadata Panel**: Live workflow analysis with copy functionality
+- **Generation Parameters**: CFG scale, steps, sampler, seed, and model information
+- **One-click Copying**: Copy prompts, parameters, and workflow data directly
+- **File Path Integration**: Direct access to files in your output directory
+- **Cross-Platform Support**: Works on desktop, tablet, and mobile devices
+
+#### **⚡ Performance Features**
+- **Smart Thumbnail System**: Generates optimized thumbnails for faster loading
+- **Lazy Loading**: Load content as needed for smooth browsing of large galleries
+- **Grid & List Views**: Choose between compact grid or detailed list display
+- **Pagination**: Efficient browsing of thousands of generated files
+- **Search & Filter**: Real-time search across filenames and metadata
+
+_Powered by [ViewerJS](https://github.com/fengyuanchen/viewerjs) for professional image viewing capabilities._
 
 ### 🔬 ComfyUI Workflow Analysis
 
@@ -218,24 +241,51 @@ Both nodes support the same metadata fields:
 
 Both nodes will automatically save prompts to the database and link any generated images to the prompt.
 
-### 🖼️ Using the Image Gallery
+### 🖼️ Using the Output-Wide Gallery
 
-The image gallery automatically captures and links generated images:
+The comprehensive gallery system provides complete access to all your ComfyUI output:
 
-1. **Generate images** using workflows with the Prompt Manager node
-2. **Open the admin interface** at `http://localhost:8188/prompt_manager/admin`
-3. **Click the "🖼️ Gallery" button** on any prompt to view its images
-4. **Click any thumbnail** to open the full-size image viewer with integrated metadata panel
-5. **Navigate images** using:
-   - **Arrow keys** (←/→) for keyboard navigation
-   - **Navigation buttons** for mouse control
-   - **ESC key** to close the viewer
-6. **View metadata** in the right panel showing:
-   - **File path** in output directory
-   - **Model/checkpoint** information
-   - **Prompts** (positive and negative)
-   - **Generation parameters** (steps, CFG, sampler, seed)
-   - **Raw workflow data** with download option
+#### **📁 Accessing the Gallery**
+1. **Open the admin interface** at `http://localhost:8188/prompt_manager/admin`
+2. **Click the "🖼️ Gallery" button** to open the output-wide gallery
+3. **Browse all content** from your ComfyUI output directory
+
+#### **🎬 Video & Image Support**
+- **Mixed Media Viewing**: Images and videos appear together in the same gallery
+- **Video Thumbnails**: Videos show with play button overlays and 🎬 icons
+- **Smart Filtering**: Filter by media type (All, Images, Videos) using the dropdown
+
+#### **⚙️ Gallery Settings**
+Configure your viewing experience in the settings panel:
+- **Performance Settings**: Grid columns, image quality, lazy loading
+- **Video Settings**: Autoplay, mute by default, loop videos
+- **Thumbnail Management**: Generate optimized thumbnails for faster loading
+
+#### **🖼️ Image Viewing Experience**
+1. **Click any image** to open the professional viewer with:
+   - **Full-screen viewing** with zoom, rotation, and slideshow controls
+   - **Integrated metadata panel** showing workflow data and generation parameters
+   - **Navigation arrows** and keyboard shortcuts (←/→ arrow keys)
+   - **Copy functionality** for prompts, parameters, and workflow data
+2. **Use keyboard shortcuts**:
+   - **Arrow keys** (←/→) for navigation
+   - **ESC** to close viewer
+   - **Space** for slideshow mode
+
+#### **🎬 Video Viewing Experience**
+1. **Click any video** to open the video player with:
+   - **HTML5 video controls** with play, pause, seek, and fullscreen
+   - **Custom control buttons** for mute/unmute and loop toggle
+   - **Video information panel** showing duration, resolution, and file details
+   - **Navigation between videos** using arrow keys or buttons
+2. **Playback settings** are remembered across sessions
+
+#### **🔍 Advanced Features**
+- **Real-time Search**: Search across filenames and metadata
+- **View Modes**: Switch between grid and list views
+- **Sorting Options**: Sort by date, size, or filename
+- **Pagination**: Efficiently browse thousands of files
+- **Thumbnail Generation**: Create optimized thumbnails for better performance
 
 ### 🔬 Analyzing ComfyUI Images
 
@@ -655,6 +705,20 @@ MIT License - see LICENSE file for details.
 - **Version control**: Track prompt iterations and effectiveness
 
 ## Changelog
+
+### v3.0.9 (Output-Wide Gallery & Video Support)
+
+- **📁 Output-Wide Gallery Mode**: Complete gallery redesign to show ALL content from ComfyUI output directory
+- **🎬 Full Video Support**: Native video playback with HTML5 player for .mp4, .webm, .avi, .mov, .mkv, .m4v, .wmv formats
+- **🖼️ Video Thumbnail Generation**: Automatic video thumbnails using OpenCV, ffmpeg, or placeholder fallback
+- **⚙️ Video Settings Panel**: Configurable autoplay, mute, and loop settings with persistent preferences
+- **🎮 Video Navigation**: Seamless navigation between videos with keyboard shortcuts and custom controls
+- **📊 Video Metadata Display**: Show duration, resolution, aspect ratio, and detailed file information
+- **🔄 Mixed Media Integration**: Videos and images seamlessly integrated in the same gallery interface
+- **⚡ Enhanced Performance**: Optimized thumbnail generation for both images and videos
+- **🎛️ Advanced Gallery Settings**: Comprehensive settings panel with video controls and performance options
+- **🖱️ Improved Click Handling**: Fixed thumbnail failures to preserve click functionality
+- **📱 Mobile Compatibility**: Enhanced responsive design for video playback on all devices
 
 ### v3.0.5 (Text-Only Node Release)
 
