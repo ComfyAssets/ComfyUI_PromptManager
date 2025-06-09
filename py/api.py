@@ -73,6 +73,14 @@ class PromptManagerAPI:
         async def get_tags_route(request):
             return await self.get_tags(request)
 
+        @routes.get("/prompt_manager/scan_duplicates")
+        async def scan_duplicates_route(request):
+            return await self.scan_duplicates_endpoint(request)
+
+        @routes.post("/prompt_manager/delete_duplicate_images")
+        async def delete_duplicate_images_route(request):
+            return await self.delete_duplicate_images_endpoint(request)
+
         @routes.post("/prompt_manager/cleanup")
         async def cleanup_duplicates_route(request):
             return await self.cleanup_duplicates_endpoint(request)
@@ -186,6 +194,38 @@ class PromptManagerAPI:
                     status=500,
                 )
 
+        # Serve the gallery interface (new admin gallery)
+        @routes.get("/prompt_manager/gallery")
+        async def serve_gallery_admin_ui(request):
+            try:
+                import os
+
+                current_dir = os.path.dirname(
+                    os.path.dirname(os.path.abspath(__file__))
+                )
+                html_path = os.path.join(current_dir, "web", "gallery.html")
+
+                if os.path.exists(html_path):
+                    with open(html_path, "r", encoding="utf-8") as f:
+                        html_content = f.read()
+
+                    return web.Response(
+                        text=html_content, content_type="text/html", charset="utf-8"
+                    )
+                else:
+                    return web.Response(
+                        text="<h1>Gallery not found</h1><p>gallery.html file not located at expected path.</p>",
+                        content_type="text/html",
+                        status=404,
+                    )
+
+            except Exception as e:
+                return web.Response(
+                    text=f"<h1>Error</h1><p>Failed to load gallery: {str(e)}</p>",
+                    content_type="text/html",
+                    status=500,
+                )
+
         # Statistics endpoint
         @routes.get("/prompt_manager/stats")
         async def get_stats_route(request):
@@ -262,9 +302,17 @@ class PromptManagerAPI:
         async def search_images_route(request):
             return await self.search_images(request)
 
+        @routes.get("/prompt_manager/images/output")
+        async def get_output_images_route(request):
+            return await self.get_output_images(request)
+
         @routes.get("/prompt_manager/images/{image_id}/file")
         async def serve_image_route(request):
             return await self.serve_image(request)
+
+        @routes.get("/prompt_manager/images/serve/{filepath:.*}")
+        async def serve_output_image_route(request):
+            return await self.serve_output_image(request)
 
         @routes.post("/prompt_manager/images/link")
         async def link_image_route(request):
@@ -273,6 +321,18 @@ class PromptManagerAPI:
         @routes.delete("/prompt_manager/images/{image_id}")
         async def delete_image_route(request):
             return await self.delete_image(request)
+
+        @routes.post("/prompt_manager/images/generate-thumbnails")
+        async def generate_thumbnails_route(request):
+            return await self.generate_thumbnails(request)
+
+        @routes.get("/prompt_manager/images/generate-thumbnails/progress")
+        async def generate_thumbnails_progress_route(request):
+            return await self.generate_thumbnails_with_progress(request)
+
+        @routes.post("/prompt_manager/images/clear-thumbnails")
+        async def clear_thumbnails_route(request):
+            return await self.clear_thumbnails(request)
 
         # Diagnostic endpoints
         @routes.get("/prompt_manager/diagnostics")
@@ -558,6 +618,29 @@ class PromptManagerAPI:
                 status=500,
             )
 
+    async def scan_duplicates_endpoint(self, request):
+        """
+        Scan for duplicate images without removing them.
+        GET /prompt_manager/scan_duplicates
+        """
+        try:
+            duplicates = await self.find_duplicate_images()
+
+            return web.json_response(
+                {
+                    "success": True,
+                    "duplicates": duplicates,
+                    "message": f"Found {len(duplicates)} groups of duplicate images",
+                }
+            )
+
+        except Exception as e:
+            self.logger.error(f"Scan duplicates error: {e}")
+            return web.json_response(
+                {"success": False, "error": f"Failed to scan duplicate images: {str(e)}"},
+                status=500,
+            )
+
     async def cleanup_duplicates_endpoint(self, request):
         """
         Cleanup duplicate prompts endpoint.
@@ -578,6 +661,216 @@ class PromptManagerAPI:
             self.logger.error(f"Cleanup error: {e}")
             return web.json_response(
                 {"success": False, "error": f"Failed to cleanup duplicates: {str(e)}"},
+                status=500,
+            )
+
+    async def find_duplicate_images(self):
+        """
+        Find duplicate images in the output folder based on file content hash.
+        
+        Returns:
+            List of duplicate groups, each containing:
+            - hash: The file content hash
+            - images: List of image records with same content
+        """
+        import hashlib
+        from pathlib import Path
+        
+        self.logger.info("Scanning for duplicate images")
+        
+        try:
+            # Find ComfyUI output directory
+            output_dir = self._find_comfyui_output_dir()
+            if not output_dir:
+                self.logger.warning("ComfyUI output directory not found")
+                return []
+            
+            output_path = Path(output_dir)
+
+            # Extensions to check
+            image_extensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff']
+            video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.gif']
+            all_extensions = image_extensions + video_extensions
+
+            # Find all media files, excluding thumbnails directory
+            media_files = []
+            for ext in all_extensions:
+                for media_path in output_path.rglob(f"*{ext.lower()}"):
+                    if 'thumbnails' not in media_path.parts:
+                        media_files.append(media_path)
+                for media_path in output_path.rglob(f"*{ext.upper()}"):
+                    if 'thumbnails' not in media_path.parts:
+                        media_files.append(media_path)
+
+            self.logger.info(f"Found {len(media_files)} media files to analyze")
+
+            # Calculate hash for each file
+            file_hashes = {}
+            processed = 0
+            
+            for media_path in media_files:
+                try:
+                    # Calculate file hash
+                    file_hash = self._calculate_file_hash(media_path)
+                    
+                    if file_hash not in file_hashes:
+                        file_hashes[file_hash] = []
+                    
+                    # Create image info object similar to get_output_images
+                    stat = media_path.stat()
+                    rel_path = media_path.relative_to(output_path)
+                    extension = media_path.suffix.lower()
+                    is_video = extension in [ext.lower() for ext in video_extensions]
+                    media_type = 'video' if is_video else 'image'
+                    
+                    # Check if thumbnail exists
+                    thumbnail_url = None
+                    thumbnails_dir = output_path / "thumbnails"
+                    if thumbnails_dir.exists():
+                        thumbnail_ext = '.jpg' if is_video else extension
+                        thumbnail_rel_path = f"thumbnails/{media_path.stem}_thumb{thumbnail_ext}"
+                        thumbnail_abs_path = output_path / thumbnail_rel_path
+                        
+                        if thumbnail_abs_path.exists():
+                            thumbnail_url = f'/prompt_manager/images/serve/{thumbnail_rel_path}'
+                    
+                    image_info = {
+                        'id': str(hash(str(media_path))),
+                        'filename': media_path.name,
+                        'path': str(media_path),
+                        'relative_path': str(rel_path),
+                        'url': f'/prompt_manager/images/serve/{rel_path}',
+                        'thumbnail_url': thumbnail_url,
+                        'size': stat.st_size,
+                        'modified_time': stat.st_mtime,
+                        'extension': extension,
+                        'media_type': media_type,
+                        'is_video': is_video,
+                        'hash': file_hash
+                    }
+                    
+                    file_hashes[file_hash].append(image_info)
+                    processed += 1
+                    
+                    # Log progress every 100 files
+                    if processed % 100 == 0:
+                        self.logger.info(f"Processed {processed}/{len(media_files)} files for duplicate detection")
+                        
+                except Exception as e:
+                    self.logger.error(f"Error processing file {media_path}: {e}")
+                    continue
+
+            # Find duplicates (groups with more than one file)
+            duplicates = []
+            for file_hash, images in file_hashes.items():
+                if len(images) > 1:
+                    # Sort by modification time (oldest first) to help users decide which to keep
+                    images.sort(key=lambda x: x['modified_time'])
+                    duplicates.append({
+                        'hash': file_hash,
+                        'images': images,
+                        'count': len(images)
+                    })
+
+            self.logger.info(f"Found {len(duplicates)} groups of duplicate images")
+            return duplicates
+
+        except Exception as e:
+            self.logger.error(f"Error finding duplicate images: {e}")
+            return []
+
+    def _calculate_file_hash(self, file_path):
+        """Calculate SHA-256 hash of a file."""
+        import hashlib
+        
+        hash_sha256 = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_sha256.update(chunk)
+        return hash_sha256.hexdigest()
+
+    async def delete_duplicate_images_endpoint(self, request):
+        """
+        Delete duplicate image files from disk.
+        POST /prompt_manager/delete_duplicate_images
+        """
+        try:
+            data = await request.json()
+            image_paths = data.get('image_paths', [])
+            
+            if not image_paths:
+                return web.json_response(
+                    {"success": False, "error": "No image paths provided"},
+                    status=400,
+                )
+
+            deleted_count = 0
+            failed_count = 0
+            failed_files = []
+
+            for image_path in image_paths:
+                try:
+                    from pathlib import Path
+                    import os
+                    
+                    # Ensure the path is within the output directory for security
+                    output_dir = self._find_comfyui_output_dir()
+                    if not output_dir:
+                        failed_files.append(f"{image_path} (output directory not found)")
+                        failed_count += 1
+                        continue
+                    
+                    output_path = Path(output_dir)
+                    file_path = Path(image_path)
+                    
+                    # Security check - ensure file is within output directory
+                    try:
+                        file_path.resolve().relative_to(output_path.resolve())
+                    except ValueError:
+                        self.logger.warning(f"Attempted to delete file outside output directory: {image_path}")
+                        failed_files.append(f"{image_path} (outside output directory)")
+                        failed_count += 1
+                        continue
+                    
+                    if file_path.exists() and file_path.is_file():
+                        os.remove(file_path)
+                        deleted_count += 1
+                        self.logger.info(f"Deleted duplicate image: {image_path}")
+                        
+                        # Also try to delete associated thumbnail if it exists
+                        try:
+                            thumbnail_path = output_path / "thumbnails" / f"{file_path.stem}_thumb{file_path.suffix}"
+                            if thumbnail_path.exists():
+                                os.remove(thumbnail_path)
+                                self.logger.debug(f"Deleted associated thumbnail: {thumbnail_path}")
+                        except Exception as e:
+                            self.logger.warning(f"Could not delete thumbnail for {image_path}: {e}")
+                    else:
+                        failed_files.append(f"{image_path} (file not found)")
+                        failed_count += 1
+                        
+                except Exception as e:
+                    self.logger.error(f"Error deleting file {image_path}: {e}")
+                    failed_files.append(f"{image_path} ({str(e)})")
+                    failed_count += 1
+
+            response_data = {
+                "success": True,
+                "deleted_count": deleted_count,
+                "failed_count": failed_count,
+                "message": f"Deleted {deleted_count} files successfully"
+            }
+            
+            if failed_count > 0:
+                response_data["failed_files"] = failed_files
+                response_data["message"] += f", {failed_count} failed"
+
+            return web.json_response(response_data)
+
+        except Exception as e:
+            self.logger.error(f"Delete duplicate images error: {e}")
+            return web.json_response(
+                {"success": False, "error": f"Failed to delete duplicate images: {str(e)}"},
                 status=500,
             )
 
@@ -1223,6 +1516,109 @@ class PromptManagerAPI:
                 'error': str(e)
             }, status=500)
 
+    async def get_output_images(self, request):
+        """Get all images from ComfyUI output folder."""
+        try:
+            import os
+            from pathlib import Path
+            
+            # Find ComfyUI output directory
+            output_dir = self._find_comfyui_output_dir()
+            if not output_dir:
+                return web.json_response({
+                    'success': False,
+                    'error': 'ComfyUI output directory not found',
+                    'images': []
+                })
+            
+            # Get pagination parameters
+            limit = int(request.query.get('limit', 100))
+            offset = int(request.query.get('offset', 0))
+            
+            # Find all media files (images and videos)
+            image_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.gif']
+            video_extensions = ['.mp4', '.webm', '.avi', '.mov', '.mkv', '.m4v', '.wmv']
+            media_extensions = image_extensions + video_extensions
+            all_images = []
+            
+            output_path = Path(output_dir)
+            thumbnails_dir = output_path / 'thumbnails'
+            
+            # Find all media files, excluding thumbnails directory
+            for ext in media_extensions:
+                for media_path in output_path.rglob(f"*{ext}"):
+                    # Skip files in thumbnails directory
+                    if 'thumbnails' not in media_path.parts:
+                        all_images.append(media_path)
+                for media_path in output_path.rglob(f"*{ext.upper()}"):
+                    # Skip files in thumbnails directory
+                    if 'thumbnails' not in media_path.parts:
+                        all_images.append(media_path)
+            
+            # Sort by modification time (newest first)
+            all_images.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+            
+            # Apply pagination
+            paginated_images = all_images[offset:offset + limit]
+            
+            # Format media data (images and videos)
+            images = []
+            for media_path in paginated_images:
+                try:
+                    stat = media_path.stat()
+                    # Create a relative path from output directory for the URL
+                    rel_path = media_path.relative_to(output_path)
+                    
+                    # Determine media type
+                    extension = media_path.suffix.lower()
+                    is_video = extension in video_extensions
+                    media_type = 'video' if is_video else 'image'
+                    
+                    # Check if thumbnail exists for this media
+                    thumbnail_url = None
+                    if thumbnails_dir.exists():
+                        # For videos, look for thumbnail with .jpg extension
+                        thumbnail_ext = '.jpg' if is_video else extension
+                        thumbnail_rel_path = f"thumbnails/{media_path.stem}_thumb{thumbnail_ext}"
+                        thumbnail_abs_path = output_path / thumbnail_rel_path
+                        
+                        if thumbnail_abs_path.exists():
+                            thumbnail_url = f'/prompt_manager/images/serve/{thumbnail_rel_path}'
+                    
+                    images.append({
+                        'id': str(hash(str(media_path))),  # Simple hash for ID
+                        'filename': media_path.name,
+                        'path': str(media_path),
+                        'relative_path': str(rel_path),
+                        'url': f'/prompt_manager/images/serve/{rel_path}',  # Always original media
+                        'thumbnail_url': thumbnail_url,  # Thumbnail URL if exists
+                        'size': stat.st_size,
+                        'modified_time': stat.st_mtime,
+                        'extension': extension,
+                        'media_type': media_type,  # 'image' or 'video'
+                        'is_video': is_video
+                    })
+                except Exception as e:
+                    self.logger.error(f"Error processing media {media_path}: {e}")
+                    continue
+            
+            return web.json_response({
+                'success': True,
+                'images': images,
+                'total': len(all_images),
+                'offset': offset,
+                'limit': limit,
+                'has_more': offset + limit < len(all_images)
+            })
+            
+        except Exception as e:
+            self.logger.error(f"Get output images error: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e),
+                'images': []
+            }, status=500)
+
     async def serve_image(self, request):
         """Serve the actual image file."""
         try:
@@ -1266,6 +1662,663 @@ class PromptManagerAPI:
         except Exception as e:
             self.logger.error(f"Serve image error: {e}")
             return web.json_response({'error': str(e)}, status=500)
+
+    async def serve_output_image(self, request):
+        """Serve image file directly from ComfyUI output folder."""
+        try:
+            import os
+            from pathlib import Path
+            
+            filepath = request.match_info["filepath"]
+            
+            # Find ComfyUI output directory
+            output_dir = self._find_comfyui_output_dir()
+            if not output_dir:
+                return web.json_response({'error': 'ComfyUI output directory not found'}, status=404)
+            
+            # Construct full image path
+            image_path = Path(output_dir) / filepath
+            
+            # Security check: make sure the path is within the output directory
+            try:
+                image_path = image_path.resolve()
+                output_path = Path(output_dir).resolve()
+                if not str(image_path).startswith(str(output_path)):
+                    return web.json_response({'error': 'Access denied'}, status=403)
+            except Exception:
+                return web.json_response({'error': 'Invalid file path'}, status=400)
+            
+            if not image_path.exists():
+                return web.json_response({'error': 'Image file not found'}, status=404)
+            
+            # Determine content type based on file extension
+            content_type = 'image/jpeg'
+            if image_path.suffix.lower() == '.png':
+                content_type = 'image/png'
+            elif image_path.suffix.lower() == '.webp':
+                content_type = 'image/webp'
+            elif image_path.suffix.lower() == '.gif':
+                content_type = 'image/gif'
+            
+            # Read and serve the file
+            with open(image_path, 'rb') as f:
+                file_data = f.read()
+            
+            return web.Response(
+                body=file_data,
+                content_type=content_type,
+                headers={
+                    'Cache-Control': 'public, max-age=3600',
+                    'Content-Length': str(len(file_data))
+                }
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Serve output image error: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+
+    async def generate_thumbnails(self, request):
+        """
+        Generate thumbnails for gallery images.
+        
+        SAFETY GUARANTEE: This function NEVER modifies original images.
+        - Only READS from original image files (read-only access)
+        - Only WRITES to separate thumbnails directory
+        - Uses PIL's read-only operations with context managers
+        - All generated files are clearly marked with '_thumb' suffix
+        """
+        try:
+            import os
+            import time
+            from pathlib import Path
+            from PIL import Image
+            
+            # Get request parameters
+            data = await request.json()
+            quality = data.get('quality', 'medium')
+            report_progress = data.get('report_progress', False)
+            
+            # Map quality to size
+            size_map = {
+                'low': (150, 150),
+                'medium': (300, 300), 
+                'high': (600, 600)
+            }
+            thumbnail_size = size_map.get(quality, (300, 300))
+            
+            # Find ComfyUI output directory
+            output_dir = self._find_comfyui_output_dir()
+            if not output_dir:
+                return web.json_response({
+                    'success': False,
+                    'error': 'ComfyUI output directory not found'
+                }, status=404)
+            
+            output_path = Path(output_dir)
+            thumbnails_dir = output_path / 'thumbnails'
+            thumbnails_dir.mkdir(exist_ok=True)
+            
+            # Find all media files (images and videos)
+            self.logger.info("Scanning for media files to generate thumbnails...")
+            image_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.gif']
+            video_extensions = ['.mp4', '.webm', '.avi', '.mov', '.mkv', '.m4v', '.wmv']
+            media_extensions = image_extensions + video_extensions
+            media_files = []
+            for root, dirs, files in os.walk(output_path):
+                # Skip thumbnails directory
+                if 'thumbnails' in Path(root).parts:
+                    continue
+                for file in files:
+                    if any(file.lower().endswith(ext) for ext in media_extensions):
+                        media_files.append(Path(root) / file)
+            
+            total_media = len(media_files)
+            self.logger.info(f"Found {total_media} media files to process for thumbnails")
+            
+            if total_media == 0:
+                return web.json_response({
+                    'success': True,
+                    'count': 0,
+                    'total_images': 0,
+                    'message': 'No media files found to process',
+                    'errors': []
+                })
+            
+            generated_count = 0
+            skipped_count = 0
+            errors = []
+            start_time = time.time()
+            
+            for i, media_file in enumerate(media_files):
+                try:
+                    # Create relative path for thumbnail
+                    rel_path = media_file.relative_to(output_path)
+                    
+                    # Check if this is a video file
+                    is_video = any(media_file.name.lower().endswith(ext) for ext in video_extensions)
+                    
+                    # For videos, always save thumbnail as .jpg
+                    if is_video:
+                        thumbnail_path = thumbnails_dir / f"{rel_path.stem}_thumb.jpg"
+                    else:
+                        thumbnail_path = thumbnails_dir / f"{rel_path.stem}_thumb{rel_path.suffix}"
+                    
+                    # Skip if thumbnail already exists and is newer than original
+                    if (thumbnail_path.exists() and 
+                        thumbnail_path.stat().st_mtime > media_file.stat().st_mtime):
+                        skipped_count += 1
+                        continue
+                    
+                    # Create thumbnail directory structure if needed
+                    thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # Generate thumbnail based on media type
+                    if is_video:
+                        # Generate video thumbnail
+                        if self._generate_video_thumbnail(media_file, thumbnail_path, thumbnail_size):
+                            generated_count += 1
+                        else:
+                            errors.append(f"Failed to generate video thumbnail for {media_file.name}")
+                    else:
+                        # Generate image thumbnail
+                        with Image.open(media_file) as img:
+                            # Convert to RGB if necessary (for PNG with transparency)
+                            if img.mode in ('RGBA', 'LA', 'P'):
+                                img = img.convert('RGB')
+                            
+                            # Create thumbnail maintaining aspect ratio
+                            img.thumbnail(thumbnail_size, Image.Resampling.LANCZOS)
+                            
+                            # Save thumbnail
+                            save_kwargs = {'quality': 85, 'optimize': True}
+                            if thumbnail_path.suffix.lower() == '.png':
+                                save_kwargs = {'optimize': True}
+                            
+                            img.save(thumbnail_path, **save_kwargs)
+                            generated_count += 1
+                    
+                    # Log progress every 100 images or at 10% intervals
+                    if generated_count % 100 == 0 or (i + 1) % max(1, total_images // 10) == 0:
+                        progress = ((i + 1) / total_images) * 100
+                        elapsed = time.time() - start_time
+                        rate = (i + 1) / elapsed if elapsed > 0 else 0
+                        eta = ((total_images - i - 1) / rate) if rate > 0 else 0
+                        self.logger.info(f"Thumbnail progress: {i+1}/{total_images} ({progress:.1f}%) - "
+                                       f"Generated: {generated_count}, Skipped: {skipped_count}, "
+                                       f"Rate: {rate:.1f} img/s, ETA: {eta:.0f}s")
+                        
+                except Exception as e:
+                    error_msg = f"Failed to generate thumbnail for {media_file.name}: {str(e)}"
+                    errors.append(error_msg)
+                    self.logger.warning(error_msg)
+            
+            elapsed_time = time.time() - start_time
+            self.logger.info(f"Thumbnail generation completed: {generated_count} generated, "
+                           f"{skipped_count} skipped, {len(errors)} errors in {elapsed_time:.1f}s")
+            
+            return web.json_response({
+                'success': True,
+                'count': generated_count,
+                'skipped': skipped_count,
+                'total_images': total_images,
+                'errors': errors,
+                'thumbnails_path': str(thumbnails_dir),
+                'elapsed_time': round(elapsed_time, 2),
+                'processing_rate': round((total_images / elapsed_time) if elapsed_time > 0 else 0, 2)
+            })
+            
+        except ImportError:
+            return web.json_response({
+                'success': False,
+                'error': 'PIL (Pillow) library not available. Install with: pip install Pillow'
+            }, status=500)
+        except Exception as e:
+            self.logger.error(f"Generate thumbnails error: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def generate_thumbnails_with_progress(self, request):
+        """Generate thumbnails with Server-Sent Events progress updates."""
+        try:
+            import os
+            import time
+            import json
+            import asyncio
+            from pathlib import Path
+            from PIL import Image
+            
+            # Parse query parameters
+            quality = request.query.get('quality', 'medium')
+            
+            # Map quality to size
+            size_map = {
+                'low': (150, 150),
+                'medium': (300, 300), 
+                'high': (600, 600)
+            }
+            thumbnail_size = size_map.get(quality, (300, 300))
+            
+            # Set up SSE response
+            response = web.StreamResponse(
+                status=200,
+                headers={
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                    'Access-Control-Allow-Origin': '*',
+                }
+            )
+            await response.prepare(request)
+            
+            async def send_progress(event_type, data):
+                """Send SSE event to client."""
+                try:
+                    message = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+                    await response.write(message.encode('utf-8'))
+                    await asyncio.sleep(0.01)  # Small delay to ensure delivery
+                except Exception as e:
+                    self.logger.warning(f"Failed to send SSE message: {e}")
+            
+            try:
+                # Find ComfyUI output directory
+                output_dir = self._find_comfyui_output_dir()
+                if not output_dir:
+                    await send_progress('error', {
+                        'error': 'ComfyUI output directory not found'
+                    })
+                    return response
+                
+                output_path = Path(output_dir)
+                thumbnails_dir = output_path / 'thumbnails'
+                thumbnails_dir.mkdir(exist_ok=True)
+                
+                # Send scanning event
+                await send_progress('status', {
+                    'phase': 'scanning',
+                    'message': 'Scanning for images to process...'
+                })
+                
+                # Find all media files (images and videos)
+                image_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.gif']
+                video_extensions = ['.mp4', '.webm', '.avi', '.mov', '.mkv', '.m4v', '.wmv']
+                media_extensions = image_extensions + video_extensions
+                media_files = []
+                for root, dirs, files in os.walk(output_path):
+                    # Skip thumbnails directory
+                    if 'thumbnails' in Path(root).parts:
+                        continue
+                    for file in files:
+                        if any(file.lower().endswith(ext) for ext in media_extensions):
+                            media_files.append(Path(root) / file)
+                
+                total_images = len(media_files)
+                
+                await send_progress('start', {
+                    'total_images': total_images,
+                    'phase': 'processing',
+                    'message': f'Found {total_images} media files to process'
+                })
+                
+                if total_images == 0:
+                    await send_progress('complete', {
+                        'count': 0,
+                        'skipped': 0,
+                        'total_images': 0,
+                        'elapsed_time': 0,
+                        'message': 'No media files found to process'
+                    })
+                    return response
+                
+                generated_count = 0
+                skipped_count = 0
+                errors = []
+                start_time = time.time()
+                
+                # Process images with progress updates
+                # SAFETY: We only READ from original images, NEVER modify them
+                for i, media_file in enumerate(media_files):
+                    try:
+                        # SAFETY: Verify we're only reading from original media files
+                        if not media_file.exists() or not media_file.is_file():
+                            continue
+                            
+                        # Check if this is a video file
+                        is_video = any(media_file.name.lower().endswith(ext) for ext in video_extensions)
+                        
+                        # Create relative path for thumbnail (in separate thumbnails directory)
+                        rel_path = media_file.relative_to(output_path)
+                        
+                        # For videos, always save thumbnail as .jpg
+                        if is_video:
+                            thumbnail_path = thumbnails_dir / f"{rel_path.stem}_thumb.jpg"
+                        else:
+                            thumbnail_path = thumbnails_dir / f"{rel_path.stem}_thumb{rel_path.suffix}"
+                        
+                        # SAFETY: Ensure thumbnail path is within our thumbnails directory
+                        try:
+                            thumbnail_path = thumbnail_path.resolve()
+                            thumbnails_dir_resolved = thumbnails_dir.resolve()
+                            if not str(thumbnail_path).startswith(str(thumbnails_dir_resolved)):
+                                self.logger.warning(f"Skipping thumbnail outside safe directory: {thumbnail_path}")
+                                continue
+                        except Exception as e:
+                            self.logger.warning(f"Path validation failed for {rel_path}: {e}")
+                            continue
+                        
+                        # Skip if thumbnail already exists and is newer than original
+                        if (thumbnail_path.exists() and 
+                            thumbnail_path.stat().st_mtime > media_file.stat().st_mtime):
+                            skipped_count += 1
+                        else:
+                            # Create thumbnail directory structure if needed (only within thumbnails dir)
+                            thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
+                            
+                            # Generate thumbnail based on media type
+                            if is_video:
+                                # Generate video thumbnail
+                                if self._generate_video_thumbnail(media_file, thumbnail_path, thumbnail_size):
+                                    generated_count += 1
+                                else:
+                                    errors.append(f"Failed to generate video thumbnail for {media_file.name}")
+                            else:
+                                # Generate image thumbnail (READ-ONLY operation on original)
+                                # SAFETY: Image.open() with context manager ensures read-only access
+                                with Image.open(media_file) as img:
+                                    # SAFETY: Work with a copy of the image data, never modify original
+                                    # Convert to RGB if necessary (for PNG with transparency)
+                                    if img.mode in ('RGBA', 'LA', 'P'):
+                                        img = img.convert('RGB')
+                                    
+                                    # Create thumbnail maintaining aspect ratio
+                                    # SAFETY: thumbnail() modifies the in-memory copy, not the original file
+                                    img.thumbnail(thumbnail_size, Image.Resampling.LANCZOS)
+                                    
+                                    # Save thumbnail to separate location
+                                    # SAFETY: Only write to our thumbnails directory, never touch originals
+                                    save_kwargs = {'quality': 85, 'optimize': True}
+                                    if thumbnail_path.suffix.lower() == '.png':
+                                        save_kwargs = {'optimize': True}
+                                    
+                                    img.save(thumbnail_path, **save_kwargs)
+                                    generated_count += 1
+                        
+                        # Send progress update every 10 images or every 2% 
+                        if (i + 1) % 10 == 0 or (i + 1) % max(1, total_images // 50) == 0 or i == total_images - 1:
+                            elapsed = time.time() - start_time
+                            progress_percent = ((i + 1) / total_images) * 100
+                            rate = (i + 1) / elapsed if elapsed > 0 else 0
+                            eta = ((total_images - i - 1) / rate) if rate > 0 else 0
+                            
+                            await send_progress('progress', {
+                                'processed': i + 1,
+                                'total_images': total_images,
+                                'generated': generated_count,
+                                'skipped': skipped_count,
+                                'percentage': round(progress_percent, 1),
+                                'rate': round(rate, 1),
+                                'eta': round(eta, 0),
+                                'elapsed': round(elapsed, 1),
+                                'current_file': media_file.name
+                            })
+                        
+                    except Exception as e:
+                        error_msg = f"Failed to generate thumbnail for {media_file.name}: {str(e)}"
+                        errors.append(error_msg)
+                        self.logger.warning(error_msg)
+                
+                elapsed_time = time.time() - start_time
+                
+                # Send completion event
+                await send_progress('complete', {
+                    'count': generated_count,
+                    'skipped': skipped_count,
+                    'total_images': total_images,
+                    'errors': errors,
+                    'elapsed_time': round(elapsed_time, 2),
+                    'processing_rate': round((total_images / elapsed_time) if elapsed_time > 0 else 0, 2),
+                    'message': f'Generated {generated_count} new thumbnails, skipped {skipped_count} existing'
+                })
+                
+            except Exception as e:
+                await send_progress('error', {
+                    'error': str(e),
+                    'message': f'Thumbnail generation failed: {str(e)}'
+                })
+                
+            return response
+            
+        except ImportError:
+            return web.json_response({
+                'success': False,
+                'error': 'PIL (Pillow) library not available. Install with: pip install Pillow'
+            }, status=500)
+        except Exception as e:
+            self.logger.error(f"Generate thumbnails with progress error: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    def _generate_video_thumbnail(self, video_path, thumbnail_path, thumbnail_size):
+        """
+        Generate thumbnail from video file.
+        Returns True if successful, False otherwise.
+        """
+        try:
+            # Try using OpenCV first (most reliable)
+            try:
+                import cv2
+                
+                # Open video
+                cap = cv2.VideoCapture(str(video_path))
+                if not cap.isOpened():
+                    return False
+                
+                # Get frame from 10% into the video (avoid black intro frames)
+                frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                target_frame = max(1, int(frame_count * 0.1))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+                
+                # Read frame
+                ret, frame = cap.read()
+                cap.release()
+                
+                if not ret or frame is None:
+                    return False
+                
+                # Convert BGR to RGB
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Convert to PIL Image and create thumbnail
+                from PIL import Image
+                img = Image.fromarray(frame_rgb)
+                img.thumbnail(thumbnail_size, Image.Resampling.LANCZOS)
+                
+                # Save thumbnail
+                img.save(thumbnail_path, 'JPEG', quality=85, optimize=True)
+                self.logger.debug(f"Generated video thumbnail using OpenCV: {thumbnail_path}")
+                return True
+                
+            except ImportError:
+                # OpenCV not available, try ffmpeg
+                pass
+                
+            # Fallback to ffmpeg
+            try:
+                import subprocess
+                
+                # Use ffmpeg to extract frame at 10% duration
+                cmd = [
+                    'ffmpeg', '-i', str(video_path),
+                    '-ss', '00:00:01',  # Skip first second to avoid black frames
+                    '-vframes', '1',
+                    '-s', f"{thumbnail_size[0]}x{thumbnail_size[1]}",
+                    '-y',  # Overwrite output
+                    str(thumbnail_path)
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                if result.returncode == 0:
+                    self.logger.debug(f"Generated video thumbnail using ffmpeg: {thumbnail_path}")
+                    return True
+                else:
+                    self.logger.warning(f"ffmpeg failed for {video_path}: {result.stderr}")
+                    
+            except (ImportError, subprocess.TimeoutExpired, FileNotFoundError):
+                # ffmpeg not available
+                pass
+            
+            # Last resort: create a placeholder thumbnail
+            try:
+                from PIL import Image, ImageDraw, ImageFont
+                
+                # Create a placeholder image
+                img = Image.new('RGB', thumbnail_size, color=(50, 50, 50))
+                draw = ImageDraw.Draw(img)
+                
+                # Add play button icon
+                center_x, center_y = thumbnail_size[0] // 2, thumbnail_size[1] // 2
+                triangle_size = min(thumbnail_size) // 4
+                
+                # Draw play triangle
+                points = [
+                    (center_x - triangle_size//2, center_y - triangle_size//2),
+                    (center_x - triangle_size//2, center_y + triangle_size//2),
+                    (center_x + triangle_size//2, center_y)
+                ]
+                draw.polygon(points, fill=(255, 255, 255))
+                
+                # Add text
+                try:
+                    # Try to get a font
+                    font = ImageFont.load_default()
+                    text = "VIDEO"
+                    bbox = draw.textbbox((0, 0), text, font=font)
+                    text_width = bbox[2] - bbox[0]
+                    text_height = bbox[3] - bbox[1]
+                    draw.text(
+                        (center_x - text_width//2, center_y + triangle_size//2 + 10),
+                        text, fill=(255, 255, 255), font=font
+                    )
+                except:
+                    pass
+                
+                img.save(thumbnail_path, 'JPEG', quality=85)
+                self.logger.debug(f"Generated placeholder video thumbnail: {thumbnail_path}")
+                return True
+                
+            except Exception as e:
+                self.logger.warning(f"Failed to create placeholder thumbnail for {video_path}: {e}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Video thumbnail generation failed for {video_path}: {e}")
+            return False
+
+    async def clear_thumbnails(self, request):
+        """Safely clear only our generated thumbnails, never touch original images."""
+        try:
+            import os
+            import shutil
+            from pathlib import Path
+            
+            # Find ComfyUI output directory
+            output_dir = self._find_comfyui_output_dir()
+            if not output_dir:
+                return web.json_response({
+                    'success': False,
+                    'error': 'ComfyUI output directory not found'
+                }, status=404)
+            
+            output_path = Path(output_dir)
+            thumbnails_dir = output_path / 'thumbnails'
+            
+            # SAFETY: Only operate within our thumbnails directory
+            if not thumbnails_dir.exists():
+                return web.json_response({
+                    'success': True,
+                    'message': 'No thumbnails directory found - nothing to clear',
+                    'cleared_files': 0
+                })
+            
+            # SAFETY: Verify this is actually our thumbnails directory
+            try:
+                thumbnails_dir_resolved = thumbnails_dir.resolve()
+                output_path_resolved = output_path.resolve()
+                
+                # Ensure thumbnails dir is within output dir and named 'thumbnails'
+                if (not str(thumbnails_dir_resolved).startswith(str(output_path_resolved)) or
+                    thumbnails_dir.name != 'thumbnails'):
+                    self.logger.error(f"Safety check failed: thumbnails directory path invalid: {thumbnails_dir}")
+                    return web.json_response({
+                        'success': False,
+                        'error': 'Safety check failed: invalid thumbnails directory path'
+                    }, status=400)
+                    
+            except Exception as e:
+                self.logger.error(f"Path validation failed: {e}")
+                return web.json_response({
+                    'success': False,
+                    'error': 'Path validation failed'
+                }, status=500)
+            
+            # Count files before deletion
+            cleared_count = 0
+            cleared_size = 0
+            
+            # SAFETY: Only delete files within thumbnails directory that match our naming pattern
+            for root, dirs, files in os.walk(thumbnails_dir):
+                for file in files:
+                    file_path = Path(root) / file
+                    
+                    # SAFETY: Additional check - only delete files with '_thumb' in name
+                    if '_thumb' in file.lower() and any(file.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp', '.gif']):
+                        try:
+                            file_size = file_path.stat().st_size
+                            file_path.unlink()  # Delete the file
+                            cleared_count += 1
+                            cleared_size += file_size
+                            self.logger.debug(f"Cleared thumbnail: {file_path}")
+                        except Exception as e:
+                            self.logger.warning(f"Failed to delete thumbnail {file_path}: {e}")
+            
+            # SAFETY: Remove empty directories within thumbnails folder (but not the main thumbnails dir)
+            try:
+                for root, dirs, files in os.walk(thumbnails_dir, topdown=False):
+                    if root != str(thumbnails_dir):  # Don't remove the main thumbnails directory
+                        try:
+                            Path(root).rmdir()  # Only removes if empty
+                        except OSError:
+                            pass  # Directory not empty, that's fine
+            except Exception as e:
+                self.logger.debug(f"Directory cleanup info: {e}")
+            
+            # Convert size to human readable format
+            def format_size(bytes_size):
+                for unit in ['B', 'KB', 'MB', 'GB']:
+                    if bytes_size < 1024.0:
+                        return f"{bytes_size:.1f} {unit}"
+                    bytes_size /= 1024.0
+                return f"{bytes_size:.1f} TB"
+            
+            self.logger.info(f"Thumbnail cleanup: cleared {cleared_count} files ({format_size(cleared_size)})")
+            
+            return web.json_response({
+                'success': True,
+                'cleared_files': cleared_count,
+                'cleared_size': cleared_size,
+                'cleared_size_formatted': format_size(cleared_size),
+                'message': f'Cleared {cleared_count} thumbnail files ({format_size(cleared_size)})'
+            })
+            
+        except Exception as e:
+            self.logger.error(f"Clear thumbnails error: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
 
     async def link_image_to_prompt(self, request):
         """Link a generated image to a prompt."""
@@ -2020,7 +3073,7 @@ class PromptManagerAPI:
             if any((current_dir / marker).exists() for marker in comfyui_markers):
                 output_dir = current_dir / "output"
                 if output_dir.exists() and output_dir.is_dir():
-                    self.logger.info(f"Found ComfyUI output directory via upward search: {output_dir}")
+                    self.logger.debug(f"Found ComfyUI output directory via upward search: {output_dir}")
                     return str(output_dir)
             
             # Move up one directory
