@@ -15,6 +15,8 @@ A drop-in replacement for ComfyUI's standard `CLIPTextEncode` node with database
 - **🔄 Drop-in Replacement**: Works exactly like the standard text encoder
 - **🤖 CLIP Encoding**: Outputs CONDITIONING for use with samplers and other CLIP-dependent nodes
 
+![Prompt Manager Interface](images/pm-04.png)
+
 ### **PromptManagerText** (Text-Only Node)
 
 A text-focused variant that outputs raw STRING for maximum flexibility:
@@ -63,13 +65,16 @@ Both nodes include the complete PromptManager feature set:
 - **Metadata Support**: Optional categories, tags, ratings (1-5), notes, and workflow names
 - **Hash-based Deduplication**: Prevents storing identical prompts multiple times
 
-### 🖼️ Advanced Output-Wide Gallery with Full Media Support
+### 🖼️ Advanced Gallery with Full Media Support
 
 ![Prompt Editor](images/pm-03.jpg)
 
 The comprehensive gallery system provides complete management of all ComfyUI output with professional viewing capabilities:
 
 #### **📁 Output-Wide Gallery Mode**
+
+![Prompt Editor](images/pm-05.jpg)
+
 - **Complete Output Monitoring**: Automatically scans and displays ALL content from your ComfyUI output directory
 - **Multi-Format Support**: Handles images (.png, .jpg, .jpeg, .webp, .gif) and videos (.mp4, .webm, .avi, .mov, .mkv, .m4v, .wmv)
 - **Intelligent Organization**: View all generated content regardless of which workflow created it
@@ -92,6 +97,9 @@ The comprehensive gallery system provides complete management of all ComfyUI out
 - **Dark Theme Integration**: Seamless styling that matches the admin interface
 
 #### **🔬 Advanced Metadata Analysis**
+
+![Prompt Editor](images/pm-06.jpg)
+
 - **Real-time PNG Parsing**: Extract ComfyUI workflow data from any generated image
 - **Integrated Metadata Panel**: Live workflow analysis with copy functionality
 - **Generation Parameters**: CFG scale, steps, sampler, seed, and model information
