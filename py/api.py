@@ -73,6 +73,14 @@ class PromptManagerAPI:
         async def get_tags_route(request):
             return await self.get_tags(request)
 
+        @routes.get("/prompt_manager/scan_duplicates")
+        async def scan_duplicates_route(request):
+            return await self.scan_duplicates_endpoint(request)
+
+        @routes.post("/prompt_manager/delete_duplicate_images")
+        async def delete_duplicate_images_route(request):
+            return await self.delete_duplicate_images_endpoint(request)
+
         @routes.post("/prompt_manager/cleanup")
         async def cleanup_duplicates_route(request):
             return await self.cleanup_duplicates_endpoint(request)
@@ -610,6 +618,29 @@ class PromptManagerAPI:
                 status=500,
             )
 
+    async def scan_duplicates_endpoint(self, request):
+        """
+        Scan for duplicate images without removing them.
+        GET /prompt_manager/scan_duplicates
+        """
+        try:
+            duplicates = await self.find_duplicate_images()
+
+            return web.json_response(
+                {
+                    "success": True,
+                    "duplicates": duplicates,
+                    "message": f"Found {len(duplicates)} groups of duplicate images",
+                }
+            )
+
+        except Exception as e:
+            self.logger.error(f"Scan duplicates error: {e}")
+            return web.json_response(
+                {"success": False, "error": f"Failed to scan duplicate images: {str(e)}"},
+                status=500,
+            )
+
     async def cleanup_duplicates_endpoint(self, request):
         """
         Cleanup duplicate prompts endpoint.
@@ -630,6 +661,216 @@ class PromptManagerAPI:
             self.logger.error(f"Cleanup error: {e}")
             return web.json_response(
                 {"success": False, "error": f"Failed to cleanup duplicates: {str(e)}"},
+                status=500,
+            )
+
+    async def find_duplicate_images(self):
+        """
+        Find duplicate images in the output folder based on file content hash.
+        
+        Returns:
+            List of duplicate groups, each containing:
+            - hash: The file content hash
+            - images: List of image records with same content
+        """
+        import hashlib
+        from pathlib import Path
+        
+        self.logger.info("Scanning for duplicate images")
+        
+        try:
+            # Find ComfyUI output directory
+            output_dir = self._find_comfyui_output_dir()
+            if not output_dir:
+                self.logger.warning("ComfyUI output directory not found")
+                return []
+            
+            output_path = Path(output_dir)
+
+            # Extensions to check
+            image_extensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff']
+            video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.gif']
+            all_extensions = image_extensions + video_extensions
+
+            # Find all media files, excluding thumbnails directory
+            media_files = []
+            for ext in all_extensions:
+                for media_path in output_path.rglob(f"*{ext.lower()}"):
+                    if 'thumbnails' not in media_path.parts:
+                        media_files.append(media_path)
+                for media_path in output_path.rglob(f"*{ext.upper()}"):
+                    if 'thumbnails' not in media_path.parts:
+                        media_files.append(media_path)
+
+            self.logger.info(f"Found {len(media_files)} media files to analyze")
+
+            # Calculate hash for each file
+            file_hashes = {}
+            processed = 0
+            
+            for media_path in media_files:
+                try:
+                    # Calculate file hash
+                    file_hash = self._calculate_file_hash(media_path)
+                    
+                    if file_hash not in file_hashes:
+                        file_hashes[file_hash] = []
+                    
+                    # Create image info object similar to get_output_images
+                    stat = media_path.stat()
+                    rel_path = media_path.relative_to(output_path)
+                    extension = media_path.suffix.lower()
+                    is_video = extension in [ext.lower() for ext in video_extensions]
+                    media_type = 'video' if is_video else 'image'
+                    
+                    # Check if thumbnail exists
+                    thumbnail_url = None
+                    thumbnails_dir = output_path / "thumbnails"
+                    if thumbnails_dir.exists():
+                        thumbnail_ext = '.jpg' if is_video else extension
+                        thumbnail_rel_path = f"thumbnails/{media_path.stem}_thumb{thumbnail_ext}"
+                        thumbnail_abs_path = output_path / thumbnail_rel_path
+                        
+                        if thumbnail_abs_path.exists():
+                            thumbnail_url = f'/prompt_manager/images/serve/{thumbnail_rel_path}'
+                    
+                    image_info = {
+                        'id': str(hash(str(media_path))),
+                        'filename': media_path.name,
+                        'path': str(media_path),
+                        'relative_path': str(rel_path),
+                        'url': f'/prompt_manager/images/serve/{rel_path}',
+                        'thumbnail_url': thumbnail_url,
+                        'size': stat.st_size,
+                        'modified_time': stat.st_mtime,
+                        'extension': extension,
+                        'media_type': media_type,
+                        'is_video': is_video,
+                        'hash': file_hash
+                    }
+                    
+                    file_hashes[file_hash].append(image_info)
+                    processed += 1
+                    
+                    # Log progress every 100 files
+                    if processed % 100 == 0:
+                        self.logger.info(f"Processed {processed}/{len(media_files)} files for duplicate detection")
+                        
+                except Exception as e:
+                    self.logger.error(f"Error processing file {media_path}: {e}")
+                    continue
+
+            # Find duplicates (groups with more than one file)
+            duplicates = []
+            for file_hash, images in file_hashes.items():
+                if len(images) > 1:
+                    # Sort by modification time (oldest first) to help users decide which to keep
+                    images.sort(key=lambda x: x['modified_time'])
+                    duplicates.append({
+                        'hash': file_hash,
+                        'images': images,
+                        'count': len(images)
+                    })
+
+            self.logger.info(f"Found {len(duplicates)} groups of duplicate images")
+            return duplicates
+
+        except Exception as e:
+            self.logger.error(f"Error finding duplicate images: {e}")
+            return []
+
+    def _calculate_file_hash(self, file_path):
+        """Calculate SHA-256 hash of a file."""
+        import hashlib
+        
+        hash_sha256 = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_sha256.update(chunk)
+        return hash_sha256.hexdigest()
+
+    async def delete_duplicate_images_endpoint(self, request):
+        """
+        Delete duplicate image files from disk.
+        POST /prompt_manager/delete_duplicate_images
+        """
+        try:
+            data = await request.json()
+            image_paths = data.get('image_paths', [])
+            
+            if not image_paths:
+                return web.json_response(
+                    {"success": False, "error": "No image paths provided"},
+                    status=400,
+                )
+
+            deleted_count = 0
+            failed_count = 0
+            failed_files = []
+
+            for image_path in image_paths:
+                try:
+                    from pathlib import Path
+                    import os
+                    
+                    # Ensure the path is within the output directory for security
+                    output_dir = self._find_comfyui_output_dir()
+                    if not output_dir:
+                        failed_files.append(f"{image_path} (output directory not found)")
+                        failed_count += 1
+                        continue
+                    
+                    output_path = Path(output_dir)
+                    file_path = Path(image_path)
+                    
+                    # Security check - ensure file is within output directory
+                    try:
+                        file_path.resolve().relative_to(output_path.resolve())
+                    except ValueError:
+                        self.logger.warning(f"Attempted to delete file outside output directory: {image_path}")
+                        failed_files.append(f"{image_path} (outside output directory)")
+                        failed_count += 1
+                        continue
+                    
+                    if file_path.exists() and file_path.is_file():
+                        os.remove(file_path)
+                        deleted_count += 1
+                        self.logger.info(f"Deleted duplicate image: {image_path}")
+                        
+                        # Also try to delete associated thumbnail if it exists
+                        try:
+                            thumbnail_path = output_path / "thumbnails" / f"{file_path.stem}_thumb{file_path.suffix}"
+                            if thumbnail_path.exists():
+                                os.remove(thumbnail_path)
+                                self.logger.debug(f"Deleted associated thumbnail: {thumbnail_path}")
+                        except Exception as e:
+                            self.logger.warning(f"Could not delete thumbnail for {image_path}: {e}")
+                    else:
+                        failed_files.append(f"{image_path} (file not found)")
+                        failed_count += 1
+                        
+                except Exception as e:
+                    self.logger.error(f"Error deleting file {image_path}: {e}")
+                    failed_files.append(f"{image_path} ({str(e)})")
+                    failed_count += 1
+
+            response_data = {
+                "success": True,
+                "deleted_count": deleted_count,
+                "failed_count": failed_count,
+                "message": f"Deleted {deleted_count} files successfully"
+            }
+            
+            if failed_count > 0:
+                response_data["failed_files"] = failed_files
+                response_data["message"] += f", {failed_count} failed"
+
+            return web.json_response(response_data)
+
+        except Exception as e:
+            self.logger.error(f"Delete duplicate images error: {e}")
+            return web.json_response(
+                {"success": False, "error": f"Failed to delete duplicate images: {str(e)}"},
                 status=500,
             )
 
