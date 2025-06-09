@@ -1,0 +1,2264 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PromptManager - Gallery</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/viewerjs/1.11.6/viewer.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/viewerjs/1.11.6/viewer.min.js"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        gray: {
+                            850: '#1f2937',
+                            875: '#1a202c',
+                            925: '#0f172a'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 8px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #374151;
+            border-radius: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #6b7280;
+            border-radius: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #9ca3af;
+        }
+        
+        .viewer-dark-theme .viewer-backdrop {
+            background-color: #000000 !important;
+            background: #000000 !important;
+        }
+        
+        /* Additional selectors to ensure black background */
+        .viewer-backdrop {
+            background-color: #000000 !important;
+            background: #000000 !important;
+        }
+        
+        .viewer-container {
+            background-color: #000000 !important;
+            background: #000000 !important;
+        }
+        
+        .viewer-canvas {
+            background-color: #000000 !important;
+            background: #000000 !important;
+        }
+        
+        .viewer-dark-theme .viewer-toolbar {
+            background-color: rgba(31, 41, 55, 0.95) !important;
+        }
+        
+        .viewer-dark-theme .viewer-navbar {
+            background-color: rgba(31, 41, 55, 0.95) !important;
+        }
+        
+        .viewer-dark-theme .viewer-title {
+            color: #f3f4f6 !important;
+        }
+
+        .image-item {
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        
+        .image-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+        }
+
+        .metadata-sidebar {
+            position: fixed !important;
+            top: 0 !important;
+            right: 0 !important;
+            width: 384px !important;
+            height: 100vh !important;
+            background: rgb(17, 24, 39) !important;
+            border-left: 1px solid rgb(55, 65, 81) !important;
+            display: flex !important;
+            flex-direction: column !important;
+            z-index: 10000 !important;
+        }
+    </style>
+</head>
+<body class="bg-gray-925 text-gray-100 min-h-screen">
+    <div class="min-h-screen flex flex-col">
+        <!-- Header -->
+        <header class="bg-gradient-to-r from-gray-850 to-gray-800 border-b border-gray-700 px-6 py-4">
+            <div class="max-w-7xl mx-auto">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-3">
+                        <div class="w-10 h-10 bg-gradient-to-br from-violet-500 to-purple-600 rounded-lg flex items-center justify-center">
+                            <span class="text-xl">🖼️</span>
+                        </div>
+                        <div>
+                            <h1 class="text-2xl font-bold bg-gradient-to-r from-violet-400 to-purple-400 bg-clip-text text-transparent">
+                                PromptManager Gallery
+                            </h1>
+                            <p class="text-gray-400 text-sm">Browse all images from your ComfyUI output folder</p>
+                        </div>
+                    </div>
+                    <div class="hidden sm:flex items-center space-x-2">
+                        <div class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+                        <span class="text-green-400 text-sm font-medium">Online</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Controls -->
+        <div class="bg-gray-850 border-b border-gray-700/50 px-6 py-4">
+            <div class="max-w-7xl mx-auto">
+                <div class="flex flex-wrap items-center justify-between gap-4">
+                    <div class="flex items-center space-x-4">
+                        <label class="text-sm text-gray-400">Show:</label>
+                        <select id="limitSelector" class="px-3 py-1 bg-gray-700 border border-gray-600 rounded text-gray-100 text-sm">
+                            <option value="50">50</option>
+                            <option value="100" selected>100</option>
+                            <option value="200">200</option>
+                            <option value="500">500</option>
+                        </select>
+                        <span class="text-sm text-gray-400">images</span>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <button id="refreshBtn" 
+                                class="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            🔄 Refresh
+                        </button>
+                        <button id="gridViewBtn" 
+                                class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            ⊞ Grid View
+                        </button>
+                        <button id="listViewBtn" 
+                                class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            ☰ List View
+                        </button>
+                        <button id="settingsBtn" 
+                                class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            ⚙️ Settings
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Stats Bar -->
+        <div class="bg-gray-800 px-6 py-3 border-b border-gray-700/50">
+            <div class="max-w-7xl mx-auto">
+                <div class="flex items-center justify-between text-sm">
+                    <span class="text-gray-400">
+                        Showing <span id="showingStart">0</span> to <span id="showingEnd">0</span> of <span id="totalImages">0</span> images
+                    </span>
+                    <span class="text-gray-400" id="loadingStatus">Loading...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Gallery Content -->
+        <div class="flex-1 overflow-y-auto custom-scrollbar">
+            <div class="max-w-7xl mx-auto p-6">
+                <!-- Loading State -->
+                <div id="loadingState" class="flex items-center justify-center py-20">
+                    <div class="text-center">
+                        <div class="w-12 h-12 border-4 border-violet-500/30 border-t-violet-500 rounded-full animate-spin mx-auto mb-4"></div>
+                        <p class="text-gray-400">Loading gallery...</p>
+                    </div>
+                </div>
+
+                <!-- Error State -->
+                <div id="errorState" class="hidden flex items-center justify-center py-20">
+                    <div class="text-center">
+                        <div class="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <span class="text-3xl">❌</span>
+                        </div>
+                        <h3 class="text-xl font-semibold text-gray-100 mb-2">Error Loading Gallery</h3>
+                        <p class="text-gray-400 mb-4" id="errorMessage">Something went wrong while loading the images.</p>
+                        <button id="retryBtn" class="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white font-medium rounded-lg transition-colors">
+                            🔄 Try Again
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Gallery Grid -->
+                <div id="galleryGrid" class="hidden grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-4">
+                    <!-- Images will be inserted here -->
+                </div>
+
+                <!-- Gallery List -->
+                <div id="galleryList" class="hidden space-y-3">
+                    <!-- Images will be inserted here -->
+                </div>
+
+                <!-- Pagination -->
+                <div id="paginationControls" class="hidden mt-8 flex items-center justify-center space-x-2">
+                    <button id="prevPageBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                        ← Previous
+                    </button>
+                    <span id="pageInfo" class="px-4 py-2 text-gray-400">Page 1</span>
+                    <button id="nextPageBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                        Next →
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl max-w-2xl w-full max-h-[90vh] overflow-hidden mx-4 border border-gray-700">
+            <div class="p-6 border-b border-gray-700">
+                <div class="flex items-center justify-between">
+                    <h3 class="text-xl font-semibold text-gray-100">⚙️ Gallery Settings</h3>
+                    <button id="closeSettingsBtn" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
+                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="p-6 overflow-y-auto max-h-[calc(90vh-200px)] custom-scrollbar space-y-6">
+                
+                <!-- Performance Settings -->
+                <div class="space-y-4">
+                    <h4 class="text-lg font-medium text-gray-100 flex items-center">
+                        <span class="mr-2">🚀</span>
+                        Performance Settings
+                    </h4>
+                    
+                    <!-- Thumbnail Generation -->
+                    <div class="bg-gray-700 rounded-lg p-4">
+                        <div class="flex items-center justify-between mb-3">
+                            <div>
+                                <h5 class="text-white font-medium">Generate Thumbnails</h5>
+                                <p class="text-sm text-gray-400">Create optimized thumbnails for faster loading</p>
+                            </div>
+                            <button id="generateThumbnailsBtn" class="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white text-sm rounded transition-colors">
+                                Generate
+                            </button>
+                        </div>
+                        <div class="text-xs text-gray-500 mb-2">
+                            Status: <span id="thumbnailStatus">Not generated</span>
+                            <div class="text-xs text-gray-600 mt-1">
+                                💡 Thumbnails speed up gallery loading. Original images always used for viewing and metadata.
+                            </div>
+                        </div>
+                        <!-- Progress bar (hidden by default) -->
+                        <div id="thumbnailProgress" class="hidden">
+                            <div class="flex items-center justify-between text-xs text-gray-400 mb-1">
+                                <span id="progressText">Processing...</span>
+                                <div class="flex items-center gap-2">
+                                    <span id="progressPercent">0%</span>
+                                    <button id="cancelThumbnailsBtn" class="text-red-400 hover:text-red-300 text-xs px-2 py-1 bg-red-900/20 rounded hidden">
+                                        Cancel
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="w-full bg-gray-600 rounded-full h-2">
+                                <div id="progressBar" class="bg-violet-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                            </div>
+                            <div class="flex items-center justify-between text-xs text-gray-500 mt-1">
+                                <span id="progressDetails">Scanning images...</span>
+                                <span id="progressETA" class="text-gray-600"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Image Loading -->
+                    <div class="bg-gray-700 rounded-lg p-4">
+                        <h5 class="text-white font-medium mb-3">Image Loading</h5>
+                        <div class="space-y-3">
+                            <div class="flex items-center justify-between">
+                                <label class="text-sm text-gray-300">Lazy Loading</label>
+                                <input type="checkbox" id="lazyLoadingToggle" checked class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <label class="text-sm text-gray-300">Image Quality</label>
+                                <select id="imageQualitySelect" class="px-3 py-1 bg-gray-600 border border-gray-500 rounded text-gray-100 text-sm">
+                                    <option value="high">High (Original)</option>
+                                    <option value="medium" selected>Medium (Optimized)</option>
+                                    <option value="low">Low (Fast)</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Display Settings -->
+                <div class="space-y-4">
+                    <h4 class="text-lg font-medium text-gray-100 flex items-center">
+                        <span class="mr-2">🖼️</span>
+                        Display Settings
+                    </h4>
+                    
+                    <div class="bg-gray-700 rounded-lg p-4 space-y-3">
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm text-gray-300">Default View Mode</label>
+                            <select id="defaultViewModeSelect" class="px-3 py-1 bg-gray-600 border border-gray-500 rounded text-gray-100 text-sm">
+                                <option value="grid" selected>Grid View</option>
+                                <option value="list">List View</option>
+                            </select>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm text-gray-300">Items per Page</label>
+                            <select id="defaultLimitSelect" class="px-3 py-1 bg-gray-600 border border-gray-500 rounded text-gray-100 text-sm">
+                                <option value="50">50</option>
+                                <option value="100" selected>100</option>
+                                <option value="200">200</option>
+                                <option value="500">500</option>
+                            </select>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm text-gray-300">Grid Columns (Desktop)</label>
+                            <select id="gridColumnsSelect" class="px-3 py-1 bg-gray-600 border border-gray-500 rounded text-gray-100 text-sm">
+                                <option value="4">4 Columns</option>
+                                <option value="6">6 Columns</option>
+                                <option value="8" selected>8 Columns</option>
+                                <option value="10">10 Columns</option>
+                            </select>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm text-gray-300">Show Media Info</label>
+                            <input type="checkbox" id="showImageInfoToggle" checked class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                        </div>
+                    </div>
+                    
+                    <!-- Video Settings -->
+                    <div class="bg-gray-700 rounded-lg p-4 space-y-3">
+                        <h5 class="text-white font-medium mb-3">Video Settings</h5>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm text-gray-300">Autoplay Videos</label>
+                            <input type="checkbox" id="videoAutoplayToggle" class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm text-gray-300">Mute Videos by Default</label>
+                            <input type="checkbox" id="videoMuteToggle" checked class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm text-gray-300">Loop Videos</label>
+                            <input type="checkbox" id="videoLoopToggle" checked class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Metadata Settings -->
+                <div class="space-y-4">
+                    <h4 class="text-lg font-medium text-gray-100 flex items-center">
+                        <span class="mr-2">📋</span>
+                        Metadata Settings
+                    </h4>
+                    
+                    <div class="bg-gray-700 rounded-lg p-4 space-y-3">
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm text-gray-300">Auto-load Metadata</label>
+                            <input type="checkbox" id="autoLoadMetadataToggle" checked class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm text-gray-300">Cache Metadata</label>
+                            <input type="checkbox" id="cacheMetadataToggle" checked class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm text-gray-300">Show File Paths</label>
+                            <input type="checkbox" id="showFilePathsToggle" checked class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Maintenance -->
+                <div class="space-y-4">
+                    <h4 class="text-lg font-medium text-gray-100 flex items-center">
+                        <span class="mr-2">🔧</span>
+                        Maintenance
+                    </h4>
+                    
+                    <div class="bg-gray-700 rounded-lg p-4 space-y-3">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <h5 class="text-white text-sm font-medium">Clear Cache</h5>
+                                <p class="text-xs text-gray-400">Clear cached metadata and thumbnails</p>
+                            </div>
+                            <button id="clearCacheBtn" class="px-3 py-1 bg-red-600 hover:bg-red-700 text-white text-sm rounded transition-colors">
+                                Clear
+                            </button>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <h5 class="text-white text-sm font-medium">Rescan Output Folder</h5>
+                                <p class="text-xs text-gray-400">Refresh the image list from disk</p>
+                            </div>
+                            <button id="rescanFolderBtn" class="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded transition-colors">
+                                Rescan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Advanced Settings -->
+                <div class="space-y-4">
+                    <h4 class="text-lg font-medium text-gray-100 flex items-center">
+                        <span class="mr-2">🔬</span>
+                        Advanced
+                    </h4>
+                    
+                    <div class="bg-gray-700 rounded-lg p-4 space-y-3">
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm text-gray-300">Debug Mode</label>
+                            <input type="checkbox" id="debugModeToggle" class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm text-gray-300">API Timeout (seconds)</label>
+                            <input type="number" id="apiTimeoutInput" value="30" min="5" max="300" class="px-3 py-1 bg-gray-600 border border-gray-500 rounded text-gray-100 text-sm w-20">
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+            <div class="p-6 border-t border-gray-700 flex justify-end space-x-3">
+                <button id="resetSettingsBtn" class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                    Reset to Defaults
+                </button>
+                <button id="saveSettingsBtn" class="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white font-medium rounded-lg transition-colors">
+                    Save Settings
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class GalleryManager {
+            constructor() {
+                this.images = [];
+                this.currentPage = 1;
+                this.limit = 100;
+                this.total = 0;
+                this.viewMode = 'grid'; // 'grid' or 'list'
+                this.viewer = null;
+                
+                this.initializeEventListeners();
+                this.loadImages();
+            }
+
+            initializeEventListeners() {
+                document.getElementById('refreshBtn').addEventListener('click', () => this.loadImages());
+                document.getElementById('limitSelector').addEventListener('change', (e) => this.changeLimit(parseInt(e.target.value)));
+                document.getElementById('gridViewBtn').addEventListener('click', () => this.setViewMode('grid'));
+                document.getElementById('listViewBtn').addEventListener('click', () => this.setViewMode('list'));
+                document.getElementById('settingsBtn').addEventListener('click', () => this.showSettings());
+                document.getElementById('retryBtn').addEventListener('click', () => this.loadImages());
+                document.getElementById('prevPageBtn').addEventListener('click', () => this.previousPage());
+                document.getElementById('nextPageBtn').addEventListener('click', () => this.nextPage());
+                
+                // Settings modal event listeners
+                document.getElementById('closeSettingsBtn').addEventListener('click', () => this.hideSettings());
+                document.getElementById('saveSettingsBtn').addEventListener('click', () => this.saveSettings());
+                document.getElementById('resetSettingsBtn').addEventListener('click', () => this.resetSettings());
+                document.getElementById('generateThumbnailsBtn').addEventListener('click', () => this.generateThumbnails());
+                document.getElementById('clearCacheBtn').addEventListener('click', () => this.clearCache());
+                document.getElementById('rescanFolderBtn').addEventListener('click', () => this.rescanFolder());
+                
+                // Close modal on outside click
+                document.getElementById('settingsModal').addEventListener('click', (e) => {
+                    if (e.target.id === 'settingsModal') {
+                        this.hideSettings();
+                    }
+                });
+            }
+
+            async loadImages() {
+                this.showLoading();
+                
+                try {
+                    const offset = (this.currentPage - 1) * this.limit;
+                    const response = await fetch(`/prompt_manager/images/output?limit=${this.limit}&offset=${offset}`);
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        this.images = data.images;
+                        this.total = data.total;
+                        this.updateStats();
+                        this.renderGallery();
+                        this.updatePagination();
+                        document.getElementById('loadingStatus').textContent = 'Loaded';
+                    } else {
+                        throw new Error(data.error || 'Failed to load images');
+                    }
+                    
+                } catch (error) {
+                    console.error('Error loading images:', error);
+                    this.showError(error.message);
+                }
+            }
+
+            showLoading() {
+                document.getElementById('loadingState').classList.remove('hidden');
+                document.getElementById('errorState').classList.add('hidden');
+                document.getElementById('galleryGrid').classList.add('hidden');
+                document.getElementById('galleryList').classList.add('hidden');
+                document.getElementById('paginationControls').classList.add('hidden');
+                document.getElementById('loadingStatus').textContent = 'Loading...';
+            }
+
+            showError(message) {
+                document.getElementById('loadingState').classList.add('hidden');
+                document.getElementById('errorState').classList.remove('hidden');
+                document.getElementById('galleryGrid').classList.add('hidden');
+                document.getElementById('galleryList').classList.add('hidden');
+                document.getElementById('paginationControls').classList.add('hidden');
+                document.getElementById('errorMessage').textContent = message;
+                document.getElementById('loadingStatus').textContent = 'Error';
+            }
+
+            updateStats() {
+                const start = (this.currentPage - 1) * this.limit + 1;
+                const end = Math.min(this.currentPage * this.limit, this.total);
+                
+                document.getElementById('showingStart').textContent = this.images.length > 0 ? start : 0;
+                document.getElementById('showingEnd').textContent = end;
+                document.getElementById('totalImages').textContent = this.total;
+            }
+
+            setViewMode(mode) {
+                this.viewMode = mode;
+                
+                // Update button states
+                const gridBtn = document.getElementById('gridViewBtn');
+                const listBtn = document.getElementById('listViewBtn');
+                
+                if (mode === 'grid') {
+                    gridBtn.classList.remove('bg-gray-600');
+                    gridBtn.classList.add('bg-violet-600');
+                    listBtn.classList.remove('bg-violet-600');
+                    listBtn.classList.add('bg-gray-600');
+                } else {
+                    listBtn.classList.remove('bg-gray-600');
+                    listBtn.classList.add('bg-violet-600');
+                    gridBtn.classList.remove('bg-violet-600');
+                    gridBtn.classList.add('bg-gray-600');
+                }
+                
+                this.renderGallery();
+            }
+
+            renderGallery() {
+                if (this.images.length === 0) {
+                    this.showError('No images found in the output folder');
+                    return;
+                }
+
+                document.getElementById('loadingState').classList.add('hidden');
+                document.getElementById('errorState').classList.add('hidden');
+
+                if (this.viewMode === 'grid') {
+                    this.renderGridView();
+                } else {
+                    this.renderListView();
+                }
+
+                // Initialize ViewerJS after rendering
+                setTimeout(() => this.initializeViewer(), 100);
+                
+                // Add simple fallback click handlers
+                this.addFallbackClickHandlers();
+            }
+
+            renderGridView() {
+                const grid = document.getElementById('galleryGrid');
+                const list = document.getElementById('galleryList');
+                
+                list.classList.add('hidden');
+                grid.classList.remove('hidden');
+
+                grid.innerHTML = this.images.map((image, index) => {
+                    // Use thumbnail for display if available, fallback to original
+                    const displayUrl = image.thumbnail_url || image.url;
+                    const hasThumb = !!image.thumbnail_url;
+                    const isVideo = image.is_video || false;
+                    const mediaType = image.media_type || 'image';
+                    
+                    return `
+                    <div class="image-item bg-gray-800 rounded-lg overflow-hidden border border-gray-700 hover:border-gray-600 cursor-pointer group">
+                        <div class="aspect-square bg-gray-900 overflow-hidden relative">
+                            <img src="${displayUrl}" 
+                                 alt="${image.filename}" 
+                                 class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                 loading="lazy"
+                                 data-original="${image.url}"
+                                 data-thumbnail="${image.thumbnail_url || ''}"
+                                 data-caption="${this.formatImageCaption(image)}"
+                                 data-media-type="${mediaType}"
+                                 data-is-video="${isVideo}"
+                                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'">
+                            <!-- Fallback for failed thumbnails -->
+                            <div class="hidden absolute inset-0 bg-gray-700 text-gray-400 flex items-center justify-center">
+                                <div class="text-center">
+                                    <div class="text-2xl mb-1">${isVideo ? '🎬' : '🖼️'}</div>
+                                    <div class="text-xs">Failed to load</div>
+                                </div>
+                            </div>
+                            <div class="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-opacity duration-300 flex items-center justify-center">
+                                ${isVideo ? `
+                                    <div class="w-12 h-12 bg-black bg-opacity-60 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                                        <svg class="w-6 h-6 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+                                            <path d="M8 5v14l11-7z"/>
+                                        </svg>
+                                    </div>
+                                ` : `
+                                    <svg class="w-8 h-8 text-white opacity-0 group-hover:opacity-100 transition-opacity duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                                    </svg>
+                                `}
+                            </div>
+                            ${hasThumb ? '<div class="absolute top-2 right-2 w-3 h-3 bg-green-500 rounded-full" title="Thumbnail available"></div>' : ''}
+                            ${isVideo ? '<div class="absolute top-2 left-2 px-2 py-1 bg-red-600 text-white text-xs rounded" title="Video file">VIDEO</div>' : ''}
+                        </div>
+                        <div class="p-2">
+                            <div class="text-xs text-gray-400 truncate" title="${image.filename}">${image.filename}</div>
+                            <div class="text-xs text-gray-500">${this.formatFileSize(image.size)}${hasThumb ? ' • Fast' : ''}${isVideo ? ' • Video' : ''}</div>
+                        </div>
+                    </div>
+                `;
+                }).join('');
+            }
+
+            renderListView() {
+                const grid = document.getElementById('galleryGrid');
+                const list = document.getElementById('galleryList');
+                
+                grid.classList.add('hidden');
+                list.classList.remove('hidden');
+
+                list.innerHTML = this.images.map((image, index) => {
+                    // Use thumbnail for display if available, fallback to original
+                    const displayUrl = image.thumbnail_url || image.url;
+                    const hasThumb = !!image.thumbnail_url;
+                    const isVideo = image.is_video || false;
+                    const mediaType = image.media_type || 'image';
+                    
+                    return `
+                    <div class="image-item bg-gray-800 rounded-lg border border-gray-700 hover:border-gray-600 cursor-pointer group flex items-center p-4">
+                        <div class="w-16 h-16 bg-gray-900 rounded-lg overflow-hidden flex-shrink-0 mr-4 relative">
+                            <img src="${displayUrl}" 
+                                 alt="${image.filename}" 
+                                 class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                 loading="lazy"
+                                 data-original="${image.url}"
+                                 data-thumbnail="${image.thumbnail_url || ''}"
+                                 data-caption="${this.formatImageCaption(image)}"
+                                 data-media-type="${mediaType}"
+                                 data-is-video="${isVideo}"
+                                 onerror="this.innerHTML='<div class=\\'flex items-center justify-center h-full text-gray-400 text-xs\\'>⚠️</div>'">
+                            ${hasThumb ? '<div class="absolute top-1 right-1 w-2 h-2 bg-green-500 rounded-full" title="Thumbnail available"></div>' : ''}
+                            ${isVideo ? '<div class="absolute top-1 left-1 w-4 h-3 bg-red-600 text-white text-xs flex items-center justify-center rounded" title="Video">▶</div>' : ''}
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <div class="text-sm font-medium text-gray-100 truncate">${image.filename}${isVideo ? ' 🎬' : ''}</div>
+                            <div class="text-xs text-gray-400">${this.formatFileSize(image.size)} • ${new Date(image.modified_time * 1000).toLocaleDateString()}${hasThumb ? ' • Fast' : ''}${isVideo ? ' • Video' : ''}</div>
+                            <div class="text-xs text-gray-500 truncate">${image.relative_path}</div>
+                        </div>
+                        <div class="flex-shrink-0 ml-4">
+                            ${isVideo ? `
+                                <svg class="w-5 h-5 text-red-400 group-hover:text-red-300 transition-colors" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M8 5v14l11-7z"/>
+                                </svg>
+                            ` : `
+                                <svg class="w-5 h-5 text-gray-400 group-hover:text-white transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                                </svg>
+                            `}
+                        </div>
+                    </div>
+                `;
+                }).join('');
+            }
+
+            initializeViewer() {
+                // Destroy existing viewer if it exists
+                if (this.viewer) {
+                    this.viewer.destroy();
+                }
+
+                const container = this.viewMode === 'grid' ? document.getElementById('galleryGrid') : document.getElementById('galleryList');
+                
+                // Find all images in the container
+                const images = container.querySelectorAll('img[data-original]');
+                
+                if (images.length === 0) {
+                    console.warn('No images found for viewer initialization');
+                    return;
+                }
+
+                this.viewer = new Viewer(container, {
+                    inline: false,
+                    button: true,
+                    navbar: true,
+                    title: true,
+                    // IMPORTANT: Use original images for viewing, not thumbnails
+                    url: 'data-original',  // Tell ViewerJS to use data-original attribute
+                    toolbar: {
+                        zoomIn: 1,
+                        zoomOut: 1,
+                        oneToOne: 1,
+                        reset: 1,
+                        prev: 1,
+                        play: {
+                            show: 1,
+                            size: 'large',
+                        },
+                        next: 1,
+                        rotateLeft: 1,
+                        rotateRight: 1,
+                        flipHorizontal: 1,
+                        flipVertical: 1,
+                    },
+                    className: 'viewer-dark-theme',
+                    title: [1, (image, imageData) => `${imageData.alt} (${this.images.length} images) - Original Image`],
+                    viewed: (event) => {
+                        console.log('ViewerJS opened original image for metadata');
+                        // Add metadata sidebar when ViewerJS opens
+                        // Use the original image URL from data-original attribute
+                        const originalImg = event.detail.originalImage;
+                        setTimeout(() => this.addMetadataSidebar(originalImg), 100);
+                    },
+                    show: function() {
+                        console.log('Viewer shown - displaying original image');
+                    },
+                    shown: function() {
+                        console.log('ViewerJS initialization complete - ready for metadata');
+                    },
+                    hide: function() {
+                        // Remove sidebar when viewer closes
+                        const sidebar = document.getElementById('metadata-sidebar');
+                        if (sidebar) {
+                            sidebar.remove();
+                        }
+                    }
+                });
+
+                // Don't add click handlers here - let ViewerJS handle them
+            }
+
+            addMetadataSidebar(originalImage) {
+                const viewerContainer = document.querySelector('.viewer-container');
+                if (!viewerContainer || document.getElementById('metadata-sidebar')) return;
+
+                const sidebar = document.createElement('div');
+                sidebar.id = 'metadata-sidebar';
+                sidebar.className = 'metadata-sidebar';
+                sidebar.innerHTML = `
+                    <!-- Header -->
+                    <div class="flex items-center justify-between p-4 border-b border-gray-700">
+                        <div class="flex items-center gap-2">
+                            <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                            </svg>
+                            <h1 class="text-lg font-medium text-white">Generation data</h1>
+                        </div>
+                        <button class="text-xs text-blue-400 hover:text-blue-300 transition-colors metadata-copy-all">
+                            📋 COPY ALL
+                        </button>
+                    </div>
+                    
+                    <!-- Scrollable Content -->
+                    <div id="metadata-content" class="flex-1 overflow-y-auto p-4 space-y-6">
+                        <!-- Loading state -->
+                        <div class="text-center text-gray-500 py-8">
+                            <div class="w-8 h-8 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mx-auto mb-2"></div>
+                            <p class="text-sm">Loading metadata...</p>
+                        </div>
+                    </div>
+                `;
+
+                document.body.appendChild(sidebar);
+
+                // Load metadata for the current image (ALWAYS use original for metadata)
+                const originalImageUrl = originalImage.dataset.original || originalImage.src;
+                console.log('Loading metadata from original image:', originalImageUrl);
+                this.loadImageMetadata(originalImageUrl, sidebar.querySelector('#metadata-content'));
+
+                // Listen for ViewerJS view changes to update metadata
+                this.setupViewerMetadataUpdates(sidebar);
+            }
+
+            setupViewerMetadataUpdates(sidebar) {
+                // Listen for ViewerJS navigation events
+                const viewerContainer = document.querySelector('.viewer-container');
+                if (!viewerContainer) return;
+
+                // Override ViewerJS navigation to update metadata
+                const observer = new MutationObserver((mutations) => {
+                    mutations.forEach((mutation) => {
+                        if (mutation.type === 'attributes' && mutation.attributeName === 'src') {
+                            const img = mutation.target;
+                            if (img.tagName === 'IMG' && img.closest('.viewer-canvas')) {
+                                // Find the corresponding original image
+                                const imageUrl = img.src;
+                                this.loadImageMetadata(imageUrl, sidebar.querySelector('#metadata-content'));
+                            }
+                        }
+                    });
+                });
+
+                const canvas = viewerContainer.querySelector('.viewer-canvas');
+                if (canvas) {
+                    observer.observe(canvas, {
+                        childList: true,
+                        subtree: true,
+                        attributes: true,
+                        attributeFilter: ['src']
+                    });
+                }
+            }
+
+            addFallbackClickHandlers() {
+                // Add simple click handlers that work even if ViewerJS fails
+                const container = this.viewMode === 'grid' ? document.getElementById('galleryGrid') : document.getElementById('galleryList');
+                const imageItems = container.querySelectorAll('.image-item');
+                
+                imageItems.forEach((item, index) => {
+                    item.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        
+                        const img = item.querySelector('img[data-original]');
+                        if (img) {
+                            // ALWAYS use the original media URL for viewing
+                            const originalMediaUrl = img.dataset.original;
+                            const caption = img.dataset.caption;
+                            const isVideo = img.dataset.isVideo === 'true';
+                            const mediaType = img.dataset.mediaType || 'image';
+                            
+                            console.log('Opening original media for viewing:', originalMediaUrl, 'Type:', mediaType);
+                            
+                            if (isVideo) {
+                                // For videos, use our custom video modal
+                                this.showVideoModal(originalMediaUrl, caption, index);
+                            } else {
+                                // For images, try ViewerJS first, fallback to simple modal
+                                if (this.viewer) {
+                                    try {
+                                        this.viewer.view(index);
+                                    } catch (e) {
+                                        console.warn('ViewerJS failed, using fallback:', e);
+                                        this.showSimpleImageModal(originalMediaUrl, caption);
+                                    }
+                                } else {
+                                    this.showSimpleImageModal(originalMediaUrl, caption);
+                                }
+                            }
+                        }
+                    });
+                });
+            }
+
+            async showSimpleImageModal(imageUrl, caption) {
+                // Create a modal that matches the screenshot design
+                const modal = document.createElement('div');
+                modal.className = 'fixed inset-0 bg-black z-50 flex';
+                modal.innerHTML = `
+                    <!-- Image area with navigation -->
+                    <div class="flex-1 flex items-center justify-center relative">
+                        <!-- Navigation arrows -->
+                        <button class="absolute left-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-white text-xl z-10" id="prevImageBtn">
+                            ‹
+                        </button>
+                        <button class="absolute right-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-white text-xl z-10" id="nextImageBtn">
+                            ›
+                        </button>
+                        
+                        <!-- Close button -->
+                        <button class="absolute top-4 right-4 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-white text-xl z-10" onclick="this.parentElement.parentElement.remove()">
+                            ×
+                        </button>
+                        
+                        <!-- Main image -->
+                        <img src="${imageUrl}" alt="${caption}" class="max-w-full max-h-full object-contain" id="modalImage">
+                    </div>
+                    
+                    <!-- Metadata sidebar (matching the screenshot) -->
+                    <div class="metadata-sidebar">
+                        <!-- Header -->
+                        <div class="flex items-center justify-between p-4 border-b border-gray-700">
+                            <div class="flex items-center gap-2">
+                                <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                </svg>
+                                <h1 class="text-lg font-medium text-white">Generation data</h1>
+                            </div>
+                            <button class="text-xs text-blue-400 hover:text-blue-300 transition-colors metadata-copy-all">
+                                📋 COPY ALL
+                            </button>
+                        </div>
+                        
+                        <!-- Scrollable Content -->
+                        <div id="metadata-content" class="flex-1 overflow-y-auto p-4 space-y-6">
+                            <!-- Loading state -->
+                            <div class="text-center text-gray-500 py-8">
+                                <div class="w-8 h-8 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mx-auto mb-2"></div>
+                                <p class="text-sm">Loading metadata...</p>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                // Close on click outside image area
+                modal.addEventListener('click', (e) => {
+                    if (e.target === modal || e.target.id === 'modalImage') {
+                        modal.remove();
+                    }
+                });
+                
+                // Close on Escape key
+                const escapeHandler = (e) => {
+                    if (e.key === 'Escape') {
+                        modal.remove();
+                        document.removeEventListener('keydown', escapeHandler);
+                    }
+                };
+                document.addEventListener('keydown', escapeHandler);
+                
+                document.body.appendChild(modal);
+                
+                // Add navigation functionality
+                this.setupImageNavigation(modal, imageUrl);
+                
+                // Load and display metadata
+                await this.loadImageMetadata(imageUrl, modal.querySelector('#metadata-content'));
+            }
+
+            async showVideoModal(videoUrl, caption, videoIndex) {
+                const settings = this.getSettings();
+                
+                // Create a modal for video viewing
+                const modal = document.createElement('div');
+                modal.className = 'fixed inset-0 bg-black z-50 flex';
+                modal.innerHTML = `
+                    <!-- Video area with navigation -->
+                    <div class="flex-1 flex items-center justify-center relative">
+                        <!-- Navigation arrows -->
+                        <button class="absolute left-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-white text-xl z-10" id="prevVideoBtn">
+                            ‹
+                        </button>
+                        <button class="absolute right-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-white text-xl z-10" id="nextVideoBtn">
+                            ›
+                        </button>
+                        
+                        <!-- Close button -->
+                        <button class="absolute top-4 right-4 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-white text-xl z-10" onclick="this.parentElement.parentElement.remove()">
+                            ×
+                        </button>
+                        
+                        <!-- Video controls -->
+                        <div class="absolute bottom-4 right-4 flex space-x-2 z-10">
+                            <button id="videoMuteBtn" class="px-3 py-2 bg-black bg-opacity-50 hover:bg-opacity-70 rounded text-white text-sm">
+                                🔊
+                            </button>
+                            <button id="videoLoopBtn" class="px-3 py-2 bg-black bg-opacity-50 hover:bg-opacity-70 rounded text-white text-sm">
+                                🔁
+                            </button>
+                        </div>
+                        
+                        <!-- Main video -->
+                        <video id="modalVideo" 
+                               src="${videoUrl}" 
+                               class="max-w-full max-h-full object-contain"
+                               controls
+                               ${settings.videoAutoplay ? 'autoplay' : ''}
+                               ${settings.videoMute ? 'muted' : ''}
+                               ${settings.videoLoop ? 'loop' : ''}>
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    
+                    <!-- Metadata sidebar (videos have limited metadata) -->
+                    <div class="metadata-sidebar">
+                        <!-- Header -->
+                        <div class="flex items-center justify-between p-4 border-b border-gray-700">
+                            <div class="flex items-center gap-2">
+                                <svg class="w-5 h-5 text-red-400" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M8 5v14l11-7z"/>
+                                </svg>
+                                <h1 class="text-lg font-medium text-white">Video Info</h1>
+                            </div>
+                            <button class="text-xs text-blue-400 hover:text-blue-300 transition-colors" onclick="navigator.clipboard.writeText('${videoUrl}').then(() => this.textContent = '✓ Copied!'); setTimeout(() => this.textContent = '📋 COPY URL', 1000)">
+                                📋 COPY URL
+                            </button>
+                        </div>
+                        
+                        <!-- Video info content -->
+                        <div id="video-info-content" class="flex-1 overflow-y-auto p-4 space-y-6">
+                            <!-- Video details will be loaded here -->
+                        </div>
+                    </div>
+                `;
+                
+                // Close on click outside video area
+                modal.addEventListener('click', (e) => {
+                    if (e.target === modal) {
+                        modal.remove();
+                    }
+                });
+                
+                // Close on Escape key
+                const escapeHandler = (e) => {
+                    if (e.key === 'Escape') {
+                        modal.remove();
+                        document.removeEventListener('keydown', escapeHandler);
+                    }
+                };
+                document.addEventListener('keydown', escapeHandler);
+                
+                document.body.appendChild(modal);
+                
+                // Set up video controls
+                this.setupVideoControls(modal, settings);
+                
+                // Add navigation functionality
+                this.setupVideoNavigation(modal, videoUrl, videoIndex);
+                
+                // Load and display video info
+                await this.loadVideoInfo(videoUrl, modal.querySelector('#video-info-content'));
+            }
+
+            setupVideoControls(modal, settings) {
+                const video = modal.querySelector('#modalVideo');
+                const muteBtn = modal.querySelector('#videoMuteBtn');
+                const loopBtn = modal.querySelector('#videoLoopBtn');
+                
+                // Mute/unmute toggle
+                muteBtn.addEventListener('click', () => {
+                    video.muted = !video.muted;
+                    muteBtn.textContent = video.muted ? '🔇' : '🔊';
+                    
+                    // Save setting
+                    const newSettings = this.getSettings();
+                    newSettings.videoMute = video.muted;
+                    this.saveSettings(newSettings);
+                });
+                
+                // Loop toggle
+                loopBtn.addEventListener('click', () => {
+                    video.loop = !video.loop;
+                    loopBtn.style.opacity = video.loop ? '1' : '0.5';
+                    
+                    // Save setting
+                    const newSettings = this.getSettings();
+                    newSettings.videoLoop = video.loop;
+                    this.saveSettings(newSettings);
+                });
+                
+                // Set initial states
+                muteBtn.textContent = video.muted ? '🔇' : '🔊';
+                loopBtn.style.opacity = video.loop ? '1' : '0.5';
+            }
+
+            setupVideoNavigation(modal, currentVideoUrl, currentIndex) {
+                const prevBtn = modal.querySelector('#prevVideoBtn');
+                const nextBtn = modal.querySelector('#nextVideoBtn');
+                
+                // Get all video items from current gallery
+                const container = this.viewMode === 'grid' ? document.getElementById('galleryGrid') : document.getElementById('galleryList');
+                const videoItems = Array.from(container.querySelectorAll('.image-item img[data-is-video="true"]'));
+                
+                if (videoItems.length <= 1) {
+                    prevBtn.style.display = 'none';
+                    nextBtn.style.display = 'none';
+                    return;
+                }
+                
+                const currentVideoIndex = videoItems.findIndex(img => img.dataset.original === currentVideoUrl);
+                
+                prevBtn.addEventListener('click', () => {
+                    const prevIndex = currentVideoIndex > 0 ? currentVideoIndex - 1 : videoItems.length - 1;
+                    const prevVideo = videoItems[prevIndex];
+                    if (prevVideo) {
+                        modal.remove();
+                        this.showVideoModal(prevVideo.dataset.original, prevVideo.dataset.caption, prevIndex);
+                    }
+                });
+                
+                nextBtn.addEventListener('click', () => {
+                    const nextIndex = currentVideoIndex < videoItems.length - 1 ? currentVideoIndex + 1 : 0;
+                    const nextVideo = videoItems[nextIndex];
+                    if (nextVideo) {
+                        modal.remove();
+                        this.showVideoModal(nextVideo.dataset.original, nextVideo.dataset.caption, nextIndex);
+                    }
+                });
+                
+                // Add keyboard navigation
+                const keyHandler = (e) => {
+                    if (e.key === 'ArrowLeft') {
+                        e.preventDefault();
+                        prevBtn.click();
+                    } else if (e.key === 'ArrowRight') {
+                        e.preventDefault();
+                        nextBtn.click();
+                    }
+                };
+                
+                document.addEventListener('keydown', keyHandler);
+                
+                // Clean up listener when modal is removed
+                const observer = new MutationObserver((mutations) => {
+                    mutations.forEach((mutation) => {
+                        if (mutation.type === 'childList') {
+                            mutation.removedNodes.forEach((node) => {
+                                if (node === modal) {
+                                    document.removeEventListener('keydown', keyHandler);
+                                    observer.disconnect();
+                                }
+                            });
+                        }
+                    });
+                });
+                
+                observer.observe(document.body, { childList: true });
+            }
+
+            async loadVideoInfo(videoUrl, container) {
+                try {
+                    // Extract basic video information
+                    const fileName = videoUrl.split('/').pop();
+                    const fileExt = fileName.split('.').pop().toUpperCase();
+                    
+                    container.innerHTML = `
+                        <!-- File Info -->
+                        <div class="space-y-2">
+                            <h2 class="text-sm font-medium text-gray-300">File Info</h2>
+                            <div class="text-xs text-gray-400 font-mono bg-gray-800 p-2 rounded break-all cursor-pointer hover:bg-gray-700" 
+                                 onclick="navigator.clipboard.writeText('${videoUrl}').then(() => this.textContent = 'Copied!'); setTimeout(() => this.textContent = '${fileName}', 1000)"
+                                 title="Click to copy path">
+                                ${fileName}
+                            </div>
+                            <div class="text-xs text-gray-500">
+                                Type: ${fileExt} Video
+                            </div>
+                        </div>
+
+                        <!-- Video Properties -->
+                        <div class="space-y-2" id="video-properties">
+                            <h2 class="text-sm font-medium text-gray-300">Video Properties</h2>
+                            <div class="text-xs text-gray-400">
+                                Loading video information...
+                            </div>
+                        </div>
+
+                        <!-- Video Settings -->
+                        <div class="space-y-3">
+                            <h2 class="text-sm font-medium text-gray-300">Playback Settings</h2>
+                            <div class="space-y-2 text-xs">
+                                <div class="flex justify-between items-center">
+                                    <span class="text-gray-400">Autoplay:</span>
+                                    <span class="text-gray-200">${this.getSettings().videoAutoplay ? 'Enabled' : 'Disabled'}</span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-gray-400">Muted:</span>
+                                    <span class="text-gray-200">${this.getSettings().videoMute ? 'Yes' : 'No'}</span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-gray-400">Loop:</span>
+                                    <span class="text-gray-200">${this.getSettings().videoLoop ? 'Enabled' : 'Disabled'}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Note about metadata -->
+                        <div class="bg-blue-900/20 border border-blue-600 rounded-lg p-3">
+                            <h4 class="text-blue-400 font-medium mb-1 text-sm">ℹ️ Video Note</h4>
+                            <p class="text-gray-300 text-xs">
+                                Videos don't contain the same metadata as PNG images. ComfyUI workflow data is only embedded in PNG outputs.
+                            </p>
+                        </div>
+                    `;
+                    
+                    // Try to get video metadata from the video element
+                    const video = document.querySelector('#modalVideo');
+                    if (video) {
+                        video.addEventListener('loadedmetadata', () => {
+                            const propertiesDiv = container.querySelector('#video-properties');
+                            if (propertiesDiv) {
+                                const duration = video.duration;
+                                const width = video.videoWidth;
+                                const height = video.videoHeight;
+                                
+                                propertiesDiv.innerHTML = `
+                                    <h2 class="text-sm font-medium text-gray-300">Video Properties</h2>
+                                    <div class="space-y-1 text-xs">
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">Duration:</span>
+                                            <span class="text-gray-200">${this.formatDuration(duration)}</span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">Resolution:</span>
+                                            <span class="text-gray-200">${width} × ${height}</span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">Aspect Ratio:</span>
+                                            <span class="text-gray-200">${(width/height).toFixed(2)}:1</span>
+                                        </div>
+                                    </div>
+                                `;
+                            }
+                        });
+                    }
+                    
+                } catch (error) {
+                    console.error('Error loading video info:', error);
+                    container.innerHTML = `
+                        <div class="bg-red-900/20 border border-red-600 rounded-lg p-4">
+                            <h4 class="text-red-400 font-medium mb-2">❌ Video Info Error</h4>
+                            <p class="text-gray-300 text-sm">${error.message}</p>
+                        </div>
+                    `;
+                }
+            }
+
+            formatDuration(seconds) {
+                if (isNaN(seconds) || seconds === 0) return '0:00';
+                
+                const hours = Math.floor(seconds / 3600);
+                const minutes = Math.floor((seconds % 3600) / 60);
+                const secs = Math.floor(seconds % 60);
+                
+                if (hours > 0) {
+                    return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+                } else {
+                    return `${minutes}:${secs.toString().padStart(2, '0')}`;
+                }
+            }
+
+            async loadImageMetadata(imageUrl, container) {
+                try {
+                    const metadata = await this.extractImageMetadata(imageUrl);
+                    this.displayMetadata(metadata, container);
+                } catch (error) {
+                    console.error('Error loading metadata:', error);
+                    container.innerHTML = `
+                        <div class="bg-red-900/20 border border-red-600 rounded-lg p-4">
+                            <h4 class="text-red-400 font-medium mb-2">❌ Metadata Error</h4>
+                            <p class="text-gray-300 text-sm">${error.message}</p>
+                        </div>
+                    `;
+                }
+            }
+
+            displayMetadata(metadata, container) {
+                if (!metadata) {
+                    container.innerHTML = `
+                        <div class="text-center text-gray-500 py-8">
+                            <svg class="w-16 h-16 mx-auto mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                            </svg>
+                            <p class="text-sm">No metadata found in this image</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                const html = `
+                    <!-- File Path -->
+                    <div class="space-y-2">
+                        <h2 class="text-sm font-medium text-gray-300">File Path</h2>
+                        <div class="text-xs text-gray-400 font-mono bg-gray-800 p-2 rounded break-all cursor-pointer hover:bg-gray-700" data-copy-path title="Click to copy">
+                            ${metadata.imagePath || 'Unknown'}
+                        </div>
+                    </div>
+
+                    <!-- Resources used -->
+                    <div class="space-y-3">
+                        <h2 class="text-sm font-medium text-gray-300">Resources used</h2>
+                        <div class="space-y-2 text-xs">
+                            <div class="flex justify-between">
+                                <span class="text-gray-400">Model:</span>
+                                <span class="text-gray-200">${metadata.checkpoint || 'Unknown'}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Prompt Section -->
+                    <div class="space-y-3">
+                        <div class="flex items-center justify-between">
+                            <h2 class="text-sm font-medium text-gray-300">Prompt</h2>
+                            <button class="text-xs px-2 py-1 bg-orange-600 hover:bg-orange-700 text-white rounded transition-colors" data-copy-type="positive">
+                                COPY PROMPT
+                            </button>
+                        </div>
+                        <div class="text-xs text-gray-200 bg-gray-800 p-3 rounded max-h-32 overflow-y-auto break-words leading-relaxed">
+                            ${this.formatPromptText(metadata.positivePrompt)}
+                            <div class="mt-2 pt-2 border-t border-gray-700">
+                                <button class="text-blue-400 hover:text-blue-300 underline text-xs" data-show-type="positive">
+                                    Show more
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Negative Prompt -->
+                    <div class="space-y-3">
+                        <h2 class="text-sm font-medium text-gray-300">Negative prompt</h2>
+                        <div class="text-xs text-gray-200 bg-gray-800 p-3 rounded max-h-32 overflow-y-auto break-words leading-relaxed">
+                            ${this.formatPromptText(metadata.negativePrompt)}
+                            <div class="mt-2 pt-2 border-t border-gray-700">
+                                <button class="text-blue-400 hover:text-blue-300 underline text-xs" data-show-type="negative">
+                                    Show more
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Other metadata -->
+                    <div class="space-y-3">
+                        <h2 class="text-sm font-medium text-gray-300">Other metadata</h2>
+                        <div class="space-y-2 text-xs">
+                            <div class="flex justify-between">
+                                <span class="text-gray-400">CFG SCALE:</span>
+                                <span class="text-gray-200 px-2 py-1 bg-gray-700 rounded text-xs">${metadata.cfgScale || 'Unknown'}</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-400">STEPS:</span>
+                                <span class="text-gray-200 px-2 py-1 bg-gray-700 rounded text-xs">${metadata.steps || 'Unknown'}</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-400">SAMPLER:</span>
+                                <span class="text-gray-200 px-2 py-1 bg-gray-700 rounded text-xs">${metadata.sampler || 'Unknown'}</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-400">SEED:</span>
+                                <span class="text-gray-200 font-mono px-2 py-1 bg-gray-700 rounded text-xs">${metadata.seed || 'Unknown'}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ComfyUI Workflow -->
+                    ${metadata.workflow ? `
+                        <div class="space-y-3">
+                            <h2 class="text-sm font-medium text-gray-300">ComfyUI Workflow</h2>
+                            <div class="space-y-2">
+                                <button class="text-xs text-blue-400 hover:text-blue-300 underline flex items-center gap-1" data-action="show-workflow">
+                                    <span>View Raw Workflow JSON</span>
+                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
+                                    </svg>
+                                </button>
+                                <button class="text-xs text-blue-400 hover:text-blue-300 underline flex items-center gap-1" data-action="download-workflow">
+                                    <span>Download Workflow</span>
+                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                    ` : ''}
+                `;
+
+                container.innerHTML = html;
+                
+                // Store metadata for actions
+                this.currentMetadata = metadata;
+                
+                // Add click handlers
+                this.setupMetadataActions(container);
+            }
+
+            setupImageNavigation(modal, currentImageUrl) {
+                // Find current image index
+                this.currentImageIndex = this.images.findIndex(img => img.url === currentImageUrl);
+                
+                const prevBtn = modal.querySelector('#prevImageBtn');
+                const nextBtn = modal.querySelector('#nextImageBtn');
+                const modalImage = modal.querySelector('#modalImage');
+                
+                const updateImage = async (newIndex) => {
+                    if (newIndex >= 0 && newIndex < this.images.length) {
+                        this.currentImageIndex = newIndex;
+                        const newImage = this.images[newIndex];
+                        // ALWAYS use original URL for viewing and metadata
+                        modalImage.src = newImage.url;  // This is always the original URL
+                        modalImage.alt = this.formatImageCaption(newImage);
+                        
+                        // Update metadata using original image
+                        const metadataContainer = modal.querySelector('#metadata-content');
+                        metadataContainer.innerHTML = `
+                            <div class="text-center text-gray-500 py-8">
+                                <div class="w-8 h-8 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mx-auto mb-2"></div>
+                                <p class="text-sm">Loading metadata from original image...</p>
+                            </div>
+                        `;
+                        // Load metadata from original image (which has embedded workflow data)
+                        await this.loadImageMetadata(newImage.url, metadataContainer);
+                    }
+                    
+                    // Update button states
+                    prevBtn.style.opacity = newIndex > 0 ? '1' : '0.5';
+                    nextBtn.style.opacity = newIndex < this.images.length - 1 ? '1' : '0.5';
+                };
+                
+                prevBtn.addEventListener('click', () => {
+                    if (this.currentImageIndex > 0) {
+                        updateImage(this.currentImageIndex - 1);
+                    }
+                });
+                
+                nextBtn.addEventListener('click', () => {
+                    if (this.currentImageIndex < this.images.length - 1) {
+                        updateImage(this.currentImageIndex + 1);
+                    }
+                });
+                
+                // Keyboard navigation
+                const keyHandler = (e) => {
+                    if (e.key === 'ArrowLeft' && this.currentImageIndex > 0) {
+                        updateImage(this.currentImageIndex - 1);
+                    } else if (e.key === 'ArrowRight' && this.currentImageIndex < this.images.length - 1) {
+                        updateImage(this.currentImageIndex + 1);
+                    }
+                };
+                document.addEventListener('keydown', keyHandler);
+                
+                // Clean up on modal close
+                modal.addEventListener('remove', () => {
+                    document.removeEventListener('keydown', keyHandler);
+                });
+                
+                // Initial button state
+                updateImage(this.currentImageIndex);
+            }
+
+            setupMetadataActions(container) {
+                // Copy prompt buttons
+                const copyButtons = container.querySelectorAll('[data-copy-type]');
+                copyButtons.forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const type = btn.getAttribute('data-copy-type');
+                        if (this.currentMetadata) {
+                            const text = type === 'positive' ? this.currentMetadata.positivePrompt : this.currentMetadata.negativePrompt;
+                            this.copyToClipboard(text);
+                        }
+                    });
+                });
+
+                // File path copy
+                const pathEl = container.querySelector('[data-copy-path]');
+                if (pathEl) {
+                    pathEl.addEventListener('click', () => {
+                        if (this.currentMetadata) {
+                            this.copyToClipboard(this.currentMetadata.imagePath);
+                        }
+                    });
+                }
+
+                // Show more buttons
+                const showMoreBtns = container.querySelectorAll('[data-show-type]');
+                showMoreBtns.forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const type = btn.getAttribute('data-show-type');
+                        this.showFullPrompt(type);
+                    });
+                });
+
+                // Workflow action buttons
+                const actionBtns = container.querySelectorAll('[data-action]');
+                actionBtns.forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const action = btn.getAttribute('data-action');
+                        if (action === 'show-workflow') {
+                            this.showWorkflowData();
+                        } else if (action === 'download-workflow') {
+                            this.downloadWorkflowJSON();
+                        }
+                    });
+                });
+
+                // Copy all button
+                const copyAllBtn = container.closest('.metadata-sidebar').querySelector('.metadata-copy-all');
+                if (copyAllBtn) {
+                    copyAllBtn.addEventListener('click', () => {
+                        this.copyAllMetadata();
+                    });
+                }
+            }
+
+            showFullPrompt(type) {
+                if (this.currentMetadata) {
+                    const prompt = type === 'positive' ? this.currentMetadata.positivePrompt : this.currentMetadata.negativePrompt;
+                    const newWindow = window.open('', '_blank');
+                    newWindow.document.write(`
+                        <html>
+                            <head><title>${type.charAt(0).toUpperCase() + type.slice(1)} Prompt</title></head>
+                            <body style="background: #111; color: #fff; font-family: monospace; padding: 20px;">
+                                <h2>${type.charAt(0).toUpperCase() + type.slice(1)} Prompt</h2>
+                                <div style="background: #222; padding: 15px; border-radius: 5px; white-space: pre-wrap; line-height: 1.5;">${prompt}</div>
+                                <button onclick="navigator.clipboard.writeText(\`${prompt.replace(/`/g, '\\`')}\`).then(() => alert('Copied!'))" style="margin-top: 20px; padding: 10px 20px; background: #444; color: #fff; border: none; border-radius: 5px; cursor: pointer;">Copy to Clipboard</button>
+                            </body>
+                        </html>
+                    `);
+                }
+            }
+
+            showWorkflowData() {
+                if (this.currentMetadata && this.currentMetadata.workflow) {
+                    const newWindow = window.open('', '_blank');
+                    newWindow.document.write(`
+                        <html>
+                            <head><title>ComfyUI Workflow Data</title></head>
+                            <body style="background: #111; color: #fff; font-family: monospace; padding: 20px;">
+                                <h2>ComfyUI Workflow JSON</h2>
+                                <pre style="background: #222; padding: 15px; border-radius: 5px; overflow: auto;">${JSON.stringify(this.currentMetadata.workflow, null, 2)}</pre>
+                            </body>
+                        </html>
+                    `);
+                }
+            }
+
+            async copyToClipboard(text) {
+                try {
+                    await navigator.clipboard.writeText(text);
+                    this.showNotification('Copied to clipboard!', 'success');
+                } catch (err) {
+                    console.error('Copy failed:', err);
+                    this.showNotification('Copy failed', 'error');
+                }
+            }
+
+            copyAllMetadata() {
+                if (!this.currentMetadata) return;
+                
+                const allData = `Checkpoint: ${this.currentMetadata.checkpoint || 'Unknown'}
+Positive Prompt: ${this.currentMetadata.positivePrompt}
+Negative Prompt: ${this.currentMetadata.negativePrompt}
+Steps: ${this.currentMetadata.steps || 'Unknown'}
+CFG Scale: ${this.currentMetadata.cfgScale || 'Unknown'}
+Sampler: ${this.currentMetadata.sampler || 'Unknown'}
+Seed: ${this.currentMetadata.seed || 'Unknown'}`;
+                
+                this.copyToClipboard(allData);
+            }
+
+            downloadWorkflowJSON() {
+                if (this.currentMetadata && this.currentMetadata.workflow) {
+                    const dataStr = JSON.stringify(this.currentMetadata.workflow, null, 2);
+                    const dataBlob = new Blob([dataStr], {type: 'application/json'});
+                    const url = URL.createObjectURL(dataBlob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = 'comfyui_workflow.json';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(url);
+                    this.showNotification('Workflow downloaded!', 'success');
+                }
+            }
+
+            formatPromptText(text) {
+                if (!text || text === 'No prompt found' || text === 'No negative prompt found') {
+                    return `<span class="text-gray-500 italic">${text || 'No prompt found'}</span>`;
+                }
+                return this.escapeHtml(text);
+            }
+
+            escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+
+            unescapeHtml(text) {
+                const div = document.createElement('div');
+                div.innerHTML = text;
+                return div.textContent;
+            }
+
+            showNotification(message, type = 'info') {
+                const notification = document.createElement('div');
+                notification.className = `fixed top-4 right-4 px-6 py-4 rounded-lg shadow-lg z-[20000] transition-all duration-300 transform translate-x-full`;
+                
+                const colors = {
+                    success: "bg-green-600 text-white",
+                    error: "bg-red-600 text-white",
+                    warning: "bg-yellow-600 text-white",
+                    info: "bg-blue-600 text-white"
+                };
+                
+                notification.className += ` ${colors[type] || colors.info}`;
+                notification.textContent = message;
+                
+                document.body.appendChild(notification);
+                
+                setTimeout(() => notification.classList.remove("translate-x-full"), 100);
+                setTimeout(() => {
+                    notification.classList.add("translate-x-full");
+                    setTimeout(() => {
+                        if (notification.parentNode) {
+                            document.body.removeChild(notification);
+                        }
+                    }, 300);
+                }, 3000);
+            }
+
+            formatImageCaption(image) {
+                const date = new Date(image.modified_time * 1000);
+                return `${image.filename} | ${this.formatFileSize(image.size)} | ${date.toLocaleString()}`;
+            }
+
+            async extractImageMetadata(imageUrl) {
+                try {
+                    // Fetch the image as an array buffer
+                    const response = await fetch(imageUrl);
+                    const arrayBuffer = await response.arrayBuffer();
+                    
+                    // Parse PNG metadata
+                    const metadata = await this.parsePNGMetadata(arrayBuffer);
+                    const comfyData = this.extractComfyUIData(metadata);
+                    
+                    return this.parseWorkflowData(comfyData, imageUrl);
+                } catch (error) {
+                    console.error('Error extracting metadata:', error);
+                    return null;
+                }
+            }
+
+            async parsePNGMetadata(arrayBuffer) {
+                const dataView = new DataView(arrayBuffer);
+                let offset = 8; // Skip PNG signature
+                const metadata = {};
+
+                while (offset < arrayBuffer.byteLength - 8) {
+                    const length = dataView.getUint32(offset);
+                    const type = new TextDecoder().decode(arrayBuffer.slice(offset + 4, offset + 8));
+                    
+                    if (type === 'tEXt' || type === 'iTXt' || type === 'zTXt') {
+                        const chunkData = arrayBuffer.slice(offset + 8, offset + 8 + length);
+                        let text;
+                        
+                        if (type === 'tEXt') {
+                            text = new TextDecoder().decode(chunkData);
+                        } else if (type === 'iTXt') {
+                            // iTXt format: keyword\0compression\0language\0translated_keyword\0text
+                            const textData = new TextDecoder().decode(chunkData);
+                            const parts = textData.split('\0');
+                            if (parts.length >= 5) {
+                                metadata[parts[0]] = parts[4];
+                            }
+                            text = textData;
+                        } else if (type === 'zTXt') {
+                            // zTXt is compressed - basic parsing (might need proper decompression)
+                            text = new TextDecoder().decode(chunkData);
+                        }
+                        
+                        // Parse the text chunk for key-value pairs
+                        const nullIndex = text.indexOf('\0');
+                        if (nullIndex !== -1) {
+                            const key = text.substring(0, nullIndex);
+                            const value = text.substring(nullIndex + 1);
+                            metadata[key] = value;
+                        }
+                    }
+                    
+                    offset += 8 + length + 4; // Move to next chunk (8 = length + type, 4 = CRC)
+                }
+
+                return metadata;
+            }
+
+            extractComfyUIData(metadata) {
+                let workflowData = null;
+                let promptData = null;
+
+                // Common ComfyUI metadata field names
+                const workflowFields = ['workflow', 'Workflow', 'comfy', 'ComfyUI'];
+                const promptFields = ['prompt', 'Prompt', 'parameters', 'Parameters'];
+
+                for (const field of workflowFields) {
+                    if (metadata[field]) {
+                        try {
+                            // Clean NaN values from JSON string before parsing
+                            let cleanedJson = metadata[field];
+                            cleanedJson = cleanedJson.replace(/:\s*NaN\b/g, ': null');
+                            cleanedJson = cleanedJson.replace(/\bNaN\b/g, 'null');
+                            
+                            workflowData = JSON.parse(cleanedJson);
+                            break;
+                        } catch (e) {
+                            console.log('Failed to parse workflow field:', field);
+                        }
+                    }
+                }
+
+                for (const field of promptFields) {
+                    if (metadata[field]) {
+                        try {
+                            // Clean NaN values from JSON string before parsing
+                            let cleanedJson = metadata[field];
+                            cleanedJson = cleanedJson.replace(/:\s*NaN\b/g, ': null');
+                            cleanedJson = cleanedJson.replace(/\bNaN\b/g, 'null');
+                            
+                            promptData = JSON.parse(cleanedJson);
+                            break;
+                        } catch (e) {
+                            console.log('Failed to parse prompt field:', field);
+                        }
+                    }
+                }
+
+                return { workflow: workflowData, prompt: promptData };
+            }
+
+            parseWorkflowData(comfyData, imagePath) {
+                // Extract information from ComfyUI workflow
+                let checkpoint = 'Unknown';
+                let positivePrompt = 'No prompt found';
+                let negativePrompt = 'No negative prompt found';
+                let steps = 'Unknown';
+                let cfgScale = 'Unknown';
+                let sampler = 'Unknown';
+                let seed = 'Unknown';
+
+                // Parse prompt data first (more reliable for actual generation parameters)
+                if (comfyData.prompt) {
+                    const promptNodes = comfyData.prompt;
+                    
+                    for (const nodeId in promptNodes) {
+                        const node = promptNodes[nodeId];
+                        
+                        // Checkpoint
+                        if (node.class_type === 'CheckpointLoaderSimple' && node.inputs) {
+                            checkpoint = node.inputs.ckpt_name || checkpoint;
+                        }
+                        
+                        // Prompts - need to identify which is positive vs negative
+                        if (node.class_type === 'PromptManager' && node.inputs && node.inputs.text) {
+                            // PromptManager typically contains the positive prompt
+                            positivePrompt = node.inputs.text;
+                        }
+                        
+                        if (node.class_type === 'CLIPTextEncode' && node.inputs && node.inputs.text) {
+                            // Check if this looks like a negative prompt
+                            const text = node.inputs.text.toLowerCase();
+                            if (text.includes('bad anatomy') || text.includes('unfinished') || 
+                                text.includes('censored') || text.includes('weird anatomy') ||
+                                text.includes('negative') || text.includes('embedding:')) {
+                                negativePrompt = node.inputs.text;
+                            } else if (positivePrompt === 'No prompt found') {
+                                // If we haven't found a positive prompt yet, this might be it
+                                positivePrompt = node.inputs.text;
+                            }
+                        }
+                        
+                        // Sampling parameters
+                        if (node.class_type === 'KSampler' && node.inputs) {
+                            steps = node.inputs.steps || steps;
+                            cfgScale = node.inputs.cfg || cfgScale;
+                            sampler = node.inputs.sampler_name || sampler;
+                            seed = node.inputs.seed || seed;
+                        }
+                        
+                        if (node.class_type === 'KSamplerAdvanced' && node.inputs) {
+                            steps = node.inputs.steps || steps;
+                            cfgScale = node.inputs.cfg || cfgScale;
+                            sampler = node.inputs.sampler_name || sampler;
+                            seed = node.inputs.noise_seed || seed;
+                        }
+                    }
+                }
+
+                // Also try to parse from workflow data if we didn't find everything in prompt
+                if (comfyData.workflow && comfyData.workflow.nodes) {
+                    for (const node of comfyData.workflow.nodes) {
+                        if (node.type === 'CheckpointLoaderSimple' && node.widgets_values) {
+                            checkpoint = node.widgets_values[0] || checkpoint;
+                        }
+                        
+                        if (node.type === 'CLIPTextEncode' && node.widgets_values && node.widgets_values[0]) {
+                            const text = node.widgets_values[0];
+                            const textLower = text.toLowerCase();
+                            
+                            if (textLower.includes('bad anatomy') || textLower.includes('unfinished') || 
+                                textLower.includes('censored') || textLower.includes('negative')) {
+                                negativePrompt = text;
+                            } else if (positivePrompt === 'No prompt found') {
+                                positivePrompt = text;
+                            }
+                        }
+                        
+                        if ((node.type === 'KSampler' || node.type === 'KSamplerAdvanced') && node.widgets_values) {
+                            if (node.widgets_values.length >= 4) {
+                                seed = node.widgets_values[0] || seed;
+                                steps = node.widgets_values[1] || steps;
+                                cfgScale = node.widgets_values[2] || cfgScale;
+                                sampler = node.widgets_values[3] || sampler;
+                            }
+                        }
+                    }
+                }
+
+                return {
+                    checkpoint,
+                    positivePrompt,
+                    negativePrompt,
+                    steps,
+                    cfgScale,
+                    sampler,
+                    seed,
+                    workflow: comfyData.workflow,
+                    imagePath
+                };
+            }
+
+            // Settings functionality
+            showSettings() {
+                this.loadSettingsFromStorage();
+                document.getElementById('settingsModal').classList.remove('hidden');
+                document.getElementById('settingsModal').classList.add('flex');
+                document.body.style.overflow = 'hidden';
+            }
+
+            hideSettings() {
+                document.getElementById('settingsModal').classList.add('hidden');
+                document.getElementById('settingsModal').classList.remove('flex');
+                document.body.style.overflow = '';
+            }
+
+            loadSettingsFromStorage() {
+                const settings = this.getSettings();
+                
+                // Load checkbox settings
+                document.getElementById('lazyLoadingToggle').checked = settings.lazyLoading;
+                document.getElementById('autoLoadMetadataToggle').checked = settings.autoLoadMetadata;
+                document.getElementById('cacheMetadataToggle').checked = settings.cacheMetadata;
+                document.getElementById('showFilePathsToggle').checked = settings.showFilePaths;
+                document.getElementById('showImageInfoToggle').checked = settings.showImageInfo;
+                document.getElementById('debugModeToggle').checked = settings.debugMode;
+                
+                // Load video settings
+                document.getElementById('videoAutoplayToggle').checked = settings.videoAutoplay;
+                document.getElementById('videoMuteToggle').checked = settings.videoMute;
+                document.getElementById('videoLoopToggle').checked = settings.videoLoop;
+                
+                // Load select settings
+                document.getElementById('imageQualitySelect').value = settings.imageQuality;
+                document.getElementById('defaultViewModeSelect').value = settings.defaultViewMode;
+                document.getElementById('defaultLimitSelect').value = settings.defaultLimit;
+                document.getElementById('gridColumnsSelect').value = settings.gridColumns;
+                
+                // Load input settings
+                document.getElementById('apiTimeoutInput').value = settings.apiTimeout;
+                
+                // Update thumbnail status
+                document.getElementById('thumbnailStatus').textContent = settings.thumbnailsGenerated ? 'Generated' : 'Not generated';
+            }
+
+            getSettings() {
+                const defaultSettings = {
+                    lazyLoading: true,
+                    imageQuality: 'medium',
+                    defaultViewMode: 'grid',
+                    defaultLimit: 100,
+                    gridColumns: 8,
+                    showImageInfo: true,
+                    autoLoadMetadata: true,
+                    cacheMetadata: true,
+                    showFilePaths: true,
+                    debugMode: false,
+                    apiTimeout: 30,
+                    thumbnailsGenerated: false,
+                    // Video settings
+                    videoAutoplay: false,
+                    videoMute: true,
+                    videoLoop: true
+                };
+
+                try {
+                    const stored = localStorage.getItem('gallerySettings');
+                    if (stored) {
+                        return { ...defaultSettings, ...JSON.parse(stored) };
+                    }
+                } catch (e) {
+                    console.warn('Failed to load settings from localStorage:', e);
+                }
+
+                return defaultSettings;
+            }
+
+            saveSettings() {
+                const settings = {
+                    lazyLoading: document.getElementById('lazyLoadingToggle').checked,
+                    imageQuality: document.getElementById('imageQualitySelect').value,
+                    defaultViewMode: document.getElementById('defaultViewModeSelect').value,
+                    defaultLimit: parseInt(document.getElementById('defaultLimitSelect').value),
+                    gridColumns: parseInt(document.getElementById('gridColumnsSelect').value),
+                    showImageInfo: document.getElementById('showImageInfoToggle').checked,
+                    autoLoadMetadata: document.getElementById('autoLoadMetadataToggle').checked,
+                    cacheMetadata: document.getElementById('cacheMetadataToggle').checked,
+                    showFilePaths: document.getElementById('showFilePathsToggle').checked,
+                    debugMode: document.getElementById('debugModeToggle').checked,
+                    apiTimeout: parseInt(document.getElementById('apiTimeoutInput').value),
+                    thumbnailsGenerated: this.getSettings().thumbnailsGenerated, // Preserve this
+                    // Video settings
+                    videoAutoplay: document.getElementById('videoAutoplayToggle').checked,
+                    videoMute: document.getElementById('videoMuteToggle').checked,
+                    videoLoop: document.getElementById('videoLoopToggle').checked
+                };
+
+                try {
+                    localStorage.setItem('gallerySettings', JSON.stringify(settings));
+                    this.showNotification('Settings saved successfully!', 'success');
+                    this.hideSettings();
+                    
+                    // Apply some settings immediately
+                    this.applySettings(settings);
+                } catch (e) {
+                    console.error('Failed to save settings:', e);
+                    this.showNotification('Failed to save settings', 'error');
+                }
+            }
+
+            resetSettings() {
+                if (confirm('Reset all settings to defaults? This cannot be undone.')) {
+                    localStorage.removeItem('gallerySettings');
+                    this.loadSettingsFromStorage();
+                    this.showNotification('Settings reset to defaults', 'success');
+                }
+            }
+
+            applySettings(settings) {
+                // Apply grid columns
+                this.updateGridColumns(settings.gridColumns);
+                
+                // Apply default view mode if different
+                if (this.viewMode !== settings.defaultViewMode) {
+                    this.setViewMode(settings.defaultViewMode);
+                }
+                
+                // Apply default limit if different
+                if (this.limit !== settings.defaultLimit) {
+                    this.limit = settings.defaultLimit;
+                    document.getElementById('limitSelector').value = settings.defaultLimit;
+                }
+            }
+
+            updateGridColumns(columns) {
+                const gridContainer = document.getElementById('galleryGrid');
+                if (gridContainer) {
+                    // Remove existing column classes
+                    gridContainer.className = gridContainer.className.replace(/xl:grid-cols-\d+/g, '');
+                    // Add new column class
+                    gridContainer.classList.add(`xl:grid-cols-${columns}`);
+                }
+            }
+
+            async generateThumbnails() {
+                const btn = document.getElementById('generateThumbnailsBtn');
+                const status = document.getElementById('thumbnailStatus');
+                const progressContainer = document.getElementById('thumbnailProgress');
+                const progressBar = document.getElementById('progressBar');
+                const progressText = document.getElementById('progressText');
+                const progressPercent = document.getElementById('progressPercent');
+                const progressDetails = document.getElementById('progressDetails');
+                
+                btn.disabled = true;
+                btn.textContent = 'Generating...';
+                status.textContent = 'Initializing...';
+                progressContainer.classList.remove('hidden');
+                
+                try {
+                    // Start thumbnail generation with progress updates
+                    const result = await this.generateThumbnailsWithProgress({
+                        quality: document.getElementById('imageQualitySelect').value
+                    });
+                    
+                    // Update settings on success
+                    const settings = this.getSettings();
+                    settings.thumbnailsGenerated = true;
+                    localStorage.setItem('gallerySettings', JSON.stringify(settings));
+                    
+                    status.textContent = 'Generation completed';
+                    progressText.textContent = 'Completed!';
+                    progressDetails.textContent = `Generated ${result.count} new, skipped ${result.skipped || 0} existing (${result.total_images} total) in ${result.elapsed_time}s`;
+                    
+                    this.showNotification('Thumbnails generated successfully!', 'success');
+                    
+                    // Hide progress after a delay
+                    setTimeout(() => {
+                        progressContainer.classList.add('hidden');
+                    }, 3000);
+                    
+                } catch (error) {
+                    console.error('Thumbnail generation error:', error);
+                    status.textContent = 'Generation failed';
+                    progressText.textContent = 'Failed';
+                    progressDetails.textContent = error.message;
+                    progressBar.style.width = '0%';
+                    progressBar.classList.add('bg-red-600');
+                    
+                    this.showNotification('Failed to generate thumbnails: ' + error.message, 'error');
+                    
+                    // Hide progress after a delay
+                    setTimeout(() => {
+                        progressContainer.classList.add('hidden');
+                        progressBar.classList.remove('bg-red-600');
+                    }, 5000);
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = 'Generate';
+                }
+            }
+
+            async generateThumbnailsWithProgress(options) {
+                const progressBar = document.getElementById('progressBar');
+                const progressText = document.getElementById('progressText');
+                const progressPercent = document.getElementById('progressPercent');
+                const progressDetails = document.getElementById('progressDetails');
+                const progressETA = document.getElementById('progressETA');
+                const cancelBtn = document.getElementById('cancelThumbnailsBtn');
+                
+                return new Promise((resolve, reject) => {
+                    // Show cancel button
+                    cancelBtn.classList.remove('hidden');
+                    
+                    // Set up Server-Sent Events
+                    const eventSource = new EventSource(`/prompt_manager/images/generate-thumbnails/progress?quality=${options.quality}`);
+                    
+                    let cancelled = false;
+                    let resultData = null;
+                    
+                    // Handle cancellation
+                    const cancelHandler = () => {
+                        cancelled = true;
+                        eventSource.close();
+                        cancelBtn.classList.add('hidden');
+                        reject(new Error('Thumbnail generation cancelled by user'));
+                    };
+                    cancelBtn.addEventListener('click', cancelHandler);
+                    
+                    // Handle scanning/status events
+                    eventSource.addEventListener('status', (event) => {
+                        if (cancelled) return;
+                        const data = JSON.parse(event.data);
+                        progressText.textContent = data.message || 'Processing...';
+                        progressDetails.textContent = data.phase === 'scanning' ? 'Scanning output folder...' : 'Preparing...';
+                    });
+                    
+                    // Handle start event
+                    eventSource.addEventListener('start', (event) => {
+                        if (cancelled) return;
+                        const data = JSON.parse(event.data);
+                        progressText.textContent = `Processing ${data.total_images} images...`;
+                        progressDetails.textContent = data.message || `Found ${data.total_images} images to process`;
+                    });
+                    
+                    // Handle progress updates
+                    eventSource.addEventListener('progress', (event) => {
+                        if (cancelled) return;
+                        const data = JSON.parse(event.data);
+                        
+                        // Update progress bar
+                        progressBar.style.width = `${data.percentage}%`;
+                        progressPercent.textContent = `${data.percentage}%`;
+                        
+                        // Update text
+                        progressText.textContent = `Processing... (${data.processed}/${data.total_images})`;
+                        progressDetails.textContent = `Generated: ${data.generated}, Skipped: ${data.skipped} | Rate: ${data.rate} img/s`;
+                        
+                        // Update ETA
+                        if (data.eta > 0 && data.eta < 3600) {
+                            const etaText = data.eta > 60 ? `${Math.floor(data.eta / 60)}m ${Math.floor(data.eta % 60)}s` : `${Math.floor(data.eta)}s`;
+                            progressETA.textContent = `ETA: ${etaText}`;
+                        } else {
+                            progressETA.textContent = '';
+                        }
+                    });
+                    
+                    // Handle completion
+                    eventSource.addEventListener('complete', (event) => {
+                        if (cancelled) return;
+                        resultData = JSON.parse(event.data);
+                        
+                        // Update final progress
+                        progressBar.style.width = '100%';
+                        progressPercent.textContent = '100%';
+                        progressText.textContent = 'Completed!';
+                        progressDetails.textContent = resultData.message || `Generated ${resultData.count} new thumbnails`;
+                        progressETA.textContent = 'Done';
+                        
+                        // Clean up
+                        eventSource.close();
+                        cancelBtn.removeEventListener('click', cancelHandler);
+                        cancelBtn.classList.add('hidden');
+                        
+                        resolve(resultData);
+                    });
+                    
+                    // Handle errors
+                    eventSource.addEventListener('error', (event) => {
+                        if (cancelled) return;
+                        const data = JSON.parse(event.data);
+                        
+                        // Clean up
+                        eventSource.close();
+                        cancelBtn.removeEventListener('click', cancelHandler);
+                        cancelBtn.classList.add('hidden');
+                        
+                        reject(new Error(data.error || 'Thumbnail generation failed'));
+                    });
+                    
+                    // Handle EventSource errors
+                    eventSource.onerror = (error) => {
+                        if (cancelled) return;
+                        console.error('EventSource error:', error);
+                        
+                        // Clean up
+                        eventSource.close();
+                        cancelBtn.removeEventListener('click', cancelHandler);
+                        cancelBtn.classList.add('hidden');
+                        
+                        reject(new Error('Connection to server lost during thumbnail generation'));
+                    };
+                });
+            }
+
+
+            async clearCache() {
+                if (confirm('Clear PromptManager cache and thumbnails? This will NOT affect your original images.')) {
+                    try {
+                        // Clear only PromptManager-related browser caches (never touch user images)
+                        if ('caches' in window) {
+                            const cacheNames = await caches.keys();
+                            // Only clear caches that are specifically ours
+                            const ourCaches = cacheNames.filter(name => 
+                                name.includes('prompt-manager') || 
+                                name.includes('gallery') ||
+                                name.includes('thumbnail')
+                            );
+                            await Promise.all(ourCaches.map(name => caches.delete(name)));
+                        }
+                        
+                        // Clear only our localStorage entries (never touch user data)
+                        Object.keys(localStorage).forEach(key => {
+                            if (key.startsWith('gallery_cache_') || 
+                                key.startsWith('metadata_cache_') ||
+                                key.startsWith('promptManager_') ||
+                                key.startsWith('pm_')) {
+                                localStorage.removeItem(key);
+                            }
+                        });
+                        
+                        // Call backend to clear server-side thumbnails (only our generated thumbnails)
+                        try {
+                            const response = await fetch('/prompt_manager/images/clear-thumbnails', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' }
+                            });
+                            
+                            if (response.ok) {
+                                const data = await response.json();
+                                console.log('Server thumbnails cleared:', data);
+                            }
+                        } catch (e) {
+                            console.warn('Could not clear server thumbnails:', e);
+                            // Not a critical error - continue with local cleanup
+                        }
+                        
+                        // Update thumbnail status
+                        const settings = this.getSettings();
+                        settings.thumbnailsGenerated = false;
+                        localStorage.setItem('gallerySettings', JSON.stringify(settings));
+                        document.getElementById('thumbnailStatus').textContent = 'Not generated';
+                        
+                        this.showNotification('PromptManager cache cleared successfully! Original images untouched.', 'success');
+                    } catch (error) {
+                        console.error('Clear cache error:', error);
+                        this.showNotification('Failed to clear cache', 'error');
+                    }
+                }
+            }
+
+            async rescanFolder() {
+                const btn = document.getElementById('rescanFolderBtn');
+                btn.disabled = true;
+                btn.textContent = 'Scanning...';
+                
+                try {
+                    // Force reload images
+                    await this.loadImages();
+                    this.showNotification('Folder rescanned successfully!', 'success');
+                } catch (error) {
+                    console.error('Rescan error:', error);
+                    this.showNotification('Failed to rescan folder', 'error');
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = 'Rescan';
+                }
+            }
+
+            formatFileSize(bytes) {
+                if (bytes === 0) return '0 Bytes';
+                const k = 1024;
+                const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            }
+
+            changeLimit(newLimit) {
+                this.limit = newLimit;
+                this.currentPage = 1;
+                this.loadImages();
+            }
+
+            updatePagination() {
+                const totalPages = Math.ceil(this.total / this.limit);
+                const hasPrev = this.currentPage > 1;
+                const hasNext = this.currentPage < totalPages;
+
+                document.getElementById('prevPageBtn').disabled = !hasPrev;
+                document.getElementById('nextPageBtn').disabled = !hasNext;
+                document.getElementById('pageInfo').textContent = `Page ${this.currentPage} of ${totalPages}`;
+
+                if (totalPages > 1) {
+                    document.getElementById('paginationControls').classList.remove('hidden');
+                } else {
+                    document.getElementById('paginationControls').classList.add('hidden');
+                }
+            }
+
+            previousPage() {
+                if (this.currentPage > 1) {
+                    this.currentPage--;
+                    this.loadImages();
+                }
+            }
+
+            nextPage() {
+                const totalPages = Math.ceil(this.total / this.limit);
+                if (this.currentPage < totalPages) {
+                    this.currentPage++;
+                    this.loadImages();
+                }
+            }
+        }
+
+        // Initialize gallery when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            new GalleryManager();
+        });
+    </script>
+</body>
+</html>
