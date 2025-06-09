@@ -403,6 +403,15 @@
                                 Rescan
                             </button>
                         </div>
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <h5 class="text-white text-sm font-medium">Find Duplicate Images</h5>
+                                <p class="text-xs text-gray-400">Scan for duplicate images based on file content</p>
+                            </div>
+                            <button id="scanDuplicatesBtn" class="px-3 py-1 bg-orange-600 hover:bg-orange-700 text-white text-sm rounded transition-colors">
+                                Scan
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -433,6 +442,62 @@
                 <button id="saveSettingsBtn" class="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white font-medium rounded-lg transition-colors">
                     Save Settings
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Duplicates Modal -->
+    <div id="duplicatesModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl max-w-4xl w-full max-h-[90vh] overflow-hidden mx-4 border border-gray-700">
+            <div class="p-6 border-b border-gray-700">
+                <div class="flex items-center justify-between">
+                    <h3 class="text-xl font-semibold text-gray-100">🔍 Duplicate Images Found</h3>
+                    <button id="closeDuplicatesBtn" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
+                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="p-6 overflow-y-auto max-h-[calc(90vh-200px)] custom-scrollbar">
+                <div id="duplicatesScanStatus" class="text-center py-8">
+                    <div class="inline-flex items-center px-4 py-2 bg-orange-600 rounded-lg">
+                        <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Scanning for duplicate images...
+                    </div>
+                </div>
+                <div id="duplicatesContent" class="hidden">
+                    <div class="mb-6 p-4 bg-red-900/20 border border-red-500/50 rounded-lg">
+                        <div class="flex items-start">
+                            <svg class="w-5 h-5 text-red-400 mt-0.5 mr-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path>
+                            </svg>
+                            <div>
+                                <h4 class="text-red-300 font-medium">⚠️ Warning: Removing duplicate images cannot be undone!</h4>
+                                <p class="text-red-200 text-sm mt-1">When you remove a duplicate image, the selected file will be permanently deleted from disk. Choose carefully which images to keep.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="duplicatesList" class="space-y-4">
+                        <!-- Duplicates will be populated here -->
+                    </div>
+                </div>
+            </div>
+            <div id="duplicatesFooter" class="hidden p-6 border-t border-gray-700 flex justify-between items-center">
+                <div class="text-sm text-gray-400">
+                    <span id="duplicatesCount">0</span> duplicate image groups found
+                </div>
+                <div class="flex space-x-3">
+                    <button id="selectAllBtn" class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                        Select All to Delete
+                    </button>
+                    <button id="removeDuplicatesBtn" class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors">
+                        Delete Selected
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -468,11 +533,23 @@
                 document.getElementById('generateThumbnailsBtn').addEventListener('click', () => this.generateThumbnails());
                 document.getElementById('clearCacheBtn').addEventListener('click', () => this.clearCache());
                 document.getElementById('rescanFolderBtn').addEventListener('click', () => this.rescanFolder());
+                document.getElementById('scanDuplicatesBtn').addEventListener('click', () => this.scanDuplicates());
+                
+                // Duplicates modal event listeners
+                document.getElementById('closeDuplicatesBtn').addEventListener('click', () => this.hideDuplicatesModal());
+                document.getElementById('selectAllBtn').addEventListener('click', () => this.selectAllDuplicates());
+                document.getElementById('removeDuplicatesBtn').addEventListener('click', () => this.removeDuplicates());
                 
                 // Close modal on outside click
                 document.getElementById('settingsModal').addEventListener('click', (e) => {
                     if (e.target.id === 'settingsModal') {
                         this.hideSettings();
+                    }
+                });
+                
+                document.getElementById('duplicatesModal').addEventListener('click', (e) => {
+                    if (e.target.id === 'duplicatesModal') {
+                        this.hideDuplicatesModal();
                     }
                 });
             }
@@ -2206,6 +2283,200 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 } finally {
                     btn.disabled = false;
                     btn.textContent = 'Rescan';
+                }
+            }
+
+            async scanDuplicates() {
+                this.showDuplicatesModal();
+                
+                const btn = document.getElementById('scanDuplicatesBtn');
+                btn.disabled = true;
+                btn.textContent = 'Scanning...';
+                
+                try {
+                    const response = await fetch('/prompt_manager/scan_duplicates');
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        this.displayDuplicates(data.duplicates || []);
+                        this.showNotification(`Found ${data.duplicates?.length || 0} duplicate image groups`, 'info');
+                    } else {
+                        throw new Error(data.error || 'Failed to scan for duplicate images');
+                    }
+                } catch (error) {
+                    console.error('Duplicate scan error:', error);
+                    this.showNotification('Failed to scan for duplicate images', 'error');
+                    this.hideDuplicatesModal();
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = 'Scan';
+                }
+            }
+
+            showDuplicatesModal() {
+                document.getElementById('duplicatesModal').classList.remove('hidden');
+                document.getElementById('duplicatesModal').classList.add('flex');
+                document.body.style.overflow = 'hidden';
+                
+                // Reset modal state
+                document.getElementById('duplicatesScanStatus').classList.remove('hidden');
+                document.getElementById('duplicatesContent').classList.add('hidden');
+                document.getElementById('duplicatesFooter').classList.add('hidden');
+            }
+
+            hideDuplicatesModal() {
+                document.getElementById('duplicatesModal').classList.add('hidden');
+                document.getElementById('duplicatesModal').classList.remove('flex');
+                document.body.style.overflow = '';
+            }
+
+            displayDuplicates(duplicates) {
+                const scanStatus = document.getElementById('duplicatesScanStatus');
+                const content = document.getElementById('duplicatesContent');
+                const footer = document.getElementById('duplicatesFooter');
+                const list = document.getElementById('duplicatesList');
+                const count = document.getElementById('duplicatesCount');
+                
+                scanStatus.classList.add('hidden');
+                
+                if (duplicates.length === 0) {
+                    list.innerHTML = '<div class="text-center py-8 text-gray-400">No duplicate images found! 🎉</div>';
+                    content.classList.remove('hidden');
+                    return;
+                }
+                
+                count.textContent = duplicates.length;
+                list.innerHTML = '';
+                
+                duplicates.forEach((group, groupIndex) => {
+                    const groupEl = document.createElement('div');
+                    groupEl.className = 'bg-gray-700 rounded-lg p-4 border border-gray-600';
+                    
+                    groupEl.innerHTML = `
+                        <div class="mb-3 text-sm font-medium text-gray-300">
+                            Duplicate Group ${groupIndex + 1} (${group.images.length} identical ${group.images[0].media_type}s)
+                        </div>
+                        <div class="mb-3 p-3 bg-gray-800 rounded text-sm text-gray-300">
+                            <strong>Content Hash:</strong> ${group.hash.substring(0, 16)}...
+                        </div>
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                            ${group.images.map((image, imageIndex) => `
+                                <div class="flex items-start p-3 bg-gray-800 rounded border border-gray-600 ${imageIndex === 0 ? 'border-green-500' : ''}">
+                                    <div class="flex-shrink-0 mr-3">
+                                        ${image.media_type === 'video' ? `
+                                            <div class="w-20 h-20 bg-gray-600 rounded flex items-center justify-center relative">
+                                                ${image.thumbnail_url ? `
+                                                    <img src="${image.thumbnail_url}" alt="Video thumbnail" class="w-full h-full object-cover rounded">
+                                                ` : `
+                                                    <svg class="w-8 h-8 text-gray-400" fill="currentColor" viewBox="0 0 20 20">
+                                                        <path d="M2 6a2 2 0 012-2h6l2 2h6a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z"/>
+                                                    </svg>
+                                                `}
+                                                <div class="absolute bottom-0 right-0 bg-black bg-opacity-75 text-white text-xs px-1 rounded">VIDEO</div>
+                                            </div>
+                                        ` : `
+                                            <img src="${image.thumbnail_url || image.url}" alt="${image.filename}" 
+                                                 class="w-20 h-20 object-cover rounded cursor-pointer hover:opacity-80" 
+                                                 onclick="this.parentElement.parentElement.querySelector('.image-preview').click()">
+                                        `}
+                                    </div>
+                                    <div class="flex-1 min-w-0">
+                                        <div class="text-sm text-gray-300 mb-2">
+                                            <div class="font-medium truncate" title="${image.filename}">${image.filename}</div>
+                                            <div class="text-xs text-gray-400 mt-1">
+                                                <span class="font-medium">Size:</span> ${this.formatFileSize(image.size)} • 
+                                                <span class="font-medium">Modified:</span> ${new Date(image.modified_time * 1000).toLocaleDateString()}
+                                            </div>
+                                            <div class="text-xs text-gray-500 mt-1 truncate" title="${image.relative_path}">
+                                                ${image.relative_path}
+                                            </div>
+                                        </div>
+                                        <div class="flex items-center justify-between">
+                                            <div class="flex items-center space-x-2">
+                                                <button class="image-preview text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded" 
+                                                        onclick="window.open('${image.url}', '_blank')">
+                                                    View Full
+                                                </button>
+                                            </div>
+                                            <div class="flex items-center">
+                                                ${imageIndex === 0 ? `
+                                                    <span class="px-3 py-1 bg-green-600 text-white text-xs rounded">KEEP (Oldest)</span>
+                                                ` : `
+                                                    <label class="flex items-center">
+                                                        <input type="checkbox" class="duplicate-checkbox" data-group="${groupIndex}" data-image-path="${image.path}" 
+                                                               class="w-4 h-4 text-red-600 bg-gray-600 border-gray-500 rounded focus:ring-red-500">
+                                                        <span class="ml-2 text-sm text-red-300">Delete</span>
+                                                    </label>
+                                                `}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `;
+                    
+                    list.appendChild(groupEl);
+                });
+                
+                content.classList.remove('hidden');
+                footer.classList.remove('hidden');
+            }
+
+            selectAllDuplicates() {
+                const checkboxes = document.querySelectorAll('.duplicate-checkbox');
+                const selectBtn = document.getElementById('selectAllBtn');
+                
+                const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+                
+                checkboxes.forEach(cb => {
+                    cb.checked = !allChecked;
+                });
+                
+                selectBtn.textContent = allChecked ? 'Select All to Delete' : 'Deselect All';
+            }
+
+            async removeDuplicates() {
+                const checkboxes = document.querySelectorAll('.duplicate-checkbox:checked');
+                
+                if (checkboxes.length === 0) {
+                    this.showNotification('No duplicate images selected for removal', 'warning');
+                    return;
+                }
+                
+                const confirmation = confirm(`Are you sure you want to permanently delete ${checkboxes.length} duplicate image files? This action cannot be undone!`);
+                if (!confirmation) return;
+                
+                const btn = document.getElementById('removeDuplicatesBtn');
+                btn.disabled = true;
+                btn.textContent = 'Deleting...';
+                
+                try {
+                    const imagePaths = Array.from(checkboxes).map(cb => cb.dataset.imagePath);
+                    
+                    const response = await fetch('/prompt_manager/delete_duplicate_images', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ image_paths: imagePaths })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        this.showNotification(`Successfully deleted ${imagePaths.length} duplicate image files`, 'success');
+                        this.hideDuplicatesModal();
+                        this.loadImages(); // Refresh the gallery
+                    } else {
+                        throw new Error(data.error || 'Failed to delete duplicate images');
+                    }
+                } catch (error) {
+                    console.error('Remove duplicates error:', error);
+                    this.showNotification('Failed to delete duplicate images', 'error');
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = 'Remove Selected';
                 }
             }
 
