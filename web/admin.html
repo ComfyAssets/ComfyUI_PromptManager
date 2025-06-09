@@ -248,6 +248,10 @@
                                 class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors">
                             🔍 Metadata
                         </button>
+                        <button id="galleryBtn" 
+                                class="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            🖼️ Gallery
+                        </button>
                     </div>
                     </div>
                 </div>
@@ -869,6 +873,7 @@
                 document.getElementById("scanBtn").addEventListener("click", () => this.showScanModal());
                 document.getElementById("logsBtn").addEventListener("click", () => this.showLogsModal());
                 document.getElementById("metadataBtn").addEventListener("click", () => this.openMetadataViewer());
+                document.getElementById("galleryBtn").addEventListener("click", () => this.openGallery());
 
                 // Pagination controls
                 document.getElementById("limitSelector").addEventListener("change", (e) => this.changeLimit(parseInt(e.target.value)));
@@ -2818,6 +2823,11 @@
             // Metadata functionality
             openMetadataViewer() {
                 window.open('/prompt_manager/gallery.html', '_blank');
+            }
+
+            // Gallery functionality
+            openGallery() {
+                window.open('/prompt_manager/gallery', '_blank');
             }
 
 
