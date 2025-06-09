@@ -446,6 +446,71 @@ class PromptDatabase:
             self.logger.error(f"Error exporting prompts: {e}")
             return False
     
+    def find_duplicates(self) -> List[Dict[str, Any]]:
+        """
+        Find duplicate prompts based on text content without removing them.
+        
+        Returns:
+            List of duplicate groups, each containing:
+            - text: The duplicate text content
+            - prompts: List of prompt records with same text
+        """
+        self.logger.info("Scanning for duplicate prompts")
+        try:
+            with self.model.get_connection() as conn:
+                # Find duplicates by text content (case-insensitive)
+                cursor = conn.execute("""
+                    SELECT LOWER(TRIM(text)) as normalized_text, COUNT(*) as count, 
+                           GROUP_CONCAT(id ORDER BY created_at ASC) as ids
+                    FROM prompts 
+                    GROUP BY LOWER(TRIM(text))
+                    HAVING COUNT(*) > 1
+                """)
+                
+                duplicate_groups = cursor.fetchall()
+                self.logger.debug(f"Found {len(duplicate_groups)} groups of duplicate prompts")
+                
+                result = []
+                
+                for group in duplicate_groups:
+                    ids = group['ids'].split(',')
+                    
+                    # Get full details for all prompts in this duplicate group
+                    prompts = []
+                    for prompt_id in ids:
+                        cursor = conn.execute("""
+                            SELECT id, text, category, rating, tags, created_at, updated_at
+                            FROM prompts 
+                            WHERE id = ?
+                        """, (int(prompt_id),))
+                        
+                        prompt_data = cursor.fetchone()
+                        if prompt_data:
+                            prompt_dict = dict(prompt_data)
+                            # Parse tags if they exist
+                            if prompt_dict['tags']:
+                                try:
+                                    import json
+                                    prompt_dict['tags'] = json.loads(prompt_dict['tags'])
+                                except:
+                                    prompt_dict['tags'] = []
+                            else:
+                                prompt_dict['tags'] = []
+                            prompts.append(prompt_dict)
+                    
+                    if prompts:
+                        result.append({
+                            'text': prompts[0]['text'],  # Use the actual text (not normalized)
+                            'prompts': prompts
+                        })
+                
+                self.logger.info(f"Found {len(result)} groups with duplicates")
+                return result
+                
+        except Exception as e:
+            self.logger.error(f"Error finding duplicates: {e}")
+            return []
+    
     def cleanup_duplicates(self) -> int:
         """
         Remove duplicate prompts based on text content, preserving all image links.
