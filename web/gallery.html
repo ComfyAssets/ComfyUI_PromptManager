@@ -208,7 +208,11 @@
                     <button id="prevPageBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                         ← Previous
                     </button>
-                    <span id="pageInfo" class="px-4 py-2 text-gray-400">Page 1</span>
+                    <div class="flex items-center space-x-2">
+                        <span class="text-gray-400">Page</span>
+                        <input id="pageInput" type="number" min="1" class="w-16 px-2 py-1 bg-gray-700 text-white text-center rounded border border-gray-600 focus:border-blue-500 focus:outline-none" value="1">
+                        <span id="pageInfo" class="text-gray-400">of 1</span>
+                    </div>
                     <button id="nextPageBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                         Next →
                     </button>
@@ -525,6 +529,12 @@
                 document.getElementById('retryBtn').addEventListener('click', () => this.loadImages());
                 document.getElementById('prevPageBtn').addEventListener('click', () => this.previousPage());
                 document.getElementById('nextPageBtn').addEventListener('click', () => this.nextPage());
+                document.getElementById('pageInput').addEventListener('change', (e) => this.goToPage(parseInt(e.target.value)));
+                document.getElementById('pageInput').addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        this.goToPage(parseInt(e.target.value));
+                    }
+                });
                 
                 // Settings modal event listeners
                 document.getElementById('closeSettingsBtn').addEventListener('click', () => this.hideSettings());
@@ -2501,7 +2511,11 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                 document.getElementById('prevPageBtn').disabled = !hasPrev;
                 document.getElementById('nextPageBtn').disabled = !hasNext;
-                document.getElementById('pageInfo').textContent = `Page ${this.currentPage} of ${totalPages}`;
+                document.getElementById('pageInfo').textContent = `of ${totalPages}`;
+                
+                const pageInput = document.getElementById('pageInput');
+                pageInput.value = this.currentPage;
+                pageInput.max = totalPages;
 
                 if (totalPages > 1) {
                     document.getElementById('paginationControls').classList.remove('hidden');
@@ -2521,6 +2535,20 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 const totalPages = Math.ceil(this.total / this.limit);
                 if (this.currentPage < totalPages) {
                     this.currentPage++;
+                    this.loadImages();
+                }
+            }
+
+            goToPage(page) {
+                const totalPages = Math.ceil(this.total / this.limit);
+                if (isNaN(page) || page < 1 || page > totalPages) {
+                    // Reset to current page if invalid input
+                    document.getElementById('pageInput').value = this.currentPage;
+                    return;
+                }
+                
+                if (page !== this.currentPage) {
+                    this.currentPage = page;
                     this.loadImages();
                 }
             }
