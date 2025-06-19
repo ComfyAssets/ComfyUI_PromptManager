@@ -3108,7 +3108,7 @@ class PromptManagerAPI:
             try:
                 abs_path = path.resolve()
                 if abs_path.exists() and abs_path.is_dir():
-                    self.logger.info(f"Found ComfyUI output directory: {abs_path}")
+                    self.logger.debug(f"Found ComfyUI output directory: {abs_path}")
                     return str(abs_path)
             except (OSError, RuntimeError):
                 continue  # Skip invalid paths
