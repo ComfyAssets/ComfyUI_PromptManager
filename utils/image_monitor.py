@@ -36,7 +36,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
     def on_created(self, event):
         """Handle file creation events."""
         if not event.is_directory and self.is_image_file(event.src_path):
-            self.logger.info(f"New image detected: {event.src_path}")
+            self.logger.debug(f"New image detected: {event.src_path}")
             # Small delay to ensure file is fully written
             threading.Timer(
                 self.processing_delay, 
@@ -51,7 +51,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
     def process_new_image(self, image_path: str):
         """Process a newly created image file."""
         try:
-            self.logger.info(f"Processing image: {image_path}")
+            self.logger.debug(f"Processing image: {image_path}")
             
             if not os.path.exists(image_path):
                 self.logger.warning(f"Image file no longer exists: {image_path}")
@@ -62,11 +62,11 @@ class ImageGenerationHandler(FileSystemEventHandler):
             self.logger.debug(f"Current prompt context: {current_prompt['id'] if current_prompt else 'None'}")
             
             if not current_prompt:
-                self.logger.info(f"No active prompt context for image: {image_path}")
+                self.logger.debug(f"No active prompt context for image: {image_path}")
                 # Fallback: try to link to the most recent prompt in database
                 current_prompt = self._get_fallback_prompt()
                 if current_prompt:
-                    self.logger.info(f"Using fallback prompt: {current_prompt['id']}")
+                    self.logger.debug(f"Using fallback prompt: {current_prompt['id']}")
                 else:
                     self.logger.warning(f"No fallback prompt available, skipping image")
                     return
@@ -84,10 +84,10 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 metadata = None
             
             if metadata:
-                self.logger.info(f"Linking image with full metadata to prompt {current_prompt['id']}")
+                self.logger.debug(f"Linking image with full metadata to prompt {current_prompt['id']}")
                 self.link_image_to_prompt(image_path, current_prompt, metadata)
             else:
-                self.logger.info(f"Linking image with basic info to prompt {current_prompt['id']}")
+                self.logger.debug(f"Linking image with basic info to prompt {current_prompt['id']}")
                 # Link with basic file info even without metadata
                 basic_metadata = self.get_basic_file_info(image_path)
                 self.link_image_to_prompt(image_path, current_prompt, {'file_info': basic_metadata})
@@ -147,7 +147,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 metadata=metadata
             )
             fallback_note = " (fallback)" if prompt_context.get('fallback') else ""
-            self.logger.info(f"Successfully linked image {image_id} to prompt {prompt_context['id']}{fallback_note}")
+            self.logger.debug(f"Successfully linked image {image_id} to prompt {prompt_context['id']}{fallback_note}")
         except Exception as e:
             self.logger.error(f"Failed to link image to prompt: {e}")
 
@@ -199,13 +199,13 @@ class ImageMonitor:
             if os.path.exists(output_dir):
                 self.observer.schedule(self.handler, output_dir, recursive=True)
                 self.monitored_directories.append(output_dir)
-                self.logger.info(f"Monitoring directory: {output_dir}")
+                self.logger.debug(f"Monitoring directory: {output_dir}")
             else:
                 self.logger.warning(f"Directory does not exist: {output_dir}")
         
         if self.monitored_directories:
             self.observer.start()
-            self.logger.info(f"Image monitoring started for {len(self.monitored_directories)} directories")
+            self.logger.debug(f"Image monitoring started for {len(self.monitored_directories)} directories")
         else:
             self.logger.warning("No valid directories to monitor")
     
@@ -217,7 +217,7 @@ class ImageMonitor:
             self.observer = None
             self.handler = None
             self.monitored_directories = []
-            self.logger.info("Image monitoring stopped")
+            self.logger.debug("Image monitoring stopped")
     
     def detect_comfyui_output_dirs(self) -> list:
         """Auto-detect ComfyUI output directories."""
@@ -229,7 +229,7 @@ class ImageMonitor:
             output_dir = folder_paths.get_output_directory()
             if output_dir and os.path.exists(output_dir):
                 potential_dirs.append(output_dir)
-                self.logger.info(f"Detected ComfyUI output directory: {output_dir}")
+                self.logger.debug(f"Detected ComfyUI output directory: {output_dir}")
         except ImportError:
             self.logger.debug("ComfyUI folder_paths not available, using fallback detection")
         
