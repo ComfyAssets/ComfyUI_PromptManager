@@ -32,7 +32,7 @@ class PromptTracker:
             db_manager: Database manager instance
         """
         self.logger = get_logger('prompt_manager.prompt_tracker')
-        self.logger.info("Initializing PromptTracker")
+        self.logger.debug("Initializing PromptTracker")
         
         self.db_manager = db_manager
         self._local = threading.local()
@@ -212,7 +212,7 @@ class PromptTracker:
                         self.active_prompts.pop(exec_id, None)
                 
                 if expired_ids:
-                    self.logger.info(f"Cleaned up {len(expired_ids)} expired prompts")
+                    self.logger.debug(f"Cleaned up {len(expired_ids)} expired prompts")
                 
                 time.sleep(self.cleanup_interval)
                 
@@ -244,7 +244,7 @@ class PromptTracker:
         # Clear thread-local storage as well
         self._local.current_prompt = None
         
-        self.logger.info(f"Cleared {cleared_count} active prompts")
+        self.logger.debug(f"Cleared {cleared_count} active prompts")
         return cleared_count
     
     def get_status(self) -> Dict[str, Any]:
