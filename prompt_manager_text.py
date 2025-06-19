@@ -183,7 +183,7 @@ class PromptManagerText(ComfyNodeABC):
                             'append_text': append_text.strip() if append_text else None
                         }
                     )
-                    self.logger.info(f"Set execution context: {execution_id} for prompt ID: {prompt_id}")
+                    self.logger.debug(f"Set execution context: {execution_id} for prompt ID: {prompt_id}")
                 
             except Exception as e:
                 # Log error but don't fail the processing
@@ -238,7 +238,7 @@ class PromptManagerText(ComfyNodeABC):
             )
             
             if prompt_id:
-                self.logger.info(f"Successfully saved new prompt with ID: {prompt_id}")
+                self.logger.debug(f"Successfully saved new prompt with ID: {prompt_id}")
             else:
                 self.logger.warning("Failed to save prompt - no ID returned")
             
