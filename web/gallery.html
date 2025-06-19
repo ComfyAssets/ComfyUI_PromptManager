@@ -92,6 +92,42 @@
             display: flex !important;
             flex-direction: column !important;
             z-index: 10000 !important;
+            transition: transform 0.3s ease-in-out !important;
+        }
+        
+        .metadata-sidebar.collapsed {
+            transform: translateX(340px) !important;
+        }
+        
+        .metadata-collapse-btn {
+            position: absolute;
+            left: -40px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 32px;
+            height: 80px;
+            background: rgb(17, 24, 39);
+            border: 1px solid rgb(55, 65, 81);
+            border-right: none;
+            border-radius: 6px 0 0 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            z-index: 10001;
+        }
+        
+        .metadata-collapse-btn:hover {
+            background: rgb(31, 41, 55);
+        }
+        
+        .metadata-collapse-btn svg {
+            transition: transform 0.3s ease;
+        }
+        
+        .metadata-sidebar.collapsed .metadata-collapse-btn svg {
+            transform: rotate(180deg);
         }
     </style>
 </head>
@@ -259,6 +295,17 @@
                             <div class="text-xs text-gray-600 mt-1">
                                 💡 Thumbnails speed up gallery loading. Original images always used for viewing and metadata.
                             </div>
+                        </div>
+                        <!-- Check thumbnails at startup -->
+                        <div class="flex items-center justify-between py-2 border-t border-gray-600">
+                            <div>
+                                <label class="text-sm text-gray-300">Check thumbnails at startup</label>
+                                <p class="text-xs text-gray-500">Prompt to generate thumbnails if missing when opening gallery</p>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" id="checkThumbnailsAtStartup" class="sr-only peer" checked>
+                                <div class="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-violet-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-violet-600"></div>
+                            </label>
                         </div>
                         <!-- Progress bar (hidden by default) -->
                         <div id="thumbnailProgress" class="hidden">
@@ -518,6 +565,9 @@
                 
                 this.initializeEventListeners();
                 this.loadImages();
+                
+                // Check thumbnails at startup if enabled
+                this.checkThumbnailsAtStartup();
             }
 
             initializeEventListeners() {
@@ -850,6 +900,13 @@
                 sidebar.id = 'metadata-sidebar';
                 sidebar.className = 'metadata-sidebar';
                 sidebar.innerHTML = `
+                    <!-- Collapse Button -->
+                    <div class="metadata-collapse-btn" onclick="this.closest('.metadata-sidebar').classList.toggle('collapsed')">
+                        <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
+                        </svg>
+                    </div>
+                    
                     <!-- Header -->
                     <div class="flex items-center justify-between p-4 border-b border-gray-700">
                         <div class="flex items-center gap-2">
@@ -981,6 +1038,13 @@
                     
                     <!-- Metadata sidebar (matching the screenshot) -->
                     <div class="metadata-sidebar">
+                        <!-- Collapse Button -->
+                        <div class="metadata-collapse-btn" onclick="this.closest('.metadata-sidebar').classList.toggle('collapsed')">
+                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
+                            </svg>
+                        </div>
+                        
                         <!-- Header -->
                         <div class="flex items-center justify-between p-4 border-b border-gray-700">
                             <div class="flex items-center gap-2">
@@ -1076,6 +1140,13 @@
                     
                     <!-- Metadata sidebar (videos have limited metadata) -->
                     <div class="metadata-sidebar">
+                        <!-- Collapse Button -->
+                        <div class="metadata-collapse-btn" onclick="this.closest('.metadata-sidebar').classList.toggle('collapsed')">
+                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
+                            </svg>
+                        </div>
+                        
                         <!-- Header -->
                         <div class="flex items-center justify-between p-4 border-b border-gray-700">
                             <div class="flex items-center gap-2">
@@ -1934,6 +2005,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 document.getElementById('showFilePathsToggle').checked = settings.showFilePaths;
                 document.getElementById('showImageInfoToggle').checked = settings.showImageInfo;
                 document.getElementById('debugModeToggle').checked = settings.debugMode;
+                document.getElementById('checkThumbnailsAtStartup').checked = settings.checkThumbnailsAtStartup;
                 
                 // Load video settings
                 document.getElementById('videoAutoplayToggle').checked = settings.videoAutoplay;
@@ -1967,6 +2039,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     debugMode: false,
                     apiTimeout: 30,
                     thumbnailsGenerated: false,
+                    checkThumbnailsAtStartup: true,
                     // Video settings
                     videoAutoplay: false,
                     videoMute: true,
@@ -1999,6 +2072,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     debugMode: document.getElementById('debugModeToggle').checked,
                     apiTimeout: parseInt(document.getElementById('apiTimeoutInput').value),
                     thumbnailsGenerated: this.getSettings().thumbnailsGenerated, // Preserve this
+                    checkThumbnailsAtStartup: document.getElementById('checkThumbnailsAtStartup').checked,
                     // Video settings
                     videoAutoplay: document.getElementById('videoAutoplayToggle').checked,
                     videoMute: document.getElementById('videoMuteToggle').checked,
@@ -2550,6 +2624,350 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 if (page !== this.currentPage) {
                     this.currentPage = page;
                     this.loadImages();
+                }
+            }
+
+            async checkThumbnailsAtStartup() {
+                // Wait a moment to ensure page is fully loaded
+                setTimeout(async () => {
+                    const settings = this.getSettings();
+                    
+                    // Only check if the feature is enabled
+                    if (!settings.checkThumbnailsAtStartup) {
+                        console.debug('Thumbnail startup check disabled in settings');
+                        return;
+                    }
+                    
+                    try {
+                        // Check a sample of images to see if any are missing thumbnails
+                        const response = await fetch('/prompt_manager/images/output?limit=50&offset=0');
+                        const data = await response.json();
+                        
+                        console.debug('Checking images for missing thumbnails:', data);
+                        
+                        if (data.success && data.images && data.images.length > 0) {
+                            // Count images missing thumbnails
+                            let missingThumbnails = 0;
+                            for (const image of data.images) {
+                                if (!image.thumbnail_url) {
+                                    missingThumbnails++;
+                                }
+                            }
+                            
+                            console.debug(`Found ${missingThumbnails} images without thumbnails in sample of ${data.images.length}`);
+                            
+                            // If more than 10% of sampled images are missing thumbnails, show prompt
+                            const missingPercentage = (missingThumbnails / data.images.length) * 100;
+                            if (missingThumbnails > 0 && missingPercentage > 10) {
+                                // Estimate total missing based on sample
+                                const estimatedMissing = Math.round((missingThumbnails / data.images.length) * data.total);
+                                console.debug(`Estimated ${estimatedMissing} total images missing thumbnails (${missingPercentage.toFixed(1)}% of sample)`);
+                                this.showThumbnailGenerationPrompt(data.total, estimatedMissing);
+                            } else if (missingThumbnails > 0) {
+                                console.debug(`Only ${missingPercentage.toFixed(1)}% of images missing thumbnails, not showing prompt`);
+                            } else {
+                                console.debug('All sampled images have thumbnails');
+                            }
+                        } else {
+                            console.debug('No images found or failed to fetch images');
+                        }
+                    } catch (error) {
+                        console.debug('Could not check for missing thumbnails at startup:', error);
+                    }
+                }, 1000); // Wait 1 second for page to settle
+            }
+
+            showThumbnailGenerationPrompt(imageCount, missingCount = imageCount) {
+                const modal = document.createElement('div');
+                modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
+                modal.innerHTML = `
+                    <div class="bg-gray-800 rounded-xl max-w-md w-full mx-4 border border-gray-700">
+                        <div class="p-6">
+                            <h3 class="text-xl font-semibold text-gray-100 mb-4 flex items-center">
+                                <span class="mr-2">🚀</span>
+                                Generate Thumbnails?
+                            </h3>
+                            <p class="text-gray-300 mb-4">
+                                Found ${missingCount} images without thumbnails (${imageCount} total images). Would you like to generate thumbnails for faster loading?
+                            </p>
+                            <p class="text-sm text-gray-500 mb-6">
+                                💡 Thumbnails speed up gallery loading significantly. You can change this setting in Gallery Settings.
+                            </p>
+                            <div class="flex space-x-3">
+                                <button id="thumbnailPromptNo" class="flex-1 px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors">
+                                    Not Now
+                                </button>
+                                <button id="thumbnailPromptYes" class="flex-1 px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-lg transition-colors">
+                                    Generate
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                document.body.appendChild(modal);
+                
+                // Handle button clicks
+                document.getElementById('thumbnailPromptNo').addEventListener('click', () => {
+                    document.body.removeChild(modal);
+                });
+                
+                document.getElementById('thumbnailPromptYes').addEventListener('click', () => {
+                    // Don't remove modal yet - transform it to show progress
+                    this.startThumbnailGenerationInModal(modal, imageCount, missingCount);
+                });
+                
+                // Close on outside click
+                modal.addEventListener('click', (e) => {
+                    if (e.target === modal) {
+                        document.body.removeChild(modal);
+                    }
+                });
+            }
+
+            async startThumbnailGenerationInModal(modal, imageCount, missingCount) {
+                // Transform the modal to show progress
+                const modalContent = modal.querySelector('.bg-gray-800');
+                modalContent.innerHTML = `
+                    <div class="p-6">
+                        <h3 class="text-xl font-semibold text-gray-100 mb-4 flex items-center">
+                            <span class="mr-2">🚀</span>
+                            Generating Thumbnails
+                        </h3>
+                        <p class="text-gray-300 mb-4">
+                            Processing ${missingCount} images out of ${imageCount} total...
+                        </p>
+                        
+                        <!-- Progress Section -->
+                        <div class="mb-6">
+                            <div class="flex items-center justify-between text-sm text-gray-400 mb-2">
+                                <span id="modalProgressText">Initializing...</span>
+                                <span id="modalProgressPercent">0%</span>
+                            </div>
+                            <div class="w-full bg-gray-600 rounded-full h-3">
+                                <div id="modalProgressBar" class="bg-violet-600 h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
+                            </div>
+                            <div class="flex items-center justify-between text-xs text-gray-500 mt-2">
+                                <span id="modalProgressDetails">Starting thumbnail generation...</span>
+                                <span id="modalProgressETA" class="text-gray-600"></span>
+                            </div>
+                        </div>
+                        
+                        <!-- Status Messages -->
+                        <div id="modalStatusMessages" class="text-sm text-gray-400 mb-4 max-h-32 overflow-y-auto custom-scrollbar">
+                            <div class="text-violet-400">• Starting thumbnail generation...</div>
+                        </div>
+                        
+                        <!-- Buttons -->
+                        <div class="flex space-x-3">
+                            <button id="modalCancelBtn" class="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors">
+                                Cancel
+                            </button>
+                            <button id="modalCloseBtn" class="flex-1 px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors hidden">
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                `;
+                
+                // Setup progress tracking
+                let isCancelled = false;
+                const progressText = modal.querySelector('#modalProgressText');
+                const progressPercent = modal.querySelector('#modalProgressPercent');
+                const progressBar = modal.querySelector('#modalProgressBar');
+                const progressDetails = modal.querySelector('#modalProgressDetails');
+                const progressETA = modal.querySelector('#modalProgressETA');
+                const statusMessages = modal.querySelector('#modalStatusMessages');
+                const cancelBtn = modal.querySelector('#modalCancelBtn');
+                const closeBtn = modal.querySelector('#modalCloseBtn');
+                
+                // Add status message helper
+                const addStatusMessage = (message, type = 'info') => {
+                    const colors = {
+                        'info': 'text-gray-400',
+                        'success': 'text-green-400',
+                        'error': 'text-red-400',
+                        'warning': 'text-yellow-400'
+                    };
+                    const msgEl = document.createElement('div');
+                    msgEl.className = colors[type] || colors.info;
+                    msgEl.textContent = `• ${message}`;
+                    statusMessages.appendChild(msgEl);
+                    statusMessages.scrollTop = statusMessages.scrollHeight;
+                };
+                
+                // Handle cancel
+                cancelBtn.addEventListener('click', () => {
+                    isCancelled = true;
+                    addStatusMessage('Cancellation requested...', 'warning');
+                    cancelBtn.disabled = true;
+                    cancelBtn.textContent = 'Cancelling...';
+                });
+                
+                // Handle close (only appears when done)
+                closeBtn.addEventListener('click', () => {
+                    document.body.removeChild(modal);
+                    // Refresh the gallery to show new thumbnails
+                    this.loadImages();
+                });
+                
+                // Disable outside click while processing
+                modal.removeEventListener('click', modal.clickHandler);
+                
+                try {
+                    addStatusMessage('Connecting to thumbnail generation service...');
+                    
+                    // Start thumbnail generation with progress monitoring
+                    await this.generateThumbnailsWithProgressInModal({
+                        progressText,
+                        progressPercent,
+                        progressBar,
+                        progressDetails,
+                        progressETA,
+                        addStatusMessage,
+                        isCancelled: () => isCancelled
+                    });
+                    
+                    // Show completion
+                    if (!isCancelled) {
+                        progressText.textContent = 'Completed!';
+                        progressPercent.textContent = '100%';
+                        progressBar.style.width = '100%';
+                        addStatusMessage('Thumbnail generation completed successfully!', 'success');
+                        
+                        // Update settings
+                        const settings = this.getSettings();
+                        settings.thumbnailsGenerated = true;
+                        localStorage.setItem('gallerySettings', JSON.stringify(settings));
+                        
+                        // Show notification
+                        this.showNotification('Thumbnails generated successfully!', 'success');
+                    }
+                    
+                } catch (error) {
+                    console.error('Thumbnail generation failed:', error);
+                    addStatusMessage(`Generation failed: ${error.message}`, 'error');
+                    progressBar.classList.add('bg-red-600');
+                    progressBar.classList.remove('bg-violet-600');
+                } finally {
+                    // Show close button and hide cancel
+                    cancelBtn.classList.add('hidden');
+                    closeBtn.classList.remove('hidden');
+                    
+                    // Re-enable outside click to close
+                    setTimeout(() => {
+                        modal.addEventListener('click', (e) => {
+                            if (e.target === modal) {
+                                document.body.removeChild(modal);
+                                // Refresh the gallery to show new thumbnails
+                                this.loadImages();
+                            }
+                        });
+                    }, 100);
+                }
+            }
+
+            async generateThumbnailsWithProgressInModal(uiElements) {
+                const { progressText, progressPercent, progressBar, progressDetails, progressETA, addStatusMessage, isCancelled } = uiElements;
+                
+                addStatusMessage('Starting thumbnail generation...');
+                
+                // Get quality setting
+                const quality = this.getSettings().imageQuality || 'medium';
+                
+                try {
+                    // Start the progress stream
+                    const response = await fetch('/prompt_manager/images/generate-thumbnails/progress', {
+                        method: 'GET',
+                        headers: {
+                            'Accept': 'text/event-stream',
+                            'Cache-Control': 'no-cache'
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    
+                    let buffer = '';
+                    let startTime = Date.now();
+                    
+                    while (true) {
+                        if (isCancelled()) {
+                            addStatusMessage('Generation cancelled by user', 'warning');
+                            break;
+                        }
+                        
+                        const { done, value } = await reader.read();
+                        
+                        if (done) break;
+                        
+                        buffer += decoder.decode(value, { stream: true });
+                        
+                        // Process complete lines
+                        let lines = buffer.split('\n');
+                        buffer = lines.pop(); // Keep incomplete line in buffer
+                        
+                        for (let line of lines) {
+                            line = line.trim();
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const data = JSON.parse(line.slice(6));
+                                    
+                                    if (data.type === 'progress') {
+                                        // Update progress UI
+                                        const progress = Math.round(data.progress || 0);
+                                        progressPercent.textContent = `${progress}%`;
+                                        progressBar.style.width = `${progress}%`;
+                                        
+                                        if (data.status) {
+                                            progressText.textContent = data.status;
+                                        }
+                                        
+                                        if (data.processed !== undefined && data.found !== undefined) {
+                                            progressDetails.textContent = `Processed: ${data.processed}, Generated: ${data.found}`;
+                                        }
+                                        
+                                        // Calculate ETA
+                                        if (progress > 5) {
+                                            const elapsed = (Date.now() - startTime) / 1000;
+                                            const estimated = (elapsed / progress) * 100;
+                                            const remaining = Math.max(0, estimated - elapsed);
+                                            
+                                            if (remaining > 60) {
+                                                progressETA.textContent = `~${Math.round(remaining / 60)}m remaining`;
+                                            } else {
+                                                progressETA.textContent = `~${Math.round(remaining)}s remaining`;
+                                            }
+                                        }
+                                        
+                                        // Add status messages for milestones
+                                        if (progress === 25) addStatusMessage('25% complete - processing continues...');
+                                        if (progress === 50) addStatusMessage('50% complete - halfway there!');
+                                        if (progress === 75) addStatusMessage('75% complete - almost done!');
+                                        
+                                    } else if (data.type === 'complete') {
+                                        addStatusMessage(`Completed: ${data.generated} new, ${data.skipped} skipped, ${data.total} total`, 'success');
+                                        addStatusMessage(`Processing time: ${data.elapsed_time}s`, 'info');
+                                        break;
+                                        
+                                    } else if (data.type === 'error') {
+                                        throw new Error(data.error || 'Unknown error during generation');
+                                    }
+                                    
+                                } catch (parseError) {
+                                    console.debug('Parse error for line:', line, parseError);
+                                }
+                            }
+                        }
+                    }
+                    
+                } catch (error) {
+                    addStatusMessage(`Error: ${error.message}`, 'error');
+                    throw error;
                 }
             }
         }
