@@ -31,7 +31,7 @@ class PromptDatabase:
             db_path: Path to the SQLite database file
         """
         self.logger = get_logger('prompt_manager.database')
-        self.logger.info(f"Initializing database operations with path: {db_path}")
+        self.logger.debug(f"Initializing database operations with path: {db_path}")
         self.model = PromptModel(db_path)
         self.logger.debug("Database operations initialized successfully")
     
@@ -92,7 +92,7 @@ class PromptDatabase:
             )
             conn.commit()
             prompt_id = cursor.lastrowid
-            self.logger.info(f"Successfully saved prompt with ID: {prompt_id}")
+            self.logger.debug(f"Successfully saved prompt with ID: {prompt_id}")
             return prompt_id
     
     def get_prompt_by_id(self, prompt_id: int) -> Optional[Dict[str, Any]]:
@@ -598,32 +598,59 @@ class PromptDatabase:
         Returns:
             int: The ID of the created image record
         """
-        filename = os.path.basename(image_path)
-        file_info = metadata.get('file_info', {}) if metadata else {}
-        
-        with self.model.get_connection() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO generated_images 
-                (prompt_id, image_path, filename, file_size, width, height, format, 
-                 workflow_data, prompt_metadata, parameters)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    prompt_id,
-                    image_path,
-                    filename,
-                    file_info.get('size'),
-                    file_info.get('dimensions', [None, None])[0] if file_info.get('dimensions') else None,
-                    file_info.get('dimensions', [None, None])[1] if file_info.get('dimensions') else None,
-                    file_info.get('format'),
-                    json.dumps(metadata.get('workflow', {}) if metadata else {}),
-                    json.dumps(metadata.get('prompt', {}) if metadata else {}),
-                    json.dumps(metadata.get('parameters', {}) if metadata else {})
+        # Validate that prompt_id is a valid integer and exists in prompts table
+        try:
+            # Convert prompt_id to integer if it's a string number
+            if isinstance(prompt_id, str) and prompt_id.isdigit():
+                prompt_id_int = int(prompt_id)
+            elif isinstance(prompt_id, int):
+                prompt_id_int = prompt_id
+            else:
+                # Handle temporary IDs like "temp_123456" - skip linking
+                if isinstance(prompt_id, str) and prompt_id.startswith('temp_'):
+                    self.logger.debug(f"Skipping image linking for temporary prompt ID: {prompt_id}")
+                    return 0
+                else:
+                    self.logger.warning(f"Invalid prompt_id format: {prompt_id}, skipping image linking")
+                    return 0
+            
+            # Verify the prompt exists in the database
+            with self.model.get_connection() as conn:
+                cursor = conn.execute("SELECT id FROM prompts WHERE id = ?", (prompt_id_int,))
+                if not cursor.fetchone():
+                    self.logger.warning(f"Prompt ID {prompt_id_int} not found in database, skipping image linking")
+                    return 0
+                
+                # Proceed with linking
+                filename = os.path.basename(image_path)
+                file_info = metadata.get('file_info', {}) if metadata else {}
+                
+                cursor = conn.execute(
+                    """
+                    INSERT INTO generated_images 
+                    (prompt_id, image_path, filename, file_size, width, height, format, 
+                     workflow_data, prompt_metadata, parameters)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        prompt_id_int,
+                        image_path,
+                        filename,
+                        file_info.get('size'),
+                        file_info.get('dimensions', [None, None])[0] if file_info.get('dimensions') else None,
+                        file_info.get('dimensions', [None, None])[1] if file_info.get('dimensions') else None,
+                        file_info.get('format'),
+                        json.dumps(metadata.get('workflow', {}) if metadata else {}),
+                        json.dumps(metadata.get('prompt', {}) if metadata else {}),
+                        json.dumps(metadata.get('parameters', {}) if metadata else {})
+                    )
                 )
-            )
-            conn.commit()
-            return cursor.lastrowid
+                conn.commit()
+                return cursor.lastrowid
+                
+        except Exception as e:
+            self.logger.error(f"Error linking image to prompt {prompt_id}: {e}")
+            return 0
 
     def get_prompt_images(self, prompt_id: str) -> List[Dict[str, Any]]:
         """
