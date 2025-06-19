@@ -59,7 +59,7 @@ class PromptManagerText(ComfyNodeABC):
     
     def __init__(self):
         self.logger = get_logger('prompt_manager_text.node')
-        self.logger.info("Initializing PromptManagerText node")
+        self.logger.debug("Initializing PromptManagerText node")
         
         self.db = PromptDatabase()
         self.prompt_tracker = PromptTracker(self.db)
@@ -67,7 +67,7 @@ class PromptManagerText(ComfyNodeABC):
         
         # Start image monitoring automatically
         self._start_gallery_system()
-        self.logger.info("PromptManagerText node initialization completed")
+        self.logger.debug("PromptManagerText node initialization completed")
     
     @classmethod
     def INPUT_TYPES(cls) -> InputTypeDict:
@@ -108,7 +108,7 @@ class PromptManagerText(ComfyNodeABC):
         "The final combined text string (with prepend/append applied) ready for use in other nodes.",
     )
     FUNCTION = "process_text"
-    CATEGORY = "PromptManager/Text"
+    CATEGORY = "ComfyAssets/Text"
     DESCRIPTION = (
         "Processes and manages text prompts with database storage and search capabilities. "
         "Outputs a plain STRING that can be used with any node that accepts text input. "
@@ -318,12 +318,12 @@ class PromptManagerText(ComfyNodeABC):
     def _start_gallery_system(self):
         """Initialize and start the gallery monitoring system."""
         try:
-            self.logger.info("Starting gallery system...")
+            self.logger.debug("Starting gallery system...")
             
             # Start image monitoring
             self.image_monitor.start_monitoring()
             
-            self.logger.info("Gallery system started successfully")
+            self.logger.debug("Gallery system started successfully")
             
         except Exception as e:
             self.logger.error(f"Failed to start gallery system: {e}")
@@ -341,7 +341,7 @@ class PromptManagerText(ComfyNodeABC):
         try:
             if hasattr(self, 'image_monitor'):
                 self.image_monitor.stop_monitoring()
-            self.logger.info("Gallery system cleaned up")
+            self.logger.debug("Gallery system cleaned up")
         except Exception as e:
             self.logger.error(f"Error cleaning up gallery system: {e}")
     
