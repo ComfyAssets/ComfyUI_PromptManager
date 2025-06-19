@@ -27,7 +27,7 @@ class PromptModel:
             db_path: Path to the SQLite database file
         """
         self.logger = get_logger('prompt_manager.database.models')
-        self.logger.info(f"Initializing database model with path: {db_path}")
+        self.logger.debug(f"Initializing database model with path: {db_path}")
         self.db_path = db_path
         self._ensure_database_exists()
     
