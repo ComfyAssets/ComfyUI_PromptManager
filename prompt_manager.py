@@ -8,6 +8,7 @@ import datetime
 import json
 import webbrowser
 import os
+import time
 from typing import Optional, Dict, Any, Tuple, List
 
 # Import logging system
@@ -36,6 +37,7 @@ try:
     from .database.operations import PromptDatabase
     from .utils.prompt_tracker import PromptTracker, PromptExecutionContext
     from .utils.image_monitor import ImageMonitor
+    from .utils.comfyui_integration import get_comfyui_integration
 except ImportError:
     # For direct imports when not in a package
     import sys
@@ -44,6 +46,7 @@ except ImportError:
     from database.operations import PromptDatabase
     from utils.prompt_tracker import PromptTracker, PromptExecutionContext
     from utils.image_monitor import ImageMonitor
+    from utils.comfyui_integration import get_comfyui_integration
 
 
 class PromptManager(ComfyNodeABC):
@@ -62,6 +65,7 @@ class PromptManager(ComfyNodeABC):
         self.db = PromptDatabase()
         self.prompt_tracker = PromptTracker(self.db)
         self.image_monitor = ImageMonitor(self.db, self.prompt_tracker)
+        self.comfyui_integration = get_comfyui_integration()
         
         # Start image monitoring automatically
         self._start_gallery_system()
@@ -198,7 +202,8 @@ class PromptManager(ComfyNodeABC):
                             'tags': extended_tags,
                             'prompt_id': prompt_id,
                             'prepend_text': prepend_text.strip() if prepend_text else None,
-                            'append_text': append_text.strip() if append_text else None
+                            'append_text': append_text.strip() if append_text else None,
+                            'final_text': encoding_text.strip()  # Store final combined text
                         }
                     )
                     self.logger.debug(f"Set execution context: {execution_id} for prompt ID: {prompt_id}")
@@ -212,6 +217,16 @@ class PromptManager(ComfyNodeABC):
         self.logger.debug(f"Performing CLIP text encoding on combined text: {encoding_text[:100]}...")
         tokens = clip.tokenize(encoding_text)
         conditioning = clip.encode_from_tokens_scheduled(tokens)
+        
+        # Register with ComfyUI integration for standard metadata compatibility
+        node_id = f"promptmanager_{int(time.time() * 1000)}"  # Unique node ID
+        self.comfyui_integration.register_prompt(node_id, encoding_text.strip(), {
+            'category': category.strip() if category else None,
+            'tags': extended_tags,
+            'prompt_id': prompt_id,
+            'prepend_text': prepend_text.strip() if prepend_text else None,
+            'append_text': append_text.strip() if append_text else None
+        })
         
         self.logger.debug("CLIP encoding completed successfully")
         return (conditioning, encoding_text)
