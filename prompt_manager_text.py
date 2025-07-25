@@ -8,6 +8,7 @@ import datetime
 import json
 import webbrowser
 import os
+import time
 from typing import Optional, Dict, Any, Tuple, List
 
 # Import logging system
@@ -36,6 +37,7 @@ try:
     from .database.operations import PromptDatabase
     from .utils.prompt_tracker import PromptTracker, PromptExecutionContext
     from .utils.image_monitor import ImageMonitor
+    from .utils.comfyui_integration import get_comfyui_integration
 except ImportError:
     # For direct imports when not in a package
     import sys
@@ -44,6 +46,7 @@ except ImportError:
     from database.operations import PromptDatabase
     from utils.prompt_tracker import PromptTracker, PromptExecutionContext
     from utils.image_monitor import ImageMonitor
+    from utils.comfyui_integration import get_comfyui_integration
 
 
 class PromptManagerText(ComfyNodeABC):
@@ -64,6 +67,7 @@ class PromptManagerText(ComfyNodeABC):
         self.db = PromptDatabase()
         self.prompt_tracker = PromptTracker(self.db)
         self.image_monitor = ImageMonitor(self.db, self.prompt_tracker)
+        self.comfyui_integration = get_comfyui_integration()
         
         # Start image monitoring automatically
         self._start_gallery_system()
@@ -188,6 +192,16 @@ class PromptManagerText(ComfyNodeABC):
             except Exception as e:
                 # Log error but don't fail the processing
                 self.logger.warning(f"Failed to save prompt to database: {e}")
+        
+        # Register with ComfyUI integration for standard metadata compatibility
+        node_id = f"promptmanagertext_{int(time.time() * 1000)}"  # Unique node ID
+        self.comfyui_integration.register_prompt(node_id, final_text.strip(), {
+            'category': category.strip() if category else None,
+            'tags': extended_tags,
+            'prompt_id': prompt_id,
+            'prepend_text': prepend_text.strip() if prepend_text else None,
+            'append_text': append_text.strip() if append_text else None
+        })
         
         self.logger.debug(f"Text processing completed: {final_text[:100]}...")
         return (final_text,)
