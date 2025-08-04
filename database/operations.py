@@ -459,9 +459,12 @@ class PromptDatabase:
         try:
             with self.model.get_connection() as conn:
                 # Find duplicates by text content (case-insensitive)
+                # Note: Removed ORDER BY from GROUP_CONCAT for SQLite compatibility
+                # We'll sort the IDs manually after fetching
                 cursor = conn.execute("""
                     SELECT LOWER(TRIM(text)) as normalized_text, COUNT(*) as count, 
-                           GROUP_CONCAT(id ORDER BY created_at ASC) as ids
+                           GROUP_CONCAT(id) as ids,
+                           GROUP_CONCAT(created_at) as created_dates
                     FROM prompts 
                     GROUP BY LOWER(TRIM(text))
                     HAVING COUNT(*) > 1
@@ -474,6 +477,12 @@ class PromptDatabase:
                 
                 for group in duplicate_groups:
                     ids = group['ids'].split(',')
+                    created_dates = group['created_dates'].split(',')
+                    
+                    # Sort IDs by created_at date
+                    id_date_pairs = list(zip(ids, created_dates))
+                    id_date_pairs.sort(key=lambda x: x[1])  # Sort by date
+                    ids = [pair[0] for pair in id_date_pairs]
                     
                     # Get full details for all prompts in this duplicate group
                     prompts = []
@@ -523,9 +532,12 @@ class PromptDatabase:
         try:
             with self.model.get_connection() as conn:
                 # Find duplicates by text content (case-insensitive)
+                # Note: Removed ORDER BY from GROUP_CONCAT for SQLite compatibility
+                # We'll sort the IDs manually after fetching
                 cursor = conn.execute("""
                     SELECT LOWER(TRIM(text)) as normalized_text, COUNT(*) as count, 
-                           GROUP_CONCAT(id ORDER BY created_at ASC) as ids
+                           GROUP_CONCAT(id) as ids,
+                           GROUP_CONCAT(created_at) as created_dates
                     FROM prompts 
                     GROUP BY LOWER(TRIM(text))
                     HAVING COUNT(*) > 1
@@ -538,9 +550,16 @@ class PromptDatabase:
                 
                 for duplicate in duplicates:
                     ids = duplicate['ids'].split(',')
+                    created_dates = duplicate['created_dates'].split(',')
+                    
+                    # Sort IDs by created_at date to keep the oldest
+                    id_date_pairs = list(zip(ids, created_dates))
+                    id_date_pairs.sort(key=lambda x: x[1])  # Sort by date
+                    sorted_ids = [int(pair[0]) for pair in id_date_pairs]
+                    
                     # Keep the oldest one (first), merge and delete the rest
-                    primary_id = int(ids[0])  # Keep the oldest
-                    duplicate_ids = [int(id_str) for id_str in ids[1:]]
+                    primary_id = sorted_ids[0]  # Keep the oldest
+                    duplicate_ids = sorted_ids[1:]
                     
                     self.logger.debug(f"Merging duplicates: keeping {primary_id}, removing {duplicate_ids}")
                     
