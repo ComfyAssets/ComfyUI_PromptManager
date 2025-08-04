@@ -693,14 +693,20 @@ class PromptManagerAPI:
             all_extensions = image_extensions + video_extensions
 
             # Find all media files, excluding thumbnails directory
+            # Use a set to avoid duplicates on case-insensitive filesystems (Windows)
             media_files = []
+            seen_paths = set()
             for ext in all_extensions:
-                for media_path in output_path.rglob(f"*{ext.lower()}"):
-                    if 'thumbnails' not in media_path.parts:
-                        media_files.append(media_path)
-                for media_path in output_path.rglob(f"*{ext.upper()}"):
-                    if 'thumbnails' not in media_path.parts:
-                        media_files.append(media_path)
+                # Search for both lowercase and uppercase extensions
+                for pattern in [f"*{ext.lower()}", f"*{ext.upper()}"]:
+                    for media_path in output_path.rglob(pattern):
+                        # Skip files in thumbnails directory
+                        if 'thumbnails' not in media_path.parts:
+                            # Normalize path for deduplication (case-insensitive on Windows)
+                            normalized_path = str(media_path).lower()
+                            if normalized_path not in seen_paths:
+                                seen_paths.add(normalized_path)
+                                media_files.append(media_path)
 
             self.logger.info(f"Found {len(media_files)} media files to analyze")
 
@@ -732,14 +738,14 @@ class PromptManagerAPI:
                         thumbnail_abs_path = output_path / thumbnail_rel_path
                         
                         if thumbnail_abs_path.exists():
-                            thumbnail_url = f'/prompt_manager/images/serve/{thumbnail_rel_path}'
+                            thumbnail_url = f'/prompt_manager/images/serve/{Path(thumbnail_rel_path).as_posix()}'
                     
                     image_info = {
                         'id': str(hash(str(media_path))),
                         'filename': media_path.name,
                         'path': str(media_path),
                         'relative_path': str(rel_path),
-                        'url': f'/prompt_manager/images/serve/{rel_path}',
+                        'url': f'/prompt_manager/images/serve/{rel_path.as_posix()}',
                         'thumbnail_url': thumbnail_url,
                         'size': stat.st_size,
                         'modified_time': stat.st_mtime,
@@ -1545,15 +1551,19 @@ class PromptManagerAPI:
             thumbnails_dir = output_path / 'thumbnails'
             
             # Find all media files, excluding thumbnails directory
+            # Use a set to avoid duplicates on case-insensitive filesystems (Windows)
+            seen_paths = set()
             for ext in media_extensions:
-                for media_path in output_path.rglob(f"*{ext}"):
-                    # Skip files in thumbnails directory
-                    if 'thumbnails' not in media_path.parts:
-                        all_images.append(media_path)
-                for media_path in output_path.rglob(f"*{ext.upper()}"):
-                    # Skip files in thumbnails directory
-                    if 'thumbnails' not in media_path.parts:
-                        all_images.append(media_path)
+                # Search for both lowercase and uppercase extensions
+                for pattern in [f"*{ext}", f"*{ext.upper()}"]:
+                    for media_path in output_path.rglob(pattern):
+                        # Skip files in thumbnails directory
+                        if 'thumbnails' not in media_path.parts:
+                            # Normalize path for deduplication (case-insensitive on Windows)
+                            normalized_path = str(media_path).lower()
+                            if normalized_path not in seen_paths:
+                                seen_paths.add(normalized_path)
+                                all_images.append(media_path)
             
             # Sort by modification time (newest first)
             all_images.sort(key=lambda x: x.stat().st_mtime, reverse=True)
@@ -1583,14 +1593,14 @@ class PromptManagerAPI:
                         thumbnail_abs_path = output_path / thumbnail_rel_path
                         
                         if thumbnail_abs_path.exists():
-                            thumbnail_url = f'/prompt_manager/images/serve/{thumbnail_rel_path}'
+                            thumbnail_url = f'/prompt_manager/images/serve/{Path(thumbnail_rel_path).as_posix()}'
                     
                     images.append({
                         'id': str(hash(str(media_path))),  # Simple hash for ID
                         'filename': media_path.name,
                         'path': str(media_path),
                         'relative_path': str(rel_path),
-                        'url': f'/prompt_manager/images/serve/{rel_path}',  # Always original media
+                        'url': f'/prompt_manager/images/serve/{rel_path.as_posix()}',  # Use forward slashes for URLs
                         'thumbnail_url': thumbnail_url,  # Thumbnail URL if exists
                         'size': stat.st_size,
                         'modified_time': stat.st_mtime,
