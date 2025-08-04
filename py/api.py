@@ -3234,19 +3234,87 @@ class PromptManagerAPI:
         
         return None
     
+    def _get_node_inputs(self, node):
+        """
+        Safely get inputs from a node, handling both dict and list formats.
+        Returns a normalized dict format for consistent access.
+        
+        Old format: inputs is a dict with direct key-value pairs
+            inputs = {"text": "my prompt", "seed": 123}
+        
+        New format: inputs is a list of connection objects
+            inputs = [
+                {"name": "text", "type": "STRING", "link": null, "widget": {"name": "text"}},
+                {"name": "clip", "type": "CLIP", "link": 11}
+            ]
+        """
+        if not isinstance(node, dict):
+            return {}
+        
+        inputs = node.get("inputs", {})
+        
+        # If inputs is already a dict, return it
+        if isinstance(inputs, dict):
+            return inputs
+        
+        # If inputs is a list, convert to dict format
+        if isinstance(inputs, list):
+            inputs_dict = {}
+            for input_item in inputs:
+                if isinstance(input_item, dict) and "name" in input_item:
+                    name = input_item["name"]
+                    # For now, just mark that this input exists
+                    # The actual value might be in widgets_values
+                    inputs_dict[name] = input_item
+            return inputs_dict
+        
+        # If inputs is neither dict nor list, return empty dict
+        return {}
+    
+    def _find_text_in_node(self, node):
+        """
+        Try to find text content in a node using various strategies.
+        Handles both old and new workflow formats.
+        """
+        if not isinstance(node, dict):
+            return None
+        
+        # Strategy 1: Check normalized inputs for 'text' field
+        inputs = self._get_node_inputs(node)
+        if "text" in inputs and isinstance(inputs["text"], str):
+            return inputs["text"]
+        
+        # Strategy 2: For text encoder nodes, check widgets_values
+        class_type = node.get("class_type", node.get("type", ""))
+        text_encoder_types = [
+            'CLIPTextEncode', 'CLIPTextEncodeSDXL', 'CLIPTextEncodeSDXLRefiner',
+            'CLIPTextEncodeFlux', 'PromptManager', 'PromptManagerText',
+            'BNK_CLIPTextEncoder', 'Text Encoder', 'CLIP Text Encode'
+        ]
+        
+        if any(encoder_type.lower() in class_type.lower() for encoder_type in text_encoder_types):
+            widgets_values = node.get("widgets_values", [])
+            if widgets_values and len(widgets_values) > 0:
+                # First widget is usually the text for these nodes
+                if isinstance(widgets_values[0], str) and widgets_values[0].strip():
+                    return widgets_values[0]
+        
+        return None
+    
     def _extract_positive_prompt_from_comfyui_data(self, data):
-        """Extract positive prompt from ComfyUI data using the logic from parse-metadata.py."""
+        """Extract positive prompt from ComfyUI data, handling both old and new formats."""
         if not isinstance(data, dict):
             return None
         
-        # Build nodes dictionary similar to parse-metadata.py
+        # Build nodes dictionary
         nodes_by_id = {}
         if "nodes" in data:
             # Handle nodes array format
             for node in data["nodes"]:
-                nid = node.get("id")
-                if nid is not None:
-                    nodes_by_id[nid] = node
+                if isinstance(node, dict):
+                    nid = node.get("id")
+                    if nid is not None:
+                        nodes_by_id[nid] = node
         else:
             # Handle flat dictionary format (node_id -> node_data)
             for nid_str, node in data.items():
@@ -3265,48 +3333,45 @@ class PromptManagerAPI:
         # First, try to find positive/negative connection pattern
         pos_id = None
         for node in nodes_by_id.values():
-            inputs = node.get("inputs", {})
-            if "positive" in inputs and "negative" in inputs:
-                try:
-                    pos_id = int(inputs["positive"][0])
-                    break
-                except:
-                    continue
+            if isinstance(node, dict):
+                inputs = self._get_node_inputs(node)  # Use our safe function
+                if "positive" in inputs and "negative" in inputs:
+                    try:
+                        # Handle both old format (direct value) and new format (connection object)
+                        pos_input = inputs["positive"]
+                        if isinstance(pos_input, list) and len(pos_input) > 0:
+                            pos_id = int(pos_input[0])
+                            break
+                    except:
+                        continue
         
         # Get text from the positive node
         if pos_id is not None and pos_id in nodes_by_id:
-            text_val = nodes_by_id[pos_id].get("inputs", {}).get("text")
-            if isinstance(text_val, str):
+            text_val = self._find_text_in_node(nodes_by_id[pos_id])
+            if text_val:
                 return text_val
         
         # Fallback: find any text encoder node with text content
-        text_encoder_types = [
-            'CLIPTextEncode', 'CLIPTextEncodeSDXL', 'CLIPTextEncodeSDXLRefiner',
-            'PromptManager', 'BNK_CLIPTextEncoder', 'Text Encoder', 'CLIP Text Encode'
-        ]
-        
+        # Collect all text encoder nodes
+        text_nodes = []
         for node in nodes_by_id.values():
             if isinstance(node, dict):
-                class_type = node.get('class_type', '')
-                inputs = node.get('inputs', {})
+                class_type = node.get('class_type', node.get('type', ''))
                 
                 # Check if this is a text encoder node
-                if any(encoder_type.lower() in class_type.lower() for encoder_type in text_encoder_types):
-                    if 'text' in inputs and isinstance(inputs['text'], str):
-                        return inputs['text']
+                text_val = self._find_text_in_node(node)
+                if text_val:
+                    # Try to determine if this is positive or negative
+                    node_title = node.get('title', '').lower()
+                    if 'neg' not in node_title and 'negative' not in node_title:
+                        # Prioritize non-negative prompts
+                        text_nodes.insert(0, text_val)
+                    else:
+                        text_nodes.append(text_val)
         
-        # Final fallback: collect all text fields and return the first non-empty one
-        text_fields = []
-        for node in nodes_by_id.values():
-            if isinstance(node, dict):
-                inputs = node.get("inputs", {})
-                text_val = inputs.get("text")
-                if isinstance(text_val, str) and text_val.strip():
-                    text_fields.append(text_val)
-        
-        # Return the first text field (likely positive prompt)
-        if text_fields:
-            return text_fields[0]
+        # Return the first positive-looking prompt
+        if text_nodes:
+            return text_nodes[0]
         
         return None
 
