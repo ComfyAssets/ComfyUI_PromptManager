@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Metadata Parsing Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #1a1a1a; color: #fff; }
+        .result { background: #2a2a2a; padding: 20px; margin: 10px 0; border-radius: 8px; }
+        .error { background: #3a1a1a; border: 1px solid #ff6b6b; }
+        .success { background: #1a3a1a; border: 1px solid #6bcf7f; }
+        input[type="file"] { margin: 20px 0; padding: 10px; background: #3a3a3a; color: #fff; border: none; border-radius: 4px; }
+        pre { white-space: pre-wrap; word-wrap: break-word; }
+    </style>
+</head>
+<body>
+    <h1>PNG Metadata Parsing Test</h1>
+    <p>Select the test_metadata_file.png to verify metadata extraction works correctly.</p>
+    
+    <input type="file" id="fileInput" accept=".png" />
+    
+    <div id="results"></div>
+
+    <script>
+        // Copy the updated parsing functions from metadata.html
+        async function parsePNGMetadata(arrayBuffer) {
+            const dataView = new DataView(arrayBuffer);
+            let offset = 8; // Skip PNG signature
+            const metadata = {};
+
+            while (offset < arrayBuffer.byteLength - 8) {
+                const length = dataView.getUint32(offset);
+                const type = new TextDecoder().decode(arrayBuffer.slice(offset + 4, offset + 8));
+                
+                if (type === 'tEXt' || type === 'iTXt' || type === 'zTXt') {
+                    const chunkData = arrayBuffer.slice(offset + 8, offset + 8 + length);
+                    let text;
+                    
+                    if (type === 'tEXt') {
+                        text = new TextDecoder().decode(chunkData);
+                    } else if (type === 'iTXt') {
+                        const textData = new TextDecoder().decode(chunkData);
+                        const parts = textData.split('\0');
+                        if (parts.length >= 5) {
+                            metadata[parts[0]] = parts[4];
+                        }
+                        text = textData;
+                    } else if (type === 'zTXt') {
+                        text = new TextDecoder().decode(chunkData);
+                    }
+                    
+                    const nullIndex = text.indexOf('\0');
+                    if (nullIndex !== -1) {
+                        const key = text.substring(0, nullIndex);
+                        const value = text.substring(nullIndex + 1);
+                        metadata[key] = value;
+                    }
+                }
+                
+                offset += 8 + length + 4;
+            }
+
+            return metadata;
+        }
+
+        function extractComfyUIData(metadata) {
+            let workflowData = null;
+            let promptData = null;
+
+            const workflowFields = ['workflow', 'Workflow', 'comfy', 'ComfyUI'];
+            const promptFields = ['prompt', 'Prompt', 'parameters', 'Parameters'];
+
+            for (const field of workflowFields) {
+                if (metadata[field]) {
+                    try {
+                        let cleanedJson = metadata[field];
+                        cleanedJson = cleanedJson.replace(/:\s*NaN\b/g, ': null');
+                        cleanedJson = cleanedJson.replace(/\bNaN\b/g, 'null');
+                        
+                        workflowData = JSON.parse(cleanedJson);
+                        break;
+                    } catch (e) {
+                        console.log('Failed to parse workflow field:', field);
+                    }
+                }
+            }
+
+            for (const field of promptFields) {
+                if (metadata[field]) {
+                    try {
+                        let cleanedJson = metadata[field];
+                        cleanedJson = cleanedJson.replace(/:\s*NaN\b/g, ': null');
+                        cleanedJson = cleanedJson.replace(/\bNaN\b/g, 'null');
+                        
+                        promptData = JSON.parse(cleanedJson);
+                        break;
+                    } catch (e) {
+                        console.log('Failed to parse prompt field:', field);
+                    }
+                }
+            }
+
+            return { workflow: workflowData, prompt: promptData };
+        }
+
+        function parseWorkflowData(comfyData) {
+            let checkpoint = 'Unknown';
+            let positivePrompt = 'No prompt found';
+            let negativePrompt = 'No negative prompt found';
+            let steps = 'Unknown';
+            let cfgScale = 'Unknown';
+            let sampler = 'Unknown';
+            let seed = 'Unknown';
+
+            // Parse prompt data first (more reliable for actual generation parameters)
+            if (comfyData.prompt) {
+                console.log('Parsing prompt data...');
+                const promptNodes = comfyData.prompt;
+                
+                for (const nodeId in promptNodes) {
+                    const node = promptNodes[nodeId];
+                    console.log(`Node ${nodeId}: ${node.class_type}`);
+                    
+                    // Checkpoint
+                    if (node.class_type === 'CheckpointLoaderSimple' && node.inputs) {
+                        checkpoint = node.inputs.ckpt_name || checkpoint;
+                    }
+                    
+                    // Prompts
+                    if (node.class_type === 'PromptManager' && node.inputs && node.inputs.text) {
+                        positivePrompt = node.inputs.text;
+                    }
+                    
+                    if (node.class_type === 'CLIPTextEncode' && node.inputs && node.inputs.text) {
+                        const text = node.inputs.text.toLowerCase();
+                        if (text.includes('bad anatomy') || text.includes('unfinished') || 
+                            text.includes('censored') || text.includes('weird anatomy') ||
+                            text.includes('negative') || text.includes('embedding:')) {
+                            negativePrompt = node.inputs.text;
+                        } else if (positivePrompt === 'No prompt found') {
+                            positivePrompt = node.inputs.text;
+                        }
+                    }
+                    
+                    // Sampling parameters - check multiple sampler types
+                    if ((node.class_type === 'KSampler' || 
+                         node.class_type === 'KSamplerAdvanced' ||
+                         node.class_type === 'SamplerCustom' ||
+                         node.class_type === 'SamplerCustomAdvanced') && node.inputs) {
+                        seed = node.inputs.seed || seed;
+                        steps = node.inputs.steps || steps;
+                        cfgScale = node.inputs.cfg || cfgScale;
+                        sampler = node.inputs.sampler_name || sampler;
+                    }
+                    
+                    // New ComfyUI node types for modern workflows
+                    if (node.class_type === 'CFGGuider' && node.inputs && node.inputs.cfg) {
+                        cfgScale = node.inputs.cfg;
+                    }
+                    
+                    if (node.class_type === 'BasicScheduler' && node.inputs && node.inputs.steps) {
+                        steps = node.inputs.steps;
+                    }
+                    
+                    if (node.class_type === 'KSamplerSelect' && node.inputs && node.inputs.sampler_name) {
+                        sampler = node.inputs.sampler_name;
+                    }
+                    
+                    if ((node.class_type === 'RandomNoise' || node.class_type === 'SeedHistory') && node.inputs) {
+                        if (node.inputs.noise_seed) {
+                            seed = Array.isArray(node.inputs.noise_seed) ? node.inputs.noise_seed[0] : node.inputs.noise_seed;
+                        } else if (node.inputs.seed) {
+                            seed = node.inputs.seed;
+                        }
+                    }
+                }
+            }
+
+            return {
+                checkpoint,
+                positivePrompt,
+                negativePrompt,
+                steps,
+                cfgScale,
+                sampler,
+                seed
+            };
+        }
+
+        document.getElementById('fileInput').addEventListener('change', async (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '<div class="result">Processing...</div>';
+
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                const metadata = await parsePNGMetadata(arrayBuffer);
+                const comfyData = extractComfyUIData(metadata);
+                const params = parseWorkflowData(comfyData);
+                
+                const expectedParams = {
+                    checkpoint: 'illustrious/realism/Realism_Illustrious_BSY_PATREON_FP16_V4.5_C27.safetensors',
+                    steps: 35,
+                    cfgScale: 4.0,
+                    sampler: 'euler_ancestral',
+                    positivePrompt: 'An amateur candid photo of kiko9natsumi, looking at the viewer.',
+                    negativePrompt: 'embedding:'
+                };
+
+                let html = '<div class="result success"><h2>✅ Metadata Extraction Test Results</h2>';
+                
+                for (const [key, value] of Object.entries(params)) {
+                    const expected = expectedParams[key];
+                    let status = '✅';
+                    let statusText = 'OK';
+                    
+                    if (expected && (key === 'negativePrompt' ? !String(value).includes(String(expected)) : value !== expected)) {
+                        status = '❌';
+                        statusText = `Expected: ${expected}`;
+                    } else if (value === 'Unknown' || value === 'No prompt found') {
+                        status = '⚠️';
+                        statusText = 'Not found';
+                    }
+                    
+                    html += `
+                        <div style="margin: 10px 0; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 4px;">
+                            <strong>${key}:</strong> ${status} ${String(value).substring(0, 100)}${String(value).length > 100 ? '...' : ''}
+                            <br><small style="color: #aaa;">${statusText}</small>
+                        </div>
+                    `;
+                }
+                
+                html += '</div>';
+                
+                html += `
+                    <div class="result">
+                        <h3>Raw Metadata Fields Found:</h3>
+                        <pre>${Object.keys(metadata).join(', ')}</pre>
+                    </div>
+                `;
+                
+                resultsDiv.innerHTML = html;
+                
+            } catch (error) {
+                resultsDiv.innerHTML = `<div class="result error"><h2>❌ Error</h2><p>${error.message}</p></div>`;
+                console.error('Error processing image:', error);
+            }
+        });
+    </script>
+</body>
+</html>
