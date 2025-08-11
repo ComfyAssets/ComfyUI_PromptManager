@@ -235,12 +235,37 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
                         }
                     }
                     
-                    // Sampling parameters
-                    if (node.class_type === 'KSampler' && node.inputs) {
+                    // Sampling parameters - check multiple sampler types
+                    if ((node.class_type === 'KSampler' || 
+                         node.class_type === 'KSamplerAdvanced' ||
+                         node.class_type === 'SamplerCustom' ||
+                         node.class_type === 'SamplerCustomAdvanced') && node.inputs) {
                         seed = node.inputs.seed || seed;
                         steps = node.inputs.steps || steps;
                         cfgScale = node.inputs.cfg || cfgScale;
                         sampler = node.inputs.sampler_name || sampler;
+                    }
+                    
+                    // New ComfyUI node types for modern workflows
+                    if (node.class_type === 'CFGGuider' && node.inputs && node.inputs.cfg) {
+                        cfgScale = node.inputs.cfg;
+                    }
+                    
+                    if (node.class_type === 'BasicScheduler' && node.inputs && node.inputs.steps) {
+                        steps = node.inputs.steps;
+                    }
+                    
+                    if (node.class_type === 'KSamplerSelect' && node.inputs && node.inputs.sampler_name) {
+                        sampler = node.inputs.sampler_name;
+                    }
+                    
+                    if ((node.class_type === 'RandomNoise' || node.class_type === 'SeedHistory') && node.inputs) {
+                        if (node.inputs.noise_seed) {
+                            // RandomNoise nodes might reference other nodes, resolve if needed
+                            seed = Array.isArray(node.inputs.noise_seed) ? node.inputs.noise_seed[0] : node.inputs.noise_seed;
+                        } else if (node.inputs.seed) {
+                            seed = node.inputs.seed;
+                        }
                     }
                 }
             }
@@ -280,16 +305,47 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
                     }
                 }
 
-                // Look for sampler
+                // Look for sampler nodes - check multiple types
                 const samplerNode = nodes.find(node => 
                     node.type === 'KSampler' || 
-                    node.type === 'KSamplerAdvanced'
+                    node.type === 'KSamplerAdvanced' ||
+                    node.type === 'SamplerCustom' ||
+                    node.type === 'SamplerCustomAdvanced'
                 );
                 if (samplerNode && samplerNode.widgets_values) {
                     seed = samplerNode.widgets_values[0] || seed;
                     steps = samplerNode.widgets_values[1] || steps;
                     cfgScale = samplerNode.widgets_values[2] || cfgScale;
                     sampler = samplerNode.widgets_values[3] || sampler;
+                }
+                
+                // Look for newer node types
+                if (steps === 'Unknown') {
+                    const schedulerNode = nodes.find(node => node.type === 'BasicScheduler');
+                    if (schedulerNode && schedulerNode.widgets_values) {
+                        steps = schedulerNode.widgets_values[1]; // steps is usually second parameter
+                    }
+                }
+                
+                if (cfgScale === 'Unknown') {
+                    const cfgNode = nodes.find(node => node.type === 'CFGGuider');
+                    if (cfgNode && cfgNode.widgets_values) {
+                        cfgScale = cfgNode.widgets_values[0]; // cfg is usually first parameter
+                    }
+                }
+                
+                if (sampler === 'Unknown') {
+                    const samplerSelectNode = nodes.find(node => node.type === 'KSamplerSelect');
+                    if (samplerSelectNode && samplerSelectNode.widgets_values) {
+                        sampler = samplerSelectNode.widgets_values[0]; // sampler name is usually first parameter
+                    }
+                }
+                
+                if (seed === 'Unknown') {
+                    const noiseNode = nodes.find(node => node.type === 'RandomNoise');
+                    if (noiseNode && noiseNode.widgets_values) {
+                        seed = noiseNode.widgets_values[0]; // seed is usually first parameter
+                    }
                 }
             }
 

@@ -2014,6 +2014,28 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             sampler = node.inputs.sampler_name || sampler;
                             seed = node.inputs.seed || node.inputs.noise_seed || seed;
                         }
+                        
+                        // New ComfyUI node types for modern workflows
+                        if (node.class_type === 'CFGGuider' && node.inputs && node.inputs.cfg) {
+                            cfgScale = node.inputs.cfg;
+                        }
+                        
+                        if (node.class_type === 'BasicScheduler' && node.inputs && node.inputs.steps) {
+                            steps = node.inputs.steps;
+                        }
+                        
+                        if (node.class_type === 'KSamplerSelect' && node.inputs && node.inputs.sampler_name) {
+                            sampler = node.inputs.sampler_name;
+                        }
+                        
+                        if ((node.class_type === 'RandomNoise' || node.class_type === 'SeedHistory') && node.inputs) {
+                            if (node.inputs.noise_seed) {
+                                // RandomNoise nodes might reference other nodes, resolve if needed
+                                seed = Array.isArray(node.inputs.noise_seed) ? node.inputs.noise_seed[0] : node.inputs.noise_seed;
+                            } else if (node.inputs.seed) {
+                                seed = node.inputs.seed;
+                            }
+                        }
                     }
                     
                     // Process collected text nodes to identify positive/negative prompts
