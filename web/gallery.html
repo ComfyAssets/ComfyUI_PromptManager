@@ -2042,6 +2042,10 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     // if we haven't found them from PromptManager
                     for (const textNode of textNodes) {
                         const text = textNode.text;
+                        // Ensure text is a string before calling toLowerCase
+                        if (!text || typeof text !== 'string') {
+                            continue;
+                        }
                         const textLower = text.toLowerCase();
                         
                         // Skip if this is the PromptManager text we already have
@@ -2091,14 +2095,17 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         // CLIPTextEncode nodes
                         if (node.type === 'CLIPTextEncode' && node.widgets_values && node.widgets_values[0]) {
                             const text = node.widgets_values[0];
-                            const textLower = text.toLowerCase();
-                            
-                            if (textLower.includes('bad anatomy') || textLower.includes('unfinished') || 
-                                textLower.includes('censored') || textLower.includes('negative') ||
-                                textLower.includes('worst quality') || textLower.includes('low quality')) {
-                                negativePrompt = text;
-                            } else if (positivePrompt === 'No prompt found') {
-                                positivePrompt = text;
+                            // Ensure text is a string before calling toLowerCase
+                            if (text && typeof text === 'string') {
+                                const textLower = text.toLowerCase();
+                                
+                                if (textLower.includes('bad anatomy') || textLower.includes('unfinished') || 
+                                    textLower.includes('censored') || textLower.includes('negative') ||
+                                    textLower.includes('worst quality') || textLower.includes('low quality')) {
+                                    negativePrompt = text;
+                                } else if (positivePrompt === 'No prompt found') {
+                                    positivePrompt = text;
+                                }
                             }
                         }
                         
