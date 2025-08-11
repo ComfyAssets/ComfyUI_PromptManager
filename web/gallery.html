@@ -1405,7 +1405,72 @@
 
             async loadImageMetadata(imageUrl, container) {
                 try {
-                    const metadata = await this.extractImageMetadata(imageUrl);
+                    // First try to get linked prompt from database
+                    let databasePrompt = null;
+                    try {
+                        // Extract relative path from the URL for the API call
+                        const urlParts = imageUrl.split('/prompt_manager/images/serve/');
+                        if (urlParts.length > 1) {
+                            const relativePath = urlParts[1];
+                            const response = await fetch(`/prompt_manager/images/prompt/${encodeURIComponent(relativePath)}`);
+                            if (response.ok) {
+                                const data = await response.json();
+                                if (data.success && data.prompt) {
+                                    databasePrompt = data.prompt;
+                                }
+                            }
+                        }
+                    } catch (dbError) {
+                        // No database prompt found, will fall back to metadata extraction
+                    }
+                    
+                    // If we have a database prompt, use it; otherwise extract from metadata
+                    let metadata;
+                    if (databasePrompt) {
+                        // Create metadata object from database prompt
+                        metadata = {
+                            positivePrompt: databasePrompt.text,
+                            negativePrompt: 'No negative prompt found', // Database doesn't separate positive/negative
+                            checkpoint: 'Unknown',
+                            steps: 'Unknown',
+                            cfgScale: 'Unknown',
+                            sampler: 'Unknown',
+                            seed: 'Unknown',
+                            workflow: databasePrompt.workflow_data,
+                            imagePath: imageUrl,
+                            source: 'database', // Mark this as coming from database
+                            promptId: databasePrompt.prompt_id,
+                            category: databasePrompt.category,
+                            tags: databasePrompt.tags,
+                            rating: databasePrompt.rating,
+                            notes: databasePrompt.notes
+                        };
+                        
+                        // Still try to extract technical parameters from PNG metadata if available
+                        try {
+                            const pngMetadata = await this.extractImageMetadata(imageUrl);
+                            if (pngMetadata) {
+                                metadata.checkpoint = pngMetadata.checkpoint;
+                                metadata.steps = pngMetadata.steps;
+                                metadata.cfgScale = pngMetadata.cfgScale;
+                                metadata.sampler = pngMetadata.sampler;
+                                metadata.seed = pngMetadata.seed;
+                                // Use negative prompt from PNG if available
+                                if (pngMetadata.negativePrompt && pngMetadata.negativePrompt !== 'No negative prompt found') {
+                                    metadata.negativePrompt = pngMetadata.negativePrompt;
+                                }
+                            }
+                        } catch (pngError) {
+                            // Could not extract PNG metadata, using database-only data
+                        }
+                    } else {
+                        // Fall back to PNG metadata extraction
+                        metadata = await this.extractImageMetadata(imageUrl);
+                        if (metadata) {
+                            metadata.source = 'png'; // Mark this as coming from PNG
+                        }
+                    }
+                    
                     this.displayMetadata(metadata, container);
                 } catch (error) {
                     console.error('Error loading metadata:', error);
@@ -1894,46 +1959,85 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 if (comfyData.prompt) {
                     const promptNodes = comfyData.prompt;
                     
+                    // Track all text nodes and try to identify positive/negative
+                    const textNodes = [];
+                    
                     for (const nodeId in promptNodes) {
                         const node = promptNodes[nodeId];
                         
-                        // Checkpoint
-                        if (node.class_type === 'CheckpointLoaderSimple' && node.inputs) {
-                            checkpoint = node.inputs.ckpt_name || checkpoint;
+                        // Checkpoint - check multiple types
+                        if ((node.class_type === 'CheckpointLoaderSimple' || 
+                             node.class_type === 'UNETLoader' ||
+                             node.class_type === 'DualCLIPLoader') && node.inputs) {
+                            checkpoint = node.inputs.ckpt_name || node.inputs.unet_name || checkpoint;
                         }
                         
-                        // Prompts - need to identify which is positive vs negative
-                        if (node.class_type === 'PromptManager' && node.inputs && node.inputs.text) {
-                            // PromptManager typically contains the positive prompt
-                            positivePrompt = node.inputs.text;
+                        // Collect all text nodes for analysis
+                        if (node.inputs && node.inputs.text) {
+                            textNodes.push({
+                                nodeId: nodeId,
+                                classType: node.class_type,
+                                text: node.inputs.text,
+                                inputs: node.inputs
+                            });
                         }
                         
-                        if (node.class_type === 'CLIPTextEncode' && node.inputs && node.inputs.text) {
-                            // Check if this looks like a negative prompt
-                            const text = node.inputs.text.toLowerCase();
-                            if (text.includes('bad anatomy') || text.includes('unfinished') || 
-                                text.includes('censored') || text.includes('weird anatomy') ||
-                                text.includes('negative') || text.includes('embedding:')) {
-                                negativePrompt = node.inputs.text;
-                            } else if (positivePrompt === 'No prompt found') {
-                                // If we haven't found a positive prompt yet, this might be it
+                        // Special handling for PromptManager nodes
+                        if (node.class_type === 'PromptManager' && node.inputs) {
+                            // PromptManager always contains the positive prompt
+                            if (node.inputs.text) {
                                 positivePrompt = node.inputs.text;
+                            }
+                            // Also check for loaded prompt
+                            if (node.inputs.selected_prompt) {
+                                positivePrompt = node.inputs.selected_prompt;
                             }
                         }
                         
-                        // Sampling parameters
-                        if (node.class_type === 'KSampler' && node.inputs) {
-                            steps = node.inputs.steps || steps;
-                            cfgScale = node.inputs.cfg || cfgScale;
-                            sampler = node.inputs.sampler_name || sampler;
-                            seed = node.inputs.seed || seed;
+                        // PromptManagerText node
+                        if (node.class_type === 'PromptManagerText' && node.inputs) {
+                            if (node.inputs.text) {
+                                positivePrompt = node.inputs.text;
+                            }
+                            if (node.inputs.selected_prompt) {
+                                positivePrompt = node.inputs.selected_prompt;
+                            }
                         }
                         
-                        if (node.class_type === 'KSamplerAdvanced' && node.inputs) {
+                        // Sampling parameters - check multiple sampler types
+                        if ((node.class_type === 'KSampler' || 
+                             node.class_type === 'KSamplerAdvanced' ||
+                             node.class_type === 'SamplerCustom' ||
+                             node.class_type === 'SamplerCustomAdvanced') && node.inputs) {
                             steps = node.inputs.steps || steps;
                             cfgScale = node.inputs.cfg || cfgScale;
                             sampler = node.inputs.sampler_name || sampler;
-                            seed = node.inputs.noise_seed || seed;
+                            seed = node.inputs.seed || node.inputs.noise_seed || seed;
+                        }
+                    }
+                    
+                    // Process collected text nodes to identify positive/negative prompts
+                    // if we haven't found them from PromptManager
+                    for (const textNode of textNodes) {
+                        const text = textNode.text;
+                        const textLower = text.toLowerCase();
+                        
+                        // Skip if this is the PromptManager text we already have
+                        if (textNode.classType === 'PromptManager' || textNode.classType === 'PromptManagerText') {
+                            continue;
+                        }
+                        
+                        // Identify negative prompts by common patterns
+                        if (textNode.classType === 'CLIPTextEncode') {
+                            if (textLower.includes('bad anatomy') || textLower.includes('unfinished') || 
+                                textLower.includes('censored') || textLower.includes('weird anatomy') ||
+                                textLower.includes('negative') || textLower.includes('embedding:') ||
+                                textLower.includes('worst quality') || textLower.includes('low quality')) {
+                                negativePrompt = text;
+                            } else if (positivePrompt === 'No prompt found') {
+                                // If we haven't found a positive prompt yet, this might be it
+                                positivePrompt = text;
+                            }
                         }
                     }
                 }
@@ -1941,23 +2045,44 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 // Also try to parse from workflow data if we didn't find everything in prompt
                 if (comfyData.workflow && comfyData.workflow.nodes) {
                     for (const node of comfyData.workflow.nodes) {
-                        if (node.type === 'CheckpointLoaderSimple' && node.widgets_values) {
+                        // Checkpoint loaders
+                        if ((node.type === 'CheckpointLoaderSimple' || 
+                             node.type === 'UNETLoader' ||
+                             node.type === 'DualCLIPLoader') && node.widgets_values) {
                             checkpoint = node.widgets_values[0] || checkpoint;
                         }
                         
+                        // PromptManager nodes in workflow
+                        if (node.type === 'PromptManager' && node.widgets_values) {
+                            // The first widget value is usually the text
+                            if (node.widgets_values[0] && positivePrompt === 'No prompt found') {
+                                positivePrompt = node.widgets_values[0];
+                            }
+                        }
+                        
+                        if (node.type === 'PromptManagerText' && node.widgets_values) {
+                            if (node.widgets_values[0] && positivePrompt === 'No prompt found') {
+                                positivePrompt = node.widgets_values[0];
+                            }
+                        }
+                        
+                        // CLIPTextEncode nodes
                         if (node.type === 'CLIPTextEncode' && node.widgets_values && node.widgets_values[0]) {
                             const text = node.widgets_values[0];
                             const textLower = text.toLowerCase();
                             
                             if (textLower.includes('bad anatomy') || textLower.includes('unfinished') || 
-                                textLower.includes('censored') || textLower.includes('negative')) {
+                                textLower.includes('censored') || textLower.includes('negative') ||
+                                textLower.includes('worst quality') || textLower.includes('low quality')) {
                                 negativePrompt = text;
                             } else if (positivePrompt === 'No prompt found') {
                                 positivePrompt = text;
                             }
                         }
                         
-                        if ((node.type === 'KSampler' || node.type === 'KSamplerAdvanced') && node.widgets_values) {
+                        // Samplers
+                        if ((node.type === 'KSampler' || node.type === 'KSamplerAdvanced' ||
+                             node.type === 'SamplerCustom' || node.type === 'SamplerCustomAdvanced') && node.widgets_values) {
                             if (node.widgets_values.length >= 4) {
                                 seed = node.widgets_values[0] || seed;
                                 steps = node.widgets_values[1] || steps;
