@@ -164,10 +164,15 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
             for (const field of workflowFields) {
                 if (metadata[field]) {
                     try {
-                        workflowData = JSON.parse(metadata[field]);
+                        // Clean NaN values from JSON string before parsing
+                        let cleanedJson = metadata[field];
+                        cleanedJson = cleanedJson.replace(/:\s*NaN\b/g, ': null');
+                        cleanedJson = cleanedJson.replace(/\bNaN\b/g, 'null');
+                        
+                        workflowData = JSON.parse(cleanedJson);
                         break;
                     } catch (e) {
-                        console.log('Failed to parse workflow field:', field);
+                        console.log('Failed to parse workflow field:', field, e);
                     }
                 }
             }
@@ -175,10 +180,15 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
             for (const field of promptFields) {
                 if (metadata[field]) {
                     try {
-                        promptData = JSON.parse(metadata[field]);
+                        // Clean NaN values from JSON string before parsing
+                        let cleanedJson = metadata[field];
+                        cleanedJson = cleanedJson.replace(/:\s*NaN\b/g, ': null');
+                        cleanedJson = cleanedJson.replace(/\bNaN\b/g, 'null');
+                        
+                        promptData = JSON.parse(cleanedJson);
                         break;
                     } catch (e) {
-                        console.log('Failed to parse prompt field:', field);
+                        console.log('Failed to parse prompt field:', field, e);
                     }
                 }
             }
@@ -204,34 +214,50 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
                 console.log('Parsing prompt data...');
                 const promptNodes = comfyData.prompt;
                 
+                // Track all text nodes and try to identify positive/negative
+                const textNodes = [];
+                
                 for (const nodeId in promptNodes) {
                     const node = promptNodes[nodeId];
                     console.log(`Node ${nodeId}:`, node.class_type, node);
                     
-                    // Checkpoint
-                    if (node.class_type === 'CheckpointLoaderSimple' && node.inputs) {
-                        checkpoint = node.inputs.ckpt_name || checkpoint;
+                    // Checkpoint - check multiple types
+                    if ((node.class_type === 'CheckpointLoaderSimple' || 
+                         node.class_type === 'UNETLoader' ||
+                         node.class_type === 'DualCLIPLoader') && node.inputs) {
+                        checkpoint = node.inputs.ckpt_name || node.inputs.unet_name || checkpoint;
                     }
                     
-                    // Prompts - need to identify which is positive vs negative
-                    if (node.class_type === 'PromptManager' && node.inputs && node.inputs.text) {
-                        // PromptManager typically contains the positive prompt
-                        positivePrompt = node.inputs.text;
-                        console.log('Found PromptManager with text:', positivePrompt.substring(0, 100));
+                    // Collect all text nodes for analysis
+                    if (node.inputs && node.inputs.text) {
+                        textNodes.push({
+                            nodeId: nodeId,
+                            classType: node.class_type,
+                            text: node.inputs.text,
+                            inputs: node.inputs
+                        });
                     }
                     
-                    if (node.class_type === 'CLIPTextEncode' && node.inputs && node.inputs.text) {
-                        // Check if this looks like a negative prompt
-                        const text = node.inputs.text.toLowerCase();
-                        if (text.includes('bad anatomy') || text.includes('unfinished') || 
-                            text.includes('censored') || text.includes('weird anatomy') ||
-                            text.includes('negative') || text.includes('embedding:')) {
-                            negativePrompt = node.inputs.text;
-                            console.log('Found negative prompt:', negativePrompt.substring(0, 100));
-                        } else if (positivePrompt === 'No prompt found') {
-                            // If we haven't found a positive prompt yet, this might be it
+                    // Special handling for PromptManager nodes
+                    if (node.class_type === 'PromptManager' && node.inputs) {
+                        // PromptManager always contains the positive prompt
+                        if (node.inputs.text) {
                             positivePrompt = node.inputs.text;
-                            console.log('Found potential positive prompt:', positivePrompt.substring(0, 100));
+                            console.log('Found PromptManager with text:', positivePrompt.substring(0, 100));
+                        }
+                        // Also check for loaded prompt
+                        if (node.inputs.selected_prompt) {
+                            positivePrompt = node.inputs.selected_prompt;
+                        }
+                    }
+                    
+                    // PromptManagerText node
+                    if (node.class_type === 'PromptManagerText' && node.inputs) {
+                        if (node.inputs.text) {
+                            positivePrompt = node.inputs.text;
+                        }
+                        if (node.inputs.selected_prompt) {
+                            positivePrompt = node.inputs.selected_prompt;
                         }
                     }
                     
@@ -240,10 +266,10 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
                          node.class_type === 'KSamplerAdvanced' ||
                          node.class_type === 'SamplerCustom' ||
                          node.class_type === 'SamplerCustomAdvanced') && node.inputs) {
-                        seed = node.inputs.seed || seed;
                         steps = node.inputs.steps || steps;
                         cfgScale = node.inputs.cfg || cfgScale;
                         sampler = node.inputs.sampler_name || sampler;
+                        seed = node.inputs.seed || node.inputs.noise_seed || seed;
                     }
                     
                     // New ComfyUI node types for modern workflows
@@ -268,83 +294,89 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
                         }
                     }
                 }
-            }
-
-            // Fallback to workflow parsing if prompt parsing didn't work well
-            if (comfyData.workflow && (positivePrompt === 'No prompt found' || checkpoint === 'Unknown')) {
-                console.log('Falling back to workflow parsing...');
-                const nodes = comfyData.workflow.nodes || [];
                 
-                // Look for checkpoint loader
-                const checkpointNode = nodes.find(node => 
-                    node.type === 'CheckpointLoaderSimple' || 
-                    node.type === 'CheckpointLoader'
-                );
-                if (checkpointNode && checkpointNode.widgets_values) {
-                    checkpoint = checkpointNode.widgets_values[0] || checkpoint;
-                }
-
-                // Look for prompts in workflow nodes
-                const textEncodeNodes = nodes.filter(node => node.type === 'CLIPTextEncode');
-                const promptManagerNodes = nodes.filter(node => node.type === 'PromptManager');
-                
-                // Check PromptManager first for positive prompt
-                if (promptManagerNodes.length > 0 && promptManagerNodes[0].widgets_values) {
-                    positivePrompt = promptManagerNodes[0].widgets_values[0] || positivePrompt;
-                }
-                
-                // For negative prompt, look for CLIPTextEncode that isn't the positive
-                for (const node of textEncodeNodes) {
-                    if (node.widgets_values && node.widgets_values[0]) {
-                        const text = node.widgets_values[0].toLowerCase();
-                        if (text.includes('bad anatomy') || text.includes('unfinished') || 
-                            text.includes('censored') || text.includes('weird anatomy')) {
-                            negativePrompt = node.widgets_values[0];
-                            break;
+                // Process collected text nodes to identify positive/negative prompts
+                // if we haven't found them from PromptManager
+                for (const textNode of textNodes) {
+                    const text = textNode.text;
+                    // Ensure text is a string before calling toLowerCase
+                    if (!text || typeof text !== 'string') {
+                        continue;
+                    }
+                    const textLower = text.toLowerCase();
+                    
+                    // Skip if this is the PromptManager text we already have
+                    if (textNode.classType === 'PromptManager' || textNode.classType === 'PromptManagerText') {
+                        continue;
+                    }
+                    
+                    // Identify negative prompts by common patterns
+                    if (textNode.classType === 'CLIPTextEncode') {
+                        if (textLower.includes('bad anatomy') || textLower.includes('unfinished') || 
+                            textLower.includes('censored') || textLower.includes('weird anatomy') ||
+                            textLower.includes('negative') || textLower.includes('embedding:') ||
+                            textLower.includes('worst quality') || textLower.includes('low quality')) {
+                            negativePrompt = text;
+                            console.log('Found negative prompt:', negativePrompt.substring(0, 100));
+                        } else if (positivePrompt === 'No prompt found') {
+                            // If we haven't found a positive prompt yet, this might be it
+                            positivePrompt = text;
+                            console.log('Found potential positive prompt:', positivePrompt.substring(0, 100));
                         }
                     }
                 }
+            }
 
-                // Look for sampler nodes - check multiple types
-                const samplerNode = nodes.find(node => 
-                    node.type === 'KSampler' || 
-                    node.type === 'KSamplerAdvanced' ||
-                    node.type === 'SamplerCustom' ||
-                    node.type === 'SamplerCustomAdvanced'
-                );
-                if (samplerNode && samplerNode.widgets_values) {
-                    seed = samplerNode.widgets_values[0] || seed;
-                    steps = samplerNode.widgets_values[1] || steps;
-                    cfgScale = samplerNode.widgets_values[2] || cfgScale;
-                    sampler = samplerNode.widgets_values[3] || sampler;
-                }
-                
-                // Look for newer node types
-                if (steps === 'Unknown') {
-                    const schedulerNode = nodes.find(node => node.type === 'BasicScheduler');
-                    if (schedulerNode && schedulerNode.widgets_values) {
-                        steps = schedulerNode.widgets_values[1]; // steps is usually second parameter
+            // Also try to parse from workflow data if we didn't find everything in prompt
+            if (comfyData.workflow && comfyData.workflow.nodes) {
+                for (const node of comfyData.workflow.nodes) {
+                    // Checkpoint loaders
+                    if ((node.type === 'CheckpointLoaderSimple' || 
+                         node.type === 'UNETLoader' ||
+                         node.type === 'DualCLIPLoader') && node.widgets_values) {
+                        checkpoint = node.widgets_values[0] || checkpoint;
                     }
-                }
-                
-                if (cfgScale === 'Unknown') {
-                    const cfgNode = nodes.find(node => node.type === 'CFGGuider');
-                    if (cfgNode && cfgNode.widgets_values) {
-                        cfgScale = cfgNode.widgets_values[0]; // cfg is usually first parameter
+                    
+                    // PromptManager nodes in workflow
+                    if (node.type === 'PromptManager' && node.widgets_values) {
+                        // The first widget value is usually the text
+                        if (node.widgets_values[0] && positivePrompt === 'No prompt found') {
+                            positivePrompt = node.widgets_values[0];
+                        }
                     }
-                }
-                
-                if (sampler === 'Unknown') {
-                    const samplerSelectNode = nodes.find(node => node.type === 'KSamplerSelect');
-                    if (samplerSelectNode && samplerSelectNode.widgets_values) {
-                        sampler = samplerSelectNode.widgets_values[0]; // sampler name is usually first parameter
+                    
+                    if (node.type === 'PromptManagerText' && node.widgets_values) {
+                        if (node.widgets_values[0] && positivePrompt === 'No prompt found') {
+                            positivePrompt = node.widgets_values[0];
+                        }
                     }
-                }
-                
-                if (seed === 'Unknown') {
-                    const noiseNode = nodes.find(node => node.type === 'RandomNoise');
-                    if (noiseNode && noiseNode.widgets_values) {
-                        seed = noiseNode.widgets_values[0]; // seed is usually first parameter
+                    
+                    // CLIPTextEncode nodes
+                    if (node.type === 'CLIPTextEncode' && node.widgets_values && node.widgets_values[0]) {
+                        const text = node.widgets_values[0];
+                        // Ensure text is a string before calling toLowerCase
+                        if (text && typeof text === 'string') {
+                            const textLower = text.toLowerCase();
+                            
+                            if (textLower.includes('bad anatomy') || textLower.includes('unfinished') || 
+                                textLower.includes('censored') || textLower.includes('negative') ||
+                                textLower.includes('worst quality') || textLower.includes('low quality')) {
+                                negativePrompt = text;
+                            } else if (positivePrompt === 'No prompt found') {
+                                positivePrompt = text;
+                            }
+                        }
+                    }
+                    
+                    // Samplers
+                    if ((node.type === 'KSampler' || node.type === 'KSamplerAdvanced' ||
+                         node.type === 'SamplerCustom' || node.type === 'SamplerCustomAdvanced') && node.widgets_values) {
+                        if (node.widgets_values.length >= 4) {
+                            seed = node.widgets_values[0] || seed;
+                            steps = node.widgets_values[1] || steps;
+                            cfgScale = node.widgets_values[2] || cfgScale;
+                            sampler = node.widgets_values[3] || sampler;
+                        }
                     }
                 }
             }
