@@ -317,6 +317,10 @@ class PromptManagerAPI:
         @routes.post("/prompt_manager/images/link")
         async def link_image_route(request):
             return await self.link_image_to_prompt(request)
+            
+        @routes.get("/prompt_manager/images/prompt/{image_path:.*}")
+        async def get_image_prompt_route(request):
+            return await self.get_image_prompt(request)
 
         @routes.delete("/prompt_manager/images/{image_id}")
         async def delete_image_route(request):
@@ -2363,6 +2367,85 @@ class PromptManagerAPI:
             
         except Exception as e:
             self.logger.error(f"Link image error: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def get_image_prompt(self, request):
+        """Get prompt information for a specific image path."""
+        try:
+            import urllib.parse
+            import os
+            import json
+            from pathlib import Path
+            
+            # Get the image path from URL
+            raw_image_path = request.match_info.get('image_path', '')
+            image_path = urllib.parse.unquote(raw_image_path)
+            
+            if not image_path:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Image path is required'
+                }, status=400)
+            
+            # Convert relative path to absolute if needed
+            if not os.path.isabs(image_path):
+                # If it's a relative path from ComfyUI output, make it absolute
+                output_dir = self._find_comfyui_output_dir()
+                if output_dir:
+                    image_path = str(Path(output_dir) / image_path)
+            
+            # Look up the image in generated_images table
+            try:
+                with self.db.model.get_connection() as conn:
+                    cursor = conn.execute(
+                        """SELECT gi.prompt_id, p.text, p.category, p.tags, p.rating, p.notes,
+                                  gi.workflow_data, gi.prompt_metadata, gi.generation_time
+                           FROM generated_images gi 
+                           JOIN prompts p ON gi.prompt_id = p.id 
+                           WHERE gi.image_path = ? OR gi.image_path LIKE ?""",
+                        (image_path, f'%{os.path.basename(image_path)}')
+                    )
+                    result = cursor.fetchone()
+                    
+                    if result:
+                        # Convert to dict
+                        prompt_data = {
+                            'prompt_id': result[0],
+                            'text': result[1],
+                            'category': result[2],
+                            'tags': json.loads(result[3]) if result[3] else [],
+                            'rating': result[4],
+                            'notes': result[5],
+                            'workflow_data': json.loads(result[6]) if result[6] else None,
+                            'prompt_metadata': json.loads(result[7]) if result[7] else None,
+                            'generation_time': result[8],
+                            'image_path': image_path
+                        }
+                        
+                        return web.json_response({
+                            'success': True,
+                            'prompt': prompt_data
+                        })
+                    else:
+                        # No linked prompt found - this is normal for many images
+                        return web.json_response({
+                            'success': False,
+                            'error': 'No prompt found for this image',
+                            'image_path': image_path
+                        })
+                        
+            except Exception as db_error:
+                self.logger.error(f"Database error in get_image_prompt: {db_error}")
+                return web.json_response({
+                    'success': False,
+                    'error': 'Database error occurred'
+                }, status=500)
+            
+        except Exception as e:
+            self.logger.error(f"Get image prompt error: {e}")
             return web.json_response({
                 'success': False,
                 'error': str(e)
