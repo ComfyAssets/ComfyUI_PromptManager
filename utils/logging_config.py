@@ -35,6 +35,11 @@ class PromptManagerLogger:
     _lock = threading.Lock()
     
     def __new__(cls):
+        """Ensure singleton pattern with thread safety.
+        
+        Returns:
+            The single instance of PromptManagerLogger
+        """
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -42,6 +47,11 @@ class PromptManagerLogger:
         return cls._instance
     
     def __init__(self):
+        """Initialize the logging system if not already initialized.
+        
+        Sets up log directory, configuration, memory buffer, and all handlers.
+        Uses _initialized flag to prevent duplicate initialization.
+        """
         if hasattr(self, '_initialized'):
             return
         
@@ -67,7 +77,11 @@ class PromptManagerLogger:
         self._setup_loggers()
     
     def _setup_loggers(self):
-        """Set up all loggers with appropriate handlers."""
+        """Set up all loggers with appropriate handlers.
+        
+        Configures the main logger with console, file, and memory handlers.
+        Sets up file rotation and safe encoding for cross-platform compatibility.
+        """
         # Main logger
         self.logger = logging.getLogger('prompt_manager')
         self.logger.setLevel(getattr(logging, self.config['level']))
@@ -110,7 +124,11 @@ class PromptManagerLogger:
         self._setup_component_loggers()
     
     def _setup_component_loggers(self):
-        """Set up loggers for specific components."""
+        """Set up loggers for specific components.
+        
+        Creates child loggers for different PromptManager components.
+        Child loggers inherit handlers from the main logger.
+        """
         components = [
             'prompt_manager.database',
             'prompt_manager.api',
@@ -125,11 +143,23 @@ class PromptManagerLogger:
             # Child loggers inherit handlers from parent
     
     def get_logger(self, name: str = 'prompt_manager') -> logging.Logger:
-        """Get a logger instance for a specific component."""
+        """Get a logger instance for a specific component.
+        
+        Args:
+            name: Logger name, typically in format 'prompt_manager.component'
+            
+        Returns:
+            Configured logger instance
+        """
         return logging.getLogger(name)
     
     def add_to_buffer(self, record: logging.LogRecord, formatted_message: str):
-        """Add a log entry to the memory buffer for web viewer."""
+        """Add a log entry to the memory buffer for web viewer.
+        
+        Args:
+            record: The LogRecord object from the logging system
+            formatted_message: The formatted log message string
+        """
         with self._buffer_lock:
             log_entry = {
                 'timestamp': datetime.fromtimestamp(record.created).isoformat(),
@@ -152,7 +182,15 @@ class PromptManagerLogger:
                 self._log_buffer = self._log_buffer[-self.config['buffer_size']:]
     
     def get_recent_logs(self, limit: int = 100, level: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get recent log entries from memory buffer."""
+        """Get recent log entries from memory buffer.
+        
+        Args:
+            limit: Maximum number of log entries to return
+            level: Optional log level filter (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+            
+        Returns:
+            List of log entry dictionaries, most recent first
+        """
         with self._buffer_lock:
             logs = self._log_buffer[:]
         
@@ -166,7 +204,16 @@ class PromptManagerLogger:
         return list(reversed(logs[-limit:]))
     
     def get_log_files(self) -> List[Dict[str, Any]]:
-        """Get information about available log files."""
+        """Get information about available log files.
+        
+        Returns:
+            List of dictionaries containing file information:
+            - filename: Name of the log file
+            - path: Full path to the log file
+            - size: File size in bytes
+            - modified: ISO formatted modification timestamp
+            - is_main: True if this is the main log file
+        """
         log_files = []
         
         for log_file in self.log_dir.glob("*.log*"):
@@ -187,7 +234,19 @@ class PromptManagerLogger:
         return log_files
     
     def read_log_file(self, filename: str, lines: int = 100) -> List[str]:
-        """Read lines from a specific log file."""
+        """Read lines from a specific log file.
+        
+        Args:
+            filename: Name of the log file to read (must be in log directory)
+            lines: Number of lines to read from the end of the file (0 for all)
+            
+        Returns:
+            List of line strings from the log file
+            
+        Raises:
+            FileNotFoundError: If the log file doesn't exist
+            ValueError: If the file path is outside the log directory
+        """
         log_file = self.log_dir / filename
         
         if not log_file.exists() or not log_file.is_file():
@@ -207,7 +266,16 @@ class PromptManagerLogger:
             raise
     
     def truncate_logs(self) -> Dict[str, Any]:
-        """Truncate all log files."""
+        """Truncate all log files.
+        
+        Clears the main log file and deletes rotated log files.
+        Also clears the memory buffer.
+        
+        Returns:
+            Dictionary with:
+            - truncated: List of successfully truncated files
+            - errors: List of error messages for failed operations
+        """
         results = {
             'truncated': [],
             'errors': []
@@ -238,7 +306,12 @@ class PromptManagerLogger:
         return results
     
     def update_config(self, new_config: Dict[str, Any]):
-        """Update logging configuration."""
+        """Update logging configuration.
+        
+        Args:
+            new_config: Dictionary of configuration updates
+                       (level, console_logging, file_logging, etc.)
+        """
         self.config.update(new_config)
         
         # Reconfigure loggers if level changed
@@ -259,11 +332,25 @@ class PromptManagerLogger:
         self.logger.info(f"Updated logging configuration: {new_config}")
     
     def get_config(self) -> Dict[str, Any]:
-        """Get current logging configuration."""
+        """Get current logging configuration.
+        
+        Returns:
+            Copy of the current configuration dictionary
+        """
         return self.config.copy()
     
     def get_log_stats(self) -> Dict[str, Any]:
-        """Get logging statistics."""
+        """Get logging statistics.
+        
+        Returns:
+            Dictionary containing:
+            - buffer_count: Number of entries in memory buffer
+            - level_counts: Count of entries by log level
+            - log_files_count: Number of log files
+            - total_log_size: Total size of all log files in bytes
+            - log_directory: Path to the log directory
+            - current_level: Current logging level
+        """
         with self._buffer_lock:
             buffer_count = len(self._log_buffer)
             level_counts = {}
@@ -285,14 +372,31 @@ class PromptManagerLogger:
 
 
 class MemoryBufferHandler(logging.Handler):
-    """Custom logging handler that stores logs in memory for web viewer."""
+    """Custom logging handler that stores logs in memory for web viewer.
+    
+    This handler extends the standard logging.Handler to capture log records
+    and store them in the PromptManagerLogger's memory buffer. This enables
+    the web interface to display recent log entries without reading from files.
+    
+    The handler is designed to be failure-safe - if any error occurs during
+    log processing, it silently continues without disrupting the application.
+    """
     
     def __init__(self, logger_manager: PromptManagerLogger):
+        """Initialize the memory buffer handler.
+        
+        Args:
+            logger_manager: The PromptManagerLogger instance to store logs in
+        """
         super().__init__()
         self.logger_manager = logger_manager
     
     def emit(self, record: logging.LogRecord):
-        """Handle a log record by adding it to the memory buffer."""
+        """Handle a log record by adding it to the memory buffer.
+        
+        Args:
+            record: The LogRecord to process and store
+        """
         try:
             formatted_message = self.format(record)
             self.logger_manager.add_to_buffer(record, formatted_message)
@@ -305,14 +409,25 @@ class MemoryBufferHandler(logging.Handler):
 _logger_manager = None
 
 def get_logger_manager() -> PromptManagerLogger:
-    """Get the global logger manager instance."""
+    """Get the global logger manager instance.
+    
+    Returns:
+        The singleton PromptManagerLogger instance, creating it if necessary
+    """
     global _logger_manager
     if _logger_manager is None:
         _logger_manager = PromptManagerLogger()
     return _logger_manager
 
 def get_logger(name: str = 'prompt_manager') -> logging.Logger:
-    """Convenience function to get a logger."""
+    """Convenience function to get a logger.
+    
+    Args:
+        name: Logger name, defaults to 'prompt_manager'
+        
+    Returns:
+        Configured logger instance for the specified name
+    """
     return get_logger_manager().get_logger(name)
 
 # Initialize logging on import

@@ -1,6 +1,33 @@
-"""
-ComfyUI metadata extraction utilities.
-Extracts workflow and prompt information from generated images.
+"""ComfyUI metadata extraction utilities.
+
+This module provides comprehensive metadata extraction capabilities for ComfyUI-generated
+images. It can extract workflow information, prompt data, and generation parameters from
+PNG images that contain embedded ComfyUI metadata in their text chunks.
+
+The extractor supports:
+- Complete workflow data extraction from PNG text chunks
+- Text encoder node identification and analysis
+- Generation parameter extraction (steps, cfg_scale, sampler, etc.)
+- Basic file information fallback when metadata is unavailable
+- Flexible node type detection for various ComfyUI extensions
+
+Typical usage:
+    from utils.metadata_extractor import ComfyUIMetadataExtractor
+    
+    extractor = ComfyUIMetadataExtractor()
+    metadata = extractor.extract_metadata('/path/to/image.png')
+    
+    if metadata:
+        workflow = metadata.get('workflow', {})
+        text_nodes = metadata.get('text_encoder_nodes', [])
+        params = extractor.get_generation_parameters(metadata)
+
+The extracted metadata includes:
+- file_info: Basic file stats (size, dimensions, format, timestamps)
+- workflow: Complete ComfyUI workflow data structure
+- text_encoder_nodes: List of identified text encoding nodes
+- prompt: ComfyUI prompt execution data
+- Generation parameters: steps, cfg_scale, sampler, seed, etc.
 """
 
 import os
@@ -13,21 +40,46 @@ from .logging_config import get_logger
 
 
 class ComfyUIMetadataExtractor:
-    """Extracts ComfyUI metadata from generated images."""
+    """Extracts ComfyUI metadata from generated images.
+    
+    This class handles extraction of ComfyUI workflow and generation metadata
+    from PNG images. It parses the text chunks embedded by ComfyUI and extracts
+    structured information about workflows, prompts, and generation parameters.
+    
+    The extractor is designed to be robust and handle various ComfyUI workflow
+    formats, including custom nodes and different metadata structures.
+    """
     
     def __init__(self):
-        """Initialize the metadata extractor."""
+        """Initialize the metadata extractor.
+        
+        Sets up logging and prepares the extractor for metadata parsing operations.
+        """
         self.logger = get_logger('prompt_manager.metadata_extractor')
     
     def extract_metadata(self, image_path: str) -> Optional[Dict[str, Any]]:
         """
         Extract ComfyUI workflow and prompt metadata from an image.
         
+        This method opens a PNG image and extracts all available ComfyUI metadata
+        from the embedded text chunks. It handles JSON parsing, workflow analysis,
+        and parameter extraction.
+        
         Args:
-            image_path: Path to the image file
+            image_path: Path to the PNG image file to analyze
             
         Returns:
-            Dictionary containing extracted metadata or None if extraction fails
+            Dictionary containing extracted metadata with keys:
+            - file_info: Basic file information (always present)
+            - workflow: Parsed workflow data (if available)
+            - text_encoder_nodes: List of text encoding nodes (if found)
+            - prompt: ComfyUI prompt data (if available)
+            - Additional fields: parameters, model, sampler, steps, etc. (if present)
+            Returns None if no ComfyUI metadata is found or extraction fails
+            
+        Raises:
+            Exception: Re-raises any exception that occurs during extraction,
+                      with appropriate error logging
         """
         try:
             with Image.open(image_path) as image:
@@ -85,12 +137,21 @@ class ComfyUIMetadataExtractor:
         """
         Get basic file information.
         
+        Extracts fundamental file properties including size, dimensions, format,
+        and filesystem timestamps.
+        
         Args:
             image_path: Path to the image file
-            image: PIL Image object
+            image: Opened PIL Image object
             
         Returns:
-            Dictionary containing file information
+            Dictionary containing:
+            - size: File size in bytes
+            - dimensions: Image dimensions as [width, height]
+            - format: Image format (PNG, JPEG, etc.)
+            - mode: Color mode (RGB, RGBA, etc.)
+            - created_time: File creation timestamp
+            - modified_time: File modification timestamp
         """
         try:
             stat = os.stat(image_path)
@@ -110,11 +171,17 @@ class ComfyUIMetadataExtractor:
         """
         Find text encoder nodes in the workflow data.
         
+        Searches through the workflow structure to identify nodes that perform
+        text encoding operations. This includes standard ComfyUI nodes like
+        CLIPTextEncode as well as custom nodes and extensions.
+        
         Args:
-            workflow_data: ComfyUI workflow data
+            workflow_data: ComfyUI workflow data structure (can be in various formats)
             
         Returns:
-            List of text encoder node data
+            List of dictionaries representing text encoder nodes, each containing
+            the node's configuration, inputs, and metadata. For dictionary-based
+            workflows, adds 'node_id' field to each node.
         """
         text_encoder_nodes = []
         
@@ -155,11 +222,15 @@ class ComfyUIMetadataExtractor:
         """
         Check if a node is a text encoder node.
         
+        Determines whether a given node performs text encoding by examining
+        its type, class, and title for known text encoding patterns. Supports
+        various ComfyUI node types and custom extensions.
+        
         Args:
-            node_data: Node data to check
+            node_data: Node configuration dictionary to analyze
             
         Returns:
-            True if the node is a text encoder
+            True if the node is identified as a text encoder, False otherwise
         """
         if not isinstance(node_data, dict):
             return False
@@ -195,11 +266,15 @@ class ComfyUIMetadataExtractor:
         """
         Extract the actual prompt text from workflow data.
         
+        Searches through text encoder nodes to find and extract the actual
+        prompt text that was used for generation. Handles various input field
+        names and data structures.
+        
         Args:
-            workflow_data: ComfyUI workflow data
+            workflow_data: ComfyUI workflow data structure
             
         Returns:
-            Extracted prompt text or None
+            The extracted prompt text string, or None if no prompt text is found
         """
         text_encoder_nodes = self.find_text_encoder_nodes(workflow_data)
         
@@ -223,11 +298,23 @@ class ComfyUIMetadataExtractor:
         """
         Extract generation parameters from metadata.
         
+        Parses the metadata to extract key generation parameters used for
+        image creation, including sampling settings, model information,
+        and other configuration values.
+        
         Args:
-            metadata: Full metadata dictionary
+            metadata: Full metadata dictionary from extract_metadata()
             
         Returns:
-            Dictionary of generation parameters
+            Dictionary containing generation parameters such as:
+            - steps: Number of sampling steps
+            - cfg_scale: Classifier-free guidance scale
+            - sampler: Sampling method used
+            - scheduler: Noise scheduler
+            - seed: Random seed value
+            - model: Model name/path
+            - width/height: Image dimensions
+            - batch_size: Number of images generated
         """
         parameters = {}
         
@@ -252,11 +339,16 @@ class ComfyUIMetadataExtractor:
         """
         Extract generation parameters from workflow data.
         
+        Analyzes the workflow structure to identify and extract generation
+        parameters from various node types. This method can be extended
+        to support specific workflow patterns and custom nodes.
+        
         Args:
-            workflow_data: ComfyUI workflow data
+            workflow_data: ComfyUI workflow data structure
             
         Returns:
-            Dictionary of extracted parameters
+            Dictionary of extracted parameters. Currently returns empty dict
+            but can be extended based on specific workflow analysis needs.
         """
         parameters = {}
         

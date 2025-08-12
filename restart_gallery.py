@@ -1,7 +1,23 @@
 #!/usr/bin/env python3
 """
-Restart gallery system script.
-Use this after fixing code to reload the image monitoring system.
+ComfyUI_PromptManager Gallery System Restart Script.
+
+This script reinitializes and restarts the automatic image gallery monitoring system
+for ComfyUI_PromptManager. Use this script after code modifications or when the 
+gallery system needs to be reloaded.
+
+The script performs the following operations:
+1. Initializes the database connection
+2. Creates a PromptTracker instance for linking prompts to images
+3. Sets up the ImageMonitor for real-time file system monitoring
+4. Starts monitoring ComfyUI output directories
+5. Reports system status and readiness
+
+Usage:
+    python restart_gallery.py
+
+This is particularly useful during development when you need to restart the
+gallery monitoring system without restarting the entire ComfyUI application.
 """
 
 import sys

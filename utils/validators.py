@@ -1,5 +1,33 @@
-"""
-Input validation utilities for KikoTextEncode.
+"""Input validation utilities for PromptManager.
+
+This module provides comprehensive input validation and sanitization functions
+for the PromptManager system. It ensures data integrity and security by validating
+user inputs before they are processed or stored in the database.
+
+Validation functions include:
+- Prompt text validation (length limits, type checking)
+- Rating validation (1-5 scale with None support)
+- Tag validation and parsing (comma-separated strings or lists)
+- Category validation (optional string fields)
+- Workflow name validation
+- Input sanitization and cleaning utilities
+
+All validation functions follow a consistent pattern:
+- Type checking with descriptive error messages
+- Reasonable limits to prevent abuse
+- Support for None/optional values where appropriate
+- Raise ValueError with clear messages on validation failures
+
+Typical usage:
+    from utils.validators import validate_prompt_text, sanitize_input
+    
+    try:
+        validate_prompt_text(user_input)
+        clean_text = sanitize_input(user_input)
+        # Process the validated and cleaned input
+    except ValueError as e:
+        # Handle validation error with user-friendly message
+        print(f"Invalid input: {e}")
 """
 
 import re
@@ -10,14 +38,20 @@ def validate_prompt_text(text: str) -> bool:
     """
     Validate prompt text input.
     
+    Ensures the prompt text is a valid string with reasonable length limits.
+    Empty or whitespace-only strings are rejected.
+    
     Args:
         text: The prompt text to validate
         
     Returns:
-        bool: True if valid, False otherwise
+        True if the text passes validation
         
     Raises:
-        ValueError: If text is invalid with descriptive message
+        ValueError: If text is invalid with descriptive message including:
+                   - Not a string type
+                   - Empty or whitespace-only
+                   - Exceeds maximum length (10,000 characters)
     """
     if not isinstance(text, str):
         raise ValueError("Prompt text must be a string")
@@ -35,14 +69,18 @@ def validate_rating(rating: Optional[int]) -> bool:
     """
     Validate rating input.
     
+    Validates rating values on a 1-5 scale, with None allowed for unrated prompts.
+    
     Args:
-        rating: The rating to validate (1-5 or None)
+        rating: The rating to validate (1-5 scale or None for no rating)
         
     Returns:
-        bool: True if valid, False otherwise
+        True if the rating is valid
         
     Raises:
-        ValueError: If rating is invalid
+        ValueError: If rating is invalid:
+                   - Not an integer (when not None)
+                   - Outside the 1-5 range
     """
     if rating is None:
         return True
@@ -60,14 +98,22 @@ def validate_tags(tags: Union[str, List[str], None]) -> bool:
     """
     Validate tags input.
     
+    Accepts tags as comma-separated string, list of strings, or None.
+    Validates each tag for length and character restrictions.
+    
     Args:
-        tags: Tags as string, list, or None
+        tags: Tags as comma-separated string, list of strings, or None
         
     Returns:
-        bool: True if valid, False otherwise
+        True if all tags are valid
         
     Raises:
-        ValueError: If tags are invalid
+        ValueError: If tags are invalid:
+                   - Wrong input type (not string, list, or None)
+                   - Individual tag is empty or only whitespace
+                   - Individual tag exceeds 50 characters
+                   - Tag contains invalid characters (non-alphanumeric, spaces, hyphens, underscores)
+                   - More than 20 tags provided
     """
     if tags is None:
         return True
@@ -104,14 +150,20 @@ def validate_category(category: Optional[str]) -> bool:
     """
     Validate category input.
     
+    Validates optional category strings with reasonable length limits
+    and character restrictions.
+    
     Args:
-        category: The category to validate
+        category: The category string to validate (None allowed for no category)
         
     Returns:
-        bool: True if valid, False otherwise
+        True if the category is valid or None
         
     Raises:
-        ValueError: If category is invalid
+        ValueError: If category is invalid:
+                   - Not a string type (when not None)
+                   - Exceeds 100 characters
+                   - Contains invalid characters (non-alphanumeric, spaces, hyphens, underscores)
     """
     if category is None:
         return True
@@ -137,14 +189,19 @@ def validate_workflow_name(workflow_name: Optional[str]) -> bool:
     """
     Validate workflow name input.
     
+    Validates optional workflow name strings with generous length limits
+    to accommodate descriptive workflow names.
+    
     Args:
-        workflow_name: The workflow name to validate
+        workflow_name: The workflow name to validate (None allowed for no workflow)
         
     Returns:
-        bool: True if valid, False otherwise
+        True if the workflow name is valid or None
         
     Raises:
-        ValueError: If workflow name is invalid
+        ValueError: If workflow name is invalid:
+                   - Not a string type (when not None)
+                   - Exceeds 200 characters
     """
     if workflow_name is None:
         return True
@@ -166,11 +223,20 @@ def sanitize_input(text: str) -> str:
     """
     Sanitize text input by removing potentially harmful content.
     
+    Cleans text input by removing control characters, normalizing whitespace,
+    and limiting excessive empty lines. Preserves the semantic content while
+    ensuring safe storage and display.
+    
     Args:
-        text: The text to sanitize
+        text: The text string to sanitize
         
     Returns:
-        str: Sanitized text
+        Sanitized text string with:
+        - Null bytes and control characters removed
+        - Normalized line endings (\r\n and \r converted to \n)
+        - Trimmed whitespace on each line
+        - Limited consecutive empty lines (maximum 2)
+        - Overall trimmed result
     """
     if not isinstance(text, str):
         return ""
@@ -202,11 +268,15 @@ def parse_tags_string(tags_string: str) -> List[str]:
     """
     Parse a comma-separated tags string into a clean list.
     
+    Converts comma-separated tag strings into a clean, deduplicated list
+    of tags. Each tag is sanitized and trimmed.
+    
     Args:
-        tags_string: Comma-separated tags string
+        tags_string: Comma-separated tags string (e.g., "tag1, tag2, tag3")
         
     Returns:
-        List[str]: Cleaned list of unique tags
+        List of unique, cleaned tag strings. Empty input returns empty list.
+        Limited to maximum 20 tags to prevent abuse.
     """
     if not tags_string or not isinstance(tags_string, str):
         return []
