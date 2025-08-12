@@ -1,6 +1,26 @@
-"""
-Image monitoring system for ComfyUI generated images.
-Automatically detects new images and links them to prompts.
+"""Image monitoring system for ComfyUI generated images.
+
+This module provides real-time monitoring of ComfyUI output directories to automatically
+detect newly generated images and associate them with their corresponding prompts. The system
+uses filesystem watchers to detect image creation events and extract metadata from the images
+to maintain a gallery system.
+
+The main components are:
+- ImageGenerationHandler: Handles filesystem events for new image creation
+- ImageMonitor: Main monitoring system that manages directory watching
+
+Typical usage:
+    from utils.image_monitor import ImageMonitor
+    
+    monitor = ImageMonitor(db_manager, prompt_tracker)
+    monitor.start_monitoring(['/path/to/comfyui/output'])
+
+The system automatically:
+- Detects new image files in monitored directories
+- Extracts ComfyUI workflow metadata from PNG chunks
+- Links images to active prompts using the prompt tracker
+- Handles fallback linking when no active prompt is available
+- Provides status information and monitoring control
 """
 
 import os
@@ -17,15 +37,26 @@ from .logging_config import get_logger
 
 
 class ImageGenerationHandler(FileSystemEventHandler):
-    """Handler for new image file creation events."""
+    """Filesystem event handler for detecting new image generation.
+    
+    This handler extends watchdog's FileSystemEventHandler to specifically handle
+    new image file creation events in ComfyUI output directories. When a new image
+    is detected, it attempts to:
+    1. Extract ComfyUI metadata from the image
+    2. Associate the image with the currently active prompt
+    3. Store the relationship in the database
+    
+    The handler implements a small delay before processing to ensure files are
+    completely written before attempting to read them.
+    """
     
     def __init__(self, db_manager, prompt_tracker):
         """
-        Initialize the image handler.
+        Initialize the image generation handler.
         
         Args:
-            db_manager: Database manager instance
-            prompt_tracker: Prompt tracking instance
+            db_manager: Database manager instance for storing image-prompt relationships
+            prompt_tracker: Prompt tracking instance for getting current active prompts
         """
         self.db_manager = db_manager
         self.prompt_tracker = prompt_tracker
@@ -34,7 +65,15 @@ class ImageGenerationHandler(FileSystemEventHandler):
         self.logger = get_logger('prompt_manager.image_monitor')
         
     def on_created(self, event):
-        """Handle file creation events."""
+        """Handle filesystem creation events.
+        
+        This method is called by watchdog when a new file is created in a monitored
+        directory. It filters for image files and schedules them for processing after
+        a small delay to ensure the file is fully written.
+        
+        Args:
+            event: FileSystemEvent object containing event details
+        """
         if not event.is_directory and self.is_image_file(event.src_path):
             self.logger.debug(f"New image detected: {event.src_path}")
             # Small delay to ensure file is fully written
@@ -45,11 +84,29 @@ class ImageGenerationHandler(FileSystemEventHandler):
             ).start()
     
     def is_image_file(self, filepath: str) -> bool:
-        """Check if file is a supported image format."""
+        """Check if file is a supported image format.
+        
+        Args:
+            filepath: Path to the file to check
+            
+        Returns:
+            True if the file has a supported image extension, False otherwise
+        """
         return filepath.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif'))
     
     def process_new_image(self, image_path: str):
-        """Process a newly created image file."""
+        """Process a newly created image file for gallery integration.
+        
+        This method handles the complete processing pipeline for a new image:
+        1. Verifies the file still exists
+        2. Gets the current prompt context from the tracker
+        3. Extracts ComfyUI metadata from the image
+        4. Links the image to the appropriate prompt in the database
+        5. Handles fallback scenarios when no active prompt is available
+        
+        Args:
+            image_path: Full path to the newly created image file
+        """
         try:
             self.logger.debug(f"Processing image: {image_path}")
             
@@ -98,7 +155,20 @@ class ImageGenerationHandler(FileSystemEventHandler):
             self.logger.error(traceback.format_exc())
     
     def get_basic_file_info(self, image_path: str) -> Dict[str, Any]:
-        """Get basic file information when metadata extraction fails."""
+        """Get basic file information when metadata extraction fails.
+        
+        Provides fallback file information when ComfyUI metadata cannot be extracted
+        from the image. Includes file size, format, and dimensions when possible.
+        
+        Args:
+            image_path: Path to the image file
+            
+        Returns:
+            Dictionary containing basic file information:
+            - size: File size in bytes
+            - format: Image format (PNG, JPEG, etc.)
+            - dimensions: Image width and height as list [width, height]
+        """
         try:
             from PIL import Image
             
@@ -123,7 +193,16 @@ class ImageGenerationHandler(FileSystemEventHandler):
             return {}
     
     def _get_fallback_prompt(self) -> Optional[Dict[str, Any]]:
-        """Get the most recent prompt from database as fallback."""
+        """Get the most recent prompt from database as fallback.
+        
+        When no active prompt is available from the tracker, this method attempts
+        to find the most recently created prompt in the database to use as a fallback
+        for image linking.
+        
+        Returns:
+            Dictionary containing prompt information with 'fallback' flag set to True,
+            or None if no recent prompt is available
+        """
         try:
             recent_prompts = self.db_manager.get_recent_prompts(limit=1)
             if recent_prompts:
@@ -139,7 +218,16 @@ class ImageGenerationHandler(FileSystemEventHandler):
         return None
     
     def link_image_to_prompt(self, image_path: str, prompt_context: Dict, metadata: Dict):
-        """Link an image to a prompt in the database."""
+        """Link an image to a prompt in the database.
+        
+        Creates a database record associating the generated image with its source prompt,
+        including any extracted metadata from the image file.
+        
+        Args:
+            image_path: Full path to the image file
+            prompt_context: Dictionary containing prompt information including ID and text
+            metadata: Extracted metadata from the image file (workflow, parameters, etc.)
+        """
         try:
             image_id = self.db_manager.link_image_to_prompt(
                 prompt_id=prompt_context['id'],
@@ -153,15 +241,25 @@ class ImageGenerationHandler(FileSystemEventHandler):
 
 
 class ImageMonitor:
-    """Main image monitoring system."""
+    """Main image monitoring system for ComfyUI gallery integration.
+    
+    This class manages the overall image monitoring system, including:
+    - Setting up filesystem watchers for output directories
+    - Auto-detecting ComfyUI output locations
+    - Managing the lifecycle of monitoring operations
+    - Providing status information
+    
+    The monitor uses watchdog to efficiently watch filesystem changes and can
+    monitor multiple directories simultaneously with recursive subdirectory support.
+    """
     
     def __init__(self, db_manager, prompt_tracker):
         """
         Initialize the image monitor.
         
         Args:
-            db_manager: Database manager instance
-            prompt_tracker: Prompt tracking instance
+            db_manager: Database manager instance for storing image relationships
+            prompt_tracker: Prompt tracking instance for getting active prompt context
         """
         self.db_manager = db_manager
         self.prompt_tracker = prompt_tracker
@@ -172,10 +270,14 @@ class ImageMonitor:
         
     def start_monitoring(self, output_directories: Optional[list] = None):
         """
-        Start monitoring ComfyUI output directories.
+        Start monitoring ComfyUI output directories for new images.
+        
+        Begins filesystem watching on the specified directories. If no directories
+        are provided, the system will attempt to auto-detect ComfyUI output locations.
+        All monitoring is done recursively to catch images in subdirectories.
         
         Args:
-            output_directories: List of directories to monitor. If None, auto-detect.
+            output_directories: List of directory paths to monitor. If None, uses auto-detection.
         """
         if self.observer:
             self.logger.warning("Image monitoring already running")
@@ -210,7 +312,11 @@ class ImageMonitor:
             self.logger.warning("No valid directories to monitor")
     
     def stop_monitoring(self):
-        """Stop the image monitoring system."""
+        """Stop the image monitoring system.
+        
+        Cleanly shuts down the filesystem watcher and clears all monitoring state.
+        This method should be called before program exit to ensure proper cleanup.
+        """
         if self.observer:
             self.observer.stop()
             self.observer.join()
@@ -220,7 +326,16 @@ class ImageMonitor:
             self.logger.debug("Image monitoring stopped")
     
     def detect_comfyui_output_dirs(self) -> list:
-        """Auto-detect ComfyUI output directories."""
+        """Auto-detect ComfyUI output directories.
+        
+        Attempts to locate ComfyUI output directories using multiple strategies:
+        1. Import ComfyUI's folder_paths module to get the configured output directory
+        2. Search common relative paths where ComfyUI output directories are typically located
+        3. Verify that detected directories actually exist
+        
+        Returns:
+            List of absolute paths to detected output directories
+        """
         potential_dirs = []
         
         try:
@@ -251,7 +366,14 @@ class ImageMonitor:
         return potential_dirs
     
     def get_status(self) -> Dict[str, Any]:
-        """Get monitoring status information."""
+        """Get monitoring status information.
+        
+        Returns:
+            Dictionary containing:
+            - running: Boolean indicating if monitoring is active
+            - monitored_directories: List of currently monitored directory paths
+            - handler_active: Boolean indicating if the event handler is active
+        """
         return {
             'running': self.observer is not None,
             'monitored_directories': self.monitored_directories,

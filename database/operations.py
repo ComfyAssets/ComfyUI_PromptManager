@@ -796,12 +796,12 @@ class PromptDatabase:
         
         return removed_count
 
-    def _clean_nan_values(self, obj):
+    def _clean_nan_values(self, obj: Any) -> Any:
         """
         Recursively clean NaN values from nested data structures.
         
         Args:
-            obj: The object to clean
+            obj: The object to clean (dict, list, or scalar)
             
         Returns:
             Cleaned object with NaN values replaced by None

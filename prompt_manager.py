@@ -316,13 +316,29 @@ class PromptManager(ComfyNodeABC):
             return None
 
     def _generate_hash(self, text: str) -> str:
-        """Generate SHA256 hash for the prompt text."""
+        """
+        Generate SHA256 hash for the prompt text.
+        
+        Args:
+            text: The prompt text to hash
+            
+        Returns:
+            Hexadecimal string representation of the SHA256 hash
+        """
         # Normalize text for consistent hashing (strip whitespace, normalize case)
         normalized_text = text.strip().lower()
         return hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
 
     def _parse_tags(self, tags_string: str) -> Optional[list]:
-        """Parse comma-separated tags string into a list."""
+        """
+        Parse comma-separated tags string into a list.
+        
+        Args:
+            tags_string: Comma-separated string of tags
+            
+        Returns:
+            List of parsed tags, or None if no valid tags found
+        """
         if not tags_string or not tags_string.strip():
             return None
 
@@ -330,7 +346,15 @@ class PromptManager(ComfyNodeABC):
         return tags if tags else None
 
     def _search_prompts(self, search_text: str = "") -> List[Dict[str, Any]]:
-        """Search for past prompts by text content."""
+        """
+        Search for past prompts by text content.
+        
+        Args:
+            search_text: Text to search for in prompt database
+            
+        Returns:
+            List of matching prompt dictionaries with metadata
+        """
         try:
             if not search_text or not search_text.strip():
                 return []
@@ -350,7 +374,12 @@ class PromptManager(ComfyNodeABC):
             return []
 
     def _open_web_interface(self):
-        """Open the web interface in the default browser."""
+        """
+        Open the web interface in the default browser.
+        
+        Attempts to locate and open the web interface HTML file.
+        Logs warnings if the interface is not properly configured.
+        """
         try:
             # Look for a web interface directory
             current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -375,11 +404,27 @@ class PromptManager(ComfyNodeABC):
             self.logger.error(f"Error opening web interface: {e}")
 
     def search_prompts_api(self, search_text: str = "") -> List[Dict[str, Any]]:
-        """API method for JavaScript UI to search prompts."""
+        """
+        API method for JavaScript UI to search prompts.
+        
+        Args:
+            search_text: Text to search for in prompts
+            
+        Returns:
+            List of matching prompt dictionaries
+        """
         return self._search_prompts(search_text=search_text)
 
     def get_recent_prompts_api(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """API method for JavaScript UI to get recent prompts."""
+        """
+        API method for JavaScript UI to get recent prompts.
+        
+        Args:
+            limit: Maximum number of recent prompts to retrieve
+            
+        Returns:
+            List of recent prompt dictionaries ordered by creation time
+        """
         try:
             return self.db.get_recent_prompts(limit=limit)
         except Exception as e:
@@ -387,7 +432,12 @@ class PromptManager(ComfyNodeABC):
             return []
 
     def _start_gallery_system(self):
-        """Initialize and start the gallery monitoring system."""
+        """
+        Initialize and start the gallery monitoring system.
+        
+        Starts the image monitor which watches for new generated images
+        and links them to their source prompts in the database.
+        """
         try:
             self.logger.debug("Starting gallery system...")
 
@@ -401,14 +451,24 @@ class PromptManager(ComfyNodeABC):
             self.logger.warning("Gallery features will be disabled")
 
     def get_gallery_status(self) -> Dict[str, Any]:
-        """Get status of the gallery system."""
+        """
+        Get status of the gallery system.
+        
+        Returns:
+            Dictionary containing status information for image monitor and prompt tracker
+        """
         return {
             "image_monitor": self.image_monitor.get_status(),
             "prompt_tracker": self.prompt_tracker.get_status(),
         }
 
     def cleanup_gallery_system(self):
-        """Clean up gallery system resources."""
+        """
+        Clean up gallery system resources.
+        
+        Stops image monitoring and releases associated resources.
+        Called automatically during object destruction.
+        """
         try:
             if hasattr(self, "image_monitor"):
                 self.image_monitor.stop_monitoring()
@@ -417,10 +477,19 @@ class PromptManager(ComfyNodeABC):
             self.logger.error(f"Error cleaning up gallery system: {e}")
 
     def __del__(self):
-        """Cleanup when object is destroyed."""
+        """
+        Cleanup when object is destroyed.
+        
+        Ensures proper resource cleanup by stopping the gallery system.
+        """
         self.cleanup_gallery_system()
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
-        """Always process to ensure database saving."""
+        """
+        ComfyUI method to determine if node needs re-execution.
+        
+        Returns:
+            NaN to force re-execution, ensuring prompts are always saved to database
+        """
         return float("NaN")  # Always execute

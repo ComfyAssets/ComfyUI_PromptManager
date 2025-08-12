@@ -32,7 +32,15 @@ class PromptModel:
         self._ensure_database_exists()
     
     def _ensure_database_exists(self) -> None:
-        """Create database and tables if they don't exist."""
+        """
+        Create database and tables if they don't exist.
+        
+        Sets up the database schema including tables for prompts and generated images,
+        creates necessary indexes, and applies any pending migrations.
+        
+        Raises:
+            Exception: If database creation fails
+        """
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute("PRAGMA foreign_keys = ON")
@@ -44,7 +52,16 @@ class PromptModel:
             raise
     
     def _create_tables(self, conn: sqlite3.Connection) -> None:
-        """Create the prompts table with all required columns."""
+        """
+        Create the prompts and generated_images tables with all required columns.
+        
+        Args:
+            conn: Active database connection
+            
+        Creates:
+            - prompts table: Stores prompt text and metadata
+            - generated_images table: Links generated images to their source prompts
+        """
         conn.execute("""
             CREATE TABLE IF NOT EXISTS prompts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,7 +102,18 @@ class PromptModel:
         self._migrate_foreign_key_types(conn)
     
     def _create_indexes(self, conn: sqlite3.Connection) -> None:
-        """Create indexes for better query performance."""
+        """
+        Create indexes for better query performance.
+        
+        Args:
+            conn: Active database connection
+            
+        Creates indexes on:
+            - Text content for search operations
+            - Categories and tags for filtering
+            - Timestamps for sorting
+            - Hash values for duplicate detection
+        """
         indexes = [
             "CREATE INDEX IF NOT EXISTS idx_prompts_text ON prompts(text)",
             "CREATE INDEX IF NOT EXISTS idx_prompts_category ON prompts(category)",
@@ -113,7 +141,15 @@ class PromptModel:
         return conn
     
     def _migrate_workflow_name_removal(self, conn: sqlite3.Connection) -> None:
-        """Remove workflow_name column if it exists in existing database."""
+        """
+        Remove workflow_name column if it exists in existing database.
+        
+        Args:
+            conn: Active database connection
+            
+        This migration handles legacy schema updates by removing the deprecated
+        workflow_name column while preserving all other data.
+        """
         try:
             # Check if workflow_name column exists
             cursor = conn.execute("PRAGMA table_info(prompts)")
@@ -155,7 +191,15 @@ class PromptModel:
             # If migration fails, the table creation will handle it
     
     def _migrate_foreign_key_types(self, conn: sqlite3.Connection) -> None:
-        """Fix foreign key data type mismatch in generated_images table."""
+        """
+        Fix foreign key data type mismatch in generated_images table.
+        
+        Args:
+            conn: Active database connection
+            
+        Converts prompt_id from TEXT to INTEGER type to match the prompts table's
+        primary key type, ensuring referential integrity.
+        """
         try:
             # Check if generated_images table exists and has TEXT prompt_id
             cursor = conn.execute("PRAGMA table_info(generated_images)")
@@ -206,12 +250,22 @@ class PromptModel:
             # If migration fails, continue with existing schema
     
     def migrate_database(self) -> None:
-        """Apply any pending database migrations."""
+        """
+        Apply any pending database migrations.
+        
+        This method serves as an entry point for future schema migrations.
+        Add new migration logic here as the database evolves.
+        """
         # Future migrations can be added here
         pass
     
     def vacuum_database(self) -> None:
-        """Optimize database by running VACUUM command."""
+        """
+        Optimize database by running VACUUM command.
+        
+        Reclaims unused space and defragments the database file,
+        improving query performance and reducing file size.
+        """
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute("VACUUM")
