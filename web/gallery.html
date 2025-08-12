@@ -2288,11 +2288,19 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 const progressText = document.getElementById('progressText');
                 const progressPercent = document.getElementById('progressPercent');
                 const progressDetails = document.getElementById('progressDetails');
+                const progressETA = document.getElementById('progressETA');
                 
                 btn.disabled = true;
                 btn.textContent = 'Generating...';
-                status.textContent = 'Initializing...';
+                status.textContent = 'Initializing thumbnail generation...';
                 progressContainer.classList.remove('hidden');
+                
+                // Initialize progress display
+                progressBar.style.width = '0%';
+                progressPercent.textContent = 'Starting...';
+                progressText.textContent = 'Connecting to server...';
+                progressDetails.textContent = 'Preparing to scan output directory...';
+                progressETA.textContent = '';
                 
                 try {
                     // Start thumbnail generation with progress updates
@@ -2318,11 +2326,13 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     
                 } catch (error) {
                     console.error('Thumbnail generation error:', error);
+                    console.error('Error details:', error.stack);
                     status.textContent = 'Generation failed';
                     progressText.textContent = 'Failed';
                     progressDetails.textContent = error.message;
                     progressBar.style.width = '0%';
                     progressBar.classList.add('bg-red-600');
+                    progressPercent.textContent = 'Error';
                     
                     this.showNotification('Failed to generate thumbnails: ' + error.message, 'error');
                     
@@ -2349,8 +2359,13 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     // Show cancel button
                     cancelBtn.classList.remove('hidden');
                     
+                    console.log(`Starting thumbnail generation with quality: ${options.quality}`);
+                    
                     // Set up Server-Sent Events
                     const eventSource = new EventSource(`/prompt_manager/images/generate-thumbnails/progress?quality=${options.quality}`);
+                    
+                    // Log connection
+                    console.log('EventSource connected for thumbnail generation progress');
                     
                     let cancelled = false;
                     let resultData = null;
@@ -2369,15 +2384,38 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         if (cancelled) return;
                         const data = JSON.parse(event.data);
                         progressText.textContent = data.message || 'Processing...';
-                        progressDetails.textContent = data.phase === 'scanning' ? 'Scanning output folder...' : 'Preparing...';
+                        if (data.phase === 'scanning') {
+                            progressDetails.textContent = 'Scanning output folder for images and videos...';
+                            progressBar.style.width = '0%';
+                            progressPercent.textContent = 'Scanning...';
+                        } else {
+                            progressDetails.textContent = 'Preparing thumbnail generation...';
+                        }
+                        
+                        // Log status updates
+                        if (this.getSettings().debugMode) {
+                            console.log(`Thumbnail generation status: ${data.phase} - ${data.message}`);
+                        }
                     });
                     
                     // Handle start event
                     eventSource.addEventListener('start', (event) => {
                         if (cancelled) return;
                         const data = JSON.parse(event.data);
-                        progressText.textContent = `Processing ${data.total_images} images...`;
-                        progressDetails.textContent = data.message || `Found ${data.total_images} images to process`;
+                        // Show detailed file type breakdown if available
+                        const fileBreakdown = (data.image_count !== undefined && data.video_count !== undefined) 
+                            ? ` (${data.image_count} images, ${data.video_count} videos)`
+                            : '';
+                        progressText.textContent = `Starting to process ${data.total_images} media files${fileBreakdown}...`;
+                        progressDetails.textContent = data.message || `Found ${data.total_images} images and videos to process`;
+                        progressBar.style.width = '0%';
+                        progressPercent.textContent = '0%';
+                        progressETA.textContent = 'Calculating...';
+                        
+                        // Log start event
+                        if (this.getSettings().debugMode) {
+                            console.log(`Thumbnail generation started: ${data.total_images} files to process`);
+                        }
                     });
                     
                     // Handle progress updates
@@ -2389,9 +2427,14 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         progressBar.style.width = `${data.percentage}%`;
                         progressPercent.textContent = `${data.percentage}%`;
                         
-                        // Update text
-                        progressText.textContent = `Processing... (${data.processed}/${data.total_images})`;
-                        progressDetails.textContent = `Generated: ${data.generated}, Skipped: ${data.skipped} | Rate: ${data.rate} img/s`;
+                        // Update text with current file being processed and action
+                        const fileInfo = data.current_file ? ` - ${data.current_file}` : '';
+                        const actionText = data.action === 'skipped' ? ' [Skipping]' : data.action === 'generating' ? ' [Generating]' : '';
+                        progressText.textContent = `Processing ${data.file_type || 'file'}... (${data.processed}/${data.total_images})${fileInfo}${actionText}`;
+                        
+                        // More detailed progress information
+                        const elapsedText = data.elapsed ? ` | Time: ${Math.floor(data.elapsed)}s` : '';
+                        progressDetails.textContent = `Generated: ${data.generated}, Skipped: ${data.skipped} | Rate: ${data.rate} img/s${elapsedText}`;
                         
                         // Update ETA
                         if (data.eta > 0 && data.eta < 3600) {
@@ -2399,6 +2442,11 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             progressETA.textContent = `ETA: ${etaText}`;
                         } else {
                             progressETA.textContent = '';
+                        }
+                        
+                        // Log to console for debugging if debug mode is enabled
+                        if (this.getSettings().debugMode) {
+                            console.log(`Thumbnail generation progress: ${data.processed}/${data.total_images} - ${data.current_file}`);
                         }
                     });
                     
@@ -2411,8 +2459,26 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         progressBar.style.width = '100%';
                         progressPercent.textContent = '100%';
                         progressText.textContent = 'Completed!';
-                        progressDetails.textContent = resultData.message || `Generated ${resultData.count} new thumbnails`;
+                        
+                        // Show detailed completion message
+                        const errorCount = resultData.error_count || (resultData.errors ? resultData.errors.length : 0);
+                        const errors = errorCount > 0 ? ` (${errorCount} errors)` : '';
+                        const rateText = resultData.processing_rate ? ` at ${resultData.processing_rate} img/s` : '';
+                        progressDetails.textContent = `Generated: ${resultData.count} new, Skipped: ${resultData.skipped} existing | Total: ${resultData.total_images} files | Time: ${resultData.elapsed_time}s${rateText}${errors}`;
+                        
+                        // Show first error if any occurred
+                        if (resultData.errors && resultData.errors.length > 0 && this.getSettings().debugMode) {
+                            console.error('First thumbnail error:', resultData.errors[0]);
+                        }
                         progressETA.textContent = 'Done';
+                        
+                        // Log completion details
+                        if (this.getSettings().debugMode) {
+                            console.log('Thumbnail generation completed:', resultData);
+                            if (resultData.errors && resultData.errors.length > 0) {
+                                console.warn('Thumbnail generation errors:', resultData.errors);
+                            }
+                        }
                         
                         // Clean up
                         eventSource.close();
@@ -2439,13 +2505,24 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     eventSource.onerror = (error) => {
                         if (cancelled) return;
                         console.error('EventSource error:', error);
+                        console.error('EventSource readyState:', eventSource.readyState);
+                        
+                        // Check if connection is closing normally
+                        if (eventSource.readyState === EventSource.CLOSED) {
+                            console.log('EventSource connection closed');
+                        } else {
+                            console.error('EventSource connection failed');
+                        }
                         
                         // Clean up
                         eventSource.close();
                         cancelBtn.removeEventListener('click', cancelHandler);
                         cancelBtn.classList.add('hidden');
                         
-                        reject(new Error('Connection to server lost during thumbnail generation'));
+                        // Only reject if we don't have result data
+                        if (!resultData) {
+                            reject(new Error('Connection to server lost during thumbnail generation'));
+                        }
                     };
                 });
             }
@@ -2835,7 +2912,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 const modal = document.createElement('div');
                 modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
                 modal.innerHTML = `
-                    <div class="bg-gray-800 rounded-xl max-w-md w-full mx-4 border border-gray-700">
+                    <div class="bg-gray-800 rounded-xl max-w-2xl w-full mx-4 border border-gray-700">
                         <div class="p-6">
                             <h3 class="text-xl font-semibold text-gray-100 mb-4 flex items-center">
                                 <span class="mr-2">🚀</span>
@@ -2908,7 +2985,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         </div>
                         
                         <!-- Status Messages -->
-                        <div id="modalStatusMessages" class="text-sm text-gray-400 mb-4 max-h-32 overflow-y-auto custom-scrollbar">
+                        <div id="modalStatusMessages" class="text-sm text-gray-400 mb-4 max-h-40 overflow-y-auto custom-scrollbar">
                             <div class="text-violet-400">• Starting thumbnail generation...</div>
                         </div>
                         
@@ -3019,110 +3096,192 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         });
                     }, 100);
                 }
-            }
-
-            async generateThumbnailsWithProgressInModal(uiElements) {
+            }            async generateThumbnailsWithProgressInModal(uiElements) {
                 const { progressText, progressPercent, progressBar, progressDetails, progressETA, addStatusMessage, isCancelled } = uiElements;
                 
-                addStatusMessage('Starting thumbnail generation...');
-                
-                // Get quality setting
-                const quality = this.getSettings().imageQuality || 'medium';
-                
-                try {
-                    // Start the progress stream
-                    const response = await fetch('/prompt_manager/images/generate-thumbnails/progress', {
-                        method: 'GET',
-                        headers: {
-                            'Accept': 'text/event-stream',
-                            'Cache-Control': 'no-cache'
+                return new Promise((resolve, reject) => {
+                    addStatusMessage('Starting thumbnail generation...');
+                    
+                    // Get quality setting
+                    const quality = this.getSettings().imageQuality || 'medium';
+                    
+                    console.log(`Starting modal thumbnail generation with quality: ${quality}`);
+                    
+                    // Set up Server-Sent Events (same as the settings modal)
+                    const eventSource = new EventSource(`/prompt_manager/images/generate-thumbnails/progress?quality=${quality}`);
+                    
+                    let resultData = null;
+                    
+                    // Handle scanning/status events
+                    eventSource.addEventListener('status', (event) => {
+                        if (isCancelled()) {
+                            eventSource.close();
+                            return;
+                        }
+                        const data = JSON.parse(event.data);
+                        
+                        if (data.phase === 'scanning') {
+                            progressText.textContent = 'Scanning for images...';
+                            progressDetails.textContent = data.message || 'Scanning output folder for images and videos...';
+                            addStatusMessage(data.message || 'Scanning output folder...', 'info');
+                        } else if (data.phase === 'processing' && data.message.includes('Error')) {
+                            addStatusMessage(data.message, 'error');
+                        } else {
+                            progressDetails.textContent = data.message || 'Preparing...';
                         }
                     });
                     
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                    }
-                    
-                    const reader = response.body.getReader();
-                    const decoder = new TextDecoder();
-                    
-                    let buffer = '';
-                    let startTime = Date.now();
-                    
-                    while (true) {
+                    // Handle start event
+                    eventSource.addEventListener('start', (event) => {
                         if (isCancelled()) {
-                            addStatusMessage('Generation cancelled by user', 'warning');
-                            break;
+                            eventSource.close();
+                            return;
                         }
+                        const data = JSON.parse(event.data);
                         
-                        const { done, value } = await reader.read();
+                        // Show detailed file type breakdown
+                        const fileBreakdown = (data.image_count !== undefined && data.video_count !== undefined) 
+                            ? ` (${data.image_count} images, ${data.video_count} videos)`
+                            : '';
                         
-                        if (done) break;
+                        progressText.textContent = `Processing ${data.total_images} files${fileBreakdown}...`;
+                        progressDetails.textContent = data.message || `Found ${data.total_images} media files to process`;
+                        progressBar.style.width = '0%';
+                        progressPercent.textContent = '0%';
+                        progressETA.textContent = 'Calculating...';
                         
-                        buffer += decoder.decode(value, { stream: true });
-                        
-                        // Process complete lines
-                        let lines = buffer.split('\n');
-                        buffer = lines.pop(); // Keep incomplete line in buffer
-                        
-                        for (let line of lines) {
-                            line = line.trim();
-                            if (line.startsWith('data: ')) {
-                                try {
-                                    const data = JSON.parse(line.slice(6));
-                                    
-                                    if (data.type === 'progress') {
-                                        // Update progress UI
-                                        const progress = Math.round(data.progress || 0);
-                                        progressPercent.textContent = `${progress}%`;
-                                        progressBar.style.width = `${progress}%`;
-                                        
-                                        if (data.status) {
-                                            progressText.textContent = data.status;
-                                        }
-                                        
-                                        if (data.processed !== undefined && data.found !== undefined) {
-                                            progressDetails.textContent = `Processed: ${data.processed}, Generated: ${data.found}`;
-                                        }
-                                        
-                                        // Calculate ETA
-                                        if (progress > 5) {
-                                            const elapsed = (Date.now() - startTime) / 1000;
-                                            const estimated = (elapsed / progress) * 100;
-                                            const remaining = Math.max(0, estimated - elapsed);
-                                            
-                                            if (remaining > 60) {
-                                                progressETA.textContent = `~${Math.round(remaining / 60)}m remaining`;
-                                            } else {
-                                                progressETA.textContent = `~${Math.round(remaining)}s remaining`;
-                                            }
-                                        }
-                                        
-                                        // Add status messages for milestones
-                                        if (progress === 25) addStatusMessage('25% complete - processing continues...');
-                                        if (progress === 50) addStatusMessage('50% complete - halfway there!');
-                                        if (progress === 75) addStatusMessage('75% complete - almost done!');
-                                        
-                                    } else if (data.type === 'complete') {
-                                        addStatusMessage(`Completed: ${data.generated} new, ${data.skipped} skipped, ${data.total} total`, 'success');
-                                        addStatusMessage(`Processing time: ${data.elapsed_time}s`, 'info');
-                                        break;
-                                        
-                                    } else if (data.type === 'error') {
-                                        throw new Error(data.error || 'Unknown error during generation');
-                                    }
-                                    
-                                } catch (parseError) {
-                                    console.debug('Parse error for line:', line, parseError);
-                                }
-                            }
-                        }
-                    }
+                        addStatusMessage(`Found ${data.total_images} media files to process${fileBreakdown}`, 'info');
+                    });
                     
-                } catch (error) {
-                    addStatusMessage(`Error: ${error.message}`, 'error');
-                    throw error;
-                }
+                    // Handle progress updates
+                    eventSource.addEventListener('progress', (event) => {
+                        if (isCancelled()) {
+                            eventSource.close();
+                            return;
+                        }
+                        const data = JSON.parse(event.data);
+                        
+                        // Update progress bar
+                        progressBar.style.width = `${data.percentage}%`;
+                        progressPercent.textContent = `${data.percentage}%`;
+                        
+                        // Update text with current file and action
+                        const actionText = data.action === 'skipped' ? ' [Skipped]' : data.action === 'generating' ? ' [Generating]' : '';
+                        // Show full path but truncate if too long
+                        const fullPath = data.current_file || '';
+                        const displayPath = fullPath.length > 60 ? '...' + fullPath.slice(-57) : fullPath;
+                        progressText.textContent = `Processing ${data.file_type || 'file'} ${data.processed}/${data.total_images}: ${displayPath}${actionText}`;
+                        
+                        // Update details
+                        const elapsedText = data.elapsed ? ` | Time: ${Math.floor(data.elapsed)}s` : '';
+                        progressDetails.textContent = `Generated: ${data.generated}, Skipped: ${data.skipped} | Rate: ${data.rate} img/s${elapsedText}`;
+                        
+                        // Update ETA
+                        if (data.eta > 0 && data.eta < 3600) {
+                            const etaText = data.eta > 60 ? `${Math.floor(data.eta / 60)}m ${Math.floor(data.eta % 60)}s` : `${Math.floor(data.eta)}s`;
+                            progressETA.textContent = `ETA: ${etaText}`;
+                        } else {
+                            progressETA.textContent = '';
+                        }
+                        
+                        // Add status message periodically
+                        if (data.processed % 50 === 0 || data.processed === data.total_images) {
+                            addStatusMessage(`Processed ${data.processed}/${data.total_images} files (${data.generated} generated, ${data.skipped} skipped)`, 'info');
+                        }
+                    });
+                    
+                    // Handle completion
+                    eventSource.addEventListener('complete', (event) => {
+                        if (isCancelled()) {
+                            eventSource.close();
+                            return;
+                        }
+                        resultData = JSON.parse(event.data);
+                        
+                        // Update final progress
+                        progressBar.style.width = '100%';
+                        progressPercent.textContent = '100%';
+                        progressText.textContent = 'Completed!';
+                        
+                        // Show detailed completion message
+                        const errorCount = resultData.error_count || (resultData.errors ? resultData.errors.length : 0);
+                        const errors = errorCount > 0 ? ` (${errorCount} errors)` : '';
+                        const rateText = resultData.processing_rate ? ` at ${resultData.processing_rate} img/s` : '';
+                        progressDetails.textContent = `Generated: ${resultData.count} new, Skipped: ${resultData.skipped} | Total: ${resultData.total_images} files | Time: ${resultData.elapsed_time}s${rateText}${errors}`;
+                        progressETA.textContent = 'Done';
+                        
+                        // Add completion message
+                        if (errorCount > 0) {
+                            addStatusMessage(`Completed with ${errorCount} errors: Generated ${resultData.count} new thumbnails, skipped ${resultData.skipped} existing`, 'warning');
+                            if (resultData.errors && resultData.errors.length > 0) {
+                                // Show first few errors
+                                resultData.errors.slice(0, 3).forEach(err => {
+                                    addStatusMessage(err, 'error');
+                                });
+                            }
+                        } else {
+                            addStatusMessage(`Successfully generated ${resultData.count} new thumbnails, skipped ${resultData.skipped} existing`, 'success');
+                        }
+                        
+                        console.log('Modal thumbnail generation completed:', resultData);
+                        
+                        // Clean up
+                        eventSource.close();
+                        resolve(resultData);
+                    });
+                    
+                    // Handle errors
+                    eventSource.addEventListener('error', (event) => {
+                        if (isCancelled()) {
+                            eventSource.close();
+                            return;
+                        }
+                        
+                        let errorMsg = 'Thumbnail generation failed';
+                        try {
+                            const data = JSON.parse(event.data);
+                            errorMsg = data.error || errorMsg;
+                        } catch (e) {
+                            // If not JSON, it's a connection error
+                            console.error('EventSource error in modal:', e);
+                        }
+                        
+                        addStatusMessage(errorMsg, 'error');
+                        progressBar.classList.add('bg-red-600');
+                        progressBar.classList.remove('bg-violet-600');
+                        
+                        // Clean up
+                        eventSource.close();
+                        reject(new Error(errorMsg));
+                    });
+                    
+                    // Handle EventSource connection errors
+                    eventSource.onerror = (error) => {
+                        if (isCancelled()) {
+                            eventSource.close();
+                            return;
+                        }
+                        
+                        console.error('EventSource connection error in modal:', error);
+                        
+                        // Check if connection is closing normally (after complete event)
+                        if (eventSource.readyState === EventSource.CLOSED && resultData) {
+                            console.log('EventSource connection closed normally after completion');
+                            return;
+                        }
+                        
+                        addStatusMessage('Connection to server lost', 'error');
+                        progressBar.classList.add('bg-red-600');
+                        progressBar.classList.remove('bg-violet-600');
+                        
+                        // Clean up
+                        eventSource.close();
+                        
+                        if (!resultData) {
+                            reject(new Error('Connection to server lost during thumbnail generation'));
+                        }
+                    };
+                });
             }
         }
 
