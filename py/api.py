@@ -1951,29 +1951,52 @@ class PromptManagerAPI:
                 # Send scanning event
                 await send_progress('status', {
                     'phase': 'scanning',
-                    'message': 'Scanning for images to process...'
+                    'message': f'Scanning {output_path} for images and videos to process...'
                 })
+                
+                self.logger.info(f"Starting thumbnail generation scan in: {output_path}")
                 
                 # Find all media files (images and videos)
                 image_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.gif']
                 video_extensions = ['.mp4', '.webm', '.avi', '.mov', '.mkv', '.m4v', '.wmv']
                 media_extensions = image_extensions + video_extensions
                 media_files = []
+                scanned_dirs = 0
+                
                 for root, dirs, files in os.walk(output_path):
                     # Skip thumbnails directory
                     if 'thumbnails' in Path(root).parts:
                         continue
+                    
+                    scanned_dirs += 1
+                    # Send scanning progress for every directory
+                    if scanned_dirs % 5 == 0:  # Update every 5 directories
+                        await send_progress('status', {
+                            'phase': 'scanning',
+                            'message': f'Scanning directories... ({scanned_dirs} checked, {len(media_files)} files found)'
+                        })
+                    
                     for file in files:
                         if any(file.lower().endswith(ext) for ext in media_extensions):
                             media_files.append(Path(root) / file)
                 
+                self.logger.info(f"Scan complete: Found {len(media_files)} media files in {scanned_dirs} directories")
+                
                 total_images = len(media_files)
+                
+                # Count images vs videos for more detail
+                image_count = sum(1 for f in media_files if any(f.name.lower().endswith(ext) for ext in image_extensions))
+                video_count = total_images - image_count
                 
                 await send_progress('start', {
                     'total_images': total_images,
                     'phase': 'processing',
-                    'message': f'Found {total_images} media files to process'
+                    'message': f'Found {image_count} images and {video_count} videos to process',
+                    'image_count': image_count,
+                    'video_count': video_count
                 })
+                
+                self.logger.info(f"Starting thumbnail generation for {image_count} images and {video_count} videos")
                 
                 if total_images == 0:
                     await send_progress('complete', {
@@ -2058,12 +2081,21 @@ class PromptManagerAPI:
                                     img.save(thumbnail_path, **save_kwargs)
                                     generated_count += 1
                         
-                        # Send progress update every 10 images or every 2% 
-                        if (i + 1) % 10 == 0 or (i + 1) % max(1, total_images // 50) == 0 or i == total_images - 1:
+                        # Send progress update more frequently for better feedback
+                        # Update every 5 images or every 1% for large sets
+                        if (i + 1) % 5 == 0 or (i + 1) % max(1, total_images // 100) == 0 or i == total_images - 1:
                             elapsed = time.time() - start_time
                             progress_percent = ((i + 1) / total_images) * 100
                             rate = (i + 1) / elapsed if elapsed > 0 else 0
                             eta = ((total_images - i - 1) / rate) if rate > 0 else 0
+                            
+                            # Include more detailed file info
+                            file_info = {
+                                'name': media_file.name,
+                                'dir': media_file.parent.name,
+                                'type': 'video' if is_video else 'image',
+                                'action': 'skipped' if thumbnail_path.exists() else 'generating'
+                            }
                             
                             await send_progress('progress', {
                                 'processed': i + 1,
@@ -2074,26 +2106,46 @@ class PromptManagerAPI:
                                 'rate': round(rate, 1),
                                 'eta': round(eta, 0),
                                 'elapsed': round(elapsed, 1),
-                                'current_file': media_file.name
+                                'current_file': f"{file_info['dir']}/{file_info['name']}",
+                                'file_type': file_info['type'],
+                                'action': file_info['action']
                             })
+                            
+                            # Log progress
+                            if (i + 1) % 50 == 0:  # Log every 50 files
+                                self.logger.info(f"Thumbnail progress: {i+1}/{total_images} ({progress_percent:.1f}%) - Generated: {generated_count}, Skipped: {skipped_count}")
                         
                     except Exception as e:
                         error_msg = f"Failed to generate thumbnail for {media_file.name}: {str(e)}"
                         errors.append(error_msg)
                         self.logger.warning(error_msg)
+                        
+                        # Send error notification for immediate feedback
+                        if len(errors) <= 5:  # Only send first 5 errors to avoid spam
+                            await send_progress('status', {
+                                'phase': 'processing',
+                                'message': f'Error processing {media_file.name}: {str(e)}'
+                            })
                 
                 elapsed_time = time.time() - start_time
                 
-                # Send completion event
+                # Send detailed completion event
+                completion_message = f'Successfully generated {generated_count} new thumbnails, skipped {skipped_count} existing'
+                if errors:
+                    completion_message += f' ({len(errors)} errors occurred)'
+                
                 await send_progress('complete', {
                     'count': generated_count,
                     'skipped': skipped_count,
                     'total_images': total_images,
-                    'errors': errors,
+                    'errors': errors[:10],  # Limit errors to first 10
+                    'error_count': len(errors),
                     'elapsed_time': round(elapsed_time, 2),
                     'processing_rate': round((total_images / elapsed_time) if elapsed_time > 0 else 0, 2),
-                    'message': f'Generated {generated_count} new thumbnails, skipped {skipped_count} existing'
+                    'message': completion_message
                 })
+                
+                self.logger.info(f"Thumbnail generation completed: {generated_count} generated, {skipped_count} skipped, {len(errors)} errors in {elapsed_time:.2f}s")
                 
             except Exception as e:
                 await send_progress('error', {
