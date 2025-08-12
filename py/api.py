@@ -1,3 +1,31 @@
+"""REST API module for ComfyUI PromptManager.
+
+This module provides a comprehensive REST API for managing prompts, images, and
+gallery functionality within ComfyUI. The API handles CRUD operations for prompts,
+image gallery management, system administration, logging, and real-time image
+monitoring with metadata extraction.
+
+Key Features:
+- Prompt management (create, read, update, delete, search)
+- Image gallery with automatic ComfyUI output monitoring
+- Bulk operations for efficiency
+- Database maintenance and optimization
+- System diagnostics and logging
+- Thumbnail generation and management
+- Metadata extraction from PNG files
+- Real-time progress tracking
+
+The API integrates with ComfyUI's aiohttp server and provides endpoints for
+both programmatic access and web UI functionality.
+
+Classes:
+    PromptManagerAPI: Main API class handling all REST endpoints
+
+Example:
+    api = PromptManagerAPI()
+    api.add_routes(server.routes)
+"""
+
 # PromptManager/py/api.py
 
 import datetime
@@ -25,9 +53,36 @@ except ImportError:
 
 
 class PromptManagerAPI:
-    """API class for PromptManager database operations."""
+    """REST API handler for PromptManager operations and web interface.
+
+    This class provides comprehensive REST API endpoints for managing prompts,
+    images, and system operations. It handles database interactions, file
+    operations, image processing, and web UI serving.
+
+    The API is designed to integrate seamlessly with ComfyUI's aiohttp server
+    and provides both JSON API endpoints and static file serving for the
+    web interface.
+
+    Attributes:
+        logger: Configured logger instance for API operations
+        db (PromptDatabase): Database connection and operations handler
+
+    Example:
+        api = PromptManagerAPI()
+        api.add_routes(server_routes)
+        # API endpoints are now available at /prompt_manager/*
+    """
 
     def __init__(self):
+        """Initialize the PromptManager API with database connection and cleanup.
+        
+        Sets up logging, initializes the database connection, and performs
+        startup cleanup to remove any duplicate prompts that may exist.
+        
+        Raises:
+            Exception: If database initialization fails, logs error but continues.
+                      If cleanup fails, logs error but continues operation.
+        """
         self.logger = get_logger('prompt_manager.api')
         self.logger.info("Initializing PromptManager API")
         
@@ -44,7 +99,28 @@ class PromptManagerAPI:
         self.logger.info("PromptManager API initialization completed")
 
     def add_routes(self, routes):
-        """Add API routes to ComfyUI server using decorator pattern."""
+        """Add API routes to ComfyUI server using decorator pattern.
+        
+        Registers all API endpoints with the provided aiohttp routes object.
+        Uses decorator pattern to define routes inline with their handlers.
+        
+        Categories of routes registered:
+        - Core prompt operations (search, save, delete, categories, tags)
+        - Database maintenance (cleanup, duplicates, maintenance)
+        - Web UI serving (admin, gallery, metadata viewer)
+        - Image operations (gallery, thumbnails, metadata extraction)
+        - System operations (diagnostics, logging, statistics)
+        - Bulk operations (delete, tag management, export)
+        
+        Args:
+            routes: aiohttp RouteTableDef object from ComfyUI server instance.
+                   Routes will be registered with this object for URL handling.
+        
+        Example:
+            from server import PromptServer
+            api = PromptManagerAPI()
+            api.add_routes(PromptServer.instance.routes)
+        """
 
         # Test route to verify registration works
         @routes.get("/prompt_manager/test")
@@ -384,9 +460,34 @@ class PromptManagerAPI:
         self.logger.info("All routes registered with decorator pattern")
 
     async def search_prompts(self, request):
-        """
-        Search prompts endpoint.
-        GET /prompt_manager/search?text=...&category=...&tags=...&min_rating=...&limit=...
+        """Search for prompts using multiple filter criteria.
+        
+        Provides comprehensive search functionality across prompt text, categories,
+        tags, and ratings with configurable result limits.
+        
+        Query Parameters:
+            text (str, optional): Search text to match against prompt content
+            category (str, optional): Filter by specific category
+            tags (str, optional): Comma-separated list of tags to filter by
+            min_rating (int, optional): Minimum rating (1-5) to include
+            limit (int, optional): Maximum results to return (default: 50, max: 1000)
+        
+        Args:
+            request (aiohttp.web.Request): HTTP request object containing query parameters
+        
+        Returns:
+            aiohttp.web.Response: JSON response with structure:
+                {
+                    "success": bool,
+                    "results": List[Dict],  # List of matching prompt objects
+                    "count": int            # Number of results returned
+                }
+        
+        Raises:
+            Returns 500 status with error details if search fails
+        
+        Example:
+            GET /prompt_manager/search?text=portrait&category=photography&min_rating=3
         """
         try:
             # Get query parameters
@@ -428,9 +529,40 @@ class PromptManagerAPI:
             )
 
     async def get_recent_prompts(self, request):
-        """
-        Get recent prompts endpoint with pagination support.
-        GET /prompt_manager/recent?limit=50&page=2&offset=100
+        """Retrieve recently created prompts with pagination support.
+        
+        Returns prompts sorted by creation date (newest first) with configurable
+        pagination using either page-based or offset-based navigation.
+        
+        Query Parameters:
+            limit (int, optional): Number of prompts per page (default: 50, max: 1000)
+            page (int, optional): Page number for pagination (1-based, default: 1)
+            offset (int, optional): Offset for results (takes precedence over page)
+        
+        Args:
+            request (aiohttp.web.Request): HTTP request object containing query parameters
+        
+        Returns:
+            aiohttp.web.Response: JSON response with structure:
+                {
+                    "success": bool,
+                    "results": List[Dict],  # List of prompt objects
+                    "pagination": {
+                        "total": int,        # Total number of prompts
+                        "limit": int,        # Items per page
+                        "offset": int,       # Current offset
+                        "page": int,         # Current page number
+                        "total_pages": int,  # Total number of pages
+                        "has_more": bool,    # Whether more pages exist
+                        "count": int         # Number of items in current page
+                    }
+                }
+        
+        Raises:
+            Returns 500 status with error details if retrieval fails
+        
+        Example:
+            GET /prompt_manager/recent?limit=20&page=2
         """
         try:
             limit = int(request.query.get("limit", 50))
@@ -476,9 +608,25 @@ class PromptManagerAPI:
             )
 
     async def get_categories(self, request):
-        """
-        Get all categories endpoint.
-        GET /prompt_manager/categories
+        """Retrieve all available prompt categories.
+        
+        Returns a list of all unique categories found in the database.
+        
+        Args:
+            request (aiohttp.web.Request): HTTP request object
+        
+        Returns:
+            aiohttp.web.Response: JSON response with structure:
+                {
+                    "success": bool,
+                    "categories": List[str]  # List of category names
+                }
+        
+        Raises:
+            Returns 500 status with error details if retrieval fails
+        
+        Example:
+            GET /prompt_manager/categories
         """
         try:
             categories = self.db.get_all_categories()
@@ -497,9 +645,25 @@ class PromptManagerAPI:
             )
 
     async def get_tags(self, request):
-        """
-        Get all tags endpoint.
-        GET /prompt_manager/tags
+        """Retrieve all available prompt tags.
+        
+        Returns a list of all unique tags found across all prompts in the database.
+        
+        Args:
+            request (aiohttp.web.Request): HTTP request object
+        
+        Returns:
+            aiohttp.web.Response: JSON response with structure:
+                {
+                    "success": bool,
+                    "tags": List[str]  # List of unique tag names
+                }
+        
+        Raises:
+            Returns 500 status with error details if retrieval fails
+        
+        Example:
+            GET /prompt_manager/tags
         """
         try:
             tags = self.db.get_all_tags()
@@ -518,10 +682,44 @@ class PromptManagerAPI:
             )
 
     async def save_prompt(self, request):
-        """
-        Save a new prompt endpoint.
-        POST /prompt_manager/save
-        Body: {"text": "...", "category": "...", "tags": [...], "rating": 5, "notes": "..."}
+        """Save a new prompt with metadata and duplicate detection.
+        
+        Creates a new prompt record with automatic duplicate detection based on
+        SHA256 hash of the prompt text. If a duplicate is found, updates the
+        existing record's metadata instead of creating a new one.
+        
+        Request Body (JSON):
+            text (str, required): The prompt text content
+            category (str, optional): Category for organization
+            tags (List[str], optional): List of tags for classification
+            rating (int, optional): Rating from 1-5
+            notes (str, optional): Additional notes or description
+        
+        Args:
+            request (aiohttp.web.Request): HTTP request with JSON body
+        
+        Returns:
+            aiohttp.web.Response: JSON response with structure:
+                {
+                    "success": bool,
+                    "prompt_id": int,          # ID of created/updated prompt
+                    "message": str,            # Success/status message
+                    "is_duplicate": bool       # True if prompt already existed
+                }
+        
+        Raises:
+            Returns 400 status if required fields are missing
+            Returns 500 status with error details if save fails
+        
+        Example:
+            POST /prompt_manager/save
+            {
+                "text": "A beautiful sunset over mountains",
+                "category": "landscape",
+                "tags": ["nature", "scenic"],
+                "rating": 4,
+                "notes": "Great for wallpapers"
+            }
         """
         try:
             data = await request.json()
@@ -589,9 +787,30 @@ class PromptManagerAPI:
             )
 
     async def delete_prompt(self, request):
-        """
-        Delete a prompt endpoint.
-        DELETE /prompt_manager/delete/{prompt_id}
+        """Delete a specific prompt by ID.
+        
+        Permanently removes a prompt and all associated metadata from the database.
+        Associated image links may also be removed depending on database configuration.
+        
+        URL Parameters:
+            prompt_id (int): The unique identifier of the prompt to delete
+        
+        Args:
+            request (aiohttp.web.Request): HTTP request with prompt_id in URL path
+        
+        Returns:
+            aiohttp.web.Response: JSON response with structure:
+                {
+                    "success": bool,
+                    "message": str  # Success or error message
+                }
+        
+        Raises:
+            Returns 404 status if prompt not found
+            Returns 500 status with error details if deletion fails
+        
+        Example:
+            DELETE /prompt_manager/delete/123
         """
         try:
             prompt_id = int(request.match_info["prompt_id"])
@@ -669,13 +888,44 @@ class PromptManagerAPI:
             )
 
     async def find_duplicate_images(self):
-        """
-        Find duplicate images in the output folder based on file content hash.
+        """Find duplicate images in ComfyUI output directory using content hashing.
+        
+        Scans the ComfyUI output directory for image and video files, calculates
+        SHA256 hashes of file contents, and identifies groups of files with
+        identical content. Supports both images and videos with thumbnail detection.
+        
+        The method processes files efficiently, logging progress every 100 files,
+        and handles various media formats including PNG, JPG, JPEG, WebP, GIF,
+        and common video formats.
         
         Returns:
-            List of duplicate groups, each containing:
-            - hash: The file content hash
-            - images: List of image records with same content
+            List[Dict[str, Any]]: List of duplicate groups, where each group contains:
+                - hash (str): SHA256 hash of the file content
+                - images (List[Dict]): List of file info dictionaries with:
+                    - id (str): Unique identifier based on file path hash
+                    - filename (str): Original filename
+                    - path (str): Absolute file path
+                    - relative_path (str): Path relative to output directory
+                    - url (str): URL for serving the file
+                    - thumbnail_url (str, optional): URL for thumbnail if available
+                    - size (int): File size in bytes
+                    - modified_time (float): Last modification timestamp
+                    - extension (str): File extension
+                    - media_type (str): 'image' or 'video'
+                    - is_video (bool): True if file is a video
+                    - hash (str): SHA256 content hash
+                - count (int): Number of duplicate files in this group
+        
+        Note:
+            Files within each duplicate group are sorted by modification time
+            (oldest first) to help users decide which files to keep.
+        
+        Example:
+            duplicates = await api.find_duplicate_images()
+            for group in duplicates:
+                print(f"Found {group['count']} duplicates with hash {group['hash']}")
+                for img in group['images']:
+                    print(f"  - {img['filename']} ({img['size']} bytes)")
         """
         import hashlib
         from pathlib import Path
@@ -790,7 +1040,21 @@ class PromptManagerAPI:
             return []
 
     def _calculate_file_hash(self, file_path):
-        """Calculate SHA-256 hash of a file."""
+        """Calculate SHA-256 hash of a file's content.
+        
+        Reads the file in 4KB chunks to efficiently handle large files
+        without loading the entire content into memory.
+        
+        Args:
+            file_path (str): Path to the file to hash
+        
+        Returns:
+            str: Hexadecimal SHA-256 hash of the file content
+        
+        Raises:
+            IOError: If the file cannot be read
+            OSError: If the file path is invalid or inaccessible
+        """
         import hashlib
         
         hash_sha256 = hashlib.sha256()
@@ -1732,14 +1996,47 @@ class PromptManagerAPI:
             return web.json_response({'error': str(e)}, status=500)
 
     async def generate_thumbnails(self, request):
-        """
-        Generate thumbnails for gallery images.
+        """Generate thumbnails for all images and videos in the ComfyUI output directory.
         
-        SAFETY GUARANTEE: This function NEVER modifies original images.
-        - Only READS from original image files (read-only access)
-        - Only WRITES to separate thumbnails directory
-        - Uses PIL's read-only operations with context managers
-        - All generated files are clearly marked with '_thumb' suffix
+        Creates optimized thumbnail versions of all media files in a separate
+        'thumbnails' subdirectory. This process is safe and never modifies
+        original files.
+        
+        Safety Features:
+        - Read-only access to original files
+        - Writes only to separate thumbnails directory  
+        - Uses PIL context managers for safe file handling
+        - All thumbnails clearly marked with '_thumb' suffix
+        - Proper error handling prevents corruption
+        
+        Supported Formats:
+        - Images: PNG, JPG, JPEG, WebP, GIF
+        - Videos: MP4, AVI, MOV, WMV (generates frame thumbnails)
+        
+        Query Parameters:
+            size (int, optional): Thumbnail size in pixels (default: 256)
+            quality (int, optional): JPEG quality 1-100 (default: 85)
+            overwrite (bool, optional): Regenerate existing thumbnails (default: false)
+        
+        Args:
+            request (aiohttp.web.Request): HTTP request with optional query parameters
+        
+        Returns:
+            aiohttp.web.Response: JSON response with structure:
+                {
+                    \"success\": bool,
+                    \"message\": str,
+                    \"processed\": int,     # Number of thumbnails created
+                    \"skipped\": int,       # Number of files skipped
+                    \"errors\": int,        # Number of processing errors
+                    \"total_size\": str     # Total size of created thumbnails
+                }
+        
+        Raises:
+            Returns 500 status with error details if thumbnail generation fails
+        
+        Example:
+            POST /prompt_manager/images/generate-thumbnails?size=512&quality=90
         """
         try:
             import os
@@ -2531,7 +2828,41 @@ class PromptManagerAPI:
 
     # Diagnostic endpoints
     async def run_diagnostics(self, request):
-        """Run system diagnostics."""
+        """Run comprehensive system diagnostics and health checks.
+        
+        Performs various system health checks including database connectivity,
+        file system access, ComfyUI integration status, and configuration
+        validation. Useful for troubleshooting and system monitoring.
+        
+        Diagnostic Checks:
+        - Database connection and integrity
+        - ComfyUI output directory detection
+        - File system permissions
+        - Configuration validation
+        - Memory and performance metrics
+        - Extension loading status
+        
+        Args:
+            request (aiohttp.web.Request): HTTP request object
+        
+        Returns:
+            aiohttp.web.Response: JSON response with diagnostic results:
+                {
+                    "success": bool,
+                    "diagnostics": {
+                        "database": Dict,      # Database health info
+                        "filesystem": Dict,   # File system status
+                        "comfyui": Dict,      # ComfyUI integration status
+                        "config": Dict,       # Configuration validation
+                        "performance": Dict   # Performance metrics
+                    },
+                    "summary": str,           # Overall system status
+                    "issues": List[str]      # List of identified issues
+                }
+        
+        Example:
+            POST /prompt_manager/diagnostics
+        """
         try:
             # Simple diagnostics without importing complex modules
             import os
@@ -2682,9 +3013,52 @@ class PromptManagerAPI:
             }, status=500)
 
     async def run_maintenance(self, request):
-        """
-        Comprehensive database maintenance endpoint.
-        POST /prompt_manager/maintenance
+        """Perform comprehensive database maintenance and optimization.
+        
+        Executes a series of database maintenance operations to optimize
+        performance, clean up orphaned data, and ensure database integrity.
+        This is a resource-intensive operation that should be run during
+        low-traffic periods.
+        
+        Maintenance Operations:
+        - Remove duplicate prompts based on content hash
+        - Clean up orphaned image references
+        - Remove missing file records from database
+        - Optimize database with VACUUM operation
+        - Update database statistics
+        - Validate data integrity
+        - Clean up temporary files
+        
+        Query Parameters:
+            full (bool, optional): Perform full maintenance including VACUUM
+            cleanup_images (bool, optional): Clean up missing image references
+            optimize (bool, optional): Run database optimization
+        
+        Args:
+            request (aiohttp.web.Request): HTTP request with optional parameters
+        
+        Returns:
+            aiohttp.web.Response: JSON response with maintenance results:
+                {
+                    "success": bool,
+                    "operations": {
+                        "duplicates_removed": int,
+                        "orphaned_images_cleaned": int,
+                        "missing_files_removed": int,
+                        "database_optimized": bool,
+                        "integrity_check_passed": bool
+                    },
+                    "before_stats": Dict,    # Database stats before maintenance
+                    "after_stats": Dict,     # Database stats after maintenance
+                    "duration": float,       # Maintenance duration in seconds
+                    "message": str
+                }
+        
+        Raises:
+            Returns 500 status with error details if maintenance fails
+        
+        Example:
+            POST /prompt_manager/maintenance?full=true&cleanup_images=true
         """
         try:
             data = await request.json() if request.content_type == 'application/json' else {}
@@ -3201,7 +3575,29 @@ class PromptManagerAPI:
         return response
     
     def _find_comfyui_output_dir(self):
-        """Find the ComfyUI output directory with improved detection logic."""
+        """Locate the ComfyUI output directory using multiple detection strategies.
+        
+        Attempts to find the ComfyUI output directory by checking various
+        possible locations relative to the current file and common installation
+        patterns. Handles different ComfyUI installation types and structures.
+        
+        Detection Strategy:
+        1. Look for 'output' directory in parent directories (up to 10 levels)
+        2. Check common ComfyUI installation patterns
+        3. Verify directory contains typical ComfyUI subdirectories
+        4. Return first valid match found
+        
+        Returns:
+            str or None: Absolute path to ComfyUI output directory, or None
+                        if no valid directory is found
+        
+        Example:
+            output_dir = api._find_comfyui_output_dir()
+            if output_dir:
+                print(f"Found ComfyUI output at: {output_dir}")
+            else:
+                print("ComfyUI output directory not found")
+        """
         import os
         from pathlib import Path
         
@@ -3268,7 +3664,38 @@ class PromptManagerAPI:
         return None
     
     def _extract_comfyui_metadata(self, image_path):
-        """Extract ComfyUI metadata from a PNG file."""
+        """Extract ComfyUI workflow metadata from PNG image files.
+        
+        Reads embedded metadata from PNG files generated by ComfyUI,
+        extracting workflow information, parameters, and generation details
+        stored in PNG text chunks.
+        
+        ComfyUI stores metadata in standard PNG text chunks:
+        - 'workflow': Complete node graph workflow data
+        - 'prompt': Simplified prompt/parameter data
+        - Custom fields: Additional generation parameters
+        
+        Args:
+            image_path (str): Path to the PNG image file to analyze
+        
+        Returns:
+            Dict[str, Any]: Dictionary containing extracted metadata:
+                - 'workflow': Raw workflow JSON data (if present)
+                - 'prompt': Simplified prompt data (if present)
+                - Additional custom fields from PNG text chunks
+                - Empty dict if no metadata found or file is not PNG
+        
+        Raises:
+            Exception: If file cannot be opened or read (handled gracefully,
+                      returns empty dict)
+        
+        Example:
+            metadata = api._extract_comfyui_metadata('output/image_001.png')
+            if 'workflow' in metadata:
+                print("Found ComfyUI workflow data")
+            if 'prompt' in metadata:
+                print(f"Prompt data: {metadata['prompt']}")
+        """
         try:
             with Image.open(image_path) as img:
                 metadata = {}

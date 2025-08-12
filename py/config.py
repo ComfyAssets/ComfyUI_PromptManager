@@ -1,3 +1,21 @@
+"""Configuration module for ComfyUI PromptManager.
+
+This module provides centralized configuration management for the PromptManager
+extension, including gallery monitoring settings, database configuration,
+web interface options, and performance tuning parameters.
+
+The configuration is organized into two main classes:
+- GalleryConfig: Settings for image monitoring and gallery functionality
+- PromptManagerConfig: General settings for the PromptManager core features
+
+Configuration can be loaded from and saved to JSON files for persistence.
+
+Example:
+    from config import PromptManagerConfig
+    config = PromptManagerConfig.get_config()
+    PromptManagerConfig.load_from_file('custom_config.json')
+"""
+
 # PromptManager/py/config.py
 
 # Extension configuration
@@ -10,10 +28,6 @@ routes = server_instance.routes
 
 # Extension info
 extension_uri = None  # Will be set in __init__.py
-
-"""
-Configuration settings for PromptManager gallery and monitoring system.
-"""
 
 import os
 from typing import Dict, Any, List
@@ -32,7 +46,31 @@ config_logger = get_logger('prompt_manager.config')
 
 
 class GalleryConfig:
-    """Configuration for the gallery monitoring system."""
+    """Configuration class for the gallery monitoring and image processing system.
+    
+    This class manages all settings related to automatic image monitoring,
+    prompt tracking, database cleanup, web interface display, and performance
+    optimization for the gallery functionality.
+    
+    All configuration values are class attributes that can be modified at runtime
+    or loaded from external configuration files.
+    
+    Attributes:
+        MONITORING_ENABLED (bool): Enable/disable automatic image monitoring
+        MONITORING_DIRECTORIES (List[str]): Directories to monitor for new images
+        SUPPORTED_EXTENSIONS (List[str]): Image file extensions to process
+        PROCESSING_DELAY (float): Delay in seconds before processing new files
+        PROMPT_TIMEOUT (int): Seconds to keep prompt context active
+        CLEANUP_INTERVAL (int): Seconds between cleanup of expired prompts
+        AUTO_CLEANUP_MISSING_FILES (bool): Automatically remove missing file records
+        MAX_IMAGE_AGE_DAYS (int): Maximum age in days before cleaning up images
+        IMAGES_PER_PAGE (int): Number of images to display per page in web UI
+        THUMBNAIL_SIZE (int): Size in pixels for generated thumbnails
+        ENABLE_SEARCH (bool): Enable search functionality in web interface
+        ENABLE_METADATA_VIEW (bool): Enable metadata viewing for images
+        MAX_CONCURRENT_PROCESSING (int): Maximum concurrent image processing tasks
+        METADATA_EXTRACTION_TIMEOUT (int): Timeout for metadata extraction operations
+    """
     
     # Image monitoring settings
     MONITORING_ENABLED = True
@@ -60,7 +98,18 @@ class GalleryConfig:
     
     @classmethod
     def get_config(cls) -> Dict[str, Any]:
-        """Get the complete configuration as a dictionary."""
+        """Get the complete gallery configuration as a structured dictionary.
+        
+        Returns:
+            Dict[str, Any]: A nested dictionary containing all gallery configuration
+                sections: monitoring, tracking, database, web_interface, and performance.
+                Each section contains the relevant configuration parameters as key-value pairs.
+        
+        Example:
+            config = GalleryConfig.get_config()
+            monitoring_enabled = config['monitoring']['enabled']
+            images_per_page = config['web_interface']['images_per_page']
+        """
         return {
             'monitoring': {
                 'enabled': cls.MONITORING_ENABLED,
@@ -87,10 +136,91 @@ class GalleryConfig:
                 'metadata_extraction_timeout': cls.METADATA_EXTRACTION_TIMEOUT
             }
         }
+    
+    @classmethod
+    def update_config(cls, new_config: Dict[str, Any]):
+        """Update gallery configuration attributes from a dictionary.
+        
+        Takes a nested dictionary with gallery configuration sections and updates
+        the corresponding class attributes. Only updates attributes that are
+        present in the input dictionary, leaving others unchanged.
+        
+        Args:
+            new_config (Dict[str, Any]): Nested dictionary containing gallery
+                configuration updates. Should follow the same structure as returned
+                by get_config(). Valid top-level keys are: 'monitoring', 'tracking',
+                'database', 'web_interface', 'performance'.
+        
+        Example:
+            gallery_settings = {
+                'monitoring': {'enabled': False},
+                'web_interface': {'images_per_page': 50}
+            }
+            GalleryConfig.update_config(gallery_settings)
+        """
+        monitoring = new_config.get('monitoring', {})
+        if 'enabled' in monitoring:
+            cls.MONITORING_ENABLED = monitoring['enabled']
+        if 'directories' in monitoring:
+            cls.MONITORING_DIRECTORIES = monitoring['directories']
+        if 'extensions' in monitoring:
+            cls.SUPPORTED_EXTENSIONS = monitoring['extensions']
+        if 'processing_delay' in monitoring:
+            cls.PROCESSING_DELAY = monitoring['processing_delay']
+        
+        tracking = new_config.get('tracking', {})
+        if 'prompt_timeout' in tracking:
+            cls.PROMPT_TIMEOUT = tracking['prompt_timeout']
+        if 'cleanup_interval' in tracking:
+            cls.CLEANUP_INTERVAL = tracking['cleanup_interval']
+        
+        database = new_config.get('database', {})
+        if 'auto_cleanup' in database:
+            cls.AUTO_CLEANUP_MISSING_FILES = database['auto_cleanup']
+        if 'max_image_age_days' in database:
+            cls.MAX_IMAGE_AGE_DAYS = database['max_image_age_days']
+        
+        web_interface = new_config.get('web_interface', {})
+        if 'images_per_page' in web_interface:
+            cls.IMAGES_PER_PAGE = web_interface['images_per_page']
+        if 'thumbnail_size' in web_interface:
+            cls.THUMBNAIL_SIZE = web_interface['thumbnail_size']
+        if 'enable_search' in web_interface:
+            cls.ENABLE_SEARCH = web_interface['enable_search']
+        if 'enable_metadata_view' in web_interface:
+            cls.ENABLE_METADATA_VIEW = web_interface['enable_metadata_view']
+        
+        performance = new_config.get('performance', {})
+        if 'max_concurrent_processing' in performance:
+            cls.MAX_CONCURRENT_PROCESSING = performance['max_concurrent_processing']
+        if 'metadata_extraction_timeout' in performance:
+            cls.METADATA_EXTRACTION_TIMEOUT = performance['metadata_extraction_timeout']
 
 
 class PromptManagerConfig:
-    """General configuration for PromptManager."""
+    """Main configuration class for PromptManager core functionality.
+    
+    This class manages configuration for database operations, web UI behavior,
+    performance settings, and integrates gallery configuration. It provides
+    methods for loading and saving configuration from/to JSON files.
+    
+    The configuration is organized into logical sections:
+    - Database: Settings for SQLite operations and data management
+    - Web UI: User interface behavior and display options
+    - Performance: Optimization and resource management settings
+    - Gallery: Embedded gallery configuration (via GalleryConfig)
+    
+    Attributes:
+        DEFAULT_DB_PATH (str): Default path for the SQLite database file
+        ENABLE_DUPLICATE_DETECTION (bool): Enable automatic duplicate detection
+        ENABLE_AUTO_SAVE (bool): Enable automatic saving of prompts
+        RESULT_TIMEOUT (int): Auto-hide timeout for results in ComfyUI node
+        SHOW_TEST_BUTTON (bool): Show API test button in node interface
+        WEBUI_DISPLAY_MODE (str): Display mode for web UI ('popup' or 'newtab')
+        MAX_SEARCH_RESULTS (int): Maximum number of search results to return
+        ENABLE_FUZZY_SEARCH (bool): Enable fuzzy search capabilities
+        AUTO_BACKUP_INTERVAL (int): Hours between automatic database backups
+    """
     
     # Database settings
     DEFAULT_DB_PATH = "prompts.db"
@@ -109,7 +239,20 @@ class PromptManagerConfig:
     
     @classmethod
     def get_config(cls) -> Dict[str, Any]:
-        """Get the complete configuration as a dictionary."""
+        """Get the complete PromptManager configuration as a structured dictionary.
+        
+        Returns:
+            Dict[str, Any]: A nested dictionary containing all configuration sections:
+                - database: Database-related settings
+                - web_ui: Web interface configuration
+                - performance: Performance and optimization settings
+                - gallery: Complete gallery configuration (from GalleryConfig)
+        
+        Example:
+            config = PromptManagerConfig.get_config()
+            db_path = config['database']['default_path']
+            max_results = config['performance']['max_search_results']
+        """
         return {
             'database': {
                 'default_path': cls.DEFAULT_DB_PATH,
@@ -131,7 +274,24 @@ class PromptManagerConfig:
     
     @classmethod
     def load_from_file(cls, config_path: str):
-        """Load configuration from a JSON file."""
+        """Load configuration settings from a JSON file.
+        
+        Reads configuration from the specified JSON file and updates the current
+        configuration attributes. If the file doesn't exist or contains invalid
+        JSON, logs an appropriate message and continues with default values.
+        
+        Args:
+            config_path (str): Path to the JSON configuration file to load.
+                            Can be relative or absolute path.
+        
+        Raises:
+            The method handles all exceptions internally and logs errors rather
+            than propagating them, ensuring the system continues with defaults.
+        
+        Example:
+            PromptManagerConfig.load_from_file('custom_config.json')
+            PromptManagerConfig.load_from_file('/path/to/config.json')
+        """
         import json
         
         if os.path.exists(config_path):
@@ -147,7 +307,23 @@ class PromptManagerConfig:
     
     @classmethod
     def save_to_file(cls, config_path: str):
-        """Save current configuration to a JSON file."""
+        """Save the current configuration to a JSON file.
+        
+        Serializes the complete configuration (including gallery settings) to
+        a JSON file. Creates the directory structure if it doesn't exist.
+        
+        Args:
+            config_path (str): Path where the JSON configuration file should be saved.
+                            Parent directories will be created if they don't exist.
+        
+        Raises:
+            The method handles all exceptions internally and logs errors rather
+            than propagating them.
+        
+        Example:
+            PromptManagerConfig.save_to_file('backup_config.json')
+            PromptManagerConfig.save_to_file('/etc/comfyui/prompt_manager.json')
+        """
         import json
         
         try:
@@ -163,7 +339,24 @@ class PromptManagerConfig:
     
     @classmethod
     def update_config(cls, new_config: Dict[str, Any]):
-        """Update configuration from a dictionary."""
+        """Update configuration attributes from a dictionary.
+        
+        Takes a nested dictionary with configuration sections and updates
+        the corresponding class attributes. Only updates attributes that
+        are present in the input dictionary, leaving others unchanged.
+        
+        Args:
+            new_config (Dict[str, Any]): Nested dictionary containing configuration
+                updates. Should follow the same structure as returned by get_config().
+                Valid top-level keys are: 'database', 'web_ui', 'performance', 'gallery'.
+        
+        Example:
+            new_settings = {
+                'database': {'default_path': 'custom.db'},
+                'performance': {'max_search_results': 50}
+            }
+            PromptManagerConfig.update_config(new_settings)
+        """
         database = new_config.get('database', {})
         if 'default_path' in database:
             cls.DEFAULT_DB_PATH = database['default_path']

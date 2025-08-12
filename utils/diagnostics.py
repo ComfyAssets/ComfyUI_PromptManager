@@ -1,5 +1,33 @@
-"""
-Diagnostic utilities for troubleshooting the PromptManager gallery system.
+"""Diagnostic utilities for troubleshooting the PromptManager gallery system.
+
+This module provides comprehensive diagnostic tools to help identify and resolve
+issues with the PromptManager system, particularly the gallery and image monitoring
+functionality. It performs systematic checks of all system components and provides
+clear feedback on potential problems.
+
+The diagnostic system checks:
+- Database connectivity and schema integrity
+- Image table structure and data
+- File system permissions and access
+- ComfyUI output directory detection
+- Required Python dependencies
+- System integration points
+
+Typical usage:
+    from utils.diagnostics import GalleryDiagnostics, run_diagnostics
+    
+    # Run full diagnostic suite
+    results = run_diagnostics()
+    
+    # Or create custom diagnostic instance
+    diagnostics = GalleryDiagnostics("custom_db.db")
+    database_status = diagnostics.check_database()
+
+The diagnostics provide:
+- Clear pass/fail status for each component
+- Detailed error messages and remediation suggestions
+- Statistics and system information
+- Test utilities for verifying functionality
 """
 
 import os
@@ -11,14 +39,48 @@ from .logging_config import get_logger
 
 
 class GalleryDiagnostics:
-    """Diagnostics for the gallery system."""
+    """Diagnostics for the gallery system.
+    
+    This class provides comprehensive diagnostic capabilities for the PromptManager
+    gallery system. It systematically checks all components and dependencies to
+    identify potential issues and provide actionable feedback.
+    
+    The diagnostics cover:
+    - Database structure and connectivity
+    - Image tracking table integrity
+    - File system access and permissions
+    - ComfyUI integration points
+    - Python dependency availability
+    
+    Each diagnostic method returns a standardized result dictionary with:
+    - status: 'ok', 'warning', or 'error'
+    - message: Descriptive message (for warnings/errors)
+    - Additional data specific to the diagnostic
+    """
     
     def __init__(self, db_path: str = "prompts.db"):
+        """Initialize the diagnostics system.
+        
+        Args:
+            db_path: Path to the SQLite database file to diagnose
+        """
         self.db_path = db_path
         self.logger = get_logger('prompt_manager.diagnostics')
     
     def run_full_diagnostic(self) -> Dict[str, Any]:
-        """Run a complete diagnostic check."""
+        """Run a complete diagnostic check.
+        
+        Executes all diagnostic checks in sequence and provides a comprehensive
+        report of system status. Logs detailed information during the process.
+        
+        Returns:
+            Dictionary mapping diagnostic categories to their results:
+            - database: Database connectivity and structure check
+            - images_table: Image tracking table specific check
+            - file_system: File system access and permissions check
+            - comfyui_output: ComfyUI output directory detection
+            - dependencies: Python dependency availability check
+        """
         self.logger.info("\n" + "="*60)
         self.logger.info("[DIAG] PROMPTMANAGER GALLERY DIAGNOSTICS")
         self.logger.info("="*60)
@@ -45,7 +107,18 @@ class GalleryDiagnostics:
         return results
     
     def check_database(self) -> Dict[str, Any]:
-        """Check database connection and structure."""
+        """Check database connection and structure.
+        
+        Verifies that the database file exists, is accessible, and contains
+        the expected prompt table structure.
+        
+        Returns:
+            Dictionary containing:
+            - status: 'ok' or 'error'
+            - message: Error description (if status is 'error')
+            - prompt_count: Number of prompts in database (if successful)
+            - has_images_table: Whether generated_images table exists (if successful)
+        """
         self.logger.info("\n[DB]  Checking Database...")
         
         try:
@@ -85,7 +158,18 @@ class GalleryDiagnostics:
             }
     
     def check_images_table(self) -> Dict[str, Any]:
-        """Check the generated_images table specifically."""
+        """Check the generated_images table specifically.
+        
+        Examines the generated_images table structure and content to verify
+        the gallery system can function properly.
+        
+        Returns:
+            Dictionary containing:
+            - status: 'ok' or 'error'
+            - message: Error description (if table missing or inaccessible)
+            - image_count: Number of images in table (if successful)
+            - recent_images: List of recent image records (if successful)
+        """
         self.logger.info("\n[IMG]  Checking Images Table...")
         
         try:
@@ -136,7 +220,18 @@ class GalleryDiagnostics:
             }
     
     def check_file_system(self) -> Dict[str, Any]:
-        """Check file system and permissions."""
+        """Check file system and permissions.
+        
+        Verifies that the application has appropriate file system access
+        for reading images and writing database files.
+        
+        Returns:
+            Dictionary containing:
+            - status: 'ok' or 'error'
+            - message: Error description (if issues detected)
+            - current_dir: Current working directory path
+            - can_write: Whether write access is available
+        """
         self.logger.info("\n[DIR] Checking File System...")
         
         try:
@@ -169,7 +264,17 @@ class GalleryDiagnostics:
             }
     
     def check_comfyui_output(self) -> Dict[str, Any]:
-        """Check ComfyUI output directories."""
+        """Check ComfyUI output directories.
+        
+        Attempts to locate ComfyUI output directories where generated images
+        would be stored. Checks both common locations and ComfyUI's configured paths.
+        
+        Returns:
+            Dictionary containing:
+            - status: 'ok' if directories found, 'warning' if none found
+            - message: Warning message (if no directories found)
+            - output_dirs: List of detected output directory paths
+        """
         self.logger.info("\n[STYLE] Checking ComfyUI Output...")
         
         output_dirs = []
@@ -216,7 +321,17 @@ class GalleryDiagnostics:
         }
     
     def check_dependencies(self) -> Dict[str, Any]:
-        """Check required dependencies."""
+        """Check required dependencies.
+        
+        Verifies that all required Python packages are available for the
+        PromptManager system to function properly.
+        
+        Returns:
+            Dictionary containing:
+            - status: 'ok' if all dependencies available, 'error' if any missing
+            - message: Error description (if dependencies missing)
+            - dependencies: Dictionary mapping package names to availability status
+        """
         self.logger.info("\n[PKG] Checking Dependencies...")
         
         dependencies = {
@@ -258,7 +373,21 @@ class GalleryDiagnostics:
         }
     
     def create_test_image_link(self, prompt_id: int, test_image_path: str = None) -> Dict[str, Any]:
-        """Create a test image link to verify the system works."""
+        """Create a test image link to verify the system works.
+        
+        Creates a test entry in the generated_images table to verify that
+        the image linking functionality is working correctly.
+        
+        Args:
+            prompt_id: ID of an existing prompt to link the test image to
+            test_image_path: Optional path for the test image (uses fake path if None)
+            
+        Returns:
+            Dictionary containing:
+            - status: 'ok' if test link created successfully, 'error' otherwise
+            - message: Success or error message
+            - image_id: ID of created test image record (if successful)
+        """
         self.logger.info(f"\n[TEST] Creating test image link for prompt {prompt_id}...")
         
         try:
@@ -307,8 +436,15 @@ class GalleryDiagnostics:
             }
 
 
-def run_diagnostics():
-    """Run diagnostics from command line."""
+def run_diagnostics() -> Dict[str, Any]:
+    """Run diagnostics from command line.
+    
+    Convenience function to create a GalleryDiagnostics instance and run
+    the full diagnostic suite with default settings.
+    
+    Returns:
+        Complete diagnostic results dictionary
+    """
     diagnostics = GalleryDiagnostics()
     return diagnostics.run_full_diagnostic()
 

@@ -1,6 +1,22 @@
 """
-PromptManager: A ComfyUI custom node that extends the standard text encoder
-with persistent prompt storage and advanced search capabilities using SQLite.
+ComfyUI_PromptManager: A comprehensive ComfyUI custom node that extends text encoding 
+with persistent prompt storage, advanced search capabilities, and an automatic image 
+gallery system.
+
+This module provides two main node types:
+- PromptManager: CLIP encoding node that outputs CONDITIONING
+- PromptManagerText: Text-only node that outputs STRING with prepend/append functionality
+
+Both nodes share the same database backend for persistent prompt storage and include
+an automatic image gallery system that monitors ComfyUI output directories and links
+generated images to their source prompts.
+
+Features:
+- SQLite-based persistent prompt storage with deduplication
+- Advanced search and categorization system  
+- Real-time image gallery with metadata extraction
+- Web-based admin dashboard for prompt management
+- Comprehensive logging and diagnostics
 """
 
 import re
