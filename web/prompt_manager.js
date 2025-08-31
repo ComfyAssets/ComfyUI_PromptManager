@@ -35,25 +35,57 @@ app.registerExtension({
         // Load settings from API
         this.loadSettings();
 
-        // Create DOM widget container
+        // Create DOM widget container with unique ID for scoped styling
         const container = document.createElement("div");
-        container.style.padding = "8px";
-        container.style.backgroundColor = "#2a2a2a";
-        container.style.borderRadius = "4px";
-        container.style.marginTop = "5px";
+        const uniqueId = `pm-${Math.random().toString(36).substring(2, 9)}`;
+        container.id = uniqueId;
+        
+        // Add inline styles for perfect sizing like KikoLocalImageLoader
+        const styleSheet = document.createElement("style");
+        styleSheet.textContent = `
+          #${uniqueId} {
+            width: 100%;
+            height: 100%;
+            padding: 8px;
+            background-color: #2a2a2a;
+            border-radius: 4px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+          }
+          #${uniqueId} > div {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+          }
+        `;
+        document.head.appendChild(styleSheet);
+        
+        // Store style reference for cleanup
+        this._styleSheet = styleSheet;
 
         this.createSearchUI(container);
 
-        // Add as DOM widget
+        // Add as DOM widget with proper configuration
         this.searchWidget = this.addDOMWidget(
           "prompt_manager_search_ui",
           "div",
           container,
+          {
+            serialize: false, // Don't save UI state
+          }
         );
 
         // Set initial node size, but preserve user resizes
         if (!this._userHasResized) {
-          this.size = [400, 400]; // width=400, height=300 pixels
+          // For nodes with text widgets, we need more height
+          const baseHeight = 400;
+          const widgetHeight = this.widgets ? this.widgets.length * 30 : 0;
+          this.size = [600, baseHeight + widgetHeight]; // Dynamic size based on widgets
+          this.setSize(this.size); // IMPORTANT: Actually apply the size
         }
 
         // Hook into resize to track user changes
@@ -97,19 +129,44 @@ app.registerExtension({
         this.setDirtyCanvas(true, true);
       };
 
+      // Override onRemoved to cleanup styles
+      const onRemoved = nodeType.prototype.onRemoved;
+      nodeType.prototype.onRemoved = function () {
+        // Cleanup styles when node is removed
+        if (this._styleSheet && this._styleSheet.parentNode) {
+          this._styleSheet.parentNode.removeChild(this._styleSheet);
+        }
+        
+        // Call original onRemoved if it exists
+        if (onRemoved) {
+          onRemoved.apply(this, arguments);
+        }
+      };
+
       // Method to create search UI elements
       nodeType.prototype.createSearchUI = function (container) {
         container.innerHTML = "";
 
+        // Main wrapper to match KikoLocalImageLoader structure
+        const wrapper = document.createElement("div");
+        wrapper.style.width = "100%";
+        wrapper.style.height = "100%";
+        wrapper.style.display = "flex";
+        wrapper.style.flexDirection = "column";
+        wrapper.style.gap = "8px";
+
         // Search controls section
         const searchSection = document.createElement("div");
-        searchSection.style.marginBottom = "10px";
+        searchSection.style.display = "flex";
+        searchSection.style.flexDirection = "column";
+        searchSection.style.height = "100%";
+        searchSection.style.gap = "8px";
 
         // Search buttons row
         const buttonRow = document.createElement("div");
         buttonRow.style.display = "flex";
         buttonRow.style.gap = "8px";
-        buttonRow.style.marginBottom = "8px";
+        buttonRow.style.flexShrink = "0"; // Don't shrink buttons
 
         // Search button
         const searchButton = document.createElement("button");
@@ -178,7 +235,8 @@ app.registerExtension({
 
         // Results section
         const resultsSection = document.createElement("div");
-        resultsSection.style.maxHeight = "200px";
+        resultsSection.style.flex = "1"; // Take remaining space
+        resultsSection.style.minHeight = "100px"; // Minimum height
         resultsSection.style.overflowY = "auto";
         resultsSection.style.border = "1px solid #444";
         resultsSection.style.borderRadius = "4px";
@@ -192,7 +250,9 @@ app.registerExtension({
         this.resultsSection = resultsSection;
         searchSection.appendChild(resultsSection);
 
-        container.appendChild(searchSection);
+        // Add search section to wrapper, then wrapper to container
+        wrapper.appendChild(searchSection);
+        container.appendChild(wrapper);
       };
 
       // Method to perform search
