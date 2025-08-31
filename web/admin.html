@@ -2969,23 +2969,25 @@
                         // Prompts - need to identify which is positive vs negative
                         if (node.class_type === 'PromptManager' && node.inputs && node.inputs.text) {
                             // PromptManager typically contains the positive prompt
-                            positivePrompt = node.inputs.text;
-                            console.log('Found PromptManager with text:', positivePrompt.substring(0, 100));
+                            const promptValue = typeof node.inputs.text === 'string' ? node.inputs.text : (Array.isArray(node.inputs.text) ? node.inputs.text[0] : String(node.inputs.text));
+                            positivePrompt = promptValue;
+                            console.log('Found PromptManager with text:', promptValue.substring(0, 100));
                         }
                         
                         if (node.class_type === 'CLIPTextEncode' && node.inputs && node.inputs.text) {
-                            console.log('Found CLIPTextEncode:', node.inputs.text.substring(0, 50));
                             // Check if this looks like a negative prompt
-                            const text = node.inputs.text.toLowerCase();
+                            const textValue = typeof node.inputs.text === 'string' ? node.inputs.text : (Array.isArray(node.inputs.text) ? node.inputs.text[0] : String(node.inputs.text));
+                            console.log('Found CLIPTextEncode:', textValue.substring(0, 50));
+                            const text = textValue.toLowerCase();
                             if (text.includes('bad anatomy') || text.includes('unfinished') || 
                                 text.includes('censored') || text.includes('weird anatomy') ||
                                 text.includes('negative') || text.includes('embedding:')) {
-                                negativePrompt = node.inputs.text;
-                                console.log('Found negative prompt:', negativePrompt.substring(0, 100));
+                                negativePrompt = textValue;
+                                console.log('Found negative prompt:', textValue.substring(0, 100));
                             } else if (positivePrompt === 'No prompt found') {
                                 // If we haven't found a positive prompt yet, this might be it
-                                positivePrompt = node.inputs.text;
-                                console.log('Found potential positive prompt:', positivePrompt.substring(0, 100));
+                                positivePrompt = textValue;
+                                console.log('Found potential positive prompt:', textValue.substring(0, 100));
                             }
                         }
                         
@@ -3385,19 +3387,21 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         // Prompts - need to identify which is positive vs negative
                         if (node.class_type === 'PromptManager' && node.inputs && node.inputs.text) {
                             // PromptManager typically contains the positive prompt
-                            positivePrompt = node.inputs.text;
+                            const promptValue = typeof node.inputs.text === 'string' ? node.inputs.text : (Array.isArray(node.inputs.text) ? node.inputs.text[0] : String(node.inputs.text));
+                            positivePrompt = promptValue;
                         }
                         
                         if (node.class_type === 'CLIPTextEncode' && node.inputs && node.inputs.text) {
                             // Check if this looks like a negative prompt
-                            const text = node.inputs.text.toLowerCase();
+                            const textValue = typeof node.inputs.text === 'string' ? node.inputs.text : (Array.isArray(node.inputs.text) ? node.inputs.text[0] : String(node.inputs.text));
+                            const text = textValue.toLowerCase();
                             if (text.includes('bad anatomy') || text.includes('unfinished') || 
                                 text.includes('censored') || text.includes('weird anatomy') ||
                                 text.includes('negative') || text.includes('embedding:')) {
-                                negativePrompt = node.inputs.text;
+                                negativePrompt = textValue;
                             } else if (positivePrompt === 'No prompt found') {
                                 // If we haven't found a positive prompt yet, this might be it
-                                positivePrompt = node.inputs.text;
+                                positivePrompt = textValue;
                             }
                         }
                         
@@ -3928,12 +3932,12 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
                 // Close any open modals
-                if (!document.getElementById('galleryModal').classList.contains('hidden')) {
+                if (document.getElementById('galleryModal') && !document.getElementById('galleryModal').classList.contains('hidden')) {
                     admin.closeGallery();
-                } else if (!document.getElementById('imageViewerModal').classList.contains('hidden')) {
+                } else if (document.getElementById('imageViewerModal') && !document.getElementById('imageViewerModal').classList.contains('hidden')) {
                     admin.closeImageViewer();
                 }
-            } else if (!document.getElementById('imageViewerModal').classList.contains('hidden')) {
+            } else if (document.getElementById('imageViewerModal') && !document.getElementById('imageViewerModal').classList.contains('hidden')) {
                 // Handle arrow keys in image viewer
                 if (e.key === 'ArrowLeft') {
                     e.preventDefault();
@@ -3948,7 +3952,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
         // Window resize listener for responsive image sizing
         window.addEventListener('resize', function() {
             // Only apply resize adjustments if image viewer is open and in fit mode
-            if (!document.getElementById('imageViewerModal').classList.contains('hidden') && admin.imageViewMode === 'fit') {
+            if (document.getElementById('imageViewerModal') && !document.getElementById('imageViewerModal').classList.contains('hidden') && admin.imageViewMode === 'fit') {
                 admin.applyImageSizing();
             }
         });

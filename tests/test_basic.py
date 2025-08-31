@@ -1,5 +1,5 @@
 """
-Basic tests for KikoTextEncode functionality.
+Basic tests for PromptManager functionality.
 """
 
 import os
@@ -17,7 +17,7 @@ from utils.validators import validate_prompt_text, validate_rating, validate_tag
 
 
 class TestBasicFunctionality(unittest.TestCase):
-    """Test basic functionality of KikoTextEncode components."""
+    """Test basic functionality of PromptManager components."""
     
     def setUp(self):
         """Set up test fixtures."""
@@ -118,7 +118,6 @@ class TestBasicFunctionality(unittest.TestCase):
             tags=["test", "database"],
             rating=4,
             notes="Test notes",
-            workflow_name="test_workflow",
             prompt_hash=generate_prompt_hash("Test prompt for database")
         )
         
@@ -133,7 +132,6 @@ class TestBasicFunctionality(unittest.TestCase):
         self.assertEqual(retrieved['tags'], ["test", "database"])
         self.assertEqual(retrieved['rating'], 4)
         self.assertEqual(retrieved['notes'], "Test notes")
-        self.assertEqual(retrieved['workflow_name'], "test_workflow")
     
     def test_duplicate_detection(self):
         """Test duplicate prompt detection."""
@@ -220,7 +218,7 @@ class TestNodeIntegration(unittest.TestCase):
         if os.path.exists(self.temp_db.name):
             os.unlink(self.temp_db.name)
     
-    @patch('kiko_text_encode.PromptDatabase')
+    @patch('prompt_manager.PromptDatabase')
     def test_node_encode_function(self, mock_db_class):
         """Test the node's encode function with mocked dependencies."""
         # Mock the database
@@ -233,44 +231,36 @@ class TestNodeIntegration(unittest.TestCase):
         mock_clip.encode_from_tokens_scheduled.return_value = "mock_conditioning"
         
         # Import and test the node
-        from kiko_text_encode import KikoTextEncode
+        from prompt_manager import PromptManager
         
-        node = KikoTextEncode()
+        node = PromptManager()
         
         # Test encoding
         result = node.encode(
             clip=mock_clip,
             text="Test prompt",
-            category="test",
-            tags="tag1, tag2",
-            rating=4,
-            notes="Test notes",
-            workflow_name="test_workflow"
+            search_text=""
         )
         
         # Verify CLIP was called correctly
         mock_clip.tokenize.assert_called_once_with("Test prompt")
         mock_clip.encode_from_tokens_scheduled.assert_called_once_with("mock_tokens")
         
-        # Verify result
-        self.assertEqual(result, ("mock_conditioning",))
+        # Verify result - PromptManager returns both conditioning and prompt text
+        self.assertEqual(result, ("mock_conditioning", "Test prompt"))
     
     def test_node_input_types(self):
         """Test the node's input type definitions."""
-        from kiko_text_encode import KikoTextEncode
+        from prompt_manager import PromptManager
         
-        input_types = KikoTextEncode.INPUT_TYPES()
+        input_types = PromptManager.INPUT_TYPES()
         
         # Check required inputs
         self.assertIn("text", input_types["required"])
         self.assertIn("clip", input_types["required"])
         
         # Check optional inputs
-        self.assertIn("category", input_types["optional"])
-        self.assertIn("tags", input_types["optional"])
-        self.assertIn("rating", input_types["optional"])
-        self.assertIn("notes", input_types["optional"])
-        self.assertIn("workflow_name", input_types["optional"])
+        self.assertIn("search_text", input_types["optional"])
 
 
 if __name__ == '__main__':
