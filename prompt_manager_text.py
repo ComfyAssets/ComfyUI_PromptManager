@@ -456,11 +456,24 @@ class PromptManagerText(ComfyNodeABC):
         self.cleanup_gallery_system()
 
     @classmethod
-    def IS_CHANGED(cls, **kwargs):
+    def IS_CHANGED(cls, text="", category="", tags="", search_text="", 
+                    prepend_text="", append_text="", **kwargs):
         """
         ComfyUI method to determine if node needs re-execution.
         
+        This method now properly tracks input changes to avoid unnecessary
+        re-execution while still ensuring prompts are saved when inputs change.
+        
         Returns:
-            NaN to force re-execution, ensuring prompts are always saved to database
+            A hash of the input values that changes when any input changes
         """
-        return float("NaN")  # Always execute
+        # Create a hash of all the text inputs that affect the output
+        # This ensures the node only re-executes when inputs actually change
+        import hashlib
+        
+        # Combine all text inputs that affect the output
+        combined = f"{text}|{category}|{tags}|{prepend_text}|{append_text}"
+        
+        # Return a hash that will change when inputs change
+        # Note: We don't include search_text as it doesn't affect the output
+        return hashlib.sha256(combined.encode()).hexdigest()
