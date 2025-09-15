@@ -4,7 +4,7 @@ A comprehensive ComfyUI custom node that extends the standard text encoder with 
 
 # 🚀 Prompt Manager v2 Rewrite  
 
-We’ve been hard at work on a **complete UI rewrite** of Prompt Manager.  
+We’ve been hard at work on a **complete rewrite** of Prompt Manager.  
 The new version brings over all features from v1, introduces a dark theme (v2 look), and adds **negative prompt support**.  
 
 ## ✨ What’s New
