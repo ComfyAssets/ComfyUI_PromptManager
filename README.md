@@ -2,6 +2,48 @@
 
 A comprehensive ComfyUI custom node that extends the standard text encoder with persistent prompt storage, advanced search capabilities, automatic image gallery system, and powerful ComfyUI workflow metadata analysis using SQLite.
 
+# 🚀 Prompt Manager v2 Rewrite  
+
+We’ve been hard at work on a **complete UI rewrite** of Prompt Manager.  
+The new version brings over all features from v1, introduces a dark theme (v2 look), and adds **negative prompt support**.  
+
+## ✨ What’s New
+- Unified dark theme UI (v2)  
+- Table view (for power users) and Card view (for quick browsing)  
+- Negative prompt field with clear highlighting  
+- Streamlined toolbar & filters  
+
+---
+
+## 📊 Progress  
+
+**Rewrite completion status:**  
+
+- [█████████░░] 85% done  
+
+✅ Core features migrated  
+✅ Dark UI overhaul  
+✅ Table + Card views  
+✅ Negative prompt handling  
+⬜ API integration & real data wiring  
+⬜ Community feedback + polish pass  
+
+---
+
+## 🧪 Call for Beta Testers  
+
+We’d love your help testing Prompt Manager v2 before release!  
+
+- Try the new UI locally  
+- Report bugs, UI quirks, or feature requests  
+- Share feedback on usability & performance  
+
+👉 Open an [Issue](../../issues) with feedback or join the discussion in [Discussions](../../discussions).  
+
+---
+
+💡 Thanks to everyone who has supported this project—your input drives its evolution!  
+
 ## Overview
 
 ![Prompt Manager Interface](images/pm-01.png)
