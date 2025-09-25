@@ -25,21 +25,16 @@ if not hasattr(sys.modules.get("__main__", sys), _GLOBAL_INIT_FLAG):
 
 _ORIGINAL_PRINT = builtins.print
 _PRINT_REDIRECTED = False
-_ORIGINAL_GETLOGGER = logging.getLogger
 
 
 def _normalize_logger_name(name: Optional[str]) -> Optional[str]:
-    if not name:
-        return name
-    if name.startswith("promptmanager"):
-        return name
-    sanitized = name.lstrip('.')
-    return f"promptmanager.{sanitized}" if sanitized else "promptmanager"
+    """Return a clean logger name without forcing a PromptManager prefix."""
 
+    if name is None:
+        return None
 
-def _prefixed_get_logger(name: Optional[str] = None) -> logging.Logger:
-    normalized = _normalize_logger_name(name) or name
-    return _ORIGINAL_GETLOGGER(normalized)
+    normalized = name.strip().lstrip(".")
+    return normalized or None
 
 
 class LogConfig:
@@ -129,8 +124,6 @@ class LogConfig:
             format_string = format_string or cls.DEFAULT_FORMAT
             date_format = date_format or cls.DEFAULT_DATE_FORMAT
 
-            logging.getLogger = _prefixed_get_logger  # type: ignore[assignment]
-
             formatter = logging.Formatter(format_string, date_format)
             root_logger = logging.getLogger()
             root_logger.setLevel(resolved_level or (logging.CRITICAL + 10))
@@ -197,11 +190,13 @@ class LogConfig:
 
     @classmethod
     def get_logger(cls, name: str) -> logging.Logger:
-        return logging.getLogger(_normalize_logger_name(name) or name)
+        normalized = _normalize_logger_name(name) or name or "promptmanager"
+        return logging.getLogger(normalized)
 
     @classmethod
     def set_level(cls, level: int, logger_name: Optional[str] = None) -> None:
-        target = logging.getLogger(_normalize_logger_name(logger_name) or logger_name)
+        normalized = _normalize_logger_name(logger_name)
+        target = logging.getLogger(normalized if normalized is not None else logger_name)
         target.setLevel(level)
         for handler in target.handlers:
             handler.setLevel(level)
