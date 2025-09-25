@@ -11,7 +11,11 @@ from abc import abstractmethod
 from .base_gallery import BaseGallery, ViewMode, SortOrder, FilterCriteria
 from ..database import PromptDatabase, extend_prompt_database_with_gallery
 from ..utils.comfyui_integration import get_comfyui_integration
-from ..loggers import get_logger
+
+try:  # pragma: no cover - import path differs between runtime contexts
+    from promptmanager.loggers import get_logger  # type: ignore
+except ImportError:  # pragma: no cover
+    from loggers import get_logger  # type: ignore
 
 logger = get_logger(__name__)
 
