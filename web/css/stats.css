@@ -1,0 +1,199 @@
+/* Stats Page Specific Styles */
+
+/* Main content area spacing */
+.page-content {
+    padding: 2rem;
+}
+
+/* Page header with better spacing */
+.page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.page-header h1 {
+    font-size: 2rem;
+    margin: 0;
+    margin-bottom: 0.5rem;
+}
+
+.page-header p {
+    color: var(--text-secondary);
+    margin: 0;
+    font-size: 1rem;
+}
+
+/* Stats controls with proper spacing */
+.stats-controls {
+    display: flex;
+    gap: 2rem;
+    align-items: center;
+}
+
+.stats-control-group {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.stats-control-label {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.stats-select-time,
+.stats-select-gran {
+    min-width: 140px;
+    padding: 0.5rem 1rem;
+}
+
+/* Stats KPI grid with improved spacing */
+.stats-grid {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    margin-top: 2.5rem;
+    margin-bottom: 1.5rem;
+}
+
+/* Stat cards with better internal spacing */
+.stat-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 1.5rem;
+    position: relative;
+    overflow: hidden;
+}
+
+.stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 4px;
+    background: linear-gradient(90deg, var(--primary-color), var(--accent-color));
+}
+
+.stat-label {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    margin-bottom: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.stat-value {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+}
+
+.stats-value-large {
+    font-size: 1.75rem;
+}
+
+.stat-change {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.stat-change.positive {
+    color: var(--success-color);
+}
+
+.stat-change.negative {
+    color: var(--error-color);
+}
+
+/* Charts grid with better spacing */
+.charts-grid {
+    display: grid;
+    gap: 2rem;
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    margin-top: 3rem;
+    margin-bottom: 2rem;
+}
+
+/* Chart cards with padding */
+.card {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 2rem;
+    min-height: 400px;
+    margin-bottom: 1.5rem;
+}
+
+.chart-title {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin: 0;
+    margin-bottom: 2rem;
+    color: var(--text-primary);
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+/* Canvas elements with proper sizing */
+canvas {
+    width: 100% !important;
+    height: 320px !important;
+    display: block;
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+/* Full width chart */
+.chart-full-width {
+    grid-column: 1 / -1;
+}
+
+/* Responsive adjustments */
+@media (max-width: 1024px) {
+    .charts-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .stats-controls {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1rem;
+    }
+}
+
+@media (max-width: 768px) {
+    .page-content {
+        padding: 1.5rem;
+    }
+
+    .page-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1rem;
+    }
+
+    .stats-grid {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+    }
+
+    .charts-grid {
+        gap: 1.5rem;
+    }
+
+    .stat-value {
+        font-size: 1.75rem;
+    }
+
+    .stats-value-large {
+        font-size: 1.5rem;
+    }
+}

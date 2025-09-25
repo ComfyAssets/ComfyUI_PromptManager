@@ -1,0 +1,52 @@
+/* Logs Page Specific Styles */
+
+.logs-controls {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 1rem;
+    background: var(--space-dark);
+    border-radius: 1rem;
+    margin-bottom: 1rem;
+}
+
+.log-viewer {
+    background: var(--space-void);
+    border: 1px solid rgba(139, 92, 246, 0.2);
+    border-radius: 1rem;
+    padding: 1rem;
+}
+
+textarea.log-content {
+    width: 100%;
+    min-height: 60vh;
+    background: transparent;
+    color: var(--text-primary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.8125rem;
+    border: none;
+    padding: 0;
+    resize: none;
+    outline: none;
+}
+
+.log-meta {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    margin-bottom: 1rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid rgba(139, 92, 246, 0.2);
+}
+
+@media (max-width: 768px) {
+    .logs-controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .logs-controls > * {
+        flex: 1;
+        min-width: 0;
+    }
+}

@@ -1,0 +1,141 @@
+/* Blue Theme Override - Applied on top of style.css */
+
+:root {
+  /* Override purple/pink with blue colors */
+  --electric-purple: #3b82f6 !important;
+  --neon-pink: #2563eb !important;
+
+  /* Blue gradient definitions */
+  --gradient-brand: linear-gradient(to right, #3b82f6, #2563eb, #1d4ed8) !important;
+  --gradient-hover: linear-gradient(to right, #60a5fa, #3b82f6, #2563eb) !important;
+
+  /* Blue shadows and glows */
+  --glow-purple: 0 0 20px rgba(59, 130, 246, 0.3) !important;
+  --glow-pink: 0 0 20px rgba(37, 99, 235, 0.3) !important;
+
+  /* Blue borders */
+  --border-subtle: rgba(59, 130, 246, 0.1) !important;
+  --border-default: rgba(59, 130, 246, 0.2) !important;
+  --border-strong: rgba(59, 130, 246, 0.3) !important;
+}
+
+/* Brand badge with proper blue gradient */
+.brand-badge,
+.logo-badge {
+  background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 50%, #2563eb 100%) !important;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.25) !important;
+}
+
+/* Buttons with blue gradient like your example */
+.btn {
+  border-radius: 8px !important;
+  transition: all 200ms !important;
+}
+
+.btn-primary {
+  background: linear-gradient(to right, #60a5fa, #3b82f6, #2563eb) !important;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
+  color: white !important;
+  font-weight: 600 !important;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3) !important;
+}
+
+/* Plus icon in buttons */
+.btn-icon-plus {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  margin-right: 0.25rem;
+}
+
+.btn-icon-plus::before {
+  content: '\f067';
+  font-family: 'Font Awesome 6 Free';
+  font-weight: 900;
+  font-size: 1.2rem;
+  color: white;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+}
+
+.btn-primary:hover,
+.btn-primary:focus-visible {
+  transform: none !important;
+  box-shadow: 0 10px 15px -3px rgba(59, 130, 246, 0.3), 0 4px 6px -2px rgba(59, 130, 246, 0.2) !important;
+  background: linear-gradient(to right, #93c5fd, #60a5fa, #3b82f6) !important;
+}
+
+.btn-secondary:hover {
+  border-color: #3b82f6 !important;
+}
+
+/* Active nav items */
+.nav-item.active {
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.1), transparent) !important;
+  border-left-color: #3b82f6 !important;
+}
+
+.nav-item:hover::before {
+  background: #3b82f6 !important;
+}
+
+/* Chips with blue theme - improved visibility */
+.chip {
+  background: rgba(255, 255, 255, 0.12) !important;
+  border: 1px solid rgba(255, 255, 255, 0.25) !important;
+  color: rgba(255, 255, 255, 0.95) !important;
+  font-weight: 500 !important;
+}
+
+.chip:hover {
+  background: rgba(255, 255, 255, 0.18) !important;
+  border-color: rgba(255, 255, 255, 0.35) !important;
+  color: white !important;
+}
+
+.chip-purple {
+  background: linear-gradient(135deg, #3b82f6, #2563eb) !important;
+  border-color: rgba(96, 165, 250, 0.5) !important;
+  color: white !important;
+  font-weight: 600 !important;
+}
+
+.chip-success {
+  background: rgba(34, 197, 94, 0.2) !important;
+  border-color: rgba(34, 197, 94, 0.4) !important;
+  color: #86efac !important;
+  font-weight: 500 !important;
+}
+
+.chip-warning {
+  background: rgba(251, 191, 36, 0.2) !important;
+  border-color: rgba(251, 191, 36, 0.4) !important;
+  color: #fde68a !important;
+  font-weight: 500 !important;
+}
+
+/* Progress bars */
+.progress-bar {
+  background: linear-gradient(90deg, #3b82f6, #2563eb) !important;
+}
+
+/* Search input focus */
+.search-input:focus {
+  border-color: #3b82f6 !important;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1) !important;
+}
+
+/* Tabs */
+.tab.active {
+  background: linear-gradient(135deg, #3b82f6, #2563eb) !important;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.25) !important;
+}
+
+/* Card hover effects */
+.card:hover {
+  border-color: #3b82f6 !important;
+}
+
+/* Stat card gradients */
+.stat-card::before {
+  background: linear-gradient(135deg, #3b82f6, #2563eb) !important;
+}

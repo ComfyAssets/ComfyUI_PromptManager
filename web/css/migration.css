@@ -1,0 +1,276 @@
+:root {
+    --migration-modal-width: min(780px, 90vw);
+    --migration-gap: 16px;
+    --migration-accent: #4CAF50;
+    --migration-warning: #FF9800;
+    --migration-error: #F44336;
+}
+
+.migration-modal {
+    max-width: var(--migration-modal-width);
+    display: flex;
+    flex-direction: column;
+}
+
+.migration-header,
+.migration-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--migration-gap);
+}
+
+.migration-title {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.migration-body {
+    padding: var(--migration-gap);
+}
+
+.migration-welcome {
+    display: flex;
+    flex-direction: column;
+    gap: var(--migration-gap);
+}
+
+.migration-stats {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.stat-item {
+    background-color: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 12px;
+    text-align: center;
+}
+
+.stat-label {
+    display: block;
+    font-size: var(--font-size-xs, 12px);
+    color: var(--color-text-tertiary, #aaa);
+}
+
+.stat-value {
+    font-size: var(--font-size-lg, 20px);
+    font-weight: 600;
+}
+
+.migration-options {
+    display: grid;
+    gap: var(--migration-gap);
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.option-card {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 16px;
+    background: rgba(255, 255, 255, 0.02);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.option-card.recommended {
+    border-color: var(--migration-accent);
+    box-shadow: 0 0 0 1px rgba(76, 175, 80, 0.3);
+}
+
+.option-card ul {
+    margin: 0;
+    padding-left: 18px;
+    font-size: var(--font-size-sm, 14px);
+    color: var(--color-text-secondary, #ccc);
+}
+
+.migration-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.progress-bar {
+    position: relative;
+    height: 8px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    width: 0;
+    height: 100%;
+    background: linear-gradient(90deg, var(--migration-accent), #7ce0a7);
+    transition: width 0.4s ease;
+}
+
+.progress-status {
+    font-size: var(--font-size-sm, 14px);
+    color: var(--color-text-secondary, #ccc);
+}
+
+.progress-steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 6px;
+}
+
+.progress-steps li {
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    font-size: var(--font-size-sm, 14px);
+}
+
+.progress-steps li.complete {
+    background: rgba(76, 175, 80, 0.15);
+    color: var(--migration-accent);
+}
+
+.progress-steps li.active {
+    border: 1px solid var(--migration-accent);
+}
+
+.migration-result {
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 12px;
+    padding: 16px;
+}
+
+.result-success,
+.result-error {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.result-success h3,
+.result-error h3 {
+    margin: 0;
+}
+
+.result-stats {
+    display: grid;
+    gap: 6px;
+}
+
+.result-backup {
+    font-size: var(--font-size-sm, 14px);
+    color: var(--color-text-secondary, #ccc);
+}
+
+.result-error .error-message {
+    background: rgba(244, 67, 54, 0.12);
+    border: 1px solid rgba(244, 67, 54, 0.25);
+    border-radius: 8px;
+    padding: 12px;
+}
+
+.migration-footer-note {
+    color: var(--color-text-tertiary, #aaa);
+    font-size: var(--font-size-sm, 13px);
+}
+
+.btn-remind-later {
+    color: var(--migration-accent);
+    border-color: transparent;
+    background: transparent;
+    text-decoration: none;
+}
+
+.btn-remind-later:hover,
+.btn-remind-later:focus-visible {
+    color: #7ce0a7;
+    text-decoration: underline;
+}
+
+.migration-icon {
+    font-size: 24px;
+    line-height: 1;
+}
+
+.migration-description {
+    margin: 0;
+    color: var(--color-text-secondary, #ccc);
+}
+
+.migration-status-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.migration-status-icon {
+    font-size: 20px;
+}
+
+.migration-status-text {
+    font-size: var(--font-size-md, 16px);
+}
+
+.migration-status--info {
+    color: var(--color-text-secondary, #ccc);
+}
+
+.migration-status--success {
+    color: var(--migration-accent);
+}
+
+.migration-status--warning {
+    color: var(--migration-warning);
+}
+
+.migration-status--error {
+    color: var(--migration-error);
+}
+
+.migration-summary-list {
+    margin: 8px 0 0;
+    padding-left: 18px;
+    color: var(--color-text-secondary, #ccc);
+    font-size: var(--font-size-sm, 14px);
+}
+
+.migration-result-message {
+    margin: 0;
+}
+
+.migration-result-message.is-error {
+    color: var(--migration-error);
+}
+
+.migration-result-message.is-success {
+    color: var(--migration-accent);
+}
+
+.migration-debug-output {
+    background: #222;
+    padding: 10px;
+    border-radius: 8px;
+    color: #fff;
+    font-size: var(--font-size-xs, 12px);
+}
+
+.migration-controls {
+    margin-top: 20px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.migration-results {
+    margin-top: 20px;
+}
+
+.is-hidden {
+    display: none !important;
+}

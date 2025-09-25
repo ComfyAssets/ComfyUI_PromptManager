@@ -1,0 +1,141 @@
+/* Updated Prompt Card Design */
+.prompt-item {
+  background: var(--card-dark);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  overflow: hidden;
+  transition: all var(--transition-base);
+  position: relative;
+  display: flex;
+}
+
+/* Prompt text container and toggle button */
+.prompt-text-container {
+  position: relative;
+  padding-bottom: 0.5rem;
+}
+
+.prompt-toggle-btn {
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+  padding: 0.25rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  cursor: pointer;
+  margin-top: 0.5rem;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.prompt-toggle-btn:hover {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: rgba(96, 165, 250, 0.4);
+  transform: translateY(-1px);
+}
+
+.prompt-toggle-btn i {
+  font-size: 0.75rem;
+  transition: transform 0.2s ease;
+}
+
+.prompt-item:hover {
+  border-color: rgba(96, 165, 250, 0.3);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.prompt-checkbox {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+  accent-color: #3b82f6;
+  z-index: 10;
+}
+
+.prompt-main-content {
+  flex: 1;
+  padding-left: 3rem; /* Space for checkbox */
+}
+
+.prompt-content {
+  padding: 1rem 1.5rem;
+  position: relative;
+}
+
+.prompt-content:hover .copy-icon {
+  opacity: 1;
+}
+
+.copy-icon {
+  position: absolute;
+  right: 1rem;
+  top: 0.5rem;
+  background: rgba(59, 130, 246, 0.2);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 6px;
+  padding: 0.25rem 0.5rem;
+  color: #60a5fa;
+  font-size: 0.875rem;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.2s ease;
+}
+
+.copy-icon:hover {
+  background: rgba(59, 130, 246, 0.3);
+  transform: scale(1.05);
+}
+
+.prompt-side-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem 0.5rem;
+  background: transparent;
+  border-left: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.prompt-side-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--transition-base);
+  font-size: 1.2rem;
+  padding: 0;
+}
+
+.prompt-side-btn:hover {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: rgba(96, 165, 250, 0.3);
+  color: var(--text-primary);
+  transform: scale(1.05);
+}
+
+.prompt-side-btn--danger {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.25);
+  color: #fca5a5;
+}
+
+.prompt-side-btn--danger:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.38);
+  color: #fff;
+}
+
+
+}

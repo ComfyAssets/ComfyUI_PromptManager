@@ -1,0 +1,39 @@
+/* Base styles for PromptManager new design (responsive + retina-safe hairlines) */
+:root {
+  --brand: #4f46e5;
+  --accent: #00d1b2;
+  --pos: #22c55e;
+  --neg: #ef4444;
+  --surface-0: #0f1319;
+  --surface-50: #131822;
+  --surface-100: #161b26;
+  --surface-200: #1a1f2b;
+  --text-900: #e6e8ec;
+  --text-700: #b2bac7;
+  --text-500: #96a0ad;
+  --container-max: 1300px;
+}
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--surface-0);
+  color: var(--text-900);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans";
+  font-size: clamp(15px, 1.05vw + 0.2rem, 16px);
+  line-height: 1.35;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+.muted { color: var(--text-500); }
+.hairline { position: relative; height: 1px; }
+.hairline::after { content: ""; position: absolute; left:0; right:0; top:0; height:1px; background: rgba(255,255,255,.12); transform-origin: top left; }
+@media (min-resolution: 2dppx) { .hairline::after { transform: scaleY(.5); } }
+@media (min-resolution: 3dppx) { .hairline::after { transform: scaleY(.3334); } }
+
+/* Make main content stretch to push footer to the bottom */
+main, .layout, .wrap, .container {
+  flex: 1 0 auto;
+}

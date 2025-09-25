@@ -1,0 +1,167 @@
+/* Collections Page Specific Styles */
+
+/* Main content area spacing */
+.page-content {
+    padding: 2rem;
+}
+
+/* Page header with better spacing */
+.page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.page-header h1 {
+    font-size: 2rem;
+    margin: 0;
+    margin-bottom: 0.5rem;
+}
+
+.page-header p {
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+/* Collections header actions */
+.collections-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.collections-input-new {
+    min-width: 250px;
+}
+
+/* Collections grid with improved spacing */
+.collections-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 2rem;
+    margin-top: 2rem;
+}
+
+/* Collection card with better internal spacing */
+.collection-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 1.5rem;
+    transition: all 0.2s ease;
+    cursor: pointer;
+}
+
+.collection-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    border-color: var(--primary-color);
+}
+
+.collection-card-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.collection-card-icon {
+    font-size: 2.5rem;
+    line-height: 1;
+    padding: 0.5rem;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+}
+
+.collection-card-title {
+    margin: 0;
+    margin-bottom: 0.5rem;
+    font-size: 1.25rem;
+    font-weight: 600;
+}
+
+.collection-card-type {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    margin: 0;
+    line-height: 1.4;
+}
+
+/* Collection card actions */
+.collection-card-actions {
+    display: flex;
+    gap: 0.75rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border-color);
+}
+
+.btn-sm {
+    padding: 0.5rem 1rem;
+    font-size: 0.9rem;
+}
+
+/* Empty state with better spacing */
+.collections-empty-state {
+    text-align: center;
+    padding: 4rem 2rem;
+    color: var(--text-secondary);
+}
+
+.collections-empty-icon {
+    font-size: 4rem;
+    opacity: 0.5;
+    margin-bottom: 1.5rem;
+}
+
+.collections-empty-title {
+    font-size: 1.5rem;
+    margin: 0;
+    margin-bottom: 1rem;
+    color: var(--text-primary);
+}
+
+.collections-empty-text {
+    font-size: 1rem;
+    margin: 0;
+    max-width: 400px;
+    margin: 0 auto;
+    line-height: 1.6;
+}
+
+/* Card container with padding */
+.card {
+    background: var(--card-bg);
+    border-radius: 12px;
+    padding: 2rem;
+    margin-top: 2rem;
+    min-height: 400px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .page-content {
+        padding: 1.5rem;
+    }
+
+    .collections-grid {
+        grid-template-columns: 1fr;
+        gap: 1.5rem;
+    }
+
+    .page-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1rem;
+    }
+
+    .collections-header-actions {
+        width: 100%;
+    }
+
+    .collections-input-new {
+        flex: 1;
+    }
+}

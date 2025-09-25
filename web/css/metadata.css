@@ -1,0 +1,64 @@
+/* Metadata Page Specific Styles */
+
+.drop-zone {
+    border: 2px dashed rgba(139, 92, 246, 0.3);
+    border-radius: 1rem;
+    background: var(--space-dark);
+    transition: all 0.2s ease;
+}
+
+.drop-zone.large {
+    width: min(100%, 800px);
+    aspect-ratio: 16/10;
+    display: grid;
+    place-items: center;
+    margin: 2rem auto;
+}
+
+.drop-zone.small {
+    width: 100%;
+    padding: 1rem;
+    margin: 1rem 0;
+}
+
+.drop-zone.drag {
+    border-color: var(--electric-purple);
+    background: rgba(139, 92, 246, 0.1);
+}
+
+.metadata-grid {
+    display: grid;
+    gap: 1.5rem;
+    grid-template-columns: 1fr 1fr;
+}
+
+@media (max-width: 768px) {
+    .metadata-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .drop-zone.large {
+        margin: 1rem;
+    }
+}
+
+pre {
+    white-space: pre-wrap;
+    background: var(--space-void);
+    border: 1px solid rgba(139, 92, 246, 0.2);
+    border-radius: 0.75rem;
+    padding: 1rem;
+    font-size: 0.8125rem;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+img.preview {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    max-height: 500px;
+    border-radius: 0.75rem;
+    border: 1px solid rgba(139, 92, 246, 0.2);
+    object-fit: contain;
+}
