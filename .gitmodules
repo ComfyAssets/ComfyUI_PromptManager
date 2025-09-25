@@ -1,0 +1,3 @@
+[submodule "web/vendor/viewerjs"]
+	path = web/vendor/viewerjs
+	url = https://github.com/fengyuanchen/viewerjs.git
