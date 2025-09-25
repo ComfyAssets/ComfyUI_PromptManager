@@ -1,0 +1,1132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PromptManager - Dashboard</title>
+    <link rel="stylesheet" href="/prompt_manager/css/style.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/blue-theme-update.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/prompt-card-update.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/components.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/dashboard.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/notifications.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/migration.css" />
+
+    <!-- Scan Modal Styles -->
+    <style>
+      /* Base Modal Styles */
+      .modal {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 1000;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.8);
+      }
+
+      .modal-backdrop {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+      }
+
+      .modal-content {
+        position: relative;
+        background: #1a1a1a;
+        border-radius: 12px;
+        border: 1px solid #333;
+        max-width: 600px;
+        width: 90%;
+        max-height: 80vh;
+        overflow-y: auto;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+      }
+
+      .modal-header {
+        padding: 24px 24px 0 24px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .modal-title {
+        margin: 0;
+        color: #ffffff;
+        font-size: 24px;
+        font-weight: 600;
+      }
+
+      .modal-close {
+        background: none;
+        border: none;
+        color: #888;
+        font-size: 24px;
+        cursor: pointer;
+        padding: 4px;
+        line-height: 1;
+        transition: color 0.2s;
+      }
+
+      .modal-close:hover {
+        color: #ffffff;
+      }
+
+      .modal-body {
+        padding: 24px;
+      }
+
+      .modal-footer {
+        padding: 0 24px 24px 24px;
+        display: flex;
+        justify-content: flex-end;
+        gap: 12px;
+      }
+
+      /* Scan Modal Specific Styles */
+      .scan-step {
+        min-height: 200px;
+      }
+
+      .scan-info {
+        display: flex;
+        gap: 20px;
+        align-items: flex-start;
+      }
+
+      .scan-info-icon {
+        flex-shrink: 0;
+        width: 60px;
+        height: 60px;
+        background: #0066cc;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-size: 24px;
+      }
+
+      .scan-info-content h3 {
+        margin: 0 0 12px 0;
+        color: #ffffff;
+        font-size: 20px;
+      }
+
+      .scan-info-content p {
+        margin: 0 0 20px 0;
+        color: #cccccc;
+        line-height: 1.5;
+      }
+
+      .scan-details h4 {
+        margin: 0 0 12px 0;
+        color: #ffffff;
+        font-size: 16px;
+      }
+
+      .scan-details ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .scan-details li {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 8px 0;
+        color: #cccccc;
+      }
+
+      .scan-details li i {
+        color: #0066cc;
+        width: 16px;
+        text-align: center;
+      }
+
+      .scan-warning {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 16px;
+        background: #2a1f00;
+        border: 1px solid #665500;
+        border-radius: 8px;
+        margin-top: 20px;
+      }
+
+      .scan-warning i {
+        color: #ffaa00;
+        font-size: 18px;
+      }
+
+      .scan-warning span {
+        color: #ffcc66;
+        font-size: 14px;
+      }
+
+      /* Progress Styles */
+      .progress-container {
+        padding: 20px 0;
+      }
+
+      .progress-bar-container {
+        width: 100%;
+        height: 12px;
+        background: #333;
+        border-radius: 6px;
+        overflow: hidden;
+        margin-bottom: 16px;
+      }
+
+      .progress-bar {
+        height: 100%;
+        background: linear-gradient(90deg, #0066cc, #0099ff);
+        width: 0%;
+        transition: width 0.3s ease;
+        border-radius: 6px;
+      }
+
+      .progress-status {
+        font-size: 18px;
+        color: #ffffff;
+        margin-bottom: 8px;
+        text-align: center;
+      }
+
+      .progress-stats {
+        text-align: center;
+        color: #888;
+        font-size: 14px;
+      }
+
+      /* Results Styles */
+      .scan-results {
+        text-align: center;
+        padding: 20px 0;
+      }
+
+      .results-icon {
+        margin-bottom: 16px;
+      }
+
+      .results-icon i {
+        font-size: 48px;
+        color: #00cc66;
+      }
+
+      .scan-results h3 {
+        margin: 0 0 24px 0;
+        color: #ffffff;
+        font-size: 24px;
+      }
+
+      .results-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 20px;
+        margin-top: 24px;
+      }
+
+      .result-item {
+        text-align: center;
+      }
+
+      .result-number {
+        font-size: 32px;
+        font-weight: bold;
+        color: #0066cc;
+        margin-bottom: 8px;
+      }
+
+      .result-label {
+        font-size: 14px;
+        color: #888;
+      }
+
+      /* Button adjustments */
+      #startScanBtn i {
+        margin-right: 8px;
+      }
+    </style>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+      integrity="sha512-SnH5WK+bZxgPHs44uWIX+LLJAJ9/2PkPKZ5QiAj6Ta86w+fsb2TkcmfRyVX3pBnMFcV7oQPJkl9QevSCWr3W6A=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    />
+    <!-- ViewerJS CSS -->
+    <link rel="stylesheet" href="/prompt_manager/vendor/viewerjs/dist/viewer.min.css" />
+
+    <!-- Modal CSS -->
+    <link rel="stylesheet" href="/prompt_manager/css/scan-modal.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/maintenance-modal.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/progress-modal.css" />
+
+</head>
+  <body>
+    <div class="app-container">
+      <!-- Mobile Menu Toggle -->
+      <button class="mobile-menu-toggle">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="3" y1="6" x2="21" y2="6" />
+          <line x1="3" y1="12" x2="21" y2="12" />
+          <line x1="3" y1="18" x2="21" y2="18" />
+        </svg>
+      </button>
+
+      <!-- Sidebar -->
+      <aside class="sidebar mobile-hidden" id="sidebar">
+        <div class="sidebar-header">
+          <div id="brand-badge" class="brand-badge">PM</div>
+          <div>
+            <div class="sidebar-header-title">PromptManager</div>
+            <div class="sidebar-header-subtitle">
+              Professional Suite
+            </div>
+          </div>
+        </div>
+
+                                                <nav class="nav-menu">
+          <a href="/prompt_manager/" class="nav-item">
+            <i class="fa-solid fa-house nav-icon" aria-hidden="true"></i>
+            <span>Home</span>
+          </a>
+          <a href="/prompt_manager/dashboard" class="nav-item active">
+            <i class="fa-solid fa-chart-line nav-icon" aria-hidden="true"></i>
+            <span>Dashboard</span>
+          </a>
+          <a href="/prompt_manager/gallery" class="nav-item">
+            <i class="fa-solid fa-images nav-icon" aria-hidden="true"></i>
+            <span>Gallery</span>
+          </a>
+          <a href="/prompt_manager/collections" class="nav-item">
+            <i class="fa-solid fa-folder-tree nav-icon" aria-hidden="true"></i>
+            <span>Collections</span>
+          </a>
+          <a href="/prompt_manager/stats" class="nav-item">
+            <i class="fa-solid fa-chart-column nav-icon" aria-hidden="true"></i>
+            <span>Stats</span>
+          </a>
+          <a href="/prompt_manager/metadata" class="nav-item">
+            <i class="fa-solid fa-tags nav-icon" aria-hidden="true"></i>
+            <span>Metadata</span>
+          </a>
+          <a href="/prompt_manager/settings" class="nav-item">
+            <i class="fa-solid fa-gear nav-icon" aria-hidden="true"></i>
+            <span>Settings</span>
+          </a>
+          <a href="/prompt_manager/logs" class="nav-item">
+            <i class="fa-solid fa-clipboard-list nav-icon" aria-hidden="true"></i>
+            <span>Logs</span>
+          </a>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="progress progress-mb-sm">
+            <div class="progress-bar progress-width-65"></div>
+          </div>
+          <div class="sidebar-header-subtitle">
+            Storage: 6.5GB / 10GB
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main Content -->
+      <main class="main-content">
+        <!-- Top Bar -->
+        <header class="topbar">
+          <div class="search-container">
+            <input
+              type="text"
+              class="search-input"
+              placeholder="Search prompts, models, or tags..."
+              id="searchInput"
+            />
+            <span class="search-key-hint">/</span>
+          </div>
+        </header>
+
+        <!-- Content -->
+        <div class="content-wrapper">
+          <!-- Page Header -->
+          <div class="page-header">
+            <h1 class="page-title">Dashboard</h1>
+            <p class="page-subtitle">Manage your prompts efficiently</p>
+          </div>
+
+          <!-- Quick Actions -->
+          <div class="quick-actions">
+            <button class="btn btn-primary" data-action="add-prompt">
+              <span class="btn-icon-plus" aria-hidden="true"></span>
+              <span>New Prompt</span>
+            </button>
+            <button class="btn btn-secondary" data-action="import-prompts">
+              <span><i class="fa-solid fa-file-import" aria-hidden="true"></i></span>
+              <span>Import</span>
+            </button>
+            <button class="btn btn-secondary" data-action="export-prompts">
+              <span><i class="fa-solid fa-file-export" aria-hidden="true"></i></span>
+              <span>Export</span>
+            </button>
+          </div>
+
+          <!-- Stats Grid -->
+          <div class="dashboard-grid">
+            <div class="stat-card" id="statTotalPromptsCard">
+              <div class="stat-label">Total Prompts</div>
+              <div class="stat-value" id="statTotalPrompts">0</div>
+              <div class="stat-change" id="statAverageRating">Avg. rating: 0.0</div>
+            </div>
+            <div class="stat-card" id="statRatedPromptsCard">
+              <div class="stat-label">Rated Prompts</div>
+              <div class="stat-value" id="statRatedPrompts">0</div>
+              <div class="stat-change" id="statRatedShare">Rated share: 0%</div>
+            </div>
+            <div class="stat-card" id="statTagsCard">
+              <div class="stat-label">Unique Tags</div>
+              <div class="stat-value" id="statUniqueTags">0</div>
+              <div class="stat-change" id="statTopCategory">Top category: —</div>
+            </div>
+            <div class="stat-card" id="statImagesCard">
+              <div class="stat-label">Linked Images</div>
+              <div class="stat-value" id="statLinkedImages">0</div>
+              <div class="stat-change" id="statImagesPerPrompt">Images per prompt: 0</div>
+            </div>
+          </div>
+
+          <!-- Filter Bar -->
+          <div class="filter-bar">
+            <div class="filter-group">
+              <label class="filter-label">Model</label>
+              <select class="select">
+                <option>All Models</option>
+                <option>FLUX</option>
+                <option>HiDream</option>
+                <option>HunYuan</option>
+                <option>Illustrious</option>
+                <option>Pony</option>
+                <option>Qwen</option>
+                <option>Wan</option>
+                <option>SD 1.5</option>
+                <option>SDXL</option>
+                <option>SD 3.5</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <label class="filter-label">Tags</label>
+              <select class="select">
+                <option>All Tags</option>
+                <option>Portrait</option>
+                <option>Landscape</option>
+                <option>Abstract</option>
+                <option>Fantasy</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <label class="filter-label">Sort By</label>
+              <select class="select">
+                <option>Newest First</option>
+                <option>Oldest First</option>
+                <option>Most Used</option>
+                <option>Highest Rated</option>
+              </select>
+            </div>
+            <button class="btn btn-primary">Apply Filters</button>
+          </div>
+
+          <!-- Sticky Actions Bar -->
+          <div class="sticky-actions-bar">
+          <div class="sticky-actions-container">
+            <button class="action-btn" data-action="select-all" title="Select all visible prompts">
+              <input type="checkbox" class="select-all-checkbox" aria-label="Select all visible prompts" />
+              <span>Select All</span>
+            </button>
+            <button class="action-btn action-btn-danger" data-action="delete-selected" title="Delete selected prompts" disabled>
+              <i class="fa-solid fa-trash-can" aria-hidden="true"></i> <span>Delete Selected</span>
+            </button>
+            <button class="action-btn" data-action="add-tags" title="Add tags to selected prompts" disabled>
+              <i class="fa-solid fa-tags" aria-hidden="true"></i> <span>Add Tags</span>
+            </button>
+            <button class="action-btn" data-action="add-collections" title="Add selected prompts to a collection" disabled>
+              <i class="fa-solid fa-folder" aria-hidden="true"></i> <span>Add to Collections</span>
+            </button>
+            <button class="action-btn" data-action="export-selected" title="Export selected prompts" disabled>
+              <i class="fa-solid fa-file-export" aria-hidden="true"></i> <span>Export</span>
+            </button>
+            <button class="action-btn action-btn-secondary" data-action="run-maintenance" title="Database maintenance tools">
+              <i class="fa-solid fa-wrench" aria-hidden="true"></i> <span>Maintenance</span>
+            </button>
+            <button class="action-btn action-btn-secondary" data-action="scan-images" title="Scan images (coming soon)" disabled>
+              <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i> <span>Scan Images</span>
+            </button>
+            <span class="selection-count" id="selectionCount">No prompts selected</span>
+          </div>
+        </div>
+
+          <!-- Prompt List -->
+          <div class="prompt-list" id="promptList">
+            <div class="prompt-list-empty" id="promptListEmpty" hidden>
+              <p>No prompts found yet. Start creating or import your legacy library.</p>
+            </div>
+          </div>
+
+          <div class="pagination-bar" id="promptPagination" hidden></div>
+
+          <!-- Empty State (hidden by default) -->
+          <div class="empty-container empty-state-hidden" id="emptyState">
+            <div class="empty-icon">📭</div>
+            <h3>No prompts found</h3>
+            <p class="empty-text">
+              Start by creating a new prompt or importing existing ones
+            </p>
+            <button class="btn btn-primary" data-action="add-prompt">
+              <span class="btn-icon-plus" aria-hidden="true"></span>
+              <span>Create First Prompt</span>
+            </button>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+      <div class="spinner"></div>
+    </div>
+
+    <!-- Create Prompt Modal -->
+    <div class="modal-overlay" id="createPromptModal" hidden>
+      <div class="modal-container">
+        <div class="modal-header">
+          <h2 class="modal-title">Create New Prompt</h2>
+          <button type="button" class="modal-close" aria-label="Close create prompt modal">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 6L6 18M6 6l12 12"></path>
+            </svg>
+          </button>
+        </div>
+        
+        <div class="modal-body">
+          <!-- Model Selection -->
+          <div class="model-selection">
+            <div class="model-tabs">
+              <button class="model-tab active" data-model="flux">
+                <span class="model-icon"><i class="fa-solid fa-bolt" aria-hidden="true"></i></span>
+                <span>FLUX</span>
+              </button>
+              <button class="model-tab" data-model="sd">
+                <span class="model-icon">🎨</span>
+                <span>Stable Diffusion</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Form Fields -->
+          <form class="prompt-form" id="promptForm">
+            <div class="input-group">
+              <label class="label">Tags</label>
+              <input type="text" class="input" id="promptTags" placeholder="portrait, fantasy, digital art...">
+            </div>
+
+            <div class="input-group">
+              <label class="label">Positive Prompt *</label>
+              <textarea class="textarea large" id="positivePrompt" placeholder="Describe what you want to generate..." required></textarea>
+            </div>
+
+            <div class="input-group negative-prompt-group">
+              <label class="label">Negative Prompt</label>
+              <textarea class="textarea large" id="negativePrompt" placeholder="Describe what you want to avoid..."></textarea>
+            </div>
+          </form>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="cancel-modal">
+            Cancel
+          </button>
+          <button type="submit" class="btn btn-primary" data-action="create-prompt">
+            <span>✨</span>
+            <span>Create Prompt</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit Prompt Modal -->
+    <div class="modal-overlay" id="editPromptModal" hidden>
+      <div class="modal-container">
+        <div class="modal-header">
+          <h2 class="modal-title">Edit Prompt</h2>
+          <button type="button" class="modal-close" data-action="close-edit-modal" aria-label="Close edit prompt modal">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 6L6 18M6 6l12 12"></path>
+            </svg>
+          </button>
+        </div>
+
+        <div class="modal-body">
+          <form class="prompt-form" id="editPromptForm">
+            <div class="form-row">
+              <div class="input-group">
+                <label class="label" for="editPromptCategory">Category</label>
+                <input type="text" class="input" id="editPromptCategory" placeholder="e.g. portraits" />
+              </div>
+              <div class="input-group">
+                <label class="label" for="editPromptTags">Tags</label>
+                <input type="text" class="input" id="editPromptTags" placeholder="Comma separated tags" />
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="input-group">
+                <label class="label" for="editPromptRating">Rating</label>
+                <input type="number" class="input" id="editPromptRating" placeholder="0-5" min="0" max="5" step="1" />
+              </div>
+              <div class="input-group">
+                <label class="label" for="editPromptNotes">Notes</label>
+                <textarea class="textarea" id="editPromptNotes" rows="3" placeholder="Add any notes"></textarea>
+              </div>
+            </div>
+
+            <div class="prompt-content prompt-positive">
+              <div class="label prompt-label">✅ Positive Prompt</div>
+              <textarea class="textarea large" id="editPositivePrompt" placeholder="Positive prompt text" required></textarea>
+            </div>
+
+            <div class="prompt-content prompt-negative">
+              <div class="label prompt-label">⛔ Negative Prompt</div>
+              <textarea class="textarea large" id="editNegativePrompt" placeholder="Negative prompt text"></textarea>
+            </div>
+          </form>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="cancel-edit-modal">
+            Cancel
+          </button>
+          <button type="submit" class="btn btn-primary" data-action="save-edit-prompt" form="editPromptForm">
+            Save Changes
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Delete Selected Modal -->
+    <div class="modal-overlay" id="deleteSelectedModal" hidden>
+      <div class="modal-container">
+        <div class="modal-header">
+          <h2 class="modal-title">Delete Prompts</h2>
+          <button type="button" class="modal-close" data-action="close-delete-modal" aria-label="Close delete prompts modal">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 6L6 18M6 6l12 12"></path>
+            </svg>
+          </button>
+        </div>
+
+        <div class="modal-body">
+          <p class="modal-subtitle">Deleting prompts is permanent. The following prompts will be removed:</p>
+          <div class="delete-summary" id="deleteSummary"></div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="cancel-delete-modal">Cancel</button>
+          <button type="button" class="btn btn-danger" data-action="confirm-delete-selected">Delete</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add Tags Modal -->
+    <div class="modal-overlay" id="addTagsModal" hidden>
+      <div class="modal-container">
+        <div class="modal-header">
+          <h2 class="modal-title">Add Tags</h2>
+          <button type="button" class="modal-close" data-action="close-add-tags-modal" aria-label="Close add tags modal">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 6L6 18M6 6l12 12"></path>
+            </svg>
+          </button>
+        </div>
+
+        <div class="modal-body">
+          <p class="modal-subtitle">Tags added here will be appended to each selected prompt. Duplicates are ignored.</p>
+          <div class="blur-tag-modal-list" id="addTagsList"></div>
+          <div class="blur-tag-modal-controls">
+            <input type="text" class="input" id="addTagInput" placeholder="Type tag names (comma to add)" />
+            <button type="button" class="btn btn-secondary" data-action="add-tag-token">Add</button>
+          </div>
+          <div class="tag-suggestions" id="tagSuggestions"></div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="cancel-add-tags-modal">Cancel</button>
+          <button type="button" class="btn btn-primary" data-action="apply-add-tags">Apply Tags</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="prompt-gallery-overlay" id="promptGalleryOverlay" hidden>
+      <div class="prompt-gallery-dialog" role="dialog" aria-modal="true" aria-labelledby="promptGalleryTitle">
+        <div class="prompt-gallery-header">
+          <h2 class="prompt-gallery-title" id="promptGalleryTitle">Prompt Gallery</h2>
+          <button type="button" class="prompt-gallery-close" data-action="close-gallery" aria-label="Close gallery">
+            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+          </button>
+        </div>
+        <div class="prompt-gallery-body">
+          <p class="prompt-gallery-status" id="promptGalleryStatus" hidden>Loading images…</p>
+          <div class="prompt-gallery-grid" id="promptGalleryGrid"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scan Images Modal -->
+    <div class="modal" id="scanModal" style="display: none;">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 class="modal-title">Scan ComfyUI Images</h2>
+          <button class="modal-close" data-action="close-scan-modal">&times;</button>
+        </div>
+        <div class="modal-body">
+          <!-- Confirmation Step -->
+          <div id="scanConfirmation" class="scan-step">
+            <div class="scan-info">
+              <div class="scan-info-icon">
+                <i class="fa-solid fa-magnifying-glass"></i>
+              </div>
+              <div class="scan-info-content">
+                <h3>Scan for Image Prompts</h3>
+                <p>This will scan your ComfyUI output directory for images that contain prompt metadata and automatically import them into PromptManager.</p>
+
+                <div class="scan-details">
+                  <h4>What this scan will do:</h4>
+                  <ul>
+                    <li><i class="fa-solid fa-search"></i> Search all PNG files in your ComfyUI output directory</li>
+                    <li><i class="fa-solid fa-code"></i> Extract ComfyUI workflow and prompt metadata</li>
+                    <li><i class="fa-solid fa-plus"></i> Add new unique prompts to your library</li>
+                    <li><i class="fa-solid fa-link"></i> Link images to existing prompts when duplicates are found</li>
+                  </ul>
+                </div>
+
+                <div class="scan-warning">
+                  <i class="fa-solid fa-info-circle"></i>
+                  <span>This process may take several minutes depending on the number of images.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Progress Step -->
+          <div id="scanProgress" class="scan-step" style="display: none;">
+            <div class="progress-container">
+              <div class="progress-bar-container">
+                <div class="progress-bar" id="scanProgressBar"></div>
+              </div>
+              <div class="progress-info">
+                <div class="progress-status" id="scanStatusText">Preparing...</div>
+                <div class="progress-stats">
+                  <span id="scanCount">0 files processed</span> •
+                  <span id="scanFound">0 prompts found</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Results Step -->
+          <div id="scanResults" class="scan-step" style="display: none;">
+            <div class="scan-results">
+              <div class="results-icon">
+                <i class="fa-solid fa-check-circle"></i>
+              </div>
+              <h3>Scan Complete!</h3>
+              <div class="results-grid">
+                <div class="result-item">
+                  <div class="result-number" id="resultFilesScanned">0</div>
+                  <div class="result-label">Files Scanned</div>
+                </div>
+                <div class="result-item">
+                  <div class="result-number" id="resultPromptsFound">0</div>
+                  <div class="result-label">Prompts Found</div>
+                </div>
+                <div class="result-item">
+                  <div class="result-number" id="resultPromptsAdded">0</div>
+                  <div class="result-label">New Prompts Added</div>
+                </div>
+                <div class="result-item">
+                  <div class="result-number" id="resultImagesLinked">0</div>
+                  <div class="result-label">Images Linked</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="cancel-scan">Cancel</button>
+          <button type="button" class="btn btn-primary" id="startScanBtn" data-action="start-scan">
+            <i class="fa-solid fa-play"></i> Start Scan
+          </button>
+          <button type="button" class="btn btn-primary" id="finishScanBtn" data-action="finish-scan" style="display: none;">
+            <i class="fa-solid fa-check"></i> Finish
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="main-footer">
+      <div class="footer-content">
+        <div class="footer-text">
+          PromptManager — Clean, Fast, Local. © 2025
+        </div>
+        <div class="footer-links">
+          <a href="#" class="footer-link">Documentation</a>
+          <a href="#" class="footer-link">GitHub</a>
+          <a href="#" class="footer-link">Support</a>
+        </div>
+      </div>
+    </footer>
+
+    <!-- Thumbnail Generation Modal -->
+    <div class="modal-overlay" id="thumbnailGenerationModal" hidden>
+      <div class="modal-container">
+        <div class="modal-header">
+          <h2 class="modal-title">Generate Missing Thumbnails</h2>
+          <button type="button" class="modal-close" aria-label="Close thumbnail generation modal">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 6L6 18M6 6l12 12"></path>
+            </svg>
+          </button>
+        </div>
+
+        <div class="modal-body">
+          <p class="modal-subtitle" id="thumbnailModalMessage">
+            Found <strong id="thumbnailMissingCount">0</strong> images missing thumbnails.
+            This will generate approximately <strong id="thumbnailOperationCount">0</strong> thumbnail files.
+          </p>
+
+          <div class="thumbnail-progress-container" id="thumbnailProgressContainer" style="display: none;">
+            <div class="progress-bar">
+              <div class="progress-bar-fill" id="thumbnailProgressBar" style="width: 0%"></div>
+            </div>
+            <div class="progress-text" id="thumbnailProgressText">0 / 0 (0%)</div>
+            <div class="progress-status" id="thumbnailProgressStatus">Starting...</div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="thumbnailSkipBtn">
+            Skip for Now
+          </button>
+          <button type="button" class="btn btn-primary" id="thumbnailGenerateBtn">
+            <span>🖼️</span>
+            <span>Generate Thumbnails</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- External JavaScript files -->
+    <!-- ViewerJS Library -->
+    <script src="/prompt_manager/vendor/viewerjs/dist/viewer.min.js"></script>
+
+    <!-- Core modules -->
+    <script src="/prompt_manager/js/modules/core/events.js"></script>
+    <script src="/prompt_manager/js/modules/core/sse.js"></script>
+
+    <!-- SSE Indicators -->
+    <script src="/prompt_manager/js/modules/components/status-indicator.js"></script>
+    <script src="/prompt_manager/js/modules/components/progress-indicator.js"></script>
+    <script src="/prompt_manager/js/modules/components/footer-status.js"></script>
+
+    <!-- ViewerJS Modules -->
+    <script src="/prompt_manager/js/modules/components/viewer-manager.js"></script>
+    <script src="/prompt_manager/js/modules/components/filmstrip-manager.js"></script>
+    <script src="/prompt_manager/js/modules/services/metadata-manager.js"></script>
+    <script src="/prompt_manager/js/modules/core/viewer-integration.js"></script>
+
+    <!-- Progress Modal -->
+    <script src="/prompt_manager/js/modules/components/progress-modal.js"></script>
+
+    <!-- Maintenance Modal -->
+    <script src="/prompt_manager/js/modules/components/maintenance-modal.js"></script>
+
+    <!-- Thumbnail Modal Component -->
+    <script src="/prompt_manager/js/components/thumbnail-modal.js"></script>
+
+    <!-- Existing scripts -->
+    <script src="/prompt_manager/js/notifications.js"></script>
+    <script src="/prompt_manager/js/modules/services/migration.js"></script>
+    <script src="/prompt_manager/js/dashboard-page.js"></script>
+
+    <!-- Initialize ViewerJS Integration for Dashboard -->
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        // Initialize EventBus if not already present
+        if (!window.EventBus) {
+          window.EventBus = {
+            events: {},
+            on(event, callback) {
+              if (!this.events[event]) this.events[event] = [];
+              this.events[event].push(callback);
+            },
+            emit(event, data) {
+              if (!this.events[event]) return;
+              this.events[event].forEach(cb => cb(data));
+            },
+            off(event, callback) {
+              if (!this.events[event]) return;
+              this.events[event] = this.events[event].filter(cb => cb !== callback);
+            }
+          };
+        }
+
+        // Initialize realtime status and progress indicators
+        StatusIndicator.init({
+          position: 'bottom-right',
+          autoHide: true,
+          autoHideDelay: 5000,
+          showDetails: true
+        });
+
+        // Initialize Footer Status (compact footer version)
+        FooterStatus.init({
+          showText: true,
+          showCount: true,
+          enableTooltips: true
+        });
+
+        ProgressIndicator.init({
+          position: 'top-center',
+          showPercentage: true,
+          showTimeEstimate: true,
+          stackable: true
+        });
+
+        if (window.RealtimeUpdates) {
+          RealtimeUpdates.init();
+        }
+
+        // Initialize Progress Modal
+        if (window.ProgressModal) {
+          ProgressModal.init();
+        }
+
+        // Initialize Maintenance Modal
+        if (window.MaintenanceModal) {
+          MaintenanceModal.init();
+
+          // Wire up maintenance button
+          const maintenanceBtn = document.querySelector('[data-action="run-maintenance"]');
+          if (maintenanceBtn) {
+            maintenanceBtn.addEventListener('click', function() {
+              MaintenanceModal.open();
+            });
+          }
+        }
+
+        // Handle scan button - open confirmation modal
+        const scanButton = document.querySelector('[data-action="scan-images"]');
+        if (scanButton) {
+          scanButton.disabled = false;
+          scanButton.addEventListener('click', function() {
+            openScanModal();
+          });
+        }
+
+        // Modal management functions
+        function openScanModal() {
+          const modal = document.getElementById('scanModal');
+          resetScanModal(); // Reset modal state
+          modal.style.display = 'flex';
+        }
+
+        function closeScanModal() {
+          const modal = document.getElementById('scanModal');
+          modal.style.display = 'none';
+          resetScanModal(); // Reset modal state
+        }
+
+        function showScanStep(stepId) {
+          const steps = ['scanConfirmation', 'scanProgress', 'scanResults'];
+          steps.forEach(id => {
+            const element = document.getElementById(id);
+            if (element) {
+              element.style.display = id === stepId ? 'block' : 'none';
+            }
+          });
+        }
+
+        // Track realtime scanning state
+        let currentScanUnsubscribe = null;
+        let currentScanController = null;
+        let currentScanInFlight = false;
+
+        function resetScanModal() {
+          if (currentScanUnsubscribe) {
+            currentScanUnsubscribe();
+            currentScanUnsubscribe = null;
+          }
+
+          if (currentScanController) {
+            currentScanController.abort();
+            currentScanController = null;
+          }
+
+          currentScanInFlight = false;
+
+          showScanStep('scanConfirmation');
+
+          document.getElementById('startScanBtn').style.display = 'inline-flex';
+          document.querySelector('[data-action="cancel-scan"]').style.display = 'inline-flex';
+          document.getElementById('finishScanBtn').style.display = 'none';
+
+          const progressBar = document.getElementById('scanProgressBar');
+          if (progressBar) {
+            progressBar.style.width = '0%';
+            progressBar.style.background = '';
+          }
+
+          const statusText = document.getElementById('scanStatusText');
+          if (statusText) {
+            statusText.textContent = 'Preparing...';
+          }
+        }
+
+        // Scan modal event handlers
+        document.querySelector('[data-action="close-scan-modal"]')?.addEventListener('click', closeScanModal);
+        document.querySelector('[data-action="cancel-scan"]')?.addEventListener('click', closeScanModal);
+
+        document.querySelector('[data-action="start-scan"]')?.addEventListener('click', function() {
+          if (!currentScanInFlight) {
+            startImageScan();
+          }
+        });
+
+        document.querySelector('[data-action="finish-scan"]')?.addEventListener('click', function() {
+          // Refresh the page to show updated data
+          window.location.reload();
+        });
+
+        // Function to start image scan with realtime progress via WebSocket
+        function startImageScan() {
+          showScanStep('scanProgress');
+
+          // Update progress bar and status
+          const progressBar = document.getElementById('scanProgressBar');
+          const statusText = document.getElementById('scanStatusText');
+          const scanCount = document.getElementById('scanCount');
+          const scanFound = document.getElementById('scanFound');
+
+          progressBar.style.width = '0%';
+          progressBar.style.background = ''; // Reset any error color
+          statusText.textContent = 'Starting scan...';
+          scanCount.textContent = '0 files processed';
+          scanFound.textContent = '0 prompts found';
+
+          const progressHandler = (event) => {
+            if (!event || event.operation !== 'scan') {
+              return;
+            }
+
+            const percent = event.progress ?? 0;
+            progressBar.style.width = `${percent}%`;
+            statusText.textContent = event.message || event.status || 'Processing...';
+            scanCount.textContent = `${event.stats?.processed ?? event.processed ?? 0} files processed`;
+            scanFound.textContent = `${event.stats?.found ?? event.found ?? 0} prompts found`;
+
+            if (percent >= 100 && !currentScanInFlight) {
+              statusText.textContent = 'Finalizing results...';
+            }
+          };
+
+          if (window.EventBus) {
+            currentScanUnsubscribe = EventBus.on('sse:progress', progressHandler);
+          }
+
+          currentScanController = new AbortController();
+          currentScanInFlight = true;
+
+          fetch('/api/scan', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({}),
+            signal: currentScanController.signal
+          }).then(async (response) => {
+            if (!response.ok) {
+              const text = await response.text();
+              throw new Error(text || 'Scan failed');
+            }
+
+            const data = await response.json();
+            progressBar.style.width = '100%';
+            statusText.textContent = 'Scan complete!';
+
+            document.getElementById('resultFilesScanned').textContent = data.files_scanned || 0;
+            document.getElementById('resultPromptsFound').textContent = data.prompts_found || 0;
+            document.getElementById('resultPromptsAdded').textContent = data.prompts_added || 0;
+            document.getElementById('resultImagesLinked').textContent = data.images_linked || 0;
+
+            showScanStep('scanResults');
+            document.getElementById('startScanBtn').style.display = 'none';
+            document.querySelector('[data-action="cancel-scan"]').style.display = 'none';
+            document.getElementById('finishScanBtn').style.display = 'inline-flex';
+          }).catch((error) => {
+            if (currentScanController?.signal.aborted) {
+              statusText.textContent = 'Scan cancelled';
+            } else {
+              console.error('Scan error:', error);
+              statusText.textContent = `Error: ${error.message || error}`;
+            }
+            progressBar.style.width = '0%';
+            progressBar.style.background = '#cc0000';
+          }).finally(() => {
+            currentScanInFlight = false;
+            currentScanController = null;
+            if (currentScanUnsubscribe) {
+              currentScanUnsubscribe();
+              currentScanUnsubscribe = null;
+            }
+          });
+        }
+
+        // Initialize ViewerJS for dashboard gallery
+        ViewerIntegration.init({
+          viewer: {
+            theme: 'dark',
+            fullscreen: true,
+            keyboard: true,
+            toolbar: {
+              zoomIn: true,
+              zoomOut: true,
+              reset: true,
+              close: true
+            },
+            backdrop: 'static'
+          },
+          filmstrip: {
+            enabled: true,  // Enable filmstrip for dashboard
+            position: 'bottom',
+            autoHide: false,
+            lazyLoad: true
+          },
+          metadata: {
+            enabled: true  // Enable metadata display
+          },
+          selectors: {
+            dashboardRecent: '.prompt-gallery-grid'
+          }
+        });
+      });
+    </script>
+  </body>
+</html>
