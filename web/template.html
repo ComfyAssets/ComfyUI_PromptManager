@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en" class="no-js">
+<head>
+    <!-- Essential Meta Tags -->
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+
+    <!-- SEO and Social Meta Tags -->
+    <meta name="description" content="ComfyUI PromptManager - Professional prompt management suite for AI image generation workflows">
+    <meta name="keywords" content="ComfyUI, prompt manager, AI, image generation, stable diffusion, workflow">
+    <meta name="author" content="PromptManager Team">
+    <meta name="robots" content="noindex, nofollow">
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="PromptManager - ComfyUI Professional Suite">
+    <meta property="og:description" content="Professional prompt management for AI image generation">
+    <meta property="og:image" content="/prompt_manager/images/og-image.png">
+
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:title" content="PromptManager - ComfyUI Professional Suite">
+    <meta property="twitter:description" content="Professional prompt management for AI image generation">
+    <meta property="twitter:image" content="/prompt_manager/images/twitter-card.png">
+
+    <!-- Mobile Web App Meta Tags -->
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="PromptManager">
+    <meta name="application-name" content="PromptManager">
+
+    <!-- Theme Color -->
+    <meta name="theme-color" content="#0066cc" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#004499" media="(prefers-color-scheme: dark)">
+
+    <!-- Favicons -->
+    <link rel="icon" type="image/x-icon" href="/prompt_manager/favicon.ico">
+    <link rel="icon" type="image/png" sizes="32x32" href="/prompt_manager/images/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/prompt_manager/images/favicon-16x16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/prompt_manager/images/apple-touch-icon.png">
+    <link rel="mask-icon" href="/prompt_manager/images/safari-pinned-tab.svg" color="#0066cc">
+
+    <!-- Web App Manifest -->
+    <link rel="manifest" href="/prompt_manager/manifest.json">
+
+    <!-- Title -->
+    <title>PromptManager - Dashboard</title>
+
+    <!-- Preconnect to External Resources -->
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com">
+    <link rel="dns-prefetch" href="https://cdnjs.cloudflare.com">
+
+    <!-- Critical CSS (inline for performance) -->
+    <style>
+        /* Critical CSS for initial render */
+        :root {
+            --color-bg-primary: #0a0a0a;
+            --color-bg-secondary: #141414;
+            --color-text-primary: #ffffff;
+            --color-text-secondary: #888888;
+            --color-accent: #0066cc;
+            --transition-speed: 200ms;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            font-size: 16px;
+            -webkit-text-size-adjust: 100%;
+            -ms-text-size-adjust: 100%;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: var(--color-bg-primary);
+            color: var(--color-text-primary);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        .no-js .requires-js {
+            display: none !important;
+        }
+
+        .js .no-js-message {
+            display: none !important;
+        }
+
+        /* Prevent FOUC */
+        .app-container {
+            opacity: 0;
+            transition: opacity 300ms ease-in;
+        }
+
+        .app-ready .app-container {
+            opacity: 1;
+        }
+    </style>
+
+    <!-- Stylesheets -->
+    <link rel="stylesheet" href="/prompt_manager/css/style.css">
+    <link rel="stylesheet" href="/prompt_manager/css/theme.css">
+    <link rel="stylesheet" href="/prompt_manager/css/layout.css">
+    <link rel="stylesheet" href="/prompt_manager/css/components.css">
+    <link rel="stylesheet" href="/prompt_manager/css/responsive.css">
+
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+          integrity="sha512-SnH5WK+bZxgPHs44uWIX+LLJAJ9/2PkPKZ5QiAj6Ta86w+fsb2TkcmfRyVX3pBnMFcV7oQPJkl9QevSCWr3W6A=="
+          crossorigin="anonymous"
+          referrerpolicy="no-referrer">
+
+    <!-- JavaScript Detection -->
+    <script>
+        document.documentElement.className = document.documentElement.className.replace('no-js', 'js');
+    </script>
+
+    <!-- Preload Critical Resources -->
+    <link rel="preload" href="/prompt_manager/js/modules/core/api.js" as="script">
+    <link rel="preload" href="/prompt_manager/js/modules/core/state.js" as="script">
+    <link rel="preload" href="/prompt_manager/js/modules/core/events.js" as="script">
+</head>
+<body>
+    <!-- Skip to Content Link for Accessibility -->
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <!-- No JavaScript Message -->
+    <noscript>
+        <div class="no-js-message">
+            <div class="alert alert-warning">
+                <h2>JavaScript Required</h2>
+                <p>PromptManager requires JavaScript to be enabled for full functionality.</p>
+                <p>Please enable JavaScript in your browser settings and reload the page.</p>
+            </div>
+        </div>
+    </noscript>
+
+    <!-- Main App Container -->
+    <div class="app-container" id="app">
+        <!-- Mobile Menu Toggle -->
+        <button class="mobile-menu-toggle" id="mobile-menu-toggle" aria-label="Toggle navigation menu">
+            <span class="hamburger-icon">
+                <span></span>
+                <span></span>
+                <span></span>
+            </span>
+        </button>
+
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar" id="sidebar" aria-label="Main navigation">
+            <div class="sidebar-header">
+                <div class="brand-logo">
+                    <span class="brand-badge">PM</span>
+                    <div class="brand-text">
+                        <h1 class="brand-title">PromptManager</h1>
+                        <span class="brand-subtitle">Professional Suite</span>
+                    </div>
+                </div>
+            </div>
+
+            <nav class="nav-menu" role="navigation">
+                <a href="/prompt_manager/dashboard" class="nav-item active" aria-current="page">
+                    <i class="fa-solid fa-gauge nav-icon" aria-hidden="true"></i>
+                    <span class="nav-text">Dashboard</span>
+                </a>
+                <a href="/prompt_manager/gallery" class="nav-item">
+                    <i class="fa-solid fa-images nav-icon" aria-hidden="true"></i>
+                    <span class="nav-text">Gallery</span>
+                </a>
+                <a href="/prompt_manager/collections" class="nav-item">
+                    <i class="fa-solid fa-folder nav-icon" aria-hidden="true"></i>
+                    <span class="nav-text">Collections</span>
+                </a>
+                <a href="/prompt_manager/metadata" class="nav-item">
+                    <i class="fa-solid fa-code nav-icon" aria-hidden="true"></i>
+                    <span class="nav-text">Metadata</span>
+                </a>
+                <a href="/prompt_manager/settings" class="nav-item">
+                    <i class="fa-solid fa-cog nav-icon" aria-hidden="true"></i>
+                    <span class="nav-text">Settings</span>
+                </a>
+            </nav>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content" id="main-content" role="main">
+            <!-- Page Header -->
+            <header class="page-header">
+                <h1 class="page-title">Dashboard</h1>
+                <div class="page-actions">
+                    <button class="btn btn-primary">
+                        <i class="fa-solid fa-plus"></i>
+                        <span>New Prompt</span>
+                    </button>
+                </div>
+            </header>
+
+            <!-- Page Content -->
+            <div class="page-content">
+                <!-- Content goes here -->
+            </div>
+        </main>
+
+        <!-- Mobile Overlay -->
+        <div class="mobile-overlay" id="mobile-overlay"></div>
+    </div>
+
+    <!-- Core JavaScript Modules -->
+    <script src="/prompt_manager/js/modules/core/events.js"></script>
+    <script src="/prompt_manager/js/modules/core/api.js"></script>
+    <script src="/prompt_manager/js/modules/core/state.js"></script>
+    <script src="/prompt_manager/js/modules/core/sse.js"></script>
+
+    <!-- Service Modules -->
+    <script src="/prompt_manager/js/modules/services/realtime-updates.js"></script>
+
+    <!-- Component Modules -->
+    <script src="/prompt_manager/js/modules/components/toast.js"></script>
+    <script src="/prompt_manager/js/modules/components/modal.js"></script>
+
+    <!-- App Initialization -->
+    <script>
+        // Initialize app when DOM is ready
+        document.addEventListener('DOMContentLoaded', function() {
+            // Mark app as ready
+            document.body.classList.add('app-ready');
+
+            // Initialize core modules
+            if (window.EventBus) {
+                EventBus.emit('app:ready');
+            }
+
+            // Initialize real-time updates
+            if (window.RealtimeUpdates) {
+                RealtimeUpdates.init();
+            }
+
+            // Mobile menu handling
+            const mobileToggle = document.getElementById('mobile-menu-toggle');
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('mobile-overlay');
+
+            if (mobileToggle && sidebar && overlay) {
+                mobileToggle.addEventListener('click', function() {
+                    sidebar.classList.toggle('mobile-visible');
+                    overlay.classList.toggle('visible');
+                    document.body.classList.toggle('mobile-menu-open');
+                });
+
+                overlay.addEventListener('click', function() {
+                    sidebar.classList.remove('mobile-visible');
+                    overlay.classList.remove('visible');
+                    document.body.classList.remove('mobile-menu-open');
+                });
+            }
+
+            // Handle responsive images
+            if ('loading' in HTMLImageElement.prototype) {
+                const images = document.querySelectorAll('img[loading="lazy"]');
+                images.forEach(img => {
+                    img.src = img.dataset.src;
+                });
+            } else {
+                // Fallback for browsers that don't support lazy loading
+                const script = document.createElement('script');
+                script.src = '/prompt_manager/js/vendor/lazysizes.min.js';
+                document.body.appendChild(script);
+            }
+        });
+
+        // Service Worker Registration (for PWA support)
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', function() {
+                navigator.serviceWorker.register('/prompt_manager/sw.js')
+                    .then(function(registration) {
+                        console.log('ServiceWorker registered:', registration);
+                    })
+                    .catch(function(err) {
+                        console.log('ServiceWorker registration failed:', err);
+                    });
+            });
+        }
+    </script>
+</body>
+</html>
