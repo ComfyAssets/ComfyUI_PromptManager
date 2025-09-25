@@ -278,15 +278,94 @@ class EnhancedThumbnailService:
         self.current_progress: Optional[ThumbnailProgress] = None
         self.progress_callbacks: List[Callable] = []
 
-        # Thread pool for parallel processing - reduced to prevent overwhelming
-        # Use only 2 workers to avoid blocking the event loop
-        self.executor = ThreadPoolExecutor(max_workers=2)
+        # Thread pool configuration
+        self._default_max_workers = 2
+        self._max_parallel_config = self._parse_max_parallel(
+            config.get('thumbnail.max_parallel', self._default_max_workers)
+        )
+        self._effective_workers = self._resolve_effective_workers(self._max_parallel_config)
+
+        # Thread pool for parallel processing - sized from configuration
+        self.executor = ThreadPoolExecutor(
+            max_workers=self._effective_workers,
+            thread_name_prefix='PromptManagerThumb'
+        )
+        if self._effective_workers is None:
+            logger.info(
+                "Thumbnail generator using unlimited thread pool size (system default)"
+            )
+        else:
+            logger.info(
+                "Thumbnail generator configured with %s parallel workers",
+                self._effective_workers
+            )
 
         # Supported image formats
         self.image_formats = {
             '.jpg', '.jpeg', '.png', '.gif', '.webp',
             '.bmp', '.tiff', '.tif', '.heic', '.heif'
         }
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _parse_max_parallel(self, value: Any) -> int:
+        """Normalize stored configuration for max parallel generation."""
+        if value is None:
+            return self._default_max_workers
+
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid thumbnail.max_parallel value %r; using default %s",
+                value,
+                self._default_max_workers
+            )
+            return self._default_max_workers
+
+        return parsed
+
+    def _resolve_effective_workers(self, configured: int) -> Optional[int]:
+        """Translate configured parallelism into ThreadPoolExecutor size."""
+        if configured <= 0:
+            # None signals ThreadPoolExecutor to use its default heuristic
+            return None
+
+        # Always enforce at least one worker when positive
+        return max(1, configured)
+
+    def set_parallel_workers(self, configured: Any) -> None:
+        """Resize the worker pool when settings change."""
+        new_config = self._parse_max_parallel(configured)
+        new_effective = self._resolve_effective_workers(new_config)
+
+        if (
+            new_config == self._max_parallel_config
+            and new_effective == self._effective_workers
+        ):
+            return
+
+        logger.info(
+            "Updating thumbnail parallel generation from %s to %s",
+            'unlimited' if self._effective_workers is None else self._effective_workers,
+            'unlimited' if new_effective is None else new_effective
+        )
+
+        # Shutdown existing executor without cancelling in-flight work
+        try:
+            self.executor.shutdown(wait=False, cancel_futures=False)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed to shutdown existing executor cleanly: %s", exc)
+
+        self._max_parallel_config = new_config
+        self._effective_workers = new_effective
+        self.executor = ThreadPoolExecutor(
+            max_workers=self._effective_workers,
+            thread_name_prefix='PromptManagerThumb'
+        )
+
 
     def get_thumbnail_path(
         self,
@@ -523,12 +602,19 @@ class EnhancedThumbnailService:
                     elif completed_task.status == ThumbnailStatus.SKIPPED:
                         self.current_progress.skipped += 1
 
-                    self.current_progress.current_file = completed_task.source_path.name
+                    processed = (
+                        self.current_progress.completed
+                        + self.current_progress.failed
+                        + self.current_progress.skipped
+                    )
+                    display_name = completed_task.source_path.name
+                    if processed:
+                        display_name = f"{processed}/{self.current_progress.total} • {display_name}"
+                    self.current_progress.current_file = display_name
                     self.current_progress.update_percentage()
 
                     # Calculate estimated time
                     elapsed = (datetime.now() - start_time).total_seconds()
-                    processed = self.current_progress.completed + self.current_progress.failed + self.current_progress.skipped
                     if processed > 0:
                         rate = elapsed / processed
                         remaining = self.current_progress.total - processed
