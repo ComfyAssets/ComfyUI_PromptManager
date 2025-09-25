@@ -173,7 +173,11 @@
     // Update gallery container
     const gallery = document.querySelector('.gallery-container');
     if (gallery) {
-      gallery.className = `gallery-container ${mode}-view`;
+      const viewClasses = ['grid-view', 'masonry-view', 'list-view'];
+      viewClasses.forEach(cls => gallery.classList.remove(cls));
+      gallery.classList.add('gallery-grid');
+      gallery.classList.add(`${mode}-view`);
+      gallery.dataset.viewMode = mode;
     }
 
     // Store preference
