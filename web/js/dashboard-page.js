@@ -1071,6 +1071,9 @@
         const img = document.createElement('img');
         img.src = displayUrl;
         img.alt = labelText;
+        if (image?.url) {
+          img.dataset.fullSrc = image.url;
+        }
         button.appendChild(img);
       } else {
         button.textContent = labelText;
