@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import shutil
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -88,6 +89,7 @@ class ThumbnailAPI:
         # Thumbnail operations
         app.router.add_post('/api/v1/thumbnails/scan', self.scan_missing_thumbnails)
         app.router.add_post('/api/v1/thumbnails/generate', self.generate_thumbnails)
+        app.router.add_post('/api/v1/thumbnails/cancel', self.cancel_generation)
         app.router.add_get('/api/v1/thumbnails/status/{task_id}', self.get_task_status)
         app.router.add_post('/api/v1/thumbnails/rebuild', self.rebuild_thumbnails)
 
@@ -271,16 +273,18 @@ class ThumbnailAPI:
                     'total': 0
                 })
 
-            # Generate unique task ID
+            # Generate unique task ID and cancellation flag
             task_id = f"thumb_gen_{datetime.now().timestamp()}"
+            cancel_event = threading.Event()
             self.active_generations[task_id] = {
                 'status': 'running',
                 'progress': None,
-                'result': None
+                'result': None,
+                'cancel_event': cancel_event,
             }
 
             # Start generation in background
-            asyncio.create_task(self._generate_with_tracking(task_id, tasks))
+            asyncio.create_task(self._generate_with_tracking(task_id, tasks, cancel_event))
 
             return web.json_response({
                 'task_id': task_id,
@@ -295,7 +299,12 @@ class ThumbnailAPI:
                 status=500
             )
 
-    async def _generate_with_tracking(self, task_id: str, tasks: List):
+    async def _generate_with_tracking(
+        self,
+        task_id: str,
+        tasks: List,
+        cancel_event: Optional[threading.Event] = None,
+    ):
         """Generate thumbnails with progress tracking.
 
         Args:
@@ -342,11 +351,13 @@ class ThumbnailAPI:
             # Generate thumbnails
             result = await self.thumbnail_service.generate_batch(
                 tasks,
-                progress_callback
+                progress_callback,
+                cancel_event=cancel_event,
             )
 
             # Update task status
-            self.active_generations[task_id]['status'] = 'completed'
+            status = 'cancelled' if result.get('cancelled') else 'completed'
+            self.active_generations[task_id]['status'] = status
             self.active_generations[task_id]['result'] = result
             logger.info(f"Task {task_id} completed: {result}")
 
@@ -366,7 +377,7 @@ class ThumbnailAPI:
                 await self.realtime.send_progress(
                     'thumbnails',
                     100,
-                    'Thumbnail generation complete',
+                    'Thumbnail generation cancelled' if status == 'cancelled' else 'Thumbnail generation complete',
                     task_id=task_id,
                     stats=progress_snapshot,
                     result=result,
@@ -397,6 +408,36 @@ class ThumbnailAPI:
                     error=str(e),
                 )
                 await self.realtime.send_toast(f'Thumbnail generation failed: {e}', 'error')
+
+    async def cancel_generation(self, request: web.Request) -> web.Response:
+        """Request cancellation of an active thumbnail generation task."""
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            data = {}
+
+        task_id = data.get('task_id') or request.query.get('task_id')
+        if not task_id:
+            return web.json_response({'error': 'task_id is required'}, status=400)
+
+        task = self.active_generations.get(task_id)
+        if not task:
+            return web.json_response({'error': 'Task not found', 'task_id': task_id}, status=404)
+
+        cancel_event = task.get('cancel_event')
+        if not isinstance(cancel_event, threading.Event):
+            return web.json_response({'error': 'Task cannot be cancelled', 'task_id': task_id}, status=409)
+
+        if cancel_event.is_set():
+            return web.json_response({'status': task.get('status', 'unknown'), 'task_id': task_id})
+
+        cancel_event.set()
+        task['status'] = 'cancelling'
+
+        if self.realtime:
+            await self.realtime.send_toast('Cancelling thumbnail generation…', 'info')
+
+        return web.json_response({'status': 'cancelling', 'task_id': task_id})
 
     async def get_task_status(self, request: web.Request) -> web.Response:
         """Get current status of a thumbnail generation task.

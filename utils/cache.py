@@ -5,6 +5,7 @@ cache invalidation, statistics, and cache warming capabilities.
 """
 
 import asyncio
+import fnmatch
 import hashlib
 import json
 import pickle
@@ -264,7 +265,17 @@ class MemoryCache:
             self._stats.size_bytes = 0
             self._stats.entry_count = 0
             logger.info("Cache cleared")
-    
+
+    def clear_pattern(self, pattern: str) -> int:
+        """Remove entries matching a glob pattern."""
+        with self._lock:
+            matched_keys = [key for key in list(self._cache.keys()) if fnmatch.fnmatch(key, pattern)]
+            for key in matched_keys:
+                self._remove_entry(key)
+            if matched_keys:
+                logger.debug("Cleared %s memory cache entries for pattern '%s'", len(matched_keys), pattern)
+            return len(matched_keys)
+
     def invalidate_by_tags(self, tags: Set[str]) -> int:
         """Invalidate entries with matching tags.
         
@@ -581,7 +592,22 @@ class DiskCache:
         
         self._update_stats()
         logger.info("Disk cache cleared")
-    
+
+    def clear_pattern(self, pattern: str) -> int:
+        """Remove cached entries whose keys match the supplied pattern."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('SELECT key FROM cache')
+            keys = [row[0] for row in cursor.fetchall() if row and row[0] is not None]
+            matched = [key for key in keys if fnmatch.fnmatch(key, pattern)]
+            for key in matched:
+                conn.execute('DELETE FROM cache WHERE key = ?', (key,))
+            conn.commit()
+
+        if matched:
+            self._update_stats()
+            logger.debug("Cleared %s disk cache entries for pattern '%s'", len(matched), pattern)
+        return len(matched)
+
     def invalidate_by_tags(self, tags: Set[str]) -> int:
         """Invalidate entries with matching tags.
         
@@ -804,7 +830,17 @@ class MultiLevelCache:
         """Clear all cache levels."""
         self.memory.clear()
         self.disk.clear()
-    
+
+    def clear_pattern(self, pattern: str) -> int:
+        """Remove cached entries matching the pattern across all levels."""
+        memory_cleared = 0
+        disk_cleared = 0
+        if hasattr(self.memory, 'clear_pattern'):
+            memory_cleared = self.memory.clear_pattern(pattern)
+        if hasattr(self.disk, 'clear_pattern'):
+            disk_cleared = self.disk.clear_pattern(pattern)
+        return memory_cleared + disk_cleared
+
     def invalidate_by_tags(self, tags: Set[str]) -> int:
         """Invalidate entries with matching tags.
         
@@ -988,7 +1024,26 @@ class CacheManager:
         for name, cache in self._caches.items():
             cache.clear()
             logger.info(f"Cleared cache: {name}")
-    
+
+    def clear_pattern(self, pattern: str, cache_name: Optional[str] = None) -> int:
+        """Clear entries matching pattern across registered caches."""
+        cleared = 0
+        targets = [cache_name] if cache_name else list(self._caches.keys())
+
+        for name in targets:
+            cache = self._caches.get(name)
+            if cache is None:
+                continue
+            if hasattr(cache, 'clear_pattern'):
+                result = cache.clear_pattern(pattern)
+                cleared += result or 0
+            else:
+                logger.debug("Cache '%s' does not support pattern clearing", name)
+
+        if cleared:
+            logger.info("Cleared %s cache entries matching '%s'", cleared, pattern)
+        return cleared
+
     def get_all_stats(self) -> Dict[str, Any]:
         """Get statistics for all caches.
         

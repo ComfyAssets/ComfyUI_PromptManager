@@ -425,6 +425,13 @@ class ImageScanner:
                                 existing_link = self.generated_image_repo.find_by_path(str(media_file))
 
                                 if not existing_link:
+                                    if prompt_id is None:
+                                        self.logger.debug(
+                                            "Skipping media file %s - unable to determine associated prompt",
+                                            media_file.name,
+                                        )
+                                        continue
+
                                     # Determine media type based on file extension
                                     file_ext = media_file.suffix.lower()
                                     if file_ext in ['.mp4', '.avi', '.mov', '.webm', '.mkv']:
@@ -436,7 +443,7 @@ class ImageScanner:
 
                                     # Add the media file to the generated_images table
                                     image_data = {
-                                        'prompt_id': prompt_id,  # May be None if no match found
+                                        'prompt_id': prompt_id,
                                         'image_path': str(media_file),
                                         'filename': media_file.name,
                                         'prompt_metadata': metadata,  # Store basic metadata

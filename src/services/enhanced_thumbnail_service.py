@@ -209,12 +209,18 @@ class FFmpegHandler:
 
         try:
             # Build ffmpeg command
+            width, height = size
+            vf_filter = (
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+            )
+
             cmd = [
                 self.ffmpeg_path,
                 '-ss', str(timestamp),  # Seek to timestamp
                 '-i', str(video_path),  # Input file
                 '-vframes', '1',  # Extract one frame
-                '-vf', f'scale={size[0]}:{size[1]}:force_original_aspect_ratio=decrease',
+                '-vf', vf_filter,
                 '-y',  # Overwrite output
                 str(output_path)
             ]
@@ -299,8 +305,15 @@ class EnhancedThumbnailService:
         # Generate unique hash for path
         path_hash = hashlib.md5(str(source_path).encode()).hexdigest()
 
+        # Determine output extension
+        ext = source_path.suffix.lower()
+        if self.ffmpeg.is_video(source_path):
+            ext = '.jpg'
+        elif ext not in self.image_formats:
+            ext = '.jpg'
+
         # Build thumbnail filename
-        filename = f"{path_hash}_{size}{source_path.suffix}"
+        filename = f"{path_hash}_{size}{ext}"
 
         # Return full path
         return self.thumbnail_dir / size / filename
@@ -345,13 +358,17 @@ class EnhancedThumbnailService:
                         (300, 300)
                     )
 
+                    ext_name = 'jpg'
+                    if not is_video:
+                        ext_name = image_path.suffix.lower().lstrip('.') or 'jpg'
+
                     # Create task
                     task = ThumbnailTask(
                         image_id=hashlib.md5(str(image_path).encode()).hexdigest(),
                         source_path=image_path,
                         thumbnail_path=thumbnail_path,
                         size=size_dims,
-                        format=image_path.suffix.lower()[1:],
+                        format=ext_name,
                         is_video=is_video
                     )
                     missing_tasks.append(task)
@@ -422,7 +439,8 @@ class EnhancedThumbnailService:
     async def generate_batch(
         self,
         tasks: List[ThumbnailTask],
-        progress_callback: Optional[Callable] = None
+        progress_callback: Optional[Callable] = None,
+        cancel_event: Optional['Event'] = None
     ) -> Dict[str, Any]:
         """Generate thumbnails in batch with progress tracking.
 
@@ -461,8 +479,14 @@ class EnhancedThumbnailService:
         completed_tasks = []
         start_time = datetime.now()
 
+        cancelled = False
+
         # Process in chunks
         for batch_start in range(0, len(tasks), BATCH_SIZE):
+            if cancel_event and cancel_event.is_set():
+                logger.info("Thumbnail generation cancellation requested before batch %s", batch_start)
+                cancelled = True
+                break
             batch_end = min(batch_start + BATCH_SIZE, len(tasks))
             batch_tasks = tasks[batch_start:batch_end]
 
@@ -471,8 +495,15 @@ class EnhancedThumbnailService:
             # Submit batch to thread pool
             futures = []
             for task in batch_tasks:
+                if cancel_event and cancel_event.is_set():
+                    cancelled = True
+                    logger.info("Cancellation requested during batch scheduling")
+                    break
                 future = self.executor.submit(self._generate_single_thumbnail, task)
                 futures.append(future)
+
+            if cancelled:
+                break
 
             # Wait for this batch to complete before starting the next
             for future in as_completed(futures):
@@ -517,17 +548,38 @@ class EnhancedThumbnailService:
                     logger.error(f"Task processing error: {e}")
                     self.current_progress.failed += 1
 
+                if cancel_event and cancel_event.is_set():
+                    cancelled = True
+                    logger.info("Cancellation flag detected while awaiting batch results")
+                    break
+
             # After each batch, yield to event loop to allow realtime/status updates
             await asyncio.sleep(0.1)
             logger.info(f"Batch complete: {self.current_progress.completed} completed, "
                        f"{self.current_progress.failed} failed, "
                        f"{self.current_progress.skipped} skipped")
 
+            if cancelled:
+                break
+
+        if cancelled:
+            remaining = self.current_progress.total - (
+                self.current_progress.completed
+                + self.current_progress.failed
+                + self.current_progress.skipped
+            )
+            if remaining > 0:
+                self.current_progress.skipped += remaining
+                self.current_progress.update_percentage()
+
         # Store results in database
         await self._update_database(completed_tasks)
 
         # Clear cache for updated thumbnails
-        self.cache.clear_pattern('thumbnail:*')
+        if hasattr(self.cache, 'clear_pattern'):
+            self.cache.clear_pattern('thumbnail:*')
+        else:
+            self.cache.clear_all()
 
         # Final summary
         elapsed = (datetime.now() - start_time).total_seconds()
@@ -547,6 +599,9 @@ class EnhancedThumbnailService:
             'duration_seconds': elapsed,
             'errors': self.current_progress.errors,
         }
+
+        if cancelled:
+            summary['cancelled'] = True
 
         # Reset progress
         self.current_progress = None

@@ -220,7 +220,7 @@ class ThumbnailModal {
                     </div>
 
                     <div class="modal-footer">
-                        <button class="btn btn-secondary" data-action="close" id="btnCancel">
+                        <button class="btn btn-secondary" data-action="cancel" id="btnCancel">
                             Cancel
                         </button>
                         <button class="btn btn-primary" data-action="generate" id="btnGenerate" style="display: none;">
@@ -255,6 +255,9 @@ class ThumbnailModal {
                     break;
                 case 'generate':
                     this.startGeneration();
+                    break;
+                case 'cancel':
+                    this.cancelGeneration();
                     break;
                 case 'done':
                     this.close();
@@ -362,7 +365,8 @@ class ThumbnailModal {
         this.modal.querySelector('#thumbnailProgressView').style.display = 'block';
         this.modal.querySelector('#btnGenerate').style.display = 'none';
         this.modal.querySelector('#btnSkip').style.display = 'none';
-        this.modal.querySelector('#btnCancel').disabled = true;
+        this.modal.querySelector('#btnCancel').style.display = 'inline-block';
+        this.modal.querySelector('#btnCancel').disabled = false;
 
         // Initialize progress
         this.modal.querySelector('#progressTotal').textContent = this.missingCount;
@@ -390,6 +394,36 @@ class ThumbnailModal {
             console.error('Generation error:', error);
             this.showError('Failed to start thumbnail generation');
             this.isGenerating = false;
+        }
+    }
+
+    async cancelGeneration() {
+        if (!this.currentTaskId) {
+            this.close();
+            return;
+        }
+
+        const cancelButton = this.modal.querySelector('#btnCancel');
+        cancelButton.disabled = true;
+
+        try {
+            const response = await fetch('/api/v1/thumbnails/cancel', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ task_id: this.currentTaskId })
+            });
+
+            if (!response.ok) {
+                throw new Error(`Cancel failed with status ${response.status}`);
+            }
+
+            this.modal.querySelector('#currentFile').textContent = 'Cancelling…';
+        } catch (error) {
+            console.error('Cancel error:', error);
+            cancelButton.disabled = false;
+            this.showError('Failed to cancel thumbnail generation');
         }
     }
 
@@ -442,6 +476,14 @@ class ThumbnailModal {
         this.modal.querySelector('#progressPercentage').textContent = `${percentage}%`;
         this.modal.querySelector('#generationProgress').style.width = `${percentage}%`;
         this.modal.querySelector('.progress-text').textContent = `${percentage}%`;
+
+        const totalOperations = stats.total
+            || (typeof this.missingCount === 'number' && this.missingCount > 0
+                ? this.missingCount * Math.max(1, this.selectedSizes.length)
+                : 0);
+        if (totalOperations) {
+            this.modal.querySelector('#progressTotal').textContent = totalOperations;
+        }
 
         // Update counts
         this.modal.querySelector('#progressCompleted').textContent = stats.completed;
@@ -504,6 +546,7 @@ class ThumbnailModal {
                 Number(summary.duration_seconds ?? summary.duration ?? 0)
             )
         );
+        const isCancelled = Boolean(summary.cancelled || summary.status === 'cancelled');
 
         this.modal.querySelector('#completedTotal').textContent = processed;
         this.modal.querySelector('#completedSuccess').textContent = completed;
@@ -517,6 +560,18 @@ class ThumbnailModal {
         }
         timeStr += `${seconds}s`;
         this.modal.querySelector('#completedTime').textContent = timeStr;
+
+        const titleEl = this.modal.querySelector('#thumbnailCompleteView .completion-info h3');
+        if (titleEl) {
+            titleEl.textContent = isCancelled ? 'Thumbnail Generation Cancelled' : 'Thumbnail Generation Complete';
+        }
+
+        const messageEl = this.modal.querySelector('#thumbnailCompleteView .completion-message p');
+        if (messageEl) {
+            messageEl.textContent = isCancelled
+                ? 'Cancellation acknowledged. Any thumbnails generated before the request are still available.'
+                : 'Thumbnails have been generated and cached for faster loading.';
+        }
 
         // Show done button
         this.modal.querySelector('#btnCancel').style.display = 'none';

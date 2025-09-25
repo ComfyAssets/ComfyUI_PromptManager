@@ -437,6 +437,8 @@ class PromptManagerAPI:
             # Thumbnail operations
             routes.post('/api/v1/thumbnails/scan')(self.thumbnail_api.scan_missing_thumbnails)
             routes.post('/api/v1/thumbnails/generate')(self.thumbnail_api.generate_thumbnails)
+            routes.post('/api/v1/thumbnails/cancel')(self.thumbnail_api.cancel_generation)
+            routes.get('/api/v1/thumbnails/status/{task_id}')(self.thumbnail_api.get_task_status)
             routes.post('/api/v1/thumbnails/rebuild')(self.thumbnail_api.rebuild_thumbnails)
 
             # Thumbnail serving

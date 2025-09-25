@@ -76,8 +76,29 @@ class GeneratedImageRepository(BaseRepository):
         """
 
     def _get_columns(self) -> List[str]:
-        # Match actual database schema
-        return ["prompt_id", "image_path", "filename", "generation_time", "file_size", "width", "height", "format", "workflow_data", "prompt_metadata", "parameters"]
+        """Return insertable columns, including optional legacy fields."""
+
+        base_columns = [
+            "prompt_id",
+            "image_path",
+            "filename",
+            "generation_time",
+            "file_size",
+            "width",
+            "height",
+            "format",
+            "workflow_data",
+            "prompt_metadata",
+            "parameters",
+        ]
+
+        table_columns = self._get_table_columns()
+        if "media_type" in table_columns and "media_type" not in base_columns:
+            base_columns.append("media_type")
+        if "thumbnail_url" in table_columns and "thumbnail_url" not in base_columns:
+            base_columns.append("thumbnail_url")
+
+        return base_columns
 
     def _to_dict(self, row) -> Dict[str, Any]:
         data = dict(row)
@@ -100,27 +121,43 @@ class GeneratedImageRepository(BaseRepository):
         if isinstance(metadata, (dict, list)):
             metadata = json.dumps(metadata)
 
-        # Map file_path to image_path for compatibility
         image_path = data.get("image_path") or data.get("file_path")
-
-        # Extract filename from path if not provided
         filename = data.get("filename") or data.get("file_name")
         if not filename and image_path:
             filename = Path(image_path).name
 
-        return (
-            data.get("prompt_id"),
-            image_path,  # image_path
-            filename,  # filename
-            data.get("generation_time"),  # generation_time
-            data.get("file_size"),  # file_size
-            data.get("width"),  # width
-            data.get("height"),  # height
-            data.get("format"),  # format
-            data.get("workflow_data"),  # workflow_data
-            metadata,  # prompt_metadata
-            data.get("parameters")  # parameters
-        )
+        column_values: List[Any] = []
+        for column in self._get_columns():
+            if column == "prompt_id":
+                column_values.append(data.get("prompt_id"))
+            elif column == "image_path":
+                column_values.append(image_path)
+            elif column == "filename":
+                column_values.append(filename)
+            elif column == "generation_time":
+                column_values.append(data.get("generation_time"))
+            elif column == "file_size":
+                column_values.append(data.get("file_size"))
+            elif column == "width":
+                column_values.append(data.get("width"))
+            elif column == "height":
+                column_values.append(data.get("height"))
+            elif column == "format":
+                column_values.append(data.get("format"))
+            elif column == "workflow_data":
+                column_values.append(data.get("workflow_data"))
+            elif column == "prompt_metadata":
+                column_values.append(metadata)
+            elif column == "parameters":
+                column_values.append(data.get("parameters"))
+            elif column == "media_type":
+                column_values.append(data.get("media_type"))
+            elif column == "thumbnail_url":
+                column_values.append(data.get("thumbnail_url"))
+            else:
+                column_values.append(data.get(column))
+
+        return tuple(column_values)
 
     # ------------------------------------------------------------------
     # Metadata helpers
@@ -249,17 +286,32 @@ class GeneratedImageRepository(BaseRepository):
             LOGGER.debug("generated_images table missing while counting")
             return 0
 
+    def _has_column(self, column: str) -> bool:
+        try:
+            return column in self._get_table_columns()
+        except sqlite3.OperationalError:
+            return False
+
     def find_by_prompt_and_path(self, prompt_id: int, image_path: str) -> Optional[Dict[str, Any]]:
         """Check if an image is already linked to a prompt."""
         try:
             with self._get_connection() as conn:
-                # Check both image_path and file_path columns for compatibility
-                query = """
-                    SELECT * FROM generated_images
-                    WHERE prompt_id = ? AND (image_path = ? OR file_path = ?)
-                    LIMIT 1
-                """
-                cursor = conn.execute(query, (prompt_id, image_path, image_path))
+                params: Tuple[Any, ...]
+                if self._has_column('file_path'):
+                    query = """
+                        SELECT * FROM generated_images
+                        WHERE prompt_id = ? AND (image_path = ? OR file_path = ?)
+                        LIMIT 1
+                    """
+                    params = (prompt_id, image_path, image_path)
+                else:
+                    query = """
+                        SELECT * FROM generated_images
+                        WHERE prompt_id = ? AND image_path = ?
+                        LIMIT 1
+                    """
+                    params = (prompt_id, image_path)
+                cursor = conn.execute(query, params)
                 row = cursor.fetchone()
                 if row:
                     return self._to_dict(row)
@@ -272,13 +324,21 @@ class GeneratedImageRepository(BaseRepository):
         """Find an image by file path only."""
         try:
             with self._get_connection() as conn:
-                # Check both image_path and file_path columns for compatibility
-                query = """
-                    SELECT * FROM generated_images
-                    WHERE image_path = ? OR file_path = ?
-                    LIMIT 1
-                """
-                cursor = conn.execute(query, (image_path, image_path))
+                if self._has_column('file_path'):
+                    query = """
+                        SELECT * FROM generated_images
+                        WHERE image_path = ? OR file_path = ?
+                        LIMIT 1
+                    """
+                    params = (image_path, image_path)
+                else:
+                    query = """
+                        SELECT * FROM generated_images
+                        WHERE image_path = ?
+                        LIMIT 1
+                    """
+                    params = (image_path,)
+                cursor = conn.execute(query, params)
                 row = cursor.fetchone()
                 if row:
                     return self._to_dict(row)

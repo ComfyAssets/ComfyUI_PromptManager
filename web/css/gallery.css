@@ -29,6 +29,34 @@
     background: var(--space-medium);
 }
 
+.media-overlay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.6);
+    color: white;
+    pointer-events: none;
+}
+
+.media-overlay i {
+    font-size: 24px;
+}
+
+.media-overlay-audio {
+    background: rgba(79, 195, 247, 0.75);
+}
+
+.media-overlay-video {
+    background: rgba(239, 68, 68, 0.75);
+}
+
 .gallery-image img,
 .gallery-image video {
     position: absolute;
@@ -101,6 +129,14 @@
 
 .gallery-info {
     padding: 1rem;
+}
+
+.chip-media {
+    background: rgba(79, 195, 247, 0.15);
+    color: var(--electric-blue);
+    text-transform: uppercase;
+    font-size: 0.65rem;
+    letter-spacing: 0.05em;
 }
 
 .gallery-title {

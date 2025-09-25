@@ -434,25 +434,43 @@ class IncrementalStatsService:
     def _calculate_performance(self) -> Dict[str, Any]:
         """Calculate performance metrics."""
         with self._connect() as conn:
-            columns = self._get_table_columns("prompts", conn)
             avg_generation_time = 0.0
 
             try:
                 row = None
-                if "metadata" in columns:
+                prompt_columns = self._get_table_columns("prompts", conn)
+                if "metadata" in prompt_columns:
                     row = conn.execute("""
                         SELECT AVG(CAST(json_extract(metadata, '$.generation_time') AS REAL)) AS avg_time
                         FROM prompts
                         WHERE metadata IS NOT NULL
                           AND json_extract(metadata, '$.generation_time') IS NOT NULL
                     """).fetchone()
-                elif "generation_params" in columns:
+                elif "generation_params" in prompt_columns:
                     row = conn.execute("""
                         SELECT AVG(CAST(json_extract(generation_params, '$.generation_time') AS REAL)) AS avg_time
                         FROM prompts
                         WHERE generation_params IS NOT NULL
                           AND json_extract(generation_params, '$.generation_time') IS NOT NULL
                     """).fetchone()
+
+                # Fall back to generated_images metadata if prompt fields are absent
+                if (not row or row["avg_time"] is None):
+                    image_columns = self._get_table_columns("generated_images", conn)
+                    if "metadata" in image_columns:
+                        row = conn.execute("""
+                            SELECT AVG(CAST(json_extract(metadata, '$.generation_time') AS REAL)) AS avg_time
+                            FROM generated_images
+                            WHERE metadata IS NOT NULL
+                              AND json_extract(metadata, '$.generation_time') IS NOT NULL
+                        """).fetchone()
+                    elif "parameters" in image_columns:
+                        row = conn.execute("""
+                            SELECT AVG(CAST(json_extract(parameters, '$.generation_time') AS REAL)) AS avg_time
+                            FROM generated_images
+                            WHERE parameters IS NOT NULL
+                              AND json_extract(parameters, '$.generation_time') IS NOT NULL
+                        """).fetchone()
 
                 if row and row["avg_time"] is not None:
                     avg_generation_time = float(row["avg_time"])

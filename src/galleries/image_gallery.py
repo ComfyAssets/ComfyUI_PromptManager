@@ -4,6 +4,7 @@ Provides functionality for displaying, filtering, and managing
 generated images with their associated prompts.
 """
 
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -126,12 +127,19 @@ class ImageGallery(BaseGallery):
             image_url = base_url
             thumbnail_url = f"{base_url}?thumbnail=1"
         elif image_path:
-            # Legacy safety-net: if we somehow lack an ID, fall back to the stored path
             image_url = image_path
             thumbnail_url = image_path
 
         if not thumbnail_url and image_url:
             thumbnail_url = image_url
+
+        format_value = item.get("format")
+        if not format_value and filename:
+            format_value = Path(filename).suffix.upper().lstrip(".")
+
+        media_type = item.get("media_type") or "image"
+        if media_type == "audio":
+            thumbnail_url = "/prompt_manager/images/wave-form.svg"
 
         rendered = {
             "id": item.get("id"),
@@ -144,17 +152,34 @@ class ImageGallery(BaseGallery):
             "generation_time": item.get("generation_time") or item.get("created_at", ""),
             "dimensions": f"{item.get('width', 0)}x{item.get('height', 0)}",
             "size": self._format_file_size(item.get("file_size", 0)),
-            "format": item.get("format", "").upper() or Path(filename).suffix.upper().replace(".", ""),
-            "has_prompt": item.get("prompt_id") is not None
+            "format": (format_value or "").upper(),
+            "has_prompt": item.get("prompt_id") is not None,
+            "media_type": media_type,
         }
         
         # Add metadata if available
         if item.get("prompt_metadata"):
-            rendered["metadata"] = item["prompt_metadata"]
-        
+            metadata_value = item["prompt_metadata"]
+            if isinstance(metadata_value, str):
+                try:
+                    metadata_value = json.loads(metadata_value)
+                except json.JSONDecodeError:
+                    logger = getattr(self, "logger", None)
+                    if logger:
+                        logger.debug("Unable to parse prompt_metadata for image %s", item.get("id"))
+            rendered["metadata"] = metadata_value
+
         # Add workflow data if available
         if item.get("workflow_data"):
-            rendered["workflow"] = item["workflow_data"]
+            workflow_value = item["workflow_data"]
+            if isinstance(workflow_value, str):
+                try:
+                    workflow_value = json.loads(workflow_value)
+                except json.JSONDecodeError:
+                    logger = getattr(self, "logger", None)
+                    if logger:
+                        logger.debug("Unable to parse workflow_data for image %s", item.get("id"))
+            rendered["workflow"] = workflow_value
         
         # Format generation time
         if rendered["generation_time"]:

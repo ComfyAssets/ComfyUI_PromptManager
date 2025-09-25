@@ -129,16 +129,21 @@
         div.dataset.itemId = item.id;
 
         const modelName = extractModelName(item);
-
         const placeholderImage = '/prompt_manager/images/placeholder.png';
-        const thumbnailUrl = item.thumbnail_url || item.thumbnail || placeholderImage;
-        const fullImageUrl = item.image_url || item.url || item.path || thumbnailUrl;
+        const audioPlaceholder = '/prompt_manager/images/wave-form.svg';
+
+        const mediaType = item.media_type || 'image';
+        let thumbnailUrl = item.thumbnail_url || item.thumbnail || placeholderImage;
+        if (mediaType === 'audio') {
+            thumbnailUrl = audioPlaceholder;
+        }
+        const fullMediaUrl = item.image_url || item.url || item.path || thumbnailUrl;
 
         // Build HTML
         div.innerHTML = `
             <div class="gallery-image">
                 <img src="${thumbnailUrl}"
-                     data-full-src="${fullImageUrl}"
+                     data-full-src="${fullMediaUrl}"
                      alt="${escapeHtml(item.filename || '')}"
                      loading="lazy"
                      data-placeholder="${placeholderImage}" />
@@ -149,6 +154,7 @@
                     <span class="chip">${escapeHtml(modelName)}</span>
                     <span class="chip">${item.dimensions || 'Unknown'}</span>
                     <span class="chip">${item.size || 'Unknown'}</span>
+                    ${mediaType !== 'image' ? `<span class="chip chip-media">${mediaType}</span>` : ''}
                 </div>
                 <div class="gallery-timestamp">
                     ${formatTimeAgo(item.generation_time)}
@@ -172,9 +178,9 @@
         if (img) {
             const handleImageError = () => {
                 const fallbackTried = img.dataset.fallbackTried === '1';
-                if (!fallbackTried && fullImageUrl && img.src !== fullImageUrl) {
+                if (!fallbackTried && fullMediaUrl && img.src !== fullMediaUrl) {
                     img.dataset.fallbackTried = '1';
-                    img.src = fullImageUrl;
+                    img.src = fullMediaUrl;
                     return;
                 }
 
@@ -185,39 +191,83 @@
 
             img.addEventListener('error', handleImageError);
             img.style.cursor = 'pointer';
+            img.dataset.mediaType = mediaType;
+            img.addEventListener('click', () => {
+                if (mediaType === 'video' || mediaType === 'audio') {
+                    window.open(fullMediaUrl, '_blank');
+                    return;
+                }
+
+                if (window.ViewerIntegration && window.ViewerIntegration.showImage) {
+                    const active = window.ViewerIntegration.getActiveIntegration?.();
+                    if (active?.id) {
+                        const items = Array.from(document.querySelectorAll('#galleryContainer .gallery-item'));
+                        const index = items.findIndex(el => el.dataset.itemId === String(item.id));
+                        if (index >= 0) {
+                            window.ViewerIntegration.showImage(index, active.id);
+                            return;
+                        }
+                    }
+                }
+
+                window.open(fullMediaUrl, '_blank');
+            });
+
+            if (mediaType === 'video') {
+                const overlay = document.createElement('div');
+                overlay.className = 'media-overlay media-overlay-video';
+                overlay.innerHTML = '<i class="fa-solid fa-circle-play" aria-hidden="true"></i>';
+                const imageWrapper = div.querySelector('.gallery-image');
+                if (imageWrapper) {
+                    imageWrapper.appendChild(overlay);
+                }
+            } else if (mediaType === 'audio') {
+                const overlay = document.createElement('div');
+                overlay.className = 'media-overlay media-overlay-audio';
+                overlay.innerHTML = '<i class="fa-solid fa-wave-square" aria-hidden="true"></i>';
+                const imageWrapper = div.querySelector('.gallery-image');
+                if (imageWrapper) {
+                    imageWrapper.appendChild(overlay);
+                }
+            }
         }
 
         return div;
     }
 
     function extractModelName(item) {
-        if (!item || !item.metadata) {
+        if (!item) {
             return 'Unknown';
         }
 
-        try {
-            const rawMetadata = item.metadata;
-            const metadata = typeof rawMetadata === 'string'
-                ? JSON.parse(rawMetadata)
-                : rawMetadata;
+        const metadataSources = [item.metadata, item.workflow, item.parameters]
+            .filter(source => source !== undefined && source !== null);
 
-            if (metadata && typeof metadata === 'object') {
-                for (const value of Object.values(metadata)) {
-                    if (!value || typeof value !== 'object') {
+        for (const source of metadataSources) {
+            try {
+                const data = typeof source === 'string' ? JSON.parse(source) : source;
+                if (!data || typeof data !== 'object') {
+                    continue;
+                }
+
+                const nodes = Array.isArray(data) ? data : Object.values(data);
+                for (const node of nodes) {
+                    if (!node || typeof node !== 'object') {
                         continue;
                     }
 
-                    const inputs = value.inputs || {};
+                    const inputs = node.inputs || {};
+                    const classType = node.class_type || node.type;
                     if (
-                        (value.class_type === 'CheckpointLoaderSimple' || value.class_type === 'CheckpointLoader') &&
+                        (classType === 'CheckpointLoaderSimple' || classType === 'CheckpointLoader') &&
                         inputs.ckpt_name
                     ) {
                         return getModelDisplayName(inputs.ckpt_name);
                     }
                 }
+            } catch (error) {
+                console.warn('Failed to parse metadata for item', item.id, error);
             }
-        } catch (error) {
-            console.warn('Failed to parse metadata for item', item.id, error);
         }
 
         return 'Unknown';
