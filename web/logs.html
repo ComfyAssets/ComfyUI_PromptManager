@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <title>PromptManager — Logs</title>
+    <link rel="stylesheet" href="/prompt_manager/css/style.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/blue-theme-update.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/components.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/logs.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/notifications.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/migration.css" />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+      integrity="sha512-SnH5WK+bZxgPHs44uWIX+LLJAJ9/2PkPKZ5QiAj6Ta86w+fsb2TkcmfRyVX3pBnMFcV7oQPJkl9QevSCWr3W6A=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    />
+
+</head>
+  <body x-data="pmLogsApp()" x-init="init()">
+    <div class="app-container">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div id="brand-badge" class="brand-badge">PM</div>
+          <div>
+            <div class="sidebar-header-title">PromptManager</div>
+            <div class="sidebar-header-subtitle">
+              Professional Suite
+            </div>
+          </div>
+        </div>
+
+                                                <nav class="nav-menu">
+          <a href="/prompt_manager/" class="nav-item">
+            <i class="fa-solid fa-house nav-icon" aria-hidden="true"></i>
+            <span>Home</span>
+          </a>
+          <a href="/prompt_manager/dashboard" class="nav-item">
+            <i class="fa-solid fa-chart-line nav-icon" aria-hidden="true"></i>
+            <span>Dashboard</span>
+          </a>
+          <a href="/prompt_manager/gallery" class="nav-item">
+            <i class="fa-solid fa-images nav-icon" aria-hidden="true"></i>
+            <span>Gallery</span>
+          </a>
+          <a href="/prompt_manager/collections" class="nav-item">
+            <i class="fa-solid fa-folder-tree nav-icon" aria-hidden="true"></i>
+            <span>Collections</span>
+          </a>
+          <a href="/prompt_manager/stats" class="nav-item">
+            <i class="fa-solid fa-chart-column nav-icon" aria-hidden="true"></i>
+            <span>Stats</span>
+          </a>
+          <a href="/prompt_manager/metadata" class="nav-item">
+            <i class="fa-solid fa-tags nav-icon" aria-hidden="true"></i>
+            <span>Metadata</span>
+          </a>
+          <a href="/prompt_manager/settings" class="nav-item">
+            <i class="fa-solid fa-gear nav-icon" aria-hidden="true"></i>
+            <span>Settings</span>
+          </a>
+          <a href="/prompt_manager/logs" class="nav-item active">
+            <i class="fa-solid fa-clipboard-list nav-icon" aria-hidden="true"></i>
+            <span>Logs</span>
+          </a>
+        </nav>
+      </aside>
+
+      <!-- Main Content -->
+      <main class="main-content">
+        <!-- Topbar -->
+        <div class="topbar">
+          <div class="search-container">
+            <input
+              type="text"
+              placeholder="Search logs..."
+              class="search-input"
+            />
+          </div>
+          <div class="topbar-actions">
+            <button class="btn btn-ghost">
+              <span><i class="fa-regular fa-bell" aria-hidden="true"></i></span>
+            </button>
+            <button class="btn btn-ghost">
+              <span><i class="fa-solid fa-gear" aria-hidden="true"></i></span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Page Content -->
+        <div class="page-content">
+          <div class="page-header">
+            <div>
+              <h1>System Logs</h1>
+              <p>Monitor application activity and debug issues</p>
+            </div>
+          </div>
+
+          <!-- Log Controls -->
+          <div class="logs-controls">
+            <div class="log-filter-group">
+              <label class="log-filter-label">File:</label>
+              <select class="btn btn-secondary log-select-file" id="fileSel" @change="changeFile($event.target.value)">
+                <option value="promptmanager.log">promptmanager.log</option>
+              </select>
+            </div>
+
+            <div class="log-filter-group">
+              <label class="log-filter-label">Lines:</label>
+              <select class="btn btn-secondary" id="tailSel" @change="tail=Number($event.target.value); refresh()">
+                <option value="200">200 lines</option>
+                <option value="500" selected>500 lines</option>
+                <option value="1000">1000 lines</option>
+                <option value="0">All</option>
+              </select>
+            </div>
+
+            <label class="log-auto-refresh">
+              <input type="checkbox" class="log-auto-checkbox" @change="auto=$event.target.checked; toggleAuto()">
+              Auto-refresh
+            </label>
+
+            <div class="log-action-buttons">
+              <button class="btn btn-secondary btn-sm" @click="refresh">
+                <i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i> Refresh
+              </button>
+              <button class="btn btn-secondary btn-sm" @click="rotate">
+                🔁 Rotate
+              </button>
+              <button class="btn btn-secondary btn-sm" @click="clearLogs">
+                🧹 Clear
+              </button>
+              <button class="btn btn-secondary btn-sm" @click="download">
+                <i class="fa-solid fa-download" aria-hidden="true"></i> Download
+              </button>
+            </div>
+          </div>
+
+          <!-- Log Viewer -->
+          <div class="log-viewer">
+            <div class="log-meta">
+              <div class="log-meta-container">
+                <span x-text="'Viewing: ' + file"></span>
+                <span x-text="'Lines: ' + (tail === 0 ? 'All' : tail)"></span>
+              </div>
+            </div>
+            <textarea class="log-content" readonly x-text="content"></textarea>
+          </div>
+        </div>
+      </main>
+    </div>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="/prompt_manager/js/notifications.js"></script>
+    <script src="/prompt_manager/js/logs-page.js"></script>
+
+    <!-- Core modules -->
+    <script src="/prompt_manager/js/modules/core/events.js"></script>
+    <script src="/prompt_manager/js/modules/core/sse.js"></script>
+    <script src="/prompt_manager/js/modules/components/status-indicator.js"></script>
+    <script src="/prompt_manager/js/modules/components/progress-indicator.js"></script>
+    <script src="/prompt_manager/js/modules/components/footer-status.js"></script>
+
+    <!-- Footer -->
+    <footer class="main-footer">
+      <div class="footer-content">
+        <div class="footer-text">
+          PromptManager — Clean, Fast, Local. © 2025
+        </div>
+        <div class="footer-links">
+          <a href="#" class="footer-link">Documentation</a>
+          <a href="#" class="footer-link">GitHub</a>
+          <a href="#" class="footer-link">Support</a>
+        </div>
+      </div>
+    </footer>
+
+    <script>
+      // Initialize footer status and indicators
+      document.addEventListener('DOMContentLoaded', function() {
+        // Initialize realtime status and progress indicators
+        if (window.StatusIndicator) {
+          StatusIndicator.init({
+            position: 'bottom-right',
+            autoHide: true,
+            autoHideDelay: 5000,
+            showDetails: true
+          });
+        }
+
+        if (window.ProgressIndicator) {
+          ProgressIndicator.init({
+            position: 'top-center',
+            showPercentage: true,
+            showTimeEstimate: true,
+            stackable: true
+          });
+        }
+
+        // Initialize Footer Status (compact footer version)
+        if (window.FooterStatus) {
+          FooterStatus.init({
+            showText: true,
+            showCount: true,
+            enableTooltips: true
+          });
+        }
+      });
+    </script>
+  </body>
+  </html>
