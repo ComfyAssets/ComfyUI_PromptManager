@@ -1,0 +1,524 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <title>PromptManager — Stats</title>
+    <link rel="stylesheet" href="/prompt_manager/css/style.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/blue-theme-update.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/components.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/notifications.css" />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+      integrity="sha512-SnH5WK+bZxgPHs44uWIX+LLJAJ9/2PkPKZ5QiAj6Ta86w+fsb2TkcmfRyVX3pBnMFcV7oQPJkl9QevSCWr3W6A=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    />
+
+    <style>
+      /* Epic Stats Styles */
+      .stats-dashboard {
+        padding: 20px;
+        max-width: 1600px;
+        margin: 0 auto;
+      }
+
+      .stats-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 30px;
+        padding-bottom: 20px;
+        border-bottom: 1px solid rgba(255,255,255,0.1);
+      }
+
+      .stats-section {
+        background: rgba(0,0,0,0.3);
+        border-radius: 12px;
+        padding: 25px;
+        margin-bottom: 30px;
+        border: 1px solid rgba(255,255,255,0.05);
+      }
+
+      .section-title {
+        font-size: 1.5rem;
+        font-weight: 600;
+        margin-bottom: 20px;
+        color: #4A90E2;
+      }
+
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 20px;
+        margin-bottom: 30px;
+      }
+
+      .stat-card {
+        background: rgba(255,255,255,0.03);
+        padding: 20px;
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.08);
+        transition: all 0.3s ease;
+      }
+
+      .stat-card:hover {
+        background: rgba(255,255,255,0.05);
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+      }
+
+      .stat-label {
+        font-size: 0.9rem;
+        color: #888;
+        margin-bottom: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      .stat-value {
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: #fff;
+        margin-bottom: 10px;
+      }
+
+      .stat-change {
+        font-size: 0.9rem;
+        color: #888;
+      }
+
+      .stat-change.positive {
+        color: #50C878;
+      }
+
+      .stat-change.negative {
+        color: #FF6B9D;
+      }
+
+      .stats-loading-banner {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        padding: 1rem 1.25rem;
+        border-radius: 0.85rem;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        background: rgba(30, 41, 59, 0.6);
+        margin-bottom: 1.5rem;
+        transition: border-color 0.3s ease, box-shadow 0.3s ease;
+      }
+
+      .stats-loading-banner.is-hidden {
+        display: none;
+      }
+
+      .stats-loading-banner.has-error {
+        border-color: rgba(248, 113, 113, 0.65);
+        background: rgba(127, 29, 29, 0.35);
+      }
+
+      .stats-loading-icon {
+        width: 1.75rem;
+        height: 1.75rem;
+        border-radius: 50%;
+        border: 3px solid rgba(148, 163, 184, 0.25);
+        border-top-color: rgba(129, 140, 248, 0.9);
+        animation: spin 1s linear infinite;
+      }
+
+      .stats-loading-banner.has-error .stats-loading-icon {
+        border-color: rgba(248, 113, 113, 0.35);
+        border-top-color: rgba(248, 113, 113, 0.9);
+      }
+
+      .stats-loading-copy {
+        flex: 1;
+      }
+
+      .stats-loading-title {
+        font-weight: 600;
+        color: var(--text-primary);
+      }
+
+      .stats-loading-detail {
+        font-size: 0.85rem;
+        color: var(--text-dim);
+        margin-top: 0.1rem;
+      }
+
+      .stats-loading-banner.has-error .stats-loading-detail {
+        color: rgba(248, 113, 113, 0.9);
+      }
+
+      /* Word Cloud Styles */
+      #word-cloud-container, #wordCloud {
+        min-height: 400px;
+        background: radial-gradient(circle at center, rgba(46,126,229,0.05) 0%, transparent 70%);
+        border-radius: 12px;
+        position: relative;
+        overflow: hidden;
+        margin: 20px 0;
+      }
+
+      .word-cloud-item {
+        position: absolute;
+        cursor: pointer;
+        font-weight: 500;
+        transition: all 0.3s ease;
+        text-shadow: 1px 1px 3px rgba(0,0,0,0.5);
+        user-select: none;
+      }
+
+      .word-cloud-item:hover {
+        transform: scale(1.2);
+        z-index: 1000 !important;
+      }
+
+      .word-cloud-item.selected {
+        color: #FFD700 !important;
+        font-weight: bold;
+        animation: pulse 2s infinite;
+      }
+
+      @keyframes pulse {
+        0%, 100% { transform: translate(-50%, -50%) scale(1); }
+        50% { transform: translate(-50%, -50%) scale(1.1); }
+      }
+
+      .word-cloud-tooltip {
+        position: absolute;
+        background: rgba(0, 0, 0, 0.95);
+        color: white;
+        padding: 12px;
+        border-radius: 6px;
+        font-size: 13px;
+        pointer-events: none;
+        z-index: 10000;
+        max-width: 250px;
+        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.4);
+        border: 1px solid rgba(255,255,255,0.1);
+      }
+
+      /* Chart Styles */
+      canvas {
+        max-width: 100%;
+        height: auto !important;
+      }
+
+      .metric-card {
+        text-align: center;
+        padding: 20px;
+      }
+
+      .big-number {
+        font-size: 3rem;
+        font-weight: bold;
+        color: #4A90E2;
+        margin: 10px 0;
+      }
+
+      .progress-circle {
+        width: 100px;
+        height: 100px;
+        margin: 0 auto;
+        position: relative;
+      }
+
+      .progress-bg {
+        fill: none;
+        stroke: rgba(255,255,255,0.1);
+        stroke-width: 8;
+      }
+
+      .progress-fill {
+        fill: none;
+        stroke: #4A90E2;
+        stroke-width: 8;
+        stroke-linecap: round;
+        transform-origin: 50% 50%;
+        transform: rotate(-90deg);
+        transition: stroke-dasharray 1s ease;
+      }
+
+      .progress-value {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 1.5rem;
+        font-weight: bold;
+      }
+
+      /* Fun Stats */
+      .fun-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 15px;
+      }
+
+      .fun-fact {
+        display: flex;
+        align-items: center;
+        gap: 15px;
+        padding: 15px;
+        background: rgba(255,255,255,0.03);
+        border-radius: 8px;
+      }
+
+      .fact-emoji {
+        font-size: 2rem;
+      }
+
+      .fact-text {
+        flex: 1;
+        font-size: 1.1rem;
+      }
+
+      /* Control Buttons */
+      .stats-controls {
+        display: flex;
+        gap: 10px;
+      }
+
+      #refreshStats, #exportStats {
+        padding: 10px 20px;
+        background: #4A90E2;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: 500;
+        transition: all 0.3s ease;
+      }
+
+      #refreshStats:hover, #exportStats:hover {
+        background: #357ABD;
+        transform: translateY(-1px);
+      }
+
+      #refreshStats.loading {
+        opacity: 0.7;
+        cursor: not-allowed;
+      }
+
+      .loading-spinner {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        border: 3px solid rgba(255,255,255,0.3);
+        border-top-color: white;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+
+      /* Additional styles for epic stats specific elements */
+      .time-heat-map {
+        display: grid;
+        grid-template-columns: repeat(24, 1fr);
+        gap: 2px;
+        margin: 20px 0;
+      }
+
+      .heat-cell {
+        aspect-ratio: 1;
+        background: rgba(46,126,229,0.1);
+        border-radius: 2px;
+        position: relative;
+        cursor: pointer;
+      }
+
+      .heat-cell:hover::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(0,0,0,0.9);
+        color: white;
+        padding: 5px 10px;
+        border-radius: 4px;
+        font-size: 12px;
+        white-space: nowrap;
+        z-index: 1000;
+      }
+
+      .streak-badge {
+        display: inline-block;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 5px 15px;
+        border-radius: 20px;
+        font-weight: bold;
+        margin: 5px;
+      }
+
+      .model-badge {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 15px;
+        font-size: 0.85rem;
+        margin: 3px;
+        background: rgba(255,255,255,0.1);
+        border: 1px solid rgba(255,255,255,0.2);
+      }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div id="brand-badge" class="brand-badge">PM</div>
+          <div>
+            <div class="sidebar-header-title">PromptManager</div>
+            <div class="sidebar-header-subtitle">Professional Suite</div>
+          </div>
+        </div>
+
+        <nav class="nav-menu">
+          <a href="/prompt_manager/" class="nav-item">
+            <i class="fa-solid fa-house nav-icon"></i>
+            <span>Home</span>
+          </a>
+          <a href="/prompt_manager/dashboard" class="nav-item">
+            <i class="fa-solid fa-chart-line nav-icon"></i>
+            <span>Dashboard</span>
+          </a>
+          <a href="/prompt_manager/gallery" class="nav-item">
+            <i class="fa-solid fa-images nav-icon"></i>
+            <span>Gallery</span>
+          </a>
+          <a href="/prompt_manager/collections" class="nav-item">
+            <i class="fa-solid fa-folder-tree nav-icon"></i>
+            <span>Collections</span>
+          </a>
+          <a href="/prompt_manager/stats" class="nav-item active">
+            <i class="fa-solid fa-rocket nav-icon"></i>
+            <span>Stats</span>
+          </a>
+          <a href="/prompt_manager/metadata" class="nav-item">
+            <i class="fa-solid fa-tags nav-icon"></i>
+            <span>Metadata</span>
+          </a>
+          <a href="/prompt_manager/settings" class="nav-item">
+            <i class="fa-solid fa-gear nav-icon"></i>
+            <span>Settings</span>
+          </a>
+          <a href="/prompt_manager/logs" class="nav-item">
+            <i class="fa-solid fa-clipboard-list nav-icon"></i>
+            <span>Logs</span>
+          </a>
+        </nav>
+      </aside>
+
+      <!-- Main Content -->
+      <main class="main-content">
+        <!-- Topbar -->
+        <div class="topbar">
+          <div class="search-container">
+            <input type="text" placeholder="Search stats..." class="search-input" />
+          </div>
+          <div class="topbar-actions">
+            <button class="btn btn-ghost">
+              <span><i class="fa-regular fa-bell"></i></span>
+            </button>
+            <button class="btn btn-ghost">
+              <span><i class="fa-solid fa-gear"></i></span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Page Content -->
+        <div class="page-content">
+          <div class="stats-header">
+            <div>
+              <h1 style="font-size: 2.5rem; margin-bottom: 10px;">🚀 Epic Stats Dashboard</h1>
+              <p style="color: #888; font-size: 1.1rem;">Deep insights and creative analytics from your prompt universe</p>
+            </div>
+            <div class="stats-controls">
+              <button id="refreshStats" class="btn btn-primary">
+                <i class="fa-solid fa-sync"></i> Refresh
+              </button>
+              <button id="exportStats" class="btn btn-secondary">
+                <i class="fa-solid fa-download"></i> Export
+              </button>
+            </div>
+          </div>
+
+          <!-- Stats Dashboard Container -->
+          <div id="stats-dashboard" class="stats-dashboard">
+            <div class="stats-loading-banner" data-stats-progress role="status" aria-live="polite">
+              <div class="stats-loading-icon" data-stats-progress-spinner></div>
+              <div class="stats-loading-copy">
+                <div class="stats-loading-title" data-stats-progress-text>Preparing analytics…</div>
+                <div class="stats-loading-detail" data-stats-progress-detail>Crunching numbers for your first load.</div>
+              </div>
+            </div>
+            <!-- Content will be dynamically loaded by stats-epic.js -->
+            <div style="text-align: center; padding: 100px;">
+              <div class="loading-spinner"></div>
+              <p style="margin-top: 20px; color: #888;">Loading epic stats...</p>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- Core modules -->
+    <script src="/prompt_manager/js/modules/core/events.js"></script>
+
+    <!-- Word Cloud Module -->
+    <script src="/prompt_manager/js/wordcloud.js"></script>
+
+    <!-- Epic Stats Module -->
+    <script src="/prompt_manager/js/stats-epic.js"></script>
+
+    <!-- Initialize -->
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        // Initialize EventBus if not already available
+        if (!window.EventBus) {
+          window.EventBus = {
+            events: {},
+            on: function(event, callback) {
+              if (!this.events[event]) this.events[event] = [];
+              this.events[event].push(callback);
+            },
+            emit: function(event, data) {
+              if (!this.events[event]) return;
+              this.events[event].forEach(cb => cb(data));
+            },
+            off: function(event, callback) {
+              if (!this.events[event]) return;
+              this.events[event] = this.events[event].filter(cb => cb !== callback);
+            }
+          };
+        }
+
+        // Initialize Epic Stats
+        if (window.EpicStats) {
+          EpicStats.init();
+        }
+      });
+    </script>
+
+    <!-- Footer -->
+    <footer class="main-footer">
+      <div class="footer-content">
+        <div class="footer-text">
+          PromptManager — Clean, Fast, Local. © 2025
+        </div>
+        <div class="footer-links">
+          <a href="#" class="footer-link">Documentation</a>
+          <a href="#" class="footer-link">GitHub</a>
+          <a href="#" class="footer-link">Support</a>
+        </div>
+      </div>
+    </footer>
+</body>
+</html>
