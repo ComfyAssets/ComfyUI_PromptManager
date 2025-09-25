@@ -185,13 +185,63 @@
 }
 
 .masonry-grid {
-    column-count: 4;
-    column-gap: 1rem;
+    position: relative;
+    margin-bottom: 2rem;
 }
 
-.masonry-item {
-    break-inside: avoid;
-    margin-bottom: 1rem;
+.masonry-grid .gallery-item {
+    margin-bottom: 1.5rem;
+}
+
+.masonry-grid .masonry-sizer,
+.masonry-grid .gallery-item {
+    width: calc(33.333% - 1.5rem);
+}
+
+.gallery-container.list-view {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+}
+
+.list-item {
+    display: flex;
+    align-items: stretch;
+    gap: 1.5rem;
+}
+
+.list-item .gallery-image {
+    flex: 0 0 220px;
+    max-width: 220px;
+    aspect-ratio: 4 / 3;
+    padding-top: 0;
+    height: 100%;
+    min-height: 180px;
+}
+
+.list-item .gallery-image img,
+.list-item .gallery-image video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.list-item .gallery-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.list-item .gallery-title {
+    white-space: normal;
+}
+
+.list-item .gallery-actions {
+    margin-top: auto;
 }
 
 @media (max-width: 1200px) {
@@ -202,16 +252,38 @@
 
 @media (max-width: 900px) {
     .masonry-grid {
-        column-count: 2;
+        margin-bottom: 2rem;
+    }
+    .masonry-grid .masonry-sizer,
+    .masonry-grid .gallery-item {
+        width: calc(50% - 1.5rem);
     }
     .gallery-grid {
         grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    }
+    .gallery-container.list-view .list-item {
+        flex-direction: column;
+    }
+    .gallery-container.list-view .list-item .gallery-image {
+        flex: none;
+        max-width: none;
+        width: 100%;
     }
 }
 
 @media (max-width: 600px) {
     .masonry-grid {
-        column-count: 1;
+        margin-bottom: 2rem;
+    }
+    .masonry-grid .masonry-sizer,
+    .masonry-grid .gallery-item {
+        width: 100%;
+    }
+    .gallery-container.list-view {
+        gap: 1rem;
+    }
+    .gallery-container.list-view .list-item .gallery-image {
+        aspect-ratio: 16 / 9;
     }
 }
 
