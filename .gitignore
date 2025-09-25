@@ -9,6 +9,10 @@ web/vendor/viewerjs/lint-staged.config.js
 web/vendor/viewerjs/.github/
 web/vendor/viewerjs/.husky/
 
+# User data folder (should be in ComfyUI root, not here!)
+user/
+/user/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -91,13 +95,8 @@ prompts_v1_test.db
 logs/
 promptmanager_logs/
 
-# User data and settings (keep only default structure)
-user/*/*
-!user/default/
-!user/default/PromptManager/
-user/default/PromptManager/*.db
-user/default/PromptManager/*.json
-user/default/PromptManager/settings.json
+# User data should be in ComfyUI root directory, not in this project
+# If accidentally created here, it should be completely ignored
 
 # Generated directories
 .thumbnails/
