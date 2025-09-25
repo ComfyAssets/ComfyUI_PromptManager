@@ -159,11 +159,16 @@ const ViewerIntegration = (function() {
 
         // Find all images in gallery
         const images = Array.from(container.querySelectorAll(integration.config.selectors.galleryImage || 'img'));
-        integration.images = images.map(img => ({
-            src: img.src,
-            alt: img.alt || '',
-            title: img.getAttribute('title') || img.alt || ''
-        }));
+        integration.images = images.map(img => {
+            const thumbSrc = img.currentSrc || img.src;
+            const fullSrc = img.dataset.fullSrc || img.getAttribute('data-full-src') || thumbSrc;
+            return {
+                src: thumbSrc,
+                fullSrc,
+                alt: img.alt || '',
+                title: img.getAttribute('title') || img.alt || ''
+            };
+        });
 
         // Create viewer instance
         integration.viewerId = ViewerManager.create(container, {
@@ -171,7 +176,7 @@ const ViewerIntegration = (function() {
                 return image.tagName === 'IMG';
             },
             url(image) {
-                return image.src;
+                return image.dataset?.fullSrc || image.getAttribute?.('data-full-src') || image.src;
             },
             viewed(e) {
                 const index = e.detail.index;
@@ -335,11 +340,16 @@ const ViewerIntegration = (function() {
 
         // Find all images in dashboard gallery
         const images = Array.from(recentImagesContainer.querySelectorAll('img'));
-        integration.images = images.map(img => ({
-            src: img.src,
-            alt: img.alt || '',
-            title: img.getAttribute('title') || img.alt || ''
-        }));
+        integration.images = images.map(img => {
+            const thumbSrc = img.currentSrc || img.src;
+            const fullSrc = img.dataset.fullSrc || img.getAttribute('data-full-src') || thumbSrc;
+            return {
+                src: thumbSrc,
+                fullSrc,
+                alt: img.alt || '',
+                title: img.getAttribute('title') || img.alt || ''
+            };
+        });
 
         // Create viewer instance with full configuration
         integration.viewerId = ViewerManager.create(recentImagesContainer, {
@@ -347,7 +357,7 @@ const ViewerIntegration = (function() {
                 return image.tagName === 'IMG';
             },
             url(image) {
-                return image.src;
+                return image.dataset?.fullSrc || image.getAttribute?.('data-full-src') || image.src;
             },
             button: false,
             navbar: true,
@@ -430,7 +440,7 @@ const ViewerIntegration = (function() {
         // Load and display metadata if enabled
         if (integration.metadataPanelId && integration.images[index]) {
             const image = integration.images[index];
-            MetadataManager.extractAndDisplay(integration.metadataPanelId, image.src);
+            MetadataManager.extractAndDisplay(integration.metadataPanelId, image.fullSrc || image.src);
         }
 
         // Emit custom event
@@ -483,7 +493,8 @@ const ViewerIntegration = (function() {
 
         // Load metadata
         if (integration.metadataPanelId && integration.images[index]) {
-            MetadataManager.extractAndDisplay(integration.metadataPanelId, integration.images[index].src);
+            const image = integration.images[index];
+            MetadataManager.extractAndDisplay(integration.metadataPanelId, image.fullSrc || image.src);
         }
     }
 
@@ -671,7 +682,17 @@ const ViewerIntegration = (function() {
             const integration = integrations.get(integrationId);
             if (!integration) return false;
 
-            integration.images = images;
+            integration.images = images.map(image => {
+                if (typeof image === 'string') {
+                    return { src: image, fullSrc: image, alt: '', title: '' };
+                }
+                return {
+                    src: image.src || image.thumbnail || image.image_url || image.url || '',
+                    fullSrc: image.fullSrc || image.image_url || image.url || image.src || '',
+                    alt: image.alt || image.filename || '',
+                    title: image.title || image.filename || image.alt || ''
+                };
+            });
 
             // Update viewer
             if (integration.viewerId) {
@@ -680,7 +701,7 @@ const ViewerIntegration = (function() {
 
             // Update filmstrip
             if (integration.filmstripId) {
-                FilmstripManager.populate(integration.filmstripId, images);
+                FilmstripManager.populate(integration.filmstripId, integration.images);
             }
 
             return true;
@@ -716,7 +737,7 @@ const ViewerIntegration = (function() {
 
             if (!currentImage) return null;
 
-            return await MetadataManager.extract(currentImage.src);
+            return await MetadataManager.extract(currentImage.fullSrc || currentImage.src);
         },
 
         /**
