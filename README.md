@@ -2,47 +2,95 @@
 
 A comprehensive ComfyUI custom node that extends the standard text encoder with persistent prompt storage, advanced search capabilities, automatic image gallery system, and powerful ComfyUI workflow metadata analysis using SQLite.
 
-# 🚀 Prompt Manager v2 Rewrite  
+# 🚀 Prompt Manager v2 Beta - Now Available!
 
-We’ve been hard at work on a **complete rewrite** of Prompt Manager.  
-The new version brings over all features from v1, introduces a dark theme (v2 look), and adds **negative prompt support**.  
+## ⚠️ IMPORTANT: BACKUP YOUR DATA FIRST!
+**Before testing v2, you MUST backup your `prompts.db` file!** The v1 to v2 migration is irreversible. Copy your `prompts.db` to a safe location before proceeding.
 
-## ✨ What’s New
-- Unified dark theme UI (v2)  
-- Table view (for power users) and Card view (for quick browsing)  
-- Negative prompt field with clear highlighting  
-- Streamlined toolbar & filters  
+## 🎉 Beta Testing Now Open
+
+We're excited to announce that Prompt Manager v2 is ready for beta testing! This is a complete rewrite with major improvements and new features.
+
+### ✨ What's Working in Beta
+
+- **🖼️ Gallery System** - Completely redesigned with improved performance
+- **📊 New Prompt Tracking** - Advanced tracking system with better metadata handling
+- **🎛️ 3 New Widgets** - Enhanced UI components for better workflow integration
+- **🎬 Film Strip View** - Visual prompt browsing with thumbnail preview
+- **🌫️ Smart Blur** - New blur option with customizable tag triggers for sensitive content
+- **⚙️ Settings Panel** - Comprehensive configuration options
+- **➕ Add Prompt Dialog** - Streamlined prompt creation interface
+
+### 🚧 Still in Development
+
+- **📋 Metadata Viewer** - Being ported from v1
+- **📁 Collections** - New organizational system coming soon
+
+### ⚠️ Known Issues & Important Notes
+
+- **⏳ Initial Stats Processing**: The first time you load v2, stats parsing can take **2-3 minutes** for large databases. We're actively optimizing this - it's one of the main reasons for the beta!
+- **🔄 v1 → v2 Migration**: We especially need testers who can help validate the migration process from v1 databases
+- The migration is one-way - once converted, you cannot go back to v1
+
+### 📊 Beta Testing Focus Areas
+
+1. **Database Migration** - Test the v1 to v2 migration with your existing data (after backing up!)
+2. **Performance** - Report initial load times and any performance issues
+3. **Gallery Functionality** - Test the new gallery with your image collections
+4. **Widget Integration** - Verify the 3 new widgets work in your workflows
+5. **Film Strip View** - Test thumbnail generation and navigation
+6. **Blur Feature** - Configure and test the tag-triggered blur system
+
+## 🧪 How to Join Beta Testing
+
+1. **Backup your `prompts.db` file** (Critical!)
+2. Checkout the `v2/beta-01` branch:
+   ```bash
+   git checkout v2/beta-01
+   git submodule update --init --recursive
+   ```
+3. Restart ComfyUI
+4. Test the features and migration process
+5. Report issues or feedback via [Issues](../../issues) or [Discussions](../../discussions)
+
+## 🤝 Help Shape the Future of Prompt Manager!
+
+**Join our growing community and influence the features YOU want!**
+
+This beta is more than just testing - it's your chance to:
+- **Shape Development** - Your feedback directly influences what we build next
+- **Request Features** - Tell us what tools would make your workflow better
+- **Build Community** - Connect with other power users and share workflows
+- **Priority Access** - Beta testers get early access to new features
+
+We're building Prompt Manager WITH the community, not just for it. Your use cases, workflow needs, and feature ideas are what drive our roadmap. Whether you need better organization tools, advanced search capabilities, or integration features - we want to hear about it!
+
+👥 **Join the conversation:**
+- Share your workflows and use cases
+- Vote on upcoming features
+- Collaborate with other creators
+- Help prioritize our development roadmap
+
+## 📊 Progress
+
+**Beta completion status:**
+
+- [█████████░] 90% complete
+
+✅ Core migration system
+✅ Gallery redesign
+✅ New widgets & UI
+✅ Prompt tracking system
+✅ Film strip view
+✅ Blur feature with triggers
+✅ Settings panel
+⬜ Performance optimization
+⬜ Metadata viewer port
+⬜ Collections system
 
 ---
 
-## 📊 Progress  
-
-**Rewrite completion status:**  
-
-- [█████████░░] 85% done  
-
-✅ Core features migrated  
-✅ Dark UI overhaul  
-✅ Table + Card views  
-✅ Negative prompt handling  
-⬜ API integration & real data wiring  
-⬜ Community feedback + polish pass  
-
----
-
-## 🧪 Call for Beta Testers  
-
-We’d love your help testing Prompt Manager v2 before release!  
-
-- Try the new UI locally  
-- Report bugs, UI quirks, or feature requests  
-- Share feedback on usability & performance  
-
-👉 Open an [Issue](../../issues) with feedback or join the discussion in [Discussions](../../discussions).  
-
----
-
-💡 Thanks to everyone who has supported this project—your input drives its evolution!  
+💡 Your feedback is crucial for making v2 stable and performant. Together, we're building the prompt management system the community needs!
 
 ## Overview
 
@@ -124,6 +172,7 @@ The comprehensive gallery system provides complete management of all ComfyUI out
 - **Performance Optimized**: Efficient scanning with thumbnail generation and lazy loading
 
 #### **🎬 Full Video Support**
+
 - **Native Video Playback**: HTML5 video player with custom controls for all supported formats
 - **Video Thumbnails**: Automatic thumbnail generation with OpenCV, ffmpeg, or placeholder fallback
 - **Playback Controls**: Autoplay, mute, loop settings with persistent preferences
@@ -132,6 +181,7 @@ The comprehensive gallery system provides complete management of all ComfyUI out
 - **Mixed Media Gallery**: Videos and images integrated seamlessly in the same interface
 
 #### **🔍 Professional Image Viewer (ViewerJS Integration)**
+
 - **Full-Featured Viewing**: Zoom, rotation, slideshow modes with professional controls
 - **Advanced Navigation**: Smooth transitions, thumbnail strip, and keyboard shortcuts
 - **Zoom Controls**: Mouse wheel zoom, drag to pan, and touch gesture support
@@ -150,6 +200,7 @@ The comprehensive gallery system provides complete management of all ComfyUI out
 - **Cross-Platform Support**: Works on desktop, tablet, and mobile devices
 
 #### **⚡ Performance Features**
+
 - **Smart Thumbnail System**: Generates optimized thumbnails for faster loading
 - **Lazy Loading**: Load content as needed for smooth browsing of large galleries
 - **Grid & List Views**: Choose between compact grid or detailed list display
@@ -296,22 +347,27 @@ Both nodes will automatically save prompts to the database and link any generate
 The comprehensive gallery system provides complete access to all your ComfyUI output:
 
 #### **📁 Accessing the Gallery**
+
 1. **Open the admin interface** at `http://localhost:8188/prompt_manager/admin`
 2. **Click the "🖼️ Gallery" button** to open the output-wide gallery
 3. **Browse all content** from your ComfyUI output directory
 
 #### **🎬 Video & Image Support**
+
 - **Mixed Media Viewing**: Images and videos appear together in the same gallery
 - **Video Thumbnails**: Videos show with play button overlays and 🎬 icons
 - **Smart Filtering**: Filter by media type (All, Images, Videos) using the dropdown
 
 #### **⚙️ Gallery Settings**
+
 Configure your viewing experience in the settings panel:
+
 - **Performance Settings**: Grid columns, image quality, lazy loading
 - **Video Settings**: Autoplay, mute by default, loop videos
 - **Thumbnail Management**: Generate optimized thumbnails for faster loading
 
 #### **🖼️ Image Viewing Experience**
+
 1. **Click any image** to open the professional viewer with:
    - **Full-screen viewing** with zoom, rotation, and slideshow controls
    - **Integrated metadata panel** showing workflow data and generation parameters
@@ -323,6 +379,7 @@ Configure your viewing experience in the settings panel:
    - **Space** for slideshow mode
 
 #### **🎬 Video Viewing Experience**
+
 1. **Click any video** to open the video player with:
    - **HTML5 video controls** with play, pause, seek, and fullscreen
    - **Custom control buttons** for mute/unmute and loop toggle
@@ -331,6 +388,7 @@ Configure your viewing experience in the settings panel:
 2. **Playback settings** are remembered across sessions
 
 #### **🔍 Advanced Features**
+
 - **Real-time Search**: Search across filenames and metadata
 - **View Modes**: Switch between grid and list views
 - **Sorting Options**: Sort by date, size, or filename
