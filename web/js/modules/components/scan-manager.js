@@ -62,9 +62,102 @@ const ScanManager = (function() {
   /**
    * Cache DOM elements for performance
    */
+  function ensureModal() {
+    if (document.getElementById('scanModal')) {
+      return;
+    }
+
+    const template = document.createElement('template');
+    template.innerHTML = `
+      <div class="modal" id="scanModal" style="display: none;">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2 class="modal-title">Scan ComfyUI Images</h2>
+            <button class="modal-close" data-action="close-scan-modal">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div id="scanConfirmation" class="scan-step">
+              <div class="scan-info">
+                <div class="scan-info-icon">
+                  <i class="fa-solid fa-magnifying-glass"></i>
+                </div>
+                <div class="scan-info-content">
+                  <h3>Scan for Image Prompts</h3>
+                  <p>This will scan your ComfyUI output directory for images that contain prompt metadata and automatically import them into PromptManager.</p>
+                  <div class="scan-details">
+                    <h4>What this scan will do:</h4>
+                    <ul>
+                      <li><i class="fa-solid fa-search"></i> Search all PNG files in your ComfyUI output directory</li>
+                      <li><i class="fa-solid fa-code"></i> Extract ComfyUI workflow and prompt metadata</li>
+                      <li><i class="fa-solid fa-plus"></i> Add new unique prompts to your library</li>
+                      <li><i class="fa-solid fa-link"></i> Link images to existing prompts when duplicates are found</li>
+                    </ul>
+                  </div>
+                  <div class="scan-warning">
+                    <i class="fa-solid fa-info-circle"></i>
+                    <span>This process may take several minutes depending on the number of images.</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div id="scanProgress" class="scan-step" style="display: none;">
+              <div class="progress-container">
+                <div class="progress-bar-container">
+                  <div class="progress-bar" id="scanProgressBar"></div>
+                </div>
+                <div class="progress-info">
+                  <div class="progress-status" id="scanStatusText">Preparing...</div>
+                  <div class="progress-stats">
+                    <span id="scanCount">0 files processed</span> •
+                    <span id="scanFound">0 prompts found</span>
+                  </div>
+                </div>
+              </div>
+              <div id="scanResults" class="scan-results" style="display: none;">
+                <h4>Scan Complete!</h4>
+                <div class="results-grid">
+                  <div class="result-item">
+                    <span class="result-label">Files Scanned:</span>
+                    <span id="resultFilesScanned" class="result-value">0</span>
+                  </div>
+                  <div class="result-item">
+                    <span class="result-label">Prompts Found:</span>
+                    <span id="resultPromptsFound" class="result-value">0</span>
+                  </div>
+                  <div class="result-item">
+                    <span class="result-label">New Prompts Added:</span>
+                    <span id="resultPromptsAdded" class="result-value">0</span>
+                  </div>
+                  <div class="result-item">
+                    <span class="result-label">Images Linked:</span>
+                    <span id="resultImagesLinked" class="result-value">0</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button id="cancelScanBtn" class="btn btn-secondary" data-action="cancel-scan">Cancel</button>
+            <button id="startScanBtn" class="btn btn-primary" data-action="start-scan">
+              <i class="fa-solid fa-play"></i>
+              Start Scan
+            </button>
+          </div>
+        </div>
+      </div>
+    `.trim();
+
+    const fragment = template.content.firstElementChild;
+    if (fragment) {
+      document.body.appendChild(fragment);
+    }
+  }
+
   function cacheElements() {
     elements = {
       modal: document.getElementById('scanModal'),
+      confirmationStep: document.getElementById('scanConfirmation'),
       startBtn: document.getElementById('startScanBtn'),
       cancelBtn: document.getElementById('cancelScanBtn'),
       progressSection: document.getElementById('scanProgress'),
@@ -84,6 +177,7 @@ const ScanManager = (function() {
    * Show the scan modal
    */
   function showModal() {
+    ensureModal();
     cacheElements();
     if (elements.modal) {
       elements.modal.style.display = 'flex';
@@ -111,6 +205,9 @@ const ScanManager = (function() {
     if (elements.progressSection) {
       elements.progressSection.style.display = 'none';
     }
+    if (elements.confirmationStep) {
+      elements.confirmationStep.style.display = 'block';
+    }
     if (elements.resultsSection) {
       elements.resultsSection.style.display = 'none';
     }
@@ -119,6 +216,7 @@ const ScanManager = (function() {
     }
     if (elements.statusText) {
       elements.statusText.textContent = 'Preparing...';
+      elements.statusText.style.color = '';
     }
     if (elements.countText) {
       elements.countText.textContent = '0 files processed';
@@ -154,6 +252,9 @@ const ScanManager = (function() {
     state.isScanning = true;
 
     // Update UI
+    if (elements.confirmationStep) {
+      elements.confirmationStep.style.display = 'none';
+    }
     if (elements.progressSection) {
       elements.progressSection.style.display = 'block';
     }
@@ -410,6 +511,8 @@ const ScanManager = (function() {
    */
   function init(options = {}) {
     Object.assign(config, options);
+    ensureModal();
+    cacheElements();
 
     // Attach event listeners
     document.addEventListener('click', function(e) {
