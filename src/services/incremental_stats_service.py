@@ -5,14 +5,17 @@ Only processes new/changed data instead of full recalculation.
 
 import json
 import sqlite3
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Set
 from datetime import datetime, timedelta
 from pathlib import Path
-import logging
 
 from ..database import PromptDatabase
-from ..config.app_config import AppConfig
-from ..loggers import get_logger
+from ..config import Config
+
+try:  # pragma: no cover - import path differs between runtime contexts
+    from promptmanager.loggers import get_logger  # type: ignore
+except ImportError:  # pragma: no cover
+    from loggers import get_logger  # type: ignore
 
 logger = get_logger(__name__)
 
@@ -23,12 +26,42 @@ class IncrementalStatsService:
     First run performs full calculation, subsequent runs only process deltas.
     """
 
-    def __init__(self, database: Optional[PromptDatabase] = None, config: Optional[AppConfig] = None):
+    def __init__(self, database: Optional[PromptDatabase] = None, config: Optional[Config] = None):
         """Initialize the incremental stats service."""
         self.db = database or PromptDatabase()
-        self.config = config or AppConfig()
-        self.db_path = self.config.get_database_path()
+        self.config = config or Config()
+        self.db_path = self.config.database.path
+        self._table_columns_cache: Dict[str, Set[str]] = {}
         self._ensure_cache_table()
+
+    def _get_table_columns(
+        self,
+        table: str,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> Set[str]:
+        """Return cached column names for the requested table."""
+
+        if table in self._table_columns_cache:
+            return self._table_columns_cache[table]
+
+        close_conn = False
+        if conn is None:
+            conn = self._connect()
+            close_conn = True
+
+        try:
+            cursor = conn.execute(f"PRAGMA table_info({table})")
+            columns: Set[str] = set()
+            for row in cursor.fetchall():
+                if isinstance(row, sqlite3.Row):
+                    columns.add(row["name"])
+                else:
+                    columns.add(row[1])
+            self._table_columns_cache[table] = columns
+            return columns
+        finally:
+            if close_conn and conn is not None:
+                conn.close()
 
     def _ensure_cache_table(self):
         """Create analytics cache table if it doesn't exist."""
@@ -284,7 +317,7 @@ class IncrementalStatsService:
             ).fetchone()['cnt']
 
             recent_images = conn.execute(
-                "SELECT COUNT(*) as cnt FROM generated_images WHERE created_at > ?",
+                "SELECT COUNT(*) as cnt FROM generated_images WHERE generation_time > ?",
                 (cutoff,)
             ).fetchone()['cnt']
 
@@ -401,16 +434,33 @@ class IncrementalStatsService:
     def _calculate_performance(self) -> Dict[str, Any]:
         """Calculate performance metrics."""
         with self._connect() as conn:
-            # Get average generation times if available
-            avg_time = conn.execute("""
-                SELECT AVG(CAST(json_extract(metadata, '$.generation_time') AS REAL)) as avg_time
-                FROM prompts
-                WHERE metadata IS NOT NULL
-                AND json_extract(metadata, '$.generation_time') IS NOT NULL
-            """).fetchone()
+            columns = self._get_table_columns("prompts", conn)
+            avg_generation_time = 0.0
+
+            try:
+                row = None
+                if "metadata" in columns:
+                    row = conn.execute("""
+                        SELECT AVG(CAST(json_extract(metadata, '$.generation_time') AS REAL)) AS avg_time
+                        FROM prompts
+                        WHERE metadata IS NOT NULL
+                          AND json_extract(metadata, '$.generation_time') IS NOT NULL
+                    """).fetchone()
+                elif "generation_params" in columns:
+                    row = conn.execute("""
+                        SELECT AVG(CAST(json_extract(generation_params, '$.generation_time') AS REAL)) AS avg_time
+                        FROM prompts
+                        WHERE generation_params IS NOT NULL
+                          AND json_extract(generation_params, '$.generation_time') IS NOT NULL
+                    """).fetchone()
+
+                if row and row["avg_time"] is not None:
+                    avg_generation_time = float(row["avg_time"])
+            except sqlite3.Error as exc:  # pragma: no cover - defensive logging
+                logger.debug("Unable to calculate avg generation time: %s", exc)
 
             return {
-                'avg_generation_time': avg_time['avg_time'] if avg_time['avg_time'] else 0,
+                'avg_generation_time': avg_generation_time if avg_generation_time else 0,
                 'cache_hit_rate': 0.95,  # Placeholder - would calculate from actual cache hits
                 'incremental_processing': True
             }
