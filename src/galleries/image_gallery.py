@@ -116,12 +116,31 @@ class ImageGallery(BaseGallery):
         # Handle both file_path and image_path for compatibility
         image_path = item.get("image_path") or item.get("file_path", "")
         filename = item.get("filename") or item.get("file_name") or Path(image_path).name if image_path else "unknown"
+        image_id = item.get("id")
+
+        # Build API-safe URLs so we never expose raw filesystem paths downstream.
+        image_url: Optional[str] = None
+        thumbnail_url: Optional[str] = None
+        if image_id is not None:
+            base_url = f"/api/v1/gallery/images/{image_id}/file"
+            image_url = base_url
+            thumbnail_url = f"{base_url}?thumbnail=1"
+        elif image_path:
+            # Legacy safety-net: if we somehow lack an ID, fall back to the stored path
+            image_url = image_path
+            thumbnail_url = image_path
+
+        if not thumbnail_url and image_url:
+            thumbnail_url = image_url
 
         rendered = {
             "id": item.get("id"),
             "filename": filename,
-            "path": image_path,
-            "thumbnail": item.get("thumbnail_small_path") or item.get("thumbnail_path") or image_path,
+            "path": image_url,  # kept for backward compatibility but now points to the API endpoint
+            "thumbnail": thumbnail_url,
+            "thumbnail_url": thumbnail_url,
+            "image_url": image_url,
+            "has_thumbnail": bool(item.get("thumbnail_small_path") or item.get("thumbnail_path")),
             "generation_time": item.get("generation_time") or item.get("created_at", ""),
             "dimensions": f"{item.get('width', 0)}x{item.get('height', 0)}",
             "size": self._format_file_size(item.get("file_size", 0)),
