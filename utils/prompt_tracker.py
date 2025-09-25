@@ -36,11 +36,20 @@ from datetime import datetime, timezone
 try:
     from .logging_config import get_logger
 except ImportError:
-    import sys
-    import os
-    current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    sys.path.insert(0, current_dir)
-    from utils.logging_config import get_logger
+    import logging
+
+    def get_logger(name: str):
+        logger = logging.getLogger(name)
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(
+                logging.Formatter(
+                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+                )
+            )
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+        return logger
 
 
 class PromptTracker:

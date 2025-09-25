@@ -14,7 +14,7 @@ The diagnostic system checks:
 - System integration points
 
 Typical usage:
-    from utils.diagnostics import GalleryDiagnostics, run_diagnostics
+    from utils.diagnostics.diagnostics.diagnostics import GalleryDiagnostics, run_diagnostics
     
     # Run full diagnostic suite
     results = run_diagnostics()
@@ -35,7 +35,33 @@ import sqlite3
 from pathlib import Path
 from typing import Dict, Any, List
 
-from .logging_config import get_logger
+try:  # pragma: no cover - environment-specific import
+    from promptmanager.loggers import get_logger  # type: ignore
+except ImportError:  # pragma: no cover
+    from loggers import get_logger  # type: ignore
+
+# Import ComfyUIFileSystem for proper path resolution
+try:
+    try:
+        from ..core.file_system import ComfyUIFileSystem  # type: ignore
+    except ImportError:  # pragma: no cover - fallback for direct execution
+        from utils.core.file_system import ComfyUIFileSystem  # type: ignore
+except ImportError:
+    ComfyUIFileSystem = None
+
+
+def _get_diagnostics_base_dir() -> str:
+    """Get the base directory for diagnostics using ComfyUI root detection."""
+    if ComfyUIFileSystem is not None:
+        try:
+            fs_helper = ComfyUIFileSystem()
+            comfyui_root = fs_helper.resolve_comfyui_root()
+            return str(comfyui_root)
+        except Exception:
+            pass
+
+    # Fallback to current directory if ComfyUIFileSystem fails
+    return os.getcwd()
 
 
 class GalleryDiagnostics:
@@ -236,7 +262,7 @@ class GalleryDiagnostics:
         
         try:
             # Check current directory
-            current_dir = os.getcwd()
+            current_dir = _get_diagnostics_base_dir()
             self.logger.info(f"   [FOLDER] Current directory: {current_dir}")
             
             # Check if we can write to current directory
@@ -395,7 +421,7 @@ class GalleryDiagnostics:
             import sys
             import os
             sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            from database.operations import PromptDatabase
+            from src.database import PromptDatabase
             
             db = PromptDatabase()
             

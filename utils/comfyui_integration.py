@@ -40,10 +40,20 @@ from typing import Dict, Any, Optional
 try:
     from .logging_config import get_logger
 except ImportError:
-    import sys
-    import os
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from utils.logging_config import get_logger
+    import logging
+
+    def get_logger(name: str):
+        logger = logging.getLogger(name)
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(
+                logging.Formatter(
+                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+                )
+            )
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+        return logger
 
 
 class ComfyUIMetadataIntegration:
@@ -269,6 +279,24 @@ class ComfyUIMetadataIntegration:
         except Exception as e:
             self.logger.error(f"Failed to patch SaveImage node: {e}")
             self.logger.warning("PromptManager prompts may not appear in standard ComfyUI metadata")
+    
+    def get_output_directory(self):
+        """
+        Get the ComfyUI output directory for saving images.
+        
+        Returns the output directory path, attempting to get it from ComfyUI
+        if available, otherwise returning a default path.
+        """
+        try:
+            # Try to get from ComfyUI's folder_paths module
+            import folder_paths
+            return folder_paths.get_output_directory()
+        except ImportError:
+            # Fallback to a default directory
+            import os
+            default_dir = os.path.join(os.path.expanduser("~"), "ComfyUI", "output")
+            os.makedirs(default_dir, exist_ok=True)
+            return default_dir
     
     def cleanup_old_prompts(self, max_age_seconds: int = 600):
         """

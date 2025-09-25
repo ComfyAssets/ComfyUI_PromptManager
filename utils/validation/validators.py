@@ -11,9 +11,35 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
-from .logging import get_logger
+try:  # pragma: no cover - environment-specific import
+    from promptmanager.loggers import get_logger  # type: ignore
+except ImportError:  # pragma: no cover
+    from loggers import get_logger  # type: ignore
+
+# Import ComfyUIFileSystem for proper path resolution
+try:
+    from ..core.file_system import ComfyUIFileSystem  # type: ignore
+except ImportError:  # pragma: no cover - fallback for direct execution
+    try:
+        from utils.core.file_system import ComfyUIFileSystem  # type: ignore
+    except ImportError:
+        ComfyUIFileSystem = None
 
 logger = get_logger("promptmanager.validators")
+
+
+def _get_validator_base_dir() -> Path:
+    """Get the base directory for validation using ComfyUI root detection."""
+    if ComfyUIFileSystem is not None:
+        try:
+            fs_helper = ComfyUIFileSystem()
+            comfyui_root = fs_helper.resolve_comfyui_root()
+            return Path(comfyui_root)
+        except Exception:
+            pass
+
+    # Fallback to current directory if ComfyUIFileSystem fails
+    return Path.cwd()
 
 
 class ValidationError(Exception):
@@ -333,7 +359,7 @@ class FileValidator:
             # Only allow absolute paths within specific directories
             safe_dirs = [
                 Path.home() / 'ComfyUI' / 'output',
-                Path.cwd() / 'output',
+                _get_validator_base_dir() / 'output',
                 Path('/tmp'),  # Linux temp
                 Path('C:\\Temp'),  # Windows temp
             ]
@@ -528,3 +554,109 @@ def sanitize_html(text: str) -> str:
 def sanitize_filename(filename: str) -> str:
     """Convenience function for filename sanitization."""
     return FileValidator.sanitize_filename(filename)
+
+def validate_prompt_text(text: str) -> bool:
+    """Validate prompt text input.
+
+    Ensures the prompt text is a valid string with reasonable length limits.
+    Empty or whitespace-only strings are rejected.
+
+    Args:
+        text: The prompt text to validate
+
+    Returns:
+        True if the text passes validation
+
+    Raises:
+        ValueError: If text is invalid with descriptive message including:
+                   - Not a string type
+                   - Empty or whitespace-only
+                   - Exceeds maximum length (10,000 characters)
+    """
+    if not isinstance(text, str):
+        raise ValueError("Prompt text must be a string")
+
+    if not text or not text.strip():
+        raise ValueError("Prompt text cannot be empty")
+
+    if len(text.strip()) > 10000:  # Reasonable limit for prompt length
+        raise ValueError("Prompt text is too long (maximum 10,000 characters)")
+
+    return True
+
+def validate_rating(rating: Optional[int]) -> bool:
+    """Validate rating input.
+
+    Validates rating values on a 1-5 scale, with None allowed for unrated prompts.
+
+    Args:
+        rating: The rating to validate (1-5 scale or None for no rating)
+
+    Returns:
+        True if the rating is valid
+
+    Raises:
+        ValueError: If rating is invalid:
+                   - Not an integer (when not None)
+                   - Outside the 1-5 range
+    """
+    if rating is None:
+        return True
+
+    if not isinstance(rating, int):
+        raise ValueError("Rating must be an integer")
+
+    if rating < 1 or rating > 5:
+        raise ValueError("Rating must be between 1 and 5")
+
+    return True
+
+def validate_tags(tags: Union[str, List[str], None]) -> bool:
+    """Validate tags input.
+
+    Accepts tags as comma-separated string, list of strings, or None.
+    Validates each tag for length and character restrictions.
+
+    Args:
+        tags: Tags as comma-separated string, list of strings, or None
+
+    Returns:
+        True if all tags are valid
+
+    Raises:
+        ValueError: If tags are invalid:
+                   - Wrong input type (not string, list, or None)
+                   - Individual tag is empty or only whitespace
+                   - Individual tag exceeds 50 characters
+                   - Tag contains invalid characters (non-alphanumeric, spaces, hyphens, underscores)
+                   - More than 20 tags provided
+    """
+    if tags is None:
+        return True
+
+    if isinstance(tags, str):
+        # Parse comma-separated tags
+        tag_list = [tag.strip() for tag in tags.split(',') if tag.strip()]
+        tags = tag_list
+
+    if not isinstance(tags, list):
+        raise ValueError("Tags must be a string, list, or None")
+
+    for tag in tags:
+        if not isinstance(tag, str):
+            raise ValueError("All tags must be strings")
+
+        if not tag.strip():
+            raise ValueError("Tags cannot be empty")
+
+        if len(tag.strip()) > 50:
+            raise ValueError("Individual tags cannot exceed 50 characters")
+
+        # Check for invalid characters (optional - you can adjust this)
+        if not re.match(r'^[a-zA-Z0-9\s\-_]+$', tag.strip()):
+            raise ValueError(f"Tag '{tag}' contains invalid characters")
+
+    if len(tags) > 20:  # Reasonable limit
+        raise ValueError("Maximum 20 tags allowed")
+
+    return True

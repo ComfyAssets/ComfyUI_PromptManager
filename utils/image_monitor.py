@@ -1,381 +1,472 @@
-"""Image monitoring system for ComfyUI generated images.
+"""Image monitoring system for automatic gallery updates.
 
-This module provides real-time monitoring of ComfyUI output directories to automatically
-detect newly generated images and associate them with their corresponding prompts. The system
-uses filesystem watchers to detect image creation events and extract metadata from the images
-to maintain a gallery system.
-
-The main components are:
-- ImageGenerationHandler: Handles filesystem events for new image creation
-- ImageMonitor: Main monitoring system that manages directory watching
-
-Typical usage:
-    from utils.image_monitor import ImageMonitor
-    
-    monitor = ImageMonitor(db_manager, prompt_tracker)
-    monitor.start_monitoring(['/path/to/comfyui/output'])
-
-The system automatically:
-- Detects new image files in monitored directories
-- Extracts ComfyUI workflow metadata from PNG chunks
-- Links images to active prompts using the prompt tracker
-- Handles fallback linking when no active prompt is available
-- Provides status information and monitoring control
+Watches ComfyUI output directories for new images and automatically
+processes them with metadata extraction and database insertion.
 """
 
+import asyncio
+import hashlib
+import json
 import os
 import time
-import threading
-import json
+from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, Callable
+from typing import Any, Callable, Dict, List, Optional, Set
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+from watchdog.events import FileSystemEventHandler, FileCreatedEvent
 
-from .metadata_extractor import ComfyUIMetadataExtractor
-from .logging_config import get_logger
+from src.core.database import ImageRepository, PromptRepository
+from src.metadata.extractor import MetadataExtractor
+from src.galleries.image_gallery import ImageGallery
 
 
-class ImageGenerationHandler(FileSystemEventHandler):
-    """Filesystem event handler for detecting new image generation.
+class ImageMonitor(FileSystemEventHandler):
+    """Monitor directories for new image files.
     
-    This handler extends watchdog's FileSystemEventHandler to specifically handle
-    new image file creation events in ComfyUI output directories. When a new image
-    is detected, it attempts to:
-    1. Extract ComfyUI metadata from the image
-    2. Associate the image with the currently active prompt
-    3. Store the relationship in the database
-    
-    The handler implements a small delay before processing to ensure files are
-    completely written before attempting to read them.
+    Automatically detects new images, extracts metadata,
+    creates database records, and triggers gallery updates.
     """
-    
-    def __init__(self, db_manager, prompt_tracker):
-        """
-        Initialize the image generation handler.
-        
-        Args:
-            db_manager: Database manager instance for storing image-prompt relationships
-            prompt_tracker: Prompt tracking instance for getting current active prompts
-        """
-        self.db_manager = db_manager
-        self.prompt_tracker = prompt_tracker
-        self.metadata_extractor = ComfyUIMetadataExtractor()
-        self.processing_delay = 2.0  # Wait 2 seconds before processing
-        self.logger = get_logger('prompt_manager.image_monitor')
-        
-    def on_created(self, event):
-        """Handle filesystem creation events.
-        
-        This method is called by watchdog when a new file is created in a monitored
-        directory. It filters for image files and schedules them for processing after
-        a small delay to ensure the file is fully written.
-        
-        Args:
-            event: FileSystemEvent object containing event details
-        """
-        if not event.is_directory and self.is_image_file(event.src_path):
-            self.logger.debug(f"New image detected: {event.src_path}")
-            # Small delay to ensure file is fully written
-            threading.Timer(
-                self.processing_delay, 
-                self.process_new_image, 
-                args=[event.src_path]
-            ).start()
-    
-    def is_image_file(self, filepath: str) -> bool:
-        """Check if file is a supported image format.
-        
-        Args:
-            filepath: Path to the file to check
-            
-        Returns:
-            True if the file has a supported image extension, False otherwise
-        """
-        return filepath.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif'))
-    
-    def process_new_image(self, image_path: str):
-        """Process a newly created image file for gallery integration.
-        
-        This method handles the complete processing pipeline for a new image:
-        1. Verifies the file still exists
-        2. Gets the current prompt context from the tracker
-        3. Extracts ComfyUI metadata from the image
-        4. Links the image to the appropriate prompt in the database
-        5. Handles fallback scenarios when no active prompt is available
-        
-        Args:
-            image_path: Full path to the newly created image file
-        """
-        try:
-            self.logger.debug(f"Processing image: {image_path}")
-            
-            if not os.path.exists(image_path):
-                self.logger.warning(f"Image file no longer exists: {image_path}")
-                return
-            
-            # Get current prompt context first
-            current_prompt = self.prompt_tracker.get_current_prompt()
-            self.logger.debug(f"Current prompt context: {current_prompt['id'] if current_prompt else 'None'}")
-            
-            if not current_prompt:
-                self.logger.debug(f"No active prompt context for image: {image_path}")
-                # Fallback: try to link to the most recent prompt in database
-                current_prompt = self._get_fallback_prompt()
-                if current_prompt:
-                    self.logger.debug(f"Using fallback prompt: {current_prompt['id']}")
-                else:
-                    self.logger.warning(f"No fallback prompt available, skipping image")
-                    return
-            else:
-                # Extend the timeout for this prompt since we're still getting images
-                if 'execution_id' in current_prompt:
-                    self.prompt_tracker.extend_prompt_timeout(current_prompt['execution_id'], 300)  # Add 5 more minutes
-            
-            # Extract ComfyUI metadata
-            try:
-                metadata = self.metadata_extractor.extract_metadata(image_path)
-                self.logger.debug(f"Extracted metadata: {bool(metadata)}")
-            except Exception as meta_error:
-                self.logger.warning(f"Metadata extraction failed: {meta_error}")
-                metadata = None
-            
-            if metadata:
-                self.logger.debug(f"Linking image with full metadata to prompt {current_prompt['id']}")
-                self.link_image_to_prompt(image_path, current_prompt, metadata)
-            else:
-                self.logger.debug(f"Linking image with basic info to prompt {current_prompt['id']}")
-                # Link with basic file info even without metadata
-                basic_metadata = self.get_basic_file_info(image_path)
-                self.link_image_to_prompt(image_path, current_prompt, {'file_info': basic_metadata})
-                
-        except Exception as e:
-            self.logger.error(f"Error processing image {image_path}: {e}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-    
-    def get_basic_file_info(self, image_path: str) -> Dict[str, Any]:
-        """Get basic file information when metadata extraction fails.
-        
-        Provides fallback file information when ComfyUI metadata cannot be extracted
-        from the image. Includes file size, format, and dimensions when possible.
-        
-        Args:
-            image_path: Path to the image file
-            
-        Returns:
-            Dictionary containing basic file information:
-            - size: File size in bytes
-            - format: Image format (PNG, JPEG, etc.)
-            - dimensions: Image width and height as list [width, height]
-        """
-        try:
-            from PIL import Image
-            
-            stat = os.stat(image_path)
-            file_info = {
-                'size': stat.st_size,
-                'format': None,
-                'dimensions': None
-            }
-            
-            # Try to get image dimensions
-            try:
-                with Image.open(image_path) as img:
-                    file_info['dimensions'] = list(img.size)
-                    file_info['format'] = img.format
-            except Exception:
-                pass
-                
-            return file_info
-        except Exception as e:
-            self.logger.error(f"Error getting file info: {e}")
-            return {}
-    
-    def _get_fallback_prompt(self) -> Optional[Dict[str, Any]]:
-        """Get the most recent prompt from database as fallback.
-        
-        When no active prompt is available from the tracker, this method attempts
-        to find the most recently created prompt in the database to use as a fallback
-        for image linking.
-        
-        Returns:
-            Dictionary containing prompt information with 'fallback' flag set to True,
-            or None if no recent prompt is available
-        """
-        try:
-            recent_prompts = self.db_manager.get_recent_prompts(limit=1)
-            if recent_prompts:
-                prompt = recent_prompts[0]
-                return {
-                    'id': prompt['id'],
-                    'text': prompt['text'],
-                    'timestamp': prompt.get('created_at'),
-                    'fallback': True
-                }
-        except Exception as e:
-            self.logger.error(f"Error getting fallback prompt: {e}")
-        return None
-    
-    def link_image_to_prompt(self, image_path: str, prompt_context: Dict, metadata: Dict):
-        """Link an image to a prompt in the database.
-        
-        Creates a database record associating the generated image with its source prompt,
-        including any extracted metadata from the image file.
-        
-        Args:
-            image_path: Full path to the image file
-            prompt_context: Dictionary containing prompt information including ID and text
-            metadata: Extracted metadata from the image file (workflow, parameters, etc.)
-        """
-        try:
-            image_id = self.db_manager.link_image_to_prompt(
-                prompt_id=prompt_context['id'],
-                image_path=image_path,
-                metadata=metadata
-            )
-            fallback_note = " (fallback)" if prompt_context.get('fallback') else ""
-            self.logger.debug(f"Successfully linked image {image_id} to prompt {prompt_context['id']}{fallback_note}")
-        except Exception as e:
-            self.logger.error(f"Failed to link image to prompt: {e}")
 
+    def __init__(
+        self, 
+        output_dir: str,
+        db_path: str = "prompts.db",
+        auto_extract: bool = True,
+        create_thumbnails: bool = True
+    ):
+        """Initialize image monitor.
+        
+        Args:
+            output_dir: Directory to monitor for new images
+            db_path: Path to database file
+            auto_extract: Whether to automatically extract metadata
+            create_thumbnails: Whether to create thumbnails for new images
+        """
+        super().__init__()
+        self.output_dir = Path(output_dir)
+        self.db_path = db_path
+        self.auto_extract = auto_extract
+        self.create_thumbnails = create_thumbnails
+        
+        # Initialize components
+        self.image_repo = ImageRepository(db_path)
+        self.prompt_repo = PromptRepository(db_path)
+        self.metadata_extractor = MetadataExtractor()
+        self.gallery = ImageGallery(db_path)
+        
+        # File tracking
+        self.processed_files: Set[str] = set()
+        self.pending_files: Dict[str, float] = {}  # file -> timestamp
+        self.supported_formats = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+        
+        # Callbacks
+        self.on_new_image: Optional[Callable] = None
+        self.on_metadata_extracted: Optional[Callable] = None
+        self.on_error: Optional[Callable] = None
+        
+        # Observer for file system events
+        self.observer: Optional[Observer] = None
+        
+        # Processing settings
+        self.debounce_seconds = 2.0  # Wait for file to stabilize
+        self.batch_size = 10  # Process in batches
+        
+        # Logger
+        import logging
+        self.logger = logging.getLogger("promptmanager.monitor")
+        
+        # Load existing files to avoid reprocessing
+        self._load_existing_files()
 
-class ImageMonitor:
-    """Main image monitoring system for ComfyUI gallery integration.
-    
-    This class manages the overall image monitoring system, including:
-    - Setting up filesystem watchers for output directories
-    - Auto-detecting ComfyUI output locations
-    - Managing the lifecycle of monitoring operations
-    - Providing status information
-    
-    The monitor uses watchdog to efficiently watch filesystem changes and can
-    monitor multiple directories simultaneously with recursive subdirectory support.
-    """
-    
-    def __init__(self, db_manager, prompt_tracker):
-        """
-        Initialize the image monitor.
-        
-        Args:
-            db_manager: Database manager instance for storing image relationships
-            prompt_tracker: Prompt tracking instance for getting active prompt context
-        """
-        self.db_manager = db_manager
-        self.prompt_tracker = prompt_tracker
-        self.observer = None
-        self.handler = None
-        self.monitored_directories = []
-        self.logger = get_logger('prompt_manager.image_monitor')
-        
-    def start_monitoring(self, output_directories: Optional[list] = None):
-        """
-        Start monitoring ComfyUI output directories for new images.
-        
-        Begins filesystem watching on the specified directories. If no directories
-        are provided, the system will attempt to auto-detect ComfyUI output locations.
-        All monitoring is done recursively to catch images in subdirectories.
-        
-        Args:
-            output_directories: List of directory paths to monitor. If None, uses auto-detection.
-        """
-        if self.observer:
-            self.logger.warning("Image monitoring already running")
+    def _load_existing_files(self) -> None:
+        """Load existing files from database to avoid reprocessing."""
+        try:
+            existing_images = self.image_repo.list()
+            for image in existing_images:
+                self.processed_files.add(image["filename"])
+            
+            self.logger.info(f"Loaded {len(self.processed_files)} existing files")
+        except Exception as e:
+            self.logger.error(f"Error loading existing files: {e}")
+
+    def start(self) -> None:
+        """Start monitoring the output directory."""
+        if not self.output_dir.exists():
+            self.logger.error(f"Output directory does not exist: {self.output_dir}")
             return
         
-        # Auto-detect ComfyUI output directory if none provided
-        if not output_directories:
-            output_directories = self.detect_comfyui_output_dirs()
-        
-        if not output_directories:
-            self.logger.warning("No output directories found to monitor")
-            return
-        
-        # Create event handler
-        self.handler = ImageGenerationHandler(self.db_manager, self.prompt_tracker)
-        
-        # Start observer
+        # Create observer
         self.observer = Observer()
+        self.observer.schedule(self, str(self.output_dir), recursive=False)
+        self.observer.start()
         
-        for output_dir in output_directories:
-            if os.path.exists(output_dir):
-                self.observer.schedule(self.handler, output_dir, recursive=True)
-                self.monitored_directories.append(output_dir)
-                self.logger.debug(f"Monitoring directory: {output_dir}")
-            else:
-                self.logger.warning(f"Directory does not exist: {output_dir}")
+        # Start processing loop
+        asyncio.create_task(self._process_pending_loop())
         
-        if self.monitored_directories:
-            self.observer.start()
-            self.logger.debug(f"Image monitoring started for {len(self.monitored_directories)} directories")
-        else:
-            self.logger.warning("No valid directories to monitor")
-    
-    def stop_monitoring(self):
-        """Stop the image monitoring system.
-        
-        Cleanly shuts down the filesystem watcher and clears all monitoring state.
-        This method should be called before program exit to ensure proper cleanup.
-        """
+        self.logger.info(f"Started monitoring: {self.output_dir}")
+
+    def stop(self) -> None:
+        """Stop monitoring."""
         if self.observer:
             self.observer.stop()
             self.observer.join()
             self.observer = None
-            self.handler = None
-            self.monitored_directories = []
-            self.logger.debug("Image monitoring stopped")
-    
-    def detect_comfyui_output_dirs(self) -> list:
-        """Auto-detect ComfyUI output directories.
         
-        Attempts to locate ComfyUI output directories using multiple strategies:
-        1. Import ComfyUI's folder_paths module to get the configured output directory
-        2. Search common relative paths where ComfyUI output directories are typically located
-        3. Verify that detected directories actually exist
+        self.logger.info("Stopped monitoring")
+
+    def on_created(self, event: FileCreatedEvent) -> None:
+        """Handle file creation events.
         
-        Returns:
-            List of absolute paths to detected output directories
+        Args:
+            event: File system event
         """
-        potential_dirs = []
+        if event.is_directory:
+            return
         
+        file_path = Path(event.src_path)
+        
+        # Check if it's a supported image format
+        if file_path.suffix.lower() not in self.supported_formats:
+            return
+        
+        # Skip if already processed
+        if file_path.name in self.processed_files:
+            return
+        
+        # Add to pending with timestamp
+        self.pending_files[str(file_path)] = time.time()
+        self.logger.debug(f"Detected new file: {file_path.name}")
+
+    async def _process_pending_loop(self) -> None:
+        """Process pending files after debounce period."""
+        while True:
+            try:
+                await asyncio.sleep(1)  # Check every second
+                
+                # Find files ready to process (stable for debounce period)
+                current_time = time.time()
+                ready_files = []
+                
+                for file_path, timestamp in list(self.pending_files.items()):
+                    if current_time - timestamp >= self.debounce_seconds:
+                        ready_files.append(file_path)
+                
+                # Process ready files in batches
+                if ready_files:
+                    for i in range(0, len(ready_files), self.batch_size):
+                        batch = ready_files[i:i + self.batch_size]
+                        await self._process_batch(batch)
+                    
+                    # Remove processed files from pending
+                    for file_path in ready_files:
+                        del self.pending_files[file_path]
+                        
+            except Exception as e:
+                self.logger.error(f"Error in processing loop: {e}")
+                if self.on_error:
+                    self.on_error(e)
+
+    async def _process_batch(self, file_paths: List[str]) -> None:
+        """Process a batch of image files.
+        
+        Args:
+            file_paths: List of file paths to process
+        """
+        for file_path_str in file_paths:
+            try:
+                file_path = Path(file_path_str)
+                
+                # Skip if file no longer exists
+                if not file_path.exists():
+                    continue
+                
+                # Skip if already processed
+                if file_path.name in self.processed_files:
+                    continue
+                
+                # Process the image
+                await self._process_image(file_path)
+                
+                # Mark as processed
+                self.processed_files.add(file_path.name)
+                
+            except Exception as e:
+                self.logger.error(f"Error processing {file_path_str}: {e}")
+                if self.on_error:
+                    self.on_error(e)
+
+    async def _process_image(self, file_path: Path) -> None:
+        """Process a single image file.
+        
+        Args:
+            file_path: Path to image file
+        """
+        self.logger.info(f"Processing image: {file_path.name}")
+        
+        # Extract basic file info
+        stat = file_path.stat()
+        image_data = {
+            "image_path": str(file_path.absolute()),
+            "filename": file_path.name,
+            "file_size": stat.st_size,
+            "generation_time": datetime.fromtimestamp(stat.st_mtime).isoformat()
+        }
+        
+        # Extract image dimensions
         try:
-            # Try to import ComfyUI's folder_paths
-            import folder_paths
-            output_dir = folder_paths.get_output_directory()
-            if output_dir and os.path.exists(output_dir):
-                potential_dirs.append(output_dir)
-                self.logger.debug(f"Detected ComfyUI output directory: {output_dir}")
-        except ImportError:
-            self.logger.debug("ComfyUI folder_paths not available, using fallback detection")
+            from PIL import Image
+            with Image.open(file_path) as img:
+                image_data["width"] = img.width
+                image_data["height"] = img.height
+                image_data["format"] = img.format or file_path.suffix[1:].upper()
+        except Exception as e:
+            self.logger.warning(f"Could not extract image info: {e}")
         
-        # Fallback: Look for common ComfyUI directory structures
-        fallback_paths = [
-            "output",
-            "../output", 
-            "../../output",
-            "ComfyUI/output",
-            "../ComfyUI/output"
-        ]
+        # Extract metadata if enabled
+        if self.auto_extract:
+            try:
+                metadata = self.metadata_extractor.extract_from_file(str(file_path))
+                
+                if metadata:
+                    # Store workflow data
+                    if "workflow" in metadata:
+                        image_data["workflow_data"] = metadata.get("workflow", {})
+                    
+                    # Store prompt metadata
+                    prompt_meta = {}
+                    for key in ["prompt", "negative_prompt", "steps", "sampler", 
+                               "cfg_scale", "seed", "model"]:
+                        if key in metadata:
+                            prompt_meta[key] = metadata[key]
+                    
+                    if prompt_meta:
+                        image_data["prompt_metadata"] = prompt_meta
+                    
+                    # Store other parameters
+                    image_data["parameters"] = {
+                        k: v for k, v in metadata.items() 
+                        if k not in ["workflow", "prompt", "negative_prompt"]
+                    }
+                    
+                    # Try to link to prompt in database
+                    if "prompt" in metadata:
+                        prompt_text = metadata["prompt"]
+                        prompt_hash = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
+                        
+                        # Find or create prompt
+                        existing_prompt = self.prompt_repo.find_by_hash(prompt_hash)
+                        if existing_prompt:
+                            image_data["prompt_id"] = existing_prompt["id"]
+                        else:
+                            # Create new prompt record
+                            prompt_id = self.prompt_repo.create({
+                                "text": prompt_text,
+                                "metadata": prompt_meta
+                            })
+                            image_data["prompt_id"] = prompt_id
+                    
+                    # Trigger metadata callback
+                    if self.on_metadata_extracted:
+                        self.on_metadata_extracted(file_path.name, metadata)
+                        
+            except Exception as e:
+                self.logger.warning(f"Could not extract metadata: {e}")
         
-        for path in fallback_paths:
-            abs_path = os.path.abspath(path)
-            if os.path.exists(abs_path) and abs_path not in potential_dirs:
-                potential_dirs.append(abs_path)
-                self.logger.debug(f"Found output directory: {abs_path}")
+        # Create thumbnail if enabled
+        if self.create_thumbnails:
+            try:
+                thumbnail_path = self.gallery.create_thumbnail(str(file_path))
+                if thumbnail_path:
+                    image_data["thumbnail_path"] = thumbnail_path
+            except Exception as e:
+                self.logger.warning(f"Could not create thumbnail: {e}")
         
-        return potential_dirs
-    
-    def get_status(self) -> Dict[str, Any]:
-        """Get monitoring status information.
+        # Save to database
+        try:
+            image_id = self.image_repo.create(image_data)
+            self.logger.info(f"Added image to database with ID: {image_id}")
+            
+            # Trigger new image callback
+            if self.on_new_image:
+                self.on_new_image(image_id, image_data)
+                
+        except Exception as e:
+            self.logger.error(f"Failed to save image to database: {e}")
+            raise
+
+    def scan_existing(self) -> int:
+        """Scan directory for existing images not in database.
         
         Returns:
-            Dictionary containing:
-            - running: Boolean indicating if monitoring is active
-            - monitored_directories: List of currently monitored directory paths
-            - handler_active: Boolean indicating if the event handler is active
+            Number of new images found and processed
+        """
+        if not self.output_dir.exists():
+            self.logger.error(f"Output directory does not exist: {self.output_dir}")
+            return 0
+        
+        new_count = 0
+        
+        for file_path in self.output_dir.iterdir():
+            if file_path.is_file() and file_path.suffix.lower() in self.supported_formats:
+                if file_path.name not in self.processed_files:
+                    try:
+                        # Process synchronously for scanning
+                        asyncio.run(self._process_image(file_path))
+                        self.processed_files.add(file_path.name)
+                        new_count += 1
+                    except Exception as e:
+                        self.logger.error(f"Error processing {file_path}: {e}")
+        
+        self.logger.info(f"Scan complete: found {new_count} new images")
+        return new_count
+
+    def set_callback(self, event_type: str, callback: Callable) -> None:
+        """Set callback for specific events.
+        
+        Args:
+            event_type: Type of event ("new_image", "metadata_extracted", "error")
+            callback: Callback function
+        """
+        if event_type == "new_image":
+            self.on_new_image = callback
+        elif event_type == "metadata_extracted":
+            self.on_metadata_extracted = callback
+        elif event_type == "error":
+            self.on_error = callback
+        else:
+            raise ValueError(f"Unknown event type: {event_type}")
+
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get monitoring statistics.
+        
+        Returns:
+            Dictionary with monitoring stats
         """
         return {
-            'running': self.observer is not None,
-            'monitored_directories': self.monitored_directories,
-            'handler_active': self.handler is not None
+            "output_directory": str(self.output_dir),
+            "monitoring_active": self.observer is not None and self.observer.is_alive(),
+            "processed_files": len(self.processed_files),
+            "pending_files": len(self.pending_files),
+            "auto_extract": self.auto_extract,
+            "create_thumbnails": self.create_thumbnails,
+            "debounce_seconds": self.debounce_seconds,
+            "batch_size": self.batch_size
         }
+
+
+class ComfyUIMonitor(ImageMonitor):
+    """Specialized monitor for ComfyUI output integration.
+    
+    Extends ImageMonitor with ComfyUI-specific features like
+    workflow tracking and real-time updates via WebSocket.
+    """
+
+    def __init__(
+        self,
+        comfyui_output_dir: str = None,
+        db_path: str = "prompts.db"
+    ):
+        """Initialize ComfyUI monitor.
+        
+        Args:
+            comfyui_output_dir: ComfyUI output directory (auto-detect if None)
+            db_path: Path to database file
+        """
+        # Auto-detect ComfyUI output directory if not provided
+        if not comfyui_output_dir:
+            comfyui_output_dir = self._find_comfyui_output_dir()
+        
+        super().__init__(
+            output_dir=comfyui_output_dir,
+            db_path=db_path,
+            auto_extract=True,
+            create_thumbnails=True
+        )
+        
+        # ComfyUI specific settings
+        self.workflow_cache: Dict[str, Any] = {}
+        self.enable_websocket = True
+        self.websocket_clients: List[Any] = []
+
+    def _find_comfyui_output_dir(self) -> str:
+        """Auto-detect ComfyUI output directory.
+        
+        Returns:
+            Path to ComfyUI output directory
+        """
+        # Common ComfyUI output locations
+        possible_paths = [
+            Path("output"),
+            Path("../output"),
+            Path("../../output"),
+            Path.home() / "ComfyUI" / "output",
+            Path("/workspace/ComfyUI/output"),
+        ]
+        
+        for path in possible_paths:
+            if path.exists() and path.is_dir():
+                self.logger.info(f"Found ComfyUI output directory: {path}")
+                return str(path.absolute())
+        
+        # Default to current directory's output folder
+        default = Path("output")
+        default.mkdir(exist_ok=True)
+        return str(default.absolute())
+
+    async def notify_clients(self, event_type: str, data: Any) -> None:
+        """Notify WebSocket clients of events.
+        
+        Args:
+            event_type: Type of event
+            data: Event data
+        """
+        if not self.enable_websocket:
+            return
+        
+        message = json.dumps({
+            "type": event_type,
+            "data": data,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        # Send to all connected clients
+        for client in self.websocket_clients[:]:
+            try:
+                await client.send_str(message)
+            except Exception as e:
+                self.logger.warning(f"Failed to send to client: {e}")
+                self.websocket_clients.remove(client)
+
+    def add_websocket_client(self, ws) -> None:
+        """Add WebSocket client for notifications.
+        
+        Args:
+            ws: WebSocket connection
+        """
+        self.websocket_clients.append(ws)
+        self.logger.debug(f"Added WebSocket client, total: {len(self.websocket_clients)}")
+
+    def remove_websocket_client(self, ws) -> None:
+        """Remove WebSocket client.
+        
+        Args:
+            ws: WebSocket connection
+        """
+        if ws in self.websocket_clients:
+            self.websocket_clients.remove(ws)
+            self.logger.debug(f"Removed WebSocket client, total: {len(self.websocket_clients)}")
+
+    async def _process_image(self, file_path: Path) -> None:
+        """Process image with ComfyUI-specific handling.
+        
+        Args:
+            file_path: Path to image file
+        """
+        # Call parent processing
+        await super()._process_image(file_path)
+        
+        # Notify WebSocket clients
+        await self.notify_clients("new_image", {
+            "filename": file_path.name,
+            "path": str(file_path)
+        })
