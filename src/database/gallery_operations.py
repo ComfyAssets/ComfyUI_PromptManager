@@ -10,7 +10,11 @@ import json
 from pathlib import Path
 
 from .operations import PromptDatabase
-from ..loggers import get_logger
+
+try:  # pragma: no cover - import path differs between runtime contexts
+    from promptmanager.loggers import get_logger  # type: ignore
+except ImportError:  # pragma: no cover
+    from loggers import get_logger  # type: ignore
 
 logger = get_logger(__name__)
 
