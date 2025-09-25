@@ -1045,10 +1045,22 @@ class PromptManagerAPI:
             return web.json_response({"error": "Image not found"}, status=404)
 
         use_thumbnail = request.query.get("thumbnail") is not None
-        candidate_path = record.get("thumbnail_path") if use_thumbnail else record.get("file_path")
+        candidate_path: Optional[str]
 
-        if use_thumbnail and not candidate_path:
-            candidate_path = record.get("file_path")
+        if use_thumbnail:
+            candidate_path = record.get("thumbnail_path") or record.get("thumbnail_small_path")
+            if candidate_path:
+                thumb_path = Path(candidate_path).expanduser()
+                if not thumb_path.exists():
+                    candidate_path = None
+                else:
+                    return web.FileResponse(thumb_path)
+        else:
+            candidate_path = None
+
+        # Fallback to the original asset when thumbnail is missing or requested directly
+        if not candidate_path:
+            candidate_path = record.get("file_path") or record.get("image_path")
 
         if not candidate_path:
             return web.json_response({"error": "Image path unavailable"}, status=404)
