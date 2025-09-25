@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,viewport-fit=cover"
+    />
+    <title>PromptManager — Collections</title>
+    <link rel="stylesheet" href="/prompt_manager/css/style.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/blue-theme-update.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/components.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/collections.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/notifications.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/migration.css" />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+      integrity="sha512-SnH5WK+bZxgPHs44uWIX+LLJAJ9/2PkPKZ5QiAj6Ta86w+fsb2TkcmfRyVX3pBnMFcV7oQPJkl9QevSCWr3W6A=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    />
+    <!-- ViewerJS CSS -->
+    <link rel="stylesheet" href="/prompt_manager/vendor/viewerjs/dist/viewer.min.css" />
+
+</head>
+  <body x-data="pmCollections()" x-init="init()">
+    <div class="app-container">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div id="brand-badge" class="brand-badge">PM</div>
+          <div>
+            <div class="sidebar-header-title">PromptManager</div>
+            <div class="sidebar-header-subtitle">
+              Professional Suite
+            </div>
+          </div>
+        </div>
+
+                                                <nav class="nav-menu">
+          <a href="/prompt_manager/" class="nav-item">
+            <i class="fa-solid fa-house nav-icon" aria-hidden="true"></i>
+            <span>Home</span>
+          </a>
+          <a href="/prompt_manager/dashboard" class="nav-item">
+            <i class="fa-solid fa-chart-line nav-icon" aria-hidden="true"></i>
+            <span>Dashboard</span>
+          </a>
+          <a href="/prompt_manager/gallery" class="nav-item">
+            <i class="fa-solid fa-images nav-icon" aria-hidden="true"></i>
+            <span>Gallery</span>
+          </a>
+          <a href="/prompt_manager/collections" class="nav-item active">
+            <i class="fa-solid fa-folder-tree nav-icon" aria-hidden="true"></i>
+            <span>Collections</span>
+          </a>
+          <a href="/prompt_manager/stats" class="nav-item">
+            <i class="fa-solid fa-chart-column nav-icon" aria-hidden="true"></i>
+            <span>Stats</span>
+          </a>
+          <a href="/prompt_manager/metadata" class="nav-item">
+            <i class="fa-solid fa-tags nav-icon" aria-hidden="true"></i>
+            <span>Metadata</span>
+          </a>
+          <a href="/prompt_manager/settings" class="nav-item">
+            <i class="fa-solid fa-gear nav-icon" aria-hidden="true"></i>
+            <span>Settings</span>
+          </a>
+          <a href="/prompt_manager/logs" class="nav-item">
+            <i class="fa-solid fa-clipboard-list nav-icon" aria-hidden="true"></i>
+            <span>Logs</span>
+          </a>
+        </nav>
+      </aside>
+
+      <!-- Main Content -->
+      <main class="main-content">
+        <!-- Topbar -->
+        <div class="topbar">
+          <div class="search-container">
+            <input
+              type="text"
+              placeholder="Search collections..."
+              class="search-input"
+            />
+          </div>
+          <div class="topbar-actions">
+            <button class="btn btn-ghost" aria-label="Notifications">
+              <i class="fa-regular fa-bell" aria-hidden="true"></i>
+            </button>
+            <button class="btn btn-ghost" aria-label="Preferences">
+              <i class="fa-solid fa-sliders" aria-hidden="true"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- Page Content -->
+        <div class="page-content">
+          <div class="page-header">
+            <div>
+              <h1>Collections</h1>
+              <p>Organize and manage your prompt collections</p>
+            </div>
+            <div class="collections-header-actions">
+              <input
+                id="newColName"
+                type="text"
+                placeholder="New collection name"
+                class="search-input collections-input-new"
+              />
+              <button class="btn btn-primary" @click="create()">
+                <i class="fa-solid fa-plus" aria-hidden="true"></i> Create Collection
+              </button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="collections-grid">
+              <template x-for="c in cols" :key="c.id">
+                <div class="collection-card">
+                  <div class="collection-card-header">
+                    <div class="collection-card-icon">
+                      <i class="fa-solid fa-folder-open" aria-hidden="true"></i>
+                    </div>
+                    <div>
+                      <h3 class="collection-card-title" x-text="c.name"></h3>
+                      <p class="collection-card-type">
+                        Type: <span x-text="c.type"></span>
+                      </p>
+                    </div>
+                  </div>
+
+                  <div class="collection-card-actions">
+                    <button class="btn btn-secondary btn-sm" @click="materialize(c)">
+                      <i class="fa-solid fa-folder-open" aria-hidden="true"></i> Open Collection
+                    </button>
+                    <button class="btn btn-ghost btn-sm" aria-label="Collection settings">
+                      <i class="fa-solid fa-ellipsis-vertical" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                </div>
+              </template>
+            </div>
+
+            <div x-show="cols.length === 0" class="collections-empty-state">
+              <div class="collections-empty-icon"><i class="fa-solid fa-folder-open" aria-hidden="true"></i></div>
+              <h3 class="collections-empty-title">No Collections Yet</h3>
+              <p class="collections-empty-text">Create your first collection to organize your prompts</p>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"
+    ></script>
+        <!-- ViewerJS Library -->
+        <script src="/prompt_manager/vendor/viewerjs/dist/viewer.min.js"></script>
+
+        <!-- ViewerJS Modules -->
+        <script src="/prompt_manager/js/modules/components/viewer-manager.js"></script>
+        <script src="/prompt_manager/js/modules/components/filmstrip-manager.js"></script>
+        <script src="/prompt_manager/js/modules/services/metadata-manager.js"></script>
+        <script src="/prompt_manager/js/modules/core/viewer-integration.js"></script>
+
+        <!-- Existing scripts -->
+        <script src="/prompt_manager/js/notifications.js"></script>
+
+        <!-- Initialize ViewerJS Integration for Collections -->
+        <script>
+          document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(function() {
+              ViewerIntegration.init({
+                viewer: {
+                  theme: 'dark',
+                  fullscreen: true,
+                  keyboard: true,
+                  navbar: true
+                },
+                filmstrip: {
+                  enabled: false
+                },
+                metadata: {
+                  enabled: false
+                },
+                selectors: {
+                  collectionGrid: '.collections-grid'
+                }
+              });
+            }, 100);
+          });
+        </script>
+
+<script>
+      window.pmCollections = function () {
+        return {
+          cols: [],
+          async init() {
+            await this.load();
+          },
+          async load() {
+            try {
+              const r = await fetch("/prompt_manager/collections");
+              this.cols = await r.json();
+            } catch {
+              this.cols = [];
+            }
+          },
+          async create() {
+            const name = document.getElementById("newColName")?.value?.trim();
+            if (!name) return;
+            try {
+              await fetch("/prompt_manager/collections", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name, type: "static", items: [] }),
+              });
+              await this.load();
+              document.getElementById("newColName").value = "";
+            } catch {}
+          },
+          async materialize(col) {
+            try {
+              const r = await fetch(
+                `/prompt_manager/collections/${encodeURIComponent(col.id)}/materialize`,
+                { method: "POST" },
+              );
+              const rows = await r.json();
+              console.log("materialized", rows);
+            } catch {}
+          },
+        };
+      };
+    </script>
+
+    <!-- Core modules -->
+    <script src="/prompt_manager/js/modules/core/events.js"></script>
+    <script src="/prompt_manager/js/modules/core/sse.js"></script>
+    <script src="/prompt_manager/js/modules/components/status-indicator.js"></script>
+    <script src="/prompt_manager/js/modules/components/progress-indicator.js"></script>
+    <script src="/prompt_manager/js/modules/components/footer-status.js"></script>
+
+    <!-- Footer -->
+    <footer class="main-footer">
+      <div class="footer-content">
+        <div class="footer-text">
+          PromptManager — Clean, Fast, Local. © 2025
+        </div>
+        <div class="footer-links">
+          <a href="#" class="footer-link">Documentation</a>
+          <a href="#" class="footer-link">GitHub</a>
+          <a href="#" class="footer-link">Support</a>
+        </div>
+      </div>
+    </footer>
+
+    <script>
+      // Initialize footer status and indicators
+      document.addEventListener('DOMContentLoaded', function() {
+        // Initialize realtime status and progress indicators
+        if (window.StatusIndicator) {
+          StatusIndicator.init({
+            position: 'bottom-right',
+            autoHide: true,
+            autoHideDelay: 5000,
+            showDetails: true
+          });
+        }
+
+        if (window.ProgressIndicator) {
+          ProgressIndicator.init({
+            position: 'top-center',
+            showPercentage: true,
+            showTimeEstimate: true,
+            stackable: true
+          });
+        }
+
+        // Initialize Footer Status (compact footer version)
+        if (window.FooterStatus) {
+          FooterStatus.init({
+            showText: true,
+            showCount: true,
+            enableTooltips: true
+          });
+        }
+      });
+    </script>
+  </body>
+</html>
