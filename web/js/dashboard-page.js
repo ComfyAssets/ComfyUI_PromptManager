@@ -2264,7 +2264,7 @@
     // Gather form data
     const positivePrompt = form.querySelector('#positivePrompt')?.value?.trim() || '';
     const negativePrompt = form.querySelector('#negativePrompt')?.value?.trim() || '';
-    const tags = form.querySelector('#promptTags')?.value || '';
+    const rawTags = form.querySelector('#promptTags')?.value || '';
 
     // Generate title from positive prompt (first 50 chars or up to first comma/period)
     let title = positivePrompt;
@@ -2278,35 +2278,47 @@
       title = 'Untitled Prompt';
     }
 
-    const formData = {
-      title: title,
-      tags: tags,
-      model: currentModel,
-      positivePrompt: positivePrompt,
-      negativePrompt: negativePrompt,
-    };
-
     // Validate
-    if (!formData.positivePrompt) {
+    if (!positivePrompt) {
       if (window.NotificationService) {
         window.NotificationService.show('Positive prompt text is required', 'warning');
       }
       return;
     }
 
+    const tagList = rawTags
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+
+    const payload = {
+      title,
+      positivePrompt,
+      negativePrompt,
+      tags: tagList,
+      model: currentModel,
+    };
+
     try {
-      // TODO: Submit to API
-      console.log('Creating prompt:', formData);
+      await fetchJson('/prompts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
 
       hideAddPromptModal();
+      form.reset();
+
+      await Promise.allSettled([
+        loadPrompts(1),
+        loadStats(),
+      ]);
 
       if (window.NotificationService) {
         window.NotificationService.show('Prompt created successfully', 'success');
       }
-
-      // Reset form
-      form.reset();
-      await loadPrompts(1);
     } catch (error) {
       console.error('Failed to create prompt:', error);
       if (window.NotificationService) {
