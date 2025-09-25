@@ -1,61 +1,47 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PromptManager - Redirecting to Admin</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-            min-height: 100vh;
-            color: white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .container {
-            text-align: center;
-            background: rgba(0, 0, 0, 0.3);
-            border-radius: 12px;
-            padding: 30px;
-            backdrop-filter: blur(10px);
-        }
-        .spinner {
-            display: inline-block;
-            width: 40px;
-            height: 40px;
-            border: 4px solid rgba(255, 255, 255, 0.3);
-            border-radius: 50%;
-            border-top-color: #4facfe;
-            animation: spin 1s ease-in-out infinite;
-            margin-bottom: 20px;
-        }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        h1 {
-            background: linear-gradient(45deg, #4facfe, #00f2fe);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            margin: 0;
-        }
-    </style>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PromptManager - Loading</title>
+    <link rel="stylesheet" href="/prompt_manager/css/style.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/blue-theme-update.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/components.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/index.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/notifications.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/migration.css" />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+      integrity="sha512-SnH5WK+bZxgPHs44uWIX+LLJAJ9/2PkPKZ5QiAj6Ta86w+fsb2TkcmfRyVX3pBnMFcV7oQPJkl9QevSCWr3W6A=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    />
+
 </head>
-<body>
-    <div class="container">
-        <div class="spinner"></div>
-        <h1>🔍 PromptManager</h1>
-        <p>Redirecting to Admin Dashboard...</p>
-        <p><small>Loading the full-featured prompt management interface</small></p>
+  <body>
+    <div class="loader-container">
+      <div class="loader-logo">PM</div>
+      <h1 class="loader-title">PromptManager</h1>
+      <p class="loader-subtitle">Professional prompt management suite</p>
+
+      <div class="loader-spinner-container">
+        <div class="loader-spinner"></div>
+      </div>
+
+      <div class="loader-progress" aria-hidden="true">
+        <div class="loader-progress-bar"></div>
+      </div>
+
+      <div class="loader-status" role="status" aria-live="polite">
+        <span class="status-text">Initializing…</span>
+      </div>
+
+      <ul class="loader-steps" data-loader-steps></ul>
     </div>
 
-    <script>
-        // Redirect to admin interface immediately
-        window.location.href = '/prompt_manager/admin';
-    </script>
-</body>
+        <script src="/prompt_manager/js/notifications.js"></script>
+        <script src="/prompt_manager/js/modules/services/migration.js"></script>
+        <script src="/prompt_manager/js/index-loader.js"></script>
+  </body>
 </html>

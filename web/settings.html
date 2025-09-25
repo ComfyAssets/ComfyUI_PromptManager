@@ -1,0 +1,1663 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Prompt Manager — Settings</title>
+    <link rel="stylesheet" href="/prompt_manager/css/style.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/blue-theme-update.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/components.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/settings.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/notifications.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/migration.css" />
+      <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+      integrity="sha512-SnH5WK+bZxgPHs44uWIX+LLJAJ9/2PkPKZ5QiAj6Ta86w+fsb2TkcmfRyVX3pBnMFcV7oQPJkl9QevSCWr3W6A=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    />
+</head>
+  <body>
+    <div class="app-container">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div id="brand-badge" class="brand-badge">PM</div>
+          <div>
+            <div class="sidebar-header-title">PromptManager</div>
+            <div class="sidebar-header-subtitle">Professional Suite</div>
+          </div>
+        </div>
+
+                                                <nav class="nav-menu">
+          <a href="/prompt_manager/" class="nav-item">
+            <i class="fa-solid fa-house nav-icon" aria-hidden="true"></i>
+            <span>Home</span>
+          </a>
+          <a href="/prompt_manager/dashboard" class="nav-item">
+            <i class="fa-solid fa-chart-line nav-icon" aria-hidden="true"></i>
+            <span>Dashboard</span>
+          </a>
+          <a href="/prompt_manager/gallery" class="nav-item">
+            <i class="fa-solid fa-images nav-icon" aria-hidden="true"></i>
+            <span>Gallery</span>
+          </a>
+          <a href="/prompt_manager/collections" class="nav-item">
+            <i class="fa-solid fa-folder-tree nav-icon" aria-hidden="true"></i>
+            <span>Collections</span>
+          </a>
+          <a href="/prompt_manager/stats" class="nav-item">
+            <i class="fa-solid fa-chart-column nav-icon" aria-hidden="true"></i>
+            <span>Stats</span>
+          </a>
+          <a href="/prompt_manager/metadata" class="nav-item">
+            <i class="fa-solid fa-tags nav-icon" aria-hidden="true"></i>
+            <span>Metadata</span>
+          </a>
+          <a href="/prompt_manager/settings" class="nav-item active">
+            <i class="fa-solid fa-gear nav-icon" aria-hidden="true"></i>
+            <span>Settings</span>
+          </a>
+          <a href="/prompt_manager/logs" class="nav-item">
+            <i class="fa-solid fa-clipboard-list nav-icon" aria-hidden="true"></i>
+            <span>Logs</span>
+          </a>
+        </nav>
+      </aside>
+
+      <!-- Main Content -->
+      <main class="main-content">
+        <!-- Topbar -->
+        <div class="topbar">
+          <div class="search-container">
+            <input
+              type="text"
+              placeholder="Search settings..."
+              class="search-input"
+              id="searchSettings"
+            />
+          </div>
+          <div class="topbar-actions">
+            <button class="btn btn-ghost" onclick="importSettings()">
+              <i class="fa-solid fa-file-import" aria-hidden="true"></i> Import
+            </button>
+            <button class="btn btn-ghost" onclick="exportSettings()">
+              <i class="fa-solid fa-file-export" aria-hidden="true"></i> Export
+            </button>
+          </div>
+        </div>
+
+        <!-- Page Content -->
+        <div class="page-content">
+          <div class="page-header">
+            <div>
+              <h1>Settings</h1>
+              <p>
+                Configure your PromptManager preferences and system settings
+              </p>
+            </div>
+          </div>
+
+          <div class="settings-grid">
+            <!-- Settings Navigation -->
+            <nav class="settings-nav">
+              <div class="settings-nav-group">
+                <h3 class="settings-nav-title">Storage</h3>
+                <a class="settings-nav-item active" data-section="database">
+                  <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i> Database
+                </a>
+                <a class="settings-nav-item" data-section="cache"> <i class="fa-solid fa-box" aria-hidden="true"></i> Cache </a>
+                <a class="settings-nav-item" data-section="thumbnails">
+                  <i class="fa-solid fa-images" aria-hidden="true"></i> Thumbnails
+                </a>
+              </div>
+
+              <div class="settings-nav-group">
+                <h3 class="settings-nav-title">Interface</h3>
+                <a class="settings-nav-item" data-section="display">
+                  <i class="fa-solid fa-desktop" aria-hidden="true"></i> Display
+                </a>
+                <a class="settings-nav-item" data-section="video"> <i class="fa-solid fa-clapperboard" aria-hidden="true"></i> Video </a>
+                <a class="settings-nav-item" data-section="metadata">
+                  <i class="fa-solid fa-circle-info" aria-hidden="true"></i> Metadata
+                </a>
+                <a class="settings-nav-item" data-section="gallery">
+                  <i class="fa-solid fa-image" aria-hidden="true"></i> Gallery
+                </a>
+              </div>
+
+              <div class="settings-nav-group">
+                <h3 class="settings-nav-title">Features</h3>
+                <a class="settings-nav-item" data-section="performance">
+                  <i class="fa-solid fa-bolt" aria-hidden="true"></i> Performance
+                </a>
+                <a class="settings-nav-item" data-section="notifications">
+                  <i class="fa-regular fa-bell" aria-hidden="true"></i> Notifications
+                </a>
+                <a class="settings-nav-item" data-section="stats">
+                  <i class="fa-solid fa-chart-simple" aria-hidden="true"></i> Stats
+                </a>
+                <a class="settings-nav-item" data-section="webhooks">
+                  <i class="fa-solid fa-link" aria-hidden="true"></i> Webhooks
+                </a>
+              </div>
+
+              <div class="settings-nav-group">
+                <h3 class="settings-nav-title">System</h3>
+                <a class="settings-nav-item" data-section="logging">
+                  <i class="fa-solid fa-pen" aria-hidden="true"></i> Logging
+                </a>
+                <a class="settings-nav-item" data-section="advanced">
+                  <i class="fa-solid fa-wrench" aria-hidden="true"></i> Advanced
+                </a>
+                <a class="settings-nav-item" data-section="migration">
+                  <i class="fa-solid fa-database" aria-hidden="true"></i> Migration
+                </a>
+              </div>
+            </nav>
+
+            <!-- Settings Content -->
+            <div class="settings-content">
+              <!-- Database Section -->
+              <section class="settings-section active" id="database">
+                <div class="card">
+                  <h3 class="settings-category-header">
+                    <span class="settings-category-icon"><i class="fa-solid fa-floppy-disk" aria-hidden="true"></i></span>
+                    Database Settings
+                  </h3>
+
+                  <div class="form-group full-width">
+                    <div class="form-label">
+                      <span class="label-text">Database Path</span>
+                      <span class="label-hint"
+                        >Location of the prompts database file (server-side)</span
+                      >
+                    </div>
+                    <input
+                      type="text"
+                      class="search-input"
+                      id="databasePath"
+                      value="/data/promptmanager/database.db"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Auto-Backup</span>
+                      <span class="label-hint"
+                        >Automatically backup database before
+                        modifications</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="autoBackup" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Backup Retention (days)</span>
+                      <span class="label-hint"
+                        >How long to keep database backups</span
+                      >
+                    </div>
+                    <input
+                      type="number"
+                      class="search-input"
+                      id="backupRetention"
+                      value="30"
+                      min="1"
+                      max="365"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Max Backup Size (MB)</span>
+                      <span class="label-hint"
+                        >Maximum total size of all backup files</span
+                      >
+                    </div>
+                    <input
+                      type="number"
+                      class="search-input"
+                      id="maxBackupSize"
+                      value="500"
+                      min="100"
+                      max="10000"
+                    />
+                  </div>
+
+                  <div class="settings-divider"></div>
+
+                  <div class="form-group full-width">
+                    <div class="settings-action-buttons">
+                      <button class="btn btn-primary">Backup Now</button>
+                      <button class="btn btn-secondary">
+                        Restore from Backup
+                      </button>
+                      <button class="btn btn-secondary">Export Database</button>
+                      <button class="btn btn-secondary">Import Database</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Migration Section -->
+              <section class="settings-section" id="migration">
+                <div class="card">
+                  <h3 class="settings-category-header">
+                    <span class="settings-category-icon"><i class="fa-solid fa-database" aria-hidden="true"></i></span>
+                    Migration
+                  </h3>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Migration Status</span>
+                      <span class="label-hint">Current status of PromptManager v1 → v2 migration</span>
+                    </div>
+                    <div class="settings-control">
+                      <div class="migration-status-summary">
+                        <span id="migrationStatusIcon" class="migration-status-icon" aria-hidden="true">ℹ️</span>
+                        <span id="migrationStatus" class="migration-status-text migration-status--info">Not checked</span>
+                      </div>
+                      <ul id="migrationStatsList" class="migration-summary-list"></ul>
+                    </div>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">V1 Database Location</span>
+                      <span class="label-hint">Path to the legacy prompts database</span>
+                    </div>
+                    <div class="settings-control">
+                      <span id="v1DbPath">-</span>
+                    </div>
+                  </div>
+
+                  <div class="migration-controls">
+                    <button type="button" class="btn btn-primary" data-testid="migration-check" onclick="checkV1Database()">🔍 Check for V1 Database</button>
+                    <button type="button" class="btn btn-success" data-testid="migration-execute" onclick="executeMigration()" id="executeMigrationBtn" disabled>📦 Execute Migration</button>
+                    <button type="button" class="btn btn-danger" data-testid="migration-reset" onclick="resetMigration()">🔄 Reset Migration Status</button>
+                  </div>
+
+                  <div id="migrationResults" class="migration-results is-hidden">
+                    <div class="card">
+                      <div class="card-header">
+                        <h4>Migration Results</h4>
+                      </div>
+                      <div class="card-body" id="migrationResultsContent"></div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Cache Section -->
+              <section class="settings-section" id="cache">
+                <div class="card">
+                  <h3 class="settings-category-header">
+                    <span class="settings-category-icon"><i class="fa-solid fa-box" aria-hidden="true"></i></span>
+                    Cache Settings
+                  </h3>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Enable Cache</span>
+                      <span class="label-hint"
+                        >Use in-memory caching for better performance</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="cacheEnabled" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Cache Size (MB)</span>
+                      <span class="label-hint"
+                        >Maximum memory allocated for cache</span
+                      >
+                    </div>
+                    <input
+                      type="number"
+                      class="search-input"
+                      id="cacheSize"
+                      value="256"
+                      min="64"
+                      max="2048"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Cache TTL (minutes)</span>
+                      <span class="label-hint"
+                        >How long to keep items in cache</span
+                      >
+                    </div>
+                    <input
+                      type="number"
+                      class="search-input"
+                      id="cacheTTL"
+                      value="60"
+                      min="5"
+                      max="1440"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Cache Warming</span>
+                      <span class="label-hint"
+                        >Pre-load frequently accessed prompts on startup</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="cacheWarming" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="settings-divider"></div>
+
+                  <div class="form-group full-width">
+                    <div class="form-label">
+                      <span class="label-text">Cache Statistics</span>
+                      <span class="label-hint"
+                        >Current cache usage: 124MB / 256MB (48%)</span
+                      >
+                    </div>
+                    <div class="settings-action-buttons">
+                      <button class="btn btn-secondary">Clear Cache</button>
+                      <button class="btn btn-secondary">Optimize Cache</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Thumbnails Section -->
+              <section class="settings-section" id="thumbnails">
+                <div class="card">
+                  <h3 class="settings-category-header">
+                    <span class="settings-category-icon"><i class="fa-solid fa-images" aria-hidden="true"></i></span>
+                    Thumbnail Settings
+                  </h3>
+
+                  <div class="form-group full-width">
+                    <div class="form-label">
+                      <span class="label-text">Thumbnail Directory</span>
+                      <span class="label-hint">Where thumbnails are stored (server-side)</span>
+                    </div>
+                    <input
+                      type="text"
+                      class="search-input"
+                      id="thumbnailDirectory"
+                      value="/user/default/PromptManager/thumbnails"
+                      readonly
+                      title="This is a server-side path that cannot be changed from the UI"
+                    />
+                  </div>
+
+                  <div class="form-group full-width">
+                    <div class="form-label">
+                      <span class="label-text">Disk Space Usage</span>
+                      <span class="label-hint" id="thumbnailDiskUsage">Calculating storage usage…</span>
+                    </div>
+                    <div class="disk-usage-grid">
+                      <div class="disk-usage-card">
+                        <span class="disk-usage-title">Images</span>
+                        <span class="disk-usage-value" id="diskImagesUsed">--</span>
+                        <span class="disk-usage-meta" id="diskImagesCount">-- files</span>
+                      </div>
+                      <div class="disk-usage-card">
+                        <span class="disk-usage-title">Thumbnails</span>
+                        <span class="disk-usage-value" id="diskThumbsUsed">--</span>
+                        <span class="disk-usage-meta" id="diskThumbsCount">-- files</span>
+                      </div>
+                      <div class="disk-usage-card">
+                        <span class="disk-usage-title">Cache</span>
+                        <span class="disk-usage-value" id="diskCacheUsed">--</span>
+                        <span class="disk-usage-meta" id="diskCacheEntries">-- entries</span>
+                      </div>
+                    </div>
+                    <div class="disk-usage-summary">
+                      <span id="thumbnailSpaceUsed">--</span>
+                      <span id="thumbnailSpaceTotal" class="disk-usage-secondary"></span>
+                    </div>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Auto-Generate Thumbnails</span>
+                      <span class="label-hint">Automatically create thumbnails for new images</span>
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="autoGenerateThumbnails" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Thumbnail Sizes</span>
+                      <span class="label-hint">Select which sizes to generate</span>
+                    </div>
+                    <div class="checkbox-group">
+                      <label class="checkbox-label">
+                        <input type="checkbox" id="thumbSizeSmall" checked />
+                        <span>Small (150x150)</span>
+                      </label>
+                      <label class="checkbox-label">
+                        <input type="checkbox" id="thumbSizeMedium" checked />
+                        <span>Medium (300x300)</span>
+                      </label>
+                      <label class="checkbox-label">
+                        <input type="checkbox" id="thumbSizeLarge" checked />
+                        <span>Large (600x600)</span>
+                      </label>
+                      <label class="checkbox-label">
+                        <input type="checkbox" id="thumbSizeXLarge" />
+                        <span>X-Large (1200x1200)</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">JPEG Quality</span>
+                      <span class="label-hint">Quality for JPEG thumbnails (1-100)</span>
+                    </div>
+                    <input
+                      type="number"
+                      class="search-input"
+                      id="jpegQuality"
+                      value="85"
+                      min="1"
+                      max="100"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Parallel Generation</span>
+                      <span class="label-hint">Number of thumbnails to generate simultaneously</span>
+                    </div>
+                    <input
+                      type="number"
+                      class="search-input"
+                      id="parallelGeneration"
+                      value="2"
+                      min="1"
+                      max="8"
+                    />
+                  </div>
+
+                  <div class="settings-divider"></div>
+
+                  <div class="form-group full-width">
+                    <div class="form-label">
+                      <span class="label-text">Thumbnail Status</span>
+                      <span class="label-hint" id="thumbnailStatus">Not checked</span>
+                    </div>
+                    <div class="thumbnail-progress-container" id="thumbnailProgressContainer" style="display: none;">
+                      <div class="progress-bar">
+                        <div class="progress-bar-fill" id="thumbnailProgressBar" style="width: 0%"></div>
+                      </div>
+                      <div class="progress-text" id="thumbnailProgressText">0 / 0</div>
+                    </div>
+                  </div>
+
+                  <div class="form-group full-width">
+                    <div class="settings-action-buttons">
+                      <button class="btn btn-primary" onclick="scanForMissingThumbnails()">
+                        <i class="fa-solid fa-magnifying-glass"></i> Scan for Missing
+                      </button>
+                      <button class="btn btn-success" onclick="generateMissingThumbnails()" id="generateThumbnailsBtn" disabled>
+                        <i class="fa-solid fa-image"></i> Generate Thumbnails
+                      </button>
+                      <button class="btn btn-secondary" onclick="rebuildAllThumbnails()">
+                        <i class="fa-solid fa-rotate"></i> Rebuild All
+                      </button>
+                      <button class="btn btn-danger" onclick="clearThumbnailCache()">
+                        <i class="fa-solid fa-trash"></i> Clear Cache
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Performance Section -->
+              <section class="settings-section" id="performance">
+                <div class="card">
+                  <h3 class="settings-category-header">
+                    <span class="settings-category-icon"><i class="fa-solid fa-bolt" aria-hidden="true"></i></span>
+                    Performance Settings
+                  </h3>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Lazy Loading</span>
+                      <span class="label-hint"
+                        >Load images and metadata on demand</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="lazyLoading" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Virtual Scrolling</span>
+                      <span class="label-hint"
+                        >Optimize rendering for large lists</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="virtualScrolling" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Concurrent Requests</span>
+                      <span class="label-hint"
+                        >Maximum parallel API requests</span
+                      >
+                    </div>
+                    <input
+                      type="number"
+                      class="search-input"
+                      id="concurrentRequests"
+                      value="4"
+                      min="1"
+                      max="10"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Request Timeout (seconds)</span>
+                      <span class="label-hint"
+                        >Maximum time to wait for server response</span
+                      >
+                    </div>
+                    <input
+                      type="number"
+                      class="search-input"
+                      id="requestTimeout"
+                      value="30"
+                      min="5"
+                      max="120"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Metadata Caching</span>
+                      <span class="label-hint"
+                        >Cache extracted metadata from images</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="metadataCaching" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Worker Threads</span>
+                      <span class="label-hint"
+                        >Number of background worker threads</span
+                      >
+                    </div>
+                    <input
+                      type="number"
+                      class="search-input"
+                      id="workerThreads"
+                      value="2"
+                      min="1"
+                      max="8"
+                    />
+                  </div>
+                </div>
+              </section>
+
+              <!-- Display Section -->
+              <section class="settings-section" id="display">
+                <div class="card">
+                  <h3 class="settings-category-header">
+                    <span class="settings-category-icon"><i class="fa-solid fa-desktop" aria-hidden="true"></i></span>
+                    Display Settings
+                  </h3>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Default View</span>
+                      <span class="label-hint"
+                        >Initial layout when opening PromptManager</span
+                      >
+                    </div>
+                    <select class="btn btn-secondary" id="defaultView">
+                      <option value="table">Table</option>
+                      <option value="cards" selected>Cards</option>
+                      <option value="grid">Grid</option>
+                      <option value="masonry">Masonry</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Items Per Page</span>
+                      <span class="label-hint"
+                        >Number of prompts displayed per page</span
+                      >
+                    </div>
+                    <select class="btn btn-secondary" id="itemsPerPage">
+                      <option value="10">10</option>
+                      <option value="20">20</option>
+                      <option value="30">30</option>
+                      <option value="40">40</option>
+                      <option value="50" selected>50</option>
+                      <option value="60">60</option>
+                      <option value="70">70</option>
+                      <option value="80">80</option>
+                      <option value="90">90</option>
+                      <option value="100">100</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Thumbnail Size</span>
+                      <span class="label-hint"
+                        >Size of image thumbnails in lists</span
+                      >
+                    </div>
+                    <select class="btn btn-secondary" id="thumbnailSize">
+                      <option value="small">Small (64px)</option>
+                      <option value="medium" selected>Medium (128px)</option>
+                      <option value="large">Large (256px)</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Film Strip Size</span>
+                      <span class="label-hint"
+                        >Controls thumbnail size for dashboard film strips</span
+                      >
+                    </div>
+                    <select class="btn btn-secondary" id="filmStripSize">
+                      <option value="small">Small</option>
+                      <option value="medium" selected>Medium</option>
+                      <option value="large">Large</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Show Thumbnails</span>
+                      <span class="label-hint"
+                        >Display image thumbnails in lists</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="showThumbnails" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Blur NSFW Content</span>
+                      <span class="label-hint"
+                        >Automatically blur images with NSFW tags</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="blurNSFW" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Blurred Tags</span>
+                      <span class="label-hint">Manage which tags trigger blurring</span>
+                    </div>
+                    <div class="blur-tag-preview" id="blurNSFWTagsPreview">
+                      <span class="blur-tag-chip">nsfw</span>
+                    </div>
+                    <div class="input-with-button">
+                      <input type="hidden" id="blurNSFWTags" value="nsfw" />
+                      <button class="btn btn-secondary" type="button" data-action="manage-blur-tags">
+                        Manage Tags
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Dark Mode</span>
+                      <span class="label-hint">Use dark theme interface</span>
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="darkMode" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Video Section -->
+              <section class="settings-section" id="video">
+                <div class="card">
+                  <h3 class="settings-category-header">
+                    <span class="settings-category-icon"><i class="fa-solid fa-clapperboard" aria-hidden="true"></i></span>
+                    Video Settings
+                  </h3>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Auto-play GIFs</span>
+                      <span class="label-hint"
+                        >Automatically play animated GIF images</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="autoplayGifs" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Auto-play Videos</span>
+                      <span class="label-hint"
+                        >Automatically play video files</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="autoplayVideos" />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Mute by Default</span>
+                      <span class="label-hint">Start videos muted</span>
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="muteByDefault" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Loop Videos</span>
+                      <span class="label-hint"
+                        >Loop video playback continuously</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="loopVideos" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Video Quality</span>
+                      <span class="label-hint"
+                        >Default video playback quality</span
+                      >
+                    </div>
+                    <select class="btn btn-secondary" id="videoQuality">
+                      <option value="auto" selected>Auto</option>
+                      <option value="240p">240p</option>
+                      <option value="360p">360p</option>
+                      <option value="480p">480p</option>
+                      <option value="720p">720p</option>
+                      <option value="1080p">1080p</option>
+                      <option value="original">Original</option>
+                    </select>
+                  </div>
+
+                  <div class="settings-divider"></div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">FFmpeg Path</span>
+                      <span class="label-hint" id="ffmpegStatus">Checking for FFmpeg...</span>
+                    </div>
+                    <input
+                      type="text"
+                      class="search-input"
+                      id="ffmpegPath"
+                      placeholder="Auto-detected or enter custom path"
+                      title="Path to FFmpeg executable for video processing"
+                    />
+                  </div>
+
+                  <div class="form-group full-width">
+                    <div class="settings-action-buttons">
+                      <button class="btn btn-secondary" onclick="detectFFmpeg()">
+                        <i class="fa-solid fa-magnifying-glass"></i> Auto-detect FFmpeg
+                      </button>
+                      <button class="btn btn-secondary" onclick="testFFmpeg()">
+                        <i class="fa-solid fa-check"></i> Test FFmpeg
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Metadata Section -->
+              <section class="settings-section" id="metadata">
+                <div class="card">
+                  <h3 class="settings-category-header">
+                    <span class="settings-category-icon"><i class="fa-solid fa-circle-info" aria-hidden="true"></i></span>
+                    Metadata Settings
+                  </h3>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Auto-load Metadata</span>
+                      <span class="label-hint"
+                        >Automatically extract metadata from images</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="autoLoadMetadata" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Metadata Display Mode</span>
+                      <span class="label-hint"
+                        >How to show metadata in the interface</span
+                      >
+                    </div>
+                    <select class="btn btn-secondary" id="metadataDisplayMode">
+                      <option value="compact">Compact</option>
+                      <option value="detailed" selected>Detailed</option>
+                      <option value="raw">Raw JSON</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Extract ComfyUI Data</span>
+                      <span class="label-hint"
+                        >Parse ComfyUI workflow data from images</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="extractComfyUI" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Extract EXIF Data</span>
+                      <span class="label-hint"
+                        >Include camera and technical metadata</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="extractEXIF" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Show Hidden Metadata</span>
+                      <span class="label-hint"
+                        >Display technical and system metadata</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="showHiddenMetadata" />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Copy Format</span>
+                      <span class="label-hint"
+                        >Format when copying prompt data</span
+                      >
+                    </div>
+                    <select class="btn btn-secondary" id="copyFormat">
+                      <option value="raw" selected>Raw Text</option>
+                      <option value="json">JSON</option>
+                      <option value="markdown">Markdown</option>
+                      <option value="csv">CSV</option>
+                    </select>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Gallery Section -->
+              <section class="settings-section" id="gallery">
+                <div class="card">
+                  <h3 class="settings-category-header">
+                    <span class="settings-category-icon"><i class="fa-solid fa-image" aria-hidden="true"></i></span>
+                    Gallery Settings
+                  </h3>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Gallery Root Path</span>
+                      <span class="label-hint"
+                        >Base directory for image scanning</span
+                      >
+                    </div>
+                    <div class="input-with-button">
+                      <input
+                        type="text"
+                        class="search-input"
+                        id="galleryPath"
+                        value="/images/generations"
+                      />
+                    </div>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Monitor Directory</span>
+                      <span class="label-hint"
+                        >Watch for new images automatically</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="monitorDirectory" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Scan Interval (minutes)</span>
+                      <span class="label-hint"
+                        >How often to check for new images</span
+                      >
+                    </div>
+                    <input
+                      type="number"
+                      class="search-input"
+                      id="scanInterval"
+                      value="5"
+                      min="1"
+                      max="60"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Auto-cleanup</span>
+                      <span class="label-hint"
+                        >Remove orphaned thumbnails and metadata</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="autoCleanup" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Include Subdirectories</span>
+                      <span class="label-hint"
+                        >Scan subdirectories recursively</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="includeSubdirs" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="settings-divider"></div>
+
+                  <div class="form-group full-width">
+                    <div class="settings-action-buttons">
+                      <button class="btn btn-primary">Scan Now</button>
+                      <button class="btn btn-secondary">
+                        Rebuild Thumbnails
+                      </button>
+                      <button class="btn btn-secondary">Clean Orphans</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Notifications Section -->
+              <section class="settings-section" id="notifications">
+                <div class="card">
+                  <h3 class="settings-category-header">
+                    <span class="settings-category-icon"><i class="fa-regular fa-bell" aria-hidden="true"></i></span>
+                    Notification Settings
+                  </h3>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Enable Notifications</span>
+                      <span class="label-hint">Show notification messages</span>
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="enableNotifications" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Notification Position</span>
+                      <span class="label-hint"
+                        >Where to display notification messages</span
+                      >
+                    </div>
+                    <select class="btn btn-secondary" id="notificationPosition">
+                      <option value="top-left">Top Left</option>
+                      <option value="top-center">Top Center</option>
+                      <option value="top-right" selected>Top Right</option>
+                      <option value="bottom-left">Bottom Left</option>
+                      <option value="bottom-center">Bottom Center</option>
+                      <option value="bottom-right">Bottom Right</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Duration (seconds)</span>
+                      <span class="label-hint"
+                        >How long to show notifications</span
+                      >
+                    </div>
+                    <input
+                      type="number"
+                      class="search-input"
+                      id="notificationDuration"
+                      value="5"
+                      min="1"
+                      max="30"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Sound Alerts</span>
+                      <span class="label-hint"
+                        >Play sound with notifications</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="soundAlerts" />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Desktop Notifications</span>
+                      <span class="label-hint"
+                        >Show browser desktop notifications</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="desktopNotifications" />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Click to Dismiss</span>
+                      <span class="label-hint"
+                        >Allow clicking notifications to dismiss them</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="clickToDismiss" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Max Visible</span>
+                      <span class="label-hint"
+                        >Maximum number of notifications shown at once</span
+                      >
+                    </div>
+                    <input
+                      type="number"
+                      class="search-input"
+                      id="maxVisible"
+                      value="3"
+                      min="1"
+                      max="10"
+                    />
+                  </div>
+
+                  <div class="settings-divider"></div>
+
+                  <div class="form-group full-width">
+                    <button
+                      class="btn btn-secondary"
+                      onclick="testNotification()"
+                    >
+                      Test Notification
+                    </button>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Stats Section -->
+              <section class="settings-section" id="stats">
+                <div class="card">
+                  <h3 class="settings-category-header">
+                    <span class="settings-category-icon"><i class="fa-solid fa-chart-simple" aria-hidden="true"></i></span>
+                    Stats Preferences
+                  </h3>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Ignored Word Cloud Terms</span>
+                      <span class="label-hint">
+                        Hide recurring embeddings or boilerplate phrases from Your Creative Universe.
+                      </span>
+                    </div>
+                    <div class="stats-ignored-editor">
+                      <div id="statsIgnoredWordsList" class="stats-ignored-list"></div>
+                      <div class="input-with-button stats-ignored-input">
+                        <input
+                          type="text"
+                          class="search-input"
+                          id="statsIgnoredWordInput"
+                          data-settings-ignore="true"
+                          placeholder="Add word to ignore"
+                          autocomplete="off"
+                        />
+                        <button type="button" class="btn btn-secondary" data-action="add-ignored-word">
+                          Add
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="form-actions">
+                    <button type="button" class="btn btn-outline" data-action="reset-ignored-words">
+                      Clear ignored words
+                    </button>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Webhooks Section -->
+              <section class="settings-section" id="webhooks">
+                <div class="card">
+                  <h3 class="settings-category-header">
+                    <span class="settings-category-icon"><i class="fa-solid fa-link" aria-hidden="true"></i></span>
+                    Webhook Settings
+                  </h3>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Enable Webhooks</span>
+                      <span class="label-hint"
+                        >Send events to external services</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="enableWebhooks" />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group full-width">
+                    <div class="form-label">
+                      <span class="label-text">Webhook URL</span>
+                      <span class="label-hint"
+                        >Endpoint to receive webhook events</span
+                      >
+                    </div>
+                    <input
+                      type="text"
+                      class="search-input"
+                      id="webhookUrl"
+                      placeholder="https://example.com/webhook"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Authentication Method</span>
+                      <span class="label-hint"
+                        >How to authenticate with the webhook</span
+                      >
+                    </div>
+                    <select class="btn btn-secondary" id="webhookAuth">
+                      <option value="none" selected>None</option>
+                      <option value="bearer">Bearer Token</option>
+                      <option value="basic">Basic Auth</option>
+                      <option value="api-key">API Key</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group full-width">
+                    <div class="form-label">
+                      <span class="label-text">Secret/Token</span>
+                      <span class="label-hint">Authentication credential</span>
+                    </div>
+                    <input
+                      type="password"
+                      class="search-input"
+                      id="webhookSecret"
+                      placeholder="Enter secret or token"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Retry Failed Webhooks</span>
+                      <span class="label-hint"
+                        >Automatically retry failed webhook calls</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="retryWebhooks" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Max Retries</span>
+                      <span class="label-hint"
+                        >Maximum number of retry attempts</span
+                      >
+                    </div>
+                    <input
+                      type="number"
+                      class="search-input"
+                      id="maxRetries"
+                      value="3"
+                      min="1"
+                      max="10"
+                    />
+                  </div>
+
+                  <div class="settings-divider"></div>
+
+                  <h4 class="settings-category-header">Webhook Events</h4>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">New Prompt Created</span>
+                      <span class="label-hint"
+                        >Trigger when a new prompt is added</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="webhookNewPrompt" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Prompt Updated</span>
+                      <span class="label-hint"
+                        >Trigger when a prompt is modified</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="webhookUpdatePrompt" />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Prompt Deleted</span>
+                      <span class="label-hint"
+                        >Trigger when a prompt is removed</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="webhookDeletePrompt" />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="settings-divider"></div>
+
+                  <div class="form-group full-width">
+                    <button class="btn btn-secondary" onclick="testWebhook()">
+                      Test Webhook
+                    </button>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Logging Section -->
+              <section class="settings-section" id="logging">
+                <div class="card">
+                  <h3 class="settings-category-header">
+                    <span class="settings-category-icon"><i class="fa-solid fa-pen" aria-hidden="true"></i></span>
+                    Logging Settings
+                  </h3>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Enable Logging</span>
+                      <span class="label-hint"
+                        >Record system events and errors</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="enableLogging" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Log Level</span>
+                      <span class="label-hint"
+                        >Minimum severity level to log</span
+                      >
+                    </div>
+                    <select class="btn btn-secondary" id="logLevel">
+                      <option value="off">Off</option>
+                      <option value="debug">Debug</option>
+                      <option value="info" selected>Info</option>
+                      <option value="warning">Warning</option>
+                      <option value="error">Error</option>
+                      <option value="critical">Critical</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Log Retention (days)</span>
+                      <span class="label-hint">How long to keep log files</span>
+                    </div>
+                    <input
+                      type="number"
+                      class="search-input"
+                      id="logRetention"
+                      value="7"
+                      min="1"
+                      max="90"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Max Log Size (MB)</span>
+                      <span class="label-hint"
+                        >Maximum size per log file before rotation</span
+                      >
+                    </div>
+                    <input
+                      type="number"
+                      class="search-input"
+                      id="maxLogSize"
+                      value="10"
+                      min="1"
+                      max="100"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Console Output</span>
+                      <span class="label-hint"
+                        >Also output logs to browser console</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="consoleOutput" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="settings-divider"></div>
+
+                  <div class="form-group full-width">
+                    <div class="settings-action-buttons">
+                      <button class="btn btn-secondary">View Logs</button>
+                      <button class="btn btn-secondary">Download Logs</button>
+                      <button class="btn btn-secondary">Clear Logs</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Advanced Section -->
+              <section class="settings-section" id="advanced">
+                <div class="card">
+                  <h3 class="settings-category-header">
+                    <span class="settings-category-icon"><i class="fa-solid fa-wrench" aria-hidden="true"></i></span>
+                    Advanced Settings
+                  </h3>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">GPU Acceleration</span>
+                      <span class="label-hint"
+                        >Use GPU for image processing when available</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="gpuAcceleration" checked />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Memory Limit (MB)</span>
+                      <span class="label-hint"
+                        >Maximum memory usage for the application</span
+                      >
+                    </div>
+                    <input
+                      type="number"
+                      class="search-input"
+                      id="memoryLimit"
+                      value="1024"
+                      min="256"
+                      max="8192"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Worker Threads</span>
+                      <span class="label-hint"
+                        >Number of background processing threads</span
+                      >
+                    </div>
+                    <input
+                      type="number"
+                      class="search-input"
+                      id="workerThreadsAdv"
+                      value="4"
+                      min="1"
+                      max="16"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Debug Mode</span>
+                      <span class="label-hint"
+                        >Enable verbose debugging output</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="debugMode" />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">Experimental Features</span>
+                      <span class="label-hint"
+                        >Enable beta and experimental functionality</span
+                      >
+                    </div>
+                    <label class="toggle">
+                      <input type="checkbox" id="experimentalFeatures" />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+
+                  <div class="form-group full-width">
+                    <div class="form-label">
+                      <span class="label-text">API Endpoint Override</span>
+                      <span class="label-hint"
+                        >Custom API endpoint (leave empty for default)</span
+                      >
+                    </div>
+                    <input
+                      type="text"
+                      class="search-input"
+                      id="apiEndpoint"
+                      placeholder="https://api.example.com"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <div class="form-label">
+                      <span class="label-text">CORS Mode</span>
+                      <span class="label-hint"
+                        >Cross-Origin Resource Sharing mode</span
+                      >
+                    </div>
+                    <select class="btn btn-secondary" id="corsMode">
+                      <option value="same-origin">Same Origin</option>
+                      <option value="cors" selected>CORS</option>
+                      <option value="no-cors">No CORS</option>
+                    </select>
+                  </div>
+
+                  <div class="settings-divider"></div>
+
+                  <div class="form-group full-width">
+                    <div class="settings-action-buttons">
+                      <button class="btn btn-secondary">System Info</button>
+                      <button class="btn btn-secondary">Clear All Data</button>
+                      <button class="btn btn-danger">Factory Reset</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- Save Bar -->
+    <div class="save-bar">
+      <div class="save-status" id="saveStatus">
+        <span>✓</span>
+        <span>All changes saved</span>
+      </div>
+      <div class="save-actions">
+        <button class="btn btn-secondary" onclick="resetSettings()">
+          Reset to Defaults
+        </button>
+        <button class="btn btn-primary" onclick="saveSettingsPage()">
+          Save Changes
+        </button>
+      </div>
+    </div>
+
+    <div class="modal-overlay" id="blurTagsModal" hidden>
+      <div class="modal-container">
+        <div class="modal-header">
+          <h2 class="modal-title">Blurred Tags</h2>
+          <button type="button" class="modal-close" data-action="close-blur-tags-modal" aria-label="Close blurred tags modal">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 6L6 18M6 6l12 12"></path>
+            </svg>
+          </button>
+        </div>
+
+        <div class="modal-body">
+          <p class="modal-subtitle">
+            Images linked to prompts that use any of these tags (case-insensitive) will be blurred until you hover over them.
+          </p>
+          <div class="blur-tag-modal-list" id="blurTagsList"></div>
+          <div class="blur-tag-modal-controls">
+            <input type="text" class="input" id="blurTagInput" placeholder="Add tag (e.g. nsfw, sensitive)" />
+            <button type="button" class="btn btn-secondary" data-action="add-blur-tag">Add</button>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="cancel-blur-tags-modal">Cancel</button>
+          <button type="button" class="btn btn-primary" data-action="save-blur-tags-modal">Save Tags</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="main-footer">
+      <div class="footer-content">
+        <div class="footer-text">
+          PromptManager — Clean, Fast, Local. © 2025
+        </div>
+        <div class="footer-links">
+          <a href="#" class="footer-link">Documentation</a>
+          <a href="#" class="footer-link">GitHub</a>
+          <a href="#" class="footer-link">Support</a>
+        </div>
+      </div>
+    </footer>
+
+    <!-- External JavaScript files -->
+    <!-- Core modules -->
+    <script src="/prompt_manager/js/modules/core/events.js"></script>
+    <script src="/prompt_manager/js/modules/core/sse.js"></script>
+
+    <!-- SSE Indicators -->
+    <script src="/prompt_manager/js/modules/components/status-indicator.js"></script>
+    <script src="/prompt_manager/js/modules/components/progress-indicator.js"></script>
+    <script src="/prompt_manager/js/modules/components/footer-status.js"></script>
+
+    <script src="/prompt_manager/js/notifications.js"></script>
+    <script src="/prompt_manager/js/modules/services/migration.js"></script>
+
+    <!-- Thumbnail Components -->
+    <script src="/prompt_manager/js/settings-thumbnails.js"></script>
+    <script src="/prompt_manager/js/settings-ffmpeg.js"></script>
+    <script src="/prompt_manager/js/components/thumbnail-modal.js"></script>
+
+    <script src="/prompt_manager/js/settings.js"></script>
+    <script src="/prompt_manager/js/settings-page.js"></script>
+  </body>
+</html>
