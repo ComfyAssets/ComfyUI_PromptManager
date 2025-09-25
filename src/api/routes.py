@@ -238,10 +238,25 @@ class PromptManagerAPI:
             except json.JSONDecodeError:
                 data["metadata"] = None
 
+        rendered: Optional[Dict[str, Any]] = None
+        try:
+            rendered = self.gallery.render_item(data)
+        except Exception:  # pragma: no cover - defensive
+            rendered = None
+
+        if rendered:
+            data.update(rendered)
+            if rendered.get("image_url"):
+                data.setdefault("url", rendered["image_url"])
+            if rendered.get("thumbnail_url"):
+                data["thumbnail_url"] = rendered["thumbnail_url"]
+            if rendered.get("thumbnail_variants"):
+                data["thumbnail_variants"] = rendered["thumbnail_variants"]
+
         image_id = data.get("id")
         if image_id is not None:
-            data["url"] = self._build_generated_image_url(image_id)
-            data["thumbnail_url"] = self._build_generated_image_url(image_id, thumbnail=True)
+            data.setdefault("url", self._build_generated_image_url(image_id))
+            data.setdefault("thumbnail_url", self._build_generated_image_url(image_id, thumbnail=True))
 
         return data
 
