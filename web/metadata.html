@@ -1,646 +1,354 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Image Gallery - Generation Data</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        /* Ensure the layout takes full height and prevents overflow */
-        html, body {
-            height: 100%;
-            margin: 0;
-            padding: 0;
-            overflow: hidden;
-        }
-        
-        /* Ensure image container uses flexbox properly */
-        #image-area {
-            min-height: 0; /* Allow flex child to shrink */
-        }
-        
-        /* Make sure the image scales properly */
-        #main-image {
-            max-width: calc(100% - 2rem); /* Account for padding */
-            max-height: calc(100% - 2rem); /* Account for padding */
-        }
-    </style>
-    <script>
-        let currentWorkflowData = null;
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <title>PromptManager — Metadata Extractor</title>
+    <link rel="stylesheet" href="/prompt_manager/css/style.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/blue-theme-update.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/components.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/metadata.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/notifications.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/migration.css" />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+      integrity="sha512-SnH5WK+bZxgPHs44uWIX+LLJAJ9/2PkPKZ5QiAj6Ta86w+fsb2TkcmfRyVX3pBnMFcV7oQPJkl9QevSCWr3W6A=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    />
+    <!-- ViewerJS CSS -->
+    <link rel="stylesheet" href="/prompt_manager/vendor/viewerjs/dist/viewer.min.css" />
 
-        function openInFileExplorer(path) {
-            // For Windows file explorer
-            if (navigator.platform.indexOf('Win') > -1) {
-                // This will work in Electron apps or desktop environments
-                try {
-                    window.require('child_process').exec(`explorer /select,"${path}"`);
-                } catch (e) {
-                    // Fallback: copy path to clipboard and show alert
-                    navigator.clipboard.writeText(path).then(() => {
-                        alert('File path copied to clipboard: ' + path);
-                    }).catch(() => {
-                        alert('File path: ' + path);
-                    });
-                }
-            } else {
-                // For other platforms, just copy to clipboard
-                navigator.clipboard.writeText(path).then(() => {
-                    alert('File path copied to clipboard: ' + path);
-                }).catch(() => {
-                    alert('File path: ' + path);
-                });
-            }
-        }
-
-        async function copyToClipboard(text, button) {
-            try {
-                await navigator.clipboard.writeText(text);
-                // Show temporary feedback
-                const originalContent = button.innerHTML;
-                button.innerHTML = '✓ Copied!';
-                button.classList.add('text-green-400');
-                setTimeout(() => {
-                    button.innerHTML = originalContent;
-                    button.classList.remove('text-green-400');
-                }, 1000);
-            } catch (err) {
-                alert('Copy failed: ' + err);
-            }
-        }
-
-        function copyPositivePrompt(event) {
-            if (currentWorkflowData && currentWorkflowData.positivePrompt) {
-                copyToClipboard(currentWorkflowData.positivePrompt, event.target.closest('button'));
-            }
-        }
-
-        function copyNegativePrompt(event) {
-            if (currentWorkflowData && currentWorkflowData.negativePrompt) {
-                copyToClipboard(currentWorkflowData.negativePrompt, event.target.closest('button'));
-            }
-        }
-
-        function downloadWorkflowJSON() {
-            if (currentWorkflowData && currentWorkflowData.workflow) {
-                const dataStr = JSON.stringify(currentWorkflowData.workflow, null, 2);
-                const dataBlob = new Blob([dataStr], {type: 'application/json'});
-                const url = URL.createObjectURL(dataBlob);
-                const link = document.createElement('a');
-                link.href = url;
-                link.download = 'comfyui_workflow.json';
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                URL.revokeObjectURL(url);
-            }
-        }
-
-        async function copyAllData() {
-            if (!currentWorkflowData) return;
-            
-            const allData = `Checkpoint: ${currentWorkflowData.checkpoint || 'Unknown'}
-Positive Prompt: ${currentWorkflowData.positivePrompt}
-Negative Prompt: ${currentWorkflowData.negativePrompt}
-Steps: ${currentWorkflowData.steps || 'Unknown'}
-CFG Scale: ${currentWorkflowData.cfgScale || 'Unknown'}
-Sampler: ${currentWorkflowData.sampler || 'Unknown'}
-Seed: ${currentWorkflowData.seed || 'Unknown'}`;
-            
-            await copyToClipboard(allData);
-        }
-
-        async function parsePNGMetadata(arrayBuffer) {
-            const dataView = new DataView(arrayBuffer);
-            let offset = 8; // Skip PNG signature
-            const metadata = {};
-
-            while (offset < arrayBuffer.byteLength - 8) {
-                const length = dataView.getUint32(offset);
-                const type = new TextDecoder().decode(arrayBuffer.slice(offset + 4, offset + 8));
-                
-                if (type === 'tEXt' || type === 'iTXt' || type === 'zTXt') {
-                    const chunkData = arrayBuffer.slice(offset + 8, offset + 8 + length);
-                    let text;
-                    
-                    if (type === 'tEXt') {
-                        text = new TextDecoder().decode(chunkData);
-                    } else if (type === 'iTXt') {
-                        // iTXt format: keyword\0compression\0language\0translated_keyword\0text
-                        const textData = new TextDecoder().decode(chunkData);
-                        const parts = textData.split('\0');
-                        if (parts.length >= 5) {
-                            metadata[parts[0]] = parts[4];
-                        }
-                        text = textData;
-                    } else if (type === 'zTXt') {
-                        // zTXt is compressed - basic parsing (might need proper decompression)
-                        text = new TextDecoder().decode(chunkData);
-                    }
-                    
-                    // Parse the text chunk for key-value pairs
-                    const nullIndex = text.indexOf('\0');
-                    if (nullIndex !== -1) {
-                        const key = text.substring(0, nullIndex);
-                        const value = text.substring(nullIndex + 1);
-                        metadata[key] = value;
-                    }
-                }
-                
-                offset += 8 + length + 4; // Move to next chunk (8 = length + type, 4 = CRC)
-            }
-
-            return metadata;
-        }
-
-        function extractComfyUIData(metadata) {
-            // Look for ComfyUI workflow data in various possible fields
-            let workflowData = null;
-            let promptData = null;
-
-            // Common ComfyUI metadata field names
-            const workflowFields = ['workflow', 'Workflow', 'comfy', 'ComfyUI'];
-            const promptFields = ['prompt', 'Prompt', 'parameters', 'Parameters'];
-
-            for (const field of workflowFields) {
-                if (metadata[field]) {
-                    try {
-                        // Clean NaN values from JSON string before parsing
-                        let cleanedJson = metadata[field];
-                        cleanedJson = cleanedJson.replace(/:\s*NaN\b/g, ': null');
-                        cleanedJson = cleanedJson.replace(/\bNaN\b/g, 'null');
-                        
-                        workflowData = JSON.parse(cleanedJson);
-                        break;
-                    } catch (e) {
-                        console.log('Failed to parse workflow field:', field, e);
-                    }
-                }
-            }
-
-            for (const field of promptFields) {
-                if (metadata[field]) {
-                    try {
-                        // Clean NaN values from JSON string before parsing
-                        let cleanedJson = metadata[field];
-                        cleanedJson = cleanedJson.replace(/:\s*NaN\b/g, ': null');
-                        cleanedJson = cleanedJson.replace(/\bNaN\b/g, 'null');
-                        
-                        promptData = JSON.parse(cleanedJson);
-                        break;
-                    } catch (e) {
-                        console.log('Failed to parse prompt field:', field, e);
-                    }
-                }
-            }
-
-            return { workflow: workflowData, prompt: promptData };
-        }
-
-        function updateDataPanel(comfyData, filename) {
-            const dataPanel = document.getElementById('data-panel-content');
-            if (!dataPanel) return;
-
-            // Extract information from ComfyUI workflow
-            let checkpoint = 'Unknown';
-            let positivePrompt = 'No prompt found';
-            let negativePrompt = 'No negative prompt found';
-            let steps = 'Unknown';
-            let cfgScale = 'Unknown';
-            let sampler = 'Unknown';
-            let seed = 'Unknown';
-
-            // Parse prompt data first (more reliable for actual generation parameters)
-            if (comfyData.prompt) {
-                console.log('Parsing prompt data...');
-                const promptNodes = comfyData.prompt;
-                
-                // Track all text nodes and try to identify positive/negative
-                const textNodes = [];
-                
-                for (const nodeId in promptNodes) {
-                    const node = promptNodes[nodeId];
-                    console.log(`Node ${nodeId}:`, node.class_type, node);
-                    
-                    // Checkpoint - check multiple types
-                    if ((node.class_type === 'CheckpointLoaderSimple' || 
-                         node.class_type === 'UNETLoader' ||
-                         node.class_type === 'DualCLIPLoader') && node.inputs) {
-                        checkpoint = node.inputs.ckpt_name || node.inputs.unet_name || checkpoint;
-                    }
-                    
-                    // Collect all text nodes for analysis
-                    if (node.inputs && node.inputs.text) {
-                        textNodes.push({
-                            nodeId: nodeId,
-                            classType: node.class_type,
-                            text: node.inputs.text,
-                            inputs: node.inputs
-                        });
-                    }
-                    
-                    // Special handling for PromptManager nodes
-                    if (node.class_type === 'PromptManager' && node.inputs) {
-                        // PromptManager always contains the positive prompt
-                        if (node.inputs.text) {
-                            positivePrompt = node.inputs.text;
-                            console.log('Found PromptManager with text:', positivePrompt.substring(0, 100));
-                        }
-                        // Also check for loaded prompt
-                        if (node.inputs.selected_prompt) {
-                            positivePrompt = node.inputs.selected_prompt;
-                        }
-                    }
-                    
-                    // PromptManagerText node
-                    if (node.class_type === 'PromptManagerText' && node.inputs) {
-                        if (node.inputs.text) {
-                            positivePrompt = node.inputs.text;
-                        }
-                        if (node.inputs.selected_prompt) {
-                            positivePrompt = node.inputs.selected_prompt;
-                        }
-                    }
-                    
-                    // Sampling parameters - check multiple sampler types
-                    if ((node.class_type === 'KSampler' || 
-                         node.class_type === 'KSamplerAdvanced' ||
-                         node.class_type === 'SamplerCustom' ||
-                         node.class_type === 'SamplerCustomAdvanced') && node.inputs) {
-                        steps = node.inputs.steps || steps;
-                        cfgScale = node.inputs.cfg || cfgScale;
-                        sampler = node.inputs.sampler_name || sampler;
-                        seed = node.inputs.seed || node.inputs.noise_seed || seed;
-                    }
-                    
-                    // New ComfyUI node types for modern workflows
-                    if (node.class_type === 'CFGGuider' && node.inputs && node.inputs.cfg) {
-                        cfgScale = node.inputs.cfg;
-                    }
-                    
-                    if (node.class_type === 'BasicScheduler' && node.inputs && node.inputs.steps) {
-                        steps = node.inputs.steps;
-                    }
-                    
-                    if (node.class_type === 'KSamplerSelect' && node.inputs && node.inputs.sampler_name) {
-                        sampler = node.inputs.sampler_name;
-                    }
-                    
-                    if ((node.class_type === 'RandomNoise' || node.class_type === 'SeedHistory') && node.inputs) {
-                        if (node.inputs.noise_seed) {
-                            // RandomNoise nodes might reference other nodes, resolve if needed
-                            seed = Array.isArray(node.inputs.noise_seed) ? node.inputs.noise_seed[0] : node.inputs.noise_seed;
-                        } else if (node.inputs.seed) {
-                            seed = node.inputs.seed;
-                        }
-                    }
-                }
-                
-                // Process collected text nodes to identify positive/negative prompts
-                // if we haven't found them from PromptManager
-                for (const textNode of textNodes) {
-                    const text = textNode.text;
-                    // Ensure text is a string before calling toLowerCase
-                    if (!text || typeof text !== 'string') {
-                        continue;
-                    }
-                    const textLower = text.toLowerCase();
-                    
-                    // Skip if this is the PromptManager text we already have
-                    if (textNode.classType === 'PromptManager' || textNode.classType === 'PromptManagerText') {
-                        continue;
-                    }
-                    
-                    // Identify negative prompts by common patterns
-                    if (textNode.classType === 'CLIPTextEncode') {
-                        if (textLower.includes('bad anatomy') || textLower.includes('unfinished') || 
-                            textLower.includes('censored') || textLower.includes('weird anatomy') ||
-                            textLower.includes('negative') || textLower.includes('embedding:') ||
-                            textLower.includes('worst quality') || textLower.includes('low quality')) {
-                            negativePrompt = text;
-                            console.log('Found negative prompt:', negativePrompt.substring(0, 100));
-                        } else if (positivePrompt === 'No prompt found') {
-                            // If we haven't found a positive prompt yet, this might be it
-                            positivePrompt = text;
-                            console.log('Found potential positive prompt:', positivePrompt.substring(0, 100));
-                        }
-                    }
-                }
-            }
-
-            // Also try to parse from workflow data if we didn't find everything in prompt
-            if (comfyData.workflow && comfyData.workflow.nodes) {
-                for (const node of comfyData.workflow.nodes) {
-                    // Checkpoint loaders
-                    if ((node.type === 'CheckpointLoaderSimple' || 
-                         node.type === 'UNETLoader' ||
-                         node.type === 'DualCLIPLoader') && node.widgets_values) {
-                        checkpoint = node.widgets_values[0] || checkpoint;
-                    }
-                    
-                    // PromptManager nodes in workflow
-                    if (node.type === 'PromptManager' && node.widgets_values) {
-                        // The first widget value is usually the text
-                        if (node.widgets_values[0] && positivePrompt === 'No prompt found') {
-                            positivePrompt = node.widgets_values[0];
-                        }
-                    }
-                    
-                    if (node.type === 'PromptManagerText' && node.widgets_values) {
-                        if (node.widgets_values[0] && positivePrompt === 'No prompt found') {
-                            positivePrompt = node.widgets_values[0];
-                        }
-                    }
-                    
-                    // CLIPTextEncode nodes
-                    if (node.type === 'CLIPTextEncode' && node.widgets_values && node.widgets_values[0]) {
-                        const text = node.widgets_values[0];
-                        // Ensure text is a string before calling toLowerCase
-                        if (text && typeof text === 'string') {
-                            const textLower = text.toLowerCase();
-                            
-                            if (textLower.includes('bad anatomy') || textLower.includes('unfinished') || 
-                                textLower.includes('censored') || textLower.includes('negative') ||
-                                textLower.includes('worst quality') || textLower.includes('low quality')) {
-                                negativePrompt = text;
-                            } else if (positivePrompt === 'No prompt found') {
-                                positivePrompt = text;
-                            }
-                        }
-                    }
-                    
-                    // Samplers
-                    if ((node.type === 'KSampler' || node.type === 'KSamplerAdvanced' ||
-                         node.type === 'SamplerCustom' || node.type === 'SamplerCustomAdvanced') && node.widgets_values) {
-                        if (node.widgets_values.length >= 4) {
-                            seed = node.widgets_values[0] || seed;
-                            steps = node.widgets_values[1] || steps;
-                            cfgScale = node.widgets_values[2] || cfgScale;
-                            sampler = node.widgets_values[3] || sampler;
-                        }
-                    }
-                }
-            }
-
-            // Update the HTML
-            dataPanel.innerHTML = `
-                <!-- File Path -->
-                <div>
-                    <h2 class="text-sm font-medium text-gray-300 mb-2">File Path</h2>
-                    <div class="text-sm text-blue-400 hover:text-blue-300 cursor-pointer bg-gray-800 p-2 rounded break-all" onclick="openInFileExplorer('${filename}')">
-                        ${filename}
-                    </div>
-                </div>
-
-                <!-- Resources used -->
-                <div>
-                    <h2 class="text-sm font-medium text-gray-300 mb-2">Resources used</h2>
-                    <div class="flex items-center justify-between">
-                        <div>
-                            <div class="text-blue-400 hover:text-blue-300 cursor-pointer">${checkpoint}</div>
-                            <div class="text-xs text-gray-500">ComfyUI Generated</div>
-                        </div>
-                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">CHECKPOINT</span>
-                    </div>
-                </div>
-
-                <!-- Prompt -->
-                <div>
-                    <div class="flex items-center gap-2 mb-2">
-                        <h2 class="text-sm font-medium text-gray-300">Prompt</h2>
-                        <span class="px-2 py-1 text-xs bg-orange-600 text-orange-100 rounded">COMFYUI</span>
-                        <button class="ml-auto text-gray-400 hover:text-gray-300" onclick="copyPositivePrompt(event)">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
-                            </svg>
-                        </button>
-                    </div>
-                    <div class="text-sm text-gray-300 bg-gray-800 p-3 rounded max-h-32 overflow-y-auto">
-                        ${positivePrompt.substring(0, 200)}${positivePrompt.length > 200 ? '...' : ''}
-                    </div>
-                    ${positivePrompt.length > 200 ? '<button class="text-blue-400 hover:text-blue-300 text-sm mt-1" onclick="showFullPrompt(\'positive\')">Show more</button>' : ''}
-                </div>
-
-                <!-- Negative prompt -->
-                <div>
-                    <div class="flex items-center justify-between mb-2">
-                        <h2 class="text-sm font-medium text-gray-300">Negative prompt</h2>
-                        <button class="text-gray-400 hover:text-gray-300" onclick="copyNegativePrompt(event)">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
-                            </svg>
-                        </button>
-                    </div>
-                    <div class="text-sm text-gray-300 bg-gray-800 p-3 rounded max-h-32 overflow-y-auto">
-                        ${negativePrompt.substring(0, 200)}${negativePrompt.length > 200 ? '...' : ''}
-                    </div>
-                    ${negativePrompt.length > 200 ? '<button class="text-blue-400 hover:text-blue-300 text-sm mt-1" onclick="showFullPrompt(\'negative\')">Show more</button>' : ''}
-                </div>
-
-                <!-- Other metadata -->
-                <div>
-                    <h2 class="text-sm font-medium text-gray-300 mb-3">Other metadata</h2>
-                    <div class="flex flex-wrap gap-2">
-                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">CFG SCALE: ${cfgScale}</span>
-                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">STEPS: ${steps}</span>
-                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">SAMPLER: ${sampler}</span>
-                    </div>
-                    <div class="mt-2">
-                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">SEED: ${seed}</span>
-                    </div>
-                </div>
-
-                <!-- Raw Workflow Data -->
-                <div>
-                    <h2 class="text-sm font-medium text-gray-300 mb-2">ComfyUI Workflow</h2>
-                    <div class="flex items-center gap-2">
-                        <button class="text-blue-400 hover:text-blue-300 text-sm" onclick="showWorkflowData()">View Raw Workflow JSON</button>
-                        <button class="text-blue-400 hover:text-blue-300" onclick="downloadWorkflowJSON()" title="Download JSON">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                            </svg>
-                        </button>
-                    </div>
-                </div>
-            `;
-
-            // Store the full data for later use
-            currentWorkflowData = {
-                positivePrompt,
-                negativePrompt,
-                checkpoint,
-                steps,
-                cfgScale,
-                sampler,
-                seed,
-                workflow: comfyData.workflow,
-                prompt: comfyData.prompt
-            };
-        }
-
-        function showFullPrompt(type) {
-            if (currentWorkflowData) {
-                const prompt = type === 'positive' ? currentWorkflowData.positivePrompt : currentWorkflowData.negativePrompt;
-                const newWindow = window.open('', '_blank');
-                newWindow.document.write(`
-                    <html>
-                        <head><title>${type.charAt(0).toUpperCase() + type.slice(1)} Prompt</title></head>
-                        <body style="background: #111; color: #fff; font-family: monospace; padding: 20px;">
-                            <h2>${type.charAt(0).toUpperCase() + type.slice(1)} Prompt</h2>
-                            <div style="background: #222; padding: 15px; border-radius: 5px; white-space: pre-wrap; line-height: 1.5;">${prompt}</div>
-                            <button onclick="navigator.clipboard.writeText(\`${prompt.replace(/`/g, '\\`')}\`).then(() => alert('Copied!'))" style="margin-top: 20px; padding: 10px 20px; background: #444; color: #fff; border: none; border-radius: 5px; cursor: pointer;">Copy to Clipboard</button>
-                        </body>
-                    </html>
-                `);
-            }
-        }
-
-        function showWorkflowData() {
-            if (currentWorkflowData && currentWorkflowData.workflow) {
-                const newWindow = window.open('', '_blank');
-                newWindow.document.write(`
-                    <html>
-                        <head><title>ComfyUI Workflow Data</title></head>
-                        <body style="background: #111; color: #fff; font-family: monospace; padding: 20px;">
-                            <h2>ComfyUI Workflow JSON</h2>
-                            <pre style="background: #222; padding: 15px; border-radius: 5px; overflow: auto;">${JSON.stringify(currentWorkflowData.workflow, null, 2)}</pre>
-                        </body>
-                    </html>
-                `);
-            }
-        }
-
-        async function handleImageUpload(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-
-            try {
-                const arrayBuffer = await file.arrayBuffer();
-                const metadata = await parsePNGMetadata(arrayBuffer);
-                const comfyData = extractComfyUIData(metadata);
-                
-                // Update the image display
-                const img = document.getElementById('main-image');
-                const url = URL.createObjectURL(file);
-                img.src = url;
-                
-                // Update data panel
-                updateDataPanel(comfyData, file.name);
-                
-                console.log('Extracted metadata:', metadata);
-                console.log('ComfyUI data:', comfyData);
-                
-            } catch (error) {
-                console.error('Error processing image:', error);
-                alert('Error processing image: ' + error.message);
-            }
-        }
-
-        // Initialize drag and drop
-        function initializeDragDrop() {
-            const imageArea = document.getElementById('image-area');
-            
-            imageArea.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                imageArea.classList.add('bg-gray-900');
-            });
-            
-            imageArea.addEventListener('dragleave', (e) => {
-                e.preventDefault();
-                imageArea.classList.remove('bg-gray-900');
-            });
-            
-            imageArea.addEventListener('drop', (e) => {
-                e.preventDefault();
-                imageArea.classList.remove('bg-gray-900');
-                
-                const files = e.dataTransfer.files;
-                if (files.length > 0) {
-                    const file = files[0];
-                    if (file.type === 'image/png') {
-                        const event = { target: { files: [file] } };
-                        handleImageUpload(event);
-                    } else {
-                        alert('Please drop a PNG file');
-                    }
-                }
-            });
-        }
-
-        // Initialize when page loads
-        window.addEventListener('load', initializeDragDrop);
-        
-        // Handle window resize to ensure image stays properly sized
-        window.addEventListener('resize', () => {
-            // The CSS will handle the responsive sizing automatically
-            // but we can trigger any additional adjustments if needed
-        });
-    </script>
 </head>
-<body class="bg-black text-gray-100 font-sans overflow-hidden">
-    <div class="h-screen flex">
-        <!-- Main Image Area -->
-        <div id="image-area" class="flex-1 flex items-center justify-center p-4 bg-black relative border-2 border-dashed border-transparent transition-colors min-w-0">
-            <!-- Upload prompt overlay -->
-            <div class="absolute inset-0 flex flex-col items-center justify-center text-gray-500 pointer-events-none">
-                <svg class="w-16 h-16 mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
-                </svg>
-                <p class="text-lg mb-2">Drag & Drop PNG with ComfyUI Workflow</p>
-                <p class="text-sm">Or click to browse files</p>
+  <body x-data="pmMetaApp()" x-init="init()">
+    <div class="app-container">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div id="brand-badge" class="brand-badge">PM</div>
+          <div>
+            <div class="sidebar-header-title">PromptManager</div>
+            <div class="sidebar-header-subtitle">
+              Professional Suite
             </div>
-            
-            <!-- File input -->
-            <input type="file" id="file-input" accept=".png" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onchange="handleImageUpload(event)">
-            
-            <!-- Navigation arrows -->
-            <button class="absolute left-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-gray-800 bg-opacity-50 hover:bg-opacity-75 rounded-full flex items-center justify-center text-white transition-all z-10">
-                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
-                </svg>
-            </button>
-            
-            <!-- Main Image -->
-            <div class="w-full h-full flex items-center justify-center z-10 pointer-events-none">
-                <img id="main-image" 
-                     src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='800' height='1200' viewBox='0 0 800 1200'%3E%3Crect width='800' height='1200' fill='%23374151'/%3E%3Ctext x='400' y='600' font-family='Arial' font-size='24' fill='%23D1D5DB' text-anchor='middle'%3EDrop PNG Here%3C/text%3E%3Ctext x='400' y='640' font-family='Arial' font-size='16' fill='%239CA3AF' text-anchor='middle'%3EComfyUI Workflow%3C/text%3E%3C/svg%3E" 
-                     alt="Generated Image" 
-                     class="max-w-full max-h-full object-contain rounded shadow-2xl">
-            </div>
-            
-            <button class="absolute right-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-gray-800 bg-opacity-50 hover:bg-opacity-75 rounded-full flex items-center justify-center text-white transition-all z-10">
-                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
-                </svg>
-            </button>
+          </div>
         </div>
 
-        <!-- Generation Data Panel -->
-        <div class="w-96 bg-gray-900 border-l border-gray-700 flex flex-col">
-            <!-- Header -->
-            <div class="flex items-center justify-between p-4 border-b border-gray-700">
-                <div class="flex items-center gap-2">
-                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                    </svg>
-                    <h1 class="text-lg font-medium text-white">Generation data</h1>
-                </div>
-                <button class="text-xs text-blue-400 hover:text-blue-300 transition-colors" onclick="copyAllData()">
-                    📋 COPY ALL
-                </button>
-            </div>
+                                                <nav class="nav-menu">
+          <a href="/prompt_manager/" class="nav-item">
+            <i class="fa-solid fa-house nav-icon" aria-hidden="true"></i>
+            <span>Home</span>
+          </a>
+          <a href="/prompt_manager/dashboard" class="nav-item">
+            <i class="fa-solid fa-chart-line nav-icon" aria-hidden="true"></i>
+            <span>Dashboard</span>
+          </a>
+          <a href="/prompt_manager/gallery" class="nav-item">
+            <i class="fa-solid fa-images nav-icon" aria-hidden="true"></i>
+            <span>Gallery</span>
+          </a>
+          <a href="/prompt_manager/collections" class="nav-item">
+            <i class="fa-solid fa-folder-tree nav-icon" aria-hidden="true"></i>
+            <span>Collections</span>
+          </a>
+          <a href="/prompt_manager/stats" class="nav-item">
+            <i class="fa-solid fa-chart-column nav-icon" aria-hidden="true"></i>
+            <span>Stats</span>
+          </a>
+          <a href="/prompt_manager/metadata" class="nav-item active">
+            <i class="fa-solid fa-tags nav-icon" aria-hidden="true"></i>
+            <span>Metadata</span>
+          </a>
+          <a href="/prompt_manager/settings" class="nav-item">
+            <i class="fa-solid fa-gear nav-icon" aria-hidden="true"></i>
+            <span>Settings</span>
+          </a>
+          <a href="/prompt_manager/logs" class="nav-item">
+            <i class="fa-solid fa-clipboard-list nav-icon" aria-hidden="true"></i>
+            <span>Logs</span>
+          </a>
+        </nav>
+      </aside>
 
-            <!-- Scrollable Content -->
-            <div id="data-panel-content" class="flex-1 overflow-y-auto p-4 space-y-6">
-                <!-- Initial placeholder content -->
-                <div class="text-center text-gray-500 py-8">
-                    <svg class="w-16 h-16 mx-auto mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                    </svg>
-                    <p class="text-lg mb-2">No Image Loaded</p>
-                    <p class="text-sm">Upload a PNG with embedded ComfyUI workflow to view generation data</p>
-                </div>
-            </div>
+      <!-- Main Content -->
+      <main class="main-content">
+        <!-- Topbar -->
+        <div class="topbar">
+          <div class="search-container">
+            <input
+              type="text"
+              placeholder="Search metadata..."
+              class="search-input"
+            />
+          </div>
+          <div class="topbar-actions">
+            <button class="btn btn-ghost">
+              <span><i class="fa-regular fa-bell" aria-hidden="true"></i></span>
+            </button>
+            <button class="btn btn-ghost">
+              <span><i class="fa-solid fa-gear" aria-hidden="true"></i></span>
+            </button>
+          </div>
         </div>
+
+        <!-- Page Content -->
+        <div class="page-content">
+          <div class="page-header">
+            <div>
+              <h1>Metadata Extractor</h1>
+              <p>Extract ComfyUI workflow data from PNG images</p>
+            </div>
+          </div>
+
+          <!-- Drop Zone -->
+          <section :class="['drop-zone', drag ? 'drag' : '', thumb ? 'small' : 'large']" @dragover.prevent="drag=true" @dragleave="drag=false" @drop.prevent="handleDrop($event)">
+            <div class="drop-zone-content">
+              <div class="drop-zone-icon">📎</div>
+              <div class="drop-zone-text">
+                Drag & drop image (PNG/JPEG/WEBP) or
+              </div>
+              <input id="pick" type="file" accept="image/*" class="file-input-hidden" @change="filePicked" />
+              <button class="btn btn-primary" @click="document.getElementById('pick').click()">
+                Choose File
+              </button>
+            </div>
+          </section>
+
+          <!-- Image and Prompts -->
+          <template x-if="thumb">
+            <div class="metadata-grid">
+              <div class="card">
+                <h3 class="card-title">Image Preview</h3>
+                <img class="preview" :src="thumb" alt="preview" />
+                <div class="file-info">
+                  <span x-text="fileName"></span> •
+                  <span x-text="fileType"></span> •
+                  <span x-text="(fileSize/1024).toFixed(1) + ' KB'"></span>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="section-header">
+                  <h3 class="section-title">Extracted Prompts</h3>
+                  <div class="btn-actions">
+                    <button class="btn btn-secondary btn-sm" @click="copy(texts.positive)">
+                      Copy Positive
+                    </button>
+                    <button class="btn btn-secondary btn-sm" @click="copy(texts.negative)">
+                      Copy Negative
+                    </button>
+                  </div>
+                </div>
+
+                <div class="prompt-section">
+                  <div class="prompt-indicator">
+                    <div class="indicator-dot-brand"></div>
+                    <strong>Positive Prompt</strong>
+                  </div>
+                  <pre x-text="texts.positive || '(none found)'"></pre>
+                </div>
+
+                <div>
+                  <div class="prompt-indicator">
+                    <div class="indicator-dot-pink"></div>
+                    <strong>Negative Prompt</strong>
+                  </div>
+                  <pre x-text="texts.negative || '(none found or not used by this model)'"></pre>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- Workflow and Raw Data -->
+          <template x-if="workflow || raw">
+            <div class="metadata-grid">
+              <div class="card">
+                <div class="section-header">
+                  <h3 class="section-title">Workflow Data</h3>
+                  <button class="btn btn-secondary btn-sm" @click="copy(workflow)">
+                    Copy JSON
+                  </button>
+                </div>
+                <pre x-text="workflow || '(none found)'"></pre>
+              </div>
+
+              <div class="card">
+                <div class="section-header">
+                  <h3 class="section-title">Raw Metadata</h3>
+                  <button class="btn btn-secondary btn-sm" @click="downloadRaw">
+                    Download JSON
+                  </button>
+                </div>
+                <pre x-text="raw"></pre>
+              </div>
+            </div>
+          </template>
+
+          <!-- Empty State -->
+          <div x-show="!thumb && !workflow && !raw" class="empty-state-metadata">
+            <div class="empty-state-icon-large"><i class="fa-solid fa-tags" aria-hidden="true"></i></div>
+            <h3 class="empty-state-title">No Image Selected</h3>
+            <p class="empty-state-text">Upload an image to extract its metadata and workflow information</p>
+          </div>
+        </div>
+      </main>
     </div>
-</body>
-</html>
+    <script src="https://cdn.jsdelivr.net/npm/exif-js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pako@2/dist/pako.min.js"></script>
+    <script>
+      (function(){
+        const $ = (s, r=document) => r.querySelector(s);
+        async function parsePngText(arrayBuffer){
+          const data=new DataView(arrayBuffer); const text={}; let pos=8;
+          while(pos<data.byteLength){ const len=data.getUint32(pos); pos+=4; const type=String.fromCharCode(data.getUint8(pos),data.getUint8(pos+1),data.getUint8(pos+2),data.getUint8(pos+3)); pos+=4; const chunk=new Uint8Array(arrayBuffer,pos,len); pos+=len; pos+=4; if(type==='tEXt'){ const idx=chunk.indexOf(0); const key=new TextDecoder().decode(chunk.slice(0,idx)); const val=new TextDecoder().decode(chunk.slice(idx+1)); text[key]=val; } else if(type==='iTXt'){ let i=0; const readz=()=>{ const j=chunk.indexOf(0,i); const s=new TextDecoder().decode(chunk.slice(i,j)); i=j+1; return s; }; const keyword=readz(); const compFlag=chunk[i++]; const compMethod=chunk[i++]; readz(); readz(); const textBytes=chunk.slice(i); let val; if(compFlag===1){ try{ val=new TextDecoder().decode(pako.inflate(textBytes)); }catch{ val=''; } } else { val=new TextDecoder().decode(textBytes);} text[keyword]=val; } else if(type==='zTXt'){ let i=0; const j=chunk.indexOf(0,i); const keyword=new TextDecoder().decode(chunk.slice(0,j)); i=j+1; i++; const val=new TextDecoder().decode(pako.inflate(chunk.slice(i))); text[keyword]=val; } }
+          return text;
+        }
+        function parsePossibleParams(str){ const out={positive:'',negative:''}; if(!str) return out; const negIdx=str.toLowerCase().indexOf('negative prompt'); if(negIdx>=0){ out.positive=str.slice(0,negIdx).trim().replace(/^prompt[: ]*/i,'').trim(); out.negative=str.slice(negIdx).replace(/negative prompt[: ]*/i,'').split('\n')[0].trim(); } else { out.positive=str.trim(); } return out; }
+        window.pmMetaApp=function(){ return { drag:false, thumb:'', fileName:'', fileSize:0, fileType:'', texts:{positive:'',negative:''}, workflow:'', raw:'', init(){}, async handleDrop(e){ this.drag=false; const f=e.dataTransfer.files?.[0]; if(!f) return; await this.processFile(f); }, async filePicked(e){ const f=e.target.files?.[0]; if(!f) return; await this.processFile(f); e.target.value=''; }, async processFile(file){ this.fileName=file.name; this.fileSize=file.size; this.fileType=file.type; this.thumb=URL.createObjectURL(file); const buf=await file.arrayBuffer(); this.texts={positive:'',negative:''}; this.workflow=''; this.raw=''; if(file.type==='image/png'){ const t=await parsePngText(buf); this.raw=JSON.stringify(t,null,2); const params=t.parameters||t.Parameter||t.parametersTxt||''; const prompt=t.prompt||t.Prompt||''; const neg=t['negative_prompt']||t.Negative||''; const wflow=t.workflow||t.Workflow||t['sd-metadata']||''; if(wflow){ try{ this.workflow=JSON.stringify(JSON.parse(wflow),null,2);}catch{ this.workflow=String(wflow);} } if(params){ const p=parsePossibleParams(params); this.texts.positive=p.positive||prompt||''; this.texts.negative=p.negative||neg||''; } else { this.texts.positive=prompt||''; this.texts.negative=neg||''; } } else if(file.type==='image/jpeg' || file.type==='image/jpg'){ EXIF.getData(file, ()=>{ const all=EXIF.getAllTags(this)||{}; this.raw=JSON.stringify(all,null,2); const user=all.UserComment||all.ImageDescription||''; const p=parsePossibleParams(String(user)); this.texts.positive=p.positive; this.texts.negative=p.negative; }); } else { this.raw='(unknown image format for metadata)'; } }, copy(txt){ navigator.clipboard.writeText(txt||''); if (window.showToast) { window.showToast('Copied!', 'success'); } else if (window.notificationService) { window.notificationService.success('Copied!'); } else { console.log('[success] Copied!'); } }, downloadRaw(){ const blob=new Blob([this.raw||'{}'],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='metadata.json'; a.click(); URL.revokeObjectURL(url); }, }; }
+      })();
+    </script>
+    <script>
+      // Extend/override pmMetaApp with gallery support and robust buffer handling
+      (function(){
+        function detectType(buf){ const b=new Uint8Array(buf); const isPNG = b[0]===0x89 && b[1]===0x50 && b[2]===0x4E && b[3]===0x47 && b[4]===0x0D && b[5]===0x0A && b[6]===0x1A && b[7]===0x0A; const isJPG = b[0]===0xFF && b[1]===0xD8; return isPNG ? 'image/png' : (isJPG ? 'image/jpeg' : 'application/octet-stream'); }
+        const original = window.pmMetaApp;
+        window.pmMetaApp = function(){
+          const base = original ? original() : {};
+          return Object.assign(base, {
+            gallery: [],
+            async processBuffer(buf, name, type){
+              this.texts={positive:'',negative:''}; this.workflow=''; this.raw='';
+              if(!type||type==='application/octet-stream') type = detectType(buf);
+              if(type==='image/png'){
+                const t = await (async function parsePngText(arrayBuffer){
+                  const data=new DataView(arrayBuffer); const text={}; let pos=8;
+                  while(pos<data.byteLength){ const len=data.getUint32(pos); pos+=4; const typeStr=String.fromCharCode(data.getUint8(pos),data.getUint8(pos+1),data.getUint8(pos+2),data.getUint8(pos+3)); pos+=4; const chunk=new Uint8Array(arrayBuffer,pos,len); pos+=len; pos+=4; if(typeStr==='tEXt'){ const idx=chunk.indexOf(0); const key=new TextDecoder().decode(chunk.slice(0,idx)); const val=new TextDecoder().decode(chunk.slice(idx+1)); text[key]=val; } else if(typeStr==='iTXt'){ let i=0; const readz=()=>{ const j=chunk.indexOf(0,i); const s=new TextDecoder().decode(chunk.slice(i,j)); i=j+1; return s; }; const keyword=readz(); const compFlag=chunk[i++]; const compMethod=chunk[i++]; readz(); readz(); const textBytes=chunk.slice(i); let val; if(compFlag===1){ try{ val=new TextDecoder().decode(pako.inflate(textBytes)); }catch{ val=''; } } else { val=new TextDecoder().decode(textBytes);} text[keyword]=val; } else if(typeStr==='zTXt'){ let i=0; const j=chunk.indexOf(0,i); const keyword=new TextDecoder().decode(chunk.slice(0,j)); i=j+1; i++; const val=new TextDecoder().decode(pako.inflate(chunk.slice(i))); text[keyword]=val; } }
+                  return text;
+                })(buf);
+                this.raw=JSON.stringify(t,null,2);
+                const params=t.parameters||t.Parameter||t.parametersTxt||'';
+                const prompt=t.prompt||t.Prompt||''; const neg=t['negative_prompt']||t.Negative||'';
+                const wflow=t.workflow||t.Workflow||t['sd-metadata']||'';
+                if(wflow){ try{ this.workflow=JSON.stringify(JSON.parse(wflow),null,2);}catch{ this.workflow=String(wflow);} }
+                if(params){ const split = (function(str){ const out={positive:'',negative:''}; const idx=str.toLowerCase().indexOf('negative prompt'); if(idx>=0){ out.positive=str.slice(0,idx).trim().replace(/^prompt[: ]*/i,'').trim(); out.negative=str.slice(idx).replace(/negative prompt[: ]*/i,'').split('\n')[0].trim(); } else { out.positive=str.trim(); } return out; })(params); this.texts.positive=split.positive||prompt||''; this.texts.negative=split.negative||neg||''; } else { this.texts.positive=prompt||''; this.texts.negative=neg||''; }
+              } else if(type==='image/jpeg'){
+                this.raw = `(JPEG) ${name} — ${Math.round(buf.byteLength/1024)} KB`;
+              } else {
+                this.raw='(unknown image format for metadata)';
+              }
+              this.fileName=name; this.fileType=type; this.fileSize=buf.byteLength;
+              return true;
+            },
+            async openGallery(){ try{ await this.loadGallery(); } finally { const d=document.getElementById('galleryPicker'); if(d&&typeof d.show==='function') d.show(); else d?.setAttribute('open','true'); } },
+            closeGallery(){ const d=document.getElementById('galleryPicker'); if(d&&typeof d.hide==='function') d.hide(); else d?.removeAttribute('open'); },
+            async loadGallery(){ try{ const r=await fetch('/prompt_manager/images/output?limit=50'); const data = await r.json(); const arr = Array.isArray(data) ? data : (Array.isArray(data.images) ? data.images : []); this.gallery = arr.map(x=>{ const path = x.path || x.image_path || x.filename || x.file || x; const url = x.url || `/prompt_manager/images/serve/${encodeURIComponent(path)}`; const thumb = x.thumbnail_url || url; const name = (typeof x==='string') ? x.split('/').pop() : (x.filename || x.name || path.split('/').pop()); return { path, url, thumb, name }; }); if(this.gallery.length===0) this.gallery=[{path:'',url:'',name:'(no images found)'}]; } catch{ this.gallery=[{path:'',url:'',name:'(stub)'}]; } },
+            async loadFromGallery(g){ try{ if(!g||!g.url) return; const resp = await fetch(g.url); const buf = await resp.arrayBuffer(); this.thumb = g.thumb || g.url; await this.processBuffer(buf, g.name || 'image', undefined); this.closeGallery(); } catch{} },
+          });
+        };
+      })();
+    </script>
+    <script>
+      (function(){
+        function parsePossibleParams(str){ const out={positive:'',negative:''}; if(!str) return out; const negIdx=str.toLowerCase().indexOf('negative prompt'); if(negIdx>=0){ out.positive=str.slice(0,negIdx).trim().replace(/^prompt[: ]*/i,'').trim(); out.negative=str.slice(negIdx).replace(/negative prompt[: ]*/i,'').split('\n')[0].trim(); } else { out.positive=str.trim(); } return out; }
+        async function parsePngText(arrayBuffer){ const data=new DataView(arrayBuffer); const text={}; let pos=8; while(pos<data.byteLength){ const len=data.getUint32(pos); pos+=4; const type=String.fromCharCode(data.getUint8(pos),data.getUint8(pos+1),data.getUint8(pos+2),data.getUint8(pos+3)); pos+=4; const chunk=new Uint8Array(arrayBuffer,pos,len); pos+=len; pos+=4; if(type==='tEXt'){ const idx=chunk.indexOf(0); const key=new TextDecoder().decode(chunk.slice(0,idx)); const val=new TextDecoder().decode(chunk.slice(idx+1)); text[key]=val; } else if(type==='iTXt'){ let i=0; const readz=()=>{ const j=chunk.indexOf(0,i); const s=new TextDecoder().decode(chunk.slice(i,j)); i=j+1; return s; }; const keyword=readz(); const compFlag=chunk[i++]; const compMethod=chunk[i++]; readz(); readz(); const textBytes=chunk.slice(i); let val; if(compFlag===1){ try{ val=new TextDecoder().decode(pako.inflate(textBytes)); }catch{ val=''; } } else { val=new TextDecoder().decode(textBytes);} text[keyword]=val; } else if(type==='zTXt'){ let i=0; const j=chunk.indexOf(0,i); const keyword=new TextDecoder().decode(chunk.slice(0,j)); i=j+1; i++; const val=new TextDecoder().decode(pako.inflate(chunk.slice(i))); text[keyword]=val; } } return text; }
+        function detectType(buf){ const b=new Uint8Array(buf); const isPNG = b[0]===0x89 && b[1]===0x50 && b[2]===0x4E && b[3]===0x47 && b[4]===0x0D && b[5]===0x0A && b[6]===0x1A && b[7]===0x0A; const isJPG = b[0]===0xFF && b[1]===0xD8; return isPNG ? 'image/png' : (isJPG ? 'image/jpeg' : 'application/octet-stream'); }
+        function parseJpegEXIF(buf){ const view=new DataView(buf); let off=0; const len=view.byteLength; const res={}; if(len<4 || view.getUint16(0)!==0xFFD8) return res; off=2; while(off+4<=len){ if(view.getUint8(off)!==0xFF) break; const marker=view.getUint8(off+1); off+=2; if(marker===0xD9||marker===0xDA) break; const size=view.getUint16(off,false); const start=off+2; if(marker===0xE1 && start+6<=len){ const isExif = String.fromCharCode(view.getUint8(start),view.getUint8(start+1),view.getUint8(start+2),view.getUint8(start+3))==='Exif' && view.getUint8(start+4)===0 && view.getUint8(start+5)===0; if(isExif){ const tiff = start+6; if(tiff+8<=len){ const bom=view.getUint16(tiff,false); const little = bom===0x4949; const rd16=(p)=>view.getUint16(p,little); const rd32=(p)=>view.getUint32(p,little); const readIFD=(base, ptr)=>{ const out={}; if(ptr+2>len) return out; let n=rd16(ptr); let p=ptr+2; for(let i=0;i<n;i++){ if(p+12>len) break; const tag=rd16(p); const type=rd16(p+2); const count=rd32(p+4); const valOff=rd32(p+8); const typeSize = (type===1||type===2||type===7)?1:(type===3?2:(type===4||type===9?4:8)); const byteLen = count*typeSize; let vOff = (byteLen<=4)? (p+8) : (tiff+valOff); let val=''; try{ if(type===2){ const bytes = new Uint8Array(buf, vOff, Math.max(0, Math.min(byteLen, len-vOff))); val = new TextDecoder().decode(bytes).replace(/\0+$/,''); } else if(type===7){ const bytes = new Uint8Array(buf, vOff, Math.max(0, Math.min(byteLen, len-vOff))); if(bytes.length>=8){ const head = new TextDecoder().decode(bytes.slice(0,8)); if(head.startsWith('ASCII')) val = new TextDecoder().decode(bytes.slice(8)).replace(/\0+$/,''); else val = new TextDecoder().decode(bytes).replace(/\0+$/,''); } else val = new TextDecoder().decode(bytes).replace(/\0+$/,''); } }catch(e){ val=''; } if(tag===0x010E && val) out.ImageDescription = val; if(tag===0x9286 && val) out.UserComment = val; if(tag===0x8769){ const exifPtr = tiff + valOff; const ex = readIFD(base, exifPtr); Object.assign(out, ex); } p+=12; } return out; }; const ifd0 = tiff + rd32(tiff+4); Object.assign(res, readIFD(tiff, ifd0)); } } } return res; }
+        const prev = window.pmMetaApp;
+        window.pmMetaApp = function(){ const base = prev ? prev() : {}; return Object.assign(base, {
+          gallery: [],
+          async processBuffer(buf, name, type){ this.texts={positive:'',negative:''}; this.workflow=''; this.raw=''; if(!type||type==='application/octet-stream'){ type = detectType(buf); } if(type==='image/png'){ const t=await parsePngText(buf); this.raw=JSON.stringify(t,null,2); const params=t.parameters||t.Parameter||t.parametersTxt||''; const prompt=t.prompt||t.Prompt||''; const neg=t['negative_prompt']||t.Negative||''; const wflow=t.workflow||t.Workflow||t['sd-metadata']||''; if(wflow){ try{ this.workflow=JSON.stringify(JSON.parse(wflow),null,2);}catch{ this.workflow=String(wflow);} } if(params){ const p=parsePossibleParams(params); this.texts.positive=p.positive||prompt||''; this.texts.negative=p.negative||neg||''; } else { this.texts.positive=prompt||''; this.texts.negative=neg||''; } } else if(type==='image/jpeg'){ const ex=parseJpegEXIF(buf); this.raw=JSON.stringify(ex,null,2); const user = ex.UserComment || ex.ImageDescription || ''; const p=parsePossibleParams(String(user)); this.texts.positive=p.positive; this.texts.negative=p.negative; } else { this.raw='(unknown image format for metadata)'; } this.fileName=name; this.fileType=type; this.fileSize=buf.byteLength; return true; },
+          async openGallery(){ try{ await this.loadGallery(); } finally { const d=document.getElementById('galleryPicker'); if(d&&typeof d.show==='function') d.show(); else d?.setAttribute('open','true'); } },
+          closeGallery(){ const d=document.getElementById('galleryPicker'); if(d&&typeof d.hide==='function') d.hide(); else d?.removeAttribute('open'); },
+          async loadGallery(){ try{ const r=await fetch('/prompt_manager/images/output?limit=50'); const data = await r.json(); const arr = Array.isArray(data) ? data : (Array.isArray(data.images) ? data.images : []); this.gallery = arr.map(x=>{ const path = x.path || x.image_path || x.filename || x.file || x; const url = x.url || `/prompt_manager/images/serve/${encodeURIComponent(path)}`; const thumb = x.thumbnail_url || url; const name = (typeof x==='string') ? x.split('/').pop() : (x.filename || x.name || path.split('/').pop()); return { path, url, thumb, name }; }); if(this.gallery.length===0) this.gallery=[{path:'',url:'',name:'(no images found)'}]; } catch{ this.gallery=[{path:'',url:'',name:'(stub)'}]; } },
+          async loadFromGallery(g){ try{ if(!g||!g.url) return; const resp = await fetch(g.url); const buf = await resp.arrayBuffer(); this.thumb = g.thumb || g.url; await this.processBuffer(buf, g.name || 'image', undefined); this.closeGallery(); } catch{} },
+        }); };
+      })();
+    </script>
+        <!-- ViewerJS Library -->
+        <script src="/prompt_manager/vendor/viewerjs/dist/viewer.min.js"></script>
+
+        <!-- Core modules -->
+        <script src="/prompt_manager/js/modules/core/events.js"></script>
+        <script src="/prompt_manager/js/modules/core/sse.js"></script>
+
+        <!-- SSE Indicators -->
+        <script src="/prompt_manager/js/modules/components/status-indicator.js"></script>
+        <script src="/prompt_manager/js/modules/components/progress-indicator.js"></script>
+        <script src="/prompt_manager/js/modules/components/footer-status.js"></script>
+
+        <!-- ViewerJS Modules -->
+        <script src="/prompt_manager/js/modules/components/viewer-manager.js"></script>
+        <script src="/prompt_manager/js/modules/components/filmstrip-manager.js"></script>
+        <script src="/prompt_manager/js/modules/services/metadata-manager.js"></script>
+        <script src="/prompt_manager/js/modules/core/viewer-integration.js"></script>
+
+        <!-- Existing scripts -->
+        <script src="/prompt_manager/js/notifications.js"></script>
+
+        <!-- Initialize ViewerJS Integration for Metadata Page -->
+        <script>
+          document.addEventListener('DOMContentLoaded', function() {
+            // Initialize realtime components
+            if (window.FooterStatus) {
+              FooterStatus.init({
+                showText: true,
+                showCount: true,
+                enableTooltips: true
+              });
+            }
+
+            if (window.StatusIndicator) {
+              StatusIndicator.init({
+                position: 'bottom-right',
+                autoHide: true,
+                autoHideDelay: 5000,
+                showDetails: true
+              });
+            }
+
+            if (window.ProgressIndicator) {
+              ProgressIndicator.init({
+                position: 'top-center',
+                showPercentage: true,
+                showTimeEstimate: true,
+                stackable: true
+              });
+            }
+
+            // Wait for Alpine to be ready
+            setTimeout(function() {
+              ViewerIntegration.init({
+                viewer: {
+                  theme: 'dark',
+                  inline: true,
+                  toolbar: false,
+                  navbar: false
+                },
+                metadata: {
+                  enabled: true,
+                  position: 'bottom',
+                  autoShow: true,
+                  showExportButton: true
+                }
+              });
+            }, 100);
+          });
+        </script>
+
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <!-- Footer -->
+    <footer class="main-footer">
+      <div class="footer-content">
+        <div class="footer-text">
+          PromptManager — Clean, Fast, Local. © 2025
+        </div>
+        <div class="footer-links">
+          <a href="#" class="footer-link">Documentation</a>
+          <a href="#" class="footer-link">GitHub</a>
+          <a href="#" class="footer-link">Support</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+  </html>
