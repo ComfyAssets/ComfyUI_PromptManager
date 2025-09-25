@@ -76,6 +76,36 @@ const ViewerIntegration = (function() {
     // Integration state
     let activeIntegration = null;
 
+    function getIntegrationByViewer(viewerInstance) {
+        if (!viewerInstance) {
+            return null;
+        }
+
+        for (const integration of integrations.values()) {
+            if (!integration.viewerId) {
+                continue;
+            }
+
+            const viewer = window.ViewerManager?.getViewer?.(integration.viewerId);
+            if (viewer === viewerInstance) {
+                return integration;
+            }
+        }
+
+        return null;
+    }
+
+    function hideMetadataPanelForViewer(viewerInstance) {
+        if (!viewerInstance || !window.MetadataManager || typeof window.MetadataManager.hidePanel !== 'function') {
+            return;
+        }
+
+        const integration = getIntegrationByViewer(viewerInstance) || (activeIntegration ? integrations.get(activeIntegration) : null);
+        if (integration?.metadataPanelId) {
+            window.MetadataManager.hidePanel(integration.metadataPanelId);
+        }
+    }
+
     // Private methods
     function initializeModules() {
         if (!window.ViewerManager || !window.FilmstripManager || !window.MetadataManager) {
@@ -488,6 +518,12 @@ const ViewerIntegration = (function() {
     }
 
     // Public API
+    if (typeof document !== 'undefined') {
+        document.addEventListener('viewer:hidden', (event) => {
+            hideMetadataPanelForViewer(event?.detail?.viewer);
+        });
+    }
+
     return {
         /**
          * Initialize the integration system
