@@ -139,13 +139,27 @@ class ImageGallery(BaseGallery):
         if image_id is not None:
             base_url = f"/api/v1/gallery/images/{image_id}/file"
             image_url = base_url
-            thumbnail_url = f"{base_url}?thumbnail=1"
+
+            if item.get("thumbnail_medium_path"):
+                thumbnail_url = f"/api/v1/thumbnails/{image_id}/medium"
+            elif item.get("thumbnail_small_path"):
+                thumbnail_url = f"/api/v1/thumbnails/{image_id}/small"
+            elif item.get("thumbnail_large_path"):
+                thumbnail_url = f"/api/v1/thumbnails/{image_id}/large"
+
+            if not thumbnail_url:
+                thumbnail_url = f"{base_url}?thumbnail=1"
         elif image_path:
             image_url = image_path
-            thumbnail_url = image_path
+            thumbnail_url = item.get("thumbnail_medium_path") or item.get("thumbnail_small_path") or image_path
 
-        if not thumbnail_url and image_url:
-            thumbnail_url = image_url
+        if not thumbnail_url:
+            thumbnail_url = (
+                thumbnail_variants.get('medium')
+                or thumbnail_variants.get('small')
+                or thumbnail_variants.get('large')
+                or image_url
+            )
 
         format_value = item.get("format")
         if not format_value and filename:
@@ -155,6 +169,17 @@ class ImageGallery(BaseGallery):
         if media_type == "audio":
             thumbnail_url = "/prompt_manager/images/wave-form.svg"
 
+        thumbnail_variants: Dict[str, Optional[str]] = {}
+        if image_id is not None:
+            if item.get('thumbnail_small_path'):
+                thumbnail_variants['small'] = f"/api/v1/thumbnails/{image_id}/small"
+            if item.get('thumbnail_medium_path'):
+                thumbnail_variants['medium'] = f"/api/v1/thumbnails/{image_id}/medium"
+            if item.get('thumbnail_large_path'):
+                thumbnail_variants['large'] = f"/api/v1/thumbnails/{image_id}/large"
+            if item.get('thumbnail_xlarge_path'):
+                thumbnail_variants['xlarge'] = f"/api/v1/thumbnails/{image_id}/xlarge"
+
         rendered = {
             "id": item.get("id"),
             "filename": filename,
@@ -162,7 +187,8 @@ class ImageGallery(BaseGallery):
             "thumbnail": thumbnail_url,
             "thumbnail_url": thumbnail_url,
             "image_url": image_url,
-            "has_thumbnail": bool(item.get("thumbnail_small_path") or item.get("thumbnail_path")),
+            "has_thumbnail": any(thumbnail_variants.values()),
+            "thumbnail_variants": {key: value for key, value in thumbnail_variants.items() if value},
             "generation_time": item.get("generation_time") or item.get("created_at", ""),
             "dimensions": f"{item.get('width', 0)}x{item.get('height', 0)}",
             "size": self._format_file_size(item.get("file_size", 0)),
