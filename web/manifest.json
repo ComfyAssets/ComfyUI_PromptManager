@@ -1,0 +1,144 @@
+{
+  "name": "PromptManager Professional Suite",
+  "short_name": "PromptManager",
+  "description": "Professional prompt management suite for AI image generation workflows",
+  "start_url": "/prompt_manager/dashboard",
+  "scope": "/prompt_manager/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#0066cc",
+  "background_color": "#0a0a0a",
+  "categories": ["productivity", "utilities", "developer"],
+  "lang": "en",
+  "dir": "ltr",
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "/prompt_manager/images/icon-72x72.png",
+      "sizes": "72x72",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/prompt_manager/images/icon-96x96.png",
+      "sizes": "96x96",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/prompt_manager/images/icon-128x128.png",
+      "sizes": "128x128",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/prompt_manager/images/icon-144x144.png",
+      "sizes": "144x144",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/prompt_manager/images/icon-152x152.png",
+      "sizes": "152x152",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/prompt_manager/images/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/prompt_manager/images/icon-384x384.png",
+      "sizes": "384x384",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/prompt_manager/images/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Dashboard",
+      "short_name": "Dashboard",
+      "description": "View dashboard",
+      "url": "/prompt_manager/dashboard",
+      "icons": [
+        {
+          "src": "/prompt_manager/images/dashboard-96x96.png",
+          "sizes": "96x96",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Gallery",
+      "short_name": "Gallery",
+      "description": "Browse image gallery",
+      "url": "/prompt_manager/gallery",
+      "icons": [
+        {
+          "src": "/prompt_manager/images/gallery-96x96.png",
+          "sizes": "96x96",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Collections",
+      "short_name": "Collections",
+      "description": "Manage prompt collections",
+      "url": "/prompt_manager/collections",
+      "icons": [
+        {
+          "src": "/prompt_manager/images/collections-96x96.png",
+          "sizes": "96x96",
+          "type": "image/png"
+        }
+      ]
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/prompt_manager/images/screenshot-dashboard.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "label": "Dashboard view"
+    },
+    {
+      "src": "/prompt_manager/images/screenshot-gallery.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "label": "Gallery view"
+    },
+    {
+      "src": "/prompt_manager/images/screenshot-mobile.png",
+      "sizes": "360x800",
+      "type": "image/png",
+      "label": "Mobile view"
+    }
+  ],
+  "related_applications": [],
+  "iarc_rating_id": "",
+  "share_target": {
+    "action": "/prompt_manager/share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [
+        {
+          "name": "image",
+          "accept": ["image/png", "image/jpeg", "image/webp"]
+        }
+      ]
+    }
+  }
+}
