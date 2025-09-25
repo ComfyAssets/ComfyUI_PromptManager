@@ -2,11 +2,75 @@
 
 import { app } from "../../scripts/app.js";
 
+// Determine best API base prefix at runtime to support proxies (e.g., /api)
+let __pmApiBase = null;
+let __pmResolving = null;
+
+async function pmResolveApiBase() {
+  if (__pmApiBase) return __pmApiBase;
+  if (__pmResolving) return __pmResolving;
+  __pmResolving = (async () => {
+    // Try direct path first
+    try {
+      const r = await fetch("/prompt_manager/health", { cache: "no-store" });
+      if (r.ok) {
+        __pmApiBase = "/prompt_manager";
+        return __pmApiBase;
+      }
+    } catch (_) {}
+    // Try /api prefixed path
+    try {
+      const r2 = await fetch("/api/prompt_manager/health", { cache: "no-store" });
+      if (r2.ok) {
+        __pmApiBase = "/api/prompt_manager";
+        return __pmApiBase;
+      }
+    } catch (_) {}
+    // Fallback to direct
+    __pmApiBase = "/prompt_manager";
+    return __pmApiBase;
+  })();
+  return __pmResolving;
+}
+
+async function pmUrl(path) {
+  const base = await pmResolveApiBase();
+  if (!path.startsWith("/")) path = "/" + path;
+  return `${base}${path}`;
+}
+
+async function pmFetch(path, options) {
+  if (path.startsWith('/api/')) {
+    return fetch(path, options);
+  }
+
+  const url = await pmUrl(path);
+  let res;
+  try {
+    res = await fetch(url, options);
+  } catch (e) {
+    // As a last resort try the alternate base if resolution got it wrong
+    const alt = url.startsWith("/api/") ? url.replace("/api/", "/") : url.replace("/", "/api/");
+    try { return await fetch(alt, options); } catch (_) { throw e; }
+  }
+  if (!res.ok) {
+    // Attempt automatic fallback once on 404/502
+    if (res.status === 404 || res.status === 502) {
+      const base = await pmResolveApiBase();
+      const altBase = base.startsWith("/api/") ? base.replace("/api/", "/") : "/api" + base;
+      const altUrl = `${altBase}${path.startsWith("/") ? path : "/" + path}`;
+      const altRes = await fetch(altUrl, options).catch(() => null);
+      if (altRes && altRes.ok) return altRes;
+    }
+  }
+  return res;
+}
+
 app.registerExtension({
   name: "PromptManager.UI",
 
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
-    if (nodeData.name === "PromptManager" || nodeData.name === "PromptManagerText") {
+    if (nodeData.name === "PromptManager") {
       console.log(`[PromptManager] Patching node type for custom UI: ${nodeData.name}`);
 
       // Store original methods
@@ -326,20 +390,24 @@ app.registerExtension({
       // Method to load settings from API
       nodeType.prototype.loadSettings = async function () {
         try {
-          const response = await fetch("/prompt_manager/settings");
-          if (response.ok) {
-            const data = await response.json();
-            if (data.success && data.settings) {
-              this.properties.resultTimeout = data.settings.result_timeout || 3;
-              this.properties.showTestButton =
-                data.settings.show_test_button || false;
-              this.properties.webuiDisplayMode =
-                data.settings.webui_display_mode || "popup";
-            }
+          const response = await pmFetch('/api/v1/system/settings');
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
           }
+
+          const payload = await response.json();
+          const settings = payload?.data || payload?.settings;
+          if (!settings) {
+            return;
+          }
+
+          this.properties.resultTimeout = settings.result_timeout ?? 3;
+          this.properties.showTestButton = settings.show_test_button ?? false;
+          this.properties.webuiDisplayMode = settings.webui_display_mode || 'newtab';
         } catch (error) {
-          console.log(
-            "[PromptManager] Could not load settings, using defaults",
+          console.warn(
+            '[PromptManager] Could not load settings, using defaults',
+            error,
           );
         }
       };
@@ -572,10 +640,10 @@ app.registerExtension({
               queryParams.append("text", params.search_text);
             queryParams.append("limit", "50");
 
-            url = `/prompt_manager/search?${queryParams.toString()}`;
+            url = await pmUrl(`/search?${queryParams.toString()}`);
           } else if (method === "get_recent_prompts") {
             const limit = params.limit || 20;
-            url = `/prompt_manager/recent?limit=${limit}`;
+            url = await pmUrl(`/recent?limit=${limit}`);
           } else {
             throw new Error(`Unknown method: ${method}`);
           }
@@ -605,7 +673,7 @@ app.registerExtension({
       // Method to save a prompt via API
       nodeType.prototype.savePromptToDatabase = async function (promptData) {
         try {
-          const response = await fetch("/prompt_manager/save", {
+          const response = await pmFetch("/save", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -633,7 +701,7 @@ app.registerExtension({
       // Method to delete a prompt via API
       nodeType.prototype.deletePrompt = async function (promptId) {
         try {
-          const response = await fetch(`/prompt_manager/delete/${promptId}`, {
+          const response = await pmFetch(`/delete/${promptId}`, {
             method: "DELETE",
           });
 
@@ -660,7 +728,7 @@ app.registerExtension({
           this.resultsSection.innerHTML =
             '<div style="color: #999; text-align: center;">🔧 Testing API connection...</div>';
 
-          const response = await fetch("/prompt_manager/test");
+          const response = await pmFetch("/test");
 
           if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -693,11 +761,15 @@ app.registerExtension({
       };
 
       // Method to open web interface
-      nodeType.prototype.openWebInterface = function () {
+      nodeType.prototype.openWebInterface = async function () {
         try {
           // Open the web interface served via our API endpoint
           const currentOrigin = window.location.origin;
-          const webUrl = `${currentOrigin}/prompt_manager/web`;
+          const base = await pmResolveApiBase();
+          const uiBase = base.startsWith('/api/')
+            ? base.replace('/api/', '/')
+            : base;
+          const webUrl = `${currentOrigin}${uiBase}`;
 
           if (this.properties.webuiDisplayMode === "newtab") {
             // Open in new tab without window options
@@ -710,11 +782,12 @@ app.registerExtension({
                 "success",
               );
             } else {
-              // Fallback if popup was blocked
-              console.log(
-                "[PromptManager] Popup blocked, trying alternative method",
+              // Popup blocked: inform user without redirecting the main UI
+              console.warn("[PromptManager] Popup blocked; not redirecting main UI");
+              this.showNotification(
+                "Popup blocked. Allow popups for ComfyUI to open PromptManager.",
+                "error",
               );
-              window.location.href = webUrl;
             }
           } else {
             // Default popup mode with specific dimensions
@@ -728,11 +801,12 @@ app.registerExtension({
               console.log("[PromptManager] Web interface opened in popup");
               this.showNotification("Web interface opened in popup", "success");
             } else {
-              // Fallback if popup was blocked
-              console.log(
-                "[PromptManager] Popup blocked, trying alternative method",
+              // Popup blocked: inform user without redirecting the main UI
+              console.warn("[PromptManager] Popup blocked; not redirecting main UI");
+              this.showNotification(
+                "Popup blocked. Allow popups for ComfyUI to open PromptManager.",
+                "error",
               );
-              window.location.href = webUrl;
             }
           }
         } catch (error) {
@@ -744,42 +818,13 @@ app.registerExtension({
         }
       };
 
-      // Method to show notifications
+      // Method to show notifications (unified)
       nodeType.prototype.showNotification = function (message, type = "info") {
-        // Create a temporary notification element
-        const notification = document.createElement("div");
-        notification.style.position = "fixed";
-        notification.style.top = "20px";
-        notification.style.right = "20px";
-        notification.style.padding = "10px 15px";
-        notification.style.borderRadius = "4px";
-        notification.style.color = "white";
-        notification.style.fontSize = "12px";
-        notification.style.zIndex = "10000";
-        notification.style.maxWidth = "300px";
-        notification.textContent = message;
-
-        // Set color based on type
-        switch (type) {
-          case "success":
-            notification.style.backgroundColor = "#4caf50";
-            break;
-          case "error":
-            notification.style.backgroundColor = "#f44336";
-            break;
-          case "warning":
-            notification.style.backgroundColor = "#ff9800";
-            break;
-          default:
-            notification.style.backgroundColor = "#2196f3";
+        if (typeof window.showToast === 'function') {
+          window.showToast(message, type);
+        } else {
+          console.log(`[${type}] ${message}`);
         }
-
-        document.body.appendChild(notification);
-
-        // Remove after 3 seconds
-        setTimeout(() => {
-          document.body.removeChild(notification);
-        }, 3000);
       };
     }
   },
