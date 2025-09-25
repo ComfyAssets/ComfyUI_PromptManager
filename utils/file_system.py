@@ -229,11 +229,20 @@ class ComfyUIFileSystem:
                 self._comfyui_root = parent
                 return parent
 
-        # 5) Fallback to CWD
-        fallback = Path.cwd()
-        self.logger.warning(f"Could not find ComfyUI root, using fallback: {fallback}")
-        self._comfyui_root = fallback
-        return fallback
+        # 5) No fallback - raise error if ComfyUI root not found
+        error_msg = (
+            "Could not find ComfyUI root directory!\n"
+            "Please ensure PromptManager is installed in:\n"
+            "  ComfyUI/custom_nodes/ComfyUI_PromptManager/\n"
+            "Or set COMFYUI_PATH environment variable to your ComfyUI directory.\n"
+            "Current working directory: {}\n"
+            "Searched paths: {}".format(
+                Path.cwd(),
+                ", ".join(str(p) for p in scan_bases)
+            )
+        )
+        self.logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
     # -------------------------
     # User data directory
