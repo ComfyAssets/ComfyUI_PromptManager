@@ -12,13 +12,10 @@ import webbrowser
 from typing import Any, Dict, List, Optional, Tuple
 
 # Import logging system
-try:
-    from .utils.logging_config import get_logger
-except ImportError:
-    import sys
-
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from utils.logging_config import get_logger
+try:  # pragma: no cover - environment-specific import
+    from promptmanager.loggers import get_logger  # type: ignore
+except ImportError:  # pragma: no cover
+    from loggers import get_logger  # type: ignore
 
 try:
     from comfy.comfy_types import IO, ComfyNodeABC, InputTypeDict
@@ -35,20 +32,20 @@ except ImportError:
     InputTypeDict = dict
 
 try:
-    from .database.operations import PromptDatabase
-    from .utils.comfyui_integration import get_comfyui_integration
-    from .utils.image_monitor import ImageMonitor
-    from .utils.prompt_tracker import PromptExecutionContext, PromptTracker
+    from .src.database import PromptDatabase
+    from .utils.comfyui_integration import get_comfyui_integration  # type: ignore
+    from .utils.image_monitor import ImageMonitor  # type: ignore
+    from .utils.prompt_tracker import PromptExecutionContext, PromptTracker  # type: ignore
 except ImportError:
     # For direct imports when not in a package
     import os
     import sys
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from database.operations import PromptDatabase
-    from utils.comfyui_integration import get_comfyui_integration
-    from utils.image_monitor import ImageMonitor
-    from utils.prompt_tracker import PromptExecutionContext, PromptTracker
+    from src.database import PromptDatabase
+    from utils.comfyui_integration import get_comfyui_integration  # type: ignore
+    from utils.image_monitor import ImageMonitor  # type: ignore
+    from utils.prompt_tracker import PromptExecutionContext, PromptTracker  # type: ignore
 
 
 class PromptManager(ComfyNodeABC):
