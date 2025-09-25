@@ -5,6 +5,7 @@ generated images with their associated prompts.
 """
 
 import json
+import math
 import os
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,19 @@ from PIL import Image
 
 from src.core.base import BaseGallery
 from src.repositories.generated_image_repository import GeneratedImageRepository
+
+
+def _sanitize_for_json(value: Any) -> Any:
+    """Recursively replace NaN/Inf values so JSON serialization succeeds."""
+
+    if isinstance(value, dict):
+        return {key: _sanitize_for_json(sub_value) for key, sub_value in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_sanitize_for_json(item) for item in value]
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+    return value
 
 
 class ImageGallery(BaseGallery):
@@ -167,6 +181,7 @@ class ImageGallery(BaseGallery):
                     logger = getattr(self, "logger", None)
                     if logger:
                         logger.debug("Unable to parse prompt_metadata for image %s", item.get("id"))
+            metadata_value = _sanitize_for_json(metadata_value)
             rendered["metadata"] = metadata_value
 
         # Add workflow data if available
@@ -179,6 +194,7 @@ class ImageGallery(BaseGallery):
                     logger = getattr(self, "logger", None)
                     if logger:
                         logger.debug("Unable to parse workflow_data for image %s", item.get("id"))
+            workflow_value = _sanitize_for_json(workflow_value)
             rendered["workflow"] = workflow_value
         
         # Format generation time
@@ -191,7 +207,7 @@ class ImageGallery(BaseGallery):
                 rendered["generation_time_display"] = rendered["generation_time"]
                 rendered["generation_time_relative"] = ""
         
-        return rendered
+        return _sanitize_for_json(rendered)
 
     def scan_directory(self, directory: str = None) -> List[Dict[str, Any]]:
         """Scan directory for new images.
