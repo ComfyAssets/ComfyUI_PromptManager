@@ -98,8 +98,8 @@
             <button class="btn btn-ghost" title="Filter">
               <span>🔽</span>
             </button>
-            <button class="btn btn-secondary" data-action="scan-images">
-              <span><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i></span>
+            <button class="action-btn action-btn-secondary" data-action="scan-images" title="Scan images">
+              <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
               <span>Scan Images</span>
             </button>
             <button class="btn btn-primary" data-action="upload-image">
@@ -147,9 +147,9 @@
             </div>
 
             <div class="view-mode-toggle">
-              <button class="view-mode-btn active" onclick="setViewMode('grid'">Grid</button>
-              <button class="view-mode-btn" onclick="setViewMode('masonry'">Masonry</button>
-              <button class="view-mode-btn" onclick="setViewMode('list'">List</button>
+              <button class="view-mode-btn active" data-mode="grid" onclick="setViewMode('grid', event)">Grid</button>
+              <button class="view-mode-btn" data-mode="masonry" onclick="setViewMode('masonry', event)">Masonry</button>
+              <button class="view-mode-btn" data-mode="list" onclick="setViewMode('list', event)">List</button>
             </div>
           </div>
 
@@ -211,89 +211,6 @@
     <script src="/prompt_manager/js/modules/components/scan-manager.js"></script>
 
     <!-- Scan Images Modal -->
-    <div id="scanModal" class="modal" style="display: none;">
-      <div class="modal-backdrop"></div>
-      <div class="modal-content">
-        <div class="modal-header">
-          <h2 class="modal-title">
-            <i class="fa-solid fa-magnifying-glass"></i>
-            Scan ComfyUI Output Images
-          </h2>
-          <button class="modal-close" data-action="close-scan-modal">
-            <i class="fa-solid fa-times"></i>
-          </button>
-        </div>
-
-        <div class="modal-body">
-          <!-- Warning Section -->
-          <div class="alert alert-warning">
-            <div class="alert-icon">
-              <i class="fa-solid fa-triangle-exclamation"></i>
-            </div>
-            <div class="alert-content">
-              <h4>Important Information</h4>
-              <ul>
-                <li>This will scan all PNG files in your ComfyUI output directory</li>
-                <li>Depending on the size of your output folder, this could take several minutes</li>
-                <li>Only images with ComfyUI metadata will be processed</li>
-                <li>Duplicate prompts will be automatically detected and skipped</li>
-              </ul>
-            </div>
-          </div>
-
-          <!-- Progress Section (Initially Hidden) -->
-          <div id="scanProgress" class="scan-progress" style="display: none;">
-            <div class="progress-header">
-              <span class="progress-label">Scanning Progress</span>
-              <span id="scanStatusText" class="progress-status">Preparing...</span>
-            </div>
-
-            <div class="progress-bar-container">
-              <div id="scanProgressBar" class="progress-bar" style="width: 0%"></div>
-            </div>
-
-            <div class="progress-stats">
-              <span id="scanCount">0 files processed</span>
-              <span id="scanFound">0 prompts found</span>
-            </div>
-
-            <!-- Results Section (Initially Hidden) -->
-            <div id="scanResults" class="scan-results" style="display: none;">
-              <h4>Scan Complete!</h4>
-              <div class="results-grid">
-                <div class="result-item">
-                  <span class="result-label">Files Scanned:</span>
-                  <span id="resultFilesScanned" class="result-value">0</span>
-                </div>
-                <div class="result-item">
-                  <span class="result-label">Prompts Found:</span>
-                  <span id="resultPromptsFound" class="result-value">0</span>
-                </div>
-                <div class="result-item">
-                  <span class="result-label">New Prompts Added:</span>
-                  <span id="resultPromptsAdded" class="result-value">0</span>
-                </div>
-                <div class="result-item">
-                  <span class="result-label">Images Linked:</span>
-                  <span id="resultImagesLinked" class="result-value">0</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="modal-footer">
-          <button id="cancelScanBtn" class="btn btn-secondary" data-action="cancel-scan">
-            Cancel
-          </button>
-          <button id="startScanBtn" class="btn btn-primary" data-action="start-scan">
-            <i class="fa-solid fa-play"></i>
-            Start Scan
-          </button>
-        </div>
-      </div>
-    </div>
-
     <!-- Existing scripts -->
     <script src="/prompt_manager/js/notifications.js"></script>
     <script src="/prompt_manager/js/gallery-page.js"></script>
