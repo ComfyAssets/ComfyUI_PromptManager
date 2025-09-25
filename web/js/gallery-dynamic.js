@@ -16,12 +16,25 @@
     let currentFilters = {};
     let isLoading = false;
     let activeViewerIntegrationId = null;
+    let masonryInstance = null;
 
     /**
      * Initialize dynamic gallery
      */
     async function initDynamicGallery() {
         console.log('Initializing dynamic gallery...');
+
+        const container = document.getElementById('galleryContainer') || document.querySelector('.gallery-container');
+        if (container?.dataset?.viewMode) {
+            currentFilters.viewMode = container.dataset.viewMode;
+        }
+
+        if (currentFilters.viewMode) {
+            document.querySelectorAll('.view-mode-btn').forEach(btn => {
+                const mode = btn.dataset.mode || btn.textContent.trim().toLowerCase();
+                btn.classList.toggle('active', mode === currentFilters.viewMode);
+            });
+        }
 
         // Setup event listeners
         setupFilterListeners();
@@ -93,6 +106,37 @@
         }
     }
 
+    function applyViewModeToContainer(container, mode) {
+        if (!container) {
+            return 'grid';
+        }
+
+        const normalized = ['grid', 'masonry', 'list'].includes(mode) ? mode : 'grid';
+        if (normalized !== 'masonry') {
+            if (masonryInstance) {
+                masonryInstance.destroy();
+                masonryInstance = null;
+            }
+            container.querySelectorAll('.masonry-sizer').forEach(node => node.remove());
+        }
+
+        container.classList.remove('gallery-grid', 'masonry-grid', 'list-view');
+
+        switch (normalized) {
+            case 'masonry':
+                container.classList.add('masonry-grid');
+                break;
+            case 'list':
+                container.classList.add('list-view');
+                break;
+            default:
+                container.classList.add('gallery-grid');
+        }
+
+        container.dataset.viewMode = normalized;
+        return normalized;
+    }
+
     /**
      * Render gallery items
      */
@@ -111,11 +155,18 @@
             return;
         }
 
+        const viewMode = applyViewModeToContainer(container, currentFilters.viewMode || container.dataset.viewMode || 'grid');
+        currentFilters.viewMode = viewMode;
+
         // Create gallery items using actual API data structure
         items.forEach(item => {
-            const galleryItem = createGalleryItem(item);
+            const galleryItem = createGalleryItem(item, viewMode);
             container.appendChild(galleryItem);
         });
+
+        if (viewMode === 'masonry') {
+            initializeMasonryLayout(container);
+        }
 
         refreshViewerIntegration(container);
     }
@@ -123,9 +174,12 @@
     /**
      * Create a gallery item element from actual API data
      */
-    function createGalleryItem(item) {
+    function createGalleryItem(item, viewMode = 'grid') {
         const div = document.createElement('div');
         div.className = 'gallery-item';
+        if (viewMode === 'list') {
+            div.classList.add('list-item');
+        }
         div.dataset.itemId = item.id;
 
         const modelName = extractModelName(item);
@@ -173,9 +227,17 @@
             </div>
         `;
 
+        if (viewMode === 'list') {
+            const imageEl = div.querySelector('.gallery-image');
+            if (imageEl) {
+                imageEl.classList.add('list-image');
+            }
+        }
+
         // Add error fallback for broken thumbnails
         const img = div.querySelector('.gallery-image img');
         if (img) {
+            img.dataset.fullSrc = fullMediaUrl;
             const handleImageError = () => {
                 const fallbackTried = img.dataset.fallbackTried === '1';
                 if (!fallbackTried && fullMediaUrl && img.src !== fullMediaUrl) {
@@ -339,25 +401,16 @@
 
         // View mode toggle buttons
         window.setViewMode = function(mode, evt) {
-            currentFilters.viewMode = mode;
+            const normalizedMode = (mode || '').toString().toLowerCase();
 
             document.querySelectorAll('.view-mode-btn').forEach(btn => {
                 const btnMode = btn.dataset.mode || btn.textContent.trim().toLowerCase();
-                const isActive = btn === (evt?.currentTarget || null) || btnMode === mode;
+                const isActive = btn === (evt?.currentTarget || null) || btnMode === normalizedMode;
                 btn.classList.toggle('active', isActive);
             });
 
             const container = document.querySelector('.gallery-container');
-            if (container) {
-                const layoutClasses = ['gallery-grid', 'masonry-grid'];
-                layoutClasses.forEach(cls => container.classList.remove(cls));
-                container.classList.add('gallery-grid');
-                if (mode === 'masonry') {
-                    container.classList.add('masonry-grid');
-                }
-                container.dataset.viewMode = mode;
-            }
-
+            currentFilters.viewMode = applyViewModeToContainer(container, normalizedMode);
             loadGalleryData(currentPage);
         };
 
@@ -575,6 +628,39 @@
             selectors: {
                 gallery: '#galleryContainer',
                 galleryImage: '#galleryContainer .gallery-image img'
+            }
+        });
+    }
+
+    function initializeMasonryLayout(container) {
+        if (!container || typeof Masonry === 'undefined') {
+            return;
+        }
+
+        if (!container.querySelector('.masonry-sizer')) {
+            const sizer = document.createElement('div');
+            sizer.className = 'masonry-sizer';
+            container.prepend(sizer);
+        }
+
+        if (masonryInstance) {
+            masonryInstance.destroy();
+        }
+
+        masonryInstance = new Masonry(container, {
+            itemSelector: '.gallery-item',
+            columnWidth: '.masonry-sizer',
+            percentPosition: true,
+            gutter: 24,
+        });
+
+        container.querySelectorAll('img').forEach((img) => {
+            if (img.complete) {
+                masonryInstance.layout();
+            } else {
+                img.addEventListener('load', () => {
+                    masonryInstance && masonryInstance.layout();
+                }, { once: true });
             }
         });
     }
