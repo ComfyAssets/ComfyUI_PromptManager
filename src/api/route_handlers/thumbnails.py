@@ -802,6 +802,16 @@ class ThumbnailAPI:
         Returns:
             JSON response with current settings
         """
+        max_parallel_raw = config.get('thumbnail.max_parallel', 4)
+        try:
+            max_parallel = int(max_parallel_raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid thumbnail.max_parallel value %r; defaulting to 4",
+                max_parallel_raw
+            )
+            max_parallel = 4
+
         settings = {
             'cache_dir': str(self.thumbnail_service.thumbnail_dir),
             'auto_generate': config.get('thumbnail.auto_generate', True),
@@ -818,7 +828,7 @@ class ThumbnailAPI:
             'video_timestamp': config.get('thumbnail.video_timestamp', 1.0),
             'jpeg_quality': config.get('thumbnail.jpeg_quality', 85),
             'webp_quality': config.get('thumbnail.webp_quality', 85),
-            'max_parallel': config.get('thumbnail.max_parallel', 4),
+            'max_parallel': max_parallel,
             'cache_ttl': config.get('thumbnail.cache_ttl', 604800),
             'max_cache_size_gb': config.get('thumbnail.max_cache_size_gb', 10)
         }
@@ -837,8 +847,22 @@ class ThumbnailAPI:
         try:
             data = await request.json()
 
+            updates: Dict[str, Any] = dict(data)
+
+            if 'max_parallel' in updates:
+                try:
+                    updates['max_parallel'] = int(updates['max_parallel'])
+                except (TypeError, ValueError):
+                    return web.json_response(
+                        {
+                            'success': False,
+                            'error': 'max_parallel must be an integer'
+                        },
+                        status=400
+                    )
+
             # Update configuration
-            for key, value in data.items():
+            for key, value in updates.items():
                 config_key = f'thumbnail.{key}'
                 config.set(config_key, value)
 
@@ -849,6 +873,9 @@ class ThumbnailAPI:
             if 'cache_dir' in data:
                 self.thumbnail_service.thumbnail_dir = Path(data['cache_dir'])
                 self.thumbnail_service.thumbnail_dir.mkdir(parents=True, exist_ok=True)
+
+            if 'max_parallel' in updates:
+                self.thumbnail_service.set_parallel_workers(updates['max_parallel'])
 
             return web.json_response({
                 'success': True,
