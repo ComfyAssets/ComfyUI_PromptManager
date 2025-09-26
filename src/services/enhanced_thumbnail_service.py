@@ -138,6 +138,10 @@ class FFmpegHandler:
     def __init__(self):
         """Initialize ffmpeg handler."""
         self.ffmpeg_path = self._find_ffmpeg()
+        if self.ffmpeg_path:
+            logger.info(f"Found ffmpeg at: {self.ffmpeg_path}")
+        else:
+            logger.warning("ffmpeg not found - video thumbnails will not be generated")
         self.supported_formats = {
             '.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv',
             '.webm', '.m4v', '.mpg', '.mpeg', '.3gp'
@@ -259,9 +263,20 @@ class EnhancedThumbnailService:
         """
         if not HAS_PIL:
             raise ImportError("PIL/Pillow is required for thumbnail service. Install with: pip install Pillow")
-        
+
         self.db = db
-        self.cache = cache
+        self.cache_manager = cache
+
+        # Create or get a specific cache for thumbnails
+        from utils.cache import MemoryCache
+        self.cache = self.cache_manager.get_cache('thumbnails')
+        if not self.cache:
+            # Create a memory cache for thumbnail paths
+            self.cache = MemoryCache(
+                max_size=100 * 1024 * 1024,  # 100MB
+                default_ttl=3600  # 1 hour TTL
+            )
+            self.cache_manager.register_cache('thumbnails', self.cache)
         self.base_generator = ThumbnailGenerator()
         self.ffmpeg = FFmpegHandler()
 
@@ -472,19 +487,25 @@ class EnhancedThumbnailService:
 
             if task.is_video:
                 # Generate video thumbnail
-                success = self.ffmpeg.generate_thumbnail(
-                    task.source_path,
-                    task.thumbnail_path,
-                    task.size
-                )
-
-                if success:
-                    task.status = ThumbnailStatus.GENERATED
-                    task.created_at = datetime.now()
-                    task.file_size = task.thumbnail_path.stat().st_size
-                else:
+                if not self.ffmpeg.ffmpeg_path:
                     task.status = ThumbnailStatus.FAILED
-                    task.error = "Video thumbnail generation failed"
+                    task.error = "ffmpeg not available"
+                    logger.warning(f"Skipping video thumbnail for {task.source_path}: ffmpeg not found")
+                else:
+                    success = self.ffmpeg.generate_thumbnail(
+                        task.source_path,
+                        task.thumbnail_path,
+                        task.size
+                    )
+
+                    if success:
+                        task.status = ThumbnailStatus.GENERATED
+                        task.created_at = datetime.now()
+                        task.file_size = task.thumbnail_path.stat().st_size
+                    else:
+                        task.status = ThumbnailStatus.FAILED
+                        task.error = "Video thumbnail generation failed"
+                        logger.error(f"Failed to generate video thumbnail for {task.source_path}")
             else:
                 # Generate thumbnail directly using PIL
                 img = Image.open(task.source_path)
@@ -733,7 +754,7 @@ class EnhancedThumbnailService:
         """Serve thumbnail with fallback to original.
 
         Args:
-            image_id: Image identifier
+            image_id: Image identifier or path
             size: Thumbnail size
             fallback_to_original: Fall back to original if thumbnail missing
 
@@ -742,21 +763,39 @@ class EnhancedThumbnailService:
         """
         # Check cache first
         cache_key = f"thumbnail:{image_id}:{size}"
-        cached_path = self.cache.get(cache_key)
+        cached_path = self.cache.get(cache_key) if self.cache else None
         if cached_path and Path(cached_path).exists():
             return Path(cached_path)
 
-        # Get image info from database
-        image_info = await self.db.get_image(image_id)
-        if not image_info:
+        # Try to get prompt info from database if image_id is numeric
+        source_path = None
+        try:
+            prompt_id = int(image_id)
+            prompt_info = self.db.get_prompt_by_id(prompt_id)
+            if prompt_info and 'image_path' in prompt_info:
+                source_path = Path(prompt_info['image_path'])
+        except (ValueError, TypeError):
+            # image_id might be a path or file name
+            # Try to resolve it relative to the output directory
+            from pathlib import Path
+            possible_path = Path(config.comfyui.output_dir) / image_id
+            if possible_path.exists():
+                source_path = possible_path
+            else:
+                # Try as absolute path
+                possible_path = Path(image_id)
+                if possible_path.exists():
+                    source_path = possible_path
+
+        if not source_path or not source_path.exists():
             return None
 
-        source_path = Path(image_info['path'])
         thumbnail_path = self.get_thumbnail_path(source_path, size)
 
         if thumbnail_path.exists():
             # Cache the path
-            self.cache.set(cache_key, str(thumbnail_path), ttl=3600)
+            if self.cache:
+                self.cache.set(cache_key, str(thumbnail_path), ttl=3600)
             return thumbnail_path
 
         if fallback_to_original and source_path.exists():
