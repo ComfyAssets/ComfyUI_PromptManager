@@ -250,15 +250,52 @@ function handleGenerationComplete(summary) {
  * Rebuild all thumbnails
  */
 async function rebuildAllThumbnails() {
-    if (!confirm('This will regenerate ALL thumbnails. This may take a long time. Continue?')) {
+    // Get selected sizes
+    const sizes = [];
+    if (document.getElementById('thumbSizeSmall').checked) sizes.push('small');
+    if (document.getElementById('thumbSizeMedium').checked) sizes.push('medium');
+    if (document.getElementById('thumbSizeLarge').checked) sizes.push('large');
+    if (document.getElementById('thumbSizeXLarge').checked) sizes.push('xlarge');
+
+    if (sizes.length === 0) {
+        showNotification('Please select at least one thumbnail size', 'warning');
+        return;
+    }
+
+    const sizeNames = sizes.map(s => {
+        switch(s) {
+            case 'small': return 'Small (150x150)';
+            case 'medium': return 'Medium (300x300)';
+            case 'large': return 'Large (600x600)';
+            case 'xlarge': return 'X-Large (1200x1200)';
+            default: return s;
+        }
+    }).join(', ');
+
+    const confirmed = await createConfirmationDialog(
+        'Rebuild Thumbnails',
+        `This will regenerate thumbnails for the selected sizes:\n\n${sizeNames}\n\nThis may take a long time. Continue?`,
+        'Rebuild',
+        'Cancel'
+    );
+
+    if (!confirmed) {
         return;
     }
 
     try {
+        // Disable buttons during rebuild
+        document.getElementById('generateThumbnailsBtn').disabled = true;
+        document.querySelector('button[onclick="scanForMissingThumbnails()"]').disabled = true;
+
+        // Show progress container
+        document.getElementById('thumbnailProgressContainer').style.display = 'block';
+        updateThumbnailProgress(0, 0);
+
         const response = await fetch('/api/v1/thumbnails/rebuild', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({})
+            body: JSON.stringify({ sizes })  // Pass selected sizes
         });
 
         if (!response.ok) {
@@ -270,26 +307,95 @@ async function rebuildAllThumbnails() {
         if (result.task_id) {
             thumbnailGenerationTask = result.task_id;
             startProgressPolling(result.task_id);
-            showNotification(`Rebuilding ${result.total} thumbnails`, 'info');
+            showNotification(`Rebuilding thumbnails for ${sizes.length} size(s): ${result.total} operations`, 'info');
         }
 
     } catch (error) {
         console.error('Rebuild error:', error);
         showNotification(`Failed to rebuild: ${error.message}`, 'error');
+        resetThumbnailControls();
     }
+}
+
+/**
+ * Create a simple confirmation dialog
+ */
+function createConfirmationDialog(title, message, confirmText, cancelText) {
+    return new Promise((resolve) => {
+        // Create modal elements
+        const modal = document.createElement('div');
+        modal.className = 'modal-backdrop';
+        modal.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 9999; display: flex; align-items: center; justify-content: center;';
+
+        const dialog = document.createElement('div');
+        dialog.className = 'modal-dialog';
+        dialog.style.cssText = 'background: var(--bg-secondary, #1a1a1a); border: 1px solid var(--border-color, #333); border-radius: 8px; padding: 20px; max-width: 500px; box-shadow: 0 4px 6px rgba(0,0,0,0.3);';
+
+        dialog.innerHTML = `
+            <h3 style="margin: 0 0 10px 0; color: var(--text-primary, #fff);">${title}</h3>
+            <p style="margin: 0 0 20px 0; color: var(--text-secondary, #ccc);">${message}</p>
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button class="btn-secondary" id="modalCancel" style="padding: 8px 16px; background: var(--bg-tertiary, #2a2a2a); color: var(--text-primary, #fff); border: 1px solid var(--border-color, #444); border-radius: 4px; cursor: pointer;">
+                    ${cancelText || 'Cancel'}
+                </button>
+                <button class="btn-primary" id="modalConfirm" style="padding: 8px 16px; background: var(--accent-color, #0066cc); color: white; border: none; border-radius: 4px; cursor: pointer;">
+                    ${confirmText || 'Confirm'}
+                </button>
+            </div>
+        `;
+
+        modal.appendChild(dialog);
+        document.body.appendChild(modal);
+
+        // Handle clicks
+        const cleanup = () => {
+            document.body.removeChild(modal);
+        };
+
+        dialog.querySelector('#modalCancel').onclick = () => {
+            cleanup();
+            resolve(false);
+        };
+
+        dialog.querySelector('#modalConfirm').onclick = () => {
+            cleanup();
+            resolve(true);
+        };
+
+        // Handle backdrop click
+        modal.onclick = (e) => {
+            if (e.target === modal) {
+                cleanup();
+                resolve(false);
+            }
+        };
+    });
 }
 
 /**
  * Clear thumbnail cache
  */
 async function clearThumbnailCache() {
-    if (!confirm('This will delete ALL cached thumbnails. They will be regenerated on demand. Continue?')) {
+    // Show confirmation dialog
+    const confirmed = await createConfirmationDialog(
+        'Clear Thumbnail Cache',
+        'This will delete ALL cached thumbnails. They will be regenerated on demand when needed. Are you sure you want to continue?',
+        'Clear Cache',
+        'Cancel'
+    );
+
+    if (!confirmed) {
         return;
     }
 
     try {
-        const response = await fetch('/api/v1/thumbnails/clear', {
-            method: 'POST'
+        // Show progress
+        updateThumbnailStatus('Clearing thumbnail cache...');
+
+        // Use correct endpoint and method
+        const response = await fetch('/api/v1/thumbnails/cache', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' }
         });
 
         if (!response.ok) {
@@ -300,9 +406,15 @@ async function clearThumbnailCache() {
         showNotification(`Cleared ${result.deleted} thumbnails`, 'success');
         updateThumbnailStatus('Thumbnail cache cleared');
 
+        // Update disk usage display
+        if (window.updateDiskUsage) {
+            await window.updateDiskUsage();
+        }
+
     } catch (error) {
         console.error('Clear error:', error);
         showNotification(`Failed to clear cache: ${error.message}`, 'error');
+        updateThumbnailStatus('Failed to clear cache');
     }
 }
 
@@ -495,4 +607,5 @@ window.updateThumbnailStatus = updateThumbnailStatus;
 window.updateThumbnailProgress = updateThumbnailProgress;
 window.resetThumbnailControls = resetThumbnailControls;
 window.updateDiskUsage = updateDiskUsage;
+window.cancelThumbnailGeneration = cancelThumbnailGeneration;
 })();
