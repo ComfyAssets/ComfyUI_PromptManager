@@ -32,6 +32,66 @@ We're excited to announce that Prompt Manager v2 is ready for beta testing! This
 - **🔄 v1 → v2 Migration**: We especially need testers who can help validate the migration process from v1 databases
 - The migration is one-way - once converted, you cannot go back to v1
 
+### 🚀 Power User Tools
+
+**Note**: We provide two scripts for different use cases:
+- **generate_thumbnails.py** - Works with ComfyUI's configuration system, can auto-detect paths
+- **generate_thumbnails_standalone.py** - Completely standalone, doesn't require ComfyUI environment
+
+#### **High-Performance Thumbnail Generator Scripts**
+
+For power users with large collections, we provide command-line scripts that can generate thumbnails **significantly faster** than the web UI:
+
+##### Option 1: ComfyUI-Integrated Script
+
+Works with ComfyUI configuration and can auto-detect paths when run from ComfyUI directory:
+
+```bash
+# Auto-detect paths (run from ComfyUI root or custom_nodes/ComfyUI_PromptManager)
+python scripts/generate_thumbnails.py --use-preferences
+
+# Or provide explicit paths from anywhere
+python scripts/generate_thumbnails.py \
+  --comfy-root ~/ComfyUI \
+  --db-path ~/ComfyUI/user/default/PromptManager/prompts.db \
+  --sizes small medium large \
+  --parallel 0
+
+# Maximum speed - uses all CPU cores
+python scripts/generate_thumbnails.py --parallel 0 --yes
+
+# Force regenerate everything (useful after migration)
+python scripts/generate_thumbnails.py --force --yes
+```
+
+##### Option 2: Standalone Script (works anywhere with explicit paths)
+
+```bash
+# Works from any directory with explicit paths
+python scripts/generate_thumbnails_standalone.py \
+  --db-path ~/ComfyUI/user/default/PromptManager/prompts.db \
+  --output-dir ~/ComfyUI/user/default/PromptManager/thumbnails \
+  --sizes small medium large \
+  --parallel 8
+
+# Minimal example - uses sensible defaults
+python generate_thumbnails_standalone.py --db-path /path/to/prompts.db
+```
+
+**Features:**
+- **⚡ Maximum Performance**: Process thousands of thumbnails using all CPU cores
+- **🎯 Respects UI Preferences**: Use `--use-preferences` to match your UI size selections
+- **⏸️ Graceful Cancellation**: Press Ctrl+C to stop anytime without losing progress
+- **📊 Progress Tracking**: Real-time progress with ETA and throughput metrics
+- **💾 Memory Management**: `--batch-size` option for memory-constrained systems
+- **🔄 Smart Skipping**: Only generates missing thumbnails unless `--force` is used
+
+**Performance Tips:**
+- SSDs perform much better than HDDs for thumbnail generation
+- Use `--parallel 0` to utilize all CPU cores for maximum speed
+- Video thumbnails take longer due to ffmpeg processing
+- The script shows throughput in images/second for performance monitoring
+
 ### 📊 Beta Testing Focus Areas
 
 1. **Database Migration** - Test the v1 to v2 migration with your existing data (after backing up!)
