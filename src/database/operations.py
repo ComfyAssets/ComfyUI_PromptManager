@@ -49,10 +49,11 @@ except ImportError:  # pragma: no cover - fallback for direct execution
                     except Exception:  # noqa: BLE001 - runtime best effort fallback
                         pass
 
-                return {
-                    'path': str(Path.cwd()),
-                    'is_custom': False
-                }
+                raise RuntimeError(
+                    "Cannot determine ComfyUI root directory. "
+                    "Please ensure PromptManager is installed in ComfyUI/custom_nodes/ "
+                    "or set COMFYUI_PATH environment variable."
+                )
 
         def get_file_system():  # type: ignore
             return MinimalFileSystem()
