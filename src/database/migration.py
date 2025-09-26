@@ -68,7 +68,13 @@ class MigrationDetector:
     """Detects whether a migration from v1 to v2 is required."""
 
     def __init__(self, comfyui_root: str | Path | None = None) -> None:
-        root = Path(comfyui_root) if comfyui_root else Path.cwd()
+        if not comfyui_root:
+            raise ValueError(
+                "comfyui_root is required. Cannot use current working directory. "
+                "Please ensure PromptManager is installed in ComfyUI/custom_nodes/ "
+                "or provide the ComfyUI root path explicitly."
+            )
+        root = Path(comfyui_root)
         self.paths = MigrationPaths(
             comfyui_root=root,
             v1_db_path=root / "prompts.db",
