@@ -47,18 +47,12 @@ class ImageScanner:
         except ImportError:
             pass
 
-        # Fallback to common locations
-        possible_paths = [
-            os.path.join(os.getcwd(), "output"),
-            os.path.join(os.path.dirname(os.getcwd()), "output"),
-            os.path.join(os.path.dirname(os.path.dirname(os.getcwd())), "output"),
-            "/home/vito/ai-apps/ComfyUI-3.12/output"  # Hardcoded fallback
-        ]
-
-        for path in possible_paths:
-            if os.path.exists(path):
-                self.logger.info(f"Found output directory: {path}")
-                return path
+        # Do NOT search relative to CWD - require proper ComfyUI root
+        raise RuntimeError(
+            "Cannot find ComfyUI output directory. "
+            "Please ensure PromptManager is installed in ComfyUI/custom_nodes/ "
+            "or set COMFYUI_PATH environment variable."
+        )
 
         self.logger.error("ComfyUI output directory not found")
         return None
