@@ -145,6 +145,80 @@ const ViewerIntegration = (function() {
         return integrationId;
     }
 
+    function normalizeImageEntry(image, index = 0) {
+        if (typeof image === 'string') {
+            return {
+                src: image,
+                fullSrc: image,
+                alt: `Image ${index + 1}`,
+                title: `Image ${index + 1}`,
+                metadata: null
+            };
+        }
+
+        if (!image || typeof image !== 'object') {
+            return {
+                src: '',
+                fullSrc: '',
+                alt: '',
+                title: '',
+                metadata: null
+            };
+        }
+
+        const thumb = image.src || image.thumb || image.thumbnail || image.thumbnail_url || image.preview_url || image.preview || image.url || '';
+        const full = image.fullSrc || image.url || image.image_url || image.path || image.full_url || thumb;
+        const descriptiveText = image.title || image.alt || image.display_title || image.filename || image.file_name || image.name || `Image ${index + 1}`;
+
+        return {
+            src: thumb,
+            fullSrc: full,
+            alt: image.alt || descriptiveText,
+            title: descriptiveText,
+            metadata: image.metadata || image.meta || null,
+            original: image
+        };
+    }
+
+    function attachFilmstripToViewer(integration) {
+        if (!integration || !integration.filmstripId) {
+            return;
+        }
+
+        const viewerContainer = document.querySelector('.viewer-container');
+        if (viewerContainer) {
+            FilmstripManager.attach(integration.filmstripId, viewerContainer);
+        }
+    }
+
+    function disposeIntegration(integrationId, options = {}) {
+        const integration = integrations.get(integrationId);
+        if (!integration) return;
+
+        if (integration.viewerId) {
+            ViewerManager.destroy(integration.viewerId);
+        }
+
+        if (integration.filmstripId) {
+            FilmstripManager.destroy(integration.filmstripId);
+        }
+
+        if (integration.metadataPanelId) {
+            MetadataManager.hidePanel(integration.metadataPanelId);
+            MetadataManager.destroyPanel(integration.metadataPanelId);
+        }
+
+        if (options.removeContainer && integration.container && integration.container.parentNode) {
+            integration.container.parentNode.removeChild(integration.container);
+        }
+
+        integrations.delete(integrationId);
+
+        if (activeIntegration === integrationId) {
+            activeIntegration = null;
+        }
+    }
+
     function setupGalleryIntegration(integrationId) {
         const integration = integrations.get(integrationId);
         if (!integration) return false;
@@ -440,7 +514,11 @@ const ViewerIntegration = (function() {
         // Load and display metadata if enabled
         if (integration.metadataPanelId && integration.images[index]) {
             const image = integration.images[index];
-            MetadataManager.extractAndDisplay(integration.metadataPanelId, image.fullSrc || image.src);
+            if (image.metadata) {
+                MetadataManager.display(integration.metadataPanelId, image.metadata);
+            } else if (image.fullSrc || image.src) {
+                MetadataManager.extractAndDisplay(integration.metadataPanelId, image.fullSrc || image.src);
+            }
         }
 
         // Emit custom event
@@ -682,17 +760,7 @@ const ViewerIntegration = (function() {
             const integration = integrations.get(integrationId);
             if (!integration) return false;
 
-            integration.images = images.map(image => {
-                if (typeof image === 'string') {
-                    return { src: image, fullSrc: image, alt: '', title: '' };
-                }
-                return {
-                    src: image.src || image.thumbnail || image.image_url || image.url || '',
-                    fullSrc: image.fullSrc || image.image_url || image.url || image.src || '',
-                    alt: image.alt || image.filename || '',
-                    title: image.title || image.filename || image.alt || ''
-                };
-            });
+            integration.images = images.map((image, index) => normalizeImageEntry(image, index));
 
             // Update viewer
             if (integration.viewerId) {
@@ -705,6 +773,167 @@ const ViewerIntegration = (function() {
             }
 
             return true;
+        },
+
+        /**
+         * Open a standalone viewer instance with a provided image set
+         * @param {Array} images - Array of image descriptors or URLs
+         * @param {Object} options - Viewer configuration overrides
+         * @returns {string|null} Integration ID when successful
+         */
+        openImageSet: function(images, options = {}) {
+            if (!Array.isArray(images) || images.length === 0) {
+                console.warn('ViewerIntegration.openImageSet: No images supplied');
+                return null;
+            }
+
+            if (!initialized && !initializeModules()) {
+                console.error('ViewerIntegration: Required modules unavailable');
+                return null;
+            }
+
+            const normalizedImages = images
+                .map((image, index) => normalizeImageEntry(image, index))
+                .filter((image) => Boolean(image.src || image.fullSrc));
+
+            if (normalizedImages.length === 0) {
+                console.warn('ViewerIntegration.openImageSet: Normalized images missing sources');
+                return null;
+            }
+
+            const viewerOverrides = Object.assign({}, options.viewer || {});
+            const filmstripOverrides = options.filmstrip === false
+                ? { enabled: false }
+                : Object.assign({}, globalConfig.filmstrip, options.filmstrip || {});
+            const metadataOverrides = options.metadata === false
+                ? { enabled: false }
+                : Object.assign({}, globalConfig.metadata, options.metadata || {});
+
+            const integrationId = createIntegration('adhoc', {
+                viewer: Object.assign({}, globalConfig.viewer, viewerOverrides),
+                filmstrip: filmstripOverrides,
+                metadata: metadataOverrides,
+                destroyOnHide: options.destroyOnHide !== false,
+                startIndex: Number.isInteger(options.startIndex) ? options.startIndex : 0,
+                context: options.context || null
+            });
+
+            const integration = integrations.get(integrationId);
+            if (!integration) {
+                return null;
+            }
+
+            const container = document.createElement('div');
+            container.className = options.containerClass || 'viewer-adhoc-container';
+            container.style.display = 'none';
+
+            normalizedImages.forEach((image) => {
+                const imgElement = document.createElement('img');
+                imgElement.src = image.src || image.fullSrc;
+                if (image.fullSrc) {
+                    imgElement.setAttribute('data-full-src', image.fullSrc);
+                }
+                if (image.alt) {
+                    imgElement.alt = image.alt;
+                }
+                if (image.title) {
+                    imgElement.title = image.title;
+                }
+                container.appendChild(imgElement);
+            });
+
+            document.body.appendChild(container);
+
+            integration.container = container;
+            integration.images = normalizedImages;
+            integration.context = options.context || null;
+            integration.initialized = true;
+
+            // Ensure viewer config overrides are applied
+            if (integration.config.viewer) {
+                ViewerManager.updateConfig(integration.config.viewer);
+                if (integration.config.viewer.theme) {
+                    ViewerManager.setTheme(integration.config.viewer.theme);
+                }
+            }
+
+            const viewerOptions = Object.assign({}, options.viewerOptions || {});
+
+            viewerOptions.filter = viewerOptions.filter || function(node) {
+                return node.tagName === 'IMG';
+            };
+
+            viewerOptions.url = viewerOptions.url || function(node) {
+                return node.dataset?.fullSrc || node.getAttribute?.('data-full-src') || node.src;
+            };
+
+            const onShown = typeof options.onShown === 'function' ? options.onShown : null;
+            const onHidden = typeof options.onHidden === 'function' ? options.onHidden : null;
+            const onViewed = typeof options.onViewed === 'function' ? options.onViewed : null;
+
+            viewerOptions.viewed = function(event) {
+                handleImageViewed(integrationId, event.detail.index);
+                if (onViewed) {
+                    onViewed({ integrationId, event });
+                }
+            };
+
+            viewerOptions.shown = function(event) {
+                attachFilmstripToViewer(integration);
+
+                if (integration.metadataPanelId && integration.config.metadata?.autoShow !== false) {
+                    MetadataManager.showPanel(integration.metadataPanelId);
+                }
+
+                if (onShown) {
+                    onShown({ integrationId, event });
+                }
+            };
+
+            viewerOptions.hidden = function(event) {
+                if (onHidden) {
+                    onHidden({ integrationId, event });
+                }
+
+                if (integration.config.destroyOnHide !== false) {
+                    disposeIntegration(integrationId, { removeContainer: true });
+                }
+            };
+
+            integration.viewerId = ViewerManager.create(container, viewerOptions);
+
+            if (integration.config.filmstrip?.enabled) {
+                integration.filmstripId = FilmstripManager.create(
+                    integration.viewerId,
+                    integration.config.filmstrip
+                );
+                FilmstripManager.populate(integration.filmstripId, normalizedImages);
+            }
+
+            if (integration.config.metadata?.enabled) {
+                const panelConfig = Object.assign({
+                    position: integration.config.metadata.position || 'right',
+                    collapsible: integration.config.metadata.collapsible !== false,
+                    autoShow: integration.config.metadata.autoShow !== false
+                }, integration.config.metadata.panel || {});
+
+                integration.metadataPanelId = MetadataManager.createPanel(panelConfig);
+                MetadataManager.attachPanel(
+                    integration.metadataPanelId,
+                    integration.config.metadata.container || document.body
+                );
+            }
+
+            activeIntegration = integrationId;
+
+            const startIndex = Math.min(
+                Math.max(0, integration.config.startIndex || 0),
+                normalizedImages.length - 1
+            );
+
+            showImage(integrationId, startIndex);
+
+            return integrationId;
         },
 
         /**
@@ -745,31 +974,9 @@ const ViewerIntegration = (function() {
          * @param {string} integrationId - Integration ID
          */
         destroy: function(integrationId) {
-            const integration = integrations.get(integrationId);
-            if (!integration) return false;
+            if (!integrations.has(integrationId)) return false;
 
-            // Clean up viewer
-            if (integration.viewerId) {
-                ViewerManager.destroy(integration.viewerId);
-            }
-
-            // Clean up filmstrip
-            if (integration.filmstripId) {
-                FilmstripManager.destroy(integration.filmstripId);
-            }
-
-            // Clean up metadata panel
-            if (integration.metadataPanelId) {
-                MetadataManager.destroyPanel(integration.metadataPanelId);
-            }
-
-            // Remove from integrations
-            integrations.delete(integrationId);
-
-            if (activeIntegration === integrationId) {
-                activeIntegration = null;
-            }
-
+            disposeIntegration(integrationId);
             return true;
         },
 
@@ -777,8 +984,8 @@ const ViewerIntegration = (function() {
          * Destroy all integrations
          */
         destroyAll: function() {
-            integrations.forEach((_, id) => {
-                this.destroy(id);
+            Array.from(integrations.keys()).forEach((id) => {
+                disposeIntegration(id);
             });
         },
 
@@ -848,10 +1055,10 @@ const ViewerIntegration = (function() {
                     border: 4px solid rgba(255, 255, 255, 0.3);
                     border-top-color: #4fc3f7;
                     border-radius: 50%;
-                    animation: spin 1s linear infinite;
+                    animation: viewer-spin 1s linear infinite;
                 }
 
-                @keyframes spin {
+                @keyframes viewer-spin {
                     to { transform: translate(-50%, -50%) rotate(360deg); }
                 }
 
