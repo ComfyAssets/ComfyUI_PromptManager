@@ -761,23 +761,60 @@ class EnhancedThumbnailService:
         Returns:
             Path to thumbnail or original
         """
+        from pathlib import Path
+        logger.debug(f"serve_thumbnail called with image_id={image_id}, size={size}")
+
         # Check cache first
         cache_key = f"thumbnail:{image_id}:{size}"
         cached_path = self.cache.get(cache_key) if self.cache else None
         if cached_path and Path(cached_path).exists():
+            logger.debug(f"Found in cache: {cached_path}")
             return Path(cached_path)
 
-        # Try to get prompt info from database if image_id is numeric
+        # Try to get image info from generated_images table if image_id is numeric
         source_path = None
+        thumbnail_path = None
+
         try:
-            prompt_id = int(image_id)
-            prompt_info = self.db.get_prompt_by_id(prompt_id)
-            if prompt_info and 'image_path' in prompt_info:
-                source_path = Path(prompt_info['image_path'])
-        except (ValueError, TypeError):
+            image_id_int = int(image_id)
+            logger.debug(f"Looking for image ID {image_id_int} in database")
+
+            # Use asyncio.to_thread for the database query to make it non-blocking
+            import asyncio
+            import sqlite3
+
+            def query_db():
+                """Helper function to query database in thread."""
+                conn = sqlite3.connect(str(self.db.db_path))
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute(
+                    f"SELECT image_path, thumbnail_{size}_path FROM generated_images WHERE id = ?",
+                    (image_id_int,)
+                )
+                row = cursor.fetchone()
+                conn.close()
+                return row
+
+            row = await asyncio.to_thread(query_db)
+            logger.debug(f"Database query result: {row}")
+
+            if row:
+                if row['image_path']:  # image_path
+                    source_path = Path(row['image_path'])
+                    logger.debug(f"Found source_path: {source_path}")
+                if row[f'thumbnail_{size}_path']:  # thumbnail_X_path from database
+                    thumbnail_path = Path(row[f'thumbnail_{size}_path'])
+                    logger.debug(f"Found thumbnail_path from DB: {thumbnail_path}, exists: {thumbnail_path.exists()}")
+                    if thumbnail_path.exists():
+                        # Cache and return the thumbnail path from DB
+                        if self.cache:
+                            self.cache.set(cache_key, str(thumbnail_path), ttl=3600)
+                        logger.debug(f"Returning thumbnail from DB: {thumbnail_path}")
+                        return thumbnail_path
+        except (ValueError, TypeError) as e:
+            logger.debug(f"Not a numeric ID ({image_id}), trying as path: {e}")
             # image_id might be a path or file name
             # Try to resolve it relative to the output directory
-            from pathlib import Path
             possible_path = Path(config.comfyui.output_dir) / image_id
             if possible_path.exists():
                 source_path = possible_path
@@ -788,19 +825,26 @@ class EnhancedThumbnailService:
                     source_path = possible_path
 
         if not source_path or not source_path.exists():
+            logger.warning(f"No source path found or doesn't exist: {source_path}")
             return None
 
-        thumbnail_path = self.get_thumbnail_path(source_path, size)
+        # If we didn't find it in DB, try to compute the path
+        if not thumbnail_path:
+            thumbnail_path = self.get_thumbnail_path(source_path, size)
+            logger.debug(f"Computed thumbnail path: {thumbnail_path}")
 
-        if thumbnail_path.exists():
+        if thumbnail_path and thumbnail_path.exists():
             # Cache the path
             if self.cache:
                 self.cache.set(cache_key, str(thumbnail_path), ttl=3600)
+            logger.debug(f"Returning computed thumbnail path: {thumbnail_path}")
             return thumbnail_path
 
         if fallback_to_original and source_path.exists():
+            logger.debug(f"Falling back to original: {source_path}")
             return source_path
 
+        logger.debug(f"No thumbnail or original found for image_id={image_id}, size={size}")
         return None
 
     def get_cache_statistics(self) -> Dict[str, Any]:
