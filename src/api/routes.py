@@ -170,10 +170,14 @@ class PromptManagerAPI:
             self.thumbnail_api = ThumbnailAPI(db, self.cache, self.realtime)
             self.logger.info("Thumbnail service initialized successfully")
         except ImportError as e:
-            self.logger.warning(f"Thumbnail service not available: {e}")
+            self.logger.warning(f"Thumbnail service not available (ImportError): {e}")
+            import traceback
+            self.logger.warning(f"Import traceback: {traceback.format_exc()}")
             self.thumbnail_api = None
         except Exception as e:
             self.logger.error(f"Failed to initialize thumbnail service: {e}")
+            import traceback
+            self.logger.error(f"Full traceback: {traceback.format_exc()}")
             self.thumbnail_api = None
 
     def _normalize_prompt_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -502,6 +506,9 @@ class PromptManagerAPI:
         routes.post("/api/prompt_manager/maintenance/check-integrity")(self.check_integrity_maintenance)
         routes.post("/api/prompt_manager/maintenance/reindex")(self.reindex_database_maintenance)
         routes.post("/api/prompt_manager/maintenance/export")(self.export_backup_maintenance)
+
+        # Note: Thumbnail API routes need to be registered separately since we don't have app instance here
+        # This is handled in the ComfyUI server integration
 
         self._routes_registered = True
 
