@@ -179,7 +179,7 @@ function startProgressPolling(taskId) {
                 updateThumbnailStatus(`Processing: ${progress.current_file}`);
             }
 
-            // Check if complete
+            // Check if complete, cancelled, or failed
             if (status.status === 'completed' || processed >= total) {
                 clearInterval(thumbnailStatusInterval);
                 handleGenerationComplete(status.result || {
@@ -189,6 +189,11 @@ function startProgressPolling(taskId) {
                     total,
                     processed
                 });
+            } else if (status.status === 'cancelled' || status.status === 'cancelling') {
+                clearInterval(thumbnailStatusInterval);
+                updateThumbnailStatus(`Cancelled - ${completed} completed, ${failed} failed of ${total}`);
+                showNotification('Thumbnail generation cancelled', 'warning');
+                resetThumbnailControls();
             } else if (status.status === 'failed') {
                 clearInterval(thumbnailStatusInterval);
                 throw new Error(status.error || 'Generation failed');
