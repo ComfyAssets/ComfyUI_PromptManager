@@ -335,8 +335,12 @@ class PromptManagerAPI:
         try:
             comfy_root = fs.resolve_comfyui_root()
         except Exception as exc:  # pragma: no cover - defensive
-            self.logger.warning("Unable to resolve ComfyUI root, defaulting to CWD: %s", exc)
-            comfy_root = Path.cwd()
+            self.logger.error("Unable to resolve ComfyUI root: %s", exc)
+            raise RuntimeError(
+                f"Cannot determine ComfyUI root directory: {exc}\n"
+                "Please ensure PromptManager is installed in ComfyUI/custom_nodes/ "
+                "or set COMFYUI_PATH environment variable."
+            ) from exc
 
         detector = MigrationDetector(comfyui_root=str(comfy_root))
         progress = MigrationProgress()
