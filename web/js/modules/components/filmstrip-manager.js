@@ -148,9 +148,13 @@ const FilmstripManager = (function() {
         const instance = instances.get(filmstripId);
         if (!instance) return;
 
+        const thumbnailWidth = Number(instance.config.thumbnailWidth) || 0;
+        const lazyLoadOffset = Number(instance.config.lazyLoadOffset) || 0;
+        const horizontalMargin = thumbnailWidth * lazyLoadOffset;
+
         const options = {
             root: instance.wrapper,
-            rootMargin: `0px ${instance.config.thumbnailWidth * instance.config.lazyLoadOffset}px 0px ${instance.config.thumbnailWidth * instance.config.lazyLoadOffset}px`,
+            rootMargin: `0px ${horizontalMargin}px 0px ${horizontalMargin}px`,
             threshold: 0.01
         };
 
@@ -420,7 +424,17 @@ const FilmstripManager = (function() {
         });
         document.dispatchEvent(event);
 
-        // Trigger viewer to show this image
+        // Try to use ViewerIntegration first (preferred for metadata support)
+        if (window.ViewerIntegration && window.ViewerIntegration.showImage) {
+            // Try to find the active integration
+            const active = window.ViewerIntegration.getActiveIntegration?.();
+            if (active?.id) {
+                window.ViewerIntegration.showImage(index, active.id);
+                return;
+            }
+        }
+
+        // Fallback to direct ViewerManager (no metadata panel)
         if (window.ViewerManager) {
             const viewer = ViewerManager.getViewer(instance.viewerId);
             if (viewer) {
