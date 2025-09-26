@@ -41,19 +41,46 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+# Parse arguments FIRST to get comfy_root and db_path before any imports that need config
+def get_early_args():
+    """Parse critical arguments early to set environment."""
+    comfy_root = None
+    db_path = None
+
+    for i, arg in enumerate(sys.argv):
+        if arg == '--comfy-root' and i + 1 < len(sys.argv):
+            comfy_root = Path(sys.argv[i + 1]).expanduser().resolve()
+        elif arg == '--db-path' and i + 1 < len(sys.argv):
+            db_path = Path(sys.argv[i + 1]).expanduser().resolve()
+
+    return comfy_root, db_path
+
+# Get critical paths early
+early_comfy_root, early_db_path = get_early_args()
+
+# If user provides explicit paths, bypass the normal config system
+if early_comfy_root and early_db_path:
+    os.environ['COMFYUI_PATH'] = str(early_comfy_root)
+    os.environ['PROMPTMANAGER_BYPASS_CONFIG'] = '1'
+    print(f"✓ Using explicit paths:")
+    print(f"  ComfyUI: {early_comfy_root}")
+    print(f"  Database: {early_db_path}")
+elif early_comfy_root:
+    os.environ['COMFYUI_PATH'] = str(early_comfy_root)
+    print(f"✓ Using ComfyUI root: {early_comfy_root}")
+
 # Local imports live inside the repository; make sure our path is present.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.config import config
+# Now we can import - environment is already set if --comfy-root was provided
 from src.services.enhanced_thumbnail_service import (  # noqa: E402
     EnhancedThumbnailService,
     ThumbnailTask,
     ThumbnailStatus,
 )
 from utils.cache import MemoryCache  # noqa: E402
-from utils.file_system import get_file_system  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -315,11 +342,41 @@ def signal_handler(signum, frame):
 
 
 async def generate_thumbnails(args: argparse.Namespace) -> None:
+    # Handle ComfyUI root detection
     if args.comfy_root:
         os.environ['COMFYUI_PATH'] = str(args.comfy_root.expanduser().resolve())
+    else:
+        # Try to auto-detect if we're in a ComfyUI root directory
+        cwd = Path.cwd()
+        # Check if current directory looks like ComfyUI root
+        if (cwd / "custom_nodes").exists() and (cwd / "models").exists():
+            print(f"✓ Detected ComfyUI root at: {cwd}")
+            os.environ['COMFYUI_PATH'] = str(cwd)
+        # Check if we're in custom_nodes/ComfyUI_PromptManager
+        elif cwd.parent.name == "custom_nodes" and (cwd.parent.parent / "models").exists():
+            comfy_root = cwd.parent.parent
+            print(f"✓ Detected ComfyUI root at: {comfy_root}")
+            os.environ['COMFYUI_PATH'] = str(comfy_root)
 
-    fs = get_file_system()
-    db_path = Path(args.db_path).expanduser() if args.db_path else Path(fs.get_database_path('prompts.db'))
+    # Determine database path
+    if args.db_path:
+        # User provided explicit path - use it directly
+        db_path = Path(args.db_path).expanduser()
+    else:
+        # Try to auto-detect database path
+        try:
+            from utils.file_system import get_file_system
+            fs = get_file_system()
+            db_path = Path(fs.get_database_path('prompts.db'))
+        except RuntimeError as e:
+            print(f"\n❌ Error: {e}")
+            print("\nTo fix this, either:")
+            print("  1. Run from your ComfyUI root directory")
+            print("  2. Run from ComfyUI/custom_nodes/ComfyUI_PromptManager/")
+            print("  3. Use --comfy-root /path/to/ComfyUI")
+            print("  4. Use --db-path /path/to/prompts.db")
+            print("  5. Set COMFYUI_PATH environment variable")
+            sys.exit(1)
     if not db_path.exists():
         raise FileNotFoundError(
             f"PromptManager database not found at {db_path}. Run from a machine with ComfyUI Prompts data."
@@ -334,10 +391,6 @@ async def generate_thumbnails(args: argparse.Namespace) -> None:
 
     adapter = ThumbnailDatabaseAdapter(db_path, conn)
     cache = SimpleCache()
-
-    # Configure parallel workers
-    if args.parallel is not None:
-        config.set('thumbnail.max_parallel', args.parallel)
 
     service = EnhancedThumbnailService(adapter, cache)
     # Override concurrency if the user provided an explicit value
