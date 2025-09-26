@@ -46,10 +46,15 @@ env/
 .pytest_cache/
 .coverage
 .coverage.*
+.coveragerc
 htmlcov/
 .tox/
+tox.ini
 .hypothesis/
 test-results/
+test_report.html
+test_report.txt
+test_summary.md
 coverage.xml
 *.cover
 
