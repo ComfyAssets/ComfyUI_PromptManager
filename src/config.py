@@ -20,23 +20,36 @@ _fs = get_file_system()
 def _get_default_user_dir():
     try:
         return _fs.get_user_dir()
-    except Exception:
-        # Fallback to current directory if ComfyUI root not found
-        return Path.cwd() / "user_data"
+    except Exception as e:
+        # DO NOT create directories outside ComfyUI structure
+        # Raise the error so user knows to fix their setup
+        raise RuntimeError(
+            f"Cannot determine ComfyUI user directory: {e}\n"
+            "Please ensure PromptManager is installed in ComfyUI/custom_nodes/ "
+            "or set COMFYUI_PATH environment variable."
+        )
 
 def _get_default_db_path():
     try:
         return str((_fs.get_user_dir() / "prompts.db").resolve())
-    except Exception:
-        # Fallback to local database
-        return str((Path.cwd() / "prompts.db").resolve())
+    except Exception as e:
+        # DO NOT create database outside ComfyUI structure
+        raise RuntimeError(
+            f"Cannot determine database path: {e}\n"
+            "Please ensure PromptManager is installed in ComfyUI/custom_nodes/ "
+            "or set COMFYUI_PATH environment variable."
+        )
 
 def _get_default_log_file():
     try:
         return str((_fs.get_logs_dir() / "promptmanager.log").resolve())
-    except Exception:
-        # Fallback to local log file
-        return str((Path.cwd() / "promptmanager.log").resolve())
+    except Exception as e:
+        # DO NOT create log files outside ComfyUI structure
+        raise RuntimeError(
+            f"Cannot determine log file path: {e}\n"
+            "Please ensure PromptManager is installed in ComfyUI/custom_nodes/ "
+            "or set COMFYUI_PATH environment variable."
+        )
 
 
 @dataclass
@@ -110,7 +123,27 @@ class StorageConfig:
     def __post_init__(self):
         """Create storage directories if they don't exist."""
         base = Path(self.base_path)
-        for subdir in [self.images_path, self.thumbnails_path, 
+
+        # Verify we're inside ComfyUI structure before creating directories
+        # The base_path should already be validated by _get_default_user_dir()
+        # but double-check to prevent accidental directory creation
+        if not str(base).startswith('/') and not str(base).startswith('C:\\'):
+            # Relative path - likely incorrect
+            raise RuntimeError(
+                f"Invalid storage base path: {base}. "
+                "Must be an absolute path within ComfyUI structure."
+            )
+
+        # Only create directories if base_path looks valid
+        # (contains 'ComfyUI' or 'user' in the path)
+        path_str = str(base).lower()
+        if 'comfyui' not in path_str and 'user' not in path_str:
+            raise RuntimeError(
+                f"Storage path '{base}' doesn't appear to be within ComfyUI structure. "
+                "Refusing to create directories in potentially incorrect location."
+            )
+
+        for subdir in [self.images_path, self.thumbnails_path,
                       self.exports_path, self.temp_path]:
             path = base / subdir
             path.mkdir(parents=True, exist_ok=True)
