@@ -197,144 +197,345 @@
     <script src="https://cdn.jsdelivr.net/npm/exif-js"></script>
     <script src="https://cdn.jsdelivr.net/npm/pako@2/dist/pako.min.js"></script>
     <script>
-      (function(){
-        const $ = (s, r=document) => r.querySelector(s);
-        async function parsePngText(arrayBuffer){
-          const data=new DataView(arrayBuffer); const text={}; let pos=8;
-          while(pos<data.byteLength){ const len=data.getUint32(pos); pos+=4; const type=String.fromCharCode(data.getUint8(pos),data.getUint8(pos+1),data.getUint8(pos+2),data.getUint8(pos+3)); pos+=4; const chunk=new Uint8Array(arrayBuffer,pos,len); pos+=len; pos+=4; if(type==='tEXt'){ const idx=chunk.indexOf(0); const key=new TextDecoder().decode(chunk.slice(0,idx)); const val=new TextDecoder().decode(chunk.slice(idx+1)); text[key]=val; } else if(type==='iTXt'){ let i=0; const readz=()=>{ const j=chunk.indexOf(0,i); const s=new TextDecoder().decode(chunk.slice(i,j)); i=j+1; return s; }; const keyword=readz(); const compFlag=chunk[i++]; const compMethod=chunk[i++]; readz(); readz(); const textBytes=chunk.slice(i); let val; if(compFlag===1){ try{ val=new TextDecoder().decode(pako.inflate(textBytes)); }catch{ val=''; } } else { val=new TextDecoder().decode(textBytes);} text[keyword]=val; } else if(type==='zTXt'){ let i=0; const j=chunk.indexOf(0,i); const keyword=new TextDecoder().decode(chunk.slice(0,j)); i=j+1; i++; const val=new TextDecoder().decode(pako.inflate(chunk.slice(i))); text[keyword]=val; } }
-          return text;
+      (function () {
+        const PNG_SIGNATURE = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+        function parsePossibleParams(input) {
+          const result = { positive: '', negative: '' };
+          if (!input) return result;
+          const lines = String(input).split(/\r?\n/);
+
+          const firstLine = (lines[0] || '').replace(/^prompt[: ]*/i, '').trim();
+          if (firstLine) {
+            result.positive = firstLine;
+          }
+
+          const negativeLine = lines.find((line) => /negative prompt/i.test(line));
+          if (negativeLine) {
+            result.negative = negativeLine.replace(/negative prompt[: ]*/i, '').trim();
+          }
+
+          return result;
         }
-        function parsePossibleParams(str){ const out={positive:'',negative:''}; if(!str) return out; const negIdx=str.toLowerCase().indexOf('negative prompt'); if(negIdx>=0){ out.positive=str.slice(0,negIdx).trim().replace(/^prompt[: ]*/i,'').trim(); out.negative=str.slice(negIdx).replace(/negative prompt[: ]*/i,'').split('\n')[0].trim(); } else { out.positive=str.trim(); } return out; }
-        window.pmMetaApp=function(){ return { drag:false, thumb:'', fileName:'', fileSize:0, fileType:'', texts:{positive:'',negative:''}, workflow:'', raw:'', init(){}, async handleDrop(e){ this.drag=false; const f=e.dataTransfer.files?.[0]; if(!f) return; await this.processFile(f); }, async filePicked(e){ const f=e.target.files?.[0]; if(!f) return; await this.processFile(f); e.target.value=''; }, async processFile(file){ this.fileName=file.name; this.fileSize=file.size; this.fileType=file.type; this.thumb=URL.createObjectURL(file); const buf=await file.arrayBuffer(); this.texts={positive:'',negative:''}; this.workflow=''; this.raw=''; if(file.type==='image/png'){ const t=await parsePngText(buf); this.raw=JSON.stringify(t,null,2); const params=t.parameters||t.Parameter||t.parametersTxt||''; const prompt=t.prompt||t.Prompt||''; const neg=t['negative_prompt']||t.Negative||''; const wflow=t.workflow||t.Workflow||t['sd-metadata']||''; if(wflow){ try{ this.workflow=JSON.stringify(JSON.parse(wflow),null,2);}catch{ this.workflow=String(wflow);} } if(params){ const p=parsePossibleParams(params); this.texts.positive=p.positive||prompt||''; this.texts.negative=p.negative||neg||''; } else { this.texts.positive=prompt||''; this.texts.negative=neg||''; } } else if(file.type==='image/jpeg' || file.type==='image/jpg'){ EXIF.getData(file, ()=>{ const all=EXIF.getAllTags(this)||{}; this.raw=JSON.stringify(all,null,2); const user=all.UserComment||all.ImageDescription||''; const p=parsePossibleParams(String(user)); this.texts.positive=p.positive; this.texts.negative=p.negative; }); } else { this.raw='(unknown image format for metadata)'; } }, copy(txt){ navigator.clipboard.writeText(txt||''); if (window.showToast) { window.showToast('Copied!', 'success'); } else if (window.notificationService) { window.notificationService.success('Copied!'); } else { console.log('[success] Copied!'); } }, downloadRaw(){ const blob=new Blob([this.raw||'{}'],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='metadata.json'; a.click(); URL.revokeObjectURL(url); }, }; }
-      })();
-    </script>
-    <script>
-      // Extend/override pmMetaApp with gallery support and robust buffer handling
-      (function(){
-        function detectType(buf){ const b=new Uint8Array(buf); const isPNG = b[0]===0x89 && b[1]===0x50 && b[2]===0x4E && b[3]===0x47 && b[4]===0x0D && b[5]===0x0A && b[6]===0x1A && b[7]===0x0A; const isJPG = b[0]===0xFF && b[1]===0xD8; return isPNG ? 'image/png' : (isJPG ? 'image/jpeg' : 'application/octet-stream'); }
-        const original = window.pmMetaApp;
-        window.pmMetaApp = function(){
-          const base = original ? original() : {};
-          return Object.assign(base, {
-            gallery: [],
-            async processBuffer(buf, name, type){
-              this.texts={positive:'',negative:''}; this.workflow=''; this.raw='';
-              if(!type||type==='application/octet-stream') type = detectType(buf);
-              if(type==='image/png'){
-                const t = await (async function parsePngText(arrayBuffer){
-                  const data=new DataView(arrayBuffer); const text={}; let pos=8;
-                  while(pos<data.byteLength){ const len=data.getUint32(pos); pos+=4; const typeStr=String.fromCharCode(data.getUint8(pos),data.getUint8(pos+1),data.getUint8(pos+2),data.getUint8(pos+3)); pos+=4; const chunk=new Uint8Array(arrayBuffer,pos,len); pos+=len; pos+=4; if(typeStr==='tEXt'){ const idx=chunk.indexOf(0); const key=new TextDecoder().decode(chunk.slice(0,idx)); const val=new TextDecoder().decode(chunk.slice(idx+1)); text[key]=val; } else if(typeStr==='iTXt'){ let i=0; const readz=()=>{ const j=chunk.indexOf(0,i); const s=new TextDecoder().decode(chunk.slice(i,j)); i=j+1; return s; }; const keyword=readz(); const compFlag=chunk[i++]; const compMethod=chunk[i++]; readz(); readz(); const textBytes=chunk.slice(i); let val; if(compFlag===1){ try{ val=new TextDecoder().decode(pako.inflate(textBytes)); }catch{ val=''; } } else { val=new TextDecoder().decode(textBytes);} text[keyword]=val; } else if(typeStr==='zTXt'){ let i=0; const j=chunk.indexOf(0,i); const keyword=new TextDecoder().decode(chunk.slice(0,j)); i=j+1; i++; const val=new TextDecoder().decode(pako.inflate(chunk.slice(i))); text[keyword]=val; } }
-                  return text;
-                })(buf);
-                this.raw=JSON.stringify(t,null,2);
-                const params=t.parameters||t.Parameter||t.parametersTxt||'';
-                const prompt=t.prompt||t.Prompt||''; const neg=t['negative_prompt']||t.Negative||'';
-                const wflow=t.workflow||t.Workflow||t['sd-metadata']||'';
-                if(wflow){ try{ this.workflow=JSON.stringify(JSON.parse(wflow),null,2);}catch{ this.workflow=String(wflow);} }
-                if(params){ const split = (function(str){ const out={positive:'',negative:''}; const idx=str.toLowerCase().indexOf('negative prompt'); if(idx>=0){ out.positive=str.slice(0,idx).trim().replace(/^prompt[: ]*/i,'').trim(); out.negative=str.slice(idx).replace(/negative prompt[: ]*/i,'').split('\n')[0].trim(); } else { out.positive=str.trim(); } return out; })(params); this.texts.positive=split.positive||prompt||''; this.texts.negative=split.negative||neg||''; } else { this.texts.positive=prompt||''; this.texts.negative=neg||''; }
-              } else if(type==='image/jpeg'){
-                this.raw = `(JPEG) ${name} — ${Math.round(buf.byteLength/1024)} KB`;
-              } else {
-                this.raw='(unknown image format for metadata)';
+
+        function detectType(buffer) {
+          const bytes = new Uint8Array(buffer);
+          const isPng = PNG_SIGNATURE.every((byte, idx) => bytes[idx] === byte);
+          if (isPng) return 'image/png';
+          const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8;
+          if (isJpeg) return 'image/jpeg';
+          return 'application/octet-stream';
+        }
+
+        async function parsePngChunks(arrayBuffer) {
+          const dataView = new DataView(arrayBuffer);
+          const result = {};
+          if (dataView.getUint32(0) !== 0x89504e47) {
+            return result;
+          }
+
+          let offset = 8;
+          const decoder = new TextDecoder('utf-8');
+
+          while (offset < dataView.byteLength) {
+            const length = dataView.getUint32(offset);
+            const type = String.fromCharCode(
+              dataView.getUint8(offset + 4),
+              dataView.getUint8(offset + 5),
+              dataView.getUint8(offset + 6),
+              dataView.getUint8(offset + 7)
+            );
+            const chunk = new Uint8Array(arrayBuffer, offset + 8, length);
+            offset += length + 12;
+
+            if (type === 'tEXt') {
+              const separator = chunk.indexOf(0);
+              if (separator > 0) {
+                const key = decoder.decode(chunk.slice(0, separator));
+                const value = decoder.decode(chunk.slice(separator + 1));
+                result[key] = value;
               }
-              this.fileName=name; this.fileType=type; this.fileSize=buf.byteLength;
-              return true;
+            } else if (type === 'iTXt') {
+              let index = 0;
+              const readNullTerminated = () => {
+                const end = chunk.indexOf(0, index);
+                const value = decoder.decode(chunk.slice(index, end));
+                index = end + 1;
+                return value;
+              };
+              const keyword = readNullTerminated();
+              const compressed = chunk[index++];
+              index++; // compression method
+              readNullTerminated(); // language tag
+              readNullTerminated(); // translated keyword
+              const textBytes = chunk.slice(index);
+
+              if (compressed === 1 && typeof pako !== 'undefined') {
+                try {
+                  result[keyword] = decoder.decode(pako.inflate(textBytes));
+                } catch (error) {
+                  console.warn('Failed to inflate iTXt chunk', error);
+                  result[keyword] = decoder.decode(textBytes);
+                }
+              } else {
+                result[keyword] = decoder.decode(textBytes);
+              }
+            } else if (type === 'zTXt' && typeof pako !== 'undefined') {
+              let index = 0;
+              const separator = chunk.indexOf(0, index);
+              const keyword = decoder.decode(chunk.slice(0, separator));
+              index = separator + 2; // skip null + compression method
+              try {
+                result[keyword] = decoder.decode(pako.inflate(chunk.slice(index)));
+              } catch (error) {
+                console.warn('Failed to inflate zTXt chunk', error);
+              }
+            }
+
+            if (type === 'IEND') break;
+          }
+
+          return result;
+        }
+
+        function formatWorkflow(value) {
+          if (!value) return '';
+          if (typeof value === 'string') {
+            const trimmed = value.trim();
+            if (!trimmed) return '';
+            try {
+              const parsed = JSON.parse(trimmed);
+              return JSON.stringify(parsed, null, 2);
+            } catch {
+              return trimmed;
+            }
+          }
+          try {
+            return JSON.stringify(value, null, 2);
+          } catch {
+            return String(value);
+          }
+        }
+
+        function safeStringify(value) {
+          if (value === undefined || value === null) {
+            return '';
+          }
+          try {
+            return JSON.stringify(value, null, 2);
+          } catch (error) {
+            console.warn('Failed to stringify metadata', error);
+            return String(value);
+          }
+        }
+
+        function ensureMetadataManagerReady() {
+          if (window.MetadataManager?.init && !window.__pmMetadataManagerReady) {
+            window.MetadataManager.init({ enableCache: false });
+            window.__pmMetadataManagerReady = true;
+          }
+        }
+
+        window.pmMetaApp = function () {
+          return {
+            drag: false,
+            thumb: '',
+            fileName: '',
+            fileSize: 0,
+            fileType: '',
+            metadata: null,
+            texts: { positive: '', negative: '' },
+            workflow: '',
+            raw: '',
+            error: null,
+            init() {
+              ensureMetadataManagerReady();
             },
-            async openGallery(){ try{ await this.loadGallery(); } finally { const d=document.getElementById('galleryPicker'); if(d&&typeof d.show==='function') d.show(); else d?.setAttribute('open','true'); } },
-            closeGallery(){ const d=document.getElementById('galleryPicker'); if(d&&typeof d.hide==='function') d.hide(); else d?.removeAttribute('open'); },
-            async loadGallery(){ try{ const r=await fetch('/prompt_manager/images/output?limit=50'); const data = await r.json(); const arr = Array.isArray(data) ? data : (Array.isArray(data.images) ? data.images : []); this.gallery = arr.map(x=>{ const path = x.path || x.image_path || x.filename || x.file || x; const url = x.url || `/prompt_manager/images/serve/${encodeURIComponent(path)}`; const thumb = x.thumbnail_url || url; const name = (typeof x==='string') ? x.split('/').pop() : (x.filename || x.name || path.split('/').pop()); return { path, url, thumb, name }; }); if(this.gallery.length===0) this.gallery=[{path:'',url:'',name:'(no images found)'}]; } catch{ this.gallery=[{path:'',url:'',name:'(stub)'}]; } },
-            async loadFromGallery(g){ try{ if(!g||!g.url) return; const resp = await fetch(g.url); const buf = await resp.arrayBuffer(); this.thumb = g.thumb || g.url; await this.processBuffer(buf, g.name || 'image', undefined); this.closeGallery(); } catch{} },
-          });
+            async handleDrop(event) {
+              this.drag = false;
+              const file = event.dataTransfer.files?.[0];
+              if (file) {
+                await this.processFile(file);
+              }
+            },
+            async filePicked(event) {
+              const file = event.target.files?.[0];
+              if (file) {
+                await this.processFile(file);
+                event.target.value = '';
+              }
+            },
+            async processFile(file) {
+              this.error = null;
+              this.metadata = null;
+              this.texts = { positive: '', negative: '' };
+              this.workflow = '';
+              this.raw = '';
+              if (this.thumb) {
+                URL.revokeObjectURL(this.thumb);
+              }
+              this.thumb = URL.createObjectURL(file);
+              this.fileName = file.name;
+              this.fileSize = file.size;
+              this.fileType = file.type || '';
+
+              ensureMetadataManagerReady();
+              const handled = await this.tryMetadataManager(file);
+              if (!handled) {
+                await this.extractWithFallback(file);
+              }
+            },
+            async tryMetadataManager(file) {
+              if (!window.MetadataManager || typeof window.MetadataManager.extract !== 'function') {
+                return false;
+              }
+              try {
+                const metadata = await window.MetadataManager.extract(file, false);
+                if (!metadata) {
+                  return false;
+                }
+                this.applyMetadata(metadata);
+                return true;
+              } catch (error) {
+                console.error('MetadataManager.extract failed', error);
+                this.error = error?.message || String(error);
+                return false;
+              }
+            },
+            applyMetadata(metadata) {
+              this.metadata = metadata;
+              const standard = metadata.standard || {};
+              if (standard.filename) {
+                this.fileName = standard.filename;
+              }
+              if (typeof standard.fileSize === 'number') {
+                this.fileSize = standard.fileSize;
+              }
+              if (standard.mimeType) {
+                this.fileType = standard.mimeType;
+              }
+
+              const paramsSource = metadata.custom?.parameters ?? metadata.custom?.Parameter ?? metadata.parameters ?? '';
+              const prompts = parsePossibleParams(paramsSource);
+              const positive = metadata.custom?.prompt ?? metadata.custom?.positivePrompt ?? metadata.prompt ?? prompts.positive ?? '';
+              const negative = metadata.custom?.negativePrompt ?? metadata.negativePrompt ?? prompts.negative ?? '';
+              this.texts = { positive: positive || '', negative: negative || '' };
+
+              const workflowCandidate =
+                metadata.custom?.workflow ??
+                metadata.custom?.Workflow ??
+                metadata.custom?.['workflow-json'] ??
+                metadata.custom?.workflow_json ??
+                metadata.workflow ??
+                metadata['sd-metadata'];
+              this.workflow = formatWorkflow(workflowCandidate);
+
+              const rawSource = metadata.raw && Object.keys(metadata.raw).length ? metadata.raw : metadata;
+              this.raw = safeStringify(rawSource);
+            },
+            async extractWithFallback(file) {
+              try {
+                const buffer = await file.arrayBuffer();
+                let type = (file.type && file.type.toLowerCase()) || detectType(buffer);
+                if (!type || type === 'application/octet-stream') {
+                  type = detectType(buffer);
+                }
+
+                if (type === 'image/png') {
+                  const chunks = await parsePngChunks(buffer);
+                  this.raw = safeStringify(chunks);
+                  const params = chunks.parameters || chunks.Parameter || chunks.parametersTxt || '';
+                  const parsed = parsePossibleParams(params);
+                  const prompt = chunks.prompt || chunks.Prompt || '';
+                  const negative = chunks['negative_prompt'] || chunks.Negative || '';
+                  this.texts = {
+                    positive: parsed.positive || prompt,
+                    negative: parsed.negative || negative
+                  };
+                  this.workflow = formatWorkflow(
+                    chunks.workflow ||
+                    chunks.Workflow ||
+                    chunks['sd-metadata']
+                  );
+                } else if (type === 'image/jpeg' || type === 'image/jpg') {
+                  const exif = await this.extractJpegExif(buffer);
+                  this.raw = safeStringify(exif);
+                  const prompts = parsePossibleParams(exif.UserComment || exif.ImageDescription || '');
+                  this.texts = {
+                    positive: prompts.positive,
+                    negative: prompts.negative
+                  };
+                } else {
+                  this.raw = '(unknown image format for metadata)';
+                }
+
+                this.fileType = type;
+                this.fileSize = buffer.byteLength;
+              } catch (error) {
+                console.error('Fallback metadata extraction failed', error);
+                this.raw = '(metadata extraction failed)';
+              }
+            },
+            async extractJpegExif(buffer) {
+              if (typeof EXIF === 'undefined') {
+                return {};
+              }
+              try {
+                if (typeof EXIF.readFromBinaryFile === 'function') {
+                  return EXIF.readFromBinaryFile(buffer) || {};
+                }
+              } catch (error) {
+                console.warn('EXIF parsing failed', error);
+              }
+              return {};
+            },
+            copy(text) {
+              const value = text || '';
+              if (navigator.clipboard && value) {
+                navigator.clipboard.writeText(value);
+              }
+              if (window.showToast) {
+                window.showToast('Copied!', 'success');
+              } else {
+                console.log('[Copied]', value);
+              }
+            },
+            downloadRaw() {
+              const payload = typeof this.raw === 'string' ? this.raw : safeStringify(this.raw);
+              const blob = new Blob([payload || '{}'], { type: 'application/json' });
+              const url = URL.createObjectURL(blob);
+              const anchor = document.createElement('a');
+              anchor.href = url;
+              anchor.download = 'metadata.json';
+              anchor.click();
+              URL.revokeObjectURL(url);
+            }
+          };
         };
       })();
     </script>
-    <script>
-      (function(){
-        function parsePossibleParams(str){ const out={positive:'',negative:''}; if(!str) return out; const negIdx=str.toLowerCase().indexOf('negative prompt'); if(negIdx>=0){ out.positive=str.slice(0,negIdx).trim().replace(/^prompt[: ]*/i,'').trim(); out.negative=str.slice(negIdx).replace(/negative prompt[: ]*/i,'').split('\n')[0].trim(); } else { out.positive=str.trim(); } return out; }
-        async function parsePngText(arrayBuffer){ const data=new DataView(arrayBuffer); const text={}; let pos=8; while(pos<data.byteLength){ const len=data.getUint32(pos); pos+=4; const type=String.fromCharCode(data.getUint8(pos),data.getUint8(pos+1),data.getUint8(pos+2),data.getUint8(pos+3)); pos+=4; const chunk=new Uint8Array(arrayBuffer,pos,len); pos+=len; pos+=4; if(type==='tEXt'){ const idx=chunk.indexOf(0); const key=new TextDecoder().decode(chunk.slice(0,idx)); const val=new TextDecoder().decode(chunk.slice(idx+1)); text[key]=val; } else if(type==='iTXt'){ let i=0; const readz=()=>{ const j=chunk.indexOf(0,i); const s=new TextDecoder().decode(chunk.slice(i,j)); i=j+1; return s; }; const keyword=readz(); const compFlag=chunk[i++]; const compMethod=chunk[i++]; readz(); readz(); const textBytes=chunk.slice(i); let val; if(compFlag===1){ try{ val=new TextDecoder().decode(pako.inflate(textBytes)); }catch{ val=''; } } else { val=new TextDecoder().decode(textBytes);} text[keyword]=val; } else if(type==='zTXt'){ let i=0; const j=chunk.indexOf(0,i); const keyword=new TextDecoder().decode(chunk.slice(0,j)); i=j+1; i++; const val=new TextDecoder().decode(pako.inflate(chunk.slice(i))); text[keyword]=val; } } return text; }
-        function detectType(buf){ const b=new Uint8Array(buf); const isPNG = b[0]===0x89 && b[1]===0x50 && b[2]===0x4E && b[3]===0x47 && b[4]===0x0D && b[5]===0x0A && b[6]===0x1A && b[7]===0x0A; const isJPG = b[0]===0xFF && b[1]===0xD8; return isPNG ? 'image/png' : (isJPG ? 'image/jpeg' : 'application/octet-stream'); }
-        function parseJpegEXIF(buf){ const view=new DataView(buf); let off=0; const len=view.byteLength; const res={}; if(len<4 || view.getUint16(0)!==0xFFD8) return res; off=2; while(off+4<=len){ if(view.getUint8(off)!==0xFF) break; const marker=view.getUint8(off+1); off+=2; if(marker===0xD9||marker===0xDA) break; const size=view.getUint16(off,false); const start=off+2; if(marker===0xE1 && start+6<=len){ const isExif = String.fromCharCode(view.getUint8(start),view.getUint8(start+1),view.getUint8(start+2),view.getUint8(start+3))==='Exif' && view.getUint8(start+4)===0 && view.getUint8(start+5)===0; if(isExif){ const tiff = start+6; if(tiff+8<=len){ const bom=view.getUint16(tiff,false); const little = bom===0x4949; const rd16=(p)=>view.getUint16(p,little); const rd32=(p)=>view.getUint32(p,little); const readIFD=(base, ptr)=>{ const out={}; if(ptr+2>len) return out; let n=rd16(ptr); let p=ptr+2; for(let i=0;i<n;i++){ if(p+12>len) break; const tag=rd16(p); const type=rd16(p+2); const count=rd32(p+4); const valOff=rd32(p+8); const typeSize = (type===1||type===2||type===7)?1:(type===3?2:(type===4||type===9?4:8)); const byteLen = count*typeSize; let vOff = (byteLen<=4)? (p+8) : (tiff+valOff); let val=''; try{ if(type===2){ const bytes = new Uint8Array(buf, vOff, Math.max(0, Math.min(byteLen, len-vOff))); val = new TextDecoder().decode(bytes).replace(/\0+$/,''); } else if(type===7){ const bytes = new Uint8Array(buf, vOff, Math.max(0, Math.min(byteLen, len-vOff))); if(bytes.length>=8){ const head = new TextDecoder().decode(bytes.slice(0,8)); if(head.startsWith('ASCII')) val = new TextDecoder().decode(bytes.slice(8)).replace(/\0+$/,''); else val = new TextDecoder().decode(bytes).replace(/\0+$/,''); } else val = new TextDecoder().decode(bytes).replace(/\0+$/,''); } }catch(e){ val=''; } if(tag===0x010E && val) out.ImageDescription = val; if(tag===0x9286 && val) out.UserComment = val; if(tag===0x8769){ const exifPtr = tiff + valOff; const ex = readIFD(base, exifPtr); Object.assign(out, ex); } p+=12; } return out; }; const ifd0 = tiff + rd32(tiff+4); Object.assign(res, readIFD(tiff, ifd0)); } } } return res; }
-        const prev = window.pmMetaApp;
-        window.pmMetaApp = function(){ const base = prev ? prev() : {}; return Object.assign(base, {
-          gallery: [],
-          async processBuffer(buf, name, type){ this.texts={positive:'',negative:''}; this.workflow=''; this.raw=''; if(!type||type==='application/octet-stream'){ type = detectType(buf); } if(type==='image/png'){ const t=await parsePngText(buf); this.raw=JSON.stringify(t,null,2); const params=t.parameters||t.Parameter||t.parametersTxt||''; const prompt=t.prompt||t.Prompt||''; const neg=t['negative_prompt']||t.Negative||''; const wflow=t.workflow||t.Workflow||t['sd-metadata']||''; if(wflow){ try{ this.workflow=JSON.stringify(JSON.parse(wflow),null,2);}catch{ this.workflow=String(wflow);} } if(params){ const p=parsePossibleParams(params); this.texts.positive=p.positive||prompt||''; this.texts.negative=p.negative||neg||''; } else { this.texts.positive=prompt||''; this.texts.negative=neg||''; } } else if(type==='image/jpeg'){ const ex=parseJpegEXIF(buf); this.raw=JSON.stringify(ex,null,2); const user = ex.UserComment || ex.ImageDescription || ''; const p=parsePossibleParams(String(user)); this.texts.positive=p.positive; this.texts.negative=p.negative; } else { this.raw='(unknown image format for metadata)'; } this.fileName=name; this.fileType=type; this.fileSize=buf.byteLength; return true; },
-          async openGallery(){ try{ await this.loadGallery(); } finally { const d=document.getElementById('galleryPicker'); if(d&&typeof d.show==='function') d.show(); else d?.setAttribute('open','true'); } },
-          closeGallery(){ const d=document.getElementById('galleryPicker'); if(d&&typeof d.hide==='function') d.hide(); else d?.removeAttribute('open'); },
-          async loadGallery(){ try{ const r=await fetch('/prompt_manager/images/output?limit=50'); const data = await r.json(); const arr = Array.isArray(data) ? data : (Array.isArray(data.images) ? data.images : []); this.gallery = arr.map(x=>{ const path = x.path || x.image_path || x.filename || x.file || x; const url = x.url || `/prompt_manager/images/serve/${encodeURIComponent(path)}`; const thumb = x.thumbnail_url || url; const name = (typeof x==='string') ? x.split('/').pop() : (x.filename || x.name || path.split('/').pop()); return { path, url, thumb, name }; }); if(this.gallery.length===0) this.gallery=[{path:'',url:'',name:'(no images found)'}]; } catch{ this.gallery=[{path:'',url:'',name:'(stub)'}]; } },
-          async loadFromGallery(g){ try{ if(!g||!g.url) return; const resp = await fetch(g.url); const buf = await resp.arrayBuffer(); this.thumb = g.thumb || g.url; await this.processBuffer(buf, g.name || 'image', undefined); this.closeGallery(); } catch{} },
-        }); };
-      })();
-    </script>
-        <!-- ViewerJS Library -->
-        <script src="/prompt_manager/vendor/viewerjs/dist/viewer.min.js"></script>
 
-        <!-- Core modules -->
-        <script src="/prompt_manager/js/modules/core/events.js"></script>
-        <script src="/prompt_manager/js/modules/core/sse.js"></script>
+    <!-- ViewerJS Library -->
+    <script src="/prompt_manager/vendor/viewerjs/dist/viewer.min.js"></script>
 
-        <!-- SSE Indicators -->
-        <script src="/prompt_manager/js/modules/components/status-indicator.js"></script>
-        <script src="/prompt_manager/js/modules/components/progress-indicator.js"></script>
-        <script src="/prompt_manager/js/modules/components/footer-status.js"></script>
+    <!-- Core modules -->
+    <script src="/prompt_manager/js/modules/core/events.js"></script>
+    <script src="/prompt_manager/js/modules/core/sse.js"></script>
 
-        <!-- ViewerJS Modules -->
-        <script src="/prompt_manager/js/modules/components/viewer-manager.js"></script>
-        <script src="/prompt_manager/js/modules/components/filmstrip-manager.js"></script>
-        <script src="/prompt_manager/js/modules/services/metadata-manager.js"></script>
+    <!-- SSE Indicators -->
+    <script src="/prompt_manager/js/modules/components/status-indicator.js"></script>
+    <script src="/prompt_manager/js/modules/components/progress-indicator.js"></script>
+    <script src="/prompt_manager/js/modules/components/footer-status.js"></script>
+
+    <!-- ViewerJS Modules -->
+    <script src="/prompt_manager/js/modules/components/viewer-manager.js"></script>
+    <script src="/prompt_manager/js/modules/components/filmstrip-manager.js"></script>
+    <script src="/prompt_manager/js/modules/services/metadata-manager.js"></script>
+
         <script src="/prompt_manager/js/modules/core/viewer-integration.js"></script>
 
         <!-- Existing scripts -->
         <script src="/prompt_manager/js/notifications.js"></script>
-
-        <!-- Initialize ViewerJS Integration for Metadata Page -->
-        <script>
-          document.addEventListener('DOMContentLoaded', function() {
-            // Initialize realtime components
-            if (window.FooterStatus) {
-              FooterStatus.init({
-                showText: true,
-                showCount: true,
-                enableTooltips: true
-              });
-            }
-
-            if (window.StatusIndicator) {
-              StatusIndicator.init({
-                position: 'bottom-right',
-                autoHide: true,
-                autoHideDelay: 5000,
-                showDetails: true
-              });
-            }
-
-            if (window.ProgressIndicator) {
-              ProgressIndicator.init({
-                position: 'top-center',
-                showPercentage: true,
-                showTimeEstimate: true,
-                stackable: true
-              });
-            }
-
-            // Wait for Alpine to be ready
-            setTimeout(function() {
-              ViewerIntegration.init({
-                viewer: {
-                  theme: 'dark',
-                  inline: true,
-                  toolbar: false,
-                  navbar: false
-                },
-                metadata: {
-                  enabled: true,
-                  position: 'bottom',
-                  autoShow: true,
-                  showExportButton: true
-                }
-              });
-            }, 100);
-          });
-        </script>
 
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <!-- Footer -->
