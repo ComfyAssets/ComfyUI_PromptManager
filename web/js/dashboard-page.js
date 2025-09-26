@@ -51,6 +51,14 @@
     countLabel: null,
   };
   let addTagsDraft = [];
+  const promptGalleryState = {
+    promptId: null,
+    images: [],
+    integrationId: null,
+    activeIndex: 0,
+  };
+  let promptGalleryIntegrationId = null;
+  let viewerIntegrationReady = false;
 
   /**
    * Initialize dashboard page
@@ -62,6 +70,10 @@
     paginationState.limit = getItemsPerPageSetting();
     filmStripSize = getFilmStripSizeSetting();
     switchModel(currentModel);
+
+    // Note: Dashboard now uses ViewerManager directly instead of ViewerIntegration
+    // This avoids container conflicts and provides more reliable modal display
+
     if (window.MigrationService) {
       window.MigrationService.init().catch((error) => {
         console.error('Migration init failed:', error);
@@ -294,6 +306,13 @@
     if (galleryOverlay) {
       galleryOverlay.addEventListener('click', (event) => {
         if (event.target === galleryOverlay) {
+          hidePromptGallery();
+        }
+      });
+
+      galleryOverlay.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
           hidePromptGallery();
         }
       });
@@ -918,14 +937,68 @@
       button.classList.add('blur-sensitive', 'is-blurred');
     }
 
-    button.addEventListener('click', () => openPromptImages(prompt, index));
+    button.addEventListener('click', () => openPromptImageViewer(prompt, index));
     return button;
   }
 
   function openImageInNewTab(image) {
-    const url = image?.url || image?.thumbnail_url;
-    if (!url) return;
-    window.open(url, '_blank');
+    const url = image?.url || image?.fullSrc || image?.thumbnail_url;
+    if (!url) {
+      return;
+    }
+    window.open(url, '_blank', 'noopener');
+  }
+
+  async function openPromptImageViewer(prompt, startIndex = 0) {
+    if (!prompt || !prompt.id) {
+      return;
+    }
+
+    try {
+      const promptImages = await ensurePromptImages(prompt, PROMPT_GALLERY_IMAGE_LIMIT);
+      if (!Array.isArray(promptImages) || promptImages.length === 0) {
+        console.warn('No images found for prompt', prompt.id);
+        return;
+      }
+
+      const preferences = getGalleryViewerPreferences();
+      if (!ensureViewerIntegrationReady(preferences)) {
+        openImageInNewTab(promptImages[startIndex] || promptImages[0]);
+        return;
+      }
+
+      const viewerItems = promptImages
+        .map((image, index) => mapPromptImageToViewerEntry(image, index, prompt))
+        .filter(Boolean);
+
+      if (!viewerItems.length) {
+        openImageInNewTab(promptImages[startIndex] || promptImages[0]);
+        return;
+      }
+
+      const safeIndex = Math.min(Math.max(startIndex, 0), viewerItems.length - 1);
+      const integrationId = window.ViewerIntegration.openImageSet(viewerItems, {
+        startIndex: safeIndex,
+        viewer: preferences.viewer,
+        filmstrip: preferences.filmstrip,
+        metadata: preferences.metadata,
+        context: {
+          type: 'prompt-filmstrip',
+          promptId: prompt.id,
+        },
+      });
+
+      if (!integrationId) {
+        openImageInNewTab(promptImages[safeIndex]);
+      }
+    } catch (error) {
+      console.error('Failed to open prompt image viewer:', error);
+      const promptImages = promptGalleryState.images.length ? promptGalleryState.images : null;
+      const fallbackImage = promptImages?.[startIndex] || promptImages?.[0];
+      if (fallbackImage) {
+        openImageInNewTab(fallbackImage);
+      }
+    }
   }
 
   async function openPromptImages(prompt, startIndex = 0) {
@@ -933,9 +1006,25 @@
       return;
     }
 
-    // Navigate to the gallery page with the prompt ID
-    const url = `/prompt_manager/gallery.html?prompt_id=${encodeURIComponent(prompt.id)}`;
-    window.open(url, '_blank');
+    showPromptGalleryOverlay(prompt);
+    updateGalleryStatus('Loading images…');
+
+    try {
+      const promptImages = await ensurePromptImages(prompt, PROMPT_GALLERY_IMAGE_LIMIT);
+      if (!Array.isArray(promptImages) || promptImages.length === 0) {
+        updateGalleryStatus('No images linked to this prompt yet.');
+        return;
+      }
+
+      promptGalleryState.promptId = prompt.id;
+      promptGalleryState.images = promptImages;
+      promptGalleryState.activeIndex = Math.min(Math.max(startIndex, 0), promptImages.length - 1);
+
+      renderPromptGallery(prompt, promptImages, promptGalleryState.activeIndex);
+    } catch (error) {
+      console.error('Failed to load images for prompt gallery:', error);
+      updateGalleryStatus('Failed to load images.');
+    }
   }
 
   async function startEditPrompt(prompt) {
@@ -1011,17 +1100,39 @@
     return fetched.slice(0, limit);
   }
 
+  function ensureViewerIntegrationReady(preferences) {
+    if (viewerIntegrationReady) {
+      return true;
+    }
+    if (!window.ViewerIntegration || typeof window.ViewerIntegration.init !== 'function') {
+      console.warn('ViewerIntegration not available');
+      return false;
+    }
+    try {
+      window.ViewerIntegration.init({
+        viewer: preferences?.viewer,
+        filmstrip: preferences?.filmstrip,
+        metadata: preferences?.metadata,
+      });
+      viewerIntegrationReady = true;
+    } catch (error) {
+      console.warn('ViewerIntegration init failed', error);
+      viewerIntegrationReady = false;
+    }
+    return viewerIntegrationReady;
+  }
+
   function getGalleryElements() {
     return {
       overlay: document.getElementById('promptGalleryOverlay'),
       title: document.getElementById('promptGalleryTitle'),
-      grid: document.getElementById('promptGalleryGrid'),
+      gallery: document.getElementById('promptGalleryGallery'),
       status: document.getElementById('promptGalleryStatus'),
     };
   }
 
   function showPromptGalleryOverlay(prompt) {
-    const { overlay, title, grid } = getGalleryElements();
+    const { overlay, title, gallery } = getGalleryElements();
     if (!overlay) {
       return;
     }
@@ -1030,85 +1141,151 @@
     overlay.classList.add('is-visible');
     updateBodyScrollLock();
 
-    if (grid) {
-      grid.innerHTML = '';
+    if (gallery) {
+      gallery.innerHTML = '';
     }
+
+    if (overlay.getAttribute('tabindex') === null) {
+      overlay.setAttribute('tabindex', '-1');
+    }
+    overlay.focus({ preventScroll: true });
 
     if (title) {
       const promptLabel = prompt?.prompt || prompt?.positive_prompt || '';
       const truncated = promptLabel ? truncate(promptLabel, 80) : '';
-      title.textContent = truncated
-        ? `Prompt #${prompt.id}: ${truncated}`
-        : `Prompt #${prompt.id}`;
+      title.textContent = truncated ? `Prompt #${prompt.id}: ${truncated}` : `Prompt #${prompt.id}`;
     }
   }
 
-  function renderPromptGallery(prompt, images, focusIndex = 0) {
-    const { grid } = getGalleryElements();
-    if (!grid) {
+  function normalizePromptImageForGallery(image, index = 0) {
+    const shared = window.GalleryShared;
+    const sizeLabel = shared?.formatFileSize ? shared.formatFileSize(image.file_size) : computeSizeLabel(image.file_size);
+
+    return Object.assign({}, image, {
+      id: image.id ?? image.image_id ?? `prompt-image-${index}`,
+      filename: image.file_name || image.filename || image.name || `Image ${index + 1}`,
+      thumbnail_url: image.thumbnail_url || image.thumbnail || image.preview || image.url,
+      image_url: image.url || image.full_url || image.path,
+      dimensions: image.dimensions || buildDimensionsLabel(image.width, image.height),
+      size: image.size || sizeLabel,
+      generation_time: image.generation_time || image.created_at || image.timestamp,
+    });
+  }
+
+  function buildDimensionsLabel(width, height) {
+    if (width && height) {
+      return `${width}x${height}`;
+    }
+    return 'Unknown';
+  }
+
+  function computeSizeLabel(bytes) {
+    if (!Number.isFinite(bytes)) {
+      return 'Unknown';
+    }
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), sizes.length - 1);
+    return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${sizes[i]}`;
+  }
+
+  function mapPromptImageToViewerEntry(image, index = 0, prompt = null) {
+    if (!image) {
+      return null;
+    }
+
+    const thumb = image.thumbnail_url || image.thumbnail || image.thumbnail_medium_url || image.preview || image.src || image.url || image.full_url || '';
+    const full = image.url || image.full_url || image.path || image.image_url || image.src || thumb;
+
+    if (!thumb && !full) {
+      return null;
+    }
+
+    const label = image.file_name || image.filename || image.name || `Image ${index + 1}`;
+
+    return {
+      src: thumb || full,
+      thumbnail: thumb || full,
+      fullSrc: full || thumb,
+      alt: image.alt || label,
+      title: label,
+      metadata: image.metadata || image.meta || null,
+      original: image,
+      promptId: prompt?.id ?? null,
+      index,
+    };
+  }
+
+  function applyPromptBlur(elements, shouldBlur) {
+    elements.forEach((element) => {
+      const wrapper = element.querySelector('.gallery-image');
+      if (!wrapper) {
+        return;
+      }
+      if (shouldBlur) {
+        wrapper.classList.add('blur-sensitive', 'is-blurred');
+      } else {
+        wrapper.classList.remove('blur-sensitive', 'is-blurred');
+      }
+    });
+  }
+
+  function highlightPromptGalleryIndex(index) {
+    const { gallery } = getGalleryElements();
+    if (!gallery || !window.GalleryShared?.highlightIndex) {
       return;
     }
 
-    grid.innerHTML = '';
-    const blurPrompt = shouldBlurPrompt(prompt);
+    window.GalleryShared.highlightIndex(gallery, index);
 
-    images.forEach((image, index) => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'prompt-gallery-thumb';
-      button.dataset.index = String(index);
-      if (blurPrompt) {
-        button.classList.add('blur-sensitive', 'is-blurred');
+    const activeItem = gallery.querySelector('.gallery-item.is-active');
+    if (activeItem && typeof activeItem.scrollIntoView === 'function') {
+      activeItem.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+  }
+
+  function renderPromptGallery(prompt, promptImages, focusIndex = 0) {
+    const { gallery } = getGalleryElements();
+    if (!gallery) {
+      return;
+    }
+
+    const shared = window.GalleryShared;
+    if (!shared || typeof shared.renderItems !== 'function') {
+      gallery.innerHTML = '<p class="text-muted">Gallery unavailable.</p>';
+      updateGalleryStatus('');
+      return;
+    }
+
+    const preferences = getGalleryViewerPreferences();
+    ensureViewerIntegrationReady(preferences);
+
+    const normalizedItems = promptImages.map((image, index) => normalizePromptImageForGallery(image, index));
+
+    const { integrationId, elements } = shared.renderItems(gallery, normalizedItems, {
+      viewMode: gallery.dataset.viewMode || 'grid',
+      includeActions: false,
+      selectors: {
+        gallery: '#promptGalleryGallery',
+        galleryImage: '#promptGalleryGallery .gallery-image img',
+      },
+      activeIndex: focusIndex,
+      enableViewer: true,
+      viewerConfig: preferences,
+      afterRender(renderedElements) {
+        applyPromptBlur(renderedElements, shouldBlurPrompt(prompt));
       }
-
-      const labelText = image?.file_name || `Image ${index + 1}`;
-      const hoverHint = blurPrompt ? ' (hover to reveal)' : '';
-      button.setAttribute('aria-label', `Open ${labelText} in a new tab`);
-      button.title = `${labelText}${hoverHint}`;
-
-      const displayUrl = image?.thumbnail_url || image?.url;
-      if (displayUrl) {
-        const img = document.createElement('img');
-        img.src = displayUrl;
-        img.alt = labelText;
-        if (image?.url) {
-          img.dataset.fullSrc = image.url;
-        }
-        button.appendChild(img);
-      } else {
-        button.textContent = labelText;
-      }
-
-      const caption = document.createElement('div');
-      caption.className = 'prompt-gallery-thumb-label';
-      caption.textContent = labelText;
-      button.appendChild(caption);
-
-      button.addEventListener('click', (event) => {
-        event.stopPropagation();
-        const targetUrl = image?.url || image?.thumbnail_url;
-        if (targetUrl) {
-          window.open(targetUrl, '_blank', 'noopener');
-        }
-      });
-
-      if (index === focusIndex) {
-        button.classList.add('is-active');
-      }
-
-      grid.appendChild(button);
     });
 
-    if (!images.length) {
-      updateGalleryStatus('No images linked to this prompt yet.');
-      return;
-    }
+    promptGalleryIntegrationId = integrationId;
+    promptGalleryState.integrationId = integrationId;
 
     updateGalleryStatus('');
+    highlightPromptGalleryIndex(focusIndex);
 
-    const activeThumb = grid.querySelector('.prompt-gallery-thumb.is-active');
-    if (activeThumb && typeof activeThumb.scrollIntoView === 'function') {
-      activeThumb.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    if (integrationId && window.ViewerIntegration && typeof window.ViewerIntegration.showImage === 'function') {
+      window.requestAnimationFrame(() => {
+        window.ViewerIntegration.showImage(focusIndex, integrationId);
+      });
     }
   }
 
@@ -1128,7 +1305,7 @@
   }
 
   function hidePromptGallery() {
-    const { overlay } = getGalleryElements();
+    const { overlay, gallery } = getGalleryElements();
     if (!overlay) {
       return;
     }
@@ -1136,6 +1313,16 @@
     overlay.classList.remove('is-visible');
     overlay.hidden = true;
     updateBodyScrollLock();
+
+    if (gallery && window.GalleryShared?.teardown) {
+      window.GalleryShared.teardown(gallery);
+    }
+
+    promptGalleryIntegrationId = null;
+    promptGalleryState.promptId = null;
+    promptGalleryState.images = [];
+    promptGalleryState.integrationId = null;
+    promptGalleryState.activeIndex = 0;
   }
 
   function isGalleryOpen() {
@@ -1345,6 +1532,42 @@
       return Math.min(Math.max(parsed, 5), 200);
     }
     return 50;
+  }
+
+  function getGalleryViewerPreferences() {
+    const settings = getStoredSettings();
+
+    const viewer = Object.assign({
+      theme: settings.viewerTheme || 'dark',
+      toolbar: settings.viewerToolbar !== false,
+      navbar: settings.viewerNavbar !== false,
+      title: settings.viewerTitle !== false,
+      keyboard: settings.viewerKeyboard !== false,
+      fullscreen: settings.viewerFullscreen !== false
+    }, settings.viewer || {});
+
+    const filmstrip = Object.assign({
+      enabled: settings.filmstripEnabled !== false,
+      position: settings.filmstripPosition || 'bottom',
+      autoHide: settings.filmstripAutoHide === true,
+    }, settings.filmstrip || {});
+
+    if (settings.filmstripThumbnailWidth != null) {
+      filmstrip.thumbnailWidth = Number(settings.filmstripThumbnailWidth);
+    }
+
+    if (settings.filmstripThumbnailHeight != null) {
+      filmstrip.thumbnailHeight = Number(settings.filmstripThumbnailHeight);
+    }
+
+    const metadata = Object.assign({
+      enabled: settings.metadataEnabled !== false,
+      position: settings.metadataPosition || 'right',
+      autoShow: settings.metadataAutoShow !== false,
+      collapsible: settings.metadataCollapsible !== false
+    }, settings.metadata || {});
+
+    return { viewer, filmstrip, metadata };
   }
 
   function getFilmStripSizeSetting() {
