@@ -318,6 +318,41 @@ async function rebuildAllThumbnails() {
 }
 
 /**
+ * Cancel the current thumbnail generation task
+ */
+async function cancelThumbnailGeneration() {
+    if (!thumbnailGenerationTask) {
+        console.log('No active thumbnail generation task to cancel');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/v1/thumbnails/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task_id: thumbnailGenerationTask })
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || `Cancel failed: ${response.statusText}`);
+        }
+
+        const result = await response.json();
+        console.log('[INFO] Cancellation requested:', result);
+        showNotification('Cancelling thumbnail generation...', 'info');
+
+        // Update UI to show cancelling status
+        updateThumbnailStatus('Cancelling...');
+
+        // The polling will detect the cancelled status and clean up
+    } catch (error) {
+        console.error('Failed to cancel generation:', error);
+        showNotification(`Failed to cancel: ${error.message}`, 'error');
+    }
+}
+
+/**
  * Create a simple confirmation dialog
  */
 function createConfirmationDialog(title, message, confirmText, cancelText) {
