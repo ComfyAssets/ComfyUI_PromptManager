@@ -53,12 +53,21 @@ class SimpleCache:
 
     def __init__(self) -> None:
         self._cache = MemoryCache()
+        self._caches = {'thumbnails': self._cache}
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._cache.get(key, default)
 
     def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
         self._cache.set(key, value, ttl=ttl)
+
+    def get_cache(self, name: str) -> Optional[Any]:
+        """Get a named cache."""
+        return self._caches.get(name)
+
+    def register_cache(self, name: str, cache: Any) -> None:
+        """Register a named cache."""
+        self._caches[name] = cache
 
     def clear_pattern(self, pattern: str) -> int:
         if hasattr(self._cache, "clear_pattern"):
