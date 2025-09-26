@@ -7,16 +7,36 @@ including database paths, API settings, and ComfyUI integration.
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, field
 import json
 
+from pathlib import Path
 from utils.file_system import get_file_system
 
 
 _fs = get_file_system()
-_DEFAULT_USER_DIR = _fs.get_user_dir()
-_DEFAULT_DB_PATH = str((_fs.get_user_dir() / "prompts.db").resolve())
-_DEFAULT_LOG_FILE = str((_fs.get_logs_dir() / "promptmanager.log").resolve())
+
+# Lazy evaluation - only compute when needed to avoid startup errors
+def _get_default_user_dir():
+    try:
+        return _fs.get_user_dir()
+    except Exception:
+        # Fallback to current directory if ComfyUI root not found
+        return Path.cwd() / "user_data"
+
+def _get_default_db_path():
+    try:
+        return str((_fs.get_user_dir() / "prompts.db").resolve())
+    except Exception:
+        # Fallback to local database
+        return str((Path.cwd() / "prompts.db").resolve())
+
+def _get_default_log_file():
+    try:
+        return str((_fs.get_logs_dir() / "promptmanager.log").resolve())
+    except Exception:
+        # Fallback to local log file
+        return str((Path.cwd() / "promptmanager.log").resolve())
 
 
 @dataclass
@@ -24,7 +44,7 @@ class DatabaseConfig:
     """Database configuration settings."""
     
     # Use user directory to avoid polluting ComfyUI installation
-    path: str = _DEFAULT_DB_PATH
+    path: str = field(default_factory=_get_default_db_path)
     echo: bool = False
     pool_size: int = 5
     max_overflow: int = 10
@@ -81,7 +101,7 @@ class StorageConfig:
     """Storage configuration settings."""
     
     # Use user directory to avoid polluting ComfyUI installation
-    base_path: str = str(_DEFAULT_USER_DIR)
+    base_path: str = field(default_factory=lambda: str(_get_default_user_dir()))
     images_path: str = "images"
     thumbnails_path: str = "thumbnails"
     exports_path: str = "exports"
@@ -113,7 +133,7 @@ class LoggingConfig:
     
     level: str = "INFO"
     format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    file: Optional[str] = _DEFAULT_LOG_FILE
+    file: Optional[str] = field(default_factory=_get_default_log_file)
     console: bool = True
     max_bytes: int = 10485760  # 10MB
     backup_count: int = 5
