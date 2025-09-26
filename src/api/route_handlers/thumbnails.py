@@ -493,8 +493,27 @@ class ThumbnailAPI:
             JSON response with task information
         """
         try:
-            # Clear existing cache first
-            await self.thumbnail_service.clear_cache()
+            # Get sizes from request or use all sizes as default
+            data = await request.json()
+            sizes = data.get('sizes')
+
+            # If no sizes specified, try to get from user settings/preferences
+            if not sizes:
+                # Try to load from saved preferences
+                sizes = self._get_user_thumbnail_size_preferences()
+                if sizes:
+                    logger.info("No sizes specified for rebuild, using saved preferences: %s", sizes)
+                else:
+                    # Default to common sizes if no preferences saved
+                    sizes = ['small', 'medium', 'large']
+                    logger.info("No sizes specified for rebuild, using defaults: %s", sizes)
+            else:
+                logger.info("Rebuilding thumbnails for sizes: %s", sizes)
+
+            # Clear existing cache first (only for requested sizes)
+            for size in sizes:
+                if size in self.thumbnail_service.base_generator.SIZES:
+                    await self.thumbnail_service.clear_cache(size)
 
             # Get all images from database
             image_paths = []
@@ -502,7 +521,7 @@ class ThumbnailAPI:
                 import sqlite3
                 conn = sqlite3.connect(self.db.db_path)
                 cursor = conn.cursor()
-                
+
                 # Use generated_images table (v2 database)
                 cursor.execute("""
                     SELECT id, image_path, filename
@@ -510,14 +529,14 @@ class ThumbnailAPI:
                     WHERE image_path IS NOT NULL AND image_path != ''
                 """)
                 images = cursor.fetchall()
-                
+
                 for image in images:
                     path = Path(image[1])  # image_path is at index 1
                     if path.exists():
                         image_paths.append(path)
-                
+
                 conn.close()
-                        
+
             except Exception as e:
                 logger.error(f"Error fetching images for rebuild: {e}")
                 return web.json_response({
@@ -525,12 +544,18 @@ class ThumbnailAPI:
                     'details': str(e)
                 }, status=500)
 
-            # Create tasks for all sizes
+            # Create tasks only for requested sizes
             all_tasks = []
             for path in image_paths:
                 is_video = self.thumbnail_service.ffmpeg.is_video(path)
 
-                for size_name, size_dims in self.thumbnail_service.base_generator.SIZES.items():
+                for size_name in sizes:
+                    # Skip invalid size names
+                    if size_name not in self.thumbnail_service.base_generator.SIZES:
+                        logger.warning(f"Invalid size name '{size_name}' skipped")
+                        continue
+
+                    size_dims = self.thumbnail_service.base_generator.SIZES[size_name]
                     task = ThumbnailTask(
                         image_id=hashlib.md5(str(path).encode()).hexdigest(),
                         source_path=path,
@@ -543,13 +568,15 @@ class ThumbnailAPI:
 
             # Start rebuild
             task_id = f"rebuild_{datetime.now().timestamp()}"
+            cancel_event = threading.Event()
             self.active_generations[task_id] = {
                 'status': 'running',
                 'progress': None,
-                'result': None
+                'result': None,
+                'cancel_event': cancel_event
             }
 
-            asyncio.create_task(self._generate_with_tracking(task_id, all_tasks))
+            asyncio.create_task(self._generate_with_tracking(task_id, all_tasks, cancel_event))
 
             return web.json_response({
                 'task_id': task_id,
@@ -835,6 +862,64 @@ class ThumbnailAPI:
 
         return web.json_response(settings)
 
+    def _get_user_thumbnail_size_preferences(self) -> Optional[List[str]]:
+        """Get user's saved thumbnail size preferences.
+
+        Returns:
+            List of size names or None if not set
+        """
+        try:
+            # Try to get from config
+            enabled_sizes = []
+            size_config = config.get('thumbnail.enabled_sizes')
+
+            if size_config:
+                # If stored as string, parse it
+                if isinstance(size_config, str):
+                    enabled_sizes = [s.strip() for s in size_config.split(',') if s.strip()]
+                elif isinstance(size_config, list):
+                    enabled_sizes = size_config
+
+                # Validate sizes
+                valid_sizes = []
+                for size in enabled_sizes:
+                    if size in self.thumbnail_service.base_generator.SIZES:
+                        valid_sizes.append(size)
+
+                return valid_sizes if valid_sizes else None
+
+            return None
+
+        except Exception as e:
+            logger.warning(f"Failed to load thumbnail size preferences: {e}")
+            return None
+
+    def _save_user_thumbnail_size_preferences(self, sizes: List[str]) -> bool:
+        """Save user's thumbnail size preferences.
+
+        Args:
+            sizes: List of size names to save
+
+        Returns:
+            True if saved successfully
+        """
+        try:
+            # Validate sizes
+            valid_sizes = [s for s in sizes if s in self.thumbnail_service.base_generator.SIZES]
+
+            if valid_sizes:
+                # Save as comma-separated string for compatibility
+                config.set('thumbnail.enabled_sizes', ','.join(valid_sizes))
+                config.save()
+                logger.info(f"Saved thumbnail size preferences: {valid_sizes}")
+                return True
+
+            return False
+
+        except Exception as e:
+            logger.error(f"Failed to save thumbnail size preferences: {e}")
+            return False
+
     async def update_settings(self, request: web.Request) -> web.Response:
         """Update thumbnail settings.
 
@@ -860,6 +945,11 @@ class ThumbnailAPI:
                         },
                         status=400
                     )
+
+            # Handle enabled sizes separately
+            if 'enabled_sizes' in updates:
+                sizes = updates.pop('enabled_sizes')
+                self._save_user_thumbnail_size_preferences(sizes)
 
             # Update configuration
             for key, value in updates.items():
