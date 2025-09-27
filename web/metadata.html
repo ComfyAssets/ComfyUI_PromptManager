@@ -114,6 +114,7 @@
               </button>
             </div>
           </section>
+          <div x-show="error" class="metadata-error" x-text="error" role="alert"></div>
 
           <!-- Image and Prompts -->
           <template x-if="thumb">
@@ -157,6 +158,23 @@
                   <pre x-text="texts.negative || '(none found or not used by this model)'"></pre>
                 </div>
               </div>
+
+              <div class="card metadata-summary-card" x-show="summaryRows().length">
+                <div class="section-header">
+                  <h3 class="section-title">Generation Metadata</h3>
+                  <button class="btn btn-secondary btn-sm" @click="copySummary()">
+                    Copy All
+                  </button>
+                </div>
+                <div class="summary-grid">
+                  <template x-for="item in summaryRows()" :key="item.label">
+                    <div class="summary-row">
+                      <span class="summary-label" x-text="item.label"></span>
+                      <span class="summary-value" x-text="item.value"></span>
+                    </div>
+                  </template>
+                </div>
+              </div>
             </div>
           </template>
 
@@ -196,126 +214,20 @@
     </div>
     <script src="https://cdn.jsdelivr.net/npm/exif-js"></script>
     <script src="https://cdn.jsdelivr.net/npm/pako@2/dist/pako.min.js"></script>
-    <script>
+        <script>
       (function () {
-        const PNG_SIGNATURE = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-
-        function parsePossibleParams(input) {
-          const result = { positive: '', negative: '' };
-          if (!input) return result;
-          const lines = String(input).split(/\r?\n/);
-
-          const firstLine = (lines[0] || '').replace(/^prompt[: ]*/i, '').trim();
-          if (firstLine) {
-            result.positive = firstLine;
-          }
-
-          const negativeLine = lines.find((line) => /negative prompt/i.test(line));
-          if (negativeLine) {
-            result.negative = negativeLine.replace(/negative prompt[: ]*/i, '').trim();
-          }
-
-          return result;
-        }
-
-        function detectType(buffer) {
-          const bytes = new Uint8Array(buffer);
-          const isPng = PNG_SIGNATURE.every((byte, idx) => bytes[idx] === byte);
-          if (isPng) return 'image/png';
-          const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8;
-          if (isJpeg) return 'image/jpeg';
-          return 'application/octet-stream';
-        }
-
-        async function parsePngChunks(arrayBuffer) {
-          const dataView = new DataView(arrayBuffer);
-          const result = {};
-          if (dataView.getUint32(0) !== 0x89504e47) {
-            return result;
-          }
-
-          let offset = 8;
-          const decoder = new TextDecoder('utf-8');
-
-          while (offset < dataView.byteLength) {
-            const length = dataView.getUint32(offset);
-            const type = String.fromCharCode(
-              dataView.getUint8(offset + 4),
-              dataView.getUint8(offset + 5),
-              dataView.getUint8(offset + 6),
-              dataView.getUint8(offset + 7)
-            );
-            const chunk = new Uint8Array(arrayBuffer, offset + 8, length);
-            offset += length + 12;
-
-            if (type === 'tEXt') {
-              const separator = chunk.indexOf(0);
-              if (separator > 0) {
-                const key = decoder.decode(chunk.slice(0, separator));
-                const value = decoder.decode(chunk.slice(separator + 1));
-                result[key] = value;
-              }
-            } else if (type === 'iTXt') {
-              let index = 0;
-              const readNullTerminated = () => {
-                const end = chunk.indexOf(0, index);
-                const value = decoder.decode(chunk.slice(index, end));
-                index = end + 1;
-                return value;
-              };
-              const keyword = readNullTerminated();
-              const compressed = chunk[index++];
-              index++; // compression method
-              readNullTerminated(); // language tag
-              readNullTerminated(); // translated keyword
-              const textBytes = chunk.slice(index);
-
-              if (compressed === 1 && typeof pako !== 'undefined') {
-                try {
-                  result[keyword] = decoder.decode(pako.inflate(textBytes));
-                } catch (error) {
-                  console.warn('Failed to inflate iTXt chunk', error);
-                  result[keyword] = decoder.decode(textBytes);
-                }
-              } else {
-                result[keyword] = decoder.decode(textBytes);
-              }
-            } else if (type === 'zTXt' && typeof pako !== 'undefined') {
-              let index = 0;
-              const separator = chunk.indexOf(0, index);
-              const keyword = decoder.decode(chunk.slice(0, separator));
-              index = separator + 2; // skip null + compression method
-              try {
-                result[keyword] = decoder.decode(pako.inflate(chunk.slice(index)));
-              } catch (error) {
-                console.warn('Failed to inflate zTXt chunk', error);
-              }
-            }
-
-            if (type === 'IEND') break;
-          }
-
-          return result;
-        }
-
-        function formatWorkflow(value) {
-          if (!value) return '';
-          if (typeof value === 'string') {
-            const trimmed = value.trim();
-            if (!trimmed) return '';
-            try {
-              const parsed = JSON.parse(trimmed);
-              return JSON.stringify(parsed, null, 2);
-            } catch {
-              return trimmed;
-            }
-          }
-          try {
-            return JSON.stringify(value, null, 2);
-          } catch {
-            return String(value);
-          }
-        }
+        const SUMMARY_FIELDS = [
+          { key: 'positivePrompt', label: 'Prompt - positive' },
+          { key: 'negativePrompt', label: 'Prompt - negative' },
+          { key: 'model', label: 'Model' },
+          { key: 'loras', label: 'Lora(s)' },
+          { key: 'cfgScale', label: 'cfgScale' },
+          { key: 'steps', label: 'steps' },
+          { key: 'sampler', label: 'sampler' },
+          { key: 'seed', label: 'seed' },
+          { key: 'clipSkip', label: 'clipSkip' },
+          { key: 'workflow', label: 'Workflow' }
+        ];
 
         function safeStringify(value) {
           if (value === undefined || value === null) {
@@ -329,11 +241,216 @@
           }
         }
 
-        function ensureMetadataManagerReady() {
-          if (window.MetadataManager?.init && !window.__pmMetadataManagerReady) {
-            window.MetadataManager.init({ enableCache: false });
-            window.__pmMetadataManagerReady = true;
+        function normalizeSummaryValue(value) {
+          if (value === undefined || value === null) return 'None';
+
+          if (typeof value === 'string') {
+            const trimmed = value.trim();
+            return trimmed ? trimmed : 'None';
           }
+
+          if (typeof value === 'number' || typeof value === 'boolean') {
+            return String(value);
+          }
+
+          if (Array.isArray(value)) {
+            const parts = value
+              .map((item) => normalizeSummaryValue(item))
+              .filter((item) => item && item !== 'None');
+            return parts.length ? parts.join(', ') : 'None';
+          }
+
+          if (typeof value === 'object') {
+            if (value.name) {
+              const strengths = [];
+              if (value.strength !== undefined && value.strength !== null) {
+                strengths.push(`strength ${value.strength}`);
+              }
+              if (value.strength_model !== undefined && value.strength_model !== null) {
+                strengths.push(`model ${value.strength_model}`);
+              }
+              if (value.strength_clip !== undefined && value.strength_clip !== null) {
+                strengths.push(`clip ${value.strength_clip}`);
+              }
+              return strengths.length ? `${value.name} (${strengths.join(', ')})` : value.name;
+            }
+
+            if (value.text) {
+              return normalizeSummaryValue(value.text);
+            }
+
+            return 'Embedded data';
+          }
+
+          return 'None';
+        }
+
+        function countWorkflowNodes(workflow) {
+          if (!workflow || typeof workflow !== 'object') {
+            return 0;
+          }
+
+          if (Array.isArray(workflow)) {
+            return workflow.length;
+          }
+
+          if (workflow.nodes) {
+            const nodes = workflow.nodes;
+            if (Array.isArray(nodes)) {
+              return nodes.length;
+            }
+            if (nodes && typeof nodes === 'object') {
+              return Object.keys(nodes).length;
+            }
+          }
+
+          try {
+            return Object.keys(workflow).length;
+          } catch {
+            return 0;
+          }
+        }
+
+        function formatWorkflow(workflow) {
+          if (!workflow) return '';
+          if (typeof workflow === 'string') {
+            const trimmed = workflow.trim();
+            if (!trimmed) return '';
+            try {
+              return JSON.stringify(JSON.parse(trimmed), null, 2);
+            } catch {
+              return trimmed;
+            }
+          }
+
+          return JSON.stringify(workflow, null, 2);
+        }
+
+        function formatWorkflowSummary(workflow) {
+          if (!workflow) return 'Not embedded';
+          const parsed = typeof workflow === 'string'
+            ? (() => {
+                try {
+                  return JSON.parse(workflow);
+                } catch {
+                  return workflow;
+                }
+              })()
+            : workflow;
+
+          if (typeof parsed === 'string') {
+            const trimmed = parsed.trim();
+            return trimmed || 'Embedded workflow';
+          }
+
+          const nodeCount = countWorkflowNodes(parsed);
+          return nodeCount > 0 ? `Embedded workflow (${nodeCount} nodes)` : 'Embedded workflow';
+        }
+
+        function pick(...candidates) {
+          for (const candidate of candidates) {
+            if (candidate !== undefined && candidate !== null && candidate !== '') {
+              return candidate;
+            }
+          }
+          return null;
+        }
+
+        function textValue(candidate) {
+          if (candidate === undefined || candidate === null) {
+            return '';
+          }
+          if (typeof candidate === 'string') {
+            return candidate;
+          }
+          if (typeof candidate === 'number' || typeof candidate === 'boolean') {
+            return String(candidate);
+          }
+          return '';
+        }
+
+        function buildSummary(metadata) {
+          if (!metadata || typeof metadata !== 'object') return null;
+
+          const comfy = metadata.comfy_parsed && typeof metadata.comfy_parsed === 'object' ? metadata.comfy_parsed : {};
+
+          const positivePrompt = pick(metadata.positive_prompt, comfy.positive_prompt);
+          const negativePrompt = pick(metadata.negative_prompt, comfy.negative_prompt);
+          const model = pick(metadata.model, comfy.model);
+          const loras = pick(metadata.loras, comfy.loras);
+          const cfgScale = pick(metadata.cfg_scale, comfy.cfg_scale);
+          const steps = pick(metadata.steps, comfy.steps);
+          const sampler = pick(metadata.sampler, comfy.sampler);
+          const seed = pick(metadata.seed, comfy.seed);
+          const clipSkip = pick(metadata.clip_skip, comfy.clip_skip);
+          const workflow = pick(metadata.workflow, comfy.workflow);
+
+          return {
+            positivePrompt: normalizeSummaryValue(positivePrompt),
+            negativePrompt: normalizeSummaryValue(negativePrompt),
+            model: normalizeSummaryValue(model),
+            loras: normalizeSummaryValue(loras),
+            cfgScale: normalizeSummaryValue(cfgScale),
+            steps: normalizeSummaryValue(steps),
+            sampler: normalizeSummaryValue(sampler),
+            seed: normalizeSummaryValue(seed),
+            clipSkip: normalizeSummaryValue(clipSkip),
+            workflow: formatWorkflowSummary(workflow)
+          };
+        }
+
+        async function requestMetadataFromApi(file) {
+          const endpointCandidates = [
+            '/api/v1/metadata/extract',
+            '/prompt_manager/api/v1/metadata/extract',
+            '/api/prompt_manager/api/v1/metadata/extract'
+          ];
+
+          let lastError = null;
+
+          for (const endpoint of endpointCandidates) {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+              console.debug('[PromptManager] metadata upload ->', endpoint);
+              const response = await fetch(endpoint, {
+                method: 'POST',
+                body: formData
+              });
+
+              let payload = {};
+              let rawText = '';
+              try {
+                rawText = await response.text();
+              } catch (textError) {
+                console.warn('[PromptManager] metadata upload text read failed <-', endpoint, textError);
+              }
+
+              if (rawText) {
+                try {
+                  payload = JSON.parse(rawText);
+                } catch (parseError) {
+                  console.warn('[PromptManager] metadata upload JSON parse failed <-', endpoint, parseError, rawText.slice(0, 200));
+                  payload = {};
+                }
+              }
+
+              if (response.ok && payload?.success) {
+                console.debug('[PromptManager] metadata upload success <-', endpoint, payload);
+                return payload.data || {};
+              }
+
+              const message = payload?.error || payload?.message || (rawText ? rawText.slice(0, 120) : '') || response.statusText || `Request failed (${response.status})`;
+              console.warn('[PromptManager] metadata upload failed <-', endpoint, message);
+              lastError = new Error(message);
+            } catch (error) {
+              console.warn('[PromptManager] metadata upload exception <-', endpoint, error);
+              lastError = error;
+            }
+          }
+
+          throw lastError || new Error('Metadata extraction failed');
         }
 
         window.pmMetaApp = function () {
@@ -347,9 +464,10 @@
             texts: { positive: '', negative: '' },
             workflow: '',
             raw: '',
+            summary: null,
             error: null,
             init() {
-              ensureMetadataManagerReady();
+              this.error = null;
             },
             async handleDrop(event) {
               this.drag = false;
@@ -371,137 +489,77 @@
               this.texts = { positive: '', negative: '' };
               this.workflow = '';
               this.raw = '';
+              this.summary = null;
+
               if (this.thumb) {
                 URL.revokeObjectURL(this.thumb);
               }
               this.thumb = URL.createObjectURL(file);
+
               this.fileName = file.name;
               this.fileSize = file.size;
               this.fileType = file.type || '';
 
-              ensureMetadataManagerReady();
-              const handled = await this.tryMetadataManager(file);
-              if (!handled) {
-                await this.extractWithFallback(file);
-              }
-            },
-            async tryMetadataManager(file) {
-              if (!window.MetadataManager || typeof window.MetadataManager.extract !== 'function') {
-                return false;
-              }
               try {
-                const metadata = await window.MetadataManager.extract(file, false);
-                if (!metadata) {
-                  return false;
-                }
+                const metadata = await requestMetadataFromApi(file);
                 this.applyMetadata(metadata);
-                return true;
               } catch (error) {
-                console.error('MetadataManager.extract failed', error);
-                this.error = error?.message || String(error);
-                return false;
+                console.error('Metadata extraction failed', error);
+                this.error = error?.message || 'Metadata extraction failed';
               }
             },
             applyMetadata(metadata) {
+              console.debug('[PromptManager] metadata payload', metadata);
               this.metadata = metadata;
-              const standard = metadata.standard || {};
-              if (standard.filename) {
-                this.fileName = standard.filename;
+
+              if (metadata.file_size && !Number.isNaN(Number(metadata.file_size))) {
+                this.fileSize = Number(metadata.file_size);
               }
-              if (typeof standard.fileSize === 'number') {
-                this.fileSize = standard.fileSize;
-              }
-              if (standard.mimeType) {
-                this.fileType = standard.mimeType;
+              if (metadata.mime_type || metadata.format) {
+                this.fileType = metadata.mime_type || metadata.format;
               }
 
-              const paramsSource = metadata.custom?.parameters ?? metadata.custom?.Parameter ?? metadata.parameters ?? '';
-              const prompts = parsePossibleParams(paramsSource);
-              const positive = metadata.custom?.prompt ?? metadata.custom?.positivePrompt ?? metadata.prompt ?? prompts.positive ?? '';
-              const negative = metadata.custom?.negativePrompt ?? metadata.negativePrompt ?? prompts.negative ?? '';
-              this.texts = { positive: positive || '', negative: negative || '' };
+              const comfy = metadata.comfy_parsed && typeof metadata.comfy_parsed === 'object' ? metadata.comfy_parsed : {};
+              const positiveRaw = textValue(pick(metadata.positive_prompt, comfy.positive_prompt));
+              const negativeRaw = textValue(pick(metadata.negative_prompt, comfy.negative_prompt));
+              this.texts = {
+                positive: positiveRaw,
+                negative: negativeRaw
+              };
 
-              const workflowCandidate =
-                metadata.custom?.workflow ??
-                metadata.custom?.Workflow ??
-                metadata.custom?.['workflow-json'] ??
-                metadata.custom?.workflow_json ??
-                metadata.workflow ??
-                metadata['sd-metadata'];
-              this.workflow = formatWorkflow(workflowCandidate);
+              const workflowSource = pick(metadata.workflow, comfy.workflow);
+              this.workflow = formatWorkflow(workflowSource);
 
-              const rawSource = metadata.raw && Object.keys(metadata.raw).length ? metadata.raw : metadata;
-              this.raw = safeStringify(rawSource);
-            },
-            async extractWithFallback(file) {
-              try {
-                const buffer = await file.arrayBuffer();
-                let type = (file.type && file.type.toLowerCase()) || detectType(buffer);
-                if (!type || type === 'application/octet-stream') {
-                  type = detectType(buffer);
-                }
-
-                if (type === 'image/png') {
-                  const chunks = await parsePngChunks(buffer);
-                  this.raw = safeStringify(chunks);
-                  const params = chunks.parameters || chunks.Parameter || chunks.parametersTxt || '';
-                  const parsed = parsePossibleParams(params);
-                  const prompt = chunks.prompt || chunks.Prompt || '';
-                  const negative = chunks['negative_prompt'] || chunks.Negative || '';
-                  this.texts = {
-                    positive: parsed.positive || prompt,
-                    negative: parsed.negative || negative
-                  };
-                  this.workflow = formatWorkflow(
-                    chunks.workflow ||
-                    chunks.Workflow ||
-                    chunks['sd-metadata']
-                  );
-                } else if (type === 'image/jpeg' || type === 'image/jpg') {
-                  const exif = await this.extractJpegExif(buffer);
-                  this.raw = safeStringify(exif);
-                  const prompts = parsePossibleParams(exif.UserComment || exif.ImageDescription || '');
-                  this.texts = {
-                    positive: prompts.positive,
-                    negative: prompts.negative
-                  };
-                } else {
-                  this.raw = '(unknown image format for metadata)';
-                }
-
-                this.fileType = type;
-                this.fileSize = buffer.byteLength;
-              } catch (error) {
-                console.error('Fallback metadata extraction failed', error);
-                this.raw = '(metadata extraction failed)';
-              }
-            },
-            async extractJpegExif(buffer) {
-              if (typeof EXIF === 'undefined') {
-                return {};
-              }
-              try {
-                if (typeof EXIF.readFromBinaryFile === 'function') {
-                  return EXIF.readFromBinaryFile(buffer) || {};
-                }
-              } catch (error) {
-                console.warn('EXIF parsing failed', error);
-              }
-              return {};
+              this.summary = buildSummary(metadata);
+              this.raw = safeStringify(metadata);
             },
             copy(text) {
               const value = text || '';
-              if (navigator.clipboard && value) {
-                navigator.clipboard.writeText(value);
+              if (!value) return;
+              if (navigator.clipboard) {
+                navigator.clipboard.writeText(value).catch((error) => console.warn('Clipboard copy failed', error));
               }
               if (window.showToast) {
                 window.showToast('Copied!', 'success');
-              } else {
-                console.log('[Copied]', value);
               }
             },
+            copySummary() {
+              const rows = this.summaryRows();
+              if (!rows.length) return;
+              const payload = rows.map((row) => `${row.label}: ${row.value}`).join('\n');
+              this.copy(payload);
+            },
+            summaryRows() {
+              if (!this.summary) {
+                return [];
+              }
+              return SUMMARY_FIELDS.map(({ key, label }) => ({
+                label,
+                value: this.summary[key] ?? 'None'
+              }));
+            },
             downloadRaw() {
-              const payload = typeof this.raw === 'string' ? this.raw : safeStringify(this.raw);
+              const payload = safeStringify(this.metadata || {});
               const blob = new Blob([payload || '{}'], { type: 'application/json' });
               const url = URL.createObjectURL(blob);
               const anchor = document.createElement('a');
@@ -514,6 +572,7 @@
         };
       })();
     </script>
+
 
     <!-- ViewerJS Library -->
     <script src="/prompt_manager/vendor/viewerjs/dist/viewer.min.js"></script>
