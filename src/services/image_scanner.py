@@ -12,6 +12,8 @@ from typing import Dict, Any, Optional, List, AsyncGenerator
 from PIL import Image
 import logging
 
+from src.metadata import ComfyMetadataParser
+
 # Import hashing function once at module level to avoid sys.path modifications during scanning
 try:
     from utils.validation.hashing import generate_prompt_hash
@@ -35,6 +37,7 @@ class ImageScanner:
         # Get the prompt repository from the API instance
         self.prompt_repo = api_instance.prompt_repo if hasattr(api_instance, 'prompt_repo') else None
         self.generated_image_repo = api_instance.generated_image_repo if hasattr(api_instance, 'generated_image_repo') else None
+        self._comfy_parser = ComfyMetadataParser()
 
     def _find_comfyui_output_dir(self) -> Optional[str]:
         """Find the ComfyUI output directory"""
@@ -120,91 +123,34 @@ class ImageScanner:
 
     def parse_comfyui_prompt(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         """Parse ComfyUI prompt data from metadata"""
-        parsed_data = {}
-
         if not metadata:
-            return parsed_data
+            return {}
 
-        # Try to parse prompt data
-        if 'prompt' in metadata:
-            try:
-                prompt_data = json.loads(metadata['prompt']) if isinstance(metadata['prompt'], str) else metadata['prompt']
+        parsed = self._comfy_parser.parse_metadata(metadata)
 
-                # Look for text prompts in the node data
-                positive_prompts = []
-                negative_prompts = []
+        result: Dict[str, Any] = {
+            "positive_prompt": parsed.positive_prompt,
+            "negative_prompt": parsed.negative_prompt,
+            "model": parsed.model,
+            "cfg_scale": parsed.cfg_scale,
+            "steps": parsed.steps,
+            "sampler": parsed.sampler,
+            "scheduler": parsed.scheduler,
+            "seed": parsed.seed,
+            "clip_skip": parsed.clip_skip,
+            "loras": [lora.__dict__ for lora in parsed.loras],
+            "raw_chunks": parsed.raw_chunks,
+        }
 
-                for node_id, node_data in prompt_data.items():
-                    if isinstance(node_data, dict) and 'class_type' in node_data:
-                        # Check for CLIP text encode nodes
-                        if node_data['class_type'] == 'CLIPTextEncode':
-                            if 'inputs' in node_data and 'text' in node_data['inputs']:
-                                text = node_data['inputs']['text']
+        if parsed.prompt:
+            result["prompt_data"] = parsed.prompt
+        if parsed.workflow:
+            result["workflow"] = parsed.workflow
+        if parsed.denoise is not None:
+            result["denoise"] = parsed.denoise
 
-                                # Handle case where text is a list (node reference)
-                                if isinstance(text, list) and len(text) >= 2:
-                                    # This is a node reference [node_id, output_index]
-                                    # Try to resolve the actual text from the referenced node
-                                    ref_node_id = str(text[0])
-                                    if ref_node_id in prompt_data:
-                                        ref_node = prompt_data[ref_node_id]
-                                        if isinstance(ref_node, dict) and 'inputs' in ref_node:
-                                            # Look for text in the referenced node
-                                            if 'text' in ref_node['inputs']:
-                                                text = ref_node['inputs']['text']
-                                                if not isinstance(text, str):
-                                                    continue
-                                            else:
-                                                continue
-                                        else:
-                                            continue
-                                    else:
-                                        continue
-
-                                # Only process actual text strings
-                                if isinstance(text, str) and text.strip():
-                                    # Try to determine if it's positive or negative
-                                    # This is a heuristic - negative prompts often come after positive
-                                    if not positive_prompts:
-                                        positive_prompts.append(text)
-                                    else:
-                                        negative_prompts.append(text)
-
-                # Store the extracted prompts
-                if positive_prompts:
-                    parsed_data['positive_prompt'] = positive_prompts[0]
-                if negative_prompts:
-                    parsed_data['negative_prompt'] = negative_prompts[0]
-
-                # Store the full prompt data for reference
-                parsed_data['prompt_data'] = prompt_data
-
-            except (json.JSONDecodeError, KeyError) as e:
-                self.logger.debug(f"Failed to parse prompt data: {e}")
-
-        # Try to parse workflow data
-        if 'workflow' in metadata:
-            try:
-                workflow_data = json.loads(metadata['workflow']) if isinstance(metadata['workflow'], str) else metadata['workflow']
-
-                # Look for text in workflow widgets
-                if 'nodes' in workflow_data:
-                    for node in workflow_data['nodes']:
-                        if 'widgets_values' in node:
-                            for value in node['widgets_values']:
-                                if isinstance(value, str) and len(value) > 10:
-                                    # This might be a prompt text
-                                    if 'positive_prompt' not in parsed_data:
-                                        parsed_data['positive_prompt'] = value
-                                    elif 'negative_prompt' not in parsed_data:
-                                        parsed_data['negative_prompt'] = value
-
-                parsed_data['workflow'] = workflow_data
-
-            except (json.JSONDecodeError, KeyError) as e:
-                self.logger.debug(f"Failed to parse workflow data: {e}")
-
-        return parsed_data
+        # Remove empty entries while preserving False/0 values
+        return {key: value for key, value in result.items() if value not in (None, [], {})}
 
     def extract_readable_prompt(self, parsed_data: Dict[str, Any]) -> Optional[str]:
         """Extract readable prompt text from parsed data"""
