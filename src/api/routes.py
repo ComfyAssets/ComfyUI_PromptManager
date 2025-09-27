@@ -7,6 +7,7 @@ validation, and response formatting.
 from __future__ import annotations
 
 import json
+import math
 import logging
 import os
 import traceback
@@ -90,8 +91,8 @@ class PromptManagerAPI:
         except Exception as exc:  # pragma: no cover - defensive logging
             self.logger.warning("StatsService unavailable: %s", exc)
             self.stats_service = None
-            self.incremental_stats = None
-            self.stats_scheduler = None
+        self.incremental_stats = None
+        self.stats_scheduler = None
         try:
             self.log_file = Path(config.logging.file).expanduser()
             self.logs_dir = self.log_file.resolve().parent
@@ -107,6 +108,19 @@ class PromptManagerAPI:
 
         if run_migration_check:
             self._run_startup_migration_check()
+
+    @staticmethod
+    def _sanitize_for_json(value: Any) -> Any:
+        """Recursively replace NaN and Inf values so JSON is valid."""
+
+        if isinstance(value, dict):
+            return {key: PromptManagerAPI._sanitize_for_json(sub_value) for key, sub_value in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [PromptManagerAPI._sanitize_for_json(item) for item in value]
+        if isinstance(value, float):
+            if math.isnan(value) or math.isinf(value):
+                return None
+        return value
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -425,6 +439,8 @@ class PromptManagerAPI:
         # Metadata endpoints
         routes.get("/api/v1/metadata/{filename}")(self.get_image_metadata)
         routes.post("/api/v1/metadata/extract")(self.extract_metadata)
+        routes.post("/prompt_manager/api/v1/metadata/extract")(self.extract_metadata)
+        routes.post("/api/prompt_manager/api/v1/metadata/extract")(self.extract_metadata)
 
         # Migration endpoints
         routes.get("/api/v1/migration/info")(self.get_migration_info)
@@ -1213,10 +1229,13 @@ class PromptManagerAPI:
             # Extract metadata from file
             metadata = self.metadata_extractor.extract_from_file(image["image_path"])
             
-            return web.json_response({
-                "success": True,
-                "data": metadata
-            })
+            return web.json_response(
+                {
+                    "success": True,
+                    "data": metadata
+                },
+                dumps=lambda obj: json.dumps(obj, allow_nan=False)
+            )
             
         except FileNotFoundError:
             return web.json_response(
@@ -1237,28 +1256,39 @@ class PromptManagerAPI:
         Body: multipart/form-data with 'file' field
         """
         try:
+            self.logger.info("[metadata.extract] Incoming request from %s", request.remote)
+
             reader = await request.multipart()
             field = await reader.next()
-            
-            if field.name != "file":
+
+            # Walk the multipart payload until we find the uploaded file
+            while field is not None and field.name != "file":
+                self.logger.debug("[metadata.extract] Skipping field '%s'", field.name)
+                field = await reader.next()
+
+            if field is None:
+                self.logger.warning("[metadata.extract] No 'file' part found in multipart payload")
                 return web.json_response(
                     {"error": "File field required"},
                     status=400
                 )
-            
+
             # Read file data
             data = await field.read()
-            
+
             # Extract metadata
             metadata = self.metadata_extractor.extract_from_bytes(data)
-            
+            metadata = self._sanitize_for_json(metadata)
+
+            self.logger.info("[metadata.extract] Metadata extracted successfully (%s bytes)", len(data))
+
             return web.json_response({
                 "success": True,
                 "data": metadata
             })
-            
+
         except Exception as e:
-            self.logger.error(f"Error extracting metadata: {e}")
+            self.logger.exception("[metadata.extract] Error extracting metadata")
             return web.json_response(
                 {"error": str(e)},
                 status=500
