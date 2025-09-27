@@ -10,9 +10,14 @@ import zlib
 from typing import Any, Dict, Optional, Tuple
 from pathlib import Path
 
+from src.metadata import ComfyMetadataParser
+
 from .logging import get_logger
 
 logger = get_logger("promptmanager.utils.metadata_extractor")
+
+
+_COMFY_PARSER = ComfyMetadataParser()
 
 
 class MetadataExtractor:
@@ -93,7 +98,7 @@ class MetadataExtractor:
                 key, value = cls._parse_text_chunk(data)
                 if key and value:
                     metadata["text_chunks"][key] = value
-                    
+
                     # Check for ComfyUI data
                     if key == cls.COMFYUI_WORKFLOW_KEY:
                         metadata["workflow"] = cls._parse_json_safely(value)
@@ -105,7 +110,9 @@ class MetadataExtractor:
                 key, value = cls._parse_itxt_chunk(data)
                 if key and value:
                     metadata["text_chunks"][key] = value
-        
+
+        cls._merge_comfy_metadata(metadata)
+
         return metadata
     
     @classmethod
@@ -170,7 +177,7 @@ class MetadataExtractor:
     @classmethod
     def _parse_itxt_chunk(cls, data: bytes) -> Tuple[Optional[str], Optional[str]]:
         """Parse an iTXt chunk (international text).
-        
+
         Args:
             data: Chunk data
             
@@ -266,6 +273,55 @@ class MetadataExtractor:
                 params['negative_prompt'] = neg_prompt
         
         return params
+
+    @classmethod
+    def _merge_comfy_metadata(cls, metadata: Dict[str, Any]) -> None:
+        """Augment metadata with structured ComfyUI parsing results."""
+
+        comfy_result = _COMFY_PARSER.parse_metadata(metadata)
+        metadata.setdefault("comfy_parsed", comfy_result.to_dict())
+        metadata.setdefault("comfy_raw_chunks", comfy_result.raw_chunks)
+        if comfy_result.errors:
+            metadata.setdefault("comfy_errors", comfy_result.errors)
+
+        if comfy_result.prompt and "prompt_data" not in metadata:
+            metadata["prompt_data"] = comfy_result.prompt
+
+        if comfy_result.workflow and metadata.get("workflow") is None:
+            metadata["workflow"] = comfy_result.workflow
+
+        if comfy_result.positive_prompt and not metadata.get("positive_prompt"):
+            metadata["positive_prompt"] = comfy_result.positive_prompt
+
+        if comfy_result.negative_prompt and not metadata.get("negative_prompt"):
+            metadata["negative_prompt"] = comfy_result.negative_prompt
+
+        if comfy_result.model and not metadata.get("model"):
+            metadata["model"] = comfy_result.model
+
+        if comfy_result.cfg_scale is not None and not metadata.get("cfg_scale"):
+            metadata["cfg_scale"] = comfy_result.cfg_scale
+
+        if comfy_result.steps is not None and not metadata.get("steps"):
+            metadata["steps"] = comfy_result.steps
+
+        if comfy_result.sampler and not metadata.get("sampler"):
+            metadata["sampler"] = comfy_result.sampler
+
+        if comfy_result.scheduler and not metadata.get("scheduler"):
+            metadata["scheduler"] = comfy_result.scheduler
+
+        if comfy_result.seed is not None and not metadata.get("seed"):
+            metadata["seed"] = comfy_result.seed
+
+        if comfy_result.denoise is not None and not metadata.get("denoising_strength"):
+            metadata["denoising_strength"] = comfy_result.denoise
+
+        if comfy_result.clip_skip is not None and not metadata.get("clip_skip"):
+            metadata["clip_skip"] = comfy_result.clip_skip
+
+        if comfy_result.loras and not metadata.get("loras"):
+            metadata["loras"] = [lora.__dict__ for lora in comfy_result.loras]
     
     @classmethod
     def extract_workflow(cls, file_path: str) -> Optional[Dict[str, Any]]:
