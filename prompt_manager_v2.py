@@ -96,9 +96,14 @@ def get_prompt_tracker(db_instance=None):
 
 
 class PromptManagerV2(ComfyNodeABC):
-    """Slim V2 PromptManager with combined positive and negative prompts."""
-    
+    """Slim V2 PromptManager with combined positive and negative prompts.
+
+    Compatible with CLIPTextEncode - outputs standard CONDITIONING format.
+    """
+
     version = "2.0.0-slim"
+    # Compatibility aliases for parsers that look for specific patterns
+    __aliases__ = ["CLIPTextEncode", "CLIPTextEncodeSDXL", "CLIPTextEncodeV2"]
     
     def __init__(self):
         """Initialize the PromptManagerV2 node."""
