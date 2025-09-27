@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Union
 from PIL import Image
 
 from src.core.base import BaseMetadataViewer
+from src.metadata import ComfyMetadataParser, ParsedComfyMetadata
 
 
 class MetadataExtractor(BaseMetadataViewer):
@@ -25,7 +26,7 @@ class MetadataExtractor(BaseMetadataViewer):
     def __init__(self):
         """Initialize metadata extractor."""
         super().__init__("png_extractor")
-        
+
         # Known metadata keys from various tools
         self.known_keys = {
             # ComfyUI keys
@@ -66,6 +67,7 @@ class MetadataExtractor(BaseMetadataViewer):
             "generation_time": "Generation duration",
             "software": "Generation software"
         }
+        self.comfy_parser = ComfyMetadataParser()
 
     def parse_metadata(self, source: Any) -> Dict[str, Any]:
         """Parse metadata from source.
@@ -158,10 +160,15 @@ class MetadataExtractor(BaseMetadataViewer):
         """
         try:
             with Image.open(file_path) as img:
-                return self.extract_from_image(img)
+                metadata = self.extract_from_image(img)
         except Exception as e:
             self.logger.error(f"Error extracting metadata from {file_path}: {e}")
             return {}
+
+        comfy_metadata = self.comfy_parser.parse_file(file_path)
+        self._merge_comfy_metadata(metadata, comfy_metadata)
+
+        return metadata
 
     def extract_from_bytes(self, data: bytes) -> Dict[str, Any]:
         """Extract metadata from image bytes.
@@ -181,30 +188,35 @@ class MetadataExtractor(BaseMetadataViewer):
 
     def extract_from_image(self, img: Image.Image) -> Dict[str, Any]:
         """Extract metadata from PIL Image.
-        
+
         Args:
             img: PIL Image object
-            
+
         Returns:
             Extracted metadata
         """
         metadata = {}
-        
+
         # Extract from PIL info
         if hasattr(img, "info"):
             metadata.update(img.info)
-        
+
         # Extract PNG chunks if PNG format
         if img.format == "PNG":
             png_metadata = self._extract_png_chunks(img)
             metadata.update(png_metadata)
-        
+
         # Parse specific formats
         metadata = self._parse_metadata_formats(metadata)
-        
+
+        # Parse ComfyUI metadata from the extracted chunks
+        if "workflow" in metadata or "prompt" in metadata:
+            comfy_metadata = self.comfy_parser.parse_metadata(metadata)
+            self._merge_comfy_metadata(metadata, comfy_metadata)
+
         # Clean and validate
         metadata = self.validate_metadata(metadata)
-        
+
         return metadata
 
     def _extract_png_chunks(self, img: Image.Image) -> Dict[str, Any]:
@@ -273,6 +285,52 @@ class MetadataExtractor(BaseMetadataViewer):
                     pass
         
         return parsed
+
+    def _merge_comfy_metadata(self, metadata: Dict[str, Any], comfy: ParsedComfyMetadata) -> None:
+        """Merge structured ComfyUI metadata into the base dictionary."""
+
+        metadata.setdefault("comfy_parsed", comfy.to_dict())
+        metadata.setdefault("comfy_raw_chunks", comfy.raw_chunks)
+        if comfy.errors:
+            metadata.setdefault("comfy_errors", comfy.errors)
+
+        if comfy.prompt and "prompt_data" not in metadata:
+            metadata["prompt_data"] = comfy.prompt
+
+        if comfy.workflow and "workflow" not in metadata:
+            metadata["workflow"] = comfy.workflow
+
+        if comfy.positive_prompt and not metadata.get("positive_prompt"):
+            metadata["positive_prompt"] = comfy.positive_prompt
+        if comfy.negative_prompt and not metadata.get("negative_prompt"):
+            metadata["negative_prompt"] = comfy.negative_prompt
+
+        if comfy.model and not metadata.get("model"):
+            metadata["model"] = comfy.model
+
+        if comfy.cfg_scale is not None and not metadata.get("cfg_scale"):
+            metadata["cfg_scale"] = comfy.cfg_scale
+
+        if comfy.steps is not None and not metadata.get("steps"):
+            metadata["steps"] = comfy.steps
+
+        if comfy.sampler and not metadata.get("sampler"):
+            metadata["sampler"] = comfy.sampler
+
+        if comfy.scheduler and not metadata.get("scheduler"):
+            metadata["scheduler"] = comfy.scheduler
+
+        if comfy.seed is not None and not metadata.get("seed"):
+            metadata["seed"] = comfy.seed
+
+        if comfy.denoise is not None and not metadata.get("denoising_strength"):
+            metadata["denoising_strength"] = comfy.denoise
+
+        if comfy.clip_skip is not None and not metadata.get("clip_skip"):
+            metadata["clip_skip"] = comfy.clip_skip
+
+        if comfy.loras and not metadata.get("loras"):
+            metadata["loras"] = [lora.__dict__ for lora in comfy.loras]
 
     def _parse_a1111_parameters(self, params_text: str) -> Dict[str, Any]:
         """Parse Automatic1111 parameters format.
