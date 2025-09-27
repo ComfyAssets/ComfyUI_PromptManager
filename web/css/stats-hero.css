@@ -1,0 +1,200 @@
+/**
+ * Modern Stats Hero Design
+ * Clean grid layout with proper spacing and visual hierarchy
+ */
+
+/* Container */
+.stats-hero {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 20px;
+    padding: 20px;
+    background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
+    border-radius: 12px;
+    margin-bottom: 30px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+}
+
+/* Individual stat cards */
+.hero-stat {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 20px;
+    position: relative;
+    overflow: hidden;
+    transition: all 0.3s ease;
+}
+
+.hero-stat:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.12);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
+}
+
+/* Stat value - the big number */
+.stat-value {
+    font-size: 2.5rem;
+    font-weight: 700;
+    color: #ffffff;
+    line-height: 1;
+    margin-bottom: 8px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+}
+
+/* Stat label */
+.stat-label {
+    font-size: 0.875rem;
+    color: #888888;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 500;
+    margin-bottom: 12px;
+}
+
+/* Trend indicators */
+.stat-trend {
+    font-size: 0.75rem;
+    padding: 4px 8px;
+    border-radius: 4px;
+    display: inline-block;
+    font-weight: 600;
+    margin-top: 8px;
+}
+
+.stat-trend.positive {
+    color: #00cc66;
+    background: rgba(0, 204, 102, 0.1);
+}
+
+.stat-trend.negative {
+    color: #ff4444;
+    background: rgba(255, 68, 68, 0.1);
+}
+
+.stat-trend.neutral {
+    color: #888888;
+    background: rgba(136, 136, 136, 0.1);
+}
+
+/* Subtext for additional info */
+.stat-subtext {
+    font-size: 0.75rem;
+    color: #666666;
+    margin-top: 4px;
+}
+
+/* Progress bar for Innovation Index */
+.stat-progress {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 12px;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #0066cc, #00cc66);
+    border-radius: 2px;
+    transition: width 0.5s ease;
+}
+
+/* Sparkline container */
+.stat-sparkline {
+    height: 40px;
+    margin-top: 12px;
+    opacity: 0.8;
+}
+
+/* Special styling for streak */
+.hero-stat.streak {
+    background: linear-gradient(135deg, rgba(255, 102, 0, 0.05), rgba(255, 102, 0, 0.02));
+    border-color: rgba(255, 102, 0, 0.2);
+}
+
+.hero-stat.streak .stat-value {
+    background: linear-gradient(135deg, #ff6600, #ff9933);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .stats-hero {
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 12px;
+        padding: 12px;
+    }
+
+    .hero-stat {
+        padding: 16px;
+    }
+
+    .stat-value {
+        font-size: 1.875rem;
+    }
+
+    .stat-label {
+        font-size: 0.75rem;
+    }
+}
+
+/* Large screens - 4 column layout */
+@media (min-width: 1200px) {
+    .stats-hero {
+        grid-template-columns: repeat(4, 1fr);
+    }
+}
+
+/* Animation for value updates */
+@keyframes pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+    100% { transform: scale(1); }
+}
+
+.stat-value.updating {
+    animation: pulse 0.5s ease;
+}
+
+/* Icon decorations (optional) */
+.hero-stat::before {
+    content: '';
+    position: absolute;
+    top: -40px;
+    right: -40px;
+    width: 120px;
+    height: 120px;
+    background: radial-gradient(circle, rgba(255, 255, 255, 0.03) 0%, transparent 70%);
+    border-radius: 50%;
+    pointer-events: none;
+}
+
+/* Hover effect for interactive stats */
+.hero-stat.clickable {
+    cursor: pointer;
+}
+
+.hero-stat.clickable:hover .stat-value {
+    color: #0066cc;
+}
+
+/* Loading skeleton */
+.stat-value.loading {
+    background: linear-gradient(90deg, #2a2a2a 25%, #3a3a3a 50%, #2a2a2a 75%);
+    background-size: 200% 100%;
+    animation: loading 1.5s ease-in-out infinite;
+    color: transparent;
+    border-radius: 4px;
+    display: inline-block;
+    min-width: 100px;
+}
+
+@keyframes loading {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
