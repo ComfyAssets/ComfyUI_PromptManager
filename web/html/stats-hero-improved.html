@@ -1,0 +1,213 @@
+<!-- Improved Stats Hero Component -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stats Hero - Improved Design</title>
+    <link rel="stylesheet" href="../css/stats-hero.css">
+    <style>
+        /* Demo page styling */
+        body {
+            background: #0a0a0a;
+            color: #ffffff;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+
+        h2 {
+            color: #888888;
+            font-weight: 300;
+            margin-bottom: 30px;
+        }
+
+        /* Alternative compact design */
+        .stats-hero.compact {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 24px;
+            gap: 16px;
+        }
+
+        .stats-hero.compact .hero-stat {
+            flex: 1;
+            padding: 0;
+            background: none;
+            border: none;
+            border-right: 1px solid rgba(255, 255, 255, 0.08);
+            text-align: center;
+        }
+
+        .stats-hero.compact .hero-stat:last-child {
+            border-right: none;
+        }
+
+        .stats-hero.compact .stat-value {
+            font-size: 1.75rem;
+            margin-bottom: 4px;
+        }
+
+        .stats-hero.compact .stat-label {
+            font-size: 0.75rem;
+            margin-bottom: 0;
+        }
+
+        .stats-hero.compact .stat-trend,
+        .stats-hero.compact .stat-subtext,
+        .stats-hero.compact .stat-progress {
+            display: none;
+        }
+
+        /* Alternative card design */
+        .stats-hero.cards {
+            display: flex;
+            gap: 16px;
+            padding: 0;
+            background: none;
+            box-shadow: none;
+        }
+
+        .stats-hero.cards .hero-stat {
+            flex: 1;
+            background: linear-gradient(135deg, #1a1a1a, #0f0f0f);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            position: relative;
+            overflow: visible;
+        }
+
+        .stats-hero.cards .hero-stat::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #0066cc, #00cc66);
+        }
+
+        .stats-hero.cards .hero-stat:nth-child(2)::after {
+            background: linear-gradient(90deg, #ff6600, #ffcc00);
+        }
+
+        .stats-hero.cards .hero-stat:nth-child(3)::after {
+            background: linear-gradient(90deg, #cc00ff, #ff00cc);
+        }
+
+        .stats-hero.cards .hero-stat:nth-child(4)::after {
+            background: linear-gradient(90deg, #00ccff, #0066ff);
+        }
+    </style>
+</head>
+<body>
+    <h2>Option 1: Grid Layout (Recommended)</h2>
+    <div class="stats-hero">
+        <div class="hero-stat">
+            <div class="stat-value" id="totalPromptsValue">1,508</div>
+            <div class="stat-label">Total Prompts</div>
+            <div class="stat-trend positive">+17 today</div>
+        </div>
+
+        <div class="hero-stat">
+            <div class="stat-value" id="totalImagesValue">14,430</div>
+            <div class="stat-label">Images Generated</div>
+            <div class="stat-sparkline" id="imageSparkline">
+                <!-- Sparkline SVG would go here -->
+                <svg width="100%" height="40" style="opacity: 0.5">
+                    <polyline points="0,35 10,30 20,25 30,28 40,20 50,15 60,18 70,10 80,12 90,8 100,5"
+                              fill="none" stroke="#0066cc" stroke-width="2"/>
+                </svg>
+            </div>
+        </div>
+
+        <div class="hero-stat streak">
+            <div class="stat-value" id="currentStreakValue">6</div>
+            <div class="stat-label">Day Streak 🔥</div>
+            <div class="stat-subtext">Best: 6 days</div>
+        </div>
+
+        <div class="hero-stat">
+            <div class="stat-value" id="innovationScore">85%</div>
+            <div class="stat-label">Innovation Index</div>
+            <div class="stat-progress">
+                <div class="progress-fill" style="width: 85%"></div>
+            </div>
+        </div>
+    </div>
+
+    <h2>Option 2: Compact Horizontal Bar</h2>
+    <div class="stats-hero compact">
+        <div class="hero-stat">
+            <div class="stat-value">1,508</div>
+            <div class="stat-label">Prompts</div>
+        </div>
+
+        <div class="hero-stat">
+            <div class="stat-value">14.4K</div>
+            <div class="stat-label">Images</div>
+        </div>
+
+        <div class="hero-stat">
+            <div class="stat-value">6 🔥</div>
+            <div class="stat-label">Streak</div>
+        </div>
+
+        <div class="hero-stat">
+            <div class="stat-value">85%</div>
+            <div class="stat-label">Innovation</div>
+        </div>
+    </div>
+
+    <h2>Option 3: Individual Cards</h2>
+    <div class="stats-hero cards">
+        <div class="hero-stat">
+            <div class="stat-value">1,508</div>
+            <div class="stat-label">Total Prompts</div>
+            <div class="stat-trend positive">↑ 2.3%</div>
+        </div>
+
+        <div class="hero-stat">
+            <div class="stat-value">14.4K</div>
+            <div class="stat-label">Images</div>
+            <div class="stat-trend positive">↑ 856/week</div>
+        </div>
+
+        <div class="hero-stat">
+            <div class="stat-value">6</div>
+            <div class="stat-label">Day Streak 🔥</div>
+            <div class="stat-subtext">Keep it up!</div>
+        </div>
+
+        <div class="hero-stat">
+            <div class="stat-value">85%</div>
+            <div class="stat-label">Innovation</div>
+            <div class="stat-progress">
+                <div class="progress-fill" style="width: 85%"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Demo: Animate values on load
+        document.addEventListener('DOMContentLoaded', () => {
+            // Animate stat values
+            document.querySelectorAll('.stat-value').forEach(el => {
+                el.classList.add('updating');
+                setTimeout(() => el.classList.remove('updating'), 500);
+            });
+
+            // Simulate live updates
+            setInterval(() => {
+                const imageValue = document.querySelector('#totalImagesValue');
+                if (imageValue) {
+                    const current = parseInt(imageValue.textContent.replace(/,/g, ''));
+                    imageValue.textContent = (current + 1).toLocaleString();
+                    imageValue.classList.add('updating');
+                    setTimeout(() => imageValue.classList.remove('updating'), 500);
+                }
+            }, 5000);
+        });
+    </script>
+</body>
+</html>
