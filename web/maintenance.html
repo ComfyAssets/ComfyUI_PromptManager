@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PromptManager - Maintenance</title>
+    <link rel="stylesheet" href="/prompt_manager/css/styles.css">
+    <style>
+        .maintenance-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .maintenance-header {
+            margin-bottom: 2rem;
+        }
+
+        .maintenance-header h1 {
+            color: #fff;
+            margin-bottom: 0.5rem;
+        }
+
+        .warning-banner {
+            background: rgba(255, 193, 7, 0.1);
+            border: 1px solid #ffc107;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .warning-banner .warning-icon {
+            color: #ffc107;
+            margin-right: 0.5rem;
+        }
+
+        .maintenance-section {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .section-title {
+            font-size: 1.25rem;
+            color: #fff;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+        }
+
+        .section-description {
+            color: #888;
+            margin-bottom: 1.5rem;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: #0066cc;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #0052a3;
+        }
+
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #b02a37;
+        }
+
+        .btn-success {
+            background: #28a745;
+            color: white;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Progress Bar */
+        .progress-container {
+            display: none;
+            margin-top: 2rem;
+            padding: 1.5rem;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+        }
+
+        .progress-container.active {
+            display: block;
+        }
+
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+            color: #fff;
+        }
+
+        .progress-bar-wrapper {
+            background: rgba(255, 255, 255, 0.1);
+            height: 30px;
+            border-radius: 15px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #0066cc, #0099ff);
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+        }
+
+        .progress-details {
+            margin-top: 1rem;
+            color: #888;
+            font-size: 0.9rem;
+        }
+
+        .progress-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .stat-item {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 0.75rem;
+            border-radius: 4px;
+        }
+
+        .stat-label {
+            color: #888;
+            font-size: 0.85rem;
+        }
+
+        .stat-value {
+            color: #fff;
+            font-size: 1.25rem;
+            font-weight: bold;
+        }
+
+        .status-message {
+            margin-top: 1rem;
+            padding: 0.75rem;
+            border-radius: 4px;
+            display: none;
+        }
+
+        .status-message.success {
+            background: rgba(40, 167, 69, 0.2);
+            border: 1px solid #28a745;
+            color: #28a745;
+            display: block;
+        }
+
+        .status-message.error {
+            background: rgba(220, 53, 69, 0.2);
+            border: 1px solid #dc3545;
+            color: #dc3545;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <div id="sidebar"></div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <div class="maintenance-container">
+                <div class="maintenance-header">
+                    <h1>🔧 Maintenance Tools</h1>
+                    <p style="color: #888;">Database maintenance and optimization tools</p>
+                </div>
+
+                <!-- Warning Banner -->
+                <div class="warning-banner">
+                    <span class="warning-icon">⚠️</span>
+                    <strong>Important:</strong> These operations can take a long time with large databases.
+                    It's recommended to run them when ComfyUI is not actively generating images.
+                </div>
+
+                <!-- Metadata Extraction Section -->
+                <div class="maintenance-section">
+                    <h2 class="section-title">📷 Extract Metadata from Images</h2>
+                    <div class="section-description">
+                        Scan ComfyUI output folder for PNG images and extract embedded workflow metadata.
+                        This populates missing generation parameters in the database.
+                    </div>
+
+                    <div class="action-buttons">
+                        <button class="btn btn-primary" id="startExtraction">
+                            Start Metadata Extraction
+                        </button>
+                        <button class="btn btn-danger" id="cancelExtraction" disabled>
+                            Cancel
+                        </button>
+                    </div>
+
+                    <!-- Progress Container -->
+                    <div class="progress-container" id="extractionProgress">
+                        <div class="progress-header">
+                            <span id="progressStatus">Preparing...</span>
+                            <span id="progressPercentage">0%</span>
+                        </div>
+                        <div class="progress-bar-wrapper">
+                            <div class="progress-bar" id="progressBar" style="width: 0%">
+                                <span id="progressBarText">0 / 0</span>
+                            </div>
+                        </div>
+                        <div class="progress-details">
+                            <div>Current file: <span id="currentFile">-</span></div>
+                            <div>Time elapsed: <span id="elapsedTime">0s</span></div>
+                        </div>
+                        <div class="progress-stats">
+                            <div class="stat-item">
+                                <div class="stat-label">Processed</div>
+                                <div class="stat-value" id="statsProcessed">0</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">Extracted</div>
+                                <div class="stat-value" id="statsExtracted">0</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">Errors</div>
+                                <div class="stat-value" id="statsErrors">0</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">Remaining</div>
+                                <div class="stat-value" id="statsRemaining">0</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="status-message" id="extractionStatus"></div>
+                </div>
+
+                <!-- Database Optimization Section -->
+                <div class="maintenance-section">
+                    <h2 class="section-title">⚡ Database Optimization</h2>
+                    <div class="section-description">
+                        Optimize database performance by running VACUUM, ANALYZE, and checkpoint operations.
+                        This can reduce file size and improve query speed.
+                    </div>
+
+                    <div class="action-buttons">
+                        <button class="btn btn-primary" id="optimizeDb">
+                            Optimize Database
+                        </button>
+                    </div>
+
+                    <div class="status-message" id="optimizeStatus"></div>
+                </div>
+
+                <!-- Stats Cache Section -->
+                <div class="maintenance-section">
+                    <h2 class="section-title">📊 Stats Cache</h2>
+                    <div class="section-description">
+                        Force rebuild of the statistics cache if analytics are showing incorrect data.
+                        This recalculates all statistics from the database.
+                    </div>
+
+                    <div class="action-buttons">
+                        <button class="btn btn-primary" id="rebuildStats">
+                            Rebuild Stats Cache
+                        </button>
+                    </div>
+
+                    <div class="status-message" id="statsStatus"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/prompt_manager/js/modules/core/api.js"></script>
+    <script>
+        // Metadata Extraction
+        let extractionInterval = null;
+
+        document.getElementById('startExtraction').addEventListener('click', async () => {
+            const confirmMsg = "This will scan your ComfyUI output folder for PNG files and extract metadata.\n\n" +
+                              "This can take several minutes for large collections.\n\n" +
+                              "Continue?";
+
+            if (!confirm(confirmMsg)) return;
+
+            const btn = document.getElementById('startExtraction');
+            const cancelBtn = document.getElementById('cancelExtraction');
+            const progressContainer = document.getElementById('extractionProgress');
+
+            btn.disabled = true;
+            cancelBtn.disabled = false;
+            progressContainer.classList.add('active');
+            document.getElementById('extractionStatus').className = 'status-message';
+
+            try {
+                // Start extraction
+                const response = await fetch('/api/v1/maintenance/extract-metadata', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ max_files: 5000 })
+                });
+
+                if (response.ok) {
+                    // Start polling for progress
+                    extractionInterval = setInterval(updateExtractionProgress, 500);
+                } else {
+                    throw new Error('Failed to start extraction');
+                }
+            } catch (error) {
+                showError('extractionStatus', error.message);
+                btn.disabled = false;
+                cancelBtn.disabled = true;
+                progressContainer.classList.remove('active');
+            }
+        });
+
+        document.getElementById('cancelExtraction').addEventListener('click', async () => {
+            if (confirm('Cancel metadata extraction?')) {
+                await fetch('/api/v1/maintenance/cancel-extraction', { method: 'POST' });
+            }
+        });
+
+        async function updateExtractionProgress() {
+            try {
+                const response = await fetch('/api/v1/maintenance/extraction-progress');
+                const data = await response.json();
+
+                if (data.success) {
+                    const progress = data.progress;
+                    const percentage = progress.total > 0
+                        ? Math.round((progress.current / progress.total) * 100)
+                        : 0;
+
+                    // Update progress bar
+                    document.getElementById('progressBar').style.width = `${percentage}%`;
+                    document.getElementById('progressBarText').textContent = `${progress.current} / ${progress.total}`;
+                    document.getElementById('progressPercentage').textContent = `${percentage}%`;
+
+                    // Update status
+                    document.getElementById('progressStatus').textContent =
+                        progress.status.charAt(0).toUpperCase() + progress.status.slice(1);
+
+                    // Update details
+                    document.getElementById('currentFile').textContent = progress.current_file || '-';
+
+                    if (progress.elapsed_time) {
+                        const elapsed = Math.round(progress.elapsed_time);
+                        document.getElementById('elapsedTime').textContent = `${elapsed}s`;
+                    }
+
+                    // Update stats
+                    document.getElementById('statsProcessed').textContent = progress.processed || 0;
+                    document.getElementById('statsExtracted').textContent = progress.extracted || 0;
+                    document.getElementById('statsErrors').textContent = progress.errors || 0;
+                    document.getElementById('statsRemaining').textContent =
+                        (progress.total - progress.current) || 0;
+
+                    // Check if completed
+                    if (!data.in_progress) {
+                        clearInterval(extractionInterval);
+                        document.getElementById('startExtraction').disabled = false;
+                        document.getElementById('cancelExtraction').disabled = true;
+
+                        if (progress.status === 'completed') {
+                            showSuccess('extractionStatus', progress.message);
+                        } else if (progress.status === 'error') {
+                            showError('extractionStatus', progress.error || 'Extraction failed');
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to get progress:', error);
+            }
+        }
+
+        // Database Optimization
+        document.getElementById('optimizeDb').addEventListener('click', async () => {
+            const btn = document.getElementById('optimizeDb');
+            btn.disabled = true;
+            document.getElementById('optimizeStatus').className = 'status-message';
+
+            try {
+                const response = await fetch('/api/v1/maintenance/optimize-database', {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    const msg = `Database optimized! Size: ${data.stats.size_mb.toFixed(2)} MB, ` +
+                               `Integrity: ${data.stats.integrity}`;
+                    showSuccess('optimizeStatus', msg);
+                } else {
+                    throw new Error(data.error);
+                }
+            } catch (error) {
+                showError('optimizeStatus', error.message);
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        // Stats Cache Rebuild
+        document.getElementById('rebuildStats').addEventListener('click', async () => {
+            const btn = document.getElementById('rebuildStats');
+            btn.disabled = true;
+            document.getElementById('statsStatus').className = 'status-message';
+
+            try {
+                const response = await fetch('/api/v1/maintenance/rebuild-stats', {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showSuccess('statsStatus', 'Stats cache rebuilt successfully!');
+                } else {
+                    throw new Error(data.error);
+                }
+            } catch (error) {
+                showError('statsStatus', error.message);
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        // Helper functions
+        function showSuccess(elementId, message) {
+            const element = document.getElementById(elementId);
+            element.className = 'status-message success';
+            element.textContent = '✅ ' + message;
+        }
+
+        function showError(elementId, message) {
+            const element = document.getElementById(elementId);
+            element.className = 'status-message error';
+            element.textContent = '❌ ' + message;
+        }
+
+        // Load sidebar
+        fetch('/prompt_manager/components/sidebar.html')
+            .then(response => response.text())
+            .then(html => {
+                document.getElementById('sidebar').innerHTML = html;
+                // Set active menu item
+                document.querySelectorAll('.menu-item').forEach(item => {
+                    if (item.textContent.includes('Maintenance')) {
+                        item.classList.add('active');
+                    }
+                });
+            });
+    </script>
+</body>
+</html>
