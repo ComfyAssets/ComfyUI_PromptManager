@@ -18,6 +18,19 @@
     let activeViewerIntegrationId = null;
     let masonryInstance = null;
 
+    // Get items per page from settings or use default
+    function getItemsPerPage() {
+        try {
+            const settings = JSON.parse(localStorage.getItem('promptManagerSettings') || '{}');
+            const itemsPerPage = parseInt(settings.galleryItemsPerPage) || 200;
+            // Ensure it's within valid range
+            return Math.min(Math.max(itemsPerPage, 10), 500);
+        } catch (e) {
+            console.warn('Failed to load gallery items per page setting, using default:', e);
+            return 200; // Default
+        }
+    }
+
     /**
      * Initialize dynamic gallery
      */
@@ -43,6 +56,15 @@
         // Load initial data
         await loadGalleryData();
 
+        // Listen for storage changes (in case settings are changed in another tab)
+        window.addEventListener('storage', (e) => {
+            if (e.key === 'promptManagerSettings') {
+                // Reload gallery with new items per page setting
+                console.log('Settings changed, reloading gallery...');
+                loadGalleryData(1, false);
+            }
+        });
+
         // Load available models for filter
         // await loadModelOptions(); // Commented out as this API doesn't exist yet
     }
@@ -50,7 +72,7 @@
     /**
      * Load gallery data from API
      */
-    async function loadGalleryData(page = 1) {
+    async function loadGalleryData(page = 1, scrollToTop = false) {
         if (isLoading) return;
         isLoading = true;
 
@@ -60,7 +82,7 @@
             // Build query parameters
             const params = new URLSearchParams({
                 page: page,
-                items_per_page: 60,
+                limit: getItemsPerPage(),  // Use setting from localStorage
                 sort_order: currentFilters.sortOrder || 'date_desc',
                 view_mode: currentFilters.viewMode || 'grid'
             });
@@ -92,6 +114,35 @@
                     showEmptyState();
                 } else {
                     hideEmptyState();
+                }
+
+                // Scroll to top of gallery after loading new page
+                if (scrollToTop) {
+                    // Try to find the main content area or top of the page
+                    const mainContent = document.querySelector('.main-content');
+                    const topbar = document.querySelector('.topbar');
+
+                    if (mainContent) {
+                        // Scroll to the main content area
+                        mainContent.scrollIntoView({
+                            behavior: 'smooth',
+                            block: 'start'
+                        });
+                    } else if (topbar) {
+                        // Scroll to just above the topbar
+                        const topbarRect = topbar.getBoundingClientRect();
+                        const topbarTop = window.pageYOffset + topbarRect.top;
+                        window.scrollTo({
+                            top: Math.max(0, topbarTop - 20), // 20px padding above topbar
+                            behavior: 'smooth'
+                        });
+                    } else {
+                        // Fallback: scroll to absolute top of page
+                        window.scrollTo({
+                            top: 0,
+                            behavior: 'smooth'
+                        });
+                    }
                 }
             } else {
                 throw new Error(result.error || 'Failed to load gallery data');
@@ -193,39 +244,53 @@
         }
         const fullMediaUrl = item.image_url || item.url || item.path || thumbnailUrl;
 
-        // Build HTML
-        div.innerHTML = `
-            <div class="gallery-image">
-                <img src="${thumbnailUrl}"
-                     data-full-src="${fullMediaUrl}"
-                     alt="${escapeHtml(item.filename || '')}"
-                     loading="lazy"
-                     data-placeholder="${placeholderImage}" />
-            </div>
-            <div class="gallery-info">
-                <div class="gallery-title">${escapeHtml(item.filename || 'Untitled')}</div>
-                <div class="gallery-meta">
-                    <span class="chip">${escapeHtml(modelName)}</span>
-                    <span class="chip">${item.dimensions || 'Unknown'}</span>
-                    <span class="chip">${item.size || 'Unknown'}</span>
-                    ${mediaType !== 'image' ? `<span class="chip chip-media">${mediaType}</span>` : ''}
+        // Build HTML - for masonry view, only show the image (no info wrapper)
+        if (viewMode === 'masonry') {
+            div.innerHTML = `
+                <div class="gallery-image">
+                    <img src="${thumbnailUrl}"
+                         data-full-src="${fullMediaUrl}"
+                         alt="${escapeHtml(item.filename || '')}"
+                         loading="lazy"
+                         data-placeholder="${placeholderImage}"
+                         title="${escapeHtml(item.filename || 'Untitled')}" />
                 </div>
-                <div class="gallery-timestamp">
-                    ${formatTimeAgo(item.generation_time)}
+            `;
+        } else {
+            // Build HTML for grid and list views with full info
+            div.innerHTML = `
+                <div class="gallery-image">
+                    <img src="${thumbnailUrl}"
+                         data-full-src="${fullMediaUrl}"
+                         alt="${escapeHtml(item.filename || '')}"
+                         loading="lazy"
+                         data-placeholder="${placeholderImage}" />
                 </div>
-                <div class="gallery-actions">
-                    <button class="btn btn-ghost" title="View Details" onclick="viewGalleryItem('${item.id}')">
-                        <i class="fa-solid fa-info-circle"></i>
-                    </button>
-                    <button class="btn btn-ghost" title="Copy Prompt" onclick="copyPrompt('${item.id}')">
-                        <i class="fa-solid fa-copy"></i>
-                    </button>
-                    <button class="btn btn-ghost" title="Delete" onclick="deleteGalleryItem('${item.id}')">
-                        <i class="fa-solid fa-trash"></i>
-                    </button>
+                <div class="gallery-info">
+                    <div class="gallery-title">${escapeHtml(item.filename || 'Untitled')}</div>
+                    <div class="gallery-meta">
+                        <span class="chip">${escapeHtml(modelName)}</span>
+                        <span class="chip">${item.dimensions || 'Unknown'}</span>
+                        <span class="chip">${item.size || 'Unknown'}</span>
+                        ${mediaType !== 'image' ? `<span class="chip chip-media">${mediaType}</span>` : ''}
+                    </div>
+                    <div class="gallery-timestamp">
+                        ${formatTimeAgo(item.generation_time)}
+                    </div>
+                    <div class="gallery-actions">
+                        <button class="btn btn-ghost" title="View Details" onclick="viewGalleryItem('${item.id}')">
+                            <i class="fa-solid fa-info-circle"></i>
+                        </button>
+                        <button class="btn btn-ghost" title="Copy Prompt" onclick="copyPrompt('${item.id}')">
+                            <i class="fa-solid fa-copy"></i>
+                        </button>
+                        <button class="btn btn-ghost" title="Delete" onclick="deleteGalleryItem('${item.id}')">
+                            <i class="fa-solid fa-trash"></i>
+                        </button>
+                    </div>
                 </div>
-            </div>
-        `;
+            `;
+        }
 
         if (viewMode === 'list') {
             const imageEl = div.querySelector('.gallery-image');
@@ -394,7 +459,7 @@
                 clearTimeout(searchTimer);
                 searchTimer = setTimeout(() => {
                     currentFilters.search = e.target.value;
-                    loadGalleryData(1);
+                    loadGalleryData(1, false);  // Don't scroll for search
                 }, 500);
             });
         }
@@ -411,7 +476,7 @@
 
             const container = document.querySelector('.gallery-container');
             currentFilters.viewMode = applyViewModeToContainer(container, normalizedMode);
-            loadGalleryData(currentPage);
+            loadGalleryData(currentPage, false);  // Don't scroll for view mode change
         };
 
         // Model filter - first select in filter-bar
@@ -419,7 +484,7 @@
         if (modelSelect) {
             modelSelect.addEventListener('change', (e) => {
                 currentFilters.model = e.target.value;
-                loadGalleryData(1);
+                loadGalleryData(1, false);  // Don't scroll for filter change
             });
         }
 
@@ -450,7 +515,7 @@
                         delete currentFilters.dateTo;
                 }
 
-                loadGalleryData(1);
+                loadGalleryData(1, false);  // Don't scroll for filter change
             });
         }
 
@@ -464,7 +529,7 @@
                     'Most Liked': 'date_desc' // Placeholder until we have likes
                 };
                 currentFilters.sortOrder = sortMap[e.target.value] || 'date_desc';
-                loadGalleryData(currentPage);
+                loadGalleryData(currentPage, false);  // Don't scroll for sort change
             });
         }
     }
@@ -476,7 +541,7 @@
         // Make loadGalleryPage globally available
         window.loadGalleryPage = (page) => {
             if (page >= 1 && page <= totalPages) {
-                loadGalleryData(page);
+                loadGalleryData(page, true);  // Set scrollToTop to true for pagination
             }
         };
     }
@@ -647,19 +712,49 @@
             masonryInstance.destroy();
         }
 
-        masonryInstance = new Masonry(container, {
-            itemSelector: '.gallery-item',
-            columnWidth: '.masonry-sizer',
-            percentPosition: true,
-            gutter: 24,
-        });
+        // Use imagesLoaded if available for better layout after images load
+        const initMasonry = () => {
+            masonryInstance = new Masonry(container, {
+                itemSelector: '.gallery-item',
+                columnWidth: '.masonry-sizer',
+                percentPosition: true,
+                gutter: 8,  // Reduced gutter for tighter collage
+                fitWidth: false,
+                transitionDuration: '0.2s',
+                horizontalOrder: false,  // Allow vertical flow for better packing
+                initLayout: false  // We'll call layout manually after images load
+            });
 
-        container.querySelectorAll('img').forEach((img) => {
-            if (img.complete) {
-                masonryInstance.layout();
+            // Initial layout
+            masonryInstance.layout();
+        };
+
+        // Initialize masonry
+        initMasonry();
+
+        // Re-layout when each image loads for dynamic heights
+        let loadedCount = 0;
+        const images = container.querySelectorAll('img');
+        const totalImages = images.length;
+
+        images.forEach((img) => {
+            if (img.complete && img.naturalHeight !== 0) {
+                loadedCount++;
+                if (loadedCount === totalImages) {
+                    setTimeout(() => masonryInstance && masonryInstance.layout(), 100);
+                }
             } else {
                 img.addEventListener('load', () => {
+                    loadedCount++;
+                    // Re-layout after each image loads for better progressive display
                     masonryInstance && masonryInstance.layout();
+                }, { once: true });
+
+                img.addEventListener('error', () => {
+                    loadedCount++;
+                    if (loadedCount === totalImages) {
+                        masonryInstance && masonryInstance.layout();
+                    }
                 }, { once: true });
             }
         });
