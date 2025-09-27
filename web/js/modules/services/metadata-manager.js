@@ -78,14 +78,16 @@ const MetadataManager = (function() {
                 lens: 'Lens'
             },
             custom: {
-                prompt: 'Prompt',
-                negativePrompt: 'Negative Prompt',
+                positivePrompt: 'Prompt - positive',
+                negativePrompt: 'Prompt - negative',
                 model: 'Model',
-                sampler: 'Sampler',
-                steps: 'Steps',
-                cfgScale: 'CFG Scale',
-                seed: 'Seed',
-                clipSkip: 'CLIP Skip'
+                loras: 'Lora(s)',
+                cfgScale: 'cfgScale',
+                steps: 'steps',
+                sampler: 'sampler',
+                seed: 'seed',
+                clipSkip: 'clipSkip',
+                workflow: 'Workflow'
             }
         }
     };
@@ -150,12 +152,9 @@ const MetadataManager = (function() {
         };
 
         try {
-            // Extract standard metadata
             if (typeof source === 'string') {
-                // URL source
                 metadata.standard.filename = source.split('/').pop().split('?')[0];
 
-                // Fetch image for further processing
                 const response = await fetch(source);
                 const blob = await response.blob();
                 metadata.standard.fileSize = formatFileSize(blob.size);
@@ -167,11 +166,9 @@ const MetadataManager = (function() {
                 metadata.standard.lastModified = new Date(source.lastModified).toLocaleString();
             }
 
-            // Load image to get dimensions
             const img = await loadImage(source);
             metadata.standard.dimensions = `${img.width} × ${img.height}`;
 
-            // Extract EXIF data if available
             if (typeof EXIF !== 'undefined') {
                 const exifData = await extractEXIF(source);
                 if (exifData) {
@@ -179,13 +176,19 @@ const MetadataManager = (function() {
                 }
             }
 
-            // Extract custom metadata (e.g., from PNG chunks)
             const customData = await extractCustomMetadata(source);
             if (customData) {
-                metadata.custom = customData;
+                if (customData.summary && typeof customData.summary === 'object') {
+                    metadata.custom = customData.summary;
+                } else if (typeof customData === 'object') {
+                    metadata.custom = customData;
+                }
+
+                if (customData.raw && typeof customData.raw === 'object') {
+                    metadata.raw = Object.assign({}, metadata.raw, customData.raw);
+                }
             }
 
-            // Run registered extractors
             for (const [name, extractor] of extractors) {
                 try {
                     const result = await extractor(source, metadata);
@@ -202,6 +205,7 @@ const MetadataManager = (function() {
             metadata.error = error.message;
         }
 
+        augmentWithComfySummary(metadata);
         return metadata;
     }
 
@@ -254,17 +258,22 @@ const MetadataManager = (function() {
     }
 
     function parsePNGMetadata(arrayBuffer) {
-        const metadata = {};
         const dataView = new DataView(arrayBuffer);
 
-        // Check PNG signature
-        if (dataView.getUint32(0) !== 0x89504E47) {
-            return metadata;
+        if (
+            dataView.byteLength < 8 ||
+            dataView.getUint32(0) !== 0x89504E47 ||
+            dataView.getUint32(4) !== 0x0D0A1A0A
+        ) {
+            return null;
         }
 
-        let offset = 8; // Skip PNG signature
+        const latin1Decoder = new TextDecoder('latin1');
+        const utf8Decoder = new TextDecoder('utf-8');
+        const textChunks = {};
+        let offset = 8;
 
-        while (offset < dataView.byteLength) {
+        while (offset + 8 <= dataView.byteLength) {
             const length = dataView.getUint32(offset);
             const type = String.fromCharCode(
                 dataView.getUint8(offset + 4),
@@ -273,56 +282,908 @@ const MetadataManager = (function() {
                 dataView.getUint8(offset + 7)
             );
 
-            if (type === 'tEXt' || type === 'iTXt') {
-                const textData = new Uint8Array(arrayBuffer, offset + 8, length);
-                const text = new TextDecoder('utf-8').decode(textData);
-                const [key, value] = text.split('\0');
+            const nextOffset = offset + 12 + length;
+            if (nextOffset > dataView.byteLength) {
+                break;
+            }
 
-                if (key === 'parameters' || key === 'prompt') {
-                    // Parse AI generation parameters
-                    try {
-                        const params = parseAIParameters(value);
-                        Object.assign(metadata, params);
-                    } catch (e) {
-                        metadata[key] = value;
+            if (type === 'tEXt') {
+                const chunk = new Uint8Array(arrayBuffer, offset + 8, length);
+                const separator = chunk.indexOf(0);
+                if (separator !== -1) {
+                    const key = latin1Decoder.decode(chunk.slice(0, separator));
+                    const value = latin1Decoder.decode(chunk.slice(separator + 1));
+                    if (key) {
+                        textChunks[key] = value;
                     }
-                } else {
-                    metadata[key] = value;
+                }
+            } else if (type === 'iTXt') {
+                const chunk = new Uint8Array(arrayBuffer, offset + 8, length);
+                const parsed = parseITXtChunk(chunk, latin1Decoder, utf8Decoder);
+                if (parsed && parsed.key) {
+                    textChunks[parsed.key] = parsed.value;
                 }
             }
 
-            offset += length + 12; // Move to next chunk
+            if (type === 'IEND') {
+                break;
+            }
 
-            if (type === 'IEND') break;
+            offset = nextOffset;
         }
 
-        return metadata;
+        const raw = { textChunks };
+
+        const promptData = typeof textChunks.prompt === 'string' ? safeJsonParse(textChunks.prompt) : null;
+        const workflowData = typeof textChunks.workflow === 'string' ? safeJsonParse(textChunks.workflow) : null;
+
+        if (promptData) {
+            raw.prompt = promptData;
+        }
+        if (workflowData) {
+            raw.workflow = workflowData;
+        }
+
+        const comfySummary = promptData ? new ComfyPromptParser(promptData).summarize(workflowData) : null;
+        if (comfySummary) {
+            raw.comfy = comfySummary;
+        }
+
+        const a1111 = textChunks.parameters ? parseAIParameters(textChunks.parameters) : {};
+        if (Object.keys(a1111).length) {
+            raw.a1111 = a1111;
+        }
+
+        const summary = buildMetadataSummary({
+            textChunks,
+            comfySummary,
+            a1111
+        });
+
+        return { summary, raw };
     }
 
     function parseAIParameters(text) {
+        if (!text || typeof text !== 'string') {
+            return {};
+        }
+
         const params = {};
+        const normalized = text.replace(/\r\n/g, '\n');
 
-        // Parse common AI generation formats
-        // Format: "prompt: ..., negative prompt: ..., steps: 20, sampler: DPM++, ..."
-        const patterns = {
-            prompt: /^([^,\n]+?)(?:,|$)/,
-            negativePrompt: /negative\s*prompt:\s*([^,\n]+?)(?:,|$)/i,
-            model: /model:\s*([^,\n]+?)(?:,|$)/i,
-            sampler: /sampler:\s*([^,\n]+?)(?:,|$)/i,
-            steps: /steps:\s*(\d+)/i,
-            cfgScale: /cfg\s*scale:\s*([0-9.]+)/i,
-            seed: /seed:\s*(\d+)/i,
-            clipSkip: /clip\s*skip:\s*(\d+)/i
-        };
+        const explicitPromptMatch = normalized.match(/(?:^|\n)prompt:\s*([^\n]+)/i);
+        if (explicitPromptMatch) {
+            params.prompt = explicitPromptMatch[1].trim();
+        } else {
+            const firstLine = normalized.split('\n')[0];
+            if (firstLine && !/^negative\s*prompt:/i.test(firstLine)) {
+                params.prompt = firstLine.trim();
+            }
+        }
 
-        for (const [key, pattern] of Object.entries(patterns)) {
-            const match = text.match(pattern);
-            if (match) {
-                params[key] = match[1].trim();
+        const negativeMatch = normalized.match(/negative\s*prompt:\s*([\s\S]*?)(?:\n[A-Za-z][^:\n]*?:|\n*$)/i);
+        if (negativeMatch) {
+            params.negativePrompt = negativeMatch[1].trim();
+        }
+
+        const pairPattern = /([A-Za-z0-9 _-]+):\s*([^,\n]+)(?:,|\n|$)/g;
+        let match;
+
+        while ((match = pairPattern.exec(normalized)) !== null) {
+            const key = match[1].trim().toLowerCase().replace(/\s+/g, '');
+            const rawValue = match[2].trim();
+
+            if (!rawValue) continue;
+
+            switch (key) {
+                case 'steps': {
+                    const num = Number(rawValue);
+                    params.steps = Number.isNaN(num) ? rawValue : num;
+                    break;
+                }
+                case 'cfgscale':
+                case 'cfg': {
+                    const num = Number(rawValue);
+                    params.cfgScale = Number.isNaN(num) ? rawValue : num;
+                    break;
+                }
+                case 'sampler':
+                case 'samplername':
+                case 'schedule':
+                    params.sampler = rawValue;
+                    break;
+                case 'seed': {
+                    if (/^\d+$/.test(rawValue)) {
+                        const num = Number(rawValue);
+                        params.seed = Number.isSafeInteger(num) ? num : rawValue;
+                    } else {
+                        params.seed = rawValue;
+                    }
+                    break;
+                }
+                case 'clipskip':
+                case 'clip_skip': {
+                    const num = Number(rawValue);
+                    params.clipSkip = Number.isNaN(num) ? rawValue : num;
+                    break;
+                }
+                case 'model':
+                case 'modelhash':
+                case 'modelname':
+                    if (!params.model) {
+                        params.model = rawValue;
+                    }
+                    break;
+                default:
+                    break;
             }
         }
 
         return params;
+    }
+
+    function safeJsonParse(value) {
+        try {
+            return JSON.parse(value);
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function parseITXtChunk(chunk, latin1Decoder, utf8Decoder) {
+        try {
+            let offset = 0;
+
+            const readUntilNull = (decoder) => {
+                const end = chunk.indexOf(0, offset);
+                const sliceEnd = end === -1 ? chunk.length : end;
+                const value = decoder.decode(chunk.slice(offset, sliceEnd));
+                offset = sliceEnd + 1;
+                return value;
+            };
+
+            const key = readUntilNull(latin1Decoder);
+            if (!key) {
+                return null;
+            }
+
+            const compressionFlag = chunk[offset++];
+            offset++;
+
+            readUntilNull(latin1Decoder);
+            readUntilNull(utf8Decoder);
+
+            let textBytes = chunk.slice(offset);
+
+            if (compressionFlag === 1) {
+                if (typeof pako !== 'undefined') {
+                    try {
+                        textBytes = pako.inflate(textBytes);
+                    } catch (error) {
+                        console.warn('Failed to inflate iTXt chunk:', error);
+                        return null;
+                    }
+                } else {
+                    console.warn('Compressed iTXt chunk encountered but no inflater is available.');
+                    return null;
+                }
+            }
+
+            return {
+                key,
+                value: utf8Decoder.decode(textBytes)
+            };
+        } catch (error) {
+            console.warn('Failed to parse iTXt chunk:', error);
+            return null;
+        }
+    }
+
+    function buildMetadataSummary({ textChunks, comfySummary, a1111 }) {
+        const summary = {
+            positivePrompt: '',
+            negativePrompt: '',
+            model: '',
+            loras: '',
+            cfgScale: '',
+            steps: '',
+            sampler: '',
+            seed: '',
+            clipSkip: '',
+            workflow: ''
+        };
+
+        summary.positivePrompt = coalesceText(
+            comfySummary?.positivePrompt,
+            textChunks.prompt,
+            a1111.prompt
+        );
+        if (!summary.positivePrompt) {
+            summary.positivePrompt = 'None';
+        }
+
+        summary.negativePrompt = coalesceText(
+            comfySummary?.negativePrompt,
+            textChunks.negative_prompt,
+            textChunks['Negative prompt'],
+            a1111.negativePrompt
+        );
+        if (!summary.negativePrompt) {
+            summary.negativePrompt = 'None';
+        }
+
+        const model = coalesceText(
+            comfySummary?.model,
+            textChunks.model,
+            textChunks.Model,
+            a1111.model
+        );
+        summary.model = model ? String(model) : 'None';
+
+        const steps = coalesceNumeric(
+            comfySummary?.steps,
+            a1111.steps,
+            textChunks.steps
+        );
+        summary.steps = steps !== '' ? String(steps) : 'None';
+
+        const cfgScale = coalesceNumeric(
+            comfySummary?.cfgScale,
+            a1111.cfgScale,
+            textChunks.cfgScale,
+            textChunks.cfg_scale
+        );
+        summary.cfgScale = cfgScale !== '' ? String(cfgScale) : 'None';
+
+        const seed = coalesceText(
+            comfySummary?.seed,
+            a1111.seed,
+            textChunks.seed
+        );
+        summary.seed = seed ? String(seed) : 'None';
+
+        const sampler = coalesceText(
+            comfySummary?.sampler,
+            textChunks.sampler,
+            a1111.sampler
+        );
+        summary.sampler = sampler ? String(sampler) : 'None';
+
+        const clipSkip = coalesceNumeric(
+            comfySummary?.clipSkip,
+            a1111.clipSkip,
+            textChunks.clipSkip,
+            textChunks.clip_skip
+        );
+        summary.clipSkip = clipSkip !== '' ? String(clipSkip) : 'None';
+
+        const loraSummary = comfySummary?.loras && comfySummary.loras.length
+            ? comfySummary.loras.map(formatLoraEntry).filter(Boolean).join(', ')
+            : coalesceText(textChunks.loras, textChunks.lora);
+
+        summary.loras = loraSummary ? String(loraSummary) : 'None';
+
+        const workflowSummary = formatWorkflowSummary(comfySummary?.workflow ?? null);
+        summary.workflow = workflowSummary || 'Not embedded';
+
+        return summary;
+    }
+
+    function coalesceText(...values) {
+        for (const value of values) {
+            if (value === undefined || value === null) continue;
+            if (typeof value === 'string') {
+                const trimmed = value.trim();
+                if (trimmed) {
+                    return trimmed;
+                }
+            }
+            if (typeof value === 'number' && Number.isFinite(value)) {
+                return value.toString();
+            }
+        }
+        return '';
+    }
+
+    function coalesceNumeric(...values) {
+        for (const value of values) {
+            const num = toNumber(value);
+            if (num !== null) {
+                return num;
+            }
+        }
+        return '';
+    }
+
+    function toNumber(value) {
+        if (value === undefined || value === null) {
+            return null;
+        }
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            return value;
+        }
+        if (typeof value === 'string') {
+            const trimmed = value.trim();
+            if (!trimmed) {
+                return null;
+            }
+            const parsed = Number(trimmed);
+            if (!Number.isNaN(parsed)) {
+                return parsed;
+            }
+        }
+        return null;
+    }
+
+    function formatLoraEntry(entry) {
+        if (!entry || !entry.name) {
+            return '';
+        }
+
+        const strengths = [];
+        if (entry.strengthModel !== undefined && entry.strengthModel !== null) {
+            strengths.push(`model ${formatNumeric(entry.strengthModel)}`);
+        }
+        if (entry.strengthClip !== undefined && entry.strengthClip !== null) {
+            strengths.push(`clip ${formatNumeric(entry.strengthClip)}`);
+        }
+
+        return strengths.length
+            ? `${entry.name} (${strengths.join(', ')})`
+            : entry.name;
+    }
+
+    function formatNumeric(value) {
+        const num = toNumber(value);
+        if (num === null) {
+            return typeof value === 'string' ? value : '';
+        }
+        if (Number.isInteger(num)) {
+            return num.toString();
+        }
+        return Number(num.toFixed(3)).toString();
+    }
+
+    function formatWorkflowSummary(workflow) {
+        if (!workflow || typeof workflow !== 'object') {
+            return '';
+        }
+
+        const nodeCount = countWorkflowNodes(workflow);
+        if (nodeCount > 0) {
+            return `Embedded workflow (${nodeCount} nodes)`;
+        }
+        return 'Embedded workflow';
+    }
+
+    function countWorkflowNodes(workflow) {
+        if (!workflow || typeof workflow !== 'object') {
+            return 0;
+        }
+
+        if (Array.isArray(workflow)) {
+            return workflow.length;
+        }
+
+        if (workflow.nodes) {
+            const nodes = workflow.nodes;
+            if (Array.isArray(nodes)) {
+                return nodes.length;
+            }
+            if (nodes && typeof nodes === 'object') {
+                return Object.keys(nodes).length;
+            }
+        }
+
+        try {
+            return Object.keys(workflow).length;
+        } catch (error) {
+            return 0;
+        }
+    }
+
+    const TEXT_NODE_TYPES = new Set([
+        'CLIPTextEncode',
+        'CLIPTextEncodeSDXL',
+        'CLIPTextEncodeSDXLRefiner',
+        'CLIPTextEncodeSVD',
+        'DualCLIPTextEncode',
+        'Note',
+        'String',
+        'Text',
+        'TextBox',
+        'TextMultiline',
+        'PromptBookmark'
+    ]);
+
+    class ComfyPromptParser {
+        constructor(promptGraph) {
+            this.nodes = new Map();
+
+            if (promptGraph && typeof promptGraph === 'object') {
+                Object.entries(promptGraph).forEach(([id, node]) => {
+                    if (node && typeof node === 'object') {
+                        this.nodes.set(String(id), node);
+                    }
+                });
+            }
+        }
+
+        summarize(workflowData) {
+            if (!this.nodes.size) {
+                return null;
+            }
+
+            const samplerInfo = this.findSamplerNode();
+            if (!samplerInfo) {
+                return null;
+            }
+
+            const samplerNode = samplerInfo.node;
+            const inputs = samplerNode.inputs || {};
+
+            const positiveKey = inputs.positive !== undefined ? 'positive' : (inputs.positive_conditioning !== undefined ? 'positive_conditioning' : null);
+            const negativeKey = inputs.negative !== undefined ? 'negative' : (inputs.negative_conditioning !== undefined ? 'negative_conditioning' : null);
+
+            const positivePrompt = positiveKey ? this.extractText(inputs[positiveKey]) : '';
+            const negativePrompt = negativeKey ? this.extractText(inputs[negativeKey]) : '';
+
+            const steps = this.extractNumberFromValue(this.resolveFirst(inputs, ['steps', 'num_steps', 'step']));
+            const cfgScale = this.extractNumberFromValue(this.resolveFirst(inputs, ['cfg', 'cfg_scale', 'cfgScale']));
+            const samplerName = this.extractTextValue(this.resolveFirst(inputs, ['sampler_name', 'sampler', 'sampler_type', 'scheduler']));
+            const seed = this.extractSeedValue(inputs);
+
+            const modelInfo = this.collectModelChain(this.resolveFirst(inputs, ['model', 'model_in', 'model_input', 'unet']));
+
+            return {
+                positivePrompt: positivePrompt || '',
+                negativePrompt: negativePrompt || '',
+                steps: steps !== null ? steps : undefined,
+                cfgScale: cfgScale !== null ? cfgScale : undefined,
+                sampler: samplerName || '',
+                seed: seed,
+                model: modelInfo.model || '',
+                loras: modelInfo.loras,
+                clipSkip: modelInfo.clipSkip !== null ? modelInfo.clipSkip : undefined,
+                workflow: workflowData || null
+            };
+        }
+
+        findSamplerNode() {
+            const samplerTypes = new Set([
+                'KSampler',
+                'KSamplerAdvanced',
+                'KSamplerSimple',
+                'KSamplerSelect',
+                'KSamplerSDXL',
+                'KSamplerLatentUpscale',
+                'Sampler',
+                'SamplerCustom'
+            ]);
+
+            let fallback = null;
+
+            for (const [id, node] of this.nodes.entries()) {
+                if (!node || typeof node !== 'object') continue;
+                const type = node.class_type || node.type || '';
+                if (!samplerTypes.has(type)) continue;
+
+                const inputs = node.inputs || {};
+                if (inputs.positive !== undefined || inputs.positive_conditioning !== undefined) {
+                    return { id, node };
+                }
+                if (!fallback) {
+                    fallback = { id, node };
+                }
+            }
+
+            return fallback;
+        }
+
+        resolveFirst(inputs, keys) {
+            if (!inputs) return undefined;
+            for (const key of keys) {
+                if (inputs[key] !== undefined) {
+                    return inputs[key];
+                }
+            }
+            return undefined;
+        }
+
+        getNodeId(value) {
+            if (value === undefined || value === null) {
+                return null;
+            }
+
+            if (Array.isArray(value)) {
+                if (!value.length) return null;
+
+                const first = value[0];
+                if (Array.isArray(first)) {
+                    for (const entry of value) {
+                        const resolved = this.getNodeId(entry);
+                        if (resolved) return resolved;
+                    }
+                    return null;
+                }
+
+                if (typeof first === 'object' && first !== null) {
+                    return this.getNodeId(first);
+                }
+
+                const candidate = String(first);
+                return this.nodes.has(candidate) ? candidate : null;
+            }
+
+            if (typeof value === 'object') {
+                if (value.node !== undefined) {
+                    return this.getNodeId([value.node]);
+                }
+                if (value.id !== undefined) {
+                    return this.getNodeId([value.id]);
+                }
+            }
+
+            if (typeof value === 'string' || typeof value === 'number') {
+                const candidate = String(value);
+                return this.nodes.has(candidate) ? candidate : null;
+            }
+
+            return null;
+        }
+
+        getNode(id) {
+            return this.nodes.get(String(id));
+        }
+
+        extractText(value) {
+            return this.collectTextFromValue(value, new Set()).trim();
+        }
+
+        collectTextFromValue(value, visited) {
+            if (value === undefined || value === null) {
+                return '';
+            }
+            if (typeof value === 'string') {
+                return value;
+            }
+            if (typeof value === 'number') {
+                return value.toString();
+            }
+            if (Array.isArray(value)) {
+                const nodeId = this.getNodeId(value);
+                if (nodeId) {
+                    return this.collectTextFromNode(nodeId, visited);
+                }
+                return value.map((item) => this.collectTextFromValue(item, visited)).filter(Boolean).join(' ');
+            }
+            if (typeof value === 'object') {
+                if (value.node !== undefined) {
+                    return this.collectTextFromValue([value.node, value.output ?? 0], visited);
+                }
+                if (value.text !== undefined) {
+                    return this.collectTextFromValue(value.text, visited);
+                }
+                if (value.value !== undefined) {
+                    return this.collectTextFromValue(value.value, visited);
+                }
+            }
+            return '';
+        }
+
+        collectTextFromNode(nodeId, visited) {
+            nodeId = String(nodeId);
+            if (visited.has(nodeId)) {
+                return '';
+            }
+            visited.add(nodeId);
+
+            const node = this.getNode(nodeId);
+            if (!node) {
+                return '';
+            }
+
+            const type = node.class_type || node.type || '';
+            const inputs = node.inputs || {};
+
+            if (TEXT_NODE_TYPES.has(type)) {
+                const textValue = inputs.text ?? inputs.value ?? '';
+                const resolved = this.collectTextFromValue(textValue, visited);
+                if (resolved) {
+                    return resolved;
+                }
+            }
+
+            const fragments = [];
+            for (const [key, val] of Object.entries(inputs)) {
+                if (key.toLowerCase().includes('clip')) continue;
+                const resolved = this.collectTextFromValue(val, visited);
+                if (resolved) {
+                    fragments.push(resolved);
+                }
+            }
+
+            return fragments.join(', ');
+        }
+
+        extractNumberFromValue(value) {
+            const literal = this.resolveLiteral(value, new Set());
+            if (typeof literal === 'number' && Number.isFinite(literal)) {
+                return literal;
+            }
+            if (typeof literal === 'string') {
+                const parsed = Number(literal);
+                if (!Number.isNaN(parsed)) {
+                    return parsed;
+                }
+            }
+            return null;
+        }
+
+        extractTextValue(value) {
+            const literal = this.resolveLiteral(value, new Set());
+            if (literal === null || literal === undefined) {
+                return '';
+            }
+            if (typeof literal === 'string') {
+                return literal.trim();
+            }
+            if (typeof literal === 'number' && Number.isFinite(literal)) {
+                return literal.toString();
+            }
+            return '';
+        }
+
+        extractSeedValue(inputs) {
+            const seedCandidate = this.resolveFirst(inputs, ['seed', 'noise_seed', 'seed_delta', 'seed_1']);
+            if (seedCandidate === undefined) {
+                return '';
+            }
+            const literal = this.resolveLiteral(seedCandidate, new Set());
+            if (literal === null || literal === undefined) {
+                return '';
+            }
+            if (typeof literal === 'number' && Number.isFinite(literal)) {
+                return literal;
+            }
+            if (typeof literal === 'string') {
+                const trimmed = literal.trim();
+                if (trimmed) {
+                    return trimmed;
+                }
+            }
+            return '';
+        }
+
+        collectModelChain(value) {
+            const result = {
+                model: '',
+                loras: [],
+                clipSkip: null
+            };
+
+            const visited = new Set();
+            const stack = [];
+            const startId = this.getNodeId(value);
+            if (startId) {
+                stack.push(startId);
+            }
+
+            while (stack.length) {
+                const nodeId = stack.pop();
+                if (visited.has(nodeId)) continue;
+                visited.add(nodeId);
+
+                const node = this.getNode(nodeId);
+                if (!node) continue;
+
+                const inputs = node.inputs || {};
+                const type = node.class_type || node.type || '';
+
+                if (!result.model) {
+                    const modelName = this.extractTextValue(
+                        this.resolveFirst(inputs, ['ckpt_name', 'model_name', 'checkpoint', 'checkpoint_name', 'filename'])
+                    );
+                    if (modelName) {
+                        result.model = modelName;
+                    }
+                }
+
+                if (result.clipSkip === null) {
+                    const clipSkipCandidate = this.extractNumberFromValue(
+                        this.resolveFirst(inputs, ['clip_skip', 'clipSkip', 'skip', 'clip_layers'])
+                    );
+                    if (clipSkipCandidate !== null) {
+                        result.clipSkip = clipSkipCandidate;
+                    }
+                }
+
+                if (/lora/i.test(type)) {
+                    const entries = this.extractLoraEntries(node);
+                    if (entries.length) {
+                        result.loras.push(...entries);
+                    }
+                }
+
+                const nextKeys = ['model', 'model_in', 'model1', 'model2', 'clip', 'clip_in', 'clip1', 'clip2', 'unet', 'unet_in'];
+                nextKeys.forEach((key) => {
+                    if (inputs[key] !== undefined) {
+                        const nextId = this.getNodeId(inputs[key]);
+                        if (nextId && !visited.has(nextId)) {
+                            stack.push(nextId);
+                        }
+                    }
+                });
+            }
+
+            return result;
+        }
+
+        extractLoraEntries(node) {
+            const results = [];
+            const inputs = node.inputs || {};
+
+            const addEntry = (name, strengthModel, strengthClip) => {
+                if (!name) return;
+                results.push({
+                    name,
+                    strengthModel: strengthModel !== undefined ? strengthModel : null,
+                    strengthClip: strengthClip !== undefined ? strengthClip : null
+                });
+            };
+
+            const primaryName = this.extractTextValue(
+                inputs.lora_name ?? inputs.lora ?? inputs.model ?? inputs.filename ?? inputs.name
+            );
+            if (primaryName) {
+                const modelStrength = this.extractNumberFromValue(
+                    inputs.strength_model ?? inputs.model_strength ?? inputs.strength ?? inputs.alpha
+                );
+                const clipStrength = this.extractNumberFromValue(
+                    inputs.strength_clip ?? inputs.clip_strength
+                );
+                addEntry(primaryName, modelStrength, clipStrength);
+            }
+
+            if (Array.isArray(inputs.lora_stack)) {
+                inputs.lora_stack.forEach((entry) => {
+                    if (Array.isArray(entry)) {
+                        const [name, modelStrength, clipStrength] = entry;
+                        addEntry(
+                            this.extractTextValue(name),
+                            this.extractNumberFromValue(modelStrength),
+                            this.extractNumberFromValue(clipStrength)
+                        );
+                    } else if (entry && typeof entry === 'object') {
+                        addEntry(
+                            this.extractTextValue(entry.name ?? entry.lora_name),
+                            this.extractNumberFromValue(entry.strength_model ?? entry.model_strength),
+                            this.extractNumberFromValue(entry.strength_clip ?? entry.clip_strength)
+                        );
+                    }
+                });
+            }
+
+            return results;
+        }
+
+        resolveLiteral(value, visited) {
+            if (value === undefined || value === null) {
+                return null;
+            }
+
+            if (typeof value === 'number' || typeof value === 'boolean') {
+                return value;
+            }
+
+            if (typeof value === 'string') {
+                if (this.nodes.has(value)) {
+                    return this.resolveLiteral([value], visited);
+                }
+                return value;
+            }
+
+            if (Array.isArray(value)) {
+                const nodeId = this.getNodeId(value);
+                if (nodeId) {
+                    if (visited.has(nodeId)) {
+                        return null;
+                    }
+                    visited.add(nodeId);
+
+                    const node = this.getNode(nodeId);
+                    if (!node) {
+                        return null;
+                    }
+
+                    const inputs = node.inputs || {};
+                    const type = node.class_type || node.type || '';
+
+                    if (/clip.*skip/i.test(type)) {
+                        const clipSkipValue = this.resolveLiteral(inputs.clip_skip ?? inputs.clipSkip, visited);
+                        if (clipSkipValue !== null && clipSkipValue !== undefined) {
+                            return clipSkipValue;
+                        }
+                    }
+
+                    const constantKeys = ['value', 'number', 'float', 'int', 'seed', 'strength', 'strength_model', 'strength_clip'];
+                    for (const key of constantKeys) {
+                        if (inputs[key] !== undefined) {
+                            const resolved = this.resolveLiteral(inputs[key], visited);
+                            if (resolved !== null && resolved !== undefined) {
+                                return resolved;
+                            }
+                        }
+                    }
+
+                    if (node.value !== undefined) return node.value;
+                    if (node.number !== undefined) return node.number;
+                    if (node.seed !== undefined) return node.seed;
+
+                    return null;
+                }
+
+                const literals = value
+                    .map((item) => this.resolveLiteral(item, visited))
+                    .filter((item) => item !== null && item !== undefined);
+
+                if (!literals.length) {
+                    return null;
+                }
+
+                return literals.length === 1 ? literals[0] : literals;
+            }
+
+            if (typeof value === 'object') {
+                if (value.node !== undefined) {
+                    return this.resolveLiteral([value.node, value.output ?? 0], visited);
+                }
+                if (value.value !== undefined) {
+                    return this.resolveLiteral(value.value, visited);
+                }
+                if (value.number !== undefined) {
+                    return this.resolveLiteral(value.number, visited);
+                }
+                if (value.float !== undefined) {
+                    return this.resolveLiteral(value.float, visited);
+                }
+                if (value.int !== undefined) {
+                    return this.resolveLiteral(value.int, visited);
+                }
+                if (value.string !== undefined) {
+                    return this.resolveLiteral(value.string, visited);
+                }
+            }
+
+            return null;
+        }
+    }
+
+    function augmentWithComfySummary(metadata) {
+        if (!metadata) {
+            return;
+        }
+
+        const comfySummary = metadata.raw?.comfy || {};
+        const summary = metadata.custom || {};
+
+        const comfy = {
+            positivePrompt: summary.positivePrompt || comfySummary.positivePrompt || '',
+            negativePrompt: summary.negativePrompt || comfySummary.negativePrompt || '',
+            model: summary.model || comfySummary.model || '',
+            loras: Array.isArray(comfySummary.loras) ? comfySummary.loras : [],
+            cfgScale: summary.cfgScale !== undefined && summary.cfgScale !== '' ? summary.cfgScale : comfySummary.cfgScale ?? null,
+            steps: summary.steps !== undefined && summary.steps !== '' ? summary.steps : comfySummary.steps ?? null,
+            sampler: summary.sampler || comfySummary.sampler || '',
+            seed: summary.seed || comfySummary.seed || '',
+            clipSkip: summary.clipSkip !== undefined && summary.clipSkip !== '' ? summary.clipSkip : comfySummary.clipSkip ?? null,
+            workflow: metadata.raw?.workflow ?? comfySummary.workflow ?? null,
+            workflowSummary: summary.workflow || formatWorkflowSummary(comfySummary.workflow),
+            textChunks: metadata.raw?.textChunks || {}
+        };
+
+        metadata.comfy = comfy;
+        metadata.raw = Object.assign({}, metadata.raw, { comfy });
     }
 
     function formatEXIFData(exifData) {
@@ -649,6 +1510,7 @@ const MetadataManager = (function() {
 
             // Extract metadata
             const metadata = await extractFromImage(source);
+            augmentWithComfySummary(metadata);
 
             // Cache result
             if (defaultConfig.enableCache) {
