@@ -237,18 +237,52 @@ const MetadataManager = (function() {
     }
 
     async function extractCustomMetadata(source) {
-        // Extract custom metadata from PNG chunks or other formats
-        // This is specific to AI-generated images that embed parameters
+        // Extract custom metadata using the Python API
+        // This ensures consistent parsing across the application
 
         try {
-            // For PNG images, check for text chunks
+            let file;
+
+            // Convert source to File/Blob if needed
             if (source instanceof File || source instanceof Blob) {
-                const arrayBuffer = await source.arrayBuffer();
-                return parsePNGMetadata(arrayBuffer);
+                file = source;
             } else if (typeof source === 'string') {
+                // If it's a URL, fetch it first
                 const response = await fetch(source);
-                const arrayBuffer = await response.arrayBuffer();
-                return parsePNGMetadata(arrayBuffer);
+                const blob = await response.blob();
+                file = new File([blob], 'image.png', { type: blob.type });
+            } else {
+                return null;
+            }
+
+            // Use the Python API for metadata extraction
+            const formData = new FormData();
+            formData.append('file', file);
+
+            // Try multiple endpoint patterns for compatibility
+            const endpoints = [
+                '/api/v1/metadata/extract',
+                '/prompt_manager/api/v1/metadata/extract',
+                '/api/prompt_manager/api/v1/metadata/extract'
+            ];
+
+            for (const endpoint of endpoints) {
+                try {
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (response.ok) {
+                        const result = await response.json();
+                        if (result.success && result.data) {
+                            // Transform API response to match expected format
+                            return transformApiMetadata(result.data);
+                        }
+                    }
+                } catch (err) {
+                    console.debug(`Metadata API endpoint ${endpoint} failed:`, err);
+                }
             }
         } catch (error) {
             console.warn('Custom metadata extraction failed:', error);
@@ -257,228 +291,40 @@ const MetadataManager = (function() {
         return null;
     }
 
-    function parsePNGMetadata(arrayBuffer) {
-        const dataView = new DataView(arrayBuffer);
+    function transformApiMetadata(apiData) {
+        // Transform the Python API response to match the expected format
+        const summary = {
+            positivePrompt: apiData.positive_prompt || apiData.comfy_parsed?.positive_prompt,
+            negativePrompt: apiData.negative_prompt || apiData.comfy_parsed?.negative_prompt,
+            model: apiData.model || apiData.comfy_parsed?.model,
+            loras: apiData.loras || apiData.comfy_parsed?.loras,
+            cfgScale: apiData.cfg_scale || apiData.comfy_parsed?.cfg_scale,
+            steps: apiData.steps || apiData.comfy_parsed?.steps,
+            sampler: apiData.sampler || apiData.comfy_parsed?.sampler,
+            seed: apiData.seed || apiData.comfy_parsed?.seed,
+            clipSkip: apiData.clip_skip || apiData.comfy_parsed?.clip_skip,
+            workflow: apiData.workflow || apiData.comfy_parsed?.workflow
+        };
 
-        if (
-            dataView.byteLength < 8 ||
-            dataView.getUint32(0) !== 0x89504E47 ||
-            dataView.getUint32(4) !== 0x0D0A1A0A
-        ) {
-            return null;
-        }
-
-        const latin1Decoder = new TextDecoder('latin1');
-        const utf8Decoder = new TextDecoder('utf-8');
-        const textChunks = {};
-        let offset = 8;
-
-        while (offset + 8 <= dataView.byteLength) {
-            const length = dataView.getUint32(offset);
-            const type = String.fromCharCode(
-                dataView.getUint8(offset + 4),
-                dataView.getUint8(offset + 5),
-                dataView.getUint8(offset + 6),
-                dataView.getUint8(offset + 7)
-            );
-
-            const nextOffset = offset + 12 + length;
-            if (nextOffset > dataView.byteLength) {
-                break;
-            }
-
-            if (type === 'tEXt') {
-                const chunk = new Uint8Array(arrayBuffer, offset + 8, length);
-                const separator = chunk.indexOf(0);
-                if (separator !== -1) {
-                    const key = latin1Decoder.decode(chunk.slice(0, separator));
-                    const value = latin1Decoder.decode(chunk.slice(separator + 1));
-                    if (key) {
-                        textChunks[key] = value;
-                    }
-                }
-            } else if (type === 'iTXt') {
-                const chunk = new Uint8Array(arrayBuffer, offset + 8, length);
-                const parsed = parseITXtChunk(chunk, latin1Decoder, utf8Decoder);
-                if (parsed && parsed.key) {
-                    textChunks[parsed.key] = parsed.value;
-                }
-            }
-
-            if (type === 'IEND') {
-                break;
-            }
-
-            offset = nextOffset;
-        }
-
-        const raw = { textChunks };
-
-        const promptData = typeof textChunks.prompt === 'string' ? safeJsonParse(textChunks.prompt) : null;
-        const workflowData = typeof textChunks.workflow === 'string' ? safeJsonParse(textChunks.workflow) : null;
-
-        if (promptData) {
-            raw.prompt = promptData;
-        }
-        if (workflowData) {
-            raw.workflow = workflowData;
-        }
-
-        const comfySummary = promptData ? new ComfyPromptParser(promptData).summarize(workflowData) : null;
-        if (comfySummary) {
-            raw.comfy = comfySummary;
-        }
-
-        const a1111 = textChunks.parameters ? parseAIParameters(textChunks.parameters) : {};
-        if (Object.keys(a1111).length) {
-            raw.a1111 = a1111;
-        }
-
-        const summary = buildMetadataSummary({
-            textChunks,
-            comfySummary,
-            a1111
-        });
-
-        return { summary, raw };
+        return {
+            summary: summary,
+            raw: apiData
+        };
     }
 
-    function parseAIParameters(text) {
-        if (!text || typeof text !== 'string') {
-            return {};
-        }
+    // Removed client-side PNG parsing functions - now using Python API
+    // The following functions have been removed:
+    // - parsePNGMetadata: PNG chunk reading
+    // - parseAIParameters: A1111 parameter parsing
+    // - parseITXtChunk: Compressed PNG text chunks
+    // - buildMetadataSummary: Metadata aggregation
+    // - ComfyPromptParser: ComfyUI prompt graph parsing
+    // All metadata extraction is now handled by the Python API at /api/v1/metadata/extract
 
-        const params = {};
-        const normalized = text.replace(/\r\n/g, '\n');
+    // Removed parseITXtChunk - no longer needed with Python API
 
-        const explicitPromptMatch = normalized.match(/(?:^|\n)prompt:\s*([^\n]+)/i);
-        if (explicitPromptMatch) {
-            params.prompt = explicitPromptMatch[1].trim();
-        } else {
-            const firstLine = normalized.split('\n')[0];
-            if (firstLine && !/^negative\s*prompt:/i.test(firstLine)) {
-                params.prompt = firstLine.trim();
-            }
-        }
-
-        const negativeMatch = normalized.match(/negative\s*prompt:\s*([\s\S]*?)(?:\n[A-Za-z][^:\n]*?:|\n*$)/i);
-        if (negativeMatch) {
-            params.negativePrompt = negativeMatch[1].trim();
-        }
-
-        const pairPattern = /([A-Za-z0-9 _-]+):\s*([^,\n]+)(?:,|\n|$)/g;
-        let match;
-
-        while ((match = pairPattern.exec(normalized)) !== null) {
-            const key = match[1].trim().toLowerCase().replace(/\s+/g, '');
-            const rawValue = match[2].trim();
-
-            if (!rawValue) continue;
-
-            switch (key) {
-                case 'steps': {
-                    const num = Number(rawValue);
-                    params.steps = Number.isNaN(num) ? rawValue : num;
-                    break;
-                }
-                case 'cfgscale':
-                case 'cfg': {
-                    const num = Number(rawValue);
-                    params.cfgScale = Number.isNaN(num) ? rawValue : num;
-                    break;
-                }
-                case 'sampler':
-                case 'samplername':
-                case 'schedule':
-                    params.sampler = rawValue;
-                    break;
-                case 'seed': {
-                    if (/^\d+$/.test(rawValue)) {
-                        const num = Number(rawValue);
-                        params.seed = Number.isSafeInteger(num) ? num : rawValue;
-                    } else {
-                        params.seed = rawValue;
-                    }
-                    break;
-                }
-                case 'clipskip':
-                case 'clip_skip': {
-                    const num = Number(rawValue);
-                    params.clipSkip = Number.isNaN(num) ? rawValue : num;
-                    break;
-                }
-                case 'model':
-                case 'modelhash':
-                case 'modelname':
-                    if (!params.model) {
-                        params.model = rawValue;
-                    }
-                    break;
-                default:
-                    break;
-            }
-        }
-
-        return params;
-    }
-
-    function safeJsonParse(value) {
-        try {
-            return JSON.parse(value);
-        } catch (error) {
-            return null;
-        }
-    }
-
-    function parseITXtChunk(chunk, latin1Decoder, utf8Decoder) {
-        try {
-            let offset = 0;
-
-            const readUntilNull = (decoder) => {
-                const end = chunk.indexOf(0, offset);
-                const sliceEnd = end === -1 ? chunk.length : end;
-                const value = decoder.decode(chunk.slice(offset, sliceEnd));
-                offset = sliceEnd + 1;
-                return value;
-            };
-
-            const key = readUntilNull(latin1Decoder);
-            if (!key) {
-                return null;
-            }
-
-            const compressionFlag = chunk[offset++];
-            offset++;
-
-            readUntilNull(latin1Decoder);
-            readUntilNull(utf8Decoder);
-
-            let textBytes = chunk.slice(offset);
-
-            if (compressionFlag === 1) {
-                if (typeof pako !== 'undefined') {
-                    try {
-                        textBytes = pako.inflate(textBytes);
-                    } catch (error) {
-                        console.warn('Failed to inflate iTXt chunk:', error);
-                        return null;
-                    }
-                } else {
-                    console.warn('Compressed iTXt chunk encountered but no inflater is available.');
-                    return null;
-                }
-            }
-
-            return {
-                key,
-                value: utf8Decoder.decode(textBytes)
-            };
-        } catch (error) {
-            console.warn('Failed to parse iTXt chunk:', error);
-            return null;
-        }
-    }
-
+    // Removed buildMetadataSummary - handled by Python API
+    /*
     function buildMetadataSummary({ textChunks, comfySummary, a1111 }) {
         const summary = {
             positivePrompt: '',
@@ -568,6 +414,7 @@ const MetadataManager = (function() {
 
         return summary;
     }
+    */
 
     function coalesceText(...values) {
         for (const value of values) {
@@ -696,6 +543,8 @@ const MetadataManager = (function() {
         'PromptBookmark'
     ]);
 
+    // Removed ComfyPromptParser - handled by Python API
+    /*
     class ComfyPromptParser {
         constructor(promptGraph) {
             this.nodes = new Map();
@@ -1158,32 +1007,19 @@ const MetadataManager = (function() {
             return null;
         }
     }
+    */
 
     function augmentWithComfySummary(metadata) {
+        // This function now just passes through since Python API provides complete metadata
         if (!metadata) {
             return;
         }
 
-        const comfySummary = metadata.raw?.comfy || {};
-        const summary = metadata.custom || {};
-
-        const comfy = {
-            positivePrompt: summary.positivePrompt || comfySummary.positivePrompt || '',
-            negativePrompt: summary.negativePrompt || comfySummary.negativePrompt || '',
-            model: summary.model || comfySummary.model || '',
-            loras: Array.isArray(comfySummary.loras) ? comfySummary.loras : [],
-            cfgScale: summary.cfgScale !== undefined && summary.cfgScale !== '' ? summary.cfgScale : comfySummary.cfgScale ?? null,
-            steps: summary.steps !== undefined && summary.steps !== '' ? summary.steps : comfySummary.steps ?? null,
-            sampler: summary.sampler || comfySummary.sampler || '',
-            seed: summary.seed || comfySummary.seed || '',
-            clipSkip: summary.clipSkip !== undefined && summary.clipSkip !== '' ? summary.clipSkip : comfySummary.clipSkip ?? null,
-            workflow: metadata.raw?.workflow ?? comfySummary.workflow ?? null,
-            workflowSummary: summary.workflow || formatWorkflowSummary(comfySummary.workflow),
-            textChunks: metadata.raw?.textChunks || {}
-        };
-
-        metadata.comfy = comfy;
-        metadata.raw = Object.assign({}, metadata.raw, { comfy });
+        // The metadata from Python API already has everything we need
+        // Just ensure the structure is consistent
+        if (metadata.custom && metadata.custom.summary) {
+            metadata.comfy = metadata.custom.summary;
+        }
     }
 
     function formatEXIFData(exifData) {
