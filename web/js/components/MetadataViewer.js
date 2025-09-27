@@ -115,6 +115,7 @@ class MetadataViewer {
 
       <div class="metadata-content">
         <div class="tree-view">
+          <div class="summary-container" style="display: none;"></div>
           <div class="tree-container">
             <!-- Tree nodes will be rendered here -->
           </div>
@@ -221,6 +222,7 @@ class MetadataViewer {
       searchInput: this.container.querySelector('.search-input'),
       searchResults: this.container.querySelector('.search-results-info'),
       treeView: this.container.querySelector('.tree-view'),
+      summaryContainer: this.container.querySelector('.summary-container'),
       treeContainer: this.container.querySelector('.tree-container'),
       rawView: this.container.querySelector('.raw-view'),
       rawEditor: this.container.querySelector('.raw-editor'),
@@ -362,6 +364,8 @@ class MetadataViewer {
       return;
     }
 
+    this.renderSummary();
+
     switch (this.viewMode) {
       case 'tree':
         this.renderTree();
@@ -377,8 +381,13 @@ class MetadataViewer {
 
   /**
    * Render empty state
-   */
+  */
   renderEmpty() {
+    if (this.elements.summaryContainer) {
+      this.elements.summaryContainer.style.display = 'none';
+      this.elements.summaryContainer.innerHTML = '';
+    }
+
     this.elements.treeContainer.innerHTML = `
       <div class="empty-state">
         <div class="empty-icon">
@@ -405,6 +414,153 @@ class MetadataViewer {
     if (this.searchTerm) {
       this.highlightSearchResults();
     }
+  }
+
+  /**
+   * Render compact metadata summary
+   */
+  renderSummary() {
+    const container = this.elements.summaryContainer;
+    if (!container) return;
+
+    if (!this.data || this.viewMode !== 'tree') {
+      container.style.display = 'none';
+      container.innerHTML = '';
+      return;
+    }
+
+    const summary = this.getSummaryData();
+    if (!summary) {
+      container.style.display = 'none';
+      container.innerHTML = '';
+      return;
+    }
+
+    const rows = [
+      ['Prompt - positive', summary.positivePrompt],
+      ['Prompt - negative', summary.negativePrompt],
+      ['Model', summary.model],
+      ['Lora(s)', summary.loras],
+      ['cfgScale', summary.cfgScale],
+      ['steps', summary.steps],
+      ['sampler', summary.sampler],
+      ['seed', summary.seed],
+      ['clipSkip', summary.clipSkip],
+      ['Workflow', summary.workflow]
+    ];
+
+    const html = rows.map(([label, value]) => {
+      const formattedValue = this.formatSummaryValue(value);
+      return `
+        <div class="summary-item">
+          <span class="summary-label">${this.escapeHtml(label)}</span>
+          <span class="summary-value">${formattedValue}</span>
+        </div>
+      `;
+    }).join('');
+
+    container.innerHTML = `
+      <h3 class="summary-title">Generation Metadata</h3>
+      <div class="summary-grid">
+        ${html}
+      </div>
+    `;
+    container.style.display = 'block';
+  }
+
+  /**
+   * Extract summary data from metadata payload
+   */
+  getSummaryData() {
+    const metadata = this.data;
+    if (!metadata || typeof metadata !== 'object') return null;
+
+    const custom = metadata.custom && Object.keys(metadata.custom).length ? metadata.custom : null;
+    const comfy = metadata.comfy && Object.keys(metadata.comfy).length ? metadata.comfy : null;
+    const source = custom && (custom.positivePrompt || custom.prompt || custom.model || custom.workflow)
+      ? custom
+      : comfy;
+
+    if (!source) return null;
+
+    const fallback = (value, alt = '') => {
+      if (value === undefined || value === null || value === '') return alt;
+      return value;
+    };
+
+    const loras = source.loras ?? source.lora ?? (custom ? custom.loras : undefined);
+    const workflowInfo = source.workflowSummary ?? custom?.workflow ?? comfy?.workflowSummary ?? comfy?.workflow;
+
+    const summary = {
+      positivePrompt: fallback(source.positivePrompt ?? source.prompt, 'None'),
+      negativePrompt: fallback(source.negativePrompt ?? source.negative_prompt, 'None'),
+      model: fallback(source.model ?? source.checkpoint ?? source.model_name, 'None'),
+      loras: fallback(loras, 'None'),
+      cfgScale: fallback(source.cfgScale ?? source.cfg_scale ?? source.cfg, 'None'),
+      steps: fallback(source.steps ?? source.num_steps, 'None'),
+      sampler: fallback(source.sampler ?? source.sampler_name ?? source.scheduler, 'None'),
+      seed: fallback(source.seed ?? source.noise_seed, 'None'),
+      clipSkip: fallback(source.clipSkip ?? source.clip_skip, 'None'),
+      workflow: fallback(workflowInfo, 'Not embedded')
+    };
+
+    return summary;
+  }
+
+  /**
+   * Normalize summary value for display
+   */
+  formatSummaryValue(value) {
+    const normalized = this.normalizeSummaryValue(value);
+    return this.escapeHtml(normalized).replace(/\n/g, '<br>');
+  }
+
+  /**
+   * Convert summary data to human-readable string
+   */
+  normalizeSummaryValue(value) {
+    if (value === undefined || value === null) return 'None';
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      return trimmed ? trimmed : 'None';
+    }
+
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+
+    if (Array.isArray(value)) {
+      const parts = value
+        .map(item => this.normalizeSummaryValue(item))
+        .filter(Boolean);
+      return parts.length ? parts.join(', ') : 'None';
+    }
+
+    if (typeof value === 'object') {
+      if (value.name) {
+        const strengths = [];
+        if (value.strengthModel !== undefined) {
+          strengths.push(`model ${value.strengthModel}`);
+        }
+        if (value.strengthClip !== undefined) {
+          strengths.push(`clip ${value.strengthClip}`);
+        }
+        return strengths.length ? `${value.name} (${strengths.join(', ')})` : value.name;
+      }
+
+      if (value.text) {
+        return this.normalizeSummaryValue(value.text);
+      }
+
+      if (value.workflowSummary) {
+        return this.normalizeSummaryValue(value.workflowSummary);
+      }
+
+      return 'Embedded data';
+    }
+
+    return 'None';
   }
 
   /**
