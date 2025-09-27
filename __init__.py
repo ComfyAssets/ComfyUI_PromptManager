@@ -40,6 +40,14 @@ from .prompt_manager_v2 import PromptManagerV2
 from .prompt_manager_positive import PromptManagerPositive
 from .prompt_manager_negative import PromptManagerNegative
 
+# Import tracker nodes for capturing generation data
+try:
+    from .custom_nodes.prompt_manager_tracker import PromptManagerTracker, PromptManagerImageTracker
+    _tracker_nodes_available = True
+except ImportError:
+    _tracker_nodes_available = False
+    print("[PromptManager] Tracker nodes not available - generation data capture disabled")
+
 # ComfyUI node registration
 NODE_CLASS_MAPPINGS = {
     "PromptManager": PromptManager,  # Original v1 widget
@@ -54,6 +62,13 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptManagerPositive": "🧠 Prompt Manager (Positive)",
     "PromptManagerNegative": "🧠 Prompt Manager (Negative)",
 }
+
+# Add tracker nodes if available
+if _tracker_nodes_available:
+    NODE_CLASS_MAPPINGS["PromptManagerTracker"] = PromptManagerTracker
+    NODE_CLASS_MAPPINGS["PromptManagerImageTracker"] = PromptManagerImageTracker
+    NODE_DISPLAY_NAME_MAPPINGS["PromptManagerTracker"] = "📝 PM Tracker"
+    NODE_DISPLAY_NAME_MAPPINGS["PromptManagerImageTracker"] = "🖼️ PM Image Tracker"
 
 # Web directory for ComfyUI to serve static files
 WEB_DIRECTORY = "./web"
