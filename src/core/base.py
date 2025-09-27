@@ -206,34 +206,33 @@ class BaseGallery(BaseComponent):
 
     def get_paginated_items(self) -> Dict[str, Any]:
         """Get current page of filtered and sorted items.
-        
+
         Returns:
             Dictionary with items, pagination info
         """
-        # Refresh items
-        self._items = self.load_items()
-        
-        # Apply filters
-        filtered_items = self._apply_filters(self._items)
-        
-        # Apply sorting
-        sorted_items = self._apply_sorting(filtered_items)
-        
-        # Apply pagination
-        total_items = len(sorted_items)
-        # Ensure _page_size is not None (defensive programming)
+        # Ensure pagination values are set
         if self._page_size is None:
             self._page_size = 50
-        # Ensure _current_page is not None
         if self._current_page is None:
             self._current_page = 1
-        total_pages = (total_items + self._page_size - 1) // self._page_size
-        start_idx = (self._current_page - 1) * self._page_size
-        end_idx = start_idx + self._page_size
-        page_items = sorted_items[start_idx:end_idx]
-        
-        # Render items for frontend
-        rendered_items = [self.render_item(item) for item in page_items]
+
+        # Load items for current page (already paginated from database)
+        self._items = self.load_items()
+
+        # For server-side pagination, we need the total count separately
+        # Check if the subclass has a get_total_count method
+        if hasattr(self, 'get_total_count'):
+            total_items = self.get_total_count(**self._filters)
+        else:
+            # Fallback: if no total count method, assume items are all items
+            # This maintains backward compatibility but won't work well for large datasets
+            total_items = len(self._items)
+
+        # Calculate total pages based on total count
+        total_pages = (total_items + self._page_size - 1) // self._page_size if self._page_size > 0 else 1
+
+        # Render items for frontend (items are already the correct page)
+        rendered_items = [self.render_item(item) for item in self._items]
         
         return {
             "items": rendered_items,
