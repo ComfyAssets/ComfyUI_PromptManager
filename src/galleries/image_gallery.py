@@ -65,13 +65,13 @@ class ImageGallery(BaseGallery):
             self.logger.warning(f"Output directory does not exist: {path}")
 
     def load_items(self, **kwargs) -> List[Dict[str, Any]]:
-        """Load gallery items from database.
+        """Load gallery items from database with pagination.
 
         Args:
             **kwargs: Additional load parameters
 
         Returns:
-            List of image records
+            List of image records for current page
         """
         # Build ORDER BY clause with direction using dedicated repository fields
         sort_key = self._sort_key or "generation_time"
@@ -82,10 +82,16 @@ class ImageGallery(BaseGallery):
 
         # Apply any additional filters (but not order_dir)
         for key, value in kwargs.items():
-            if key not in ["order_by", "order_dir"]:
+            if key not in ["order_by", "order_dir", "limit", "offset"]:
                 filters[key] = value
 
-        records = self.image_repo.list(**filters)
+        # Calculate offset for current page
+        page = getattr(self, '_current_page', 1) or 1
+        page_size = getattr(self, '_page_size', 200) or 200
+        offset = (page - 1) * page_size
+
+        # Load only the records for the current page
+        records = self.image_repo.list(limit=page_size, offset=offset, **filters)
 
         enriched: List[Dict[str, Any]] = []
         columns = set()
@@ -117,6 +123,39 @@ class ImageGallery(BaseGallery):
             enriched.append(record)
 
         return enriched
+
+    def get_total_count(self, **filters) -> int:
+        """Get total count of items matching filters.
+
+        Args:
+            **filters: Filter parameters
+
+        Returns:
+            Total count of matching items
+        """
+        try:
+            # Get total count from database
+            with self.image_repo._get_connection() as conn:
+                query = "SELECT COUNT(*) FROM generated_images"
+
+                # Add WHERE clauses for filters if needed
+                where_clauses = []
+                params = []
+
+                for key, value in filters.items():
+                    if key not in ["order_by", "order_dir", "limit", "offset"]:
+                        if value is not None:
+                            where_clauses.append(f"{key} = ?")
+                            params.append(value)
+
+                if where_clauses:
+                    query += " WHERE " + " AND ".join(where_clauses)
+
+                cursor = conn.execute(query, params)
+                return cursor.fetchone()[0] or 0
+        except Exception as e:
+            self.logger.error(f"Error getting total count: {e}")
+            return 0
 
     def render_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """Render image item for frontend display.
