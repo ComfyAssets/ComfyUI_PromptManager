@@ -86,6 +86,10 @@ const SidebarComponent = (function() {
           <span>⚙️</span>
           <span>Settings</span>
         </a>
+        <a href="maintenance.html" class="nav-item" data-page="maintenance">
+          <span>🔧</span>
+          <span>Maintenance</span>
+        </a>
       </nav>
 
       <!-- Quick Actions -->
@@ -217,6 +221,7 @@ const SidebarComponent = (function() {
                 else if (path.includes('gallery')) config.currentPage = 'gallery';
                 else if (path.includes('metadata')) config.currentPage = 'metadata';
                 else if (path.includes('statistics')) config.currentPage = 'statistics';
+                else if (path.includes('maintenance')) config.currentPage = 'maintenance';
                 else if (path.includes('settings')) config.currentPage = 'settings';
                 else if (path.includes('prompts') || path.includes('index')) config.currentPage = 'prompts';
             }
