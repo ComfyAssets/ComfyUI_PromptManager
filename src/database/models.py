@@ -49,12 +49,19 @@ class PromptModel:
 
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
+
+                # Enable WAL mode for better concurrency
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA busy_timeout=5000")  # 5 second timeout
+                conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("PRAGMA mmap_size=268435456")  # 256MB
+
                 conn.execute("PRAGMA foreign_keys = ON")
                 self._create_tables(conn)
                 self._migrate_schema(conn)
                 self._create_indexes(conn)
                 conn.commit()
-                self.logger.info(f"Database initialized at: {self.db_path}")
+                self.logger.info(f"Database initialized at: {self.db_path} (WAL mode enabled)")
         except Exception as e:
             self.logger.error(f"Error creating database: {e}")
             raise
