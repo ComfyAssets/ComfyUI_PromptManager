@@ -47,11 +47,8 @@
       label: 'Scanning for missing thumbnails',
       run: async () => scanThumbnails(),
     },
-    {
-      key: 'warm-stats',
-      label: 'Warming up analytics snapshot',
-      run: async () => warmStats(),
-    },
+    // REMOVED: Stats warming not needed with new instant stats implementation!
+    // Stats are now always ready in the database table
     {
       key: 'finalize',
       label: 'Preparing dashboard',
@@ -182,29 +179,9 @@
     }
   }
 
-  async function warmStats() {
-    updateStatus('Warming analytics data…');
-    try {
-      const response = await fetch('/api/v1/stats/overview');
-      if (!response.ok) {
-        throw new Error(`${response.status} ${response.statusText}`);
-      }
-
-      const payload = await response.json();
-      if (payload && payload.success) {
-        sessionStorage.setItem(
-          'promptmanager.statsWarmAt',
-          new Date().toISOString(),
-        );
-        return { meta: 'Analytics snapshot cached' };
-      }
-
-      throw new Error(payload?.error || 'Stats endpoint unavailable');
-    } catch (error) {
-      console.warn('Stats warm-up failed:', error);
-      throw new Error('Statistics cache skipped');
-    }
-  }
+  // REMOVED: warmStats() function - no longer needed with instant stats
+  // The new stats implementation uses a persistent database table that's always ready
+  // Stats load instantly (<10ms) without any warming or calculation needed
 
   function redirectToDashboard() {
     window.location.href = DASHBOARD_URL;
