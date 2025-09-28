@@ -178,8 +178,11 @@ const MetadataManager = (function() {
 
             const customData = await extractCustomMetadata(source);
             if (customData) {
+                console.debug('Custom metadata extracted:', customData);
                 if (customData.summary && typeof customData.summary === 'object') {
                     metadata.custom = customData.summary;
+                    // Also add summary at root level for compatibility
+                    metadata.summary = customData.summary;
                 } else if (typeof customData === 'object') {
                     metadata.custom = customData;
                 }
@@ -241,6 +244,59 @@ const MetadataManager = (function() {
         // This ensures consistent parsing across the application
 
         try {
+            // First, try to get metadata by filename if source is a URL with a filename
+            if (typeof source === 'string') {
+                // Extract filename from URL
+                let filename = null;
+                try {
+                    // Handle both absolute and relative URLs
+                    const url = new URL(source, window.location.origin);
+                    const pathParts = url.pathname.split('/');
+                    filename = pathParts[pathParts.length - 1];
+
+                    // Remove query parameters if present
+                    if (filename.includes('?')) {
+                        filename = filename.split('?')[0];
+                    }
+
+                    // Decode URL encoding
+                    filename = decodeURIComponent(filename);
+
+                    console.debug('Extracting metadata for filename:', filename, 'from URL:', source);
+
+                    // Try to get metadata directly by filename
+                    if (filename && filename.includes('.')) {
+                        const metadataEndpoints = [
+                            `/api/v1/metadata/${encodeURIComponent(filename)}`,
+                            `/prompt_manager/api/v1/metadata/${encodeURIComponent(filename)}`,
+                            `/api/prompt_manager/api/v1/metadata/${encodeURIComponent(filename)}`
+                        ];
+
+                        for (const endpoint of metadataEndpoints) {
+                            try {
+                                console.debug('Trying metadata endpoint:', endpoint);
+                                const response = await fetch(endpoint);
+                                if (response.ok) {
+                                    const result = await response.json();
+                                    console.debug('Metadata API response:', result);
+                                    if (result.success && result.data) {
+                                        // Transform API response to match expected format
+                                        return transformApiMetadata(result.data);
+                                    }
+                                } else {
+                                    console.debug(`Metadata endpoint ${endpoint} returned status:`, response.status);
+                                }
+                            } catch (err) {
+                                console.debug(`Metadata endpoint ${endpoint} failed:`, err);
+                            }
+                        }
+                    }
+                } catch (urlErr) {
+                    console.debug('URL parsing failed:', urlErr);
+                }
+            }
+
+            // Fallback to file upload method
             let file;
 
             // Convert source to File/Blob if needed
@@ -293,18 +349,34 @@ const MetadataManager = (function() {
 
     function transformApiMetadata(apiData) {
         // Transform the Python API response to match the expected format
+        // Handle both direct fields and nested comfy_parsed structure
+        const comfyParsed = apiData.comfy_parsed || apiData.metadata || apiData;
+
         const summary = {
-            positivePrompt: apiData.positive_prompt || apiData.comfy_parsed?.positive_prompt,
-            negativePrompt: apiData.negative_prompt || apiData.comfy_parsed?.negative_prompt,
-            model: apiData.model || apiData.comfy_parsed?.model,
-            loras: apiData.loras || apiData.comfy_parsed?.loras,
-            cfgScale: apiData.cfg_scale || apiData.comfy_parsed?.cfg_scale,
-            steps: apiData.steps || apiData.comfy_parsed?.steps,
-            sampler: apiData.sampler || apiData.comfy_parsed?.sampler,
-            seed: apiData.seed || apiData.comfy_parsed?.seed,
-            clipSkip: apiData.clip_skip || apiData.comfy_parsed?.clip_skip,
-            workflow: apiData.workflow || apiData.comfy_parsed?.workflow
+            positivePrompt: apiData.positive_prompt || comfyParsed.positive_prompt || apiData.prompt || comfyParsed.prompt || '',
+            negativePrompt: apiData.negative_prompt || comfyParsed.negative_prompt || '',
+            model: apiData.model || comfyParsed.model || apiData.checkpoint || comfyParsed.checkpoint || '',
+            loras: apiData.loras || comfyParsed.loras || '',
+            cfgScale: apiData.cfg_scale || comfyParsed.cfg_scale || apiData.cfgScale || comfyParsed.cfgScale || apiData.cfg || comfyParsed.cfg || '',
+            steps: apiData.steps || comfyParsed.steps || apiData.total_steps || comfyParsed.total_steps || '',
+            sampler: apiData.sampler || comfyParsed.sampler || apiData.sampler_name || comfyParsed.sampler_name || '',
+            seed: apiData.seed || comfyParsed.seed || '',
+            clipSkip: apiData.clip_skip || comfyParsed.clip_skip || apiData.clipSkip || comfyParsed.clipSkip || '',
+            workflow: apiData.workflow || comfyParsed.workflow || apiData.workflow_name || comfyParsed.workflow_name || ''
         };
+
+        // Clean up empty values
+        Object.keys(summary).forEach(key => {
+            const value = summary[key];
+            if (value === '' || value === null || value === undefined) {
+                summary[key] = 'None';
+            } else if (typeof value === 'object') {
+                // Handle arrays or objects (like loras)
+                summary[key] = JSON.stringify(value);
+            } else {
+                summary[key] = String(value);
+            }
+        });
 
         return {
             summary: summary,
@@ -1195,6 +1267,8 @@ const MetadataManager = (function() {
         const panelInstance = panels.get(panelId);
         if (!panelInstance) return;
 
+        console.debug('Displaying metadata:', metadata);
+
         const sections = panelInstance.element.querySelector('.metadata-sections');
         sections.innerHTML = '';
 
@@ -1205,7 +1279,7 @@ const MetadataManager = (function() {
         const fieldGroups = defaultConfig.fields;
 
         for (const [groupName, fields] of Object.entries(fieldGroups)) {
-            const groupData = metadata[groupName];
+            const groupData = metadata[groupName] || (groupName === 'custom' && metadata.summary) || {};
             if (!groupData || Object.keys(groupData).length === 0) continue;
 
             const section = document.createElement('div');
