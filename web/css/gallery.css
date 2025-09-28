@@ -216,7 +216,7 @@
 }
 
 .masonry-grid .gallery-item:hover {
-    transform: scale(1.02);
+    transform: scale(1.05);
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
     z-index: 10;
     border-color: var(--electric-purple);
@@ -432,4 +432,65 @@
 .btn-sm {
     padding: 0.25rem 0.5rem;
     font-size: 0.875rem;
+}
+
+/* Gallery Loading State */
+.gallery-loader {
+    position: fixed;
+    bottom: 2rem;
+    right: 2rem;
+    background: rgba(0, 0, 0, 0.9);
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    padding: 1rem 1.5rem;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.loader-content {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+/* Only the icon should spin, not the text */
+.loader-content i.fa-spin {
+    animation: spin 1s linear infinite;
+}
+
+.loader-content p {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    /* Ensure the text doesn't inherit any animation */
+    animation: none !important;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* Infinite Scroll Loader */
+.infinite-scroll-loader {
+    display: none;
+    justify-content: center;
+    align-items: center;
+    padding: 2rem;
+    margin-top: 1rem;
+}
+
+.infinite-scroll-loader .loader-content {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+.infinite-scroll-loader i {
+    color: var(--electric-purple);
 }
