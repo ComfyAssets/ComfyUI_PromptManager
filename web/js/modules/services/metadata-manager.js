@@ -347,6 +347,100 @@ const MetadataManager = (function() {
         return null;
     }
 
+    function transformWorkflowMetadata(workflowData) {
+        // Transform raw ComfyUI workflow nodes into displayable metadata
+        const metadata = {
+            summary: {},
+            workflow: {},
+            custom: {}
+        };
+
+        // Extract key information from workflow nodes
+        let positivePrompt = '';
+        let negativePrompt = '';
+        let model = '';
+        let loras = [];
+        let sampler = '';
+        let steps = '';
+        let cfg = '';
+        let seed = '';
+        let width = '';
+        let height = '';
+
+        // Iterate through workflow nodes to extract key data
+        for (const [nodeId, node] of Object.entries(workflowData)) {
+            const classType = node.class_type || '';
+            const inputs = node.inputs || {};
+
+            // Extract prompts
+            if (classType === 'CLIPTextEncode' || classType === 'PromptManagerPositive') {
+                if (classType === 'PromptManagerPositive') {
+                    positivePrompt = inputs.prompt_text || inputs.text || '';
+                } else if (inputs.text) {
+                    // Check if it's positive or negative based on connections
+                    if (!positivePrompt) positivePrompt = inputs.text;
+                    else if (!negativePrompt) negativePrompt = inputs.text;
+                }
+            }
+
+            // Extract model info
+            if (classType === 'CheckpointLoaderSimple' || classType === 'UNETLoader' ||
+                classType === 'CheckpointLoader' || classType.includes('Checkpoint')) {
+                model = inputs.ckpt_name || inputs.unet_name || inputs.checkpoint_name || model;
+            }
+
+            // Extract LoRA info
+            if (classType.includes('Lora') || classType.includes('LoRA')) {
+                const loraName = inputs.lora_name || inputs.model_name || '';
+                if (loraName) {
+                    const strength = inputs.strength_model || inputs.strength || 1.0;
+                    loras.push(`${loraName} (${strength})`);
+                }
+            }
+
+            // Extract sampler settings
+            if (classType.includes('KSampler') || classType.includes('Sampler')) {
+                sampler = inputs.sampler_name || sampler;
+                steps = inputs.steps || steps;
+                cfg = inputs.cfg || cfg;
+                seed = inputs.seed || seed;
+            }
+
+            // Extract image dimensions
+            if (classType === 'EmptyLatentImage' || classType === 'EmptyLatentBatch') {
+                width = inputs.width || width;
+                height = inputs.height || height;
+            }
+        }
+
+        // Populate metadata structure
+        metadata.summary = {
+            positivePrompt: positivePrompt || 'Not found',
+            negativePrompt: negativePrompt || 'Not found',
+            model: model || 'Unknown',
+            sampler: sampler || 'Unknown',
+            steps: steps.toString() || 'N/A',
+            cfg: cfg.toString() || 'N/A',
+            seed: seed.toString() || 'N/A',
+            size: width && height ? `${width}x${height}` : 'Unknown'
+        };
+
+        if (loras.length > 0) {
+            metadata.summary.loras = loras.join(', ');
+        }
+
+        // Add workflow stats
+        metadata.workflow = {
+            nodeCount: Object.keys(workflowData).length.toString(),
+            nodes: Object.entries(workflowData)
+                .map(([id, node]) => `${id}: ${node.class_type}`)
+                .slice(0, 10) // Show first 10 nodes
+                .join('\n')
+        };
+
+        return metadata;
+    }
+
     function transformApiMetadata(apiData) {
         // Transform the Python API response to match the expected format
         // Handle both direct fields and nested comfy_parsed structure
@@ -1272,6 +1366,12 @@ const MetadataManager = (function() {
         const sections = panelInstance.element.querySelector('.metadata-sections');
         sections.innerHTML = '';
 
+        // Transform raw workflow metadata if needed
+        if (metadata && typeof metadata === 'object' && !metadata.summary && !metadata.standard) {
+            // This looks like raw ComfyUI workflow data - transform it
+            metadata = transformWorkflowMetadata(metadata);
+        }
+
         // Store current metadata
         panelInstance.currentMetadata = metadata;
 
@@ -1548,6 +1648,31 @@ const MetadataManager = (function() {
                 maxSize: defaultConfig.cacheSize,
                 entries: Array.from(metadataCache.keys())
             };
+        },
+
+        /**
+         * Check if a panel has metadata loaded
+         * @param {string} panelId - Panel ID
+         * @returns {boolean} True if panel has metadata
+         */
+        hasMetadata: function(panelId) {
+            const panelInstance = panels.get(panelId);
+            if (!panelInstance) return false;
+            
+            // Check if we have metadata and it's not just an error
+            return panelInstance.currentMetadata && 
+                   Object.keys(panelInstance.currentMetadata).length > 0 &&
+                   !panelInstance.currentMetadata.error;
+        },
+
+        /**
+         * Get current metadata from panel
+         * @param {string} panelId - Panel ID  
+         * @returns {Object|null} Current metadata or null
+         */
+        getPanelMetadata: function(panelId) {
+            const panelInstance = panels.get(panelId);
+            return panelInstance ? panelInstance.currentMetadata : null;
         },
 
         /**
