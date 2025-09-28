@@ -89,13 +89,18 @@ class PromptService(BaseService):
             rating = Validators.validate_rating(data["rating"])
         
         # Build validated data - use positive_prompt as the field name
+        from datetime import datetime
+        now = datetime.utcnow().isoformat()
+
         validated = {
             "positive_prompt": prompt,
             "negative_prompt": negative_prompt,
             "category": category,
             "tags": tags,
             "rating": rating,
-            "notes": data.get("notes", "")
+            "notes": data.get("notes", ""),
+            "created_at": now,
+            "updated_at": now
         }
 
         # Add optional fields if they exist in the database schema
