@@ -494,3 +494,29 @@
 .infinite-scroll-loader i {
     color: var(--electric-purple);
 }
+
+/* Keyboard Navigation Focus */
+.gallery-item.keyboard-focused {
+    outline: 3px solid var(--electric-purple);
+    outline-offset: 2px;
+    box-shadow: 0 0 20px rgba(139, 92, 246, 0.4);
+    transform: scale(1.02);
+    z-index: 15;
+}
+
+.masonry-grid .gallery-item.keyboard-focused {
+    outline: 3px solid var(--electric-purple);
+    outline-offset: 2px;
+    box-shadow: 0 0 20px rgba(139, 92, 246, 0.4);
+}
+
+/* Smooth transition for keyboard focus */
+.gallery-item {
+    transition: transform 0.2s ease, box-shadow 0.2s ease, outline 0.15s ease;
+}
+
+/* Different focus style for list view */
+.list-view .gallery-item.keyboard-focused {
+    background: rgba(139, 92, 246, 0.1);
+    border-color: var(--electric-purple);
+}
