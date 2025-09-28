@@ -395,9 +395,19 @@ const FilmstripManager = (function() {
         });
     }
 
-    function selectThumbnail(filmstripId, index) {
+    function selectThumbnail(filmstripId, index, fromViewer = false) {
         const instance = instances.get(filmstripId);
         if (!instance) return;
+
+        // Prevent recursion - if already at this index, just update UI
+        if (instance.activeIndex === index) {
+            // Still update UI in case it's out of sync
+            instance.thumbnails.forEach((thumb, i) => {
+                thumb.classList.toggle('active', i === index);
+            });
+            updateIndicator(filmstripId);
+            return;
+        }
 
         // Update active state
         instance.thumbnails.forEach((thumb, i) => {
@@ -424,21 +434,24 @@ const FilmstripManager = (function() {
         });
         document.dispatchEvent(event);
 
-        // Try to use ViewerIntegration first (preferred for metadata support)
-        if (window.ViewerIntegration && window.ViewerIntegration.showImage) {
-            // Try to find the active integration
-            const active = window.ViewerIntegration.getActiveIntegration?.();
-            if (active?.id) {
-                window.ViewerIntegration.showImage(index, active.id);
-                return;
+        // Only trigger viewer update if not called from viewer (to prevent loop)
+        if (!fromViewer) {
+            // Try to use ViewerIntegration first (preferred for metadata support)
+            if (window.ViewerIntegration && window.ViewerIntegration.showImage) {
+                // Try to find the active integration
+                const active = window.ViewerIntegration.getActiveIntegration?.();
+                if (active?.id) {
+                    window.ViewerIntegration.showImage(index, active.id);
+                    return;
+                }
             }
-        }
 
-        // Fallback to direct ViewerManager (no metadata panel)
-        if (window.ViewerManager) {
-            const viewer = ViewerManager.getViewer(instance.viewerId);
-            if (viewer) {
-                viewer.view(index);
+            // Fallback to direct ViewerManager (no metadata panel)
+            if (window.ViewerManager) {
+                const viewer = ViewerManager.getViewer(instance.viewerId);
+                if (viewer) {
+                    viewer.view(index);
+                }
             }
         }
     }
@@ -624,9 +637,10 @@ const FilmstripManager = (function() {
          * Update active thumbnail
          * @param {string} filmstripId - Filmstrip ID
          * @param {number} index - Image index
+         * @param {boolean} fromViewer - Whether this is called from viewer (prevents loop)
          */
-        setActive: function(filmstripId, index) {
-            selectThumbnail(filmstripId, index);
+        setActive: function(filmstripId, index, fromViewer = false) {
+            selectThumbnail(filmstripId, index, fromViewer);
         },
 
         /**
