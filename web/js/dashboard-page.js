@@ -24,6 +24,7 @@
   let searchTerm = '';
   let searchTermLower = '';
   let editingPromptId = null;
+  let searchDebounceTimer = null;
 
   const API_BASE_CANDIDATES = ['/api/v1', '/api/prompt_manager'];
   const DEFAULT_EMPTY_MESSAGE = 'Start by creating a new prompt or importing existing ones';
@@ -458,13 +459,23 @@
       image_limit: String(getFilmStripImageLimit()),
     });
 
+    // Add search parameter if present
+    if (searchTerm) {
+      params.append('search', searchTerm);
+    }
+
     try {
       const promptsPayload = await fetchJson(`/prompts?${params.toString()}`);
+      console.log('[loadPrompts] Raw response:', promptsPayload);
+
       const prompts = Array.isArray(promptsPayload?.data)
         ? promptsPayload.data
         : Array.isArray(promptsPayload)
           ? promptsPayload
           : [];
+
+      console.log('[loadPrompts] Extracted prompts:', prompts);
+      console.log('[loadPrompts] Number of prompts:', prompts.length);
 
       const pagination = promptsPayload?.pagination ?? {};
       paginationState.page = Number(pagination.page) || requestedPage;
@@ -474,8 +485,9 @@
         || Math.max(1, Math.ceil(paginationState.total / paginationState.limit));
 
       allPrompts = prompts;
-      const visiblePrompts = getVisiblePrompts();
-      renderPromptList(visiblePrompts);
+      currentPromptList = prompts; // No more client-side filtering
+      console.log('[loadPrompts] Rendering prompts:', currentPromptList.length);
+      renderPromptList(currentPromptList);
       renderPagination();
       return prompts;
     } catch (error) {
@@ -520,9 +532,20 @@
     const value = (rawValue ?? '').toString();
     searchTerm = value.trim();
     searchTermLower = searchTerm.toLowerCase();
-    const filtered = getVisiblePrompts();
-    renderPromptList(filtered);
-    renderPagination();
+
+    // Clear existing timer
+    if (searchDebounceTimer) {
+      clearTimeout(searchDebounceTimer);
+    }
+
+    // Debounce search - wait 300ms after user stops typing
+    searchDebounceTimer = setTimeout(async () => {
+      // Reset to page 1 when searching
+      paginationState.page = 1;
+
+      // Load prompts with search term
+      await loadPrompts(1);
+    }, 300);
   }
 
   function getVisiblePrompts() {
@@ -2513,13 +2536,20 @@
    */
   async function createPrompt(event) {
     event?.preventDefault();
+    console.log('[createPrompt] Function called');
+
     const form = document.querySelector('.prompt-form');
-    if (!form) return;
+    if (!form) {
+      console.error('[createPrompt] Form not found');
+      return;
+    }
 
     // Gather form data
     const positivePrompt = form.querySelector('#positivePrompt')?.value?.trim() || '';
     const negativePrompt = form.querySelector('#negativePrompt')?.value?.trim() || '';
     const rawTags = form.querySelector('#promptTags')?.value || '';
+
+    console.log('[createPrompt] Form data:', { positivePrompt, negativePrompt, rawTags });
 
     // Generate title from positive prompt (first 50 chars or up to first comma/period)
     let title = positivePrompt;
@@ -2535,6 +2565,7 @@
 
     // Validate
     if (!positivePrompt) {
+      console.warn('[createPrompt] Validation failed: no positive prompt');
       if (window.NotificationService) {
         window.NotificationService.show('Positive prompt text is required', 'warning');
       }
@@ -2554,8 +2585,12 @@
       model: currentModel,
     };
 
+    console.log('[createPrompt] Payload to send:', payload);
+    console.log('[createPrompt] API base candidates:', API_BASE_CANDIDATES);
+    console.log('[createPrompt] Current apiBase:', apiBase);
+
     try {
-      await fetchJson('/prompts', {
+      const result = await fetchJson('/prompts', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2563,21 +2598,28 @@
         body: JSON.stringify(payload),
       });
 
+      console.log('[createPrompt] Success! Response:', result);
+      console.log('[createPrompt] Response data:', result.data);
+      console.log('[createPrompt] Created prompt ID:', result.data?.id);
+
       hideAddPromptModal();
       form.reset();
 
-      await Promise.allSettled([
+      console.log('[createPrompt] Reloading prompts and stats...');
+      const reloadResults = await Promise.allSettled([
         loadPrompts(1),
         loadStats(),
       ]);
+      console.log('[createPrompt] Reload results:', reloadResults);
 
       if (window.NotificationService) {
         window.NotificationService.show('Prompt created successfully', 'success');
       }
     } catch (error) {
-      console.error('Failed to create prompt:', error);
+      console.error('[createPrompt] Failed to create prompt:', error);
+      console.error('[createPrompt] Error details:', error.message, error.stack);
       if (window.NotificationService) {
-        window.NotificationService.show('Failed to create prompt', 'error');
+        window.NotificationService.show('Failed to create prompt: ' + error.message, 'error');
       }
     }
   }
