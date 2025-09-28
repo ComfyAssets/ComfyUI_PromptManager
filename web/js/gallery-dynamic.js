@@ -235,6 +235,8 @@
                 masonryInstance.destroy();
                 masonryInstance = null;
             }
+            // Reset keyboard focus when reloading
+            resetKeyboardFocus();
         }
 
         if (!items || items.length === 0) {
@@ -1026,11 +1028,179 @@
         loadGalleryData(currentPage);
     };
 
+    /**
+     * Keyboard navigation for gallery
+     */
+    let currentFocusedIndex = -1;
+
+    function setupKeyboardNavigation() {
+        document.addEventListener('keydown', handleKeyboardNavigation);
+    }
+
+    function handleKeyboardNavigation(e) {
+        // Only handle arrow keys and Enter
+        if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Enter'].includes(e.key)) {
+            return;
+        }
+
+        // Don't handle if user is typing in an input field
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+            return;
+        }
+
+        const container = document.getElementById('galleryContainer') || document.querySelector('.gallery-container');
+        if (!container) return;
+
+        const items = Array.from(container.querySelectorAll('.gallery-item'));
+        if (items.length === 0) return;
+
+        // Prevent default arrow key behavior (page scrolling)
+        if (e.key.startsWith('Arrow')) {
+            e.preventDefault();
+        }
+
+        // Initialize focus if not set
+        if (currentFocusedIndex === -1) {
+            currentFocusedIndex = 0;
+            focusGalleryItem(items[currentFocusedIndex]);
+            return;
+        }
+
+        const viewMode = container.dataset.viewMode || 'grid';
+        let newIndex = currentFocusedIndex;
+
+        if (viewMode === 'masonry' || viewMode === 'grid') {
+            // Calculate grid dimensions for proper up/down navigation
+            const itemsPerRow = getItemsPerRow(container, items);
+
+            switch (e.key) {
+                case 'ArrowLeft':
+                    if (currentFocusedIndex > 0) {
+                        newIndex = currentFocusedIndex - 1;
+                    }
+                    break;
+
+                case 'ArrowRight':
+                    if (currentFocusedIndex < items.length - 1) {
+                        newIndex = currentFocusedIndex + 1;
+                    }
+                    break;
+
+                case 'ArrowUp':
+                    if (currentFocusedIndex >= itemsPerRow) {
+                        newIndex = currentFocusedIndex - itemsPerRow;
+                    }
+                    break;
+
+                case 'ArrowDown':
+                    if (currentFocusedIndex < items.length - itemsPerRow) {
+                        newIndex = currentFocusedIndex + itemsPerRow;
+                    }
+                    break;
+
+                case 'Enter':
+                    // Open the focused image in viewer or trigger click
+                    if (items[currentFocusedIndex]) {
+                        const clickEvent = new MouseEvent('click', {
+                            view: window,
+                            bubbles: true,
+                            cancelable: true
+                        });
+                        items[currentFocusedIndex].dispatchEvent(clickEvent);
+                    }
+                    break;
+            }
+        } else {
+            // List view - only up/down navigation
+            switch (e.key) {
+                case 'ArrowUp':
+                case 'ArrowLeft':
+                    if (currentFocusedIndex > 0) {
+                        newIndex = currentFocusedIndex - 1;
+                    }
+                    break;
+
+                case 'ArrowDown':
+                case 'ArrowRight':
+                    if (currentFocusedIndex < items.length - 1) {
+                        newIndex = currentFocusedIndex + 1;
+                    }
+                    break;
+
+                case 'Enter':
+                    if (items[currentFocusedIndex]) {
+                        const clickEvent = new MouseEvent('click', {
+                            view: window,
+                            bubbles: true,
+                            cancelable: true
+                        });
+                        items[currentFocusedIndex].dispatchEvent(clickEvent);
+                    }
+                    break;
+            }
+        }
+
+        // Update focus if index changed
+        if (newIndex !== currentFocusedIndex && newIndex >= 0 && newIndex < items.length) {
+            unfocusGalleryItem(items[currentFocusedIndex]);
+            currentFocusedIndex = newIndex;
+            focusGalleryItem(items[currentFocusedIndex]);
+        }
+    }
+
+    function getItemsPerRow(container, items) {
+        if (items.length < 2) return 1;
+
+        // Get the actual positions of items to determine columns
+        const firstItemRect = items[0].getBoundingClientRect();
+        let itemsPerRow = 1;
+
+        for (let i = 1; i < items.length; i++) {
+            const rect = items[i].getBoundingClientRect();
+            if (rect.top > firstItemRect.bottom) {
+                break;
+            }
+            itemsPerRow++;
+        }
+
+        return itemsPerRow || 1;
+    }
+
+    function focusGalleryItem(item) {
+        if (!item) return;
+
+        item.classList.add('keyboard-focused');
+
+        // Scroll into view if needed
+        item.scrollIntoView({
+            behavior: 'smooth',
+            block: 'nearest',
+            inline: 'nearest'
+        });
+    }
+
+    function unfocusGalleryItem(item) {
+        if (!item) return;
+        item.classList.remove('keyboard-focused');
+    }
+
+    // Reset focus when gallery is reloaded
+    function resetKeyboardFocus() {
+        currentFocusedIndex = -1;
+        document.querySelectorAll('.gallery-item.keyboard-focused').forEach(item => {
+            item.classList.remove('keyboard-focused');
+        });
+    }
+
     // Initialize when DOM is ready
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initDynamicGallery);
+        document.addEventListener('DOMContentLoaded', () => {
+            initDynamicGallery();
+            setupKeyboardNavigation();
+        });
     } else {
         initDynamicGallery();
+        setupKeyboardNavigation();
     }
 
 })();
