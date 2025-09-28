@@ -693,6 +693,19 @@
             selectors: {
                 gallery: '#galleryContainer',
                 galleryImage: '#galleryContainer .gallery-image img'
+            },
+            metadata: {
+                enabled: true,
+                position: 'right',
+                autoShow: true,
+                showCopyButtons: true,
+                enableCache: true
+            },
+            filmstrip: {
+                enabled: true,
+                position: 'bottom',
+                autoHide: false,
+                lazyLoad: true
             }
         });
     }
