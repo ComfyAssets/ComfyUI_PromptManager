@@ -29,14 +29,23 @@ const createPMButton = ({ className, text, tooltip, includeIcon, svgMarkup }) =>
     button.title = tooltip;
 
     if (includeIcon && svgMarkup) {
+        // Use a span container but make it larger to fill the button
         const iconContainer = document.createElement('span');
         iconContainer.innerHTML = svgMarkup;
         iconContainer.style.display = 'flex';
         iconContainer.style.alignItems = 'center';
         iconContainer.style.justifyContent = 'center';
-        iconContainer.style.width = '20px';
-        iconContainer.style.height = '16px';
+        iconContainer.style.width = '28px';  // Larger than L button to fill space better
+        iconContainer.style.height = '28px';  // Square container
         button.appendChild(iconContainer);
+        
+        // Make the SVG fill the container
+        const svg = iconContainer.querySelector('svg');
+        if (svg) {
+            svg.style.width = '100%';
+            svg.style.height = '100%';
+            svg.style.display = 'block';
+        }
     }
 
     if (text) {
@@ -70,12 +79,12 @@ const onPMButtonClick = (e) => {
  * Get the PM icon SVG
  */
 const getPMIcon = () => {
-    // PM text icon in a square to match LoRA Manager style
+    // PM text icon optimized to fill button space like the L button
     return `
-        <svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
-            <rect x="10" y="10" width="492" height="492" rx="20" ry="20"
-                  fill="#2E7EE5" stroke="#1B4A8A" stroke-width="8"/>
-            <text x="256" y="320" font-family="Arial, sans-serif" font-size="240" font-weight="bold"
+        <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <rect x="0" y="0" width="100" height="100" rx="8" ry="8"
+                  fill="#2E7EE5" stroke="#1B4A8A" stroke-width="2"/>
+            <text x="50" y="62" font-family="Arial, sans-serif" font-size="45" font-weight="bold"
                   fill="#FFFFFF" text-anchor="middle">PM</text>
         </svg>
     `;
@@ -106,6 +115,11 @@ const addPMButtonToRightMenu = (menuRight) => {
         includeIcon: true,
         svgMarkup: getPMIcon(),
     });
+
+    // Style button to match other toolbar buttons
+    pmButton.style.display = 'flex';
+    pmButton.style.alignItems = 'center';
+    pmButton.style.justifyContent = 'center';
 
     // Insert PM button before LoRA Manager button if it exists, otherwise append
     const loraButton = buttonGroup.querySelector('[aria-label*="Lora Manager"]');
