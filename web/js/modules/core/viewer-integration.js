@@ -506,9 +506,9 @@ const ViewerIntegration = (function() {
         const integration = integrations.get(integrationId);
         if (!integration) return;
 
-        // Update filmstrip if present
+        // Update filmstrip if present (pass true to indicate call is from viewer)
         if (integration.filmstripId) {
-            FilmstripManager.setActive(integration.filmstripId, index);
+            FilmstripManager.setActive(integration.filmstripId, index, true);
         }
 
         // Load and display metadata if enabled
@@ -564,9 +564,9 @@ const ViewerIntegration = (function() {
 
         ViewerManager.show(integration.viewerId, index);
 
-        // Sync with filmstrip
+        // Sync with filmstrip (pass true to indicate call is from viewer to prevent loop)
         if (integration.filmstripId) {
-            FilmstripManager.setActive(integration.filmstripId, index);
+            FilmstripManager.setActive(integration.filmstripId, index, true);
         }
 
         // Load metadata
