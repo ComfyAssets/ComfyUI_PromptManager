@@ -592,23 +592,31 @@ class PromptManagerAPI:
 
     async def create_prompt(self, request: web.Request) -> web.Response:
         """Create new prompt.
-        
+
         POST /api/v1/prompts
         Body: {text: str, category?: str, tags?: list, rating?: int, notes?: str}
         """
         try:
             incoming = await request.json()
+            self.logger.info(f"[CREATE] Incoming payload: {incoming}")
+
             data = self._normalize_prompt_payload(incoming)
+            self.logger.info(f"[CREATE] Normalized data: {data}")
 
             prompt_text = data.get("positive_prompt") or data.get("prompt")
             if not prompt_text:
+                self.logger.warning(f"[CREATE] No prompt text found in data: {data}")
                 return web.json_response(
                     {"error": "Prompt text is required"},
                     status=400
                 )
 
+            self.logger.info(f"[CREATE] Creating prompt with text: {prompt_text[:50]}...")
             prompt_id = self.prompt_repo.create(data)
+            self.logger.info(f"[CREATE] Created prompt with ID: {prompt_id}")
+
             prompt = self._format_prompt(self.prompt_repo.read(prompt_id))
+            self.logger.info(f"[CREATE] Read back prompt: {prompt}")
 
             # Broadcast realtime update
             await self.realtime.notify_prompt_created(prompt)
@@ -642,7 +650,7 @@ class PromptManagerAPI:
             limit = int(request.query.get("limit", 50))
             offset = (page - 1) * limit
 
-            order_field = request.query.get("order_by", "created_at")
+            order_field = request.query.get("order_by", "id")  # Use ID as default since created_at might be NULL
             order_dir = request.query.get("order_dir", "desc").upper()
             order_clause = f"{order_field} {'DESC' if order_dir == 'DESC' else 'ASC'}"
 
@@ -654,8 +662,8 @@ class PromptManagerAPI:
                     filter_kwargs["rating"] = int(rating)
                 except (TypeError, ValueError):
                     pass
-            if search := request.query.get("search"):
-                filter_kwargs["prompt"] = f"%{search}%"
+            # Handle search separately as it needs special processing
+            search_term = request.query.get("search")
 
             include_images_param = request.query.get("include_images") or request.query.get("include")
             include_images = False
@@ -670,21 +678,55 @@ class PromptManagerAPI:
             except (TypeError, ValueError):
                 image_limit = 4
 
+            # Use search method if search term provided, otherwise regular list
+            if search_term:
+                try:
+                    self.logger.info(f"[LIST] Searching for: {search_term}")
+                    search_columns = ["positive_prompt", "negative_prompt", "tags", "category", "notes"]
+
+                    # Search with pagination
+                    raw_records = self.prompt_repo.search(
+                        search_term,
+                        columns=search_columns,
+                        limit=limit,
+                        offset=offset
+                    )
+
+                    # Get total count for search results using the new search_count method
+                    search_total = self.prompt_repo.search_count(
+                        search_term,
+                        columns=search_columns
+                    )
+                    self.logger.info(f"[LIST] Search found {len(raw_records)} prompts (total: {search_total})")
+                except Exception as e:
+                    self.logger.error(f"Search error: {e}")
+                    # Fall back to empty results on search error
+                    raw_records = []
+                    search_total = 0
+            else:
+                raw_records = list(self.prompt_repo.list(
+                    limit=limit,
+                    offset=offset,
+                    order_by=order_clause,
+                    **filter_kwargs,
+                ))
+                self.logger.info(f"[LIST] Found {len(raw_records)} prompts from database")
+
             prompts = [
                 self._format_prompt(
                     record,
                     include_images=include_images,
                     image_limit=image_limit,
                 )
-                for record in self.prompt_repo.list(
-                    limit=limit,
-                    offset=offset,
-                    order_by=order_clause,
-                    **filter_kwargs,
-                )
+                for record in raw_records
             ]
 
-            total = self.prompt_repo.count(**filter_kwargs)
+            # Use appropriate total based on whether searching or not
+            if search_term:
+                total = search_total
+            else:
+                total = self.prompt_repo.count(**filter_kwargs)
+            self.logger.info(f"[LIST] Total count: {total}")
 
             return web.json_response({
                 "success": True,
