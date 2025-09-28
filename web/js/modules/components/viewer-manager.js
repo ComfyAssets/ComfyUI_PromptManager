@@ -174,8 +174,11 @@ const ViewerManager = (function() {
     function handleViewerEvent(event, e, viewer) {
         // Track active viewer
         if (event === 'shown') {
-            activeViewer = viewer;
-            attachKeyboardHandlers();
+            // Only set activeViewer if it's a valid viewer instance
+            if (viewer && typeof viewer.show === 'function') {
+                activeViewer = viewer;
+                attachKeyboardHandlers();
+            }
         } else if (event === 'hidden') {
             if (activeViewer === viewer) {
                 activeViewer = null;
@@ -191,6 +194,9 @@ const ViewerManager = (function() {
     }
 
     function attachKeyboardHandlers() {
+        // Remove any existing handler first to avoid duplicates
+        document.removeEventListener('keydown', handleKeyPress);
+
         if (!activeViewer) return;
 
         document.addEventListener('keydown', handleKeyPress);
@@ -201,19 +207,26 @@ const ViewerManager = (function() {
     }
 
     function handleKeyPress(e) {
-        if (!activeViewer) return;
-
         // Don't interfere with form inputs
         if (e.target.matches('input, textarea, select')) return;
 
         const action = keyboardShortcuts[e.key] || keyboardShortcuts[e.code];
         if (action) {
-            e.preventDefault();
-            executeAction(activeViewer, action);
+            // Only process if we have a valid viewer instance
+            if (activeViewer && typeof activeViewer.show === 'function') {
+                e.preventDefault();
+                executeAction(activeViewer, action);
+            }
         }
     }
 
     function executeAction(viewer, action) {
+        // Ensure we have the actual viewer instance
+        if (!viewer || typeof viewer.show !== 'function') {
+            console.warn('Invalid viewer instance for action:', action);
+            return;
+        }
+
         switch(action) {
             case 'hide':
                 viewer.hide();
@@ -225,10 +238,18 @@ const ViewerManager = (function() {
                 viewer.full();
                 break;
             case 'prev':
-                viewer.prev();
+                if (viewer.prev) {
+                    viewer.prev(true);  // Pass true for loop parameter
+                } else {
+                    console.warn('Viewer.prev method not available');
+                }
                 break;
             case 'next':
-                viewer.next();
+                if (viewer.next) {
+                    viewer.next(true);  // Pass true for loop parameter
+                } else {
+                    console.warn('Viewer.next method not available');
+                }
                 break;
             case 'zoomIn':
                 viewer.zoom(0.1);
