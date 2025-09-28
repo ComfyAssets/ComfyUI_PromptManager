@@ -55,7 +55,7 @@ const MetadataManager = (function() {
             collapsed: false,
             autoShow: true,
             showCopyButtons: true,
-            showExportButton: true,
+            showExportButton: false,
             theme: 'dark'
         },
         fields: {
@@ -1664,6 +1664,16 @@ const MetadataManager = (function() {
 
         sections.innerHTML = '';
 
+        // Debug logging to understand metadata structure
+        console.debug('[MetadataManager] displayMetadata called with:', {
+            panelId,
+            metadata,
+            hasCustom: metadata?.custom !== undefined,
+            hasSummary: metadata?.summary !== undefined,
+            hasStandard: metadata?.standard !== undefined,
+            keys: metadata ? Object.keys(metadata) : []
+        });
+
         // Check if metadata is empty or null
         if (!metadata || (typeof metadata === 'object' && Object.keys(metadata).length === 0)) {
             sections.innerHTML = '<div class="metadata-empty">No metadata available for this image</div>';
@@ -1682,87 +1692,182 @@ const MetadataManager = (function() {
             if (isWorkflowData) {
                 metadata = transformWorkflowMetadata(metadata);
             } else {
-                // Wrap the raw data as custom metadata
-                metadata = {
-                    custom: metadata,
-                    standard: {},
-                    summary: metadata
-                };
+                // Check if this is API response with nested structure
+                if (metadata.comfy_parsed || metadata.positive_prompt || metadata.negative_prompt ||
+                    metadata.model || metadata.sampler || metadata.steps || metadata.cfg_scale || metadata.seed) {
+                    // Transform API response to expected format
+                    metadata = transformApiMetadata(metadata);
+                } else {
+                    // Wrap the raw data as custom metadata
+                    metadata = {
+                        custom: metadata,
+                        standard: {},
+                        summary: metadata
+                    };
+                }
             }
         }
 
         // Store current metadata
         panelInstance.currentMetadata = metadata;
 
-        // Display each metadata section
-        const fieldGroups = defaultConfig.fields;
+        // Create enhanced metadata display matching the reference design
+        let displayHtml = '';
 
-        let hasAnyData = false;
-        for (const [groupName, fields] of Object.entries(fieldGroups)) {
-            // Check for data in the appropriate location
-            let groupData = metadata[groupName];
+        // Extract data from metadata - check all possible locations
+        const data = metadata.summary || metadata.custom || metadata;
 
-            // Special handling for 'custom' group - can use summary as fallback
-            if (groupName === 'custom' && !groupData && metadata.summary) {
-                groupData = metadata.summary;
-            }
+        // Also check for positivePrompt/negativePrompt (camelCase) in addition to snake_case
+        const positivePrompt = data.positivePrompt || data.positive_prompt || data.positive || data.prompt || '';
+        const negativePrompt = data.negativePrompt || data.negative_prompt || data.negative || '';
+        const model = data.model || data.checkpoint || data.model_name || '';
+        const loras = data.loras || data.lora || '';
+        const cfgScale = data.cfgScale || data.cfg_scale || data.cfg || '';
+        const steps = data.steps || data.total_steps || '';
+        const sampler = data.sampler || data.sampler_name || '';
+        const seed = data.seed || '';
+        const clipSkip = data.clipSkip || data.clip_skip || '';
 
-            groupData = groupData || {};
-
-            if (!groupData || Object.keys(groupData).length === 0) {
-                continue;
-            }
-            hasAnyData = true;
-
-            const section = document.createElement('div');
-            section.className = 'metadata-section';
-            section.innerHTML = `<h4>${groupName.charAt(0).toUpperCase() + groupName.slice(1)}</h4>`;
-
-            const list = document.createElement('dl');
-            list.className = 'metadata-list';
-
-            for (const [key, label] of Object.entries(fields)) {
-                if (groupData[key] !== undefined && groupData[key] !== null) {
-                    const dt = document.createElement('dt');
-                    dt.textContent = label;
-
-                    const dd = document.createElement('dd');
-                    dd.innerHTML = `
-                        <span class="metadata-value">${escapeHtml(groupData[key])}</span>
-                        ${panelInstance.config.showCopyButtons ?
-                            `<button class="metadata-copy" data-value="${escapeHtml(groupData[key])}" title="Copy">📋</button>` :
-                            ''}
-                    `;
-
-                    list.appendChild(dt);
-                    list.appendChild(dd);
-                }
-            }
-
-            section.appendChild(list);
-            sections.appendChild(section);
-        }
-
-        // If no data was displayed, show a message
-        if (!hasAnyData) {
-            sections.innerHTML = '<div class="metadata-empty" style="padding: 20px; text-align: center; color: #888;">No displayable metadata found</div>';
-        }
-
-        // Add copy button handlers
-        if (panelInstance.config.showCopyButtons && hasAnyData) {
-            sections.querySelectorAll('.metadata-copy').forEach(btn => {
-                btn.addEventListener('click', (e) => {
-                    const value = e.target.getAttribute('data-value');
-                    copyToClipboard(value);
-
-                    // Visual feedback
-                    e.target.textContent = '✓';
-                    setTimeout(() => {
-                        e.target.textContent = '📋';
-                    }, 1000);
-                });
+        // Display character tags if available
+        if (data.tags || data.character || data.style_tags) {
+            displayHtml += '<div class="metadata-tags">';
+            const tags = (data.tags || data.character || data.style_tags || '').split(',').map(t => t.trim()).filter(t => t);
+            tags.forEach(tag => {
+                displayHtml += `<span class="metadata-tag">${escapeHtml(tag)}</span>`;
             });
+            displayHtml += '</div>';
         }
+
+        // Display checkpoint first if available
+        if (model) {
+            // Clean up model name - remove path prefix, keep only filename
+            let cleanModelName = model;
+            // Remove any path components (handle both / and \)
+            cleanModelName = cleanModelName.replace(/^.*[\/\\]/, '');
+            // Also remove common prefixes like "checkpoints/" if present
+            cleanModelName = cleanModelName.replace(/^(checkpoints?|models?|ckpt)[\/\\]/i, '');
+
+            displayHtml += `
+                <div class="metadata-checkpoint-section">
+                    <div class="metadata-model-label">CHECKPOINT</div>
+                    <div class="metadata-model-name" title="${escapeHtml(model)}">${escapeHtml(cleanModelName)}</div>
+                </div>
+            `;
+        }
+
+        // Display positive prompt with copy functionality
+        if (positivePrompt && positivePrompt !== 'None' && positivePrompt !== 'Not found') {
+            const promptId = `prompt-${panelId}-${Date.now()}`;
+            const isLongPrompt = positivePrompt.length > 150; // Threshold for collapsing
+
+            displayHtml += `
+                <div class="metadata-prompt-section compact">
+                    <div class="metadata-prompt-label">PROMPT</div>
+                    <div class="metadata-prompt-content ${isLongPrompt ? 'collapsible' : ''}" data-prompt-id="${promptId}">
+                        <div class="prompt-text ${isLongPrompt ? 'collapsed' : ''}">${escapeHtml(positivePrompt)}</div>
+                        ${isLongPrompt ? `
+                            <button class="metadata-expand-btn" onclick="
+                                const container = document.querySelector('[data-prompt-id=\\'${promptId}\\']');
+                                const text = container.querySelector('.prompt-text');
+                                const btn = container.querySelector('.metadata-expand-btn');
+                                if (text.classList.contains('collapsed')) {
+                                    text.classList.remove('collapsed');
+                                    btn.innerHTML = '<i class=\\'fa-solid fa-chevron-up\\'></i> Show less';
+                                } else {
+                                    text.classList.add('collapsed');
+                                    btn.innerHTML = '<i class=\\'fa-solid fa-chevron-down\\'></i> Show more';
+                                }
+                            ">
+                                <i class="fa-solid fa-chevron-down"></i> Show more
+                            </button>
+                        ` : ''}
+                        <button class="metadata-copy-btn" data-value="${escapeHtml(positivePrompt)}" title="Copy prompt">
+                            <i class="fa-solid fa-copy"></i>
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Display negative prompt
+        if (negativePrompt && negativePrompt !== 'None' && negativePrompt !== 'Not found') {
+            const negPromptId = `neg-prompt-${panelId}-${Date.now() + 1}`;
+            const isLongNegPrompt = negativePrompt.length > 150;
+
+            displayHtml += `
+                <div class="metadata-prompt-section compact">
+                    <div class="metadata-prompt-label">NEGATIVE PROMPT</div>
+                    <div class="metadata-prompt-content ${isLongNegPrompt ? 'collapsible' : ''}" data-prompt-id="${negPromptId}">
+                        <div class="prompt-text ${isLongNegPrompt ? 'collapsed' : ''}">${escapeHtml(negativePrompt)}</div>
+                        ${isLongNegPrompt ? `
+                            <button class="metadata-expand-btn" onclick="
+                                const container = document.querySelector('[data-prompt-id=\\'${negPromptId}\\']');
+                                const text = container.querySelector('.prompt-text');
+                                const btn = container.querySelector('.metadata-expand-btn');
+                                if (text.classList.contains('collapsed')) {
+                                    text.classList.remove('collapsed');
+                                    btn.innerHTML = '<i class=\\'fa-solid fa-chevron-up\\'></i> Show less';
+                                } else {
+                                    text.classList.add('collapsed');
+                                    btn.innerHTML = '<i class=\\'fa-solid fa-chevron-down\\'></i> Show more';
+                                }
+                            ">
+                                <i class="fa-solid fa-chevron-down"></i> Show more
+                            </button>
+                        ` : ''}
+                        <button class="metadata-copy-btn" data-value="${escapeHtml(negativePrompt)}" title="Copy negative prompt">
+                            <i class="fa-solid fa-copy"></i>
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Display technical parameters in a grid
+        const params = [];
+        if (sampler && sampler !== 'None') params.push({ label: 'Sampler', value: sampler });
+        if (steps && steps !== 'None') params.push({ label: 'Steps', value: steps });
+        if (cfgScale && cfgScale !== 'None') params.push({ label: 'CFG Scale', value: cfgScale });
+        if (seed && seed !== 'None') params.push({ label: 'Seed', value: seed });
+        if (clipSkip && clipSkip !== 'None') params.push({ label: 'Clip Skip', value: clipSkip });
+        if (loras && loras !== 'None') params.push({ label: 'LoRAs', value: loras });
+        if (data.width && data.height) params.push({ label: 'Size', value: `${data.width}x${data.height}` });
+        else if (data.size) params.push({ label: 'Size', value: data.size });
+
+        if (params.length > 0) {
+            displayHtml += '<div class="metadata-params">';
+            params.forEach(param => {
+                displayHtml += `
+                    <div class="metadata-param">
+                        <div class="metadata-param-label">${escapeHtml(param.label)}</div>
+                        <div class="metadata-param-value">${escapeHtml(String(param.value))}</div>
+                    </div>
+                `;
+            });
+            displayHtml += '</div>';
+        }
+
+        // Apply the HTML
+        sections.innerHTML = displayHtml || '<div class="metadata-empty">No displayable metadata found</div>';
+
+        // Add copy button handlers with improved visual feedback
+        sections.querySelectorAll('.metadata-copy-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const value = btn.getAttribute('data-value');
+                copyToClipboard(value);
+
+                // Visual feedback
+                btn.classList.add('copied');
+                const originalHtml = btn.innerHTML;
+                btn.innerHTML = '<i class="fa-solid fa-check"></i> Copied!';
+
+                setTimeout(() => {
+                    btn.classList.remove('copied');
+                    btn.innerHTML = originalHtml;
+                }, 2000);
+            });
+        });
     }
 
     function escapeHtml(text) {
