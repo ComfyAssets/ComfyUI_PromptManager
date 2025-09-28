@@ -145,6 +145,73 @@ const ViewerIntegration = (function() {
         return integrationId;
     }
 
+    function parseMaybeJson(value) {
+        if (!value) {
+            return null;
+        }
+        if (typeof value === 'object') {
+            return value;
+        }
+        if (typeof value === 'string') {
+            try {
+                return JSON.parse(value);
+            } catch (error) {
+                console.debug('ViewerIntegration: failed to parse metadata JSON', error);
+            }
+        }
+        return null;
+    }
+
+    function extractImageIdFromUrl(url) {
+        if (!url || typeof url !== 'string') {
+            return null;
+        }
+
+        const match = url.match(/(?:generated-images|gallery\/images)\/(\d+)/);
+        if (match && match[1]) {
+            const parsed = Number.parseInt(match[1], 10);
+            return Number.isFinite(parsed) ? parsed : null;
+        }
+
+        return null;
+    }
+
+    function resolveImageId(image) {
+        if (!image || typeof image !== 'object') {
+            return null;
+        }
+
+        const direct = image.id
+            ?? image.image_id
+            ?? image.generated_image_id
+            ?? image.original_image_id
+            ?? image.generatedId
+            ?? image.imageId;
+
+        if (direct !== undefined && direct !== null && direct !== '') {
+            const numeric = Number(direct);
+            return Number.isFinite(numeric) ? numeric : direct;
+        }
+
+        const candidates = [
+            image.url,
+            image.fullSrc,
+            image.src,
+            image.image_url,
+            image.thumbnail_url,
+            image.path
+        ];
+
+        for (const candidate of candidates) {
+            const parsed = extractImageIdFromUrl(candidate);
+            if (parsed !== null) {
+                return parsed;
+            }
+        }
+
+        return null;
+    }
+
     function normalizeImageEntry(image, index = 0) {
         if (typeof image === 'string') {
             return {
@@ -169,13 +236,17 @@ const ViewerIntegration = (function() {
         const thumb = image.src || image.thumb || image.thumbnail || image.thumbnail_url || image.preview_url || image.preview || image.url || '';
         const full = image.fullSrc || image.url || image.image_url || image.path || image.full_url || thumb;
         const descriptiveText = image.title || image.alt || image.display_title || image.filename || image.file_name || image.name || `Image ${index + 1}`;
+        const parsedMetadata = parseMaybeJson(image.metadata)
+            || parseMaybeJson(image.meta)
+            || parseMaybeJson(image.prompt_metadata);
 
         return {
             src: thumb,
             fullSrc: full,
             alt: image.alt || descriptiveText,
             title: descriptiveText,
-            metadata: image.metadata || image.meta || null,
+            id: resolveImageId(image),
+            metadata: parsedMetadata,
             original: image
         };
     }
@@ -527,6 +598,90 @@ const ViewerIntegration = (function() {
         return true;
     }
 
+    function loadMetadataForImage(integration, index) {
+        if (!integration?.metadataPanelId) {
+            console.warn('[ViewerIntegration] No metadata panel ID for integration', integration?.id);
+            return;
+        }
+
+        const image = integration.images[index];
+        if (!image) {
+            console.warn('[ViewerIntegration] No image at index', index);
+            return;
+        }
+
+        // Display cached metadata immediately when available.
+        if (image.metadata && Object.keys(image.metadata).length > 0) {
+            MetadataManager.display(integration.metadataPanelId, image.metadata);
+            return;
+        }
+
+        // Avoid duplicate fetches while a request is in flight.
+        if (image.metadataLoading) {
+            console.debug('[ViewerIntegration] Metadata already loading for image', index);
+            return;
+        }
+
+        image.metadataLoading = true;
+        const source = image.fullSrc || image.src;
+        const imageId = image.id ?? resolveImageId(image.original) ?? resolveImageId(image) ?? extractImageIdFromUrl(source);
+
+        console.debug('[ViewerIntegration] Loading metadata', {
+            integrationId: integration.id,
+            imageIndex: index,
+            imageId,
+            source,
+            image: image
+        });
+
+        (async () => {
+            try {
+                let metadata = null;
+
+                if (imageId && typeof MetadataManager.getByImageId === 'function') {
+                    console.debug('[ViewerIntegration] Attempting to get metadata by image ID:', imageId);
+                    metadata = await MetadataManager.getByImageId(imageId);
+                    if (metadata) {
+                        console.debug('[ViewerIntegration] Successfully retrieved metadata by ID', {
+                            imageId,
+                            hasSummary: Boolean(metadata?.summary)
+                        });
+                    }
+                }
+
+                if (!metadata && source) {
+                    console.debug('[ViewerIntegration] Falling back to extract from source:', source);
+                    metadata = await MetadataManager.extract(source);
+                    if (metadata) {
+                        console.debug('[ViewerIntegration] Successfully extracted metadata from source', {
+                            source,
+                            hasSummary: Boolean(metadata?.summary)
+                        });
+                    }
+                }
+
+                if (metadata) {
+                    console.debug('[ViewerIntegration] Displaying metadata in panel', {
+                        panelId: integration.metadataPanelId,
+                        metadata
+                    });
+                    image.metadata = metadata;
+                    MetadataManager.display(integration.metadataPanelId, metadata);
+                } else {
+                    console.warn('[ViewerIntegration] No metadata found for image', {
+                        imageId,
+                        source,
+                        index
+                    });
+                }
+            } catch (error) {
+                console.error('[ViewerIntegration] Metadata retrieval failed:', error);
+            } finally {
+                delete image.metadataLoading;
+            }
+        })();
+    }
+
     function handleImageViewed(integrationId, index) {
         const integration = integrations.get(integrationId);
         if (!integration) return;
@@ -537,18 +692,7 @@ const ViewerIntegration = (function() {
         }
 
         // Load and display metadata if enabled
-        if (integration.metadataPanelId && integration.images[index]) {
-            const image = integration.images[index];
-
-            // Important: The API is the single source of truth for metadata
-            // We only use pre-loaded metadata from the API, never extract from images
-            if (image.metadata) {
-                // Display pre-loaded metadata if available
-                MetadataManager.display(integration.metadataPanelId, image.metadata);
-            }
-            // If no metadata is pre-loaded and panel already has metadata from API, keep it
-            // We don't attempt client-side extraction as the parser has been removed
-        }
+        loadMetadataForImage(integration, index);
 
         // Emit custom event
         const event = new CustomEvent('viewer:imageViewed', {
@@ -586,7 +730,10 @@ const ViewerIntegration = (function() {
 
     function showImage(integrationId, index) {
         const integration = integrations.get(integrationId);
-        if (!integration || !integration.viewerId) return;
+        if (!integration || !integration.viewerId) {
+            console.warn('[ViewerIntegration] Cannot show image - no integration or viewer');
+            return;
+        }
 
         ViewerManager.show(integration.viewerId, index);
 
@@ -595,8 +742,8 @@ const ViewerIntegration = (function() {
             FilmstripManager.setActive(integration.filmstripId, index, true);
         }
 
-        // Don't extract metadata from images - API is the single source of truth
-        // Metadata should already be loaded from the API with the image data
+        // Ensure metadata panel reflects the currently viewed image
+        loadMetadataForImage(integration, index);
     }
 
     function showQuickInfo(img) {
@@ -805,6 +952,7 @@ const ViewerIntegration = (function() {
          * @returns {string|null} Integration ID when successful
          */
         openImageSet: function(images, options = {}) {
+
             if (!Array.isArray(images) || images.length === 0) {
                 console.warn('ViewerIntegration.openImageSet: No images supplied');
                 return null;
@@ -832,14 +980,16 @@ const ViewerIntegration = (function() {
                 ? { enabled: false }
                 : Object.assign({}, globalConfig.metadata, options.metadata || {});
 
-            const integrationId = createIntegration('adhoc', {
+            const integrationConfig = {
                 viewer: Object.assign({}, globalConfig.viewer, viewerOverrides),
                 filmstrip: filmstripOverrides,
                 metadata: metadataOverrides,
                 destroyOnHide: options.destroyOnHide !== false,
                 startIndex: Number.isInteger(options.startIndex) ? options.startIndex : 0,
                 context: options.context || null
-            });
+            };
+
+            const integrationId = createIntegration('adhoc', integrationConfig);
 
             const integration = integrations.get(integrationId);
             if (!integration) {
@@ -941,6 +1091,7 @@ const ViewerIntegration = (function() {
                 }, integration.config.metadata.panel || {});
 
                 integration.metadataPanelId = MetadataManager.createPanel(panelConfig);
+
                 MetadataManager.attachPanel(
                     integration.metadataPanelId,
                     integration.config.metadata.container || document.body
