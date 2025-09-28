@@ -327,25 +327,57 @@ class BaseRepository(ABC):
         """
         return self.count(**filters) > 0
     
-    def search(self, search_term: str, columns: List[str]) -> List[Dict[str, Any]]:
-        """Search records across multiple columns.
-        
+    def search_count(self, search_term: str, columns: List[str]) -> int:
+        """Count search results across multiple columns.
+
         Args:
             search_term: Search term
             columns: Columns to search in
-            
+
+        Returns:
+            Number of matching records
+        """
+        table = self._get_table_name()
+
+        search_clauses = [f"{col} LIKE ?" for col in columns]
+        where_sql = f"WHERE {' OR '.join(search_clauses)}"
+
+        values = [f"%{search_term}%" for _ in columns]
+
+        query = f"SELECT COUNT(*) FROM {table} {where_sql}"
+
+        with self._get_connection() as conn:
+            cursor = conn.execute(query, values)
+            return cursor.fetchone()[0]
+
+    def search(self, search_term: str, columns: List[str], limit: int = None, offset: int = None) -> List[Dict[str, Any]]:
+        """Search records across multiple columns.
+
+        Args:
+            search_term: Search term
+            columns: Columns to search in
+            limit: Maximum number of records to return
+            offset: Number of records to skip
+
         Returns:
             List of matching records
         """
         table = self._get_table_name()
-        
+
         search_clauses = [f"{col} LIKE ?" for col in columns]
         where_sql = f"WHERE {' OR '.join(search_clauses)}"
-        
+
         values = [f"%{search_term}%" for _ in columns]
-        
-        query = f"SELECT * FROM {table} {where_sql} ORDER BY created_at DESC"
-        
+
+        # Use id DESC as fallback for sorting (created_at might be NULL)
+        query = f"SELECT * FROM {table} {where_sql} ORDER BY id DESC"
+
+        # Add pagination if requested
+        if limit is not None:
+            query += f" LIMIT {limit}"
+            if offset is not None:
+                query += f" OFFSET {offset}"
+
         with self._get_connection() as conn:
             cursor = conn.execute(query, values)
             return [self._to_dict(row) for row in cursor.fetchall()]
