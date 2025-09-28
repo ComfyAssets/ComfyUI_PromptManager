@@ -977,6 +977,7 @@
       }
 
       const safeIndex = Math.min(Math.max(startIndex, 0), viewerItems.length - 1);
+
       const integrationId = window.ViewerIntegration.openImageSet(viewerItems, {
         startIndex: safeIndex,
         viewer: preferences.viewer,
@@ -1188,6 +1189,23 @@
     return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${sizes[i]}`;
   }
 
+  function parseMaybeJson(value) {
+    if (!value) {
+      return null;
+    }
+    if (typeof value === 'object') {
+      return value;
+    }
+    if (typeof value === 'string') {
+      try {
+        return JSON.parse(value);
+      } catch (error) {
+        console.debug('Failed to parse metadata JSON', error);
+      }
+    }
+    return null;
+  }
+
   function mapPromptImageToViewerEntry(image, index = 0, prompt = null) {
     if (!image) {
       return null;
@@ -1195,6 +1213,16 @@
 
     const thumb = image.thumbnail_url || image.thumbnail || image.thumbnail_medium_url || image.preview || image.src || image.url || image.full_url || '';
     const full = image.url || image.full_url || image.path || image.image_url || image.src || thumb;
+    const imageId = image.id
+      ?? image.image_id
+      ?? image.generated_image_id
+      ?? image.original_image_id
+      ?? extractImageIdFromUrl(full)
+      ?? extractImageIdFromUrl(thumb);
+
+    const metadata = parseMaybeJson(image.metadata)
+      || parseMaybeJson(image.meta)
+      || parseMaybeJson(image.prompt_metadata);
 
     if (!thumb && !full) {
       return null;
@@ -1208,7 +1236,8 @@
       fullSrc: full || thumb,
       alt: image.alt || label,
       title: label,
-      metadata: image.metadata || image.meta || null,
+      id: imageId,
+      metadata,
       original: image,
       promptId: prompt?.id ?? null,
       index,
@@ -2655,3 +2684,16 @@
     init();
   }
 })();
+  function extractImageIdFromUrl(url) {
+    if (!url || typeof url !== 'string') {
+      return null;
+    }
+
+    const match = url.match(/(?:generated-images|gallery\/images)\/(\d+)/);
+    if (match && match[1]) {
+      const parsed = Number.parseInt(match[1], 10);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    return null;
+  }
