@@ -244,6 +244,18 @@
         }
         const fullMediaUrl = item.image_url || item.url || item.path || thumbnailUrl;
 
+        // Store metadata on the element for viewer integration
+        let metadataStr = '';
+        if (item.metadata) {
+            if (typeof item.metadata === 'string') {
+                // If it's already a string, use it as is (unless it's empty JSON)
+                metadataStr = (item.metadata && item.metadata !== '{}') ? item.metadata : '';
+            } else if (typeof item.metadata === 'object' && Object.keys(item.metadata).length > 0) {
+                // If it's an object with content, stringify it
+                metadataStr = JSON.stringify(item.metadata);
+            }
+        }
+
         // Build HTML - for masonry view, only show the image (no info wrapper)
         if (viewMode === 'masonry') {
             div.innerHTML = `
@@ -253,6 +265,7 @@
                          alt="${escapeHtml(item.filename || '')}"
                          loading="lazy"
                          data-placeholder="${placeholderImage}"
+                         data-metadata="${escapeHtml(metadataStr)}"
                          title="${escapeHtml(item.filename || 'Untitled')}" />
                 </div>
             `;
@@ -264,7 +277,8 @@
                          data-full-src="${fullMediaUrl}"
                          alt="${escapeHtml(item.filename || '')}"
                          loading="lazy"
-                         data-placeholder="${placeholderImage}" />
+                         data-placeholder="${placeholderImage}"
+                         data-metadata="${escapeHtml(metadataStr)}" />
                 </div>
                 <div class="gallery-info">
                     <div class="gallery-title">${escapeHtml(item.filename || 'Untitled')}</div>
@@ -666,7 +680,7 @@
     }
 
     function refreshViewerIntegration(container) {
-        if (!window.ViewerIntegration || typeof window.ViewerIntegration.initGallery !== 'function') {
+        if (!window.ViewerIntegration) {
             return;
         }
 
@@ -678,36 +692,78 @@
             return;
         }
 
+        // Check if we already have an active integration
         const active = window.ViewerIntegration.getActiveIntegration?.();
-        if (active?.id && typeof window.ViewerIntegration.destroy === 'function') {
-            window.ViewerIntegration.destroy(active.id);
-        } else if (activeViewerIntegrationId && typeof window.ViewerIntegration.destroy === 'function') {
-            window.ViewerIntegration.destroy(activeViewerIntegrationId);
-        }
 
-        if (typeof window.ViewerIntegration.initGallery !== 'function') {
-            return;
-        }
+        if (active?.id || activeViewerIntegrationId) {
+            // Update existing integration with new images
+            const integrationId = active?.id || activeViewerIntegrationId;
 
-        activeViewerIntegrationId = window.ViewerIntegration.initGallery({
-            selectors: {
-                gallery: '#galleryContainer',
-                galleryImage: '#galleryContainer .gallery-image img'
-            },
-            metadata: {
-                enabled: true,
-                position: 'right',
-                autoShow: true,
-                showCopyButtons: true,
-                enableCache: true
-            },
-            filmstrip: {
-                enabled: true,
-                position: 'bottom',
-                autoHide: false,
-                lazyLoad: true
+            // Extract images with metadata from the refreshed gallery
+            const images = Array.from(container.querySelectorAll('.gallery-image img')).map((img, index) => {
+                const thumbSrc = img.currentSrc || img.src;
+                const fullSrc = img.dataset.fullSrc || img.getAttribute('data-full-src') || thumbSrc;
+
+                // Get metadata from data attribute
+                let metadata = null;
+                const metadataStr = img.dataset.metadata || img.getAttribute('data-metadata');
+                if (metadataStr && metadataStr !== '' && metadataStr !== '{}') {
+                    try {
+                        // Unescape HTML entities
+                        const parser = new DOMParser();
+                        const txt = parser.parseFromString(metadataStr, 'text/html');
+                        const unescaped = txt.documentElement.textContent;
+                        // Only parse if we have actual content
+                        if (unescaped && unescaped !== '' && unescaped !== '{}') {
+                            metadata = JSON.parse(unescaped);
+                        }
+                    } catch (e) {
+                        // Silently ignore parse errors for empty/invalid metadata
+                        if (metadataStr !== '') {
+                            console.debug('Metadata parse issue for non-empty string:', metadataStr.substring(0, 50));
+                        }
+                    }
+                }
+
+                return {
+                    src: thumbSrc,
+                    fullSrc,
+                    alt: img.alt || `Image ${index + 1}`,
+                    title: img.getAttribute('title') || img.alt || `Image ${index + 1}`,
+                    metadata: metadata
+                };
+            });
+
+            // Refresh the integration with new images
+            if (typeof window.ViewerIntegration.refreshImages === 'function') {
+                window.ViewerIntegration.refreshImages(integrationId, images);
             }
-        });
+        } else {
+            // No existing integration, create a new one
+            if (typeof window.ViewerIntegration.initGallery !== 'function') {
+                return;
+            }
+
+            activeViewerIntegrationId = window.ViewerIntegration.initGallery({
+                selectors: {
+                    gallery: '#galleryContainer',
+                    galleryImage: '#galleryContainer .gallery-image img'
+                },
+                metadata: {
+                    enabled: true,
+                    position: 'right',
+                    autoShow: true,
+                    showCopyButtons: true,
+                    enableCache: true
+                },
+                filmstrip: {
+                    enabled: true,
+                    position: 'bottom',
+                    autoHide: false,
+                    lazyLoad: true
+                }
+            });
+        }
     }
 
     function initializeMasonryLayout(container) {
