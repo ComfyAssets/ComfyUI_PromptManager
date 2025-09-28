@@ -482,6 +482,7 @@ class PromptManagerAPI:
         routes.get("/api/v1/gallery/images")(self.list_gallery_images)
         routes.get("/api/v1/gallery/images/{id}")(self.get_gallery_image)
         routes.get("/api/v1/gallery/images/{id}/file")(self.get_gallery_image_file)
+        routes.get("/api/v1/generated-images/{image_id}/metadata")(self.get_generated_image_metadata)
         routes.get("/api/v1/generated-images/{image_id}/file")(self.get_generated_image_file)
         routes.post("/api/v1/gallery/scan")(self.scan_for_images)
         routes.post("/api/scan")(self.scan_comfyui_images)  # Simple scan endpoint for frontend
@@ -1052,6 +1053,84 @@ class PromptManagerAPI:
                 return web.json_response({"error": "Access denied"}, status=403)
 
         return web.FileResponse(resolved)
+
+    async def get_generated_image_metadata(self, request: web.Request) -> web.Response:
+        """Return extracted metadata for a generated image.
+
+        GET /api/v1/generated-images/{id}/metadata
+        """
+
+        if not getattr(self, "generated_image_repo", None):
+            return web.json_response({"error": "Generated image repository unavailable"}, status=500)
+
+        try:
+            image_id = int(request.match_info["image_id"])
+        except (KeyError, ValueError):
+            return web.json_response({"error": "Invalid image id"}, status=400)
+
+        record = self.generated_image_repo.read(image_id)
+        if not record:
+            return web.json_response({"error": "Image not found"}, status=404)
+
+        metadata_raw = record.get("metadata")
+        prompt_metadata_raw = record.get("prompt_metadata")
+        workflow_raw = record.get("workflow_data") or record.get("workflow")
+
+        def _parse_json(value: Any) -> Optional[Dict[str, Any]]:
+            if value is None:
+                return None
+            if isinstance(value, dict):
+                return value
+            if isinstance(value, str) and value.strip():
+                try:
+                    return json.loads(value)
+                except json.JSONDecodeError:
+                    self.logger.debug("Generated image %s metadata field was not valid JSON", image_id)
+                    return None
+            return None
+
+        metadata = _parse_json(metadata_raw)
+        prompt_metadata = _parse_json(prompt_metadata_raw)
+        workflow = _parse_json(workflow_raw)
+
+        # Prefer prompt_metadata when general metadata missing
+        if not metadata and prompt_metadata:
+            metadata = prompt_metadata
+
+        # Fallback to extracting directly from file when needed
+        if not metadata:
+            file_path = record.get("file_path") or record.get("image_path")
+            if file_path and Path(file_path).expanduser().exists():
+                try:
+                    metadata = self.metadata_extractor.extract_from_file(file_path)
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    self.logger.debug("Failed to extract metadata for image %s: %s", image_id, exc)
+
+        metadata = self._sanitize_for_json(metadata) if metadata else {}
+        prompt_metadata = self._sanitize_for_json(prompt_metadata) if prompt_metadata else None
+        workflow = self._sanitize_for_json(workflow) if workflow else None
+
+        response_payload: Dict[str, Any] = {
+            "id": image_id,
+            "prompt_id": record.get("prompt_id"),
+            "metadata": metadata,
+            "prompt_metadata": prompt_metadata,
+            "workflow": workflow,
+            "file_path": record.get("file_path") or record.get("image_path"),
+            "positive_prompt": record.get("prompt_text") or metadata.get("positive_prompt") if isinstance(metadata, dict) else None,
+            "negative_prompt": record.get("negative_prompt") or metadata.get("negative_prompt") if isinstance(metadata, dict) else None,
+            "model": record.get("checkpoint") or metadata.get("model") if isinstance(metadata, dict) else None,
+            "sampler": record.get("sampler") or metadata.get("sampler") if isinstance(metadata, dict) else None,
+            "steps": record.get("steps") or metadata.get("steps") if isinstance(metadata, dict) else None,
+            "cfg_scale": record.get("cfg_scale") or metadata.get("cfg_scale") if isinstance(metadata, dict) else None,
+            "seed": record.get("seed") or metadata.get("seed") if isinstance(metadata, dict) else None,
+            "comfy_parsed": metadata.get("comfy_parsed") if isinstance(metadata, dict) else None,
+        }
+
+        # Ensure nested structures are JSON-safe
+        response_payload = self._sanitize_for_json(response_payload)
+
+        return web.json_response({"success": True, "data": response_payload})
 
     async def list_gallery_images(self, request: web.Request) -> web.Response:
         """List gallery images with pagination.
