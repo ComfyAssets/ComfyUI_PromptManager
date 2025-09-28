@@ -17,6 +17,8 @@
     let isLoading = false;
     let activeViewerIntegrationId = null;
     let masonryInstance = null;
+    let hasMorePages = true;
+    let infiniteScrollEnabled = true;
 
     // Get items per page from settings or use default
     function getItemsPerPage() {
@@ -49,12 +51,27 @@
             });
         }
 
+        // Hide the container initially to prevent empty frames
+        container.style.opacity = '0';
+        container.style.visibility = 'hidden';
+
         // Setup event listeners
         setupFilterListeners();
-        setupPaginationListeners();
+        // Pagination disabled with infinite scroll
+        // setupPaginationListeners();
 
         // Load initial data
         await loadGalleryData();
+
+        // Setup infinite scroll
+        setupInfiniteScroll();
+
+        // Show the container after data is loaded with a smooth fade-in
+        setTimeout(() => {
+            container.style.transition = 'opacity 0.3s ease, visibility 0.3s ease';
+            container.style.opacity = '1';
+            container.style.visibility = 'visible';
+        }, 100);
 
         // Listen for storage changes (in case settings are changed in another tab)
         window.addEventListener('storage', (e) => {
@@ -71,13 +88,18 @@
 
     /**
      * Load gallery data from API
+     * @param {number} page - Page to load
+     * @param {boolean} scrollToTop - Whether to scroll to top after loading
+     * @param {boolean} append - Whether to append items (for infinite scroll) or replace
      */
-    async function loadGalleryData(page = 1, scrollToTop = false) {
+    async function loadGalleryData(page = 1, scrollToTop = false, append = false) {
         if (isLoading) return;
         isLoading = true;
 
         try {
-            showLoadingState();
+            if (!append) {
+                showLoadingState();
+            }
 
             // Build query parameters
             const params = new URLSearchParams({
@@ -106,11 +128,16 @@
             if (result.success && result.data) {
                 currentPage = result.pagination?.current_page || page;
                 totalPages = result.pagination?.total_pages || 1;
+                hasMorePages = result.pagination?.has_next || false;
 
-                renderGalleryItems(result.data);
-                updatePagination(result.pagination);
+                renderGalleryItems(result.data, append);
 
-                if (result.data.length === 0) {
+                // Don't show pagination controls with infinite scroll
+                // if (!append) {
+                //     updatePagination(result.pagination);
+                // }
+
+                if (result.data.length === 0 && !append) {
                     showEmptyState();
                 } else {
                     hideEmptyState();
@@ -190,34 +217,56 @@
 
     /**
      * Render gallery items
+     * @param {Array} items - Gallery items to render
+     * @param {boolean} append - Whether to append items (for infinite scroll) or replace
      */
-    function renderGalleryItems(items) {
+    function renderGalleryItems(items, append = false) {
         const container = document.getElementById('galleryContainer') || document.querySelector('.gallery-container');
         if (!container) {
             console.error('Gallery container not found');
             return;
         }
 
-        // Clear existing items
-        container.innerHTML = '';
+        // Clear existing items if not appending
+        if (!append) {
+            container.innerHTML = '';
+            // Reset masonry instance when replacing content
+            if (masonryInstance) {
+                masonryInstance.destroy();
+                masonryInstance = null;
+            }
+        }
 
         if (!items || items.length === 0) {
-            showEmptyState();
+            if (!append) {
+                showEmptyState();
+            }
             return;
         }
 
         const viewMode = applyViewModeToContainer(container, currentFilters.viewMode || container.dataset.viewMode || 'grid');
         currentFilters.viewMode = viewMode;
 
+        const newElements = [];
+
         // Create gallery items using actual API data structure
         items.forEach(item => {
             const galleryItem = createGalleryItem(item, viewMode);
             container.appendChild(galleryItem);
+            newElements.push(galleryItem);
         });
 
         if (viewMode === 'masonry') {
-            initializeMasonryLayout(container);
+            if (append && masonryInstance) {
+                // Append new items to existing masonry
+                masonryInstance.appended(newElements);
+                masonryInstance.layout();
+            } else {
+                // Initialize new masonry layout
+                initializeMasonryLayout(container);
+            }
         }
+
 
         refreshViewerIntegration(container);
     }
@@ -425,9 +474,11 @@
     }
 
     /**
-     * Update pagination controls
+     * Update pagination controls - DISABLED for infinite scroll
      */
     function updatePagination(pagination) {
+        // Pagination disabled with infinite scroll
+        return;
         if (!pagination) return;
 
         // Remove existing pagination or create new
@@ -473,6 +524,8 @@
                 clearTimeout(searchTimer);
                 searchTimer = setTimeout(() => {
                     currentFilters.search = e.target.value;
+                    currentPage = 1;  // Reset to first page
+                    hasMorePages = true;  // Reset for new search
                     loadGalleryData(1, false);  // Don't scroll for search
                 }, 500);
             });
@@ -549,15 +602,55 @@
     }
 
     /**
-     * Setup pagination listeners
+     * Setup pagination listeners - DISABLED for infinite scroll
      */
     function setupPaginationListeners() {
-        // Make loadGalleryPage globally available
-        window.loadGalleryPage = (page) => {
-            if (page >= 1 && page <= totalPages) {
-                loadGalleryData(page, true);  // Set scrollToTop to true for pagination
+        // Pagination disabled with infinite scroll
+        // window.loadGalleryPage = (page) => {
+        //     if (page >= 1 && page <= totalPages) {
+        //         loadGalleryData(page, true);  // Set scrollToTop to true for pagination
+        //     }
+        // };
+    }
+
+    /**
+     * Setup infinite scroll functionality
+     */
+    function setupInfiniteScroll() {
+        let scrollTimeout;
+        const scrollThreshold = 800; // Load more when within 800px of bottom
+
+        const handleScroll = () => {
+            // Don't trigger if not enabled or already loading
+            if (!infiniteScrollEnabled || isLoading || !hasMorePages) {
+                return;
+            }
+
+            // Get scroll position
+            const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+            const scrollHeight = document.documentElement.scrollHeight;
+            const clientHeight = window.innerHeight;
+
+            // Check if we're near the bottom
+            if (scrollTop + clientHeight >= scrollHeight - scrollThreshold) {
+                // Load next page
+                const nextPage = currentPage + 1;
+                if (nextPage <= totalPages) {
+                    console.log(`Loading page ${nextPage} via infinite scroll`);
+                    showInfiniteScrollLoader(); // Show loader at bottom
+                    loadGalleryData(nextPage, false, true); // append = true for infinite scroll
+                }
             }
         };
+
+        // Debounce scroll events
+        window.addEventListener('scroll', () => {
+            clearTimeout(scrollTimeout);
+            scrollTimeout = setTimeout(handleScroll, 100);
+        });
+
+        // Initial check in case content doesn't fill viewport
+        setTimeout(handleScroll, 500);
     }
 
     /**
@@ -566,6 +659,11 @@
     function showLoadingState() {
         const container = document.querySelector('.gallery-container');
         if (!container) return;
+
+        // Don't show loader on initial page load when container is hidden
+        if (container.style.opacity === '0') {
+            return;
+        }
 
         // Add loading overlay if not exists
         let loader = container.querySelector('.gallery-loader');
@@ -588,6 +686,40 @@
      */
     function hideLoadingState() {
         const loader = document.querySelector('.gallery-loader');
+        if (loader) {
+            loader.style.display = 'none';
+        }
+        hideInfiniteScrollLoader(); // Also hide infinite scroll loader
+    }
+
+    /**
+     * Show infinite scroll loader at bottom
+     */
+    function showInfiniteScrollLoader() {
+        let loader = document.querySelector('.infinite-scroll-loader');
+        if (!loader) {
+            loader = document.createElement('div');
+            loader.className = 'infinite-scroll-loader';
+            loader.innerHTML = `
+                <div class="loader-content">
+                    <i class="fa-solid fa-spinner fa-spin"></i>
+                    <span>Loading more images...</span>
+                </div>
+            `;
+            // Add after gallery container
+            const container = document.querySelector('.gallery-container');
+            if (container && container.parentNode) {
+                container.parentNode.insertBefore(loader, container.nextSibling);
+            }
+        }
+        loader.style.display = 'flex';
+    }
+
+    /**
+     * Hide infinite scroll loader
+     */
+    function hideInfiniteScrollLoader() {
+        const loader = document.querySelector('.infinite-scroll-loader');
         if (loader) {
             loader.style.display = 'none';
         }
