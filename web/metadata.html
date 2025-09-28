@@ -152,21 +152,9 @@
                 </div>
               </div>
 
-              <div class="card metadata-summary-card" x-show="summaryRows().length">
-                <div class="section-header">
-                  <h3 class="section-title">Generation Metadata</h3>
-                  <button class="btn btn-secondary btn-sm" @click="copySummary()">
-                    Copy All
-                  </button>
-                </div>
-                <div class="summary-grid">
-                  <template x-for="item in summaryRows()" :key="item.label">
-                    <div class="summary-row">
-                      <span class="summary-label" x-text="item.label"></span>
-                      <span class="summary-value" x-text="item.value"></span>
-                    </div>
-                  </template>
-                </div>
+              <!-- Metadata Panel Container -->
+              <div id="metadata-panel-container" class="card" x-show="metadata">
+                <!-- The styled metadata panel will be inserted here by MetadataManager -->
               </div>
             </div>
           </template>
@@ -521,6 +509,42 @@
 
               this.summary = buildSummary(metadata);
               this.raw = safeStringify(metadata);
+
+              // Use MetadataManager to display styled metadata panel
+              if (window.MetadataManager) {
+                // Initialize MetadataManager if not already done
+                if (!window.metadataPanelId) {
+                  MetadataManager.init();
+                  window.metadataPanelId = MetadataManager.createPanel({
+                    position: 'static', // Panel will be embedded in container
+                    showExportButton: true,
+                    showCopyButtons: true,
+                    collapsible: false
+                  });
+                }
+
+                // Clear existing content and attach panel
+                const container = document.getElementById('metadata-panel-container');
+                if (container) {
+                  container.innerHTML = '';
+                  MetadataManager.attachPanel(window.metadataPanelId, container);
+
+                  // Transform metadata to the format expected by MetadataManager
+                  const displayMetadata = {
+                    summary: this.summary || {},
+                    custom: this.summary || {},
+                    standard: {
+                      filename: this.fileName,
+                      fileSize: this.fileSize ? `${(this.fileSize / 1024).toFixed(1)} KB` : '',
+                      mimeType: this.fileType
+                    },
+                    raw: metadata
+                  };
+
+                  // Display the metadata
+                  MetadataManager.display(window.metadataPanelId, displayMetadata);
+                }
+              }
             },
             copy(text) {
               const value = text || '';
