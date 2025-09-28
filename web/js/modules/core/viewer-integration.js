@@ -236,11 +236,36 @@ const ViewerIntegration = (function() {
         integration.images = images.map(img => {
             const thumbSrc = img.currentSrc || img.src;
             const fullSrc = img.dataset.fullSrc || img.getAttribute('data-full-src') || thumbSrc;
+
+            // Get metadata from data attribute (already HTML-encoded)
+            let metadata = null;
+            const metadataStr = img.dataset.metadata || img.getAttribute('data-metadata');
+
+            if (metadataStr && metadataStr !== '' && metadataStr !== '{}') {
+                try {
+                    // Unescape HTML entities
+                    const parser = new DOMParser();
+                    const txt = parser.parseFromString(metadataStr, 'text/html');
+                    const unescaped = txt.documentElement.textContent;
+
+                    // Only parse if we have actual content
+                    if (unescaped && unescaped !== '' && unescaped !== '{}') {
+                        metadata = JSON.parse(unescaped);
+                    }
+                } catch (e) {
+                    // Only warn for non-empty metadata strings
+                    if (metadataStr !== '') {
+                        console.debug('Metadata parse issue:', metadataStr.substring(0, 50));
+                    }
+                }
+            }
+
             return {
                 src: thumbSrc,
                 fullSrc,
                 alt: img.alt || '',
-                title: img.getAttribute('title') || img.alt || ''
+                title: img.getAttribute('title') || img.alt || '',
+                metadata: metadata
             };
         });
 
@@ -514,11 +539,15 @@ const ViewerIntegration = (function() {
         // Load and display metadata if enabled
         if (integration.metadataPanelId && integration.images[index]) {
             const image = integration.images[index];
+
+            // Important: The API is the single source of truth for metadata
+            // We only use pre-loaded metadata from the API, never extract from images
             if (image.metadata) {
+                // Display pre-loaded metadata if available
                 MetadataManager.display(integration.metadataPanelId, image.metadata);
-            } else if (image.fullSrc || image.src) {
-                MetadataManager.extractAndDisplay(integration.metadataPanelId, image.fullSrc || image.src);
             }
+            // If no metadata is pre-loaded and panel already has metadata from API, keep it
+            // We don't attempt client-side extraction as the parser has been removed
         }
 
         // Emit custom event
@@ -546,11 +575,8 @@ const ViewerIntegration = (function() {
             ViewerManager.update(integration.viewerId);
         }
 
-        // Extract and display metadata
-        if (integration.metadataPanelId) {
-            const metadata = await MetadataManager.extract(file);
-            MetadataManager.display(integration.metadataPanelId, metadata);
-        }
+        // Don't extract metadata from files - API is the single source of truth
+        // Metadata should only come from the API, not from client-side extraction
 
         // Clean up object URL after a delay
         setTimeout(() => {
@@ -569,11 +595,8 @@ const ViewerIntegration = (function() {
             FilmstripManager.setActive(integration.filmstripId, index, true);
         }
 
-        // Load metadata
-        if (integration.metadataPanelId && integration.images[index]) {
-            const image = integration.images[index];
-            MetadataManager.extractAndDisplay(integration.metadataPanelId, image.fullSrc || image.src);
-        }
+        // Don't extract metadata from images - API is the single source of truth
+        // Metadata should already be loaded from the API with the image data
     }
 
     function showQuickInfo(img) {
@@ -966,7 +989,9 @@ const ViewerIntegration = (function() {
 
             if (!currentImage) return null;
 
-            return await MetadataManager.extract(currentImage.fullSrc || currentImage.src);
+            // Return pre-loaded metadata from the image object
+            // API is the single source of truth for metadata
+            return currentImage.metadata || null;
         },
 
         /**
