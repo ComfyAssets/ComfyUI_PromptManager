@@ -114,12 +114,28 @@ const MetadataManager = (function() {
     function getCacheKey(source) {
         if (typeof source === 'string') {
             return source;
+        } else if (typeof source === 'number') {
+            return `id:${source}`;
         } else if (source instanceof File) {
             return `file:${source.name}:${source.size}:${source.lastModified}`;
         } else if (source instanceof Blob) {
             return `blob:${source.size}:${source.type}`;
         }
         return `unknown:${Date.now()}`;
+    }
+
+    function extractImageIdFromSource(source) {
+        if (typeof source !== 'string') {
+            return null;
+        }
+
+        const match = source.match(/(?:generated-images|gallery\/images)\/(\d+)/);
+        if (match && match[1]) {
+            const parsed = Number.parseInt(match[1], 10);
+            return Number.isFinite(parsed) ? parsed : null;
+        }
+
+        return null;
     }
 
     function cleanCache() {
@@ -239,6 +255,145 @@ const MetadataManager = (function() {
         return null;
     }
 
+    async function fetchMetadataByImageId(imageId) {
+        const id = Number(imageId);
+        if (!Number.isFinite(id)) {
+            return null;
+        }
+
+        const endpoints = [
+            `/api/v1/generated-images/${id}/metadata`,
+            `/prompt_manager/api/v1/generated-images/${id}/metadata`,
+            `/api/prompt_manager/api/v1/generated-images/${id}/metadata`,
+            `/api/v1/gallery/images/${id}`,
+            `/prompt_manager/api/v1/gallery/images/${id}`,
+            `/api/prompt_manager/api/v1/gallery/images/${id}`,
+            `/api/prompt_manager/images/${id}`,
+            `/prompt_manager/api/prompt_manager/images/${id}`,
+            `/api/prompt_manager/gallery/images/${id}`,
+            `/prompt_manager/api/prompt_manager/gallery/images/${id}`
+        ];
+
+        for (const endpoint of endpoints) {
+            try {
+                const response = await fetch(endpoint, {
+                    headers: {
+                        'Accept': 'application/json'
+                    }
+                });
+
+                if (!response.ok) {
+                    continue;
+                }
+
+                const result = await response.json();
+                if (result && result.success === false) {
+                    continue;
+                }
+
+                const payload = result?.data || result;
+                if (!payload) {
+                    continue;
+                }
+
+                // For the metadata endpoint, the structure is different
+                if (endpoint.includes('/metadata')) {
+                    // The /generated-images/{id}/metadata endpoint returns data directly
+                    // with fields like metadata, prompt_metadata, workflow, etc.
+                    let extractedMetadata = payload.metadata || {};
+
+                    // Parse if string
+                    if (typeof extractedMetadata === 'string' && extractedMetadata !== '') {
+                        try {
+                            extractedMetadata = JSON.parse(extractedMetadata);
+                        } catch (error) {
+                            console.debug('Metadata field is not valid JSON');
+                            extractedMetadata = {};
+                        }
+                    }
+
+                    // Transform the full response to include all available data
+                    const metadata = transformApiMetadata({
+                        ...extractedMetadata,
+                        ...payload,  // Include all fields from response
+                        metadata: extractedMetadata,
+                        comfy_parsed: payload.comfy_parsed,
+                        positive_prompt: payload.positive_prompt || extractedMetadata.positive_prompt,
+                        negative_prompt: payload.negative_prompt || extractedMetadata.negative_prompt,
+                        seed: payload.seed || extractedMetadata.seed,
+                        sampler: payload.sampler || extractedMetadata.sampler,
+                        steps: payload.steps || extractedMetadata.steps,
+                        cfg_scale: payload.cfg_scale || extractedMetadata.cfg_scale,
+                        model: payload.model || extractedMetadata.model,
+                        workflow: payload.workflow,
+                    });
+
+                    // Check if we have valid metadata in either custom or summary fields
+                    if (metadata && (Object.keys(metadata.custom || {}).length > 0 || Object.keys(metadata.summary || {}).length > 0)) {
+                        augmentWithComfySummary(metadata);
+                        console.debug('[MetadataManager] Retrieved metadata from dedicated endpoint', {
+                            endpoint,
+                            imageId: id,
+                            hasCustom: Boolean(metadata?.custom && Object.keys(metadata.custom).length > 0),
+                            hasSummary: Boolean(metadata?.summary && Object.keys(metadata.summary).length > 0),
+                        });
+                        return metadata;
+                    }
+                }
+
+                // Original logic for other endpoints
+                let baseMetadata = payload.metadata || payload.prompt_metadata || payload.comfy_parsed || null;
+                if (typeof baseMetadata === 'string' && baseMetadata !== '') {
+                    try {
+                        baseMetadata = JSON.parse(baseMetadata);
+                    } catch (error) {
+                        console.debug('Metadata API by ID returned non-JSON metadata string');
+                        baseMetadata = null;
+                    }
+                }
+
+                // Check if we have any useful data in the payload
+                const hasUsefulData = baseMetadata || payload.summary || payload.custom || payload.standard ||
+                                     payload.positive_prompt || payload.model || payload.workflow;
+                if (!hasUsefulData) {
+                    continue;
+                }
+
+                let metadata = baseMetadata || payload;
+                if (!metadata.summary && !metadata.standard && !metadata.custom) {
+                    metadata = transformApiMetadata({
+                        metadata: baseMetadata || payload,
+                        comfy_parsed: payload.comfy_parsed,
+                        positive_prompt: payload.positive_prompt,
+                        negative_prompt: payload.negative_prompt,
+                        seed: payload.seed,
+                        sampler: payload.sampler,
+                        steps: payload.steps,
+                        cfg_scale: payload.cfg_scale,
+                        model: payload.model,
+                        workflow: payload.workflow,
+                    });
+                }
+
+                if (metadata && typeof metadata === 'object' && !metadata.raw) {
+                    metadata.raw = baseMetadata || payload;
+                }
+
+                augmentWithComfySummary(metadata);
+                console.debug('[MetadataManager] Retrieved metadata by image ID', {
+                    endpoint,
+                    imageId: id,
+                    hasSummary: Boolean(metadata?.summary),
+                });
+                return metadata;
+            } catch (error) {
+                console.debug(`Metadata API by ID failed (${endpoint}):`, error.message || error);
+            }
+        }
+
+        return null;
+    }
+
     async function extractCustomMetadata(source) {
         // Extract custom metadata using the Python API
         // This ensures consistent parsing across the application
@@ -266,6 +421,17 @@ const MetadataManager = (function() {
 
                     // Try to get metadata directly by filename
                     if (filename && filename.includes('.')) {
+                        // First try by image ID if we can extract it from the filename
+                        const imageIdMatch = filename.match(/generated_(\d+)_/);
+                        if (imageIdMatch) {
+                            const imageId = imageIdMatch[1];
+                            console.debug('Found image ID in filename:', imageId);
+                            const metadataById = await fetchMetadataByImageId(imageId);
+                            if (metadataById) {
+                                return metadataById;
+                            }
+                        }
+
                         const metadataEndpoints = [
                             `/api/v1/metadata/${encodeURIComponent(filename)}`,
                             `/prompt_manager/api/v1/metadata/${encodeURIComponent(filename)}`,
@@ -367,19 +533,58 @@ const MetadataManager = (function() {
         let width = '';
         let height = '';
 
-        // Iterate through workflow nodes to extract key data
+        // Track if we found PromptManager nodes (they take priority)
+        let foundPromptManager = false;
+
+        // First pass: Look for PromptManager nodes (they are first-class citizens!)
         for (const [nodeId, node] of Object.entries(workflowData)) {
             const classType = node.class_type || '';
             const inputs = node.inputs || {};
 
-            // Extract prompts
-            if (classType === 'CLIPTextEncode' || classType === 'PromptManagerPositive') {
-                if (classType === 'PromptManagerPositive') {
-                    positivePrompt = inputs.prompt_text || inputs.text || '';
-                } else if (inputs.text) {
-                    // Check if it's positive or negative based on connections
-                    if (!positivePrompt) positivePrompt = inputs.text;
-                    else if (!negativePrompt) negativePrompt = inputs.text;
+            // PromptManager nodes are OUR nodes - they get absolute priority!
+            if (classType === 'PromptManagerV2') {
+                // V2 has both positive and negative in one node
+                positivePrompt = inputs.text || inputs.positive_text || '';
+                negativePrompt = inputs.negative_text || inputs.negative || '';
+                foundPromptManager = true;
+            } else if (classType === 'PromptManager') {
+                // Original PromptManager - may have both or just positive
+                const text = inputs.text || inputs.prompt_text || '';
+                const negText = inputs.negative_text || inputs.negative || '';
+                if (text) {
+                    positivePrompt = text;
+                    foundPromptManager = true;
+                }
+                if (negText) {
+                    negativePrompt = negText;
+                    foundPromptManager = true;
+                }
+            } else if (classType === 'PromptManagerPositive') {
+                // Dedicated positive prompt node
+                positivePrompt = inputs.prompt_text || inputs.text || inputs.positive || '';
+                foundPromptManager = true;
+            } else if (classType === 'PromptManagerNegative') {
+                // Dedicated negative prompt node
+                negativePrompt = inputs.prompt_text || inputs.text || inputs.negative || '';
+                foundPromptManager = true;
+            }
+        }
+
+        // Second pass: Extract other metadata and fallback to CLIP nodes if no PromptManager found
+        for (const [nodeId, node] of Object.entries(workflowData)) {
+            const classType = node.class_type || '';
+            const inputs = node.inputs || {};
+
+            // Only use CLIPTextEncode if we didn't find PromptManager nodes
+            if (!foundPromptManager && classType === 'CLIPTextEncode') {
+                if (inputs.text) {
+                    // Check node title or position to determine positive/negative
+                    const title = node._meta?.title || '';
+                    if (title.toLowerCase().includes('positive') || !positivePrompt) {
+                        positivePrompt = inputs.text;
+                    } else if (title.toLowerCase().includes('negative') || !negativePrompt) {
+                        negativePrompt = inputs.text;
+                    }
                 }
             }
 
@@ -389,12 +594,38 @@ const MetadataManager = (function() {
                 model = inputs.ckpt_name || inputs.unet_name || inputs.checkpoint_name || model;
             }
 
-            // Extract LoRA info
+            // Extract LoRA info - including LoraManager support
             if (classType.includes('Lora') || classType.includes('LoRA')) {
-                const loraName = inputs.lora_name || inputs.model_name || '';
-                if (loraName) {
-                    const strength = inputs.strength_model || inputs.strength || 1.0;
-                    loras.push(`${loraName} (${strength})`);
+                // Special handling for LoraManager nodes
+                if (classType === 'Lora Loader (LoraManager)' || classType === 'LoraLoader_LoraManager') {
+                    // LoraManager uses a different structure
+                    const lorasData = inputs.loras?.__value__ || inputs.loras;
+                    if (Array.isArray(lorasData)) {
+                        lorasData.forEach(lora => {
+                            if (lora.active !== false && lora.name) {
+                                const strength = lora.strength || lora.clipStrength || 1.0;
+                                loras.push(`${lora.name} (${strength})`);
+                            }
+                        });
+                    }
+                    // Also check text field for inline LoRA syntax
+                    const loraText = inputs.text || '';
+                    const loraMatch = loraText.match(/<lora:([^:>]+):([0-9.]+)>/g);
+                    if (loraMatch) {
+                        loraMatch.forEach(match => {
+                            const parts = match.match(/<lora:([^:>]+):([0-9.]+)>/);
+                            if (parts) {
+                                loras.push(`${parts[1]} (${parts[2]})`);
+                            }
+                        });
+                    }
+                } else {
+                    // Standard LoRA loader nodes
+                    const loraName = inputs.lora_name || inputs.model_name || '';
+                    if (loraName) {
+                        const strength = inputs.strength_model || inputs.strength || 1.0;
+                        loras.push(`${loraName} (${strength})`);
+                    }
                 }
             }
 
@@ -402,7 +633,7 @@ const MetadataManager = (function() {
             if (classType.includes('KSampler') || classType.includes('Sampler')) {
                 sampler = inputs.sampler_name || sampler;
                 steps = inputs.steps || steps;
-                cfg = inputs.cfg || cfg;
+                cfg = inputs.cfg || inputs.cfg_scale || cfg;  // Handle both 'cfg' and 'cfg_scale'
                 seed = inputs.seed || seed;
             }
 
@@ -413,7 +644,21 @@ const MetadataManager = (function() {
             }
         }
 
-        // Populate metadata structure
+        // Populate metadata structure - put ComfyUI metadata in 'custom' to match field definitions
+        metadata.custom = {
+            positivePrompt: positivePrompt || 'Not found',
+            negativePrompt: negativePrompt || 'Not found',
+            model: model || 'Unknown',
+            loras: loras.length > 0 ? loras.join(', ') : undefined,
+            cfgScale: cfg.toString() || 'N/A',
+            steps: steps.toString() || 'N/A',
+            sampler: sampler || 'Unknown',
+            seed: seed.toString() || 'N/A',
+            clipSkip: '', // Not extracted yet
+            workflow: `Embedded (${Object.keys(workflowData).length} nodes)`
+        };
+
+        // Also keep summary for backward compatibility
         metadata.summary = {
             positivePrompt: positivePrompt || 'Not found',
             negativePrompt: negativePrompt || 'Not found',
@@ -472,7 +717,52 @@ const MetadataManager = (function() {
             }
         });
 
+        const standard = {};
+        const width = apiData.width || apiData.image_width || comfyParsed.width || comfyParsed.image_width;
+        const height = apiData.height || apiData.image_height || comfyParsed.height || comfyParsed.image_height;
+        const fileSize = apiData.file_size || apiData.size || comfyParsed.file_size;
+        const filename = apiData.filename || apiData.file_name || comfyParsed.filename;
+        const mimeType = apiData.mime_type || apiData.mimeType || comfyParsed.mime_type;
+        const lastModified = apiData.last_modified || apiData.modified || comfyParsed.last_modified;
+
+        if (filename) {
+            standard.filename = String(filename);
+        }
+        if (width && height) {
+            standard.dimensions = `${width} × ${height}`;
+        }
+        if (fileSize) {
+            const sizeNum = Number(fileSize);
+            if (Number.isFinite(sizeNum)) {
+                const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+                let size = sizeNum;
+                let unitIndex = 0;
+                while (size >= 1024 && unitIndex < units.length - 1) {
+                    size /= 1024;
+                    unitIndex++;
+                }
+                standard.fileSize = `${size.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+            } else {
+                standard.fileSize = String(fileSize);
+            }
+        }
+        if (mimeType) {
+            standard.mimeType = String(mimeType);
+        }
+        if (lastModified) {
+            standard.lastModified = String(lastModified);
+        }
+
+        Object.keys(standard).forEach(key => {
+            if (standard[key] === undefined || standard[key] === null || standard[key] === '') {
+                delete standard[key];
+            }
+        });
+
         return {
+            standard: standard,
+            exif: {},
+            custom: summary,
             summary: summary,
             raw: apiData
         };
@@ -1225,11 +1515,13 @@ const MetadataManager = (function() {
     }
 
     function createMetadataPanel(config = {}) {
+        console.debug('[MetadataManager] Creating panel with internal config:', config);
         const panelConfig = Object.assign({}, defaultConfig.panel, config);
         const panelId = generatePanelId();
 
         const panel = document.createElement('div');
         panel.className = `metadata-panel metadata-panel-${panelConfig.position}`;
+        console.debug('[MetadataManager] Panel element created:', panel);
         panel.setAttribute('data-panel-id', panelId);
         panel.setAttribute('data-theme', panelConfig.theme);
 
@@ -1359,17 +1651,44 @@ const MetadataManager = (function() {
 
     function displayMetadata(panelId, metadata) {
         const panelInstance = panels.get(panelId);
-        if (!panelInstance) return;
-
-        console.debug('Displaying metadata:', metadata);
+        if (!panelInstance) {
+            console.error('[MetadataManager] displayMetadata: Panel not found:', panelId);
+            return;
+        }
 
         const sections = panelInstance.element.querySelector('.metadata-sections');
+        if (!sections) {
+            console.error('[MetadataManager] No .metadata-sections element found in panel');
+            return;
+        }
+
         sections.innerHTML = '';
 
+        // Check if metadata is empty or null
+        if (!metadata || (typeof metadata === 'object' && Object.keys(metadata).length === 0)) {
+            sections.innerHTML = '<div class="metadata-empty">No metadata available for this image</div>';
+            return;
+        }
+
         // Transform raw workflow metadata if needed
-        if (metadata && typeof metadata === 'object' && !metadata.summary && !metadata.standard) {
-            // This looks like raw ComfyUI workflow data - transform it
-            metadata = transformWorkflowMetadata(metadata);
+        if (metadata && typeof metadata === 'object' && !metadata.summary && !metadata.standard && !metadata.custom) {
+
+            // Check if this looks like raw ComfyUI workflow nodes (numeric keys with class_type)
+            const isWorkflowData = Object.keys(metadata).some(key => {
+                const node = metadata[key];
+                return node && typeof node === 'object' && node.class_type;
+            });
+
+            if (isWorkflowData) {
+                metadata = transformWorkflowMetadata(metadata);
+            } else {
+                // Wrap the raw data as custom metadata
+                metadata = {
+                    custom: metadata,
+                    standard: {},
+                    summary: metadata
+                };
+            }
         }
 
         // Store current metadata
@@ -1378,9 +1697,22 @@ const MetadataManager = (function() {
         // Display each metadata section
         const fieldGroups = defaultConfig.fields;
 
+        let hasAnyData = false;
         for (const [groupName, fields] of Object.entries(fieldGroups)) {
-            const groupData = metadata[groupName] || (groupName === 'custom' && metadata.summary) || {};
-            if (!groupData || Object.keys(groupData).length === 0) continue;
+            // Check for data in the appropriate location
+            let groupData = metadata[groupName];
+
+            // Special handling for 'custom' group - can use summary as fallback
+            if (groupName === 'custom' && !groupData && metadata.summary) {
+                groupData = metadata.summary;
+            }
+
+            groupData = groupData || {};
+
+            if (!groupData || Object.keys(groupData).length === 0) {
+                continue;
+            }
+            hasAnyData = true;
 
             const section = document.createElement('div');
             section.className = 'metadata-section';
@@ -1411,8 +1743,13 @@ const MetadataManager = (function() {
             sections.appendChild(section);
         }
 
+        // If no data was displayed, show a message
+        if (!hasAnyData) {
+            sections.innerHTML = '<div class="metadata-empty" style="padding: 20px; text-align: center; color: #888;">No displayable metadata found</div>';
+        }
+
         // Add copy button handlers
-        if (panelInstance.config.showCopyButtons) {
+        if (panelInstance.config.showCopyButtons && hasAnyData) {
             sections.querySelectorAll('.metadata-copy').forEach(btn => {
                 btn.addEventListener('click', (e) => {
                     const value = e.target.getAttribute('data-value');
@@ -1471,7 +1808,10 @@ const MetadataManager = (function() {
 
     function showPanel(panelId) {
         const panelInstance = panels.get(panelId);
-        if (!panelInstance) return;
+        if (!panelInstance) {
+            console.warn('[MetadataManager] Cannot show panel - not found:', panelId);
+            return;
+        }
 
         panelInstance.element.classList.add('visible');
     }
@@ -1518,6 +1858,19 @@ const MetadataManager = (function() {
                 }
             }
 
+            if (typeof source === 'string') {
+                const idFromUrl = extractImageIdFromSource(source);
+                if (idFromUrl !== null) {
+                    const metadataById = await this.getByImageId(idFromUrl, useCache);
+                    if (metadataById) {
+                        if (defaultConfig.enableCache) {
+                            metadataCache.set(cacheKey, new CacheEntry(metadataById));
+                        }
+                        return metadataById;
+                    }
+                }
+            }
+
             // Extract metadata
             const metadata = await extractFromImage(source);
             augmentWithComfySummary(metadata);
@@ -1557,7 +1910,8 @@ const MetadataManager = (function() {
          * @returns {string} Panel ID
          */
         createPanel: function(config = {}) {
-            return createMetadataPanel(config);
+            const panelId = createMetadataPanel(config);
+            return panelId;
         },
 
         /**
@@ -1567,15 +1921,27 @@ const MetadataManager = (function() {
          */
         attachPanel: function(panelId, container) {
             const panelInstance = panels.get(panelId);
-            if (!panelInstance) return false;
+            if (!panelInstance) {
+                console.error('[MetadataManager] Cannot attach panel - not found:', panelId);
+                return false;
+            }
 
             if (typeof container === 'string') {
                 container = document.querySelector(container);
             }
 
-            if (!container) return false;
-
+            if (!container) {
+                console.error('[MetadataManager] Cannot attach panel - container not found');
+                return false;
+            }
             container.appendChild(panelInstance.element);
+
+            // Verify it was actually added
+            if (document.body.contains(panelInstance.element)) {
+            } else {
+                console.error('[MetadataManager] Panel NOT in DOM after attachment!');
+            }
+
             return true;
         },
 
@@ -1636,6 +2002,34 @@ const MetadataManager = (function() {
          */
         clearCache: function() {
             metadataCache.clear();
+        },
+
+        /**
+         * Retrieve metadata by generated image ID.
+         * @param {number|string} imageId - Generated image identifier
+         * @param {boolean} useCache - Whether to use cache
+         * @returns {Promise<Object|null>} Metadata object or null
+         */
+        getByImageId: async function(imageId, useCache = true) {
+            if (imageId === null || imageId === undefined || imageId === '') {
+                return null;
+            }
+
+            const cacheKey = getCacheKey(Number(imageId));
+
+            if (useCache && defaultConfig.enableCache) {
+                const cached = metadataCache.get(cacheKey);
+                if (cached && !cached.isExpired(defaultConfig.cacheTimeout)) {
+                    return cached.access();
+                }
+            }
+
+            const metadata = await fetchMetadataByImageId(imageId);
+            if (metadata && defaultConfig.enableCache) {
+                metadataCache.set(cacheKey, new CacheEntry(metadata));
+            }
+
+            return metadata;
         },
 
         /**
