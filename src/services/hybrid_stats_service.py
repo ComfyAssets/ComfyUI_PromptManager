@@ -11,6 +11,9 @@ from collections import Counter
 from pathlib import Path
 import logging
 
+from .word_cloud_service import WordCloudService
+from .epic_stats_calculator import EpicStatsCalculator
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,12 +25,65 @@ class HybridStatsService:
 
     def __init__(self, db_path: str | Path):
         self.db_path = str(db_path)
+        self.word_cloud_service = WordCloudService(self.db_path)
+        self.epic_stats = EpicStatsCalculator(self.db_path)
 
     def get_overview(self) -> Dict[str, Any]:
         """
         Get complete stats overview with all analytics.
-        Basic counts from cache (<10ms) + analytics calculation (~500ms).
+        First tries to get pre-calculated epic stats (<50ms).
+        Falls back to on-demand calculation if not available (~500ms).
         """
+        # Try to get pre-calculated epic stats first
+        epic_stats = self.epic_stats.get_all_stats()
+
+        # Check if we have valid epic stats data
+        has_epic_stats = (
+            epic_stats.get('timeAnalytics', {}).get('hourlyActivity') and
+            len(epic_stats.get('timeAnalytics', {}).get('hourlyActivity', [])) > 0
+        )
+
+        if has_epic_stats:
+            # Use pre-calculated epic stats (fast!)
+            logger.info("Using pre-calculated epic stats")
+
+            # Add basic overview stats
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+
+                    # Get basic counts from cache
+                    cache_row = cursor.execute("""
+                        SELECT * FROM stats_snapshot WHERE id = 1
+                    """).fetchone()
+
+                    if cache_row:
+                        # Use dict() to convert Row object or access by index
+                        cache_dict = dict(cache_row) if cache_row else {}
+                        epic_stats['overview'] = {
+                            'total_prompts': cache_dict.get('total_prompts', 0) or 0,
+                            'total_images': cache_dict.get('total_images', 0) or 0,
+                            'avg_rating': cache_dict.get('avg_rating', 0.0) or 0.0,
+                            'total_rated': cache_dict.get('total_rated', 0) or 0,
+                            'last_updated': cache_dict.get('updated_at', None)
+                        }
+
+                    # Get word cloud data
+                    epic_stats['promptPatterns']['topWords'] = self.word_cloud_service.get_cached_frequencies(limit=100)
+
+            except Exception as e:
+                logger.error(f"Failed to add overview stats: {e}")
+
+            return epic_stats
+
+        # Fall back to on-demand calculation
+        logger.info("Epic stats not available, calculating on demand")
+
+        # Don't trigger automatic calculation here - it causes a loop
+        # Users should use the maintenance modal to calculate epic stats manually
+        logger.info("Epic stats not available - please use Maintenance modal to calculate")
+
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
@@ -259,14 +315,14 @@ class HybridStatsService:
                     else:
                         complexity_bins['complex'] += 1
 
-            # Get top words (excluding common ones)
-            ignored_words = {'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-                           'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were'}
+            # Get word cloud data from cache (or calculate if needed)
+            # This is much more comprehensive than the old 20-word limit
+            top_words = self.word_cloud_service.get_cached_frequencies(limit=100)
 
-            filtered_words = {word: count for word, count in word_counter.items()
-                            if word not in ignored_words and len(word) > 2}
-
-            top_words = dict(Counter(filtered_words).most_common(20))
+            # If cache is empty, trigger calculation automatically
+            if not top_words and prompts:
+                logger.info("Word cloud cache empty, calculating automatically...")
+                top_words = self.word_cloud_service.calculate_word_frequencies(limit=100)
 
             return {
                 'topWords': top_words,
