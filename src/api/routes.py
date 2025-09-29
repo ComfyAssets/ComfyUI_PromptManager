@@ -28,6 +28,7 @@ from src.services.migration_service import MigrationService
 from src.services.stats_service import StatsService
 from src.services.incremental_stats_service import IncrementalStatsService
 from src.services.background_scheduler import StatsScheduler
+from src.services.settings_service import SettingsService
 from src.api.realtime_events import RealtimeEvents
 from utils.file_system import get_file_system
 from utils.cache import CacheManager
@@ -82,6 +83,9 @@ class PromptManagerAPI:
 
         # Initialize maintenance API
         self.maintenance_api = None
+
+        # Initialize settings service
+        self.settings_service = SettingsService(self.db_path)
         self._init_maintenance_service()
         stats_db_path = str(get_file_system().get_database_path("prompts.db"))
         try:
@@ -582,6 +586,18 @@ class PromptManagerAPI:
         routes.post("/api/prompt_manager/maintenance/check-integrity")(self.check_integrity_maintenance)
         routes.post("/api/prompt_manager/maintenance/reindex")(self.reindex_database_maintenance)
         routes.post("/api/prompt_manager/maintenance/export")(self.export_backup_maintenance)
+        routes.post("/api/prompt_manager/maintenance/tag-missing-images")(self.tag_missing_images_maintenance)
+        routes.post("/api/prompt_manager/maintenance/calculate-epic-stats")(self.calculate_epic_stats_maintenance)
+        routes.post("/api/prompt_manager/maintenance/calculate-word-cloud")(self.calculate_word_cloud_maintenance)
+
+        # Settings endpoints
+        routes.get("/api/prompt_manager/settings")(self.get_all_settings)
+        routes.get("/api/prompt_manager/settings/community")(self.get_community_settings)
+        routes.post("/api/prompt_manager/settings/generate_uuid")(self.generate_uuid)
+        routes.get("/api/prompt_manager/settings/export")(self.export_settings)
+        routes.post("/api/prompt_manager/settings/import")(self.import_settings)
+        routes.get("/api/prompt_manager/settings/{key}")(self.get_setting)
+        routes.post("/api/prompt_manager/settings/{key}")(self.set_setting)
 
         # Note: Thumbnail API routes need to be registered separately since we don't have app instance here
         # This is handled in the ComfyUI server integration
@@ -2429,6 +2445,48 @@ class PromptManagerAPI:
                 "error": str(e)
             }, status=500)
 
+    async def tag_missing_images_maintenance(self, request: web.Request) -> web.Response:
+        """Tag images with missing files.
+
+        POST /api/prompt_manager/maintenance/tag-missing-images
+        """
+        try:
+            from src.services.missing_images_tagger import MissingImagesTagger
+            tagger = MissingImagesTagger(self.db_path)
+
+            # Get the action from request
+            data = await request.json() if request.body_exists else {}
+            action = data.get('action', 'tag')  # 'tag', 'untag', or 'summary'
+
+            if action == 'summary':
+                result = tagger.get_missing_images_summary()
+            elif action == 'untag':
+                stats = tagger.remove_missing_tag()
+                result = {
+                    "success": True,
+                    "message": f"Removed 'missing' tag from {stats['tag_removed']} images that were found",
+                    "stats": stats
+                }
+            else:  # Default to 'tag'
+                stats = tagger.tag_missing_images()
+                result = {
+                    "success": True,
+                    "message": f"Tagged {stats['tagged']} missing images out of {stats['total_missing']} total missing",
+                    "stats": stats
+                }
+
+            # Broadcast realtime update
+            if hasattr(self, 'realtime') and action != 'summary':
+                await self.realtime.send_toast(result.get('message', 'Missing images processed'), 'success')
+
+            return web.json_response(result)
+        except Exception as e:
+            self.logger.error(f"Error tagging missing images: {e}")
+            return web.json_response({
+                "success": False,
+                "error": str(e)
+            }, status=500)
+
     async def export_backup_maintenance(self, request: web.Request) -> web.Response:
         """Export database backup.
 
@@ -2508,3 +2566,210 @@ class PromptManagerAPI:
         if self.stats_scheduler:
             self.logger.info("Stopping stats scheduler")
             self.stats_scheduler.stop()
+
+    # ==================== Additional Maintenance Endpoints ====================
+
+    async def calculate_epic_stats_maintenance(self, request: web.Request) -> web.Response:
+        """Calculate epic statistics.
+        POST /api/prompt_manager/maintenance/calculate-epic-stats
+        """
+        try:
+            from src.services.epic_stats_calculator import EpicStatsCalculator
+            calculator = EpicStatsCalculator(self.db_path)
+
+            # This could be a long-running operation
+            stats = calculator.calculate_all_stats(progress_callback=None)
+            
+            return web.json_response({
+                "success": True,
+                "message": "Epic stats calculated successfully",
+                "stats": stats
+            })
+        except Exception as e:
+            self.logger.error(f"Error calculating epic stats: {e}")
+            return web.json_response({
+                "success": False,
+                "error": str(e)
+            }, status=500)
+
+    async def calculate_word_cloud_maintenance(self, request: web.Request) -> web.Response:
+        """Calculate word cloud data.
+        POST /api/prompt_manager/maintenance/calculate-word-cloud
+        """
+        try:
+            from src.services.word_cloud_service import WordCloudService
+            service = WordCloudService(self.db_path)
+
+            # Calculate word frequencies
+            frequencies = service.calculate_word_frequencies(limit=100)
+            metadata = service.get_metadata()
+
+            return web.json_response({
+                "success": True,
+                "message": f"Word cloud data generated with {len(frequencies)} unique words",
+                "data": {
+                    "frequencies": frequencies,
+                    "metadata": metadata
+                }
+            })
+        except Exception as e:
+            self.logger.error(f"Error calculating word cloud: {e}")
+            return web.json_response({
+                "success": False,
+                "error": str(e)
+            }, status=500)
+
+    # ==================== Settings Endpoints ====================
+
+    async def get_setting(self, request: web.Request) -> web.Response:
+        """Get a specific setting value.
+        GET /api/prompt_manager/settings/{key}
+        """
+        try:
+            key = request.match_info['key']
+            value = self.settings_service.get(key)
+
+            return web.json_response({
+                'success': True,
+                'key': key,
+                'value': value
+            })
+        except Exception as e:
+            self.logger.error(f"Error getting setting {key}: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def set_setting(self, request: web.Request) -> web.Response:
+        """Set a setting value.
+        POST /api/prompt_manager/settings/{key}
+        Body: { value: any, category?: string, description?: string }
+        """
+        try:
+            key = request.match_info['key']
+            data = await request.json()
+
+            value = data.get('value')
+            category = data.get('category', 'general')
+            description = data.get('description')
+
+            success = self.settings_service.set(key, value, category, description)
+
+            return web.json_response({
+                'success': success,
+                'key': key,
+                'value': value
+            })
+        except Exception as e:
+            self.logger.error(f"Error setting {key}: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def get_all_settings(self, request: web.Request) -> web.Response:
+        """Get all settings with metadata.
+        GET /api/prompt_manager/settings
+        """
+        try:
+            settings = self.settings_service.get_all_settings()
+
+            return web.json_response({
+                'success': True,
+                'settings': settings
+            })
+        except Exception as e:
+            self.logger.error(f"Error getting all settings: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def get_community_settings(self, request: web.Request) -> web.Response:
+        """Get all community settings.
+        GET /api/prompt_manager/settings/community
+        """
+        try:
+            settings = self.settings_service.get_category('community')
+
+            # Mask the API key for security
+            if 'civitai_api_key' in settings and settings['civitai_api_key']:
+                settings['civitai_api_key'] = '***hidden***'
+
+            return web.json_response({
+                'success': True,
+                'settings': settings
+            })
+        except Exception as e:
+            self.logger.error(f"Error getting community settings: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def generate_uuid(self, request: web.Request) -> web.Response:
+        """Generate a new PromptManager UUID.
+        POST /api/prompt_manager/settings/generate_uuid
+        """
+        try:
+            new_uuid = self.settings_service.generate_uuid()
+
+            if new_uuid:
+                return web.json_response({
+                    'success': True,
+                    'uuid': new_uuid
+                })
+            else:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Failed to generate UUID'
+                }, status=500)
+        except Exception as e:
+            self.logger.error(f"Error generating UUID: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def export_settings(self, request: web.Request) -> web.Response:
+        """Export all settings for backup.
+        GET /api/prompt_manager/settings/export
+        """
+        try:
+            export_data = self.settings_service.export_settings()
+
+            return web.json_response({
+                'success': True,
+                'data': export_data
+            })
+        except Exception as e:
+            self.logger.error(f"Error exporting settings: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def import_settings(self, request: web.Request) -> web.Response:
+        """Import settings from backup.
+        POST /api/prompt_manager/settings/import
+        Body: { data: {category: {key: value}}, overwrite?: boolean }
+        """
+        try:
+            data = await request.json()
+            settings_data = data.get('data', {})
+            overwrite = data.get('overwrite', False)
+
+            count = self.settings_service.import_settings(settings_data, overwrite)
+
+            return web.json_response({
+                'success': True,
+                'imported': count,
+                'message': f'Imported {count} settings'
+            })
+        except Exception as e:
+            self.logger.error(f"Error importing settings: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
