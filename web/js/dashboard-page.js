@@ -1528,11 +1528,42 @@
       .sort((a, b) => a - b);
   }
 
+  function scrollToTop() {
+    // Try to find the main content area or top of the page
+    const mainContent = document.querySelector('.main-content');
+    const topbar = document.querySelector('.topbar');
+
+    if (mainContent) {
+      // Scroll to the main content area
+      mainContent.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start'
+      });
+    } else if (topbar) {
+      // Scroll to just above the topbar
+      const topbarRect = topbar.getBoundingClientRect();
+      const topbarTop = window.pageYOffset + topbarRect.top;
+      window.scrollTo({
+        top: Math.max(0, topbarTop - 20), // 20px padding above topbar
+        behavior: 'smooth'
+      });
+    } else {
+      // Fallback: scroll to absolute top of page
+      window.scrollTo({
+        top: 0,
+        behavior: 'smooth'
+      });
+    }
+  }
+
   function changePage(targetPage) {
     const page = Math.max(1, Math.min(targetPage, paginationState.totalPages));
     if (page === paginationState.page) {
       return;
     }
+
+    // Scroll to top when changing pages
+    scrollToTop();
 
     loadPrompts(page).catch((error) => {
       console.error('Failed to change page', error);
