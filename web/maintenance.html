@@ -297,6 +297,97 @@
 
                     <div class="status-message" id="statsStatus"></div>
                 </div>
+
+                <!-- Epic Stats Calculation -->
+                <div class="maintenance-section">
+                    <h3>Epic Stats Dashboard Data</h3>
+                    <div class="section-description">
+                        <strong>⚠️ Heavy Operation:</strong> Calculate all statistics for the dashboard.
+                        This analyzes your entire database to generate comprehensive statistics including
+                        hourly patterns, resolution distributions, model usage, rating trends, and more.
+                    </div>
+
+                    <div id="epicStatsInfo" style="margin: 1rem 0; padding: 1rem; background: rgba(0, 0, 0, 0.2); border-radius: 4px;">
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
+                            <div>
+                                <div style="color: #888; font-size: 0.85rem;">Stats Status</div>
+                                <div id="epicStatsStatus" style="color: #ffa500; font-weight: bold;">Not Calculated</div>
+                            </div>
+                            <div>
+                                <div style="color: #888; font-size: 0.85rem;">Data Points</div>
+                                <div id="epicStatsDataPoints" style="color: #fff; font-weight: bold;">0</div>
+                            </div>
+                            <div>
+                                <div style="color: #888; font-size: 0.85rem;">Calculation Time</div>
+                                <div id="epicStatsTime" style="color: #fff; font-weight: bold;">Never</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="action-buttons">
+                        <button class="btn btn-primary" id="calculateEpicStats">
+                            <i class="fas fa-chart-line"></i> Calculate Epic Stats
+                        </button>
+                    </div>
+
+                    <div class="progress-container" id="epicStatsProgress">
+                        <div class="progress-header">
+                            <span id="epicStatsProgressText">Processing...</span>
+                            <span id="epicStatsProgressPercent">0%</span>
+                        </div>
+                        <div class="progress-bar-wrapper">
+                            <div class="progress-bar" id="epicStatsProgressBar" style="width: 0%">
+                                <span id="epicStatsProgressLabel">0%</span>
+                            </div>
+                        </div>
+                        <div class="progress-details" id="epicStatsProgressDetails">
+                            Initializing...
+                        </div>
+                    </div>
+
+                    <div class="status-message" id="epicStatsMessage"></div>
+                </div>
+
+                <!-- Word Cloud Management -->
+                <div class="maintenance-section">
+                    <h3>Word Cloud Management</h3>
+                    <div class="section-description">
+                        Pre-calculate word frequency data from all prompts for instant loading in stats page.
+                        The word cloud shows the most frequently used words in your prompts.
+                    </div>
+
+                    <div id="wordCloudInfo" style="margin: 1rem 0; padding: 1rem; background: rgba(0, 0, 0, 0.2); border-radius: 4px;">
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
+                            <div>
+                                <div style="color: #888; font-size: 0.85rem;">Last Calculated</div>
+                                <div id="wordCloudLastCalc" style="color: #fff; font-weight: bold;">Never</div>
+                            </div>
+                            <div>
+                                <div style="color: #888; font-size: 0.85rem;">Prompts Analyzed</div>
+                                <div id="wordCloudPrompts" style="color: #fff; font-weight: bold;">0</div>
+                            </div>
+                            <div>
+                                <div style="color: #888; font-size: 0.85rem;">Words Processed</div>
+                                <div id="wordCloudWords" style="color: #fff; font-weight: bold;">0</div>
+                            </div>
+                            <div>
+                                <div style="color: #888; font-size: 0.85rem;">Status</div>
+                                <div id="wordCloudStatus" style="color: #ffa500; font-weight: bold;">Needs Calculation</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="action-buttons">
+                        <button class="btn btn-primary" id="recalculateWordCloud">
+                            <i class="fas fa-cloud"></i> Recalculate Word Cloud
+                        </button>
+                        <button class="btn btn-secondary" id="checkWordCloudStatus" style="margin-left: 0.5rem;">
+                            <i class="fas fa-sync"></i> Check Status
+                        </button>
+                    </div>
+
+                    <div class="status-message" id="wordCloudMessage"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -456,6 +547,180 @@
         });
 
         // Helper functions
+        // Epic Stats Calculation
+        let epicStatsInterval = null;
+
+        document.getElementById('calculateEpicStats').addEventListener('click', async () => {
+            // Show warning modal
+            const confirmMsg = "⚠️ HEAVY OPERATION WARNING\n\n" +
+                              "This will analyze your ENTIRE database to calculate comprehensive statistics:\n\n" +
+                              "• Hourly activity patterns\n" +
+                              "• Resolution distributions\n" +
+                              "• Aspect ratio analysis\n" +
+                              "• Model usage statistics\n" +
+                              "• Rating trends over time\n" +
+                              "• Workflow complexity analysis\n" +
+                              "• Prompt pattern discovery\n" +
+                              "• Word cloud generation\n\n" +
+                              "This may take several minutes for large databases.\n\n" +
+                              "Continue?";
+
+            if (!confirm(confirmMsg)) return;
+
+            const btn = document.getElementById('calculateEpicStats');
+            const progressContainer = document.getElementById('epicStatsProgress');
+
+            btn.disabled = true;
+            progressContainer.classList.add('active');
+            document.getElementById('epicStatsMessage').className = 'status-message';
+
+            try {
+                // Start epic stats calculation
+                const response = await fetch('/api/v1/maintenance/calculate-epic-stats', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                if (response.ok) {
+                    // Start polling for progress
+                    epicStatsInterval = setInterval(updateEpicStatsProgress, 500);
+                } else {
+                    throw new Error('Failed to start epic stats calculation');
+                }
+            } catch (error) {
+                showError('epicStatsMessage', 'Error: ' + error.message);
+                btn.disabled = false;
+                progressContainer.classList.remove('active');
+            }
+        });
+
+        async function updateEpicStatsProgress() {
+            try {
+                const response = await fetch('/api/v1/maintenance/stats-calculation-progress');
+                const data = await response.json();
+
+                if (data.success) {
+                    const progress = data.progress || {};
+                    const percent = progress.percent || 0;
+                    const message = progress.message || 'Processing...';
+
+                    // Update progress bar
+                    document.getElementById('epicStatsProgressBar').style.width = percent + '%';
+                    document.getElementById('epicStatsProgressLabel').textContent = percent + '%';
+                    document.getElementById('epicStatsProgressPercent').textContent = percent + '%';
+                    document.getElementById('epicStatsProgressDetails').textContent = message;
+
+                    // Check if completed
+                    if (!data.in_progress) {
+                        clearInterval(epicStatsInterval);
+                        epicStatsInterval = null;
+
+                        document.getElementById('calculateEpicStats').disabled = false;
+                        document.getElementById('epicStatsProgress').classList.remove('active');
+
+                        if (percent === 100 && message.includes('Completed')) {
+                            showSuccess('epicStatsMessage', message);
+                            document.getElementById('epicStatsStatus').textContent = 'Up to Date';
+                            document.getElementById('epicStatsStatus').style.color = '#28a745';
+                        } else {
+                            showError('epicStatsMessage', message);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to get progress:', error);
+            }
+        }
+
+        // Word Cloud Management
+        async function loadWordCloudStatus() {
+            try {
+                const response = await fetch('/api/v1/maintenance/word-cloud-status');
+                const data = await response.json();
+
+                if (data.success) {
+                    // Update last calculated time
+                    if (data.last_calculated) {
+                        const date = new Date(data.last_calculated);
+                        document.getElementById('wordCloudLastCalc').textContent = date.toLocaleString();
+                    } else {
+                        document.getElementById('wordCloudLastCalc').textContent = 'Never';
+                    }
+
+                    // Update stats
+                    document.getElementById('wordCloudPrompts').textContent = data.total_prompts_analyzed.toLocaleString();
+                    document.getElementById('wordCloudWords').textContent = data.total_words_processed.toLocaleString();
+
+                    // Update status
+                    const statusEl = document.getElementById('wordCloudStatus');
+                    if (data.needs_recalculation) {
+                        statusEl.textContent = 'Needs Recalculation';
+                        statusEl.style.color = '#ffa500';
+                    } else {
+                        statusEl.textContent = 'Up to Date';
+                        statusEl.style.color = '#28a745';
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to load word cloud status:', error);
+            }
+        }
+
+        // Load status on page load
+        loadWordCloudStatus();
+
+        // Recalculate word cloud button
+        document.getElementById('recalculateWordCloud').addEventListener('click', async () => {
+            const btn = document.getElementById('recalculateWordCloud');
+            const originalText = btn.innerHTML;
+
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Calculating...';
+            document.getElementById('wordCloudMessage').className = 'status-message';
+
+            try {
+                const response = await fetch('/api/v1/maintenance/recalculate-word-cloud', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showSuccess('wordCloudMessage', data.message);
+                    // Reload status to show updated info
+                    await loadWordCloudStatus();
+                } else {
+                    showError('wordCloudMessage', data.error || 'Failed to recalculate word cloud');
+                }
+            } catch (error) {
+                showError('wordCloudMessage', 'Error: ' + error.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalText;
+            }
+        });
+
+        // Check status button
+        document.getElementById('checkWordCloudStatus').addEventListener('click', async () => {
+            const btn = document.getElementById('checkWordCloudStatus');
+            const originalText = btn.innerHTML;
+
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Checking...';
+
+            await loadWordCloudStatus();
+
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+
+            // Show a brief success message
+            showSuccess('wordCloudMessage', 'Status updated');
+            setTimeout(() => {
+                document.getElementById('wordCloudMessage').className = 'status-message';
+            }, 2000);
+        });
+
         function showSuccess(elementId, message) {
             const element = document.getElementById(elementId);
             element.className = 'status-message success';
