@@ -11,6 +11,9 @@ from typing import Dict, Any
 from aiohttp import web
 import logging
 
+from ...services.word_cloud_service import WordCloudService
+from ...services.epic_stats_calculator import EpicStatsCalculator
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,6 +25,10 @@ class MaintenanceAPI:
         self.extraction_in_progress = False
         self.extraction_progress = {}
         self.extraction_cancel = False
+        self.word_cloud_service = WordCloudService(db_path)
+        self.epic_stats_calculator = EpicStatsCalculator(db_path)
+        self.stats_calculation_in_progress = False
+        self.stats_calculation_progress = {}
 
     async def extract_metadata_from_images(self, request: web.Request) -> web.Response:
         """
@@ -210,6 +217,133 @@ class MaintenanceAPI:
                 "error": str(e)
             }, status=500)
 
+    async def recalculate_word_cloud(self, request: web.Request) -> web.Response:
+        """
+        Recalculate word cloud data from all prompts.
+        This pre-calculates and caches the data for instant stats page loading.
+        """
+        try:
+            # Run recalculation
+            start_time = time.time()
+            frequencies = self.word_cloud_service.calculate_word_frequencies(limit=100)
+            calculation_time = time.time() - start_time
+
+            # Get metadata about the calculation
+            metadata = self.word_cloud_service.get_metadata()
+
+            return web.json_response({
+                "success": True,
+                "message": f"Word cloud recalculated successfully in {calculation_time:.2f}s",
+                "words_count": len(frequencies),
+                "prompts_analyzed": metadata.get('total_prompts_analyzed', 0),
+                "words_processed": metadata.get('total_words_processed', 0)
+            })
+
+        except Exception as e:
+            logger.error(f"Failed to recalculate word cloud: {e}")
+            return web.json_response({
+                "success": False,
+                "error": str(e)
+            }, status=500)
+
+    async def get_word_cloud_status(self, request: web.Request) -> web.Response:
+        """Get the current status of word cloud cache."""
+        try:
+            metadata = self.word_cloud_service.get_metadata()
+            needs_recalc = self.word_cloud_service.needs_recalculation(hours=24)
+
+            return web.json_response({
+                "success": True,
+                "last_calculated": metadata.get('last_calculated'),
+                "total_prompts_analyzed": metadata.get('total_prompts_analyzed', 0),
+                "total_words_processed": metadata.get('total_words_processed', 0),
+                "calculation_time_ms": metadata.get('calculation_time_ms', 0),
+                "needs_recalculation": needs_recalc
+            })
+
+        except Exception as e:
+            logger.error(f"Failed to get word cloud status: {e}")
+            return web.json_response({
+                "success": False,
+                "error": str(e)
+            }, status=500)
+
+    async def calculate_epic_stats(self, request: web.Request) -> web.Response:
+        """
+        Calculate comprehensive statistics for the dashboard.
+        This is a heavy operation that analyzes all data in the database.
+        """
+        if self.stats_calculation_in_progress:
+            return web.json_response({
+                "success": False,
+                "error": "Stats calculation already in progress"
+            }, status=409)
+
+        try:
+            self.stats_calculation_in_progress = True
+            self.stats_calculation_progress = {
+                'percent': 0,
+                'message': 'Starting epic stats calculation...'
+            }
+
+            # Run calculation in background
+            asyncio.create_task(self._run_epic_stats_calculation())
+
+            return web.json_response({
+                "success": True,
+                "message": "Epic stats calculation started"
+            })
+
+        except Exception as e:
+            logger.error(f"Failed to start epic stats calculation: {e}")
+            self.stats_calculation_in_progress = False
+            return web.json_response({
+                "success": False,
+                "error": str(e)
+            }, status=500)
+
+    async def _run_epic_stats_calculation(self):
+        """Run epic stats calculation in background."""
+        try:
+            def progress_callback(percent, message):
+                self.stats_calculation_progress = {
+                    'percent': percent,
+                    'message': message
+                }
+
+            # Run the calculation
+            results = self.epic_stats_calculator.calculate_all_stats(progress_callback)
+
+            if results['success']:
+                self.stats_calculation_progress = {
+                    'percent': 100,
+                    'message': f"Completed! Calculated {results['stats_calculated']} statistics in {results['calculation_time']:.2f}s"
+                }
+                # Also trigger word cloud calculation
+                self.word_cloud_service.calculate_word_frequencies(limit=100)
+            else:
+                self.stats_calculation_progress = {
+                    'percent': 100,
+                    'message': f"Failed: {', '.join(results['errors'])}"
+                }
+
+        except Exception as e:
+            logger.error(f"Epic stats calculation failed: {e}")
+            self.stats_calculation_progress = {
+                'percent': 100,
+                'message': f"Error: {str(e)}"
+            }
+        finally:
+            self.stats_calculation_in_progress = False
+
+    async def get_stats_calculation_progress(self, request: web.Request) -> web.Response:
+        """Get progress of stats calculation."""
+        return web.json_response({
+            "success": True,
+            "in_progress": self.stats_calculation_in_progress,
+            "progress": self.stats_calculation_progress
+        })
+
     def add_routes(self, routes):
         """Add maintenance routes to the app."""
         routes.post('/api/v1/maintenance/extract-metadata')(self.extract_metadata_from_images)
@@ -217,3 +351,7 @@ class MaintenanceAPI:
         routes.post('/api/v1/maintenance/cancel-extraction')(self.cancel_extraction)
         routes.post('/api/v1/maintenance/optimize-database')(self.optimize_database)
         routes.post('/api/v1/maintenance/rebuild-stats')(self.rebuild_stats_cache)
+        routes.post('/api/v1/maintenance/recalculate-word-cloud')(self.recalculate_word_cloud)
+        routes.get('/api/v1/maintenance/word-cloud-status')(self.get_word_cloud_status)
+        routes.post('/api/v1/maintenance/calculate-epic-stats')(self.calculate_epic_stats)
+        routes.get('/api/v1/maintenance/stats-calculation-progress')(self.get_stats_calculation_progress)
