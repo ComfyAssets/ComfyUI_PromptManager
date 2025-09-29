@@ -35,7 +35,7 @@ const MaintenanceModal = (function() {
     // Configuration
     const config = {
         modalId: 'maintenance-modal',
-        statsRefreshInterval: 5000  // Refresh stats every 5 seconds when modal is open
+        statsRefreshInterval: 30000  // Refresh stats every 30 seconds when modal is open (reduced from 5s to avoid log spam)
     };
 
     // State
@@ -135,6 +135,18 @@ const MaintenanceModal = (function() {
                                 <button class="action-button danger" data-action="remove-missing">
                                     <span class="action-icon">❌</span>
                                     Remove Missing Files
+                                </button>
+                                <button class="action-button primary" data-action="calculate-epic-stats">
+                                    <span class="action-icon">📊</span>
+                                    Calculate Epic Stats
+                                </button>
+                                <button class="action-button" data-action="recalculate-word-cloud">
+                                    <span class="action-icon">☁️</span>
+                                    Refresh Word Cloud
+                                </button>
+                                <button class="action-button" data-action="tag-missing-images">
+                                    <span class="action-icon">🏷️</span>
+                                    Tag Missing Images
                                 </button>
                             </div>
                         </div>
@@ -260,6 +272,22 @@ const MaintenanceModal = (function() {
     }
 
     async function executeAction(action) {
+        // Special handling for epic stats calculation
+        if (action === 'calculate-epic-stats') {
+            const confirmMsg = "⚠️ HEAVY OPERATION WARNING\n\n" +
+                              "This will analyze your ENTIRE database to calculate comprehensive statistics:\n\n" +
+                              "• Hourly activity patterns\n" +
+                              "• Resolution distributions\n" +
+                              "• Model usage statistics\n" +
+                              "• Rating trends\n" +
+                              "• Workflow complexity\n" +
+                              "• Word cloud generation\n\n" +
+                              "This may take several minutes for large databases.\n\n" +
+                              "Continue?";
+
+            if (!confirm(confirmMsg)) return;
+        }
+
         state.isRunning = true;
 
         // Initialize progress modal if needed
@@ -277,7 +305,9 @@ const MaintenanceModal = (function() {
             'fix-broken-links': 'Fix Broken Image Links',
             'optimize': 'Optimize Database',
             'backup': 'Create Database Backup',
-            'remove-missing': 'Remove Missing Files'
+            'remove-missing': 'Remove Missing Files',
+            'calculate-epic-stats': 'Calculate Epic Stats',
+            'recalculate-word-cloud': 'Refresh Word Cloud'
         };
 
         const actionName = actionLabels[action] || action;
@@ -286,7 +316,15 @@ const MaintenanceModal = (function() {
         try {
             ProgressModal.updateProgress(10, 'Connecting to server...');
 
-            const response = await fetch(`/api/prompt_manager/maintenance/${action}`, {
+            // Map actions to proper API endpoints
+            let apiEndpoint = `/api/prompt_manager/maintenance/${action}`;
+            if (action === 'calculate-epic-stats') {
+                apiEndpoint = '/api/v1/maintenance/calculate-epic-stats';
+            } else if (action === 'recalculate-word-cloud') {
+                apiEndpoint = '/api/v1/maintenance/recalculate-word-cloud';
+            }
+
+            const response = await fetch(apiEndpoint, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
