@@ -1693,43 +1693,56 @@ const EpicStats = (function() {
     function renderCharts() {
         // Hourly activity chart
         const hourlyCtx = document.getElementById('hourlyActivityChart');
-        if (hourlyCtx && statsData.timeAnalytics) {
-            renderHourlyChart(hourlyCtx, statsData.timeAnalytics.hourlyActivity);
+        if (hourlyCtx) {
+            const hourlyData = statsData?.timeAnalytics?.hourlyActivity;
+            renderHourlyChart(hourlyCtx, hourlyData);
         }
 
         // Resolution chart
         const resCtx = document.getElementById('resolutionChart');
-        if (resCtx && statsData.generationMetrics) {
-            renderResolutionChart(resCtx, statsData.generationMetrics.resolutions);
+        if (resCtx) {
+            const resData = statsData?.generationMetrics?.resolutions;
+            renderResolutionChart(resCtx, resData);
         }
 
         // Aspect ratio chart
         const aspectCtx = document.getElementById('aspectRatioChart');
-        if (aspectCtx && statsData.generationMetrics) {
-            renderAspectRatioChart(aspectCtx, statsData.generationMetrics.aspectRatios);
+        if (aspectCtx) {
+            const aspectData = statsData?.generationMetrics?.aspectRatios;
+            renderAspectRatioChart(aspectCtx, aspectData);
         }
 
         // Model usage chart
         const modelCtx = document.getElementById('modelUsageChart');
-        if (modelCtx && statsData.modelPerformance) {
-            renderModelChart(modelCtx, statsData.modelPerformance.modelUsage);
+        if (modelCtx) {
+            const modelData = statsData?.modelPerformance?.modelUsage;
+            renderModelChart(modelCtx, modelData);
         }
 
         // Rating trend chart
         const ratingCtx = document.getElementById('ratingTrendChart');
-        if (ratingCtx && statsData.qualityMetrics) {
-            renderRatingTrendChart(ratingCtx, statsData.qualityMetrics.ratingTrend);
+        if (ratingCtx) {
+            const ratingData = statsData?.qualityMetrics?.ratingTrend;
+            renderRatingTrendChart(ratingCtx, ratingData);
         }
 
         // Workflow complexity chart
         const workflowCtx = document.getElementById('workflowComplexityChart');
-        if (workflowCtx && statsData.workflowAnalysis) {
-            renderWorkflowChart(workflowCtx, statsData.workflowAnalysis.complexityLevels);
+        if (workflowCtx) {
+            const workflowData = statsData?.workflowAnalysis?.complexityLevels;
+            renderWorkflowChart(workflowCtx, workflowData);
         }
     }
 
     // Individual chart rendering functions
     function renderHourlyChart(ctx, data) {
+        // Check if data is valid
+        if (!data || !Array.isArray(data) || data.length === 0) {
+            console.warn('No hourly activity data available');
+            // Create empty 24-hour array
+            data = new Array(24).fill(0);
+        }
+
         // Simple bar chart using canvas
         const canvas = ctx.getContext('2d');
         const width = ctx.width = ctx.offsetWidth;
@@ -1900,6 +1913,12 @@ const EpicStats = (function() {
 
     // Simple chart rendering functions for other charts
     function renderResolutionChart(ctx, data) {
+        // Check if data is valid
+        if (!data || typeof data !== 'object') {
+            console.warn('No resolution data available');
+            return;
+        }
+
         // Implement pie chart for resolutions
         const canvas = ctx.getContext('2d');
         const width = ctx.width = ctx.offsetWidth;
@@ -1911,6 +1930,12 @@ const EpicStats = (function() {
     }
 
     function renderAspectRatioChart(ctx, data) {
+        // Check if data is valid
+        if (!data || typeof data !== 'object') {
+            console.warn('No aspect ratio data available');
+            return;
+        }
+
         // Donut chart for aspect ratios
         const canvas = ctx.getContext('2d');
         const width = ctx.width = ctx.offsetWidth;
@@ -1921,6 +1946,12 @@ const EpicStats = (function() {
     }
 
     function renderModelChart(ctx, data) {
+        // Check if data is valid
+        if (!data || typeof data !== 'object') {
+            console.warn('No model usage data available');
+            return;
+        }
+
         // Bar chart for model usage
         const canvas = ctx.getContext('2d');
         const width = ctx.width = ctx.offsetWidth;
@@ -1931,6 +1962,12 @@ const EpicStats = (function() {
     }
 
     function renderRatingTrendChart(ctx, data) {
+        // Check if data is valid
+        if (!data || (!Array.isArray(data) && typeof data !== 'object')) {
+            console.warn('No rating trend data available');
+            return;
+        }
+
         // Line chart for rating trends
         const canvas = ctx.getContext('2d');
         const width = ctx.width = ctx.offsetWidth;
@@ -1941,6 +1978,12 @@ const EpicStats = (function() {
     }
 
     function renderWorkflowChart(ctx, data) {
+        // Check if data is valid
+        if (!data || typeof data !== 'object') {
+            console.warn('No workflow complexity data available');
+            return;
+        }
+
         // Horizontal bar chart for workflow complexity
         const canvas = ctx.getContext('2d');
         const width = ctx.width = ctx.offsetWidth;
