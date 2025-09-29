@@ -93,8 +93,8 @@ def ensure_database_initialized():
         db = PromptDatabase()
         print(f"[PromptManager] ✅ Database initialized and schema updated at: {db.db_path}")
 
-        # Run thumbnail migration if needed
-        _run_thumbnail_migration(db)
+        # Run all SQL migrations
+        _run_sql_migrations(db)
 
         return db
 
@@ -121,10 +121,12 @@ def ensure_database_initialized():
     return None
 
 
-def _run_thumbnail_migration(db):
-    """Run the thumbnail migration to add required columns."""
+def _run_sql_migrations(db):
+    """Run all SQL migrations in order."""
     try:
         import sqlite3
+        import re
+        from datetime import datetime
 
         # Get the actual database path
         if hasattr(db, 'db_path'):
@@ -135,49 +137,121 @@ def _run_thumbnail_migration(db):
             fs = get_file_system()
             db_path = str(fs.get_database_path('prompts.db'))
 
-        print(f"[PromptManager] Checking thumbnail migration at: {db_path}")
+        # Get migrations directory
+        migrations_dir = Path(__file__).parent / 'src' / 'database' / 'migrations'
+        if not migrations_dir.exists():
+            print(f"[ComfyUI-PromptManager] Migrations directory not found: {migrations_dir}")
+            return
 
-        # Check if thumbnail columns already exist
+        # Get all migration files sorted by version number
+        migration_files = sorted(migrations_dir.glob('*.sql'))
+
+        if not migration_files:
+            print("\033[93m[ComfyUI-PromptManager] No migration files found\033[0m")
+            return
+
+        # Print header with colored output
+        print()
+        print(f"\033[94m[ComfyUI-PromptManager] Database initialized and schema updated at:\033[0m {db_path}")
+        print(f"\033[94m[ComfyUI-PromptManager] Version:\033[0m {__version__} - Applying database patches:")
+
+        # Connect to database
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        # Check if thumbnail columns exist in generated_images table
-        cursor.execute("PRAGMA table_info(generated_images)")
-        columns = [col[1] for col in cursor.fetchall()]
+        # First check if migrations table exists and has status column
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='migrations'")
+        table_exists = cursor.fetchone() is not None
 
-        if 'thumbnail_small_path' not in columns:
-            print("[PromptManager] Running thumbnail migration...")
+        if table_exists:
+            # Check if status column exists
+            cursor.execute("PRAGMA table_info(migrations)")
+            columns = [col[1] for col in cursor.fetchall()]
 
-            # Read and execute migration SQL
-            migration_path = Path(__file__).parent / 'src' / 'database' / 'migrations' / '001_add_thumbnail_support.sql'
-            if migration_path.exists():
-                with open(migration_path, 'r') as f:
-                    migration_sql = f.read()
-
-                # Split by semicolons and execute each statement
-                statements = [s.strip() for s in migration_sql.split(';') if s.strip() and not s.strip().startswith('--')]
-                for stmt in statements:
-                    if 'DOWN' in stmt:
-                        break  # Don't run rollback statements
-                    try:
-                        cursor.execute(stmt)
-                    except sqlite3.OperationalError as e:
-                        # Ignore "already exists" errors
-                        if 'already exists' not in str(e).lower():
-                            print(f"[PromptManager] Migration statement warning: {e}")
-
+            if 'status' not in columns:
+                # Upgrade the migrations table
+                cursor.execute("ALTER TABLE migrations ADD COLUMN status TEXT DEFAULT 'success'")
+                cursor.execute("ALTER TABLE migrations ADD COLUMN error_message TEXT")
                 conn.commit()
-                print("[PromptManager] ✅ Thumbnail migration completed")
-            else:
-                print("[PromptManager] ⚠️ Migration file not found")
         else:
-            print("[PromptManager] Thumbnail columns already exist, skipping migration")
+            # Create migrations table with all columns
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL,
+                    filename TEXT,
+                    status TEXT DEFAULT 'success',
+                    error_message TEXT
+                )
+            """)
+            conn.commit()
+
+        # Get list of already attempted migrations
+        cursor.execute("SELECT version FROM migrations")
+        applied_migrations = set(row[0] for row in cursor.fetchall())
+
+        # Process each migration file
+        migrations_applied = 0
+        total_migrations = len(migration_files)
+
+        for migration_file in migration_files:
+            # Extract version number from filename (e.g., 006_add_word_cloud_cache.sql -> 6)
+            version_match = re.match(r'^(\d+)', migration_file.name)
+            if not version_match:
+                continue
+
+            version = int(version_match.group(1))
+
+            # Check if already applied
+            if version in applied_migrations:
+                print(f"🫶 \033[94mPatching:\033[0m {migration_file.name}")
+                print(f"🫶 Patch already applied - skipping")
+            else:
+                print(f"🫶 \033[94mPatching:\033[0m {migration_file.name}")
+
+                try:
+                    # Read migration file
+                    with open(migration_file, 'r') as f:
+                        migration_sql = f.read()
+
+                    # Execute the entire migration as a script
+                    cursor.executescript(migration_sql)
+
+                    # Record that this migration has been applied
+                    cursor.execute(
+                        "INSERT INTO migrations (version, applied_at, filename, status) VALUES (?, ?, ?, ?)",
+                        (version, datetime.utcnow().isoformat(), migration_file.name, 'success')
+                    )
+                    conn.commit()
+
+                    print(f"🫶 Patch applied successfully")
+                    migrations_applied += 1
+
+                except sqlite3.Error as e:
+                    # Record failed migration
+                    try:
+                        cursor.execute(
+                            "INSERT INTO migrations (version, applied_at, filename, status, error_message) VALUES (?, ?, ?, ?, ?)",
+                            (version, datetime.utcnow().isoformat(), migration_file.name, 'failed', str(e))
+                        )
+                        conn.commit()
+                    except:
+                        # If insert fails, just continue
+                        pass
+
+                    print(f"⚠️  Patch failed: {e}")
+                    conn.rollback()
 
         cursor.close()
         conn.close()
 
+        # Print summary
+        print(f"\033[94mTotal: {total_migrations} patches loaded\033[0m")
+        if migrations_applied > 0:
+            print(f"\033[92m[ComfyUI-PromptManager] ✅ {migrations_applied} new patches applied\033[0m")
+
     except Exception as e:
-        print(f"[PromptManager] Thumbnail migration error: {e}")
+        print(f"\033[93m[ComfyUI-PromptManager] ⚠️ Database patching error:\033[0m {e}")
 
 
 def initialize_api(server):
