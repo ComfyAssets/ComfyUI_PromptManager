@@ -65,10 +65,10 @@ class MaintenanceService:
                 orphaned = self.generated_image_repo.find_orphaned()
                 stats['orphaned'] = len(orphaned)
 
-            # Count missing files
-            if self.generated_image_repo:
-                validation = self.generated_image_repo.validate_paths()
-                stats['missing_files'] = len(validation.get('missing', []))
+            # Count missing files - DISABLED for performance
+            # This was validating all 20k+ images on every stats call!
+            # Use the maintenance modal to check missing files when needed
+            stats['missing_files'] = -1  # -1 indicates not calculated
 
             # Get database file size
             if os.path.exists(self.db_path):
