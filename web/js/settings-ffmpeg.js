@@ -188,8 +188,8 @@ async function saveFFmpegPath(path) {
  */
 function showNotification(message, type = 'info') {
     // Use existing notification system if available
-    if (window.NotificationManager) {
-        window.NotificationManager.show(message, type);
+    if (window.NotificationService) {
+        window.NotificationService.show(message, type);
     } else if (window.NotificationService) {
         window.NotificationService.show(message, type);
     } else {
