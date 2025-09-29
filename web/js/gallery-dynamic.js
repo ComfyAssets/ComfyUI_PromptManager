@@ -20,6 +20,19 @@
     let hasMorePages = true;
     let infiniteScrollEnabled = true;
 
+    // Progressive loading state
+    let scrollVelocity = 0;
+    let lastScrollTop = 0;
+    let lastScrollTime = Date.now();
+    let preloadingNextBatch = false;
+    let batchQueue = [];
+    let progressiveLoadTimer = null;
+
+    // Track loaded items to prevent duplicates
+    let loadedItemIds = new Set();
+    let totalItemsLoaded = 0;
+    let lastPageLoaded = 0;
+
     // Get items per page from settings or use default
     function getItemsPerPage() {
         try {
@@ -130,6 +143,10 @@
                 totalPages = result.pagination?.total_pages || 1;
                 hasMorePages = result.pagination?.has_next || false;
 
+                // Update page tracking when loading through main function
+                lastPageLoaded = currentPage;
+                console.log(`Main load: Set lastPageLoaded to ${lastPageLoaded}`);
+
                 renderGalleryItems(result.data, append);
 
                 // Don't show pagination controls with infinite scroll
@@ -237,6 +254,11 @@
             }
             // Reset keyboard focus when reloading
             resetKeyboardFocus();
+
+            // Reset duplicate tracking when starting fresh
+            loadedItemIds.clear();
+            totalItemsLoaded = 0;
+            lastPageLoaded = 0;
         }
 
         if (!items || items.length === 0) {
@@ -253,16 +275,21 @@
 
         // Create gallery items using actual API data structure
         items.forEach(item => {
-            const galleryItem = createGalleryItem(item, viewMode);
-            container.appendChild(galleryItem);
-            newElements.push(galleryItem);
+            // Track loaded items to prevent duplicates
+            if (!loadedItemIds.has(item.id)) {
+                loadedItemIds.add(item.id);
+                totalItemsLoaded++;
+
+                const galleryItem = createGalleryItem(item, viewMode);
+                container.appendChild(galleryItem);
+                newElements.push(galleryItem);
+            }
         });
 
         if (viewMode === 'masonry') {
             if (append && masonryInstance) {
-                // Append new items to existing masonry
-                masonryInstance.appended(newElements);
-                masonryInstance.layout();
+                // Handle append with proper image loading
+                handleMasonryAppend(newElements);
             } else {
                 // Initialize new masonry layout
                 initializeMasonryLayout(container);
@@ -309,12 +336,12 @@
 
         // Build HTML - for masonry view, only show the image (no info wrapper)
         if (viewMode === 'masonry') {
+            // CRITICAL: Don't use lazy loading for masonry - it breaks layout calculation
             div.innerHTML = `
                 <div class="gallery-image">
                     <img src="${thumbnailUrl}"
                          data-full-src="${fullMediaUrl}"
                          alt="${escapeHtml(item.filename || '')}"
-                         loading="lazy"
                          data-placeholder="${placeholderImage}"
                          data-metadata="${escapeHtml(metadataStr)}"
                          title="${escapeHtml(item.filename || 'Untitled')}" />
@@ -616,43 +643,257 @@
     }
 
     /**
-     * Setup infinite scroll functionality
+     * Setup progressive infinite scroll with intelligent preloading
      */
     function setupInfiniteScroll() {
         let scrollTimeout;
-        const scrollThreshold = 800; // Load more when within 800px of bottom
 
-        const handleScroll = () => {
-            // Don't trigger if not enabled or already loading
-            if (!infiniteScrollEnabled || isLoading || !hasMorePages) {
+        // Dynamic thresholds based on scroll behavior and viewport
+        const getLoadThreshold = () => {
+            // Much more aggressive base threshold - start loading when 2-3 viewports remain
+            const viewportHeight = window.innerHeight;
+            let threshold = viewportHeight * 3; // Load when 3 screens of content remain
+
+            // Adjust based on scroll velocity (faster scroll = load even earlier)
+            if (scrollVelocity > 50) {
+                threshold = Math.max(threshold, viewportHeight * 5); // 5 viewports ahead for fast scrolling
+            } else if (scrollVelocity > 20) {
+                threshold = Math.max(threshold, viewportHeight * 4); // 4 viewports for medium
+            }
+
+            // Never less than 2 viewports
+            return Math.max(viewportHeight * 2, threshold);
+        };
+
+        // Calculate scroll velocity and predict user intent
+        const updateScrollMetrics = () => {
+            const currentScrollTop = window.pageYOffset || document.documentElement.scrollTop;
+            const currentTime = Date.now();
+            const timeDelta = currentTime - lastScrollTime;
+
+            if (timeDelta > 0) {
+                // Calculate pixels per millisecond, then convert to pixels per second
+                scrollVelocity = Math.abs(currentScrollTop - lastScrollTop) / timeDelta * 1000;
+            }
+
+            lastScrollTop = currentScrollTop;
+            lastScrollTime = currentTime;
+        };
+
+        // Load next full page and add to rendering queue
+        const loadNextBatch = async () => {
+            if (preloadingNextBatch || !hasMorePages) {
                 return;
             }
 
-            // Get scroll position
-            const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-            const scrollHeight = document.documentElement.scrollHeight;
-            const clientHeight = window.innerHeight;
+            preloadingNextBatch = true;
 
-            // Check if we're near the bottom
-            if (scrollTop + clientHeight >= scrollHeight - scrollThreshold) {
-                // Load next page
-                const nextPage = currentPage + 1;
-                if (nextPage <= totalPages) {
-                    console.log(`Loading page ${nextPage} via infinite scroll`);
-                    showInfiniteScrollLoader(); // Show loader at bottom
-                    loadGalleryData(nextPage, false, true); // append = true for infinite scroll
+            try {
+                // Ensure we're loading the correct next page
+                // If lastPageLoaded is 0 (initial state), use currentPage + 1
+                // Otherwise use lastPageLoaded + 1
+                const nextPage = lastPageLoaded > 0 ? lastPageLoaded + 1 : currentPage + 1;
+
+                // Build query parameters with page number
+                const params = new URLSearchParams({
+                    page: nextPage,
+                    limit: getItemsPerPage(), // Use full page size from settings
+                    sort_order: currentFilters.sortOrder || 'date_desc',
+                    view_mode: currentFilters.viewMode || 'grid'
+                });
+
+                // Add filters if present
+                if (currentFilters.search) params.append('search', currentFilters.search);
+                if (currentFilters.tags) params.append('tags', currentFilters.tags);
+                if (currentFilters.dateFrom) params.append('date_from', currentFilters.dateFrom);
+                if (currentFilters.dateTo) params.append('date_to', currentFilters.dateTo);
+                if (currentFilters.model) params.append('model', currentFilters.model);
+
+                console.log(`Loading page ${nextPage} for progressive rendering`);
+                const response = await fetch(`/api/v1/gallery/images?${params}`);
+
+                if (response.ok) {
+                    const result = await response.json();
+
+                    if (result.success && result.data && result.data.length > 0) {
+                        // Filter out any duplicates (safety check)
+                        const newItems = result.data.filter(item => {
+                            if (loadedItemIds.has(item.id)) {
+                                console.warn(`Duplicate item detected: ${item.id}`);
+                                return false;
+                            }
+                            loadedItemIds.add(item.id);
+                            return true;
+                        });
+
+                        if (newItems.length > 0) {
+                            // Add to queue for progressive rendering
+                            batchQueue.push(...newItems);
+
+                            // Track total items loaded
+                            totalItemsLoaded += newItems.length;
+
+                            // Update page tracking
+                            lastPageLoaded = nextPage;
+                            currentPage = nextPage;
+
+                            // Update pagination info
+                            if (result.pagination) {
+                                hasMorePages = result.pagination.has_next || false;
+                            } else {
+                                // If no pagination info, check if we got less than requested
+                                hasMorePages = result.data.length === batchSize;
+                            }
+
+                            // Start progressive rendering if not already running
+                            if (!progressiveLoadTimer) {
+                                startProgressiveRendering();
+                            }
+                        } else {
+                            console.log('No new items to add (all duplicates)');
+                            hasMorePages = false;
+                        }
+                    } else {
+                        // No more data
+                        hasMorePages = false;
+                    }
                 }
+            } catch (error) {
+                console.error('Failed to preload batch:', error);
+            } finally {
+                preloadingNextBatch = false;
             }
         };
 
-        // Debounce scroll events
+        // Render items progressively from queue
+        const startProgressiveRendering = () => {
+            if (progressiveLoadTimer) {
+                return;
+            }
+
+            const renderBatch = () => {
+                if (batchQueue.length === 0) {
+                    progressiveLoadTimer = null;
+                    hideInfiniteScrollLoader();
+                    return;
+                }
+
+                // Take a small chunk from queue (5-10 items at a time)
+                const chunkSize = currentFilters.viewMode === 'masonry' ? 5 : 10;
+                const chunk = batchQueue.splice(0, Math.min(chunkSize, batchQueue.length));
+
+                // Render this chunk
+                const container = document.getElementById('galleryContainer') || document.querySelector('.gallery-container');
+                if (container && chunk.length > 0) {
+                    const viewMode = currentFilters.viewMode || 'grid';
+                    const newElements = [];
+
+                    chunk.forEach(item => {
+                        const galleryItem = createGalleryItem(item, viewMode);
+                        container.appendChild(galleryItem);
+                        newElements.push(galleryItem);
+                    });
+
+                    // Handle masonry layout for new items
+                    if (viewMode === 'masonry' && masonryInstance) {
+                        handleMasonryAppend(newElements);
+                    }
+
+                    refreshViewerIntegration(container);
+                }
+
+                // Continue rendering if more items in queue
+                if (batchQueue.length > 0) {
+                    progressiveLoadTimer = setTimeout(renderBatch, 100); // Small delay between batches
+                } else {
+                    progressiveLoadTimer = null;
+
+                    // Check if we should load more
+                    if (hasMorePages) {
+                        checkScrollPosition();
+                    }
+                }
+            };
+
+            showInfiniteScrollLoader();
+            progressiveLoadTimer = setTimeout(renderBatch, 50);
+        };
+
+        const checkScrollPosition = () => {
+            // Don't trigger if not enabled or already loading main data
+            if (!infiniteScrollEnabled || isLoading) {
+                return;
+            }
+
+            const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+            const scrollHeight = document.documentElement.scrollHeight;
+            const clientHeight = window.innerHeight;
+            const threshold = getLoadThreshold();
+
+            // Calculate how close we are to bottom
+            const distanceFromBottom = scrollHeight - (scrollTop + clientHeight);
+            const scrollProgress = (scrollTop + clientHeight) / scrollHeight;
+
+            // Calculate items remaining to view (rough estimate)
+            const averageItemHeight = 300; // Approximate height of gallery items
+            const itemsRemainingToView = Math.floor(distanceFromBottom / averageItemHeight);
+            const itemsInQueue = batchQueue.length;
+            const totalBufferedItems = itemsInQueue + itemsRemainingToView;
+
+            // We want to maintain a buffer of at least 50-100 items ahead
+            const desiredBuffer = scrollVelocity > 50 ? 100 : 50;
+
+            // Load more if:
+            // 1. We're within threshold distance from bottom, OR
+            // 2. We have less than desired buffer of items remaining
+            const needsMoreContent = distanceFromBottom < threshold || totalBufferedItems < desiredBuffer;
+
+            if (needsMoreContent && hasMorePages && !preloadingNextBatch) {
+                // Always load full page from API (200 items by default)
+                console.log(`Preloading next page - Distance: ${Math.round(distanceFromBottom)}px, Buffer: ${totalBufferedItems} items`);
+                loadNextBatch();
+            }
+
+            // Emergency load if we're REALLY close to bottom
+            if (distanceFromBottom < 500 && batchQueue.length < 10 && hasMorePages && !preloadingNextBatch) {
+                console.log(`Emergency load - only ${distanceFromBottom}px from bottom!`);
+                loadNextBatch();
+            }
+        };
+
+        // Main scroll handler
+        const handleScroll = () => {
+            updateScrollMetrics();
+            checkScrollPosition();
+        };
+
+        // Debounced scroll handler
         window.addEventListener('scroll', () => {
+            // Update metrics immediately
+            updateScrollMetrics();
+
+            // Debounce the loading check
             clearTimeout(scrollTimeout);
-            scrollTimeout = setTimeout(handleScroll, 100);
+            scrollTimeout = setTimeout(handleScroll, 50); // Faster response
         });
 
-        // Initial check in case content doesn't fill viewport
-        setTimeout(handleScroll, 500);
+        // Initial check - very important for when viewport is large
+        setTimeout(() => {
+            checkScrollPosition();
+            // Also check if we need to load more to fill the viewport
+            const scrollHeight = document.documentElement.scrollHeight;
+            const clientHeight = window.innerHeight;
+            if (scrollHeight <= clientHeight * 2 && hasMorePages) {
+                console.log('Initial viewport needs more content');
+                loadNextBatch();
+            }
+        }, 500);
+
+        // Periodic check for slow/stopped scrollers
+        setInterval(() => {
+            // Always check if we have enough buffer
+            checkScrollPosition();
+        }, 1000); // Check every second instead of every 2
     }
 
     /**
@@ -902,65 +1143,144 @@
 
     function initializeMasonryLayout(container) {
         if (!container || typeof Masonry === 'undefined') {
+            console.warn('Masonry library not available');
             return;
         }
 
+        // Add sizer element for column width
         if (!container.querySelector('.masonry-sizer')) {
             const sizer = document.createElement('div');
             sizer.className = 'masonry-sizer';
             container.prepend(sizer);
         }
 
+        // Clean up existing instance
         if (masonryInstance) {
             masonryInstance.destroy();
+            masonryInstance = null;
         }
 
-        // Use imagesLoaded if available for better layout after images load
-        const initMasonry = () => {
+        // Check if imagesLoaded is available
+        if (typeof imagesLoaded === 'function') {
+            // Use imagesLoaded for perfect layout timing
+            imagesLoaded(container, function() {
+                masonryInstance = new Masonry(container, {
+                    itemSelector: '.gallery-item',
+                    columnWidth: '.masonry-sizer',
+                    percentPosition: true,
+                    gutter: 8,
+                    fitWidth: false,
+                    transitionDuration: '0.2s',
+                    horizontalOrder: false
+                });
+            });
+        } else {
+            // Fallback without imagesLoaded (less reliable)
+            console.warn('imagesLoaded not available - layout may be imperfect');
+
+            // Create masonry instance immediately
             masonryInstance = new Masonry(container, {
                 itemSelector: '.gallery-item',
                 columnWidth: '.masonry-sizer',
                 percentPosition: true,
-                gutter: 8,  // Reduced gutter for tighter collage
+                gutter: 8,
                 fitWidth: false,
                 transitionDuration: '0.2s',
-                horizontalOrder: false,  // Allow vertical flow for better packing
-                initLayout: false  // We'll call layout manually after images load
+                horizontalOrder: false,
+                initLayout: false
+            });
+
+            // Progressive layout updates as images load
+            const images = container.querySelectorAll('img');
+            let layoutTimer;
+
+            const scheduleLayout = () => {
+                clearTimeout(layoutTimer);
+                layoutTimer = setTimeout(() => {
+                    if (masonryInstance) {
+                        masonryInstance.layout();
+                    }
+                }, 100);
+            };
+
+            images.forEach((img) => {
+                if (!img.complete || img.naturalHeight === 0) {
+                    img.addEventListener('load', scheduleLayout, { once: true });
+                    img.addEventListener('error', scheduleLayout, { once: true });
+                }
             });
 
             // Initial layout
             masonryInstance.layout();
-        };
 
-        // Initialize masonry
-        initMasonry();
-
-        // Re-layout when each image loads for dynamic heights
-        let loadedCount = 0;
-        const images = container.querySelectorAll('img');
-        const totalImages = images.length;
-
-        images.forEach((img) => {
-            if (img.complete && img.naturalHeight !== 0) {
-                loadedCount++;
-                if (loadedCount === totalImages) {
-                    setTimeout(() => masonryInstance && masonryInstance.layout(), 100);
+            // Final layout after all images should be loaded
+            setTimeout(() => {
+                if (masonryInstance) {
+                    masonryInstance.layout();
                 }
-            } else {
-                img.addEventListener('load', () => {
-                    loadedCount++;
-                    // Re-layout after each image loads for better progressive display
-                    masonryInstance && masonryInstance.layout();
-                }, { once: true });
+            }, 1000);
+        }
+    }
 
-                img.addEventListener('error', () => {
-                    loadedCount++;
-                    if (loadedCount === totalImages) {
-                        masonryInstance && masonryInstance.layout();
+    /**
+     * Handle appending new items to existing Masonry layout
+     * @param {Array} newElements - New DOM elements to append
+     */
+    function handleMasonryAppend(newElements) {
+        if (!masonryInstance || !newElements || newElements.length === 0) {
+            return;
+        }
+
+        // Check if imagesLoaded is available
+        if (typeof imagesLoaded === 'function') {
+            // Use imagesLoaded for proper append timing
+            masonryInstance.appended(newElements);
+
+            imagesLoaded(newElements, function() {
+                // Layout after all new images are loaded
+                if (masonryInstance) {
+                    masonryInstance.layout();
+                }
+            });
+        } else {
+            // Fallback: append and layout with progressive updates
+            masonryInstance.appended(newElements);
+
+            // Collect all images from new elements
+            const newImages = [];
+            newElements.forEach(element => {
+                const imgs = element.querySelectorAll('img');
+                imgs.forEach(img => newImages.push(img));
+            });
+
+            let layoutTimer;
+            const scheduleLayout = () => {
+                clearTimeout(layoutTimer);
+                layoutTimer = setTimeout(() => {
+                    if (masonryInstance) {
+                        masonryInstance.layout();
                     }
-                }, { once: true });
-            }
-        });
+                }, 100);
+            };
+
+            // Set up load handlers for each new image
+            newImages.forEach((img) => {
+                if (!img.complete || img.naturalHeight === 0) {
+                    img.addEventListener('load', scheduleLayout, { once: true });
+                    img.addEventListener('error', scheduleLayout, { once: true });
+                }
+            });
+
+            // Initial layout of new items
+            masonryInstance.layout();
+
+            // Safety layout after expected load time
+            setTimeout(() => {
+                if (masonryInstance) {
+                    masonryInstance.layout();
+                }
+            }, 1000);
+        }
     }
 
     // Global functions for button actions
