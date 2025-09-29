@@ -580,8 +580,8 @@ class ThumbnailModal {
 
     showError(message) {
         // Show error notification
-        if (window.NotificationManager) {
-            window.NotificationManager.show(message, 'error');
+        if (window.NotificationService) {
+            window.NotificationService.show(message, 'error');
         } else {
             alert(message);
         }
