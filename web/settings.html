@@ -10,6 +10,143 @@
     <link rel="stylesheet" href="/prompt_manager/css/settings.css" />
     <link rel="stylesheet" href="/prompt_manager/css/notifications.css" />
     <link rel="stylesheet" href="/prompt_manager/css/migration.css" />
+    <style>
+      /* Simple notification styles */
+      .notification-container {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        z-index: 10000;
+        max-width: 400px;
+      }
+
+      .notification {
+        padding: 12px 20px;
+        margin-bottom: 10px;
+        border-radius: 6px;
+        color: #fff;
+        font-size: 14px;
+        animation: slideIn 0.3s ease-out;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      }
+
+      .notification.success {
+        background: #00cc66;
+      }
+
+      .notification.error {
+        background: #cc0000;
+      }
+
+      .notification.warning {
+        background: #cc6600;
+      }
+
+      .notification.info {
+        background: #0066cc;
+      }
+
+      @keyframes slideIn {
+        from {
+          transform: translateX(100%);
+          opacity: 0;
+        }
+        to {
+          transform: translateX(0);
+          opacity: 1;
+        }
+      }
+
+      @keyframes slideOut {
+        from {
+          transform: translateX(0);
+          opacity: 1;
+        }
+        to {
+          transform: translateX(100%);
+          opacity: 0;
+        }
+      }
+
+      /* Maintenance Section Styles */
+      .maintenance-stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 15px;
+        margin-top: 15px;
+      }
+
+      .stat-card {
+        background: #0a0a0a;
+        border: 1px solid #2a2a2a;
+        border-radius: 6px;
+        padding: 15px;
+        text-align: center;
+      }
+
+      .stat-card.warning {
+        border-color: #cc6600;
+        background: rgba(204, 102, 0, 0.1);
+      }
+
+      .stat-card.error {
+        border-color: #cc0000;
+        background: rgba(204, 0, 0, 0.1);
+      }
+
+      .stat-card.success {
+        border-color: #00cc66;
+        background: rgba(0, 204, 102, 0.1);
+      }
+
+      .stat-value {
+        font-size: 24px;
+        font-weight: bold;
+        color: #fff;
+        margin-bottom: 5px;
+      }
+
+      .stat-label {
+        font-size: 12px;
+        color: #888;
+        text-transform: uppercase;
+      }
+
+      .maintenance-actions-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+        gap: 12px;
+        margin-top: 15px;
+      }
+
+      .maintenance-action {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        justify-content: flex-start;
+      }
+
+      /* Community Section Styles */
+      .uuid-section {
+        background: #0a0a0a;
+        border: 1px solid #2a2a2a;
+        border-radius: 6px;
+        padding: 16px;
+        margin-top: 10px;
+      }
+
+      .uuid-display {
+        font-family: 'Courier New', monospace;
+        font-size: 14px;
+        color: #0cc;
+        word-break: break-all;
+        margin-bottom: 12px;
+        padding: 10px;
+        background: #1a1a1a;
+        border-radius: 4px;
+        border: 1px solid #2a2a2a;
+      }
+    </style>
       <link
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
@@ -146,6 +283,12 @@
 
               <div class="settings-nav-group">
                 <h3 class="settings-nav-title">System</h3>
+                <a class="settings-nav-item" data-section="maintenance">
+                  <i class="fa-solid fa-tools" aria-hidden="true"></i> Maintenance
+                </a>
+                <a class="settings-nav-item" data-section="community">
+                  <i class="fa-solid fa-globe" aria-hidden="true"></i> Community
+                </a>
                 <a class="settings-nav-item" data-section="logging">
                   <i class="fa-solid fa-pen" aria-hidden="true"></i> Logging
                 </a>
@@ -241,6 +384,134 @@
                       </button>
                       <button class="btn btn-secondary">Export Database</button>
                       <button class="btn btn-secondary">Import Database</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Maintenance Section -->
+              <section class="settings-section" id="maintenance">
+                <div class="card">
+                  <h3 class="settings-category-header">
+                    <span class="settings-category-icon"><i class="fa-solid fa-tools" aria-hidden="true"></i></span>
+                    System Maintenance
+                  </h3>
+
+                  <!-- Statistics -->
+                  <div class="form-group full-width">
+                    <div class="form-label">
+                      <span class="label-text">Database Statistics</span>
+                      <span class="label-hint">Current system status and health metrics</span>
+                    </div>
+                    <div class="maintenance-stats-grid">
+                      <div class="stat-card">
+                        <div class="stat-value" id="stat-prompts">-</div>
+                        <div class="stat-label">Prompts</div>
+                      </div>
+                      <div class="stat-card">
+                        <div class="stat-value" id="stat-images">-</div>
+                        <div class="stat-label">Images</div>
+                      </div>
+                      <div class="stat-card warning" id="stat-duplicates-container">
+                        <div class="stat-value" id="stat-duplicates">-</div>
+                        <div class="stat-label">Duplicate Links</div>
+                      </div>
+                      <div class="stat-card error" id="stat-orphaned-container">
+                        <div class="stat-value" id="stat-orphaned">-</div>
+                        <div class="stat-label">Orphaned Images</div>
+                      </div>
+                      <div class="stat-card error" id="stat-missing-container">
+                        <div class="stat-value" id="stat-missing">-</div>
+                        <div class="stat-label">Missing Files</div>
+                      </div>
+                      <div class="stat-card">
+                        <div class="stat-value" id="stat-size">-</div>
+                        <div class="stat-label">Database Size</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="settings-divider"></div>
+
+                  <!-- Maintenance Actions -->
+                  <div class="form-group full-width">
+                    <div class="form-label">
+                      <span class="label-text">Maintenance Operations</span>
+                      <span class="label-hint">Keep your database optimized and clean</span>
+                    </div>
+                    <div class="maintenance-actions-grid">
+                      <button class="btn btn-secondary maintenance-action" data-action="remove-duplicates">
+                        <i class="fa-solid fa-copy" aria-hidden="true"></i> Remove Duplicate Links
+                      </button>
+                      <button class="btn btn-secondary maintenance-action" data-action="clean-orphans">
+                        <i class="fa-solid fa-broom" aria-hidden="true"></i> Clean Orphaned Images
+                      </button>
+                      <button class="btn btn-secondary maintenance-action" data-action="optimize">
+                        <i class="fa-solid fa-bolt" aria-hidden="true"></i> Optimize Database
+                      </button>
+                      <button class="btn btn-primary maintenance-action" data-action="backup">
+                        <i class="fa-solid fa-save" aria-hidden="true"></i> Backup Database
+                      </button>
+                      <button class="btn btn-secondary maintenance-action" data-action="calculate-epic-stats">
+                        <i class="fa-solid fa-chart-bar" aria-hidden="true"></i> Calculate Epic Stats
+                      </button>
+                      <button class="btn btn-secondary maintenance-action" data-action="calculate-word-cloud">
+                        <i class="fa-solid fa-cloud" aria-hidden="true"></i> Generate Word Cloud
+                      </button>
+                      <button class="btn btn-secondary maintenance-action" data-action="tag-missing-images">
+                        <i class="fa-solid fa-tags" aria-hidden="true"></i> Tag Missing Images
+                      </button>
+                      <button class="btn btn-secondary maintenance-action" data-action="export">
+                        <i class="fa-solid fa-file-export" aria-hidden="true"></i> Export All Data
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Community Section -->
+              <section class="settings-section" id="community">
+                <div class="card">
+                  <h3 class="settings-category-header">
+                    <span class="settings-category-icon"><i class="fa-solid fa-globe" aria-hidden="true"></i></span>
+                    Community Integration
+                  </h3>
+
+                  <!-- CivitAI Integration -->
+                  <div class="form-group full-width">
+                    <div class="form-label">
+                      <span class="label-text">CivitAI API Key</span>
+                      <span class="label-hint">Connect with CivitAI for model metadata and community features</span>
+                    </div>
+                    <div class="input-with-button">
+                      <input type="password" class="search-input" id="civitai-api-key" placeholder="Enter your CivitAI API key" autocomplete="off">
+                      <button class="btn btn-primary" id="save-civitai-key">Save Key</button>
+                    </div>
+                    <div style="margin-top: 10px;">
+                      <a href="https://civitai.com/user/account#api-keys" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">
+                        <i class="fa-solid fa-key" aria-hidden="true"></i> Get CivitAI API Key <i class="fa-solid fa-external-link-alt" aria-hidden="true"></i>
+                      </a>
+                    </div>
+                  </div>
+
+                  <div class="settings-divider"></div>
+
+                  <!-- PromptManager UUID -->
+                  <div class="form-group full-width">
+                    <div class="form-label">
+                      <span class="label-text">PromptManager Instance ID</span>
+                      <span class="label-hint">Unique identifier for analytics and sharing features</span>
+                    </div>
+                    <div class="uuid-section">
+                      <div class="uuid-display" id="promptmanager-uuid">No UUID generated yet</div>
+                      <div class="settings-action-buttons">
+                        <button class="btn btn-primary" id="generate-uuid">
+                          <i class="fa-solid fa-id-card" aria-hidden="true"></i> Generate New UUID
+                        </button>
+                        <button class="btn btn-secondary" id="copy-uuid">
+                          <i class="fa-solid fa-clipboard" aria-hidden="true"></i> Copy to Clipboard
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1688,5 +1959,370 @@
 
     <script src="/prompt_manager/js/settings.js"></script>
     <script src="/prompt_manager/js/settings-page.js"></script>
+
+    <!-- Maintenance and Community Settings JavaScript -->
+    <script>
+      // Create notification container if it doesn't exist
+      function ensureNotificationContainer() {
+        let container = document.getElementById('notification-container');
+        if (!container) {
+          container = document.createElement('div');
+          container.id = 'notification-container';
+          container.className = 'notification-container';
+          document.body.appendChild(container);
+        }
+        return container;
+      }
+
+      // Helper function for notifications
+      function showNotification(message, type = 'info') {
+        // Use the correct NotificationService that your system uses
+        if (window.NotificationService) {
+          window.NotificationService.show(message, type);
+        } else if (window.NotificationManager) {
+          // Fallback to NotificationManager
+          switch(type) {
+            case 'success':
+              window.NotificationManager.success(message);
+              break;
+            case 'error':
+              window.NotificationManager.error(message);
+              break;
+            case 'warning':
+              window.NotificationManager.warning(message);
+              break;
+            default:
+              window.NotificationManager.info(message);
+          }
+        } else {
+          // Create our own simple notification
+          console.log(`[${type.toUpperCase()}] ${message}`);
+
+          const container = ensureNotificationContainer();
+          const notification = document.createElement('div');
+          notification.className = `notification ${type}`;
+          notification.textContent = message;
+
+          container.appendChild(notification);
+
+          // Auto-remove after 5 seconds
+          setTimeout(() => {
+            notification.style.animation = 'slideOut 0.3s ease-in';
+            setTimeout(() => {
+              notification.remove();
+            }, 300);
+          }, 5000);
+        }
+      }
+
+      // Load maintenance statistics when page loads
+      document.addEventListener('DOMContentLoaded', function() {
+        // Debug: Check what notification systems are available
+        console.log('Notification systems available:', {
+          NotificationService: !!window.NotificationService,
+          NotificationManager: !!window.NotificationManager,
+          ToastManager: !!window.ToastManager
+        });
+
+        // Load stats when maintenance section becomes visible
+        const maintenanceSection = document.getElementById('maintenance');
+        if (maintenanceSection) {
+          loadMaintenanceStats();
+        }
+
+        // Initialize maintenance action handlers
+        initMaintenanceActions();
+
+        // Initialize community settings
+        initCommunitySettings();
+      });
+
+      async function loadMaintenanceStats() {
+        try {
+          const response = await fetch('/api/prompt_manager/maintenance/stats');
+          const data = await response.json();
+
+          if (data.success) {
+            updateMaintenanceStats(data.stats);
+          }
+        } catch (error) {
+          console.error('Failed to load maintenance statistics:', error);
+        }
+      }
+
+      function updateMaintenanceStats(stats) {
+        document.getElementById('stat-prompts').textContent = stats.prompts.toLocaleString();
+        document.getElementById('stat-images').textContent = stats.images.toLocaleString();
+        document.getElementById('stat-duplicates').textContent = stats.duplicates.toLocaleString();
+        document.getElementById('stat-orphaned').textContent = stats.orphaned.toLocaleString();
+        document.getElementById('stat-missing').textContent =
+          stats.missing_files >= 0 ? stats.missing_files.toLocaleString() : 'Not calculated';
+
+        // Format database size
+        const sizeMB = (stats.database_size / (1024 * 1024)).toFixed(2);
+        document.getElementById('stat-size').textContent = `${sizeMB} MB`;
+
+        // Update container classes based on values
+        const duplicatesContainer = document.getElementById('stat-duplicates-container');
+        if (duplicatesContainer) {
+          duplicatesContainer.className = stats.duplicates > 0 ? 'stat-card warning' : 'stat-card success';
+        }
+
+        const orphanedContainer = document.getElementById('stat-orphaned-container');
+        if (orphanedContainer) {
+          orphanedContainer.className = stats.orphaned > 0 ? 'stat-card error' : 'stat-card success';
+        }
+
+        const missingContainer = document.getElementById('stat-missing-container');
+        if (missingContainer) {
+          missingContainer.className = stats.missing_files > 0 ? 'stat-card error' : 'stat-card success';
+        }
+      }
+
+      function initMaintenanceActions() {
+        const actionButtons = document.querySelectorAll('.maintenance-action');
+
+        actionButtons.forEach(button => {
+          button.addEventListener('click', async function(e) {
+            e.preventDefault();
+            const action = this.dataset.action;
+            await executeMaintenanceAction(action);
+          });
+        });
+      }
+
+      async function executeMaintenanceAction(action) {
+        // Map actions to their API endpoints
+        const actionMap = {
+          'remove-duplicates': '/api/prompt_manager/maintenance/deduplicate',
+          'clean-orphans': '/api/prompt_manager/maintenance/clean-orphans',
+          'optimize': '/api/prompt_manager/maintenance/optimize',
+          'backup': '/api/prompt_manager/maintenance/backup',
+          'calculate-epic-stats': '/api/prompt_manager/maintenance/calculate-epic-stats',
+          'calculate-word-cloud': '/api/prompt_manager/maintenance/calculate-word-cloud',
+          'tag-missing-images': '/api/prompt_manager/maintenance/tag-missing-images',
+          'export': '/api/prompt_manager/maintenance/export'
+        };
+
+        const endpoint = actionMap[action];
+        if (!endpoint) {
+          showNotification('Unknown action', 'error');
+          return;
+        }
+
+        // Show progress notification for long-running operations
+        const progressMessages = {
+          'calculate-epic-stats': 'Calculating comprehensive statistics...',
+          'calculate-word-cloud': 'Generating word cloud data...',
+          'optimize': 'Optimizing database...',
+          'backup': 'Creating backup...',
+          'export': 'Exporting data...',
+          'remove-duplicates': 'Removing duplicate links...',
+          'clean-orphans': 'Cleaning orphaned images...',
+          'tag-missing-images': 'Tagging missing images...'
+        };
+
+        const progressMessage = progressMessages[action] || `Executing ${action}...`;
+
+        // Show progress notification
+        showNotification(progressMessage, 'info');
+
+        // Disable the button during operation
+        const button = document.querySelector(`[data-action="${action}"]`);
+        if (button) {
+          button.disabled = true;
+          button.style.opacity = '0.5';
+          button.style.cursor = 'wait';
+        }
+
+        try {
+          console.log(`Executing maintenance action: ${action} -> ${endpoint}`);
+
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            }
+          });
+
+          // Check if response is ok
+          if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`Server error (${response.status}):`, errorText);
+
+            // Try to parse as JSON for better error message
+            let errorMessage = `Server error: ${response.status}`;
+            try {
+              const errorData = JSON.parse(errorText);
+              errorMessage = errorData.error || errorData.message || errorMessage;
+            } catch (e) {
+              // If not JSON, use the text if it's short
+              if (errorText && errorText.length < 200) {
+                errorMessage = errorText;
+              }
+            }
+
+            throw new Error(errorMessage);
+          }
+
+          const data = await response.json();
+          console.log(`Maintenance action ${action} response:`, data);
+
+          if (data.success) {
+            showNotification(data.message || `${action} completed successfully`, 'success');
+
+            // Reload stats after action
+            loadMaintenanceStats();
+
+            // Show results if available
+            if (data.stats) {
+              console.log('Operation stats:', data.stats);
+            }
+            if (data.affected_count !== undefined) {
+              showNotification(`Affected items: ${data.affected_count}`, 'info');
+            }
+          } else {
+            const errorMsg = data.error || data.message || 'Operation failed';
+            showNotification(errorMsg, 'error');
+          }
+        } catch (error) {
+          console.error(`Failed to execute ${action}:`, error);
+          showNotification(`Failed: ${error.message}`, 'error');
+        } finally {
+          // Re-enable the button
+          if (button) {
+            button.disabled = false;
+            button.style.opacity = '';
+            button.style.cursor = '';
+          }
+        }
+      }
+
+      async function initCommunitySettings() {
+        // Load existing settings
+        await loadCommunitySettings();
+
+        // CivitAI API Key
+        const saveKeyBtn = document.getElementById('save-civitai-key');
+        const apiKeyInput = document.getElementById('civitai-api-key');
+
+        if (saveKeyBtn && apiKeyInput) {
+          saveKeyBtn.addEventListener('click', async function() {
+            const apiKey = apiKeyInput.value.trim();
+
+            try {
+              const response = await fetch('/api/prompt_manager/settings/civitai_api_key', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ value: apiKey })
+              });
+
+              const data = await response.json();
+              if (data.success) {
+                if (window.NotificationManager) {
+                  window.NotificationManager.success('CivitAI API key saved successfully');
+                }
+                apiKeyInput.value = '';
+                apiKeyInput.placeholder = 'API key configured (hidden)';
+              } else {
+                if (window.NotificationManager) {
+                  window.NotificationManager.error('Failed to save API key');
+                }
+              }
+            } catch (error) {
+              if (window.NotificationManager) {
+                window.NotificationManager.error('Error saving API key');
+              }
+            }
+          });
+        }
+
+        // UUID Generator
+        const generateBtn = document.getElementById('generate-uuid');
+        const copyBtn = document.getElementById('copy-uuid');
+        const uuidDisplay = document.getElementById('promptmanager-uuid');
+
+        if (generateBtn) {
+          generateBtn.addEventListener('click', async function() {
+            try {
+              const response = await fetch('/api/prompt_manager/settings/generate_uuid', {
+                method: 'POST'
+              });
+
+              const data = await response.json();
+              if (data.success && data.uuid) {
+                uuidDisplay.textContent = data.uuid;
+                if (window.NotificationManager) {
+                  window.NotificationManager.success('New UUID generated');
+                }
+              } else {
+                if (window.NotificationManager) {
+                  window.NotificationManager.error('Failed to generate UUID');
+                }
+              }
+            } catch (error) {
+              if (window.NotificationManager) {
+                window.NotificationManager.error('Error generating UUID');
+              }
+            }
+          });
+        }
+
+        if (copyBtn) {
+          copyBtn.addEventListener('click', function() {
+            const uuid = uuidDisplay.textContent;
+            if (uuid && uuid !== 'No UUID generated yet') {
+              navigator.clipboard.writeText(uuid).then(() => {
+                if (window.NotificationManager) {
+                  window.NotificationManager.success('UUID copied to clipboard');
+                }
+              }).catch(() => {
+                if (window.NotificationManager) {
+                  window.NotificationManager.error('Failed to copy UUID');
+                }
+              });
+            } else {
+              if (window.NotificationManager) {
+                window.NotificationManager.warning('No UUID to copy');
+              }
+            }
+          });
+        }
+      }
+
+      async function loadCommunitySettings() {
+        try {
+          const response = await fetch('/api/prompt_manager/settings/community');
+          const data = await response.json();
+
+          if (data.success) {
+            // Load CivitAI API key (show masked)
+            if (data.settings.civitai_api_key) {
+              const apiKeyInput = document.getElementById('civitai-api-key');
+              if (apiKeyInput) {
+                apiKeyInput.placeholder = 'API key configured (hidden)';
+              }
+            }
+
+            // Load UUID
+            if (data.settings.promptmanager_uuid) {
+              const uuidDisplay = document.getElementById('promptmanager-uuid');
+              if (uuidDisplay) {
+                uuidDisplay.textContent = data.settings.promptmanager_uuid;
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Failed to load community settings:', error);
+        }
+      }
+
+      // Listen for section changes to load maintenance stats when needed
+      document.addEventListener('click', function(e) {
+        if (e.target.matches('.settings-nav-item[data-section="maintenance"]')) {
+          loadMaintenanceStats();
+        }
+      });
+    </script>
   </body>
 </html>
