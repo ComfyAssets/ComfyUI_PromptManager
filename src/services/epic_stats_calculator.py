@@ -20,7 +20,52 @@ class EpicStatsCalculator:
         """Initialize the calculator with database path."""
         self.db_path = db_path
         self.stats_data = {}
+        self._detect_columns()
         self._ensure_stats_tables()
+
+    def _detect_columns(self):
+        """Detect which columns actually exist in the database."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("PRAGMA table_info(generated_images)")
+                columns = {row[1] for row in cursor.fetchall()}
+
+                # Detect time column
+                if 'created_at' in columns:
+                    self.time_column = 'created_at'
+                elif 'generation_time' in columns:
+                    self.time_column = 'generation_time'
+                else:
+                    self.time_column = 'created_at'  # default
+
+                # Detect workflow column
+                if 'workflow' in columns:
+                    self.workflow_column = 'workflow'
+                elif 'workflow_data' in columns:
+                    self.workflow_column = 'workflow_data'
+                else:
+                    self.workflow_column = 'workflow'  # default
+
+                # Detect prompt column - v1 doesn't have prompt text in generated_images
+                if 'prompt_text' in columns:
+                    self.prompt_column = 'prompt_text'
+                elif 'prompt' in columns:
+                    self.prompt_column = 'prompt'
+                else:
+                    self.prompt_column = None  # No direct prompt column
+
+                # Check for rating column
+                self.has_rating = 'rating' in columns
+
+                logger.info(f"Detected columns: time={self.time_column}, workflow={self.workflow_column}, prompt={self.prompt_column}, has_rating={self.has_rating}")
+
+        except Exception as e:
+            logger.warning(f"Failed to detect columns, using defaults: {e}")
+            self.time_column = 'created_at'
+            self.workflow_column = 'workflow'
+            self.prompt_column = None
+            self.has_rating = True
 
     def _ensure_stats_tables(self):
         """Ensure all required stats tables exist."""
@@ -160,7 +205,7 @@ class EpicStatsCalculator:
                 cursor = conn.cursor()
 
                 # Track progress
-                total_steps = 10
+                total_steps = 12
                 current_step = 0
 
                 def update_progress(message):
@@ -219,6 +264,16 @@ class EpicStatsCalculator:
                 self._calculate_sampler_usage(cursor)
                 results['stats_calculated'] += 1
 
+                # Step 11: Calculate hero stats for dashboard
+                update_progress("Calculating hero statistics...")
+                self._calculate_hero_stats(cursor)
+                results['stats_calculated'] += 1
+
+                # Step 12: Calculate generation analytics
+                update_progress("Calculating generation analytics...")
+                self._calculate_generation_analytics(cursor)
+                results['stats_calculated'] += 1
+
                 # Update metadata
                 calculation_time_ms = int((time.time() - start_time) * 1000)
                 cursor.execute("""
@@ -247,7 +302,7 @@ class EpicStatsCalculator:
             # Clear existing data
             cursor.execute("DELETE FROM stats_hourly_activity")
 
-            # Get hourly prompt counts
+            # Get hourly prompt counts (prompts table always has created_at)
             cursor.execute("""
                 SELECT
                     CAST(strftime('%H', created_at) AS INTEGER) as hour,
@@ -259,12 +314,13 @@ class EpicStatsCalculator:
 
             prompt_hours = {row[0]: row[1] for row in cursor.fetchall()}
 
-            # Get hourly image counts
-            cursor.execute("""
+            # Get hourly image counts using detected time column
+            cursor.execute(f"""
                 SELECT
-                    CAST(strftime('%H', generation_time) AS INTEGER) as hour,
+                    CAST(strftime('%H', {self.time_column}) AS INTEGER) as hour,
                     COUNT(*) as count
                 FROM generated_images
+                WHERE {self.time_column} IS NOT NULL
                 GROUP BY hour
             """)
 
@@ -396,21 +452,48 @@ class EpicStatsCalculator:
         try:
             cursor.execute("DELETE FROM stats_model_usage")
 
-            # Get model usage stats - note: generated_images doesn't have checkpoint or model_hash columns
-            # We'll need to extract this from metadata if available
-            cursor.execute("""
-                SELECT
-                    COALESCE(json_extract(gi.parameters, '$.checkpoint'), 'Unknown') as checkpoint,
-                    COALESCE(json_extract(gi.parameters, '$.model_hash'), '') as model_hash,
-                    COUNT(*) as usage_count,
-                    AVG(p.rating) as avg_rating,
-                    MIN(gi.generation_time) as first_used,
-                    MAX(gi.generation_time) as last_used
-                FROM generated_images gi
-                LEFT JOIN prompts p ON gi.prompt_id = p.id
-                GROUP BY checkpoint
-                ORDER BY usage_count DESC
-            """)
+            # Check if checkpoint column exists
+            cursor.execute("PRAGMA table_info(generated_images)")
+            columns = {row[1] for row in cursor.fetchall()}
+            has_checkpoint = 'checkpoint' in columns
+            has_model_hash = 'model_hash' in columns
+
+            if not has_checkpoint and not has_model_hash:
+                # No model columns, skip this calculation
+                logger.info("No checkpoint/model_hash columns, skipping model usage stats")
+                return
+
+            # Get model usage stats
+            if self.has_rating:
+                cursor.execute(f"""
+                    SELECT
+                        COALESCE(gi.checkpoint, 'Unknown') as checkpoint,
+                        COALESCE(gi.model_hash, '') as model_hash,
+                        COUNT(*) as usage_count,
+                        AVG(gi.rating) as avg_rating,
+                        MIN(gi.{self.time_column}) as first_used,
+                        MAX(gi.{self.time_column}) as last_used
+                    FROM generated_images gi
+                    WHERE gi.checkpoint IS NOT NULL OR gi.model_hash IS NOT NULL
+                    GROUP BY gi.checkpoint, gi.model_hash
+                    ORDER BY usage_count DESC
+                """)
+            else:
+                # No rating column, need to join with prompts if it exists
+                cursor.execute(f"""
+                    SELECT
+                        COALESCE(gi.checkpoint, 'Unknown') as checkpoint,
+                        COALESCE(gi.model_hash, '') as model_hash,
+                        COUNT(*) as usage_count,
+                        AVG(p.rating) as avg_rating,
+                        MIN(gi.{self.time_column}) as first_used,
+                        MAX(gi.{self.time_column}) as last_used
+                    FROM generated_images gi
+                    LEFT JOIN prompts p ON gi.prompt_id = p.id
+                    WHERE gi.checkpoint IS NOT NULL OR gi.model_hash IS NOT NULL
+                    GROUP BY gi.checkpoint, gi.model_hash
+                    ORDER BY usage_count DESC
+                """)
 
             models = cursor.fetchall()
 
@@ -433,9 +516,9 @@ class EpicStatsCalculator:
             cursor.execute("DELETE FROM stats_rating_trends")
 
             # Daily trends for last 30 days
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT
-                    DATE(gi.generation_time) as period_date,
+                    DATE(gi.{self.time_column}) as period_date,
                     AVG(CASE WHEN p.rating > 0 THEN p.rating END) as avg_rating,
                     COUNT(CASE WHEN p.rating > 0 THEN 1 END) as total_ratings,
                     COUNT(CASE WHEN p.rating = 5 THEN 1 END) as five_star,
@@ -446,7 +529,7 @@ class EpicStatsCalculator:
                     COUNT(CASE WHEN p.rating = 0 OR p.rating IS NULL THEN 1 END) as unrated
                 FROM generated_images gi
                 LEFT JOIN prompts p ON gi.prompt_id = p.id
-                WHERE gi.generation_time >= date('now', '-30 days')
+                WHERE gi.{self.time_column} >= date('now', '-30 days')
                 GROUP BY period_date
             """)
 
@@ -462,9 +545,9 @@ class EpicStatsCalculator:
                 """, row)
 
             # Weekly trends for last 12 weeks
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT
-                    DATE(gi.generation_time, 'weekday 0', '-6 days') as week_start,
+                    DATE(gi.{self.time_column}, 'weekday 0', '-6 days') as week_start,
                     AVG(CASE WHEN p.rating > 0 THEN p.rating END) as avg_rating,
                     COUNT(CASE WHEN p.rating > 0 THEN 1 END) as total_ratings,
                     COUNT(CASE WHEN p.rating = 5 THEN 1 END) as five_star,
@@ -475,7 +558,7 @@ class EpicStatsCalculator:
                     COUNT(CASE WHEN p.rating = 0 OR p.rating IS NULL THEN 1 END) as unrated
                 FROM generated_images gi
                 LEFT JOIN prompts p ON gi.prompt_id = p.id
-                WHERE gi.generation_time >= date('now', '-84 days')
+                WHERE gi.{self.time_column} >= date('now', '-84 days')
                 GROUP BY week_start
             """)
 
@@ -502,16 +585,28 @@ class EpicStatsCalculator:
             cursor.execute("DELETE FROM stats_workflow_complexity WHERE workflow_count > 0")
 
             # Get workflow data
-            cursor.execute("""
-                SELECT
-                    gi.workflow_data as workflow,
-                    COUNT(*) as count,
-                    AVG(p.rating) as avg_rating
-                FROM generated_images gi
-                LEFT JOIN prompts p ON gi.prompt_id = p.id
-                WHERE gi.workflow_data IS NOT NULL AND gi.workflow_data != '{}'
-                GROUP BY gi.workflow_data
-            """)
+            if self.has_rating:
+                cursor.execute(f"""
+                    SELECT
+                        gi.{self.workflow_column} as workflow,
+                        COUNT(*) as count,
+                        AVG(gi.rating) as avg_rating
+                    FROM generated_images gi
+                    WHERE gi.{self.workflow_column} IS NOT NULL AND gi.{self.workflow_column} != '{{}}' AND gi.{self.workflow_column} != ''
+                    GROUP BY gi.{self.workflow_column}
+                """)
+            else:
+                # No rating column in v1, join with prompts if needed
+                cursor.execute(f"""
+                    SELECT
+                        gi.{self.workflow_column} as workflow,
+                        COUNT(*) as count,
+                        AVG(p.rating) as avg_rating
+                    FROM generated_images gi
+                    LEFT JOIN prompts p ON gi.prompt_id = p.id
+                    WHERE gi.{self.workflow_column} IS NOT NULL AND gi.{self.workflow_column} != '{{}}' AND gi.{self.workflow_column} != ''
+                    GROUP BY gi.{self.workflow_column}
+                """)
 
             complexity_stats = {
                 'simple': {'count': 0, 'ratings': []},
@@ -566,9 +661,9 @@ class EpicStatsCalculator:
             cursor.execute("DELETE FROM stats_time_patterns")
 
             # Find peak hour
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT
-                    CAST(strftime('%H', generation_time) AS INTEGER) as hour,
+                    CAST(strftime('%H', {self.time_column}) AS INTEGER) as hour,
                     COUNT(*) as count
                 FROM generated_images
                 GROUP BY hour
@@ -585,9 +680,9 @@ class EpicStatsCalculator:
                        f"Peak activity at {peak_hour[0]:02d}:00"))
 
             # Find most productive day of week
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT
-                    strftime('%w', generation_time) as day_of_week,
+                    strftime('%w', {self.time_column}) as day_of_week,
                     COUNT(*) as count
                 FROM generated_images
                 GROUP BY day_of_week
@@ -616,10 +711,22 @@ class EpicStatsCalculator:
         try:
             cursor.execute("DELETE FROM stats_prompt_patterns")
 
-            # Get all prompts
-            cursor.execute("""
-                SELECT positive_prompt FROM prompts
-                WHERE positive_prompt IS NOT NULL
+            # Get all prompts - check which column exists in prompts table
+            cursor.execute("PRAGMA table_info(prompts)")
+            prompts_columns = {row[1] for row in cursor.fetchall()}
+
+            if 'prompt' in prompts_columns:
+                prompt_col = 'prompt'
+            elif 'positive_prompt' in prompts_columns:
+                prompt_col = 'positive_prompt'
+            else:
+                # No prompts table or no prompt column
+                logger.info("No prompt column in prompts table, skipping prompt patterns")
+                return
+
+            cursor.execute(f"""
+                SELECT {prompt_col} FROM prompts
+                WHERE {prompt_col} IS NOT NULL AND {prompt_col} != ''
             """)
 
             prompts = [row[0] for row in cursor.fetchall()]
@@ -696,11 +803,11 @@ class EpicStatsCalculator:
             """, (avg_rating,))
 
             # Last 30 days metrics
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT COUNT(*), AVG(p.rating)
                 FROM generated_images gi
                 LEFT JOIN prompts p ON gi.prompt_id = p.id
-                WHERE gi.generation_time >= date('now', '-30 days')
+                WHERE gi.{self.time_column} >= date('now', '-30 days')
             """)
 
             month_count, month_rating = cursor.fetchone()
@@ -726,33 +833,26 @@ class EpicStatsCalculator:
         try:
             cursor.execute("DELETE FROM stats_sampler_usage")
 
-            # Try to extract sampler info from parameters JSON or prompts table
+            # Check if sampler column exists
+            cursor.execute("PRAGMA table_info(generated_images)")
+            columns = {row[1] for row in cursor.fetchall()}
+            has_sampler = 'sampler' in columns
+
+            if not has_sampler:
+                # No sampler column, skip this calculation
+                logger.info("No sampler column, skipping sampler usage stats")
+                return
+
+            # Get sampler info directly from generated_images columns
             cursor.execute("""
                 SELECT
-                    COALESCE(
-                        json_extract(gi.parameters, '$.sampler'),
-                        json_extract(p.sampler_settings, '$.sampler_name'),
-                        'Unknown'
-                    ) as sampler,
+                    COALESCE(gi.sampler, 'Unknown') as sampler,
                     COUNT(*) as usage_count,
-                    AVG(
-                        CAST(COALESCE(
-                            json_extract(gi.parameters, '$.steps'),
-                            json_extract(p.sampler_settings, '$.steps'),
-                            20
-                        ) AS REAL)
-                    ) as avg_steps,
-                    AVG(
-                        CAST(COALESCE(
-                            json_extract(gi.parameters, '$.cfg_scale'),
-                            json_extract(p.sampler_settings, '$.cfg_scale'),
-                            7.0
-                        ) AS REAL)
-                    ) as avg_cfg
+                    AVG(CAST(COALESCE(gi.steps, 20) AS REAL)) as avg_steps,
+                    AVG(CAST(COALESCE(gi.cfg_scale, 7.0) AS REAL)) as avg_cfg
                 FROM generated_images gi
-                LEFT JOIN prompts p ON gi.prompt_id = p.id
-                GROUP BY sampler
-                HAVING sampler != 'Unknown'
+                WHERE gi.sampler IS NOT NULL
+                GROUP BY gi.sampler
                 ORDER BY usage_count DESC
             """)
 
@@ -785,6 +885,184 @@ class EpicStatsCalculator:
         while b:
             a, b = b, a % b
         return a
+
+    def _calculate_hero_stats(self, cursor):
+        """Calculate hero statistics for dashboard display."""
+        try:
+            # First ensure the table exists
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS stats_hero_stats (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    total_images INTEGER DEFAULT 0,
+                    total_prompts INTEGER DEFAULT 0,
+                    rated_count INTEGER DEFAULT 0,
+                    avg_rating REAL DEFAULT 0,
+                    five_star_count INTEGER DEFAULT 0,
+                    total_collections INTEGER DEFAULT 0,
+                    images_per_prompt REAL DEFAULT 0,
+                    generation_streak INTEGER DEFAULT 0,
+                    calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Get total images
+            cursor.execute("SELECT COUNT(*) FROM generated_images")
+            total_images = cursor.fetchone()[0] or 0
+
+            # Get total prompts (if prompts table exists)
+            try:
+                cursor.execute("SELECT COUNT(*) FROM prompts")
+                total_prompts = cursor.fetchone()[0] or 0
+            except:
+                # Fallback: count unique prompts from generated_images (if column exists)
+                if self.prompt_column:
+                    cursor.execute(f"SELECT COUNT(DISTINCT {self.prompt_column}) FROM generated_images WHERE {self.prompt_column} IS NOT NULL AND {self.prompt_column} != ''")
+                    total_prompts = cursor.fetchone()[0] or 0
+                else:
+                    total_prompts = 0
+
+            # Get rating statistics (check which table has ratings)
+            if self.has_rating:
+                cursor.execute("""
+                    SELECT
+                        COUNT(*) as rated_count,
+                        AVG(rating) as avg_rating,
+                        SUM(CASE WHEN rating = 5 THEN 1 ELSE 0 END) as five_star_count
+                    FROM generated_images
+                    WHERE rating IS NOT NULL AND rating > 0
+                """)
+            else:
+                # v1 has ratings in prompts table, not generated_images
+                cursor.execute("""
+                    SELECT
+                        COUNT(*) as rated_count,
+                        AVG(p.rating) as avg_rating,
+                        SUM(CASE WHEN p.rating = 5 THEN 1 ELSE 0 END) as five_star_count
+                    FROM generated_images gi
+                    INNER JOIN prompts p ON gi.prompt_id = p.id
+                    WHERE p.rating IS NOT NULL AND p.rating > 0
+                """)
+            rating_stats = cursor.fetchone()
+            rated_count = rating_stats[0] or 0
+            avg_rating = rating_stats[1] or 0
+            five_star_count = rating_stats[2] or 0
+
+            # Get total collections (tags/categories)
+            try:
+                cursor.execute("SELECT COUNT(DISTINCT tag) FROM image_tags")
+                total_collections = cursor.fetchone()[0] or 0
+            except:
+                total_collections = 0
+
+            # Calculate images per prompt
+            images_per_prompt = total_images / total_prompts if total_prompts > 0 else 0
+
+            # Calculate generation streak (consecutive days with generations)
+            cursor.execute(f"""
+                WITH generation_dates AS (
+                    SELECT DISTINCT DATE({self.time_column}) as gen_date
+                    FROM generated_images
+                    WHERE {self.time_column} IS NOT NULL
+                    ORDER BY gen_date DESC
+                ),
+                streak_calc AS (
+                    SELECT
+                        gen_date,
+                        gen_date - ROW_NUMBER() OVER (ORDER BY gen_date) AS streak_group
+                    FROM generation_dates
+                )
+                SELECT COUNT(*) as streak_length
+                FROM streak_calc
+                WHERE streak_group = (SELECT MAX(streak_group) FROM streak_calc)
+            """)
+            generation_streak = cursor.fetchone()[0] or 0
+
+            # Delete existing and insert new
+            cursor.execute("DELETE FROM stats_hero_stats")
+            cursor.execute("""
+                INSERT INTO stats_hero_stats
+                (id, total_images, total_prompts, rated_count, avg_rating,
+                 five_star_count, total_collections, images_per_prompt, generation_streak)
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (total_images, total_prompts, rated_count, avg_rating,
+                  five_star_count, total_collections, images_per_prompt, generation_streak))
+
+            logger.info(f"Calculated hero stats: {total_images} images, {total_prompts} prompts")
+
+        except Exception as e:
+            logger.error(f"Failed to calculate hero stats: {e}")
+            # Don't raise, continue with other stats
+
+    def _calculate_generation_analytics(self, cursor):
+        """Calculate generation analytics summary."""
+        try:
+            # First ensure the table exists
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS stats_generation_analytics (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    total_generations INTEGER DEFAULT 0,
+                    unique_prompts INTEGER DEFAULT 0,
+                    avg_per_day REAL DEFAULT 0,
+                    peak_day_count INTEGER DEFAULT 0,
+                    peak_day DATE,
+                    total_generation_time REAL DEFAULT 0,
+                    avg_generation_time REAL DEFAULT 0,
+                    calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Get total generations
+            cursor.execute("SELECT COUNT(*) FROM generated_images")
+            total_generations = cursor.fetchone()[0] or 0
+
+            # Get unique prompts (if column exists)
+            if self.prompt_column:
+                cursor.execute(f"SELECT COUNT(DISTINCT {self.prompt_column}) FROM generated_images WHERE {self.prompt_column} IS NOT NULL AND {self.prompt_column} != ''")
+                unique_prompts = cursor.fetchone()[0] or 0
+            else:
+                unique_prompts = 0
+
+            # Calculate average per day (using dynamic time column)
+            cursor.execute(f"""
+                SELECT
+                    COUNT(*) * 1.0 / MAX(1, julianday('now') - julianday(MIN({self.time_column})) + 1) as avg_per_day
+                FROM generated_images
+                WHERE {self.time_column} IS NOT NULL
+            """)
+            avg_per_day = cursor.fetchone()[0] or 0
+
+            # Find peak day
+            cursor.execute(f"""
+                SELECT DATE({self.time_column}) as gen_date, COUNT(*) as count
+                FROM generated_images
+                WHERE {self.time_column} IS NOT NULL
+                GROUP BY gen_date
+                ORDER BY count DESC
+                LIMIT 1
+            """)
+            peak_result = cursor.fetchone()
+            peak_day = peak_result[0] if peak_result else None
+            peak_day_count = peak_result[1] if peak_result else 0
+
+            # Calculate generation time stats (placeholder - would need actual timing data)
+            total_generation_time = 0
+            avg_generation_time = 0
+
+            # Delete existing and insert new
+            cursor.execute("DELETE FROM stats_generation_analytics")
+            cursor.execute("""
+                INSERT INTO stats_generation_analytics
+                (id, total_generations, unique_prompts, avg_per_day, peak_day_count,
+                 peak_day, total_generation_time, avg_generation_time)
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+            """, (total_generations, unique_prompts, avg_per_day, peak_day_count,
+                  peak_day, total_generation_time, avg_generation_time))
+
+            logger.info(f"Calculated generation analytics: {total_generations} generations, avg {avg_per_day:.1f}/day")
+
+        except Exception as e:
+            logger.error(f"Failed to calculate generation analytics: {e}")
+            # Don't raise, continue with other stats
 
     def get_all_stats(self) -> Dict[str, Any]:
         """

@@ -589,6 +589,7 @@ class EnhancedThumbnailService:
                 break
             batch_end = min(batch_start + BATCH_SIZE, len(tasks))
             batch_tasks = tasks[batch_start:batch_end]
+            batch_completed = []  # Track completed tasks for this batch only
 
             logger.info(f"Processing batch {batch_start//BATCH_SIZE + 1}: tasks {batch_start+1}-{batch_end} of {len(tasks)}")
 
@@ -610,6 +611,7 @@ class EnhancedThumbnailService:
                 try:
                     completed_task = future.result()
                     completed_tasks.append(completed_task)
+                    batch_completed.append(completed_task)  # Track for batch database update
 
                     # Update progress
                     if completed_task.status == ThumbnailStatus.GENERATED:
@@ -665,6 +667,10 @@ class EnhancedThumbnailService:
             logger.info(f"Batch complete: {self.current_progress.completed} completed, "
                        f"{self.current_progress.failed} failed, "
                        f"{self.current_progress.skipped} skipped")
+
+            # Update database after each batch to persist progress
+            if batch_completed:
+                await self._update_database(batch_completed)
 
             if cancelled:
                 break
@@ -723,27 +729,70 @@ class EnhancedThumbnailService:
         Args:
             tasks: Completed thumbnail tasks
         """
-        # Prepare batch update data
-        updates = []
+        # Group thumbnails by size
+        updates_by_size = {
+            'small': [],
+            'medium': [],
+            'large': [],
+            'xlarge': []
+        }
+
+        logger.info(f"[ThumbnailDB] _update_database called with {len(tasks)} tasks")
+
         for task in tasks:
             if task.status == ThumbnailStatus.GENERATED:
-                updates.append({
-                    'image_id': task.image_id,
-                    'thumbnail_path': str(task.thumbnail_path),
-                    'thumbnail_size': f"{task.size[0]}x{task.size[1]}",
-                    'thumbnail_created': task.created_at,
-                    'thumbnail_file_size': task.file_size
-                })
+                # Determine size name from dimensions
+                size_name = None
+                for name, dims in self.base_generator.SIZES.items():
+                    if dims == task.size:
+                        size_name = name
+                        break
 
-        if updates:
-            # Batch update database
-            # This assumes the database has been extended with thumbnail columns
-            # The actual implementation depends on your database schema
+                if size_name:
+                    updates_by_size[size_name].append({
+                        'image_path': str(task.source_path),
+                        'thumbnail_path': str(task.thumbnail_path)
+                    })
+                else:
+                    logger.warning(f"[ThumbnailDB] Could not determine size_name for task with size: {task.size}")
+
+        # Log grouped results
+        for size_name, updates in updates_by_size.items():
+            if updates:
+                logger.info(f"[ThumbnailDB] {size_name}: {len(updates)} updates")
+
+        # Update database directly using SQL
+        if any(updates_by_size.values()):
             try:
-                await self.db.batch_update_thumbnails(updates)
-                logger.info(f"Updated {len(updates)} thumbnail records in database")
+                import sqlite3
+                conn = sqlite3.connect(self.db.db_path)
+                cursor = conn.cursor()
+
+                # Update each size column
+                for size_name, updates in updates_by_size.items():
+                    if not updates:
+                        continue
+
+                    column_name = f'thumbnail_{size_name}_path'
+
+                    for update in updates:
+                        cursor.execute(f"""
+                            UPDATE generated_images
+                            SET {column_name} = ?
+                            WHERE image_path = ?
+                        """, (update['thumbnail_path'], update['image_path']))
+
+                conn.commit()
+                total_updated = sum(len(updates) for updates in updates_by_size.values())
+                logger.info(f"[ThumbnailDB] ✅ Updated {total_updated} thumbnail records in database")
+                conn.close()
+
             except Exception as e:
-                logger.error(f"Database update failed: {e}")
+                logger.error(f"[ThumbnailDB] ❌ Database update failed: {e}")
+                import traceback
+                logger.error(f"[ThumbnailDB] Traceback: {traceback.format_exc()}")
+        else:
+            logger.warning(f"[ThumbnailDB] No updates to perform - updates_by_size was empty")
 
     async def serve_thumbnail(
         self,
@@ -877,6 +926,90 @@ class EnhancedThumbnailService:
         stats['total_size_mb'] = round(stats['total_size'] / (1024 * 1024), 2)
 
         return stats
+
+    async def scan_all_thumbnails(
+        self,
+        sizes: List[str] = None,
+        sample_limit: int = 6
+    ) -> Dict[str, Any]:
+        """Scan ALL images including those with existing thumbnails.
+
+        Args:
+            sizes: Thumbnail sizes to check (default: all sizes)
+            sample_limit: Max number of sample thumbnails to return
+
+        Returns:
+            {
+                'total_images': int,
+                'existing_count': int,
+                'missing_count': int,
+                'sample_thumbnails': [
+                    {'name': str, 'url': str, 'image_id': int}
+                ],
+                'sizes_checked': List[str]
+            }
+        """
+        if sizes is None:
+            sizes = list(self.base_generator.SIZES.keys())
+
+        total_images = 0
+        existing_count = 0
+        missing_count = 0
+        sample_thumbnails = []
+
+        try:
+            import sqlite3
+            conn = sqlite3.connect(self.db.db_path)
+            cursor = conn.cursor()
+
+            # Query ALL images from database
+            cursor.execute("""
+                SELECT id, image_path, filename, thumbnail_small_path
+                FROM generated_images
+                WHERE image_path IS NOT NULL AND image_path != ''
+            """)
+
+            images = cursor.fetchall()
+            total_images = len(images)
+
+            for image in images:
+                image_id, image_path, filename, thumb_path = image
+                path = Path(image_path)
+
+                if not path.exists():
+                    continue
+
+                # Check if thumbnail exists (check file existence, not just DB path)
+                has_thumbnail = False
+                if thumb_path:
+                    thumb_path_obj = Path(thumb_path)
+                    has_thumbnail = thumb_path_obj.exists()
+
+                if has_thumbnail:
+                    existing_count += 1
+                    # Add to sample (up to limit)
+                    if len(sample_thumbnails) < sample_limit:
+                        sample_thumbnails.append({
+                            'name': filename or path.name,
+                            'url': f'/api/v1/thumbnails/{image_id}/small',
+                            'image_id': image_id
+                        })
+                else:
+                    missing_count += 1
+
+            conn.close()
+
+        except Exception as e:
+            logger.error(f"Error scanning thumbnails: {e}")
+            raise
+
+        return {
+            'total_images': total_images,
+            'existing_count': existing_count,
+            'missing_count': missing_count,
+            'sample_thumbnails': sample_thumbnails,
+            'sizes_checked': sizes
+        }
 
     async def clear_cache(self, size: Optional[str] = None) -> int:
         """Clear thumbnail cache.
