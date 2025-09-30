@@ -155,6 +155,10 @@ class PromptModel:
                 workflow_data TEXT,
                 prompt_metadata TEXT,
                 parameters TEXT,
+                thumbnail_small_path TEXT,
+                thumbnail_medium_path TEXT,
+                thumbnail_large_path TEXT,
+                thumbnail_xlarge_path TEXT,
                 FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE
             )
             """
@@ -192,11 +196,31 @@ class PromptModel:
         """Upgrade legacy schemas in-place so new columns and indexes exist."""
         self._migrate_prompts_table(conn)
         self._migrate_generated_images_table(conn)
+        self._fix_stats_triggers(conn)
 
     def _migrate_prompts_table(self, conn: sqlite3.Connection) -> None:
         columns = self._get_table_columns(conn, "prompts")
         if not columns:
             return
+        
+        # Quick fix: Add updated_at if missing (lightweight migration)
+        if "updated_at" not in columns and "id" in columns:
+            try:
+                self.logger.info("Adding missing updated_at column to prompts table")
+                conn.execute("ALTER TABLE prompts ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                # Populate existing rows with created_at value or current timestamp
+                conn.execute("""
+                    UPDATE prompts 
+                    SET updated_at = COALESCE(created_at, CURRENT_TIMESTAMP)
+                    WHERE updated_at IS NULL
+                """)
+                conn.commit()
+                self.logger.info("Successfully added updated_at column")
+                # Refresh columns list
+                columns = self._get_table_columns(conn, "prompts")
+            except Exception as e:
+                self.logger.error(f"Failed to add updated_at column: {e}")
+                # Continue with existing logic - don't fail completely
 
         required_columns = {
             "id",
@@ -304,9 +328,41 @@ class PromptModel:
             "workflow_data",
             "prompt_metadata",
             "parameters",
+            "thumbnail_small_path",
+            "thumbnail_medium_path",
+            "thumbnail_large_path",
+            "thumbnail_xlarge_path",
         }
 
         legacy_markers = {"file_path", "file_name", "metadata"}
+
+        # Check if we only need to add thumbnail columns (lightweight migration)
+        missing_columns = required_columns - columns
+        thumbnail_columns = {"thumbnail_small_path", "thumbnail_medium_path", "thumbnail_large_path", "thumbnail_xlarge_path"}
+
+        if missing_columns.issubset(thumbnail_columns) and not (columns & legacy_markers):
+            # Only thumbnail columns missing - add them without table rebuild
+            self.logger.info("Adding missing thumbnail columns to generated_images table")
+            for col in missing_columns:
+                try:
+                    conn.execute(f"ALTER TABLE generated_images ADD COLUMN {col} TEXT")
+                    self.logger.info(f"Added column: {col}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to add column {col}: {e}")
+
+            # Create indexes for the new columns
+            try:
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_generated_images_thumbnail_small ON generated_images(thumbnail_small_path) WHERE thumbnail_small_path IS NOT NULL")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_generated_images_thumbnail_medium ON generated_images(thumbnail_medium_path) WHERE thumbnail_medium_path IS NOT NULL")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_generated_images_thumbnail_large ON generated_images(thumbnail_large_path) WHERE thumbnail_large_path IS NOT NULL")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_generated_images_thumbnail_xlarge ON generated_images(thumbnail_xlarge_path) WHERE thumbnail_xlarge_path IS NOT NULL")
+                self.logger.info("Created thumbnail indexes")
+            except Exception as e:
+                self.logger.warning(f"Failed to create thumbnail indexes: {e}")
+
+            return
+
+        # Full migration needed if columns already match or legacy markers present
         if required_columns.issubset(columns) and not (columns & legacy_markers):
             return
 
@@ -385,6 +441,119 @@ class PromptModel:
             conn.execute(f'DROP TABLE IF EXISTS "{temp_table}"')
         finally:
             conn.execute("PRAGMA foreign_keys = ON")
+
+    def _fix_stats_triggers(self, conn: sqlite3.Connection) -> None:
+        """Fix stats triggers that reference wrong column names.
+        
+        Some databases have triggers that reference 'updated_at' instead of 'last_updated'.
+        This method recreates all stats triggers with correct column names.
+        """
+        # Check if stats_snapshot table exists
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='stats_snapshot'"
+        )
+        if not cursor.fetchone():
+            return  # Table doesn't exist, nothing to fix
+        
+        try:
+            self.logger.info("Fixing stats triggers to use correct column names")
+            
+            # Drop all stats triggers
+            triggers_to_drop = [
+                "stats_increment_prompt_insert",
+                "stats_decrement_prompt_delete",
+                "stats_increment_image_insert",
+                "stats_decrement_image_delete",
+                "stats_update_session_insert",
+                "stats_increment_collection_insert",
+                "stats_decrement_collection_delete",
+            ]
+            
+            for trigger_name in triggers_to_drop:
+                try:
+                    conn.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+                except Exception as e:
+                    self.logger.debug(f"Could not drop trigger {trigger_name}: {e}")
+            
+            # Recreate triggers with correct column name (last_updated)
+            trigger_definitions = [
+                ("stats_increment_prompt_insert", "prompts", "INSERT", 
+                 "total_prompts = total_prompts + 1"),
+                ("stats_decrement_prompt_delete", "prompts", "DELETE",
+                 "total_prompts = MAX(0, total_prompts - 1)"),
+                ("stats_increment_image_insert", "generated_images", "INSERT",
+                 "total_images = total_images + 1"),
+                ("stats_decrement_image_delete", "generated_images", "DELETE",
+                 "total_images = MAX(0, total_images - 1)"),
+            ]
+            
+            for trigger_name, table_name, operation, update_expr in trigger_definitions:
+                sql = f"""
+                    CREATE TRIGGER IF NOT EXISTS {trigger_name}
+                    AFTER {operation} ON {table_name}
+                    BEGIN
+                        UPDATE stats_snapshot
+                        SET
+                            {update_expr},
+                            last_updated = CURRENT_TIMESTAMP
+                        WHERE id = 1;
+                    END
+                """
+                conn.execute(sql)
+            
+            # Handle collection triggers (these tables might not exist)
+            try:
+                conn.execute("""
+                    CREATE TRIGGER IF NOT EXISTS stats_increment_collection_insert
+                    AFTER INSERT ON collections
+                    BEGIN
+                        UPDATE stats_snapshot
+                        SET
+                            total_collections = total_collections + 1,
+                            last_updated = CURRENT_TIMESTAMP
+                        WHERE id = 1;
+                    END
+                """)
+                
+                conn.execute("""
+                    CREATE TRIGGER IF NOT EXISTS stats_decrement_collection_delete
+                    AFTER DELETE ON collections
+                    BEGIN
+                        UPDATE stats_snapshot
+                        SET
+                            total_collections = MAX(0, total_collections - 1),
+                            last_updated = CURRENT_TIMESTAMP
+                        WHERE id = 1;
+                    END
+                """)
+            except Exception:
+                pass  # collections table might not exist
+            
+            # Handle tracking triggers
+            try:
+                conn.execute("""
+                    CREATE TRIGGER IF NOT EXISTS stats_update_session_insert
+                    AFTER INSERT ON prompt_tracking
+                    BEGIN
+                        UPDATE stats_snapshot
+                        SET
+                            total_sessions = (
+                                SELECT COUNT(DISTINCT session_id)
+                                FROM prompt_tracking
+                            ),
+                            last_updated = CURRENT_TIMESTAMP
+                        WHERE id = 1;
+                    END
+                """)
+            except Exception:
+                pass  # prompt_tracking table might not exist
+            
+            conn.commit()
+            self.logger.info("Successfully fixed stats triggers")
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to fix stats triggers: {e}")
+            # Don't fail the entire migration if trigger fixing fails
 
     def _get_table_columns(self, conn: sqlite3.Connection, table: str) -> Set[str]:
         try:
