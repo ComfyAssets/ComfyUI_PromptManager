@@ -225,6 +225,37 @@ const EpicStats = (function() {
 
     async function fetchStatsOverview(options = {}) {
         const { force = false } = options;
+        // Try to fetch epic stats first
+        try {
+            const epicPath = buildQueryPath('/stats/epic', force ? { force: '1' } : {});
+            const epicPayload = await fetchJson(epicPath);
+
+            if (epicPayload && epicPayload.success && epicPayload.data) {
+                // Transform epic stats to match expected format
+                const data = epicPayload.data;
+                return {
+                    totalPrompts: data.hero_stats.total_prompts || 0,
+                    totalImages: data.hero_stats.total_images || 0,
+                    totalRated: data.hero_stats.rated_count || 0,
+                    avgRating: data.hero_stats.avg_rating || 0,
+                    fiveStarCount: data.hero_stats.five_star_count || 0,
+                    totalCollections: data.hero_stats.total_collections || 0,
+                    imagesPerPrompt: data.hero_stats.images_per_prompt || 0,
+                    generationStreak: data.hero_stats.generation_streak || 0,
+                    generation_analytics: data.generation_analytics,
+                    time_patterns: data.time_patterns,
+                    model_usage: data.model_usage,
+                    quality_metrics: data.quality_metrics,
+                    rating_trends: data.rating_trends,
+                    calculated_at: data.calculated_at,
+                    generatedAt: data.calculated_at
+                };
+            }
+        } catch (epicError) {
+            console.log('Epic stats not available, trying overview endpoint', epicError);
+        }
+
+        // Fallback to original overview endpoint
         const path = buildQueryPath('/stats/overview', force ? { force: '1' } : {});
         const payload = await fetchJson(path);
 
@@ -248,6 +279,56 @@ const EpicStats = (function() {
         const promptPatterns = statsData.promptPatterns = statsData.promptPatterns || {};
         promptPatterns.topWords = promptPatterns.topWords || {};
         promptPatterns.ignoredWords = [...statsIgnoredWords];
+
+        // Transform epic stats data to expected format
+        if (snapshot.time_patterns && Array.isArray(snapshot.time_patterns)) {
+            // Create hourlyActivity array from time_patterns
+            const hourlyActivity = new Array(24).fill(0);
+            snapshot.time_patterns.forEach(pattern => {
+                if (pattern.hour >= 0 && pattern.hour < 24) {
+                    hourlyActivity[pattern.hour] = pattern.generations || 0;
+                }
+            });
+
+            // Calculate peak hours
+            const hourlyMax = Math.max(...hourlyActivity);
+            const peakHours = [];
+            if (hourlyMax > 0) {
+                hourlyActivity.forEach((count, hour) => {
+                    if (count > hourlyMax * 0.5) { // Consider hours with >50% of max as peak
+                        peakHours.push({
+                            hour,
+                            count,
+                            percentage: safeFixed((count / hourlyMax) * 100, 1)
+                        });
+                    }
+                });
+            }
+
+            statsData.timeAnalytics = statsData.timeAnalytics || {};
+            statsData.timeAnalytics.hourlyActivity = hourlyActivity;
+            statsData.timeAnalytics.peakHours = peakHours;
+            statsData.timeAnalytics.currentStreak = snapshot.generationStreak || 0;
+            statsData.timeAnalytics.longestStreak = snapshot.generationStreak || 0; // TODO: track separately
+        }
+
+        // Transform quality metrics
+        if (snapshot.quality_metrics) {
+            statsData.qualityMetrics = {
+                ...snapshot.quality_metrics,
+                innovationIndex: Math.min(100, Math.round((snapshot.quality_metrics.avg_quality_score || 0) * 20)) // Convert 0-5 to 0-100
+            };
+        }
+
+        // Transform model usage for charts
+        if (snapshot.model_usage && Array.isArray(snapshot.model_usage)) {
+            statsData.modelUsage = snapshot.model_usage;
+        }
+
+        // Transform resolution data
+        if (snapshot.quality_metrics && snapshot.quality_metrics.top_resolutions) {
+            statsData.resolutionDistribution = snapshot.quality_metrics.top_resolutions;
+        }
 
         if (!statsData.generatedAt) {
             statsData.generatedAt = new Date().toISOString();
