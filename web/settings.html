@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="/prompt_manager/css/settings.css" />
     <link rel="stylesheet" href="/prompt_manager/css/notifications.css" />
     <link rel="stylesheet" href="/prompt_manager/css/migration.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/thumbnail-rebuild-modal.css" />
     <style>
       /* Simple notification styles */
       .notification-container {
@@ -794,7 +795,7 @@
                       <button class="btn btn-success" onclick="generateMissingThumbnails()" id="generateThumbnailsBtn" disabled>
                         <i class="fa-solid fa-image"></i> Generate Thumbnails
                       </button>
-                      <button class="btn btn-secondary" onclick="rebuildAllThumbnails()">
+                      <button class="btn btn-secondary" id="btnRebuildThumbnailsTop">
                         <i class="fa-solid fa-rotate"></i> Rebuild All
                       </button>
                       <button class="btn btn-danger" onclick="clearThumbnailCache()">
@@ -1339,7 +1340,7 @@
                   <div class="form-group full-width">
                     <div class="settings-action-buttons">
                       <button class="btn btn-primary">Scan Now</button>
-                      <button class="btn btn-secondary">
+                      <button class="btn btn-secondary" id="btnRebuildThumbnails">
                         Rebuild Thumbnails
                       </button>
                       <button class="btn btn-secondary">Clean Orphans</button>
@@ -1956,6 +1957,7 @@
     <script src="/prompt_manager/js/settings-thumbnails.js"></script>
     <script src="/prompt_manager/js/settings-ffmpeg.js"></script>
     <script src="/prompt_manager/js/components/thumbnail-modal.js"></script>
+    <script src="/prompt_manager/js/components/thumbnail-rebuild-modal.js"></script>
 
     <script src="/prompt_manager/js/settings.js"></script>
     <script src="/prompt_manager/js/settings-page.js"></script>
@@ -2035,7 +2037,57 @@
 
         // Initialize community settings
         initCommunitySettings();
+
+        // Initialize thumbnail rebuild modal
+        initThumbnailRebuildModal();
       });
+
+      // Initialize thumbnail rebuild modal
+      function initThumbnailRebuildModal() {
+        console.log('[ThumbnailRebuild] Initializing modal...');
+
+        // Check if ThumbnailRebuildModal class exists
+        if (typeof ThumbnailRebuildModal === 'undefined') {
+          console.error('[ThumbnailRebuild] ERROR: ThumbnailRebuildModal class not found! Script may have failed to load.');
+          return;
+        }
+
+        // Create modal instance
+        try {
+          const rebuildModal = new ThumbnailRebuildModal();
+          console.log('[ThumbnailRebuild] Modal instance created successfully');
+
+          // Wire up both rebuild buttons
+          const btnRebuildTop = document.getElementById('btnRebuildThumbnailsTop');
+          const btnRebuildBottom = document.getElementById('btnRebuildThumbnails');
+
+          if (btnRebuildTop) {
+            console.log('[ThumbnailRebuild] Wiring top rebuild button');
+            btnRebuildTop.addEventListener('click', function(e) {
+              console.log('[ThumbnailRebuild] Top button clicked!');
+              e.preventDefault();
+              rebuildModal.show();
+            });
+          } else {
+            console.warn('[ThumbnailRebuild] Top rebuild button not found');
+          }
+
+          if (btnRebuildBottom) {
+            console.log('[ThumbnailRebuild] Wiring bottom rebuild button');
+            btnRebuildBottom.addEventListener('click', function(e) {
+              console.log('[ThumbnailRebuild] Bottom button clicked!');
+              e.preventDefault();
+              rebuildModal.show();
+            });
+          } else {
+            console.warn('[ThumbnailRebuild] Bottom rebuild button not found');
+          }
+
+          console.log('[ThumbnailRebuild] Initialization complete');
+        } catch (error) {
+          console.error('[ThumbnailRebuild] Error during initialization:', error);
+        }
+      }
 
       async function loadMaintenanceStats() {
         try {
