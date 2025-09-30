@@ -84,7 +84,7 @@ const UnifiedGallery = (function() {
         localStorage.setItem('promptManagerSettings', JSON.stringify(settings));
 
         // Also sync to backend
-        fetch('/api/promptmanager/settings', {
+        fetch('/api/prompt_manager/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(settings)
@@ -135,7 +135,7 @@ const UnifiedGallery = (function() {
             }
 
             // Fetch gallery data
-            const response = await fetch(`/api/promptmanager/gallery?${params}`);
+            const response = await fetch(`/api/prompt_manager/gallery?${params}`);
             const data = await response.json();
 
             // Update current page
@@ -440,7 +440,7 @@ const UnifiedGallery = (function() {
         }
 
         try {
-            const response = await fetch('/api/promptmanager/gallery/export', {
+            const response = await fetch('/api/prompt_manager/gallery/export', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ item_ids: itemIds, format: 'json' })
@@ -506,7 +506,7 @@ const UnifiedGallery = (function() {
      */
     function trackImageView(detail) {
         // Track view in database
-        fetch('/api/promptmanager/gallery/track-view', {
+        fetch('/api/prompt_manager/gallery/track-view', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

@@ -68,6 +68,11 @@ const ViewerManager = (function() {
         keyboard: true,
         // Custom theme support
         className: 'promptmanager-viewer',
+        // Use data-full-src for full resolution images instead of thumbnails
+        url: function(image) {
+            // Try data-full-src first (set by gallery), fall back to src
+            return image.getAttribute('data-full-src') || image.src;
+        },
         // Performance optimizations
         loading: true,
         loop: true,

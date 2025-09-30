@@ -349,6 +349,40 @@
     margin-top: 0.75rem;
 }
 
+/* Parameters grid for standalone metadata page */
+.metadata-params-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 1rem;
+    padding: 1rem 0;
+}
+
+.metadata-params-grid .metadata-param {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.875rem 1.25rem;
+    background: rgba(10, 15, 25, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 0.5rem;
+}
+
+.metadata-params-grid .metadata-param-label {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.metadata-params-grid .metadata-param-value {
+    font-family: "JetBrains Mono", "Courier New", monospace;
+    font-size: 0.875rem;
+    color: #f1f5f9;
+    word-break: break-word;
+    font-weight: 400;
+}
+
 .metadata-param {
     display: flex;
     justify-content: space-between;

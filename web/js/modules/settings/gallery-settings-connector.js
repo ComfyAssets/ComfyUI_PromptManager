@@ -111,7 +111,7 @@ const GallerySettingsConnector = (function() {
 
         // Sync with backend
         try {
-            const response = await fetch('/api/promptmanager/settings');
+            const response = await fetch('/api/prompt_manager/settings');
             if (response.ok) {
                 const backendSettings = await response.json();
                 // Merge backend settings (backend takes priority)
@@ -432,7 +432,7 @@ const GallerySettingsConnector = (function() {
      */
     async function saveSettings() {
         try {
-            const response = await fetch('/api/promptmanager/settings', {
+            const response = await fetch('/api/prompt_manager/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(currentSettings)
@@ -529,7 +529,7 @@ const GallerySettingsConnector = (function() {
      */
     async function syncWithBackend() {
         try {
-            const response = await fetch('/api/promptmanager/settings');
+            const response = await fetch('/api/prompt_manager/settings');
             if (response.ok) {
                 const backendSettings = await response.json();
 

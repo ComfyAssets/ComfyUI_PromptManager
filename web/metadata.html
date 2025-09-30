@@ -154,34 +154,41 @@
                 </div>
               </div>
 
-              <!-- Metadata Panel Container -->
-              <div id="metadata-panel-container" class="card" x-show="metadata">
-                <!-- The styled metadata panel will be inserted here by MetadataManager -->
-              </div>
-            </div>
-          </template>
-
-          <!-- Workflow and Raw Data -->
-          <template x-if="workflow || raw">
-            <div class="metadata-grid">
-              <div class="card">
-                <div class="section-header">
-                  <h3 class="section-title">Workflow Data</h3>
-                  <button class="btn btn-secondary btn-sm" @click="copy(workflow)">
-                    Copy JSON
-                  </button>
+              <!-- Generation Parameters, Workflow, and Raw Data Column -->
+              <div>
+                <!-- Generation Parameters -->
+                <div class="card" x-show="summary && Object.keys(summary).length > 0">
+                  <h3 class="card-title">Generation Parameters</h3>
+                  <div class="metadata-params-grid">
+                    <template x-for="(value, key) in summary" :key="key">
+                      <div class="metadata-param">
+                        <div class="metadata-param-label" x-text="key"></div>
+                        <div class="metadata-param-value" x-text="value"></div>
+                      </div>
+                    </template>
+                  </div>
                 </div>
-                <pre x-text="workflow || '(none found)'"></pre>
-              </div>
 
-              <div class="card">
-                <div class="section-header">
-                  <h3 class="section-title">Raw Metadata</h3>
-                  <button class="btn btn-secondary btn-sm" @click="downloadRaw">
-                    Download JSON
-                  </button>
-                </div>
-                <pre x-text="raw"></pre>
+                <!-- Workflow and Raw Data -->
+                <template x-if="workflow || raw">
+                  <div class="card" style="margin-top: 1rem;">
+                    <div class="section-header">
+                      <h3 class="section-title">Workflow Data</h3>
+                      <button class="btn btn-secondary btn-sm" @click="copy(workflow)">
+                        Copy JSON
+                      </button>
+                    </div>
+                    <pre x-text="workflow || '(none found)'"></pre>
+
+                    <div class="section-header" style="margin-top: 2rem;">
+                      <h3 class="section-title">Raw Metadata</h3>
+                      <button class="btn btn-secondary btn-sm" @click="downloadRaw">
+                        Download JSON
+                      </button>
+                    </div>
+                    <pre x-text="raw"></pre>
+                  </div>
+                </template>
               </div>
             </div>
           </template>
@@ -512,41 +519,7 @@
               this.summary = buildSummary(metadata);
               this.raw = safeStringify(metadata);
 
-              // Use MetadataManager to display styled metadata panel
-              if (window.MetadataManager) {
-                // Initialize MetadataManager if not already done
-                if (!window.metadataPanelId) {
-                  MetadataManager.init();
-                  window.metadataPanelId = MetadataManager.createPanel({
-                    position: 'static', // Panel will be embedded in container
-                    showExportButton: true,
-                    showCopyButtons: true,
-                    collapsible: false
-                  });
-                }
-
-                // Clear existing content and attach panel
-                const container = document.getElementById('metadata-panel-container');
-                if (container) {
-                  container.innerHTML = '';
-                  MetadataManager.attachPanel(window.metadataPanelId, container);
-
-                  // Transform metadata to the format expected by MetadataManager
-                  const displayMetadata = {
-                    summary: this.summary || {},
-                    custom: this.summary || {},
-                    standard: {
-                      filename: this.fileName,
-                      fileSize: this.fileSize ? `${(this.fileSize / 1024).toFixed(1)} KB` : '',
-                      mimeType: this.fileType
-                    },
-                    raw: metadata
-                  };
-
-                  // Display the metadata
-                  MetadataManager.display(window.metadataPanelId, displayMetadata);
-                }
-              }
+              // Alpine.js will automatically display the summary in the template
             },
             copy(text) {
               const value = text || '';
