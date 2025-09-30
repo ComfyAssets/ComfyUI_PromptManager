@@ -82,10 +82,60 @@
     } else {
       console.warn('MigrationService not available on dashboard load');
     }
+
+    // Check for missing thumbnails and prompt user if needed
+    checkForMissingThumbnails();
+
     try {
       await loadDashboardData();
     } catch (error) {
       console.error('Failed to initialise dashboard data:', error);
+    }
+  }
+
+  /**
+   * Check for missing thumbnails and store result for modal
+   */
+  async function checkForMissingThumbnails() {
+    try {
+      const response = await fetch('/api/v1/thumbnails/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sizes: ['small', 'medium', 'large'] }),
+      });
+
+      if (!response.ok) {
+        console.warn('Thumbnail scan failed:', response.status);
+        return;
+      }
+
+      const result = await response.json();
+      console.log('Thumbnail scan result:', result);
+
+      // Changed threshold from 10 to 0 to show prompt for ANY missing thumbnails
+      if (result.missing_count > 0) {
+        console.log(`Found ${result.missing_count} images without thumbnails`);
+        // Store in sessionStorage for the thumbnail modal to pick up
+        sessionStorage.setItem(
+          'thumbnailScanResult',
+          JSON.stringify({
+            missing_count: result.missing_count,
+            total_operations: result.total_operations || result.missing_count * 3,
+            scanned_at: new Date().toISOString(),
+          })
+        );
+
+        // Initialize thumbnail modal if it exists
+        if (window.ThumbnailModal) {
+          const modal = new window.ThumbnailModal();
+          // Modal will check sessionStorage and show prompt if needed
+        }
+      } else {
+        console.log('All images have thumbnails');
+      }
+    } catch (error) {
+      console.warn('Failed to scan for thumbnails:', error);
+      // Don't block dashboard loading for thumbnail issues
     }
   }
 
@@ -437,6 +487,48 @@
   }
 
   async function loadStats() {
+    try {
+      // Try to fetch epic stats first
+      const epicPayload = await fetchJson('/stats/epic');
+      if (epicPayload?.success && epicPayload?.data) {
+        const epicStats = epicPayload.data;
+        // Transform epic stats to match dashboard format
+        const stats = {
+          prompt_count: epicStats.hero_stats?.total_prompts || 0,
+          rated_count: epicStats.hero_stats?.rated_count || 0,
+          avg_rating: epicStats.hero_stats?.avg_rating || 0,
+          tag_count: 0, // Will be fetched from system stats
+          total_images: epicStats.hero_stats?.total_images || 0,
+          image_count: epicStats.hero_stats?.total_images || 0,
+          top_categories: [], // Will be fetched from system stats
+          // Add epic-specific data
+          five_star_count: epicStats.hero_stats?.five_star_count || 0,
+          generation_streak: epicStats.hero_stats?.generation_streak || 0,
+          images_per_prompt: epicStats.hero_stats?.images_per_prompt || 0,
+          total_collections: epicStats.hero_stats?.total_collections || 0,
+          generation_analytics: epicStats.generation_analytics,
+          quality_metrics: epicStats.quality_metrics,
+        };
+
+        // Also fetch system stats for missing data (tags, categories)
+        try {
+          const sysPayload = await fetchJson('/system/stats');
+          const sysStats = sysPayload?.data ?? sysPayload ?? {};
+          stats.tag_count = sysStats.tag_count || 0;
+          stats.top_categories = sysStats.top_categories || [];
+        } catch (sysError) {
+          console.log('System stats not available, using defaults', sysError);
+        }
+
+        renderStats(stats);
+        renderHeroStats(epicStats);
+        return stats;
+      }
+    } catch (epicError) {
+      console.log('Epic stats not available, falling back to system stats', epicError);
+    }
+
+    // Fallback to system stats
     const statsPayload = await fetchJson('/system/stats');
     const stats = statsPayload?.data ?? statsPayload ?? {};
     renderStats(stats);
@@ -526,6 +618,53 @@
     setTextContent('statLinkedImages', formatNumber(totalImages));
     const imagesPerPrompt = promptCount ? totalImages / promptCount : 0;
     setTextContent('statImagesPerPrompt', `Images per prompt: ${imagesPerPrompt.toFixed(2)}`);
+  }
+
+  function renderHeroStats(epicStats) {
+    // Update the hero stats section if it exists
+    const heroSection = document.querySelector('.hero-stats');
+    if (!heroSection || !epicStats?.hero_stats) return;
+
+    // Find and update hero stat elements
+    const heroElements = {
+      'Total Images': epicStats.hero_stats.total_images || 0,
+      'Total Prompts': epicStats.hero_stats.total_prompts || 0,
+      'Rated Prompts': epicStats.hero_stats.rated_count || 0,
+      'Average Rating': (epicStats.hero_stats.avg_rating || 0).toFixed(2),
+      '5-Star Images': epicStats.hero_stats.five_star_count || 0,
+      'Collections': epicStats.hero_stats.total_collections || 0,
+      'Generation Streak': `${epicStats.hero_stats.generation_streak || 0} days`,
+      'Avg Images/Prompt': (epicStats.hero_stats.images_per_prompt || 0).toFixed(2),
+    };
+
+    // Update hero stat cards
+    const statCards = heroSection.querySelectorAll('.stat-card');
+    statCards.forEach(card => {
+      const label = card.querySelector('.stat-label')?.textContent;
+      const valueElement = card.querySelector('.stat-value');
+      if (label && valueElement && heroElements[label] !== undefined) {
+        valueElement.textContent = formatNumber(heroElements[label]);
+      }
+    });
+
+    // If Generation Analytics section exists, update it
+    const genAnalytics = epicStats.generation_analytics;
+    if (genAnalytics) {
+      setTextContent('genTotalGenerations', formatNumber(genAnalytics.total_generations));
+      setTextContent('genUniquePrompts', formatNumber(genAnalytics.unique_prompts));
+      setTextContent('genAvgPerDay', formatNumber(genAnalytics.avg_per_day));
+      setTextContent('genPeakDay', `${genAnalytics.peak_day || 'N/A'}: ${formatNumber(genAnalytics.peak_day_count)} images`);
+      setTextContent('genAvgTime', `${(genAnalytics.avg_generation_time || 0).toFixed(2)}s`);
+    }
+
+    // If Quality Metrics section exists, update it
+    const qualityMetrics = epicStats.quality_metrics;
+    if (qualityMetrics) {
+      setTextContent('qualAvgScore', (qualityMetrics.avg_quality_score || 0).toFixed(2));
+      setTextContent('qualHighCount', formatNumber(qualityMetrics.high_quality_count));
+      setTextContent('qualLowCount', formatNumber(qualityMetrics.low_quality_count));
+      setTextContent('qualTrend', qualityMetrics.quality_trend || 'stable');
+    }
   }
 
   function handleSearchInput(rawValue) {

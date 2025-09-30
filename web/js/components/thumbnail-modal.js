@@ -43,11 +43,13 @@ class ThumbnailModal {
                 // Clear the scan result so it doesn't show again on refresh
                 sessionStorage.removeItem('thumbnailScanResult');
 
-                // Only show modal if there are missing thumbnails
-                if (result.missing_count > 10) {
-                    console.log('ThumbnailModal: Found', result.missing_count, 'missing thumbnails from index scan');
+                // Show modal if there are ANY missing thumbnails
+                if (result.missing_count > 0) {
+                    console.log('ThumbnailModal: Found', result.missing_count, 'missing thumbnails from scan');
                     this.missingCount = result.missing_count;
                     this.showMissingThumbnailsPrompt();
+                } else {
+                    console.log('ThumbnailModal: No missing thumbnails found');
                 }
             } catch (error) {
                 console.error('Failed to parse thumbnail scan result:', error);
