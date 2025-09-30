@@ -269,7 +269,7 @@ class PromptTracker:
 
             # Get the prompt_id from the tracking data metadata
             prompt_id = tracking_data.metadata.get('prompt_id')
-
+            
             if prompt_id:
                 # Use the stored database instance if available, otherwise create new one
                 if hasattr(self, 'db_instance') and self.db_instance:
@@ -305,7 +305,17 @@ class PromptTracker:
                 )
                 print(f"   💾 Successfully linked image to prompt_id {prompt_id}")
             else:
-                logger.warning(f"No prompt_id found in tracking data for image {image_path}")
+                # Track the image even without prompt_id (store metadata for later linking)
+                logger.info(f"No prompt_id yet for image {image_path}, tracking metadata for later linking")
+                # Store in tracking data for potential later linking
+                if not hasattr(tracking_data, 'pending_images'):
+                    tracking_data.metadata['pending_images'] = []
+                tracking_data.metadata['pending_images'].append({
+                    'path': normalized_path,
+                    'metadata': metadata,
+                    'timestamp': time.time()
+                })
+                logger.info(f"Stored pending image link for {Path(normalized_path).name}")
             
             # Update metrics
             self.metrics["successful_pairs"] += 1
