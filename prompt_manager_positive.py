@@ -128,6 +128,18 @@ class PromptManagerPositive(ComfyNodeABC):
                     {"tooltip": "The CLIP model used for encoding the text"},
                 ),
             },
+            "optional": {
+                "prepend_text": (
+                    IO.STRING,
+                    # No widget dict = connection only
+                    {"forceInput": True, "tooltip": "Text to prepend to the prompt (connection only)"}
+                ),
+                "append_text": (
+                    IO.STRING,
+                    # No widget dict = connection only
+                    {"forceInput": True, "tooltip": "Text to append to the prompt (connection only)"}
+                ),
+            },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
                 "prompt": "PROMPT",
@@ -149,26 +161,49 @@ class PromptManagerPositive(ComfyNodeABC):
         self,
         clip,
         text: str,
+        prepend_text: Optional[str] = None,
+        append_text: Optional[str] = None,
         unique_id: Optional[str] = None,
         prompt: Optional[Dict] = None,
         extra_pnginfo: Optional[Dict] = None
     ) -> Tuple[Any, str]:
         """
         Encode positive prompt and save to database with tracking.
-        
+
         Args:
             clip: The CLIP model
             text: Positive prompt text
+            prepend_text: Text to prepend to prompt
+            append_text: Text to append to prompt
             unique_id: Unique execution ID from ComfyUI
             prompt: Full prompt data from ComfyUI
             extra_pnginfo: Workflow and metadata from ComfyUI
-        
+
         Returns:
             Tuple of (positive_conditioning, positive_text)
         """
         try:
             # Clean text
             positive_text = text.strip() if text else ""
+
+            # Build prompt with prepend/append
+            if prepend_text:
+                prepend_text = prepend_text.strip()
+                if prepend_text:
+                    # Add comma separator if needed
+                    if positive_text and not prepend_text.endswith(','):
+                        positive_text = f"{prepend_text}, {positive_text}"
+                    else:
+                        positive_text = f"{prepend_text}{positive_text}"
+
+            if append_text:
+                append_text = append_text.strip()
+                if append_text:
+                    # Add comma separator if needed
+                    if positive_text and not positive_text.endswith(','):
+                        positive_text = f"{positive_text}, {append_text}"
+                    else:
+                        positive_text = f"{positive_text}{append_text}"
             
             # Generate hash for tracking
             prompt_hash = hashlib.sha256(positive_text.encode()).hexdigest()[:16]
@@ -196,25 +231,6 @@ class PromptManagerPositive(ComfyNodeABC):
                         negative_key = key
                         break
 
-            # Save to database and capture prompt_id for tracking
-            prompt_id = None
-            if positive_text and not DISABLE_TRACKING:
-                try:
-                    if hasattr(self, "db") and self.db:
-                        prompt_hash_db = generate_prompt_hash(positive_text)
-                        prompt_id = self.db.save_prompt(
-                            text=positive_text,
-                            negative_prompt=negative_text or None,
-                            prompt_hash=prompt_hash_db,
-                        )
-                        logger.info(
-                            f"PromptManagerPositive: Saved prompt to database with ID {prompt_id}"
-                        )
-                except Exception as e:
-                    logger.warning(f"Failed to save prompt to database: {e}")
-                    if DEBUG:
-                        print(f"⚠️ Failed to save prompt to database: {e}")
-
             # Extract unique_id if it's None (critical for tracking!)
             if unique_id is None and prompt and isinstance(prompt, dict):
                 # Find our own node in the prompt data
@@ -226,7 +242,8 @@ class PromptManagerPositive(ComfyNodeABC):
                             print(f"📍 Extracted unique_id={unique_id} from prompt data")
                         break
 
-            # Register with tracker for image association
+            # Register with tracker FIRST (before database save)
+            # This ensures tracking works even if database save fails
             if self.tracker and unique_id and positive_text and not DISABLE_TRACKING:
                 node_id = f"PromptManagerPositive_{unique_id}"
 
@@ -244,32 +261,48 @@ class PromptManagerPositive(ComfyNodeABC):
                         "version": "v2",
                         "widget": "positive",
                         "prompt_hash": prompt_hash,
-                        "prompt_id": prompt_id,
                         "negative_prompt": negative_text,
                     }
                 )
-
-                if prompt_id and hasattr(self.tracker, '_active_prompts'):
-                    if unique_id in self.tracker._active_prompts:
-                        try:
-                            self.tracker._active_prompts[unique_id].metadata["prompt_id"] = prompt_id
-                        except Exception:
-                            logger.warning(
-                                "PromptManagerPositive: Unable to attach prompt_id to tracker metadata",
-                                exc_info=DEBUG,
-                            )
 
                 if negative_key:
                     pop_negative_prompt(negative_key)
 
                 if DEBUG:
-                    print(f"🔗 Positive Registered prompt - node_id: {node_id}, unique_id: {unique_id}, result: {result}")
-                    # Check if registration worked
-                    if hasattr(self.tracker, '_active_prompts'):
-                        if unique_id in self.tracker._active_prompts:
-                            print(f"✅ Successfully registered in tracker")
-                        else:
-                            print(f"❌ Failed to register in tracker")
+                    print(f"🔗 Positive Registered prompt EARLY - node_id: {node_id}, unique_id: {unique_id}, result: {result}")
+
+            # Save to database and capture prompt_id for tracking
+            prompt_id = None
+            if positive_text and not DISABLE_TRACKING:
+                try:
+                    if hasattr(self, "db") and self.db:
+                        prompt_hash_db = generate_prompt_hash(positive_text)
+                        prompt_id = self.db.save_prompt(
+                            text=positive_text,
+                            negative_prompt=negative_text or None,
+                            prompt_hash=prompt_hash_db,
+                        )
+                        logger.info(
+                            f"PromptManagerPositive: Saved prompt to database with ID {prompt_id}"
+                        )
+                        if DEBUG:
+                            print(f"💾 Saved prompt to database with ID {prompt_id}")
+
+                        # Link the prompt_id to the tracking data
+                        if prompt_id and hasattr(self.tracker, '_active_prompts') and unique_id in self.tracker._active_prompts:
+                            try:
+                                self.tracker._active_prompts[unique_id].metadata['prompt_id'] = prompt_id
+                                logger.info(f"PromptManagerPositive: Linked prompt_id {prompt_id} to tracking data")
+                                if DEBUG:
+                                    print(f"✅ Successfully linked prompt_id {prompt_id} to tracker metadata")
+                            except Exception as e:
+                                logger.warning(f"Failed to link prompt_id to tracking data: {e}")
+                                if DEBUG:
+                                    print(f"❌ Failed to link prompt_id to tracking data: {e}")
+                except Exception as e:
+                    logger.warning(f"Failed to save prompt to database: {e}")
+                    if DEBUG:
+                        print(f"⚠️ Failed to save prompt to database: {e}")
             
             # Encode prompt with CLIP (matching original implementation)
             tokens = clip.tokenize(positive_text)

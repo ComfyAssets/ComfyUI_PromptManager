@@ -153,14 +153,14 @@ class PromptManagerNegative(ComfyNodeABC):
     ) -> Tuple[Any, str]:
         """
         Encode negative prompt and save to database with tracking.
-        
+
         Args:
             clip: The CLIP model
             text: Negative prompt text
             unique_id: Unique execution ID from ComfyUI
             prompt: Full prompt data from ComfyUI
             extra_pnginfo: Workflow and metadata from ComfyUI
-        
+
         Returns:
             Tuple of (negative_conditioning, negative_text)
         """

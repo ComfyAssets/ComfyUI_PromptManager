@@ -36,6 +36,7 @@ try:
     from .utils.comfyui_integration import get_comfyui_integration  # type: ignore
     from .utils.image_monitor import ImageMonitor  # type: ignore
     from .utils.prompt_tracker import PromptExecutionContext, PromptTracker  # type: ignore
+    from .prompt_manager_shared import get_negative_prompt, pop_negative_prompt  # type: ignore
 except ImportError:
     # For direct imports when not in a package
     import os
@@ -46,6 +47,7 @@ except ImportError:
     from utils.comfyui_integration import get_comfyui_integration  # type: ignore
     from utils.image_monitor import ImageMonitor  # type: ignore
     from utils.prompt_tracker import PromptExecutionContext, PromptTracker  # type: ignore
+    from prompt_manager_shared import get_negative_prompt, pop_negative_prompt  # type: ignore
 
 
 class PromptManager(ComfyNodeABC):
@@ -122,6 +124,11 @@ class PromptManager(ComfyNodeABC):
                     },
                 ),
             },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO"
+            }
         }
 
     RETURN_TYPES = (IO.CONDITIONING, IO.STRING)
@@ -146,6 +153,9 @@ class PromptManager(ComfyNodeABC):
         search_text: str = "",
         prepend_text: str = "",
         append_text: str = "",
+        unique_id: Optional[str] = None,
+        prompt: Optional[Dict] = None,
+        extra_pnginfo: Optional[Dict] = None
     ) -> Tuple[Any]:
         """
         Encode the text prompt and save it to the database.
@@ -179,6 +189,33 @@ class PromptManager(ComfyNodeABC):
         # For database storage, save the original main text with metadata about prepend/append
         storage_text = text
 
+        # Try to discover companion negative prompt (from PromptManagerNegative node)
+        negative_text = ""
+        negative_key: Optional[str] = None
+
+        if prompt and isinstance(prompt, dict):
+            for key, value in prompt.items():
+                if not isinstance(value, dict):
+                    continue
+                if value.get("class_type") != "PromptManagerNegative":
+                    continue
+
+                # Check cached negative prompt first
+                cached = get_negative_prompt(key)
+                if cached:
+                    negative_text = cached
+                    negative_key = key
+                    self.logger.debug(f"Found cached negative prompt from node {key}")
+                    break
+
+                # Fallback to reading from prompt data
+                candidate = value.get("inputs", {}).get("text")
+                if isinstance(candidate, str) and candidate.strip():
+                    negative_text = candidate.strip()
+                    negative_key = key
+                    self.logger.debug(f"Found negative prompt from workflow data: {key}")
+                    break
+
         # Search functionality is now handled by the JavaScript UI
         # The search parameters are still available for backend processing if needed
 
@@ -207,6 +244,7 @@ class PromptManager(ComfyNodeABC):
             try:
                 prompt_id = self._save_prompt_to_database(
                     text=storage_text.strip(),  # Always strip whitespace
+                    negative_prompt=negative_text if negative_text else None,
                     category=category.strip() if category else None,
                     tags=extended_tags if extended_tags else None,
                 )
@@ -219,6 +257,7 @@ class PromptManager(ComfyNodeABC):
                             "category": category.strip() if category else None,
                             "tags": extended_tags,
                             "prompt_id": prompt_id,
+                            "negative_prompt": negative_text if negative_text else None,
                             "prepend_text": (
                                 prepend_text.strip() if prepend_text else None
                             ),
@@ -229,6 +268,11 @@ class PromptManager(ComfyNodeABC):
                     self.logger.debug(
                         f"Set execution context: {execution_id} for prompt ID: {prompt_id}"
                     )
+
+                    # Clear the negative prompt cache after use
+                    if negative_key:
+                        pop_negative_prompt(negative_key)
+                        self.logger.debug(f"Cleared negative prompt cache for node {negative_key}")
 
             except Exception as e:
                 # Log error but don't fail the encoding
@@ -260,13 +304,14 @@ class PromptManager(ComfyNodeABC):
         return (conditioning, encoding_text)
 
     def _save_prompt_to_database(
-        self, text: str, category: Optional[str] = None, tags: Optional[list] = None
+        self, text: str, negative_prompt: Optional[str] = None, category: Optional[str] = None, tags: Optional[list] = None
     ) -> Optional[int]:
         """
         Save the prompt to the SQLite database.
 
         Args:
             text: The prompt text
+            negative_prompt: Optional negative prompt text
             category: Optional category
             tags: List of tags
 
@@ -294,10 +339,10 @@ class PromptManager(ComfyNodeABC):
 
             # Save new prompt
             self.logger.debug(
-                f"Saving new prompt with category: {category}, tags: {tags}"
+                f"Saving new prompt with category: {category}, tags: {tags}, negative: {bool(negative_prompt)}"
             )
             prompt_id = self.db.save_prompt(
-                text=text, category=category, tags=tags, prompt_hash=prompt_hash
+                text=text, negative_prompt=negative_prompt, category=category, tags=tags, prompt_hash=prompt_hash
             )
 
             if prompt_id:

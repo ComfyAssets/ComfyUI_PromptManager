@@ -74,6 +74,7 @@ except ImportError:
 try:
     from .src.database import PromptDatabase
     from .utils.comfyui_integration import get_comfyui_integration
+    from .prompt_manager_shared import get_negative_prompt, pop_negative_prompt
 except ImportError:
     # For direct imports when not in a package
     import os
@@ -81,6 +82,7 @@ except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from src.database import PromptDatabase
     from utils.comfyui_integration import get_comfyui_integration
+    from prompt_manager_shared import get_negative_prompt, pop_negative_prompt
 
 # Initialize logger
 logger = get_logger(__name__)
@@ -367,12 +369,36 @@ class PromptManager(ComfyNodeABC):
             # Clean and normalize the text
             final_text = self._clean_text(combined_text)
 
-            # Get negative prompt if in workflow
+            # Try to discover companion negative prompt (from PromptManagerNegative node)
             negative_prompt = ""
-            if extra_pnginfo and "workflow" in extra_pnginfo:
-                # Try to extract negative prompt from workflow
-                # This would need to be customized based on workflow structure
-                pass
+            negative_key: Optional[str] = None
+
+            if prompt and isinstance(prompt, dict):
+                for key, value in prompt.items():
+                    if not isinstance(value, dict):
+                        continue
+                    if value.get("class_type") != "PromptManagerNegative":
+                        continue
+
+                    # Check cached negative prompt first
+                    cached = get_negative_prompt(key)
+                    if cached:
+                        negative_prompt = cached
+                        negative_key = key
+                        logger.debug(f"Found cached negative prompt from node {key}")
+                        if DEBUG:
+                            print(f"🔍 Found cached negative prompt from node {key}")
+                        break
+
+                    # Fallback to reading from prompt data
+                    candidate = value.get("inputs", {}).get("text")
+                    if isinstance(candidate, str) and candidate.strip():
+                        negative_prompt = candidate.strip()
+                        negative_key = key
+                        logger.debug(f"Found negative prompt from workflow data: {key}")
+                        if DEBUG:
+                            print(f"🔍 Found negative prompt from workflow data: {key}")
+                        break
 
             # Log unique_id extraction
             logger.info(f"PromptManager: About to check tracking - unique_id={unique_id}, type={type(unique_id)}, DISABLE_TRACKING={DISABLE_TRACKING}")
@@ -454,11 +480,19 @@ class PromptManager(ComfyNodeABC):
 
             prompt_id = self.db.save_prompt(
                 text=final_text,
+                negative_prompt=negative_prompt if negative_prompt else None,
                 category=category if category else None,
                 tags=tags if tags else None,
                 prompt_hash=p_hash
             )
-            logger.info(f"Saved prompt ID {prompt_id} with tracking")
+            logger.info(f"Saved prompt ID {prompt_id} with tracking (negative: {bool(negative_prompt)})")
+
+            # Clear the negative prompt cache after successful save
+            if negative_key:
+                pop_negative_prompt(negative_key)
+                logger.debug(f"Cleared negative prompt cache for node {negative_key}")
+                if DEBUG:
+                    print(f"🧹 Cleared negative prompt cache for node {negative_key}")
 
             # Store the prompt_id in the tracking data so we can use it later
             if not DISABLE_TRACKING and unique_id and self.tracker and hasattr(self.tracker, '_active_prompts'):
