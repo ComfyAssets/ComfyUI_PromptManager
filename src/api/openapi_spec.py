@@ -31,6 +31,11 @@ from pathlib import Path
 OPENAPI_VERSION = "3.0.3"
 API_VERSION = "1.0.0"
 
+# Cache busting version - use timestamp in dev, semantic version in prod
+import os
+import time
+CACHE_VERSION = os.environ.get('PROMPTMANAGER_VERSION', str(int(time.time())))
+
 
 @dataclass
 class APIInfo:

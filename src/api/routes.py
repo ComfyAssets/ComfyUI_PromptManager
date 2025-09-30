@@ -35,6 +35,15 @@ from utils.file_system import get_file_system
 from utils.cache import CacheManager
 from utils.logging import LogConfig
 
+# Handler imports for orchestrator pattern
+from src.api.handlers.gallery import GalleryHandlers
+from src.api.handlers.metadata import MetadataHandlers
+from src.api.handlers.logs import LogsHandlers
+from src.api.handlers.migration import MigrationHandlers
+from src.api.handlers.prompts import PromptHandlers
+from src.api.handlers.system import SystemHandlers
+from src.api.handlers.maintenance import MaintenanceHandlers
+
 
 class PromptManagerAPI:
     """REST API handler for PromptManager operations.
@@ -119,7 +128,16 @@ class PromptManagerAPI:
         # Initialize ComfyUI output monitor if available
         self._init_comfyui_monitor()
 
-        self.logger.info("PromptManager API initialized")
+        # Initialize domain handlers (orchestrator pattern)
+        self.gallery_handlers = GalleryHandlers(self)
+        self.metadata_handlers = MetadataHandlers(self)
+        self.logs_handlers = LogsHandlers(self)
+        self.migration_handlers = MigrationHandlers(self)
+        self.prompts_handlers = PromptHandlers(self)
+        self.system_handlers = SystemHandlers(self)
+        self.maintenance_handlers = MaintenanceHandlers(self)
+
+        self.logger.info("PromptManager API initialized with 7 domain handlers")
 
         if run_migration_check:
             self._run_startup_migration_check()
@@ -467,72 +485,72 @@ class PromptManagerAPI:
         if getattr(self, '_routes_registered', False):
             return
 
-        # Prompt endpoints
-        routes.post("/api/v1/prompts")(self.create_prompt)
-        routes.get("/api/v1/prompts")(self.list_prompts)
-        routes.get("/api/v1/prompts/{id}")(self.get_prompt)
-        routes.put("/api/v1/prompts/{id}")(self.update_prompt)
-        routes.delete("/api/v1/prompts/{id}")(self.delete_prompt)
-        routes.post("/api/v1/prompts/search")(self.search_prompts)
-        routes.get("/api/v1/prompts/recent")(self.get_recent_prompts)
-        routes.get("/api/v1/prompts/popular")(self.get_popular_prompts)
-        routes.get("/api/v1/prompts/categories")(self.get_prompt_categories)
-        routes.get("/api/v1/prompts/{prompt_id}/images")(self.get_prompt_images)
+        # Prompt endpoints - delegated to PromptHandlers
+        routes.post("/api/v1/prompts")(self.prompts_handlers.create_prompt)
+        routes.get("/api/v1/prompts")(self.prompts_handlers.list_prompts)
+        routes.get("/api/v1/prompts/{id}")(self.prompts_handlers.get_prompt)
+        routes.put("/api/v1/prompts/{id}")(self.prompts_handlers.update_prompt)
+        routes.delete("/api/v1/prompts/{id}")(self.prompts_handlers.delete_prompt)
+        routes.post("/api/v1/prompts/search")(self.prompts_handlers.search_prompts)
+        routes.get("/api/v1/prompts/recent")(self.system_handlers.get_recent_prompts)
+        routes.get("/api/v1/prompts/popular")(self.system_handlers.get_popular_prompts)
+        routes.get("/api/v1/prompts/categories")(self.system_handlers.get_prompt_categories)
+        routes.get("/api/v1/prompts/{prompt_id}/images")(self.system_handlers.get_prompt_images)
 
-        # Bulk operations
-        routes.post("/api/v1/prompts/bulk")(self.bulk_create_prompts)
-        routes.delete("/api/v1/prompts/bulk")(self.bulk_delete_prompts)
+        # Bulk operations - delegated to PromptHandlers
+        routes.post("/api/v1/prompts/bulk")(self.prompts_handlers.bulk_create_prompts)
+        routes.delete("/api/v1/prompts/bulk")(self.prompts_handlers.bulk_delete_prompts)
 
-        # Gallery endpoints
-        routes.get("/api/v1/gallery/images")(self.list_gallery_images)
-        routes.get("/api/v1/gallery/images/{id}")(self.get_gallery_image)
-        routes.get("/api/v1/gallery/images/{id}/file")(self.get_gallery_image_file)
-        routes.get("/api/v1/generated-images/{image_id}/metadata")(self.get_generated_image_metadata)
-        routes.get("/api/v1/generated-images/{image_id}/file")(self.get_generated_image_file)
-        routes.post("/api/v1/gallery/scan")(self.scan_for_images)
-        routes.post("/api/scan")(self.scan_comfyui_images)  # Simple scan endpoint for frontend
+        # Gallery endpoints - delegated to GalleryHandlers
+        routes.get("/api/v1/gallery/images")(self.gallery_handlers.list_gallery_images)
+        routes.get("/api/v1/gallery/images/{id}")(self.gallery_handlers.get_gallery_image)
+        routes.get("/api/v1/gallery/images/{id}/file")(self.gallery_handlers.get_gallery_image_file)
+        routes.get("/api/v1/generated-images/{image_id}/metadata")(self.gallery_handlers.get_generated_image_metadata)
+        routes.get("/api/v1/generated-images/{image_id}/file")(self.gallery_handlers.get_generated_image_file)
+        routes.post("/api/v1/gallery/scan")(self.gallery_handlers.scan_for_images)
+        routes.post("/api/scan")(self.gallery_handlers.scan_comfyui_images)  # Simple scan endpoint for frontend
 
-        # Metadata endpoints
-        routes.get("/api/v1/metadata/{filename}")(self.get_image_metadata)
-        routes.post("/api/v1/metadata/extract")(self.extract_metadata)
-        routes.post("/prompt_manager/api/v1/metadata/extract")(self.extract_metadata)
-        routes.post("/api/prompt_manager/api/v1/metadata/extract")(self.extract_metadata)
+        # Metadata endpoints - delegated to MetadataHandlers
+        routes.get("/api/v1/metadata/{filename}")(self.metadata_handlers.get_image_metadata)
+        routes.post("/api/v1/metadata/extract")(self.metadata_handlers.extract_metadata)
+        routes.post("/prompt_manager/api/v1/metadata/extract")(self.metadata_handlers.extract_metadata)
+        routes.post("/api/prompt_manager/api/v1/metadata/extract")(self.metadata_handlers.extract_metadata)
 
-        # Migration endpoints
-        routes.get("/api/v1/migration/info")(self.get_migration_info)
-        routes.get("/api/v1/migration/status")(self.get_migration_status)
-        routes.get("/api/v1/migration/progress")(self.get_migration_progress)
-        routes.post("/api/v1/migration/start")(self.start_migration)
-        routes.post("/api/v1/migration/trigger")(self.trigger_migration)
+        # Migration endpoints - delegated to MigrationHandlers
+        routes.get("/api/v1/migration/info")(self.migration_handlers.get_migration_info)
+        routes.get("/api/v1/migration/status")(self.migration_handlers.get_migration_status)
+        routes.get("/api/v1/migration/progress")(self.migration_handlers.get_migration_progress)
+        routes.post("/api/v1/migration/start")(self.migration_handlers.start_migration)
+        routes.post("/api/v1/migration/trigger")(self.migration_handlers.trigger_migration)
 
-        # System endpoints
-        routes.get("/api/v1/health")(self.health_check)
-        routes.get("/api/v1/system/stats")(self.get_statistics)
-        routes.get("/api/v1/stats/overview")(self.get_stats_overview)
-        routes.get("/api/v1/stats/scheduler/status")(self.get_stats_scheduler_status)
-        routes.get("/api/v1/stats/epic")(self.get_epic_stats)
-        routes.get("/api/prompt_manager/stats/epic")(self.get_epic_stats)
+        # System endpoints - delegated to SystemHandlers
+        routes.get("/api/v1/health")(self.system_handlers.health_check)
+        routes.get("/api/v1/system/stats")(self.system_handlers.get_statistics)
+        routes.get("/api/v1/stats/overview")(self.system_handlers.get_stats_overview)
+        routes.get("/api/v1/stats/scheduler/status")(self.get_stats_scheduler_status)  # Keep in routes.py (stats scheduler)
+        routes.get("/api/v1/stats/epic")(self.get_epic_stats)  # Keep in routes.py (legacy)
+        routes.get("/api/prompt_manager/stats/epic")(self.get_epic_stats)  # Keep in routes.py (legacy)
 
         # Maintenance endpoints - only if service is available
         if self.maintenance_api:
             self.maintenance_api.add_routes(routes)
             self.logger.info("Maintenance API routes registered")
-        routes.post("/api/v1/stats/scheduler/force")(self.force_stats_update)
-        routes.post("/api/v1/system/vacuum")(self.vacuum_database)
-        routes.post("/api/v1/system/backup")(self.backup_database)
-        routes.post("/api/v1/system/database/verify")(self.verify_database_path)
-        routes.post("/api/v1/system/database/apply")(self.apply_database_path)
-        routes.post("/api/v1/system/database/migrate")(self.migrate_database_path)
-        routes.get("/api/v1/system/categories")(self.get_categories)
-        routes.get("/api/v1/system/settings")(self.get_system_settings)
-        routes.put("/api/v1/system/settings")(self.update_system_settings)
+        routes.post("/api/v1/stats/scheduler/force")(self.force_stats_update)  # Keep in routes.py (stats scheduler)
+        routes.post("/api/v1/system/vacuum")(self.system_handlers.vacuum_database)
+        routes.post("/api/v1/system/backup")(self.system_handlers.backup_database)
+        routes.post("/api/v1/system/database/verify")(self.system_handlers.verify_database_path)
+        routes.post("/api/v1/system/database/apply")(self.system_handlers.apply_database_path)
+        routes.post("/api/v1/system/database/migrate")(self.system_handlers.migrate_database_path)
+        routes.get("/api/v1/system/categories")(self.system_handlers.get_categories)
+        routes.get("/api/v1/system/settings")(self.system_handlers.get_system_settings)
+        routes.put("/api/v1/system/settings")(self.update_system_settings)  # Keep in routes.py (uses _build_settings_payload)
 
-        # Logs
-        routes.get("/api/v1/logs")(self.list_logs)
-        routes.get("/api/v1/logs/{name}")(self.get_log_file)
-        routes.post("/api/v1/logs/clear")(self.clear_logs)
-        routes.post("/api/v1/logs/rotate")(self.rotate_logs)
-        routes.get("/api/v1/logs/download/{name}")(self.download_log)
+        # Logs - delegated to LogsHandlers
+        routes.get("/api/v1/logs")(self.logs_handlers.list_logs)
+        routes.get("/api/v1/logs/{name}")(self.logs_handlers.get_log_file)
+        routes.post("/api/v1/logs/clear")(self.logs_handlers.clear_logs)
+        routes.post("/api/v1/logs/rotate")(self.logs_handlers.rotate_logs)
+        routes.get("/api/v1/logs/download/{name}")(self.logs_handlers.download_log)
 
         # Thumbnail endpoints
         if self.thumbnail_api:
@@ -577,22 +595,22 @@ class PromptManagerAPI:
             routes.post('/api/v1/thumbnails/scan')(thumbnail_not_available)
             self.logger.warning("Thumbnail API not available - fallback routes registered")
 
-        # Maintenance endpoints
-        routes.get("/api/prompt_manager/maintenance/stats")(self.get_maintenance_stats)
-        routes.post("/api/prompt_manager/maintenance/deduplicate")(self.remove_duplicates_maintenance)
-        routes.post("/api/prompt_manager/maintenance/clean-orphans")(self.clean_orphans_maintenance)
-        routes.post("/api/prompt_manager/maintenance/validate-paths")(self.validate_paths_maintenance)
-        routes.post("/api/prompt_manager/maintenance/optimize")(self.optimize_database_maintenance)
-        routes.post("/api/prompt_manager/maintenance/backup")(self.backup_database_maintenance)
-        routes.post("/api/prompt_manager/maintenance/remove-missing")(self.remove_missing_files_maintenance)
-        routes.post("/api/prompt_manager/maintenance/update-file-metadata")(self.refresh_file_metadata_maintenance)
-        routes.post("/api/prompt_manager/maintenance/fix-broken-links")(self.fix_broken_links_maintenance)
-        routes.post("/api/prompt_manager/maintenance/check-integrity")(self.check_integrity_maintenance)
-        routes.post("/api/prompt_manager/maintenance/reindex")(self.reindex_database_maintenance)
-        routes.post("/api/prompt_manager/maintenance/export")(self.export_backup_maintenance)
-        routes.post("/api/prompt_manager/maintenance/tag-missing-images")(self.tag_missing_images_maintenance)
-        routes.post("/api/prompt_manager/maintenance/calculate-epic-stats")(self.calculate_epic_stats_maintenance)
-        routes.post("/api/prompt_manager/maintenance/calculate-word-cloud")(self.calculate_word_cloud_maintenance)
+        # Maintenance endpoints - delegated to MaintenanceHandlers
+        routes.get("/api/prompt_manager/maintenance/stats")(self.maintenance_handlers.get_maintenance_stats)
+        routes.post("/api/prompt_manager/maintenance/deduplicate")(self.maintenance_handlers.remove_duplicates)
+        routes.post("/api/prompt_manager/maintenance/clean-orphans")(self.maintenance_handlers.clean_orphans)
+        routes.post("/api/prompt_manager/maintenance/validate-paths")(self.maintenance_handlers.validate_paths)
+        routes.post("/api/prompt_manager/maintenance/optimize")(self.maintenance_handlers.optimize_database)
+        routes.post("/api/prompt_manager/maintenance/backup")(self.maintenance_handlers.create_backup)
+        routes.post("/api/prompt_manager/maintenance/remove-missing")(self.maintenance_handlers.remove_missing_files)
+        routes.post("/api/prompt_manager/maintenance/update-file-metadata")(self.maintenance_handlers.refresh_file_metadata)
+        routes.post("/api/prompt_manager/maintenance/fix-broken-links")(self.maintenance_handlers.fix_broken_links)
+        routes.post("/api/prompt_manager/maintenance/check-integrity")(self.maintenance_handlers.check_integrity)
+        routes.post("/api/prompt_manager/maintenance/reindex")(self.maintenance_handlers.reindex_database)
+        routes.post("/api/prompt_manager/maintenance/export")(self.maintenance_handlers.export_backup)
+        routes.post("/api/prompt_manager/maintenance/tag-missing-images")(self.maintenance_handlers.tag_missing_images)
+        routes.post("/api/prompt_manager/maintenance/calculate-epic-stats")(self.maintenance_handlers.calculate_epic_stats)
+        routes.post("/api/prompt_manager/maintenance/calculate-word-cloud")(self.maintenance_handlers.calculate_word_cloud)
 
         # Settings endpoints
         routes.get("/api/prompt_manager/settings")(self.get_all_settings)
