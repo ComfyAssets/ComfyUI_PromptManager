@@ -88,6 +88,7 @@ class ThumbnailAPI:
         """
         # Thumbnail operations
         app.router.add_post('/api/v1/thumbnails/scan', self.scan_missing_thumbnails)
+        app.router.add_post('/api/v1/thumbnails/scan/all', self.scan_all_thumbnails)
         app.router.add_post('/api/v1/thumbnails/generate', self.generate_thumbnails)
         app.router.add_post('/api/v1/thumbnails/cancel', self.cancel_generation)
         app.router.add_get('/api/v1/thumbnails/status/{task_id}', self.get_task_status)
@@ -115,6 +116,40 @@ class ThumbnailAPI:
         # Health check endpoint
         app.router.add_get('/api/v1/thumbnails/health', self.health_check)
 
+    async def scan_all_thumbnails(self, request: web.Request) -> web.Response:
+        """Scan ALL images including those with existing thumbnails.
+
+        Args:
+            request: HTTP request
+
+        Returns:
+            JSON response with complete scan results including existing thumbnails
+        """
+        try:
+            # Handle empty or invalid JSON body gracefully
+            try:
+                data = await request.json() if request.body_exists else {}
+            except (json.JSONDecodeError, ValueError):
+                data = {}
+
+            sizes = data.get('sizes', ['small', 'medium', 'large'])
+            sample_limit = data.get('sample_limit', 6)
+
+            # Use the service method to scan thumbnails
+            result = await self.thumbnail_service.scan_all_thumbnails(
+                sizes=sizes,
+                sample_limit=sample_limit
+            )
+
+            return web.json_response(result)
+
+        except Exception as e:
+            logger.error(f"Scan all error: {e}")
+            return web.json_response(
+                {'error': str(e)},
+                status=500
+            )
+
     async def scan_missing_thumbnails(self, request: web.Request) -> web.Response:
         """Scan for images missing thumbnails.
 
@@ -125,7 +160,12 @@ class ThumbnailAPI:
             JSON response with missing thumbnail count and list
         """
         try:
-            data = await request.json()
+            # Handle empty or invalid JSON body gracefully
+            try:
+                data = await request.json() if request.body_exists else {}
+            except (json.JSONDecodeError, ValueError):
+                data = {}
+
             sizes = data.get('sizes', ['small', 'medium', 'large'])
             include_videos = data.get('include_videos', True)
 
@@ -154,7 +194,8 @@ class ThumbnailAPI:
                         cursor.execute("""
                             SELECT id, image_path, filename
                             FROM generated_images
-                            WHERE image_path IS NOT NULL AND image_path != ''
+                            WHERE (thumbnail_small_path IS NULL OR thumbnail_small_path = '')
+                            AND image_path IS NOT NULL AND image_path != ''
                         """)
                     else:
                         logger.info("Using images table (v1)")
@@ -227,30 +268,47 @@ class ThumbnailAPI:
             JSON response with generation task ID or summary
         """
         try:
-            data = await request.json()
+            # Handle empty or invalid JSON body gracefully
+            try:
+                data = await request.json() if request.body_exists else {}
+            except (json.JSONDecodeError, ValueError):
+                data = {}
+
             sizes = data.get('sizes', ['small', 'medium', 'large'])
             force_regenerate = data.get('force', False)
 
             # Get all image paths from database
             image_paths = []
+            missing_thumbnail_count = 0
             try:
                 import sqlite3
                 conn = sqlite3.connect(self.db.db_path)
                 cursor = conn.cursor()
-                
-                # Use generated_images table (v2 database)
+
+                # First, count images without thumbnails in database
+                cursor.execute("""
+                    SELECT COUNT(*)
+                    FROM generated_images
+                    WHERE (thumbnail_small_path IS NULL OR thumbnail_small_path = '')
+                    AND image_path IS NOT NULL AND image_path != ''
+                """)
+                missing_thumbnail_count = cursor.fetchone()[0]
+                logger.info(f"Found {missing_thumbnail_count} images without thumbnail paths in database")
+
+                # Get images without thumbnails for scanning
                 cursor.execute("""
                     SELECT id, image_path, filename
                     FROM generated_images
-                    WHERE image_path IS NOT NULL AND image_path != ''
+                    WHERE (thumbnail_small_path IS NULL OR thumbnail_small_path = '')
+                    AND image_path IS NOT NULL AND image_path != ''
                 """)
                 images = cursor.fetchall()
-                
+
                 for image in images:
                     path = Path(image[1])  # image_path is at index 1
                     if path.exists():
                         image_paths.append(path)
-                
+
                 conn.close()
                         
             except Exception as e:
@@ -493,9 +551,10 @@ class ThumbnailAPI:
             JSON response with task information
         """
         try:
-            # Get sizes from request or use all sizes as default
+            # Get parameters from request
             data = await request.json()
             sizes = data.get('sizes')
+            skip_existing = data.get('skip_existing', True)  # NEW: default to True
 
             # If no sizes specified, try to get from user settings/preferences
             if not sizes:
@@ -510,24 +569,37 @@ class ThumbnailAPI:
             else:
                 logger.info("Rebuilding thumbnails for sizes: %s", sizes)
 
-            # Clear existing cache first (only for requested sizes)
-            for size in sizes:
-                if size in self.thumbnail_service.base_generator.SIZES:
-                    await self.thumbnail_service.clear_cache(size)
+            # Clear existing cache only if NOT skipping existing
+            if not skip_existing:
+                for size in sizes:
+                    if size in self.thumbnail_service.base_generator.SIZES:
+                        await self.thumbnail_service.clear_cache(size)
 
-            # Get all images from database
+            # Get images from database
             image_paths = []
             try:
                 import sqlite3
                 conn = sqlite3.connect(self.db.db_path)
                 cursor = conn.cursor()
 
-                # Use generated_images table (v2 database)
-                cursor.execute("""
-                    SELECT id, image_path, filename
-                    FROM generated_images
-                    WHERE image_path IS NOT NULL AND image_path != ''
-                """)
+                if skip_existing:
+                    # Only get images WITHOUT thumbnails
+                    logger.info("Skipping existing thumbnails - only generating missing")
+                    cursor.execute("""
+                        SELECT id, image_path, filename
+                        FROM generated_images
+                        WHERE (thumbnail_small_path IS NULL OR thumbnail_small_path = '')
+                        AND image_path IS NOT NULL AND image_path != ''
+                    """)
+                else:
+                    # Get ALL images (existing behavior for overwrite)
+                    logger.info("Overwriting all thumbnails - regenerating everything")
+                    cursor.execute("""
+                        SELECT id, image_path, filename
+                        FROM generated_images
+                        WHERE image_path IS NOT NULL AND image_path != ''
+                    """)
+
                 images = cursor.fetchall()
 
                 for image in images:
