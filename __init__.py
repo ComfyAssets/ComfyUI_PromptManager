@@ -228,19 +228,35 @@ def _run_sql_migrations(db):
                     migrations_applied += 1
 
                 except sqlite3.Error as e:
-                    # Record failed migration
-                    try:
-                        cursor.execute(
-                            "INSERT INTO migrations (version, applied_at, filename, status, error_message) VALUES (?, ?, ?, ?, ?)",
-                            (version, datetime.utcnow().isoformat(), migration_file.name, 'failed', str(e))
-                        )
-                        conn.commit()
-                    except:
-                        # If insert fails, just continue
-                        pass
+                    error_message = str(e).lower()
 
-                    print(f"⚠️  Patch failed: {e}")
-                    conn.rollback()
+                    # Check if it's a "duplicate column" error, which is safe to ignore
+                    if 'duplicate column' in error_message or 'already exists' in error_message:
+                        # Column already exists, treat as success
+                        try:
+                            cursor.execute(
+                                "INSERT INTO migrations (version, applied_at, filename, status) VALUES (?, ?, ?, ?)",
+                                (version, datetime.utcnow().isoformat(), migration_file.name, 'success')
+                            )
+                            conn.commit()
+                            print(f"🫶 Patch already applied (columns exist) - skipping")
+                            migrations_applied += 1
+                        except:
+                            pass
+                    else:
+                        # Record failed migration for other errors
+                        try:
+                            cursor.execute(
+                                "INSERT INTO migrations (version, applied_at, filename, status, error_message) VALUES (?, ?, ?, ?, ?)",
+                                (version, datetime.utcnow().isoformat(), migration_file.name, 'failed', str(e))
+                            )
+                            conn.commit()
+                        except:
+                            # If insert fails, just continue
+                            pass
+
+                        print(f"⚠️  Patch failed: {e}")
+                        conn.rollback()
 
         cursor.close()
         conn.close()
