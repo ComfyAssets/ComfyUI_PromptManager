@@ -10,6 +10,7 @@ import json
 import math
 import logging
 import os
+import sqlite3
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -509,6 +510,8 @@ class PromptManagerAPI:
         routes.get("/api/v1/system/stats")(self.get_statistics)
         routes.get("/api/v1/stats/overview")(self.get_stats_overview)
         routes.get("/api/v1/stats/scheduler/status")(self.get_stats_scheduler_status)
+        routes.get("/api/v1/stats/epic")(self.get_epic_stats)
+        routes.get("/api/prompt_manager/stats/epic")(self.get_epic_stats)
 
         # Maintenance endpoints - only if service is available
         if self.maintenance_api:
@@ -535,6 +538,7 @@ class PromptManagerAPI:
         if self.thumbnail_api:
             # Thumbnail operations
             routes.post('/api/v1/thumbnails/scan')(self.thumbnail_api.scan_missing_thumbnails)
+            routes.post('/api/v1/thumbnails/scan/all')(self.thumbnail_api.scan_all_thumbnails)
             routes.post('/api/v1/thumbnails/generate')(self.thumbnail_api.generate_thumbnails)
             routes.post('/api/v1/thumbnails/cancel')(self.thumbnail_api.cancel_generation)
             routes.get('/api/v1/thumbnails/status/{task_id}')(self.thumbnail_api.get_task_status)
@@ -2525,6 +2529,233 @@ class PromptManagerAPI:
             })
         except Exception as e:
             self.logger.error(f"Error getting scheduler status: {e}")
+            return web.json_response({
+                "success": False,
+                "error": str(e)
+            }, status=500)
+
+    async def get_epic_stats(self, request: web.Request) -> web.Response:
+        """Get epic statistics from the database.
+        GET /api/v1/stats/epic
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get list of ALL available tables (not just stats tables)
+            cursor.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table'
+            """)
+            available_tables = {row[0] for row in cursor.fetchall()}
+
+            # Initialize all data as None
+            hero_stats = None
+            generation_analytics = None
+            time_patterns = []
+            model_usage = []
+            resolutions = []
+            rating_trends = []
+
+            # Get hero stats if table exists
+            if 'stats_hero_stats' in available_tables:
+                cursor.execute("""
+                    SELECT * FROM stats_hero_stats
+                    ORDER BY calculated_at DESC
+                    LIMIT 1
+                """)
+                hero_stats = cursor.fetchone()
+
+            # Get generation analytics if table exists
+            if 'stats_generation_analytics' in available_tables:
+                cursor.execute("""
+                    SELECT * FROM stats_generation_analytics
+                    ORDER BY calculated_at DESC
+                    LIMIT 1
+                """)
+                generation_analytics = cursor.fetchone()
+
+            # Get time patterns if table exists
+            if 'stats_hourly_activity' in available_tables:
+                cursor.execute("""
+                    SELECT hour, prompt_count + image_count as total_generations, 0 as avg_quality_score
+                    FROM stats_hourly_activity
+                    ORDER BY hour
+                """)
+                time_patterns = cursor.fetchall()
+            elif 'stats_time_patterns_detailed' in available_tables:
+                cursor.execute("""
+                    SELECT hour_of_day, total_generations, avg_quality_score
+                    FROM stats_time_patterns_detailed
+                    ORDER BY hour_of_day
+                """)
+                time_patterns = cursor.fetchall()
+            elif 'stats_time_patterns' in available_tables:
+                # Try the original table structure
+                cursor.execute("""
+                    SELECT
+                        CAST(SUBSTR(pattern_value, 1, 2) AS INTEGER) as hour,
+                        0 as generations,
+                        0 as avg_quality
+                    FROM stats_time_patterns
+                    WHERE pattern_type = 'hourly'
+                    LIMIT 24
+                """)
+                time_patterns = cursor.fetchall()
+
+            # Get model usage if table exists
+            if 'stats_model_usage' in available_tables:
+                # Check which columns exist
+                cursor.execute("PRAGMA table_info(stats_model_usage)")
+                columns = {row[1] for row in cursor.fetchall()}
+
+                if 'generation_count' in columns and 'percentage' in columns:
+                    cursor.execute("""
+                        SELECT model_name, generation_count, percentage
+                        FROM stats_model_usage
+                        ORDER BY generation_count DESC
+                    """)
+                elif 'usage_count' in columns:
+                    cursor.execute("""
+                        SELECT model_name, usage_count, 0
+                        FROM stats_model_usage
+                        ORDER BY usage_count DESC
+                    """)
+                else:
+                    cursor.execute("""
+                        SELECT model_name, 0, 0
+                        FROM stats_model_usage
+                        LIMIT 10
+                    """)
+                model_usage = cursor.fetchall()
+
+            # Get resolution distribution if table exists
+            if 'stats_resolution_distribution' in available_tables:
+                cursor.execute("""
+                    SELECT width, height, count
+                    FROM stats_resolution_distribution
+                    ORDER BY count DESC
+                    LIMIT 5
+                """)
+                resolutions = cursor.fetchall()
+
+            # Get rating trends if table exists
+            if 'stats_rating_trends' in available_tables:
+                cursor.execute("""
+                    SELECT period_date, avg_rating, total_ratings
+                    FROM stats_rating_trends
+                    WHERE period_type = 'daily'
+                    ORDER BY period_date DESC
+                    LIMIT 30
+                """)
+                rating_trends = cursor.fetchall()
+
+            # Fallback: if no stats tables exist, try to get basic counts from source tables
+            if not hero_stats and 'generated_images' in available_tables:
+                try:
+                    # Check what columns exist in generated_images
+                    cursor.execute("PRAGMA table_info(generated_images)")
+                    columns = {row[1] for row in cursor.fetchall()}
+
+                    # Build query based on available columns
+                    if 'rating' in columns:
+                        cursor.execute("""
+                            SELECT
+                                COUNT(*) as total_images,
+                                COUNT(DISTINCT prompt_id) as unique_prompts,
+                                COUNT(CASE WHEN rating > 0 THEN 1 END) as rated_count,
+                                AVG(CASE WHEN rating > 0 THEN rating END) as avg_rating,
+                                COUNT(CASE WHEN rating = 5 THEN 1 END) as five_star_count
+                            FROM generated_images
+                        """)
+                    else:
+                        # No rating column, just get basic counts
+                        cursor.execute("""
+                            SELECT
+                                COUNT(*) as total_images,
+                                COUNT(DISTINCT prompt_id) as unique_prompts,
+                                0 as rated_count,
+                                0 as avg_rating,
+                                0 as five_star_count
+                            FROM generated_images
+                        """)
+
+                    basic_stats = cursor.fetchone()
+                    if basic_stats:
+                        # Create a fake hero_stats tuple with the basic data
+                        hero_stats = (1, basic_stats[0], basic_stats[1], basic_stats[2],
+                                      basic_stats[3] or 0, basic_stats[4], 0,
+                                      basic_stats[0] / max(1, basic_stats[1]), 0, None)
+                except Exception as e:
+                    self.logger.warning(f"Failed to get fallback stats from generated_images: {e}")
+                    # Continue without fallback data
+
+            conn.close()
+
+            # Format the response
+            response_data = {
+                "success": True,
+                "data": {
+                    "generation_analytics": {
+                        "total_generations": generation_analytics[1] if generation_analytics else 0,
+                        "unique_prompts": generation_analytics[2] if generation_analytics else 0,
+                        "avg_per_day": generation_analytics[3] if generation_analytics else 0,
+                        "peak_day_count": generation_analytics[4] if generation_analytics else 0,
+                        "peak_day": generation_analytics[5] if generation_analytics else None,
+                        "total_generation_time": generation_analytics[6] if generation_analytics else 0,
+                        "avg_generation_time": generation_analytics[7] if generation_analytics else 0,
+                    } if generation_analytics else {},
+                    "hero_stats": {
+                        "total_images": hero_stats[1] if hero_stats else 0,
+                        "total_prompts": hero_stats[2] if hero_stats else 0,
+                        "rated_count": hero_stats[3] if hero_stats else 0,
+                        "avg_rating": hero_stats[4] if hero_stats else 0,
+                        "five_star_count": hero_stats[5] if hero_stats else 0,
+                        "total_collections": hero_stats[6] if hero_stats else 0,
+                        "images_per_prompt": hero_stats[7] if hero_stats else 0,
+                        "generation_streak": hero_stats[8] if hero_stats else 0,
+                    } if hero_stats else {},
+                    "time_patterns": [
+                        {
+                            "hour": row[0],
+                            "generations": row[1],
+                            "avg_quality": row[2]
+                        } for row in time_patterns
+                    ],
+                    "model_usage": [
+                        {
+                            "model": row[0],
+                            "count": row[1],
+                            "percentage": row[2]
+                        } for row in model_usage
+                    ],
+                    "quality_metrics": {
+                        "avg_quality_score": 0,  # Not in metadata
+                        "high_quality_count": 0,  # Not in metadata
+                        "low_quality_count": 0,  # Not tracked in current schema
+                        "quality_trend": "stable",  # Default value
+                        "top_resolutions": [
+                            {"width": r[0], "height": r[1], "count": r[2]}
+                            for r in resolutions
+                        ] if resolutions else []
+                    },
+                    "rating_trends": [
+                        {
+                            "date": row[0],
+                            "avg_rating": row[1],
+                            "total_ratings": row[2]
+                        } for row in rating_trends
+                    ],
+                    "calculated_at": hero_stats[9] if hero_stats else generation_analytics[8] if generation_analytics else None
+                }
+            }
+
+            return web.json_response(response_data)
+
+        except Exception as e:
+            self.logger.error(f"Error getting epic stats: {e}")
+            import traceback
+            traceback.print_exc()
             return web.json_response({
                 "success": False,
                 "error": str(e)
