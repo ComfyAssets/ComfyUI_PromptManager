@@ -664,9 +664,10 @@ class EnhancedThumbnailService:
 
             # After each batch, yield to event loop to allow realtime/status updates
             await asyncio.sleep(0.1)
-            logger.info(f"Batch complete: {self.current_progress.completed} completed, "
-                       f"{self.current_progress.failed} failed, "
-                       f"{self.current_progress.skipped} skipped")
+            if self.current_progress:
+                logger.info(f"Batch complete: {self.current_progress.completed} completed, "
+                           f"{self.current_progress.failed} failed, "
+                           f"{self.current_progress.skipped} skipped")
 
             # Update database after each batch to persist progress
             if batch_completed:
@@ -675,7 +676,7 @@ class EnhancedThumbnailService:
             if cancelled:
                 break
 
-        if cancelled:
+        if cancelled and self.current_progress:
             remaining = self.current_progress.total - (
                 self.current_progress.completed
                 + self.current_progress.failed
