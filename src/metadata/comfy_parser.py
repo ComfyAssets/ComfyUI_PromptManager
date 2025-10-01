@@ -532,8 +532,32 @@ class ComfyMetadataParser:
             ref_node_id = str(value[0])
             if ref_node_id in node_map:
                 ref_node = node_map[ref_node_id]
+                ref_class_type = ref_node.get("class_type", "")
                 ref_inputs = ref_node.get("inputs", {}) or {}
+
+                # Special handling for Text Concatenate nodes
+                if "Concatenate" in ref_class_type or "Concat" in ref_class_type:
+                    delimiter = ref_inputs.get("delimiter", ", ")
+                    if not isinstance(delimiter, str):
+                        delimiter = ", "
+                    parts = []
+                    # Try text_a through text_f (common concatenate node pattern)
+                    for suffix in ("a", "b", "c", "d", "e", "f"):
+                        key = f"text_{suffix}"
+                        if key in ref_inputs:
+                            resolved = self._resolve_text(ref_inputs[key], node_map, ref_inputs)
+                            if resolved and resolved.strip():
+                                parts.append(resolved)
+                    if parts:
+                        return delimiter.join(parts)
+
+                # Try candidate keys in priority order:
+                # - text_display: computed/resolved output (DisplayText nodes)
+                # - text: primary text field
+                # - string, prompt, value, content: alternative text fields
+                # - result, multiline, wildcard: specialized text fields
                 for candidate_key in (
+                    "text_display",
                     "text",
                     "string",
                     "prompt",
@@ -544,9 +568,17 @@ class ComfyMetadataParser:
                     "wildcard",
                 ):
                     if candidate_key in ref_inputs:
-                        resolved = self._resolve_text(ref_inputs[candidate_key], node_map, ref_inputs)
+                        candidate_value = ref_inputs[candidate_key]
+                        # Skip empty strings - they're not useful text values
+                        if isinstance(candidate_value, str) and not candidate_value.strip():
+                            continue
+                        resolved = self._resolve_text(candidate_value, node_map, ref_inputs)
                         if resolved:
                             return resolved
+            else:
+                # Node reference is broken (node doesn't exist in workflow)
+                # Return a descriptive message instead of None
+                return f"[Broken reference: node {ref_node_id} not found in workflow]"
         return None
 
     def _resolve_text_from_any(self, inputs: Dict[str, Any], node_map: Dict[str, Dict[str, Any]]) -> Optional[str]:
