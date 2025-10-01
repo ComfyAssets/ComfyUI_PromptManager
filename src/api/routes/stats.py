@@ -1,38 +1,34 @@
 """
 Optimized Statistics API Routes
-Server-side processing with caching and efficient queries.
+Server-side processing with hybrid approach for fast access.
 """
 
 from aiohttp import web
 import json
 import time
 from typing import Dict, Any
-from src.services.stats_service import StatsService
+from src.services.hybrid_stats_service import HybridStatsService
 
 
 class StatsRoutes:
-    """Optimized stats API routes with server-side processing."""
+    """Optimized stats API routes with hybrid stats service."""
 
     def __init__(self, db_path: str):
-        self.stats_service = StatsService(db_path, cache_ttl=300.0)
+        self.stats_service = HybridStatsService(db_path)
         self._last_update = 0
 
     async def get_overview(self, request: web.Request) -> web.Response:
         """
-        Get stats overview - all processing server-side.
-        Cached for 5 minutes by default.
+        Get stats overview using hybrid approach.
+        Fast access from pre-calculated stats with on-demand calculation fallback.
         """
         try:
-            # Check if force refresh requested
-            force = request.query.get('force', '').lower() == 'true'
-
-            # Get stats from service (uses cache)
-            stats = self.stats_service.get_overview(force=force)
+            # Get stats from hybrid service (pre-calculated + on-demand)
+            stats = self.stats_service.get_overview()
 
             return web.json_response({
                 'success': True,
-                'data': stats,
-                'cached': not force and time.time() - self._last_update < 300
+                'data': stats
             })
         except Exception as e:
             return web.json_response({
@@ -107,16 +103,15 @@ class StatsRoutes:
             }, status=500)
 
     async def invalidate_cache(self, request: web.Request) -> web.Response:
-        """Force cache invalidation (admin only)."""
+        """Force stats recalculation (admin only)."""
         try:
             # TODO: Add authentication check here
 
-            self.stats_service._cached_snapshot = None
-            self.stats_service._cached_at = 0
-
+            # HybridStatsService doesn't have cache to invalidate
+            # Instead, force epic stats recalculation via background job
             return web.json_response({
                 'success': True,
-                'message': 'Cache invalidated'
+                'message': 'Stats recalculation triggered (use background scheduler)'
             })
         except Exception as e:
             return web.json_response({

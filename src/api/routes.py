@@ -26,7 +26,7 @@ from src.galleries.image_gallery import ImageGallery
 from src.metadata.extractor import MetadataExtractor
 from src.database.migration import MigrationDetector, MigrationProgress
 from src.services.migration_service import MigrationService
-from src.services.stats_service import StatsService
+from src.services.hybrid_stats_service import HybridStatsService
 from src.services.incremental_stats_service import IncrementalStatsService
 from src.services.background_scheduler import StatsScheduler
 from src.services.settings_service import SettingsService
@@ -107,8 +107,8 @@ class PromptManagerAPI:
             self.stats_scheduler.start()
             self.logger.info("Started incremental stats background scheduler")
 
-            # Keep old StatsService for backward compatibility if needed
-            self.stats_service: StatsService | None = StatsService(stats_db_path)
+            # Use HybridStatsService for fast stats access
+            self.stats_service: HybridStatsService | None = HybridStatsService(stats_db_path)
         except Exception as exc:  # pragma: no cover - defensive logging
             self.logger.warning("StatsService unavailable: %s", exc)
             self.stats_service = None
@@ -1540,44 +1540,27 @@ class PromptManagerAPI:
         Returns in <10ms instead of 2-3 minutes!
         """
 
-        # NEW: Use hybrid approach - instant basic stats + fast analytics
-        try:
-            from src.services.hybrid_stats_service import HybridStatsService
-            hybrid_service = HybridStatsService(self.db_path)
-            snapshot = hybrid_service.get_overview()
-
-            # Mark as hybrid for the frontend
-            snapshot['loadTime'] = 'hybrid'
-            snapshot['cached'] = False
-
-            payload = {"success": True, "data": snapshot}
-            response = web.json_response(payload)
-
-            async def _json() -> Dict[str, Any]:
-                return payload
-
-            response.json = _json  # type: ignore[attr-defined]
-            self.logger.info("Stats returned with hybrid approach (fast + complete)")
-            return response
-
-        except ImportError:
-            self.logger.warning("HybridStatsService not available, using cache fallback")
-            # Try simple cache as second fallback
+        # Use HybridStatsService for fast stats access
+        if self.stats_service:
             try:
-                from src.services.stats_cache_service import StatsCacheService
-                cache_service = StatsCacheService(self.db_path)
-                snapshot = cache_service.get_overview()
-                snapshot['loadTime'] = 'cache-only'
+                snapshot = self.stats_service.get_overview()
+
+                # Mark as hybrid for the frontend
+                snapshot['loadTime'] = 'hybrid'
+                snapshot['cached'] = False
+
                 payload = {"success": True, "data": snapshot}
                 response = web.json_response(payload)
+
                 async def _json() -> Dict[str, Any]:
                     return payload
+
                 response.json = _json  # type: ignore[attr-defined]
+                self.logger.info("Stats returned with hybrid approach (fast + complete)")
                 return response
-            except Exception as exc2:
-                self.logger.warning(f"Cache also failed: {exc2}")
-        except Exception as exc:
-            self.logger.warning(f"Hybrid stats error: {exc}, using fallback")
+
+            except Exception as exc:
+                self.logger.warning(f"Hybrid stats error: {exc}, using fallback")
 
         # FALLBACK: Prefer incremental stats for better performance
         if self.incremental_stats:
@@ -1595,37 +1578,11 @@ class PromptManagerAPI:
                 self.logger.warning("Incremental stats failed, falling back: %s", exc)
                 # Fall back to original stats service
 
-        if not self.stats_service:
-            return web.json_response(
-                {"success": False, "error": "Statistics service unavailable"},
-                status=503,
-            )
-
-        # LAST RESORT: Old stats service (2-3 minutes!)
-        force_param = (request.query or {}).get("force", "")
-        force = str(force_param).lower() in {"1", "true", "yes", "force"}
-
-        try:
-            self.logger.warning("Using slow stats service - this will take 2-3 minutes!")
-            snapshot = self.stats_service.get_overview(force=force)
-            payload = {"success": True, "data": snapshot}
-            response = web.json_response(payload)
-
-            async def _json() -> Dict[str, Any]:
-                return payload
-
-            response.json = _json  # type: ignore[attr-defined]
-            return response
-        except Exception as exc:
-            self.logger.error("Error building stats overview: %s", exc)
-            payload = {"success": False, "error": str(exc)}
-            response = web.json_response(payload, status=500)
-
-            async def _json_error() -> Dict[str, Any]:
-                return payload
-
-            response.json = _json_error  # type: ignore[attr-defined]
-            return response
+        # No stats service available
+        return web.json_response(
+            {"success": False, "error": "Statistics service unavailable"},
+            status=503,
+        )
 
     async def vacuum_database(self, request: web.Request) -> web.Response:
         """Vacuum database to optimize storage.
