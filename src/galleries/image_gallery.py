@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from PIL import Image
 
-from src.core.base import BaseGallery
+from src.core.base import LegacyBaseGallery as BaseGallery
 from src.repositories.generated_image_repository import GeneratedImageRepository
 
 
