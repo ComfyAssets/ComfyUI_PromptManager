@@ -127,7 +127,7 @@ class BaseDatabase(BaseComponent):
         pass
 
 
-class BaseGallery(BaseComponent):
+class LegacyBaseGallery(BaseComponent):
     """Base class for gallery functionality.
     
     Provides common gallery operations like loading items,
