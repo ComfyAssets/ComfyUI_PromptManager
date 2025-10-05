@@ -135,7 +135,7 @@ class PromptRepository(BaseRepository):
             data.get("negative_prompt", ""),
             data.get("category", "uncategorized"),
             tags,
-            data.get("rating", 0),
+            data.get("rating"),  # Allow None for unrated prompts
             data.get("notes", ""),
             data.get("hash"),
             data.get("model_hash"),
