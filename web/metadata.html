@@ -227,12 +227,16 @@
           }
         }
 
+        function isEmptyValue(value) {
+          return value === undefined || value === null || 
+                 (typeof value === 'string' && !value.trim());
+        }
+
         function normalizeSummaryValue(value) {
-          if (value === undefined || value === null) return 'None';
+          if (isEmptyValue(value)) return 'None';
 
           if (typeof value === 'string') {
-            const trimmed = value.trim();
-            return trimmed ? trimmed : 'None';
+            return value.trim();
           }
 
           if (typeof value === 'number' || typeof value === 'boolean') {
@@ -343,7 +347,7 @@
         }
 
         function textValue(candidate) {
-          if (candidate === undefined || candidate === null) {
+          if (candidate == null) {
             return '';
           }
           if (typeof candidate === 'string') {
@@ -386,57 +390,48 @@
         }
 
         async function requestMetadataFromApi(file) {
-          const endpointCandidates = [
-            '/api/v1/metadata/extract',
-            '/prompt_manager/api/v1/metadata/extract',
-            '/api/prompt_manager/api/v1/metadata/extract'
-          ];
+          // Use primary API endpoint (other endpoints removed after confirming routing)
+          const endpoint = '/prompt_manager/api/v1/metadata/extract';
 
-          let lastError = null;
-
-          for (const endpoint of endpointCandidates) {
+          try {
             const formData = new FormData();
             formData.append('file', file);
 
+            console.debug('[PromptManager] metadata upload ->', endpoint);
+            const response = await fetch(endpoint, {
+              method: 'POST',
+              body: formData
+            });
+
+            let payload = {};
+            let rawText = '';
             try {
-              console.debug('[PromptManager] metadata upload ->', endpoint);
-              const response = await fetch(endpoint, {
-                method: 'POST',
-                body: formData
-              });
-
-              let payload = {};
-              let rawText = '';
-              try {
-                rawText = await response.text();
-              } catch (textError) {
-                console.warn('[PromptManager] metadata upload text read failed <-', endpoint, textError);
-              }
-
-              if (rawText) {
-                try {
-                  payload = JSON.parse(rawText);
-                } catch (parseError) {
-                  console.warn('[PromptManager] metadata upload JSON parse failed <-', endpoint, parseError, rawText.slice(0, 200));
-                  payload = {};
-                }
-              }
-
-              if (response.ok && payload?.success) {
-                console.debug('[PromptManager] metadata upload success <-', endpoint, payload);
-                return payload.data || {};
-              }
-
-              const message = payload?.error || payload?.message || (rawText ? rawText.slice(0, 120) : '') || response.statusText || `Request failed (${response.status})`;
-              console.warn('[PromptManager] metadata upload failed <-', endpoint, message);
-              lastError = new Error(message);
-            } catch (error) {
-              console.warn('[PromptManager] metadata upload exception <-', endpoint, error);
-              lastError = error;
+              rawText = await response.text();
+            } catch (textError) {
+              console.warn('[PromptManager] metadata upload text read failed <-', endpoint, textError);
             }
-          }
 
-          throw lastError || new Error('Metadata extraction failed');
+            if (rawText) {
+              try {
+                payload = JSON.parse(rawText);
+              } catch (parseError) {
+                console.warn('[PromptManager] metadata upload JSON parse failed <-', endpoint, parseError, rawText.slice(0, 200));
+                payload = {};
+              }
+            }
+
+            if (response.ok && payload?.success) {
+              console.debug('[PromptManager] metadata upload success <-', endpoint, payload);
+              return payload.data || {};
+            }
+
+            const message = payload?.error || payload?.message || (rawText ? rawText.slice(0, 120) : '') || response.statusText || `Request failed (${response.status})`;
+            console.warn('[PromptManager] metadata upload failed <-', endpoint, message);
+            throw new Error(message);
+          } catch (error) {
+            console.warn('[PromptManager] metadata upload exception <-', endpoint, error);
+            throw error;
+          }
         }
 
         window.pmMetaApp = function () {
@@ -531,21 +526,7 @@
                 window.showToast('Copied!', 'success');
               }
             },
-            copySummary() {
-              const rows = this.summaryRows();
-              if (!rows.length) return;
-              const payload = rows.map((row) => `${row.label}: ${row.value}`).join('\n');
-              this.copy(payload);
-            },
-            summaryRows() {
-              if (!this.summary) {
-                return [];
-              }
-              return SUMMARY_FIELDS.map(({ key, label }) => ({
-                label,
-                value: this.summary[key] ?? 'None'
-              }));
-            },
+            
             downloadRaw() {
               const payload = safeStringify(this.metadata || {});
               const blob = new Blob([payload || '{}'], { type: 'application/json' });

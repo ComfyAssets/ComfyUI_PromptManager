@@ -121,6 +121,7 @@ const ViewerManager = (function() {
 
     // Active viewer tracking
     let activeViewer = null;
+    let keyboardHandlersAttached = false;
     let helpOverlay = null;
 
     // Private methods
@@ -179,7 +180,7 @@ const ViewerManager = (function() {
     function handleViewerEvent(event, e, viewer) {
         // Track active viewer
         if (event === 'shown') {
-            // Only set activeViewer if it's a valid viewer instance
+            // Validate viewer instance before tracking
             if (viewer && typeof viewer.show === 'function') {
                 activeViewer = viewer;
                 attachKeyboardHandlers();
@@ -199,16 +200,17 @@ const ViewerManager = (function() {
     }
 
     function attachKeyboardHandlers() {
-        // Remove any existing handler first to avoid duplicates
-        document.removeEventListener('keydown', handleKeyPress);
-
+        if (keyboardHandlersAttached) return;
         if (!activeViewer) return;
-
+        
         document.addEventListener('keydown', handleKeyPress);
+        keyboardHandlersAttached = true;
     }
 
     function detachKeyboardHandlers() {
+        if (!keyboardHandlersAttached) return;
         document.removeEventListener('keydown', handleKeyPress);
+        keyboardHandlersAttached = false;
     }
 
     function handleKeyPress(e) {
@@ -216,21 +218,14 @@ const ViewerManager = (function() {
         if (e.target.matches('input, textarea, select')) return;
 
         const action = keyboardShortcuts[e.key] || keyboardShortcuts[e.code];
-        if (action) {
-            // Only process if we have a valid viewer instance
-            if (activeViewer && typeof activeViewer.show === 'function') {
-                e.preventDefault();
-                executeAction(activeViewer, action);
-            }
+        if (action && activeViewer) {
+            e.preventDefault();
+            executeAction(activeViewer, action);
         }
     }
 
     function executeAction(viewer, action) {
-        // Ensure we have the actual viewer instance
-        if (!viewer || typeof viewer.show !== 'function') {
-            console.warn('Invalid viewer instance for action:', action);
-            return;
-        }
+        // activeViewer is already validated, no need for additional checks
 
         switch(action) {
             case 'hide':

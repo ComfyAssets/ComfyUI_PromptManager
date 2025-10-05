@@ -529,6 +529,10 @@ class ThumbnailModal {
     showCompletion(summary) {
         this.isGenerating = false;
 
+        // Clear sessionStorage when generation completes
+        sessionStorage.removeItem('thumbnailScanResult');
+        console.log('ThumbnailModal: Cleared sessionStorage after generation completion');
+
         // Update UI
         this.modal.querySelector('#thumbnailProgressView').style.display = 'none';
         this.modal.querySelector('#thumbnailCompleteView').style.display = 'block';
@@ -597,6 +601,10 @@ class ThumbnailModal {
 
         this.modal.style.display = 'none';
         this.isGenerating = false;
+
+        // Clear sessionStorage to prevent showing stale scan results
+        sessionStorage.removeItem('thumbnailScanResult');
+        console.log('ThumbnailModal: Cleared sessionStorage on close');
 
         // Reset views
         this.modal.querySelector('#thumbnailScanView').style.display = 'block';

@@ -3,9 +3,9 @@
  * Handles offline functionality, caching, and background sync
  */
 
-const CACHE_NAME = 'promptmanager-v1.0.0';
-const API_CACHE = 'promptmanager-api-v1';
-const IMAGE_CACHE = 'promptmanager-images-v1';
+const CACHE_NAME = 'promptmanager-v1.0.1';
+const API_CACHE = 'promptmanager-api-v1.0.1';
+const IMAGE_CACHE = 'promptmanager-images-v1.0.1';
 
 // Files to cache on install
 const STATIC_ASSETS = [

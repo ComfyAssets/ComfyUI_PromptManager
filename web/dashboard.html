@@ -409,40 +409,40 @@
           <div class="filter-bar">
             <div class="filter-group">
               <label class="filter-label">Model</label>
-              <select class="select">
-                <option>All Models</option>
-                <option>FLUX</option>
-                <option>HiDream</option>
-                <option>HunYuan</option>
-                <option>Illustrious</option>
-                <option>Pony</option>
-                <option>Qwen</option>
-                <option>Wan</option>
-                <option>SD 1.5</option>
-                <option>SDXL</option>
-                <option>SD 3.5</option>
+              <select id="modelFilterSelect" class="select">
+                <option value="all">All Models</option>
+                <option value="flux">FLUX</option>
+                <option value="hidream">HiDream</option>
+                <option value="hunyuan">HunYuan</option>
+                <option value="illustrious">Illustrious</option>
+                <option value="pony">Pony</option>
+                <option value="qwen">Qwen</option>
+                <option value="wan">Wan</option>
+                <option value="sd15">SD 1.5</option>
+                <option value="sdxl">SDXL</option>
+                <option value="sd35">SD 3.5</option>
               </select>
             </div>
             <div class="filter-group">
               <label class="filter-label">Tags</label>
-              <select class="select">
-                <option>All Tags</option>
-                <option>Portrait</option>
-                <option>Landscape</option>
-                <option>Abstract</option>
-                <option>Fantasy</option>
+              <select id="tagFilterSelect" class="select">
+                <option value="all">All Tags</option>
+                <option value="portrait">Portrait</option>
+                <option value="landscape">Landscape</option>
+                <option value="abstract">Abstract</option>
+                <option value="fantasy">Fantasy</option>
               </select>
             </div>
             <div class="filter-group">
               <label class="filter-label">Sort By</label>
-              <select class="select">
-                <option>Newest First</option>
-                <option>Oldest First</option>
-                <option>Most Used</option>
-                <option>Highest Rated</option>
+              <select id="sortBySelect" class="select">
+                <option value="newest" selected>Newest First</option>
+                <option value="oldest">Oldest First</option>
+                <option value="most-used">Most Used</option>
+                <option value="highest-rated">Highest Rated</option>
               </select>
             </div>
-            <button class="btn btn-primary">Apply Filters</button>
+            <button id="applyFiltersButton" class="btn btn-primary">Apply Filters</button>
           </div>
 
           <!-- Sticky Actions Bar -->

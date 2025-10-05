@@ -25,6 +25,9 @@
   let searchTermLower = '';
   let editingPromptId = null;
   let searchDebounceTimer = null;
+  let currentSortOrder = 'newest'; // Default sort order
+  let currentTagFilter = 'all';
+  let currentModelFilter = 'all';
 
   const API_BASE_CANDIDATES = ['/api/v1', '/api/prompt_manager'];
   const DEFAULT_EMPTY_MESSAGE = 'Start by creating a new prompt or importing existing ones';
@@ -111,6 +114,11 @@
 
       const result = await response.json();
       console.log('Thumbnail scan result:', result);
+      
+      // Debug: Show which images are missing thumbnails
+      if (result.missing_images && result.missing_images.length > 0) {
+        console.log('Missing thumbnail images:', result.missing_images);
+      }
 
       // Changed threshold from 10 to 0 to show prompt for ANY missing thumbnails
       if (result.missing_count > 0) {
@@ -132,6 +140,8 @@
         }
       } else {
         console.log('All images have thumbnails');
+        // Clear any stale sessionStorage data
+        sessionStorage.removeItem('thumbnailScanResult');
       }
     } catch (error) {
       console.warn('Failed to scan for thumbnails:', error);
@@ -210,6 +220,35 @@
     if (searchInput) {
       searchInput.addEventListener('input', (event) => {
         handleSearchInput(event.target.value);
+      });
+    }
+
+    // Filter bar event listeners
+    const sortBySelect = document.getElementById('sortBySelect');
+    if (sortBySelect) {
+      sortBySelect.addEventListener('change', (event) => {
+        currentSortOrder = event.target.value;
+      });
+    }
+
+    const modelFilterSelect = document.getElementById('modelFilterSelect');
+    if (modelFilterSelect) {
+      modelFilterSelect.addEventListener('change', (event) => {
+        currentModelFilter = event.target.value;
+      });
+    }
+
+    const tagFilterSelect = document.getElementById('tagFilterSelect');
+    if (tagFilterSelect) {
+      tagFilterSelect.addEventListener('change', (event) => {
+        currentTagFilter = event.target.value;
+      });
+    }
+
+    const applyFiltersButton = document.getElementById('applyFiltersButton');
+    if (applyFiltersButton) {
+      applyFiltersButton.addEventListener('click', () => {
+        loadPrompts(1); // Reset to page 1 when applying filters
       });
     }
 
@@ -555,6 +594,17 @@
     if (searchTerm) {
       params.append('search', searchTerm);
     }
+
+    // Add sort order parameters (v1 API uses order_by for field and order_dir for direction)
+    const sortConfig = {
+      'newest': { field: 'id', dir: 'desc' },
+      'oldest': { field: 'id', dir: 'asc' },
+      'most-used': { field: 'usage_count', dir: 'desc' },
+      'highest-rated': { field: 'rating', dir: 'desc' }
+    };
+    const config = sortConfig[currentSortOrder] || sortConfig['newest'];
+    params.append('order_by', config.field);
+    params.append('order_dir', config.dir);
 
     try {
       const promptsPayload = await fetchJson(`/prompts?${params.toString()}`);

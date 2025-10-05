@@ -240,13 +240,26 @@ const ViewerIntegration = (function() {
             || parseMaybeJson(image.meta)
             || parseMaybeJson(image.prompt_metadata);
 
+        // Don't cache empty/invalid metadata - let the viewer extract it from the image file
+        const hasValidMetadata = parsedMetadata && Object.keys(parsedMetadata).length > 0 &&
+                                 parsedMetadata !== '{}' &&
+                                 (parsedMetadata.positive_prompt || parsedMetadata.prompt || parsedMetadata.summary);
+
+        console.debug('[ViewerIntegration] Normalized image metadata', {
+            imageId: resolveImageId(image),
+            hadParsedMetadata: !!parsedMetadata,
+            parsedMetadataKeys: parsedMetadata ? Object.keys(parsedMetadata) : [],
+            hasValidMetadata,
+            willCache: hasValidMetadata
+        });
+
         return {
             src: thumb,
             fullSrc: full,
             alt: image.alt || descriptiveText,
             title: descriptiveText,
             id: resolveImageId(image),
-            metadata: parsedMetadata,
+            metadata: hasValidMetadata ? parsedMetadata : null,
             original: image
         };
     }

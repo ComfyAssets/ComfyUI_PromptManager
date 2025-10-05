@@ -427,8 +427,36 @@ const MetadataManager = (function() {
                             const imageId = imageIdMatch[1];
                             console.debug('Found image ID in filename:', imageId);
                             const metadataById = await fetchMetadataByImageId(imageId);
+
+                            // Validate metadata before returning
                             if (metadataById) {
-                                return metadataById;
+                                const invalidValues = ['None', 'Not found', ''];
+                                const isValidPrompt = (value) => {
+                                    if (!value) return false;
+                                    if (invalidValues.includes(value)) return false;
+                                    // Reject "Generate a prompt from..." which is UI placeholder text
+                                    if (value.startsWith('Generate a prompt')) return false;
+                                    return true;
+                                };
+
+                                const hasValidPrompts = (
+                                    isValidPrompt(metadataById.positive_prompt) ||
+                                    isValidPrompt(metadataById.negative_prompt) ||
+                                    isValidPrompt(metadataById.comfy_parsed?.positive_prompt) ||
+                                    isValidPrompt(metadataById.comfy_parsed?.negative_prompt) ||
+                                    isValidPrompt(metadataById.summary?.positivePrompt) ||
+                                    isValidPrompt(metadataById.summary?.positive_prompt) ||
+                                    isValidPrompt(metadataById.custom?.positivePrompt) ||
+                                    isValidPrompt(metadataById.custom?.positive_prompt)
+                                );
+
+                                // Only return if valid, otherwise continue to file upload method
+                                if (hasValidPrompts) {
+                                    console.debug('Found valid metadata by image ID:', imageId);
+                                    return metadataById;
+                                } else {
+                                    console.debug('Metadata by image ID invalid, continuing to file extraction:', imageId);
+                                }
                             }
                         }
 
@@ -578,12 +606,15 @@ const MetadataManager = (function() {
             // Only use CLIPTextEncode if we didn't find PromptManager nodes
             if (!foundPromptManager && classType === 'CLIPTextEncode') {
                 if (inputs.text) {
-                    // Check node title or position to determine positive/negative
-                    const title = node._meta?.title || '';
-                    if (title.toLowerCase().includes('positive') || !positivePrompt) {
-                        positivePrompt = inputs.text;
-                    } else if (title.toLowerCase().includes('negative') || !negativePrompt) {
-                        negativePrompt = inputs.text;
+                    // Skip if text is a node reference (array) - we only want direct text values
+                    if (typeof inputs.text === 'string') {
+                        // Check node title or position to determine positive/negative
+                        const title = node._meta?.title || '';
+                        if (title.toLowerCase().includes('positive') || !positivePrompt) {
+                            positivePrompt = inputs.text;
+                        } else if (title.toLowerCase().includes('negative') || !negativePrompt) {
+                            negativePrompt = inputs.text;
+                        }
                     }
                 }
             }
@@ -692,7 +723,8 @@ const MetadataManager = (function() {
         const comfyParsed = apiData.comfy_parsed || apiData.metadata || apiData;
 
         const summary = {
-            positivePrompt: apiData.positive_prompt || comfyParsed.positive_prompt || apiData.prompt || comfyParsed.prompt || '',
+            // NOTE: Don't use apiData.prompt/comfyParsed.prompt as fallback - too generic, may contain UI instructions
+            positivePrompt: apiData.positive_prompt || comfyParsed.positive_prompt || '',
             negativePrompt: apiData.negative_prompt || comfyParsed.negative_prompt || '',
             model: apiData.model || comfyParsed.model || apiData.checkpoint || comfyParsed.checkpoint || '',
             loras: apiData.loras || comfyParsed.loras || '',
@@ -1158,7 +1190,12 @@ const MetadataManager = (function() {
             if (Array.isArray(value)) {
                 const nodeId = this.getNodeId(value);
                 if (nodeId) {
-                    return this.collectTextFromNode(nodeId, visited);
+                    const text = this.collectTextFromNode(nodeId, visited);
+                    // If node reference failed to resolve, show error instead of falling through
+                    if (!text && !this.getNode(nodeId)) {
+                        return `[Broken reference: node ${nodeId} not found]`;
+                    }
+                    return text;
                 }
                 return value.map((item) => this.collectTextFromValue(item, visited)).filter(Boolean).join(' ');
             }
@@ -1717,9 +1754,34 @@ const MetadataManager = (function() {
         // Extract data from metadata - check all possible locations
         const data = metadata.summary || metadata.custom || metadata;
 
+        // Validation helper - rejects invalid/placeholder prompts
+        const isValidPrompt = (value) => {
+            if (!value || value === '' || value === 'None' || value === 'Not found') return false;
+            // Reject "Generate a prompt from..." which is UI placeholder text
+            if (String(value).startsWith('Generate a prompt')) return false;
+            return true;
+        };
+
         // Also check for positivePrompt/negativePrompt (camelCase) in addition to snake_case
-        const positivePrompt = data.positivePrompt || data.positive_prompt || data.positive || data.prompt || '';
-        const negativePrompt = data.negativePrompt || data.negative_prompt || data.negative || '';
+        // NOTE: Don't use data.prompt as fallback - it's too generic and may contain instructions/metadata
+        // Try camelCase first, then snake_case, but validate each before using
+        let positivePrompt = '';
+        if (isValidPrompt(data.positivePrompt)) {
+            positivePrompt = data.positivePrompt;
+        } else if (isValidPrompt(data.positive_prompt)) {
+            positivePrompt = data.positive_prompt;
+        } else if (isValidPrompt(data.positive)) {
+            positivePrompt = data.positive;
+        }
+
+        let negativePrompt = '';
+        if (isValidPrompt(data.negativePrompt)) {
+            negativePrompt = data.negativePrompt;
+        } else if (isValidPrompt(data.negative_prompt)) {
+            negativePrompt = data.negative_prompt;
+        } else if (isValidPrompt(data.negative)) {
+            negativePrompt = data.negative;
+        }
         const model = data.model || data.checkpoint || data.model_name || '';
         const loras = data.loras || data.lora || '';
         const cfgScale = data.cfgScale || data.cfg_scale || data.cfg || '';
@@ -1959,7 +2021,38 @@ const MetadataManager = (function() {
             if (useCache && defaultConfig.enableCache) {
                 const cached = metadataCache.get(cacheKey);
                 if (cached && !cached.isExpired(defaultConfig.cacheTimeout)) {
-                    return cached.access();
+                    const cachedData = cached.access();
+                    
+                    // Validate cached data before returning it
+                    const invalidValues = ['None', 'Not found', ''];
+                    const isValidPrompt = (value) => {
+                        if (!value) return false;
+                        if (invalidValues.includes(value)) return false;
+                        // Reject "Generate a prompt from..." which is UI placeholder text
+                        if (value.startsWith('Generate a prompt')) return false;
+                        return true;
+                    };
+
+                    const hasValidPrompts = cachedData && (
+                        isValidPrompt(cachedData.positive_prompt) ||
+                        isValidPrompt(cachedData.negative_prompt) ||
+                        isValidPrompt(cachedData.comfy_parsed?.positive_prompt) ||
+                        isValidPrompt(cachedData.comfy_parsed?.negative_prompt) ||
+                        isValidPrompt(cachedData.summary?.positivePrompt) ||
+                        isValidPrompt(cachedData.summary?.positive_prompt) ||
+                        isValidPrompt(cachedData.custom?.positivePrompt) ||
+                        isValidPrompt(cachedData.custom?.positive_prompt)
+                    );
+
+                    // Only return cached data if it has valid prompts
+                    if (hasValidPrompts) {
+                        console.debug('[MetadataManager] Returning valid cached metadata for:', source);
+                        return cachedData;
+                    } else {
+                        console.debug('[MetadataManager] Cached metadata invalid - re-extracting for:', source);
+                        // Clear invalid cache entry
+                        metadataCache.delete(cacheKey);
+                    }
                 }
             }
 
@@ -2130,6 +2223,32 @@ const MetadataManager = (function() {
             }
 
             const metadata = await fetchMetadataByImageId(imageId);
+
+            // Check if metadata has actual parsed prompt text (not just "None" placeholders or error messages)
+            const invalidValues = ['None', 'Not found', ''];
+            const isValidPrompt = (value) => {
+                if (!value) return false;
+                if (invalidValues.includes(value)) return false;
+                // Reject "Generate a prompt from..." which is UI placeholder text
+                if (value.startsWith('Generate a prompt')) return false;
+                return true;
+            };
+
+            const hasValidPrompts = metadata && (
+                isValidPrompt(metadata.positive_prompt) ||
+                isValidPrompt(metadata.negative_prompt) ||
+                isValidPrompt(metadata.comfy_parsed?.positive_prompt) ||
+                isValidPrompt(metadata.comfy_parsed?.negative_prompt) ||
+                isValidPrompt(metadata.summary?.positivePrompt) ||
+                isValidPrompt(metadata.custom?.positivePrompt)
+            );
+
+            // If we don't have valid parsed prompts, return null so caller extracts from file
+            if (!hasValidPrompts) {
+                console.debug('[MetadataManager] Database metadata has no valid parsed prompts for image', imageId, '- caller should extract from file');
+                return null;
+            }
+
             if (metadata && defaultConfig.enableCache) {
                 metadataCache.set(cacheKey, new CacheEntry(metadata));
             }
