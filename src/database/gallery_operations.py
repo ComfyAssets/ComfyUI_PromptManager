@@ -349,10 +349,12 @@ class GalleryDatabaseOperations:
                     i.id as image_id,
                     i.filename,
                     i.width,
-                    i.height
+                    i.height,
+                    i.generation_time,
+                    i.created_at as image_created_at
                 FROM prompts p
                 INNER JOIN generated_images i ON p.id = i.prompt_id
-                ORDER BY p.created_at DESC
+                ORDER BY COALESCE(i.generation_time, i.created_at, p.created_at) DESC
             """
 
             self.cursor.execute(query)

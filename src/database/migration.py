@@ -388,7 +388,7 @@ class DatabaseMigrator:
                 negative_prompt TEXT DEFAULT '',
                 category TEXT,
                 tags TEXT,
-                rating INTEGER DEFAULT 0,
+                rating INTEGER CHECK(rating IS NULL OR (rating >= 1 AND rating <= 5)),
                 notes TEXT,
                 hash TEXT UNIQUE,
                 model_hash TEXT,
@@ -398,17 +398,57 @@ class DatabaseMigrator:
                 updated_at TEXT
             );
             CREATE TABLE IF NOT EXISTS generated_images (
-                id INTEGER PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 prompt_id INTEGER NOT NULL,
-                file_path TEXT,
-                file_name TEXT,
-                metadata TEXT,
-                FOREIGN KEY(prompt_id) REFERENCES prompts(id)
+                image_path TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                generation_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                file_size INTEGER,
+                width INTEGER,
+                height INTEGER,
+                format TEXT,
+                workflow_data TEXT,
+                prompt_metadata TEXT,
+                parameters TEXT,
+                thumbnail_small_path TEXT,
+                thumbnail_medium_path TEXT,
+                thumbnail_large_path TEXT,
+                thumbnail_xlarge_path TEXT,
+                FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE
             );
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS analytics_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                metric_type TEXT NOT NULL,
+                metric_key TEXT NOT NULL,
+                metric_value TEXT NOT NULL,
+                calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(metric_type, metric_key)
+            );
+            CREATE TABLE IF NOT EXISTS analytics_tracking (
+                id INTEGER PRIMARY KEY,
+                table_name TEXT UNIQUE NOT NULL,
+                last_processed_at TIMESTAMP,
+                last_processed_id INTEGER,
+                processing_status TEXT DEFAULT 'idle'
+            );
+            CREATE TABLE IF NOT EXISTS prompt_tracking (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                prompt_text TEXT NOT NULL,
+                node_id TEXT,
+                workflow_data TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                metadata TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_analytics_cache_type ON analytics_cache(metric_type);
+            CREATE INDEX IF NOT EXISTS idx_analytics_tracking_table ON analytics_tracking(table_name);
+            CREATE INDEX IF NOT EXISTS idx_prompt_tracking_session ON prompt_tracking(session_id);
+            CREATE INDEX IF NOT EXISTS idx_prompt_tracking_created ON prompt_tracking(created_at);
             PRAGMA foreign_keys = ON;
             """
         )
@@ -420,15 +460,18 @@ class DatabaseMigrator:
         v2_path = self.detector.v2_db_path
         v2_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Remove existing v2 database to ensure clean schema creation
+        if v2_path.exists():
+            LOGGER.info("Removing existing v2 database for clean migration")
+            v2_path.unlink()
+
         try:
             with sqlite3.connect(v1_path) as v1_conn, sqlite3.connect(v2_path) as v2_conn:
                 v1_conn.row_factory = sqlite3.Row
                 v2_conn.row_factory = sqlite3.Row
                 self._ensure_v2_schema(v2_conn)
 
-                # Clear existing records so repeated migrations start from a clean slate
-                v2_conn.execute("DELETE FROM generated_images")
-                v2_conn.execute("DELETE FROM prompts")
+                # No need to clear records - we deleted the v2 database file above
 
                 prompts = v1_conn.execute(
                     "SELECT * FROM prompts ORDER BY id"
@@ -470,7 +513,10 @@ class DatabaseMigrator:
                     tags = record.get("tags")
                     if tags is None:
                         tags = "[]"
+                    # Convert invalid ratings (0 or outside 1-5 range) to NULL for v2 compatibility
                     rating = record.get("rating")
+                    if rating is not None and (rating < 1 or rating > 5):
+                        rating = None
                     notes = record.get("notes")
                     params = (
                         record.get("id"),
@@ -554,7 +600,7 @@ class DatabaseMigrator:
 
                     v2_conn.execute(
                         """
-                        INSERT INTO generated_images (prompt_id, file_path, file_name, metadata)
+                        INSERT INTO generated_images (prompt_id, image_path, filename, parameters)
                         VALUES (?, ?, ?, ?)
                         """,
                         (prompt_id, file_path, file_name, metadata),

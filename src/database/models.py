@@ -128,7 +128,7 @@ class PromptModel:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 category TEXT,
                 tags TEXT,
-                rating INTEGER CHECK(rating >= 1 AND rating <= 5),
+                rating INTEGER CHECK(rating IS NULL OR (rating >= 1 AND rating <= 5)),
                 notes TEXT,
                 hash TEXT UNIQUE,
                 model_hash TEXT,
