@@ -195,6 +195,7 @@ class ThumbnailAPI:
                             SELECT id, image_path, filename
                             FROM generated_images
                             WHERE (thumbnail_small_path IS NULL OR thumbnail_small_path = '')
+                            AND (thumbnail_small_path IS NULL OR thumbnail_small_path != 'FAILED')
                             AND image_path IS NOT NULL AND image_path != ''
                         """)
                     else:
@@ -222,9 +223,22 @@ class ThumbnailAPI:
                 logger.warning(f"Database query error during scan: {db_error}")
                 # Continue without database images
 
-            # Scan for missing thumbnails
+            # Scan for missing thumbnails, excluding blacklisted files
+            logger.info(f"Scanning {len(image_paths)} images for missing thumbnails")
+            logger.info(f"Currently {self.thumbnail_service.get_blacklisted_count()} files are blacklisted")
+            
+            # Filter out blacklisted files BEFORE scanning
+            non_blacklisted_paths = [
+                path for path in image_paths 
+                if not self.thumbnail_service._is_blacklisted(path)
+            ]
+            
+            blacklisted_count = len(image_paths) - len(non_blacklisted_paths)
+            if blacklisted_count > 0:
+                logger.info(f"Filtered out {blacklisted_count} blacklisted files from scan")
+            
             missing_tasks = await self.thumbnail_service.scan_missing_thumbnails(
-                image_paths,
+                non_blacklisted_paths,
                 sizes
             )
 
@@ -296,10 +310,12 @@ class ThumbnailAPI:
                 logger.info(f"Found {missing_thumbnail_count} images without thumbnail paths in database")
 
                 # Get images without thumbnails for scanning
+                # Exclude images marked as FAILED (permanently can't have thumbnails)
                 cursor.execute("""
                     SELECT id, image_path, filename
                     FROM generated_images
                     WHERE (thumbnail_small_path IS NULL OR thumbnail_small_path = '')
+                    AND (thumbnail_small_path IS NULL OR thumbnail_small_path != 'FAILED')
                     AND image_path IS NOT NULL AND image_path != ''
                 """)
                 images = cursor.fetchall()
@@ -319,15 +335,29 @@ class ThumbnailAPI:
                     'details': str(e)
                 }, status=500)
 
-            # Scan for missing thumbnails
+            # Scan for missing thumbnails, excluding blacklisted files
+            logger.info(f"Scanning {len(image_paths)} images for missing thumbnails")
+            logger.info(f"Currently {self.thumbnail_service.get_blacklisted_count()} files are blacklisted")
+            
+            # Filter out blacklisted files BEFORE scanning
+            non_blacklisted_paths = [
+                path for path in image_paths 
+                if not self.thumbnail_service._is_blacklisted(path)
+            ]
+            
+            blacklisted_count = len(image_paths) - len(non_blacklisted_paths)
+            if blacklisted_count > 0:
+                logger.info(f"Filtered out {blacklisted_count} blacklisted files from scan")
+            
             tasks = await self.thumbnail_service.scan_missing_thumbnails(
-                image_paths,
+                non_blacklisted_paths,
                 sizes
             )
 
             if not tasks:
                 return web.json_response({
                     'message': 'No missing thumbnails found',
+                    'missing_count': 0,
                     'total': 0
                 })
 
@@ -347,6 +377,7 @@ class ThumbnailAPI:
             return web.json_response({
                 'task_id': task_id,
                 'total': len(tasks),
+                'missing_count': len(tasks),  # Frontend expects this field
                 'message': 'Generation started'
             })
 
