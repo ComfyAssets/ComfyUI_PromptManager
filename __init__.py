@@ -40,6 +40,12 @@ from .prompt_manager_v2 import PromptManagerV2
 from .prompt_manager_positive import PromptManagerPositive
 from .prompt_manager_negative import PromptManagerNegative
 
+# Import text-only versions (no CLIP encoding)
+from .prompt_manager_text import PromptManagerText
+from .prompt_manager_v2_text import PromptManagerV2Text
+from .prompt_manager_positive_text import PromptManagerPositiveText
+from .prompt_manager_negative_text import PromptManagerNegativeText
+
 # Import tracker nodes for capturing generation data
 try:
     from .custom_nodes.prompt_manager_tracker import PromptManagerTracker, PromptManagerImageTracker
@@ -54,6 +60,11 @@ NODE_CLASS_MAPPINGS = {
     "PromptManagerV2": PromptManagerV2,  # V2 combined widget
     "PromptManagerPositive": PromptManagerPositive,  # V2 positive only
     "PromptManagerNegative": PromptManagerNegative,  # V2 negative only
+    # Text-only versions (no CLIP encoding)
+    "PromptManagerText": PromptManagerText,  # V1 text-only
+    "PromptManagerV2Text": PromptManagerV2Text,  # V2 text-only
+    "PromptManagerPositiveText": PromptManagerPositiveText,  # Positive text-only
+    "PromptManagerNegativeText": PromptManagerNegativeText,  # Negative text-only
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -61,6 +72,11 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptManagerV2": "🧠 Prompt Manager V2",
     "PromptManagerPositive": "🧠 Prompt Manager (Positive)",
     "PromptManagerNegative": "🧠 Prompt Manager (Negative)",
+    # Text-only versions
+    "PromptManagerText": "🧠 Prompt Manager (text)",
+    "PromptManagerV2Text": "🧠 Prompt Manager V2 (text)",
+    "PromptManagerPositiveText": "🧠 Prompt Manager (Positive/text)",
+    "PromptManagerNegativeText": "🧠 Prompt Manager (Negative/text)",
 }
 
 # Add tracker nodes if available
