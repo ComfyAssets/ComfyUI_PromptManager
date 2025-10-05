@@ -11,6 +11,7 @@ import json
 import os
 import threading
 import time
+import warnings
 from pathlib import Path
 from queue import Queue
 import torch
@@ -551,7 +552,12 @@ class SaveImagePatcher:
                     if obj is getattr(comfy_nodes, 'SaveImage', None):
                         # Already patched by the dedicated hook above
                         continue
-                    if hasattr(obj, 'save_images') and callable(getattr(obj, 'save_images')):
+                    # Suppress warnings during attribute checking
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        has_save_images = hasattr(obj, 'save_images') and callable(getattr(obj, 'save_images'))
+
+                    if has_save_images:
                         if obj in self._generic_patched:
                             continue
                         original = getattr(obj, 'save_images')
