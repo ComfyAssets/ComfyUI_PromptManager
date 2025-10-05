@@ -233,6 +233,9 @@ class ImageScanner:
             linked_count = 0
 
             for i, media_file in enumerate(media_files):
+                # Always increment processed count, even if processing fails
+                processed_count += 1
+                
                 try:
                     # Extract metadata (PNG files may have ComfyUI metadata)
                     if media_file.suffix.lower() == '.png':
@@ -240,7 +243,6 @@ class ImageScanner:
                     else:
                         # For other formats, extract basic metadata
                         metadata = self.extract_basic_metadata(str(media_file))
-                    processed_count += 1
 
                     # For PNG files, try to extract prompt data
                     if media_file.suffix.lower() == '.png' and metadata:
@@ -399,14 +401,19 @@ class ImageScanner:
                                 self.logger.error(f"Failed to add media file {media_file} to database: {e}")
 
                 except Exception as e:
-                    self.logger.error(f"Failed to process {media_file}: {e}")
+                    self.logger.error(f"Failed to process {media_file}: {e}", exc_info=True)
 
                 # Calculate progress
                 progress = min(95, int((i + 1) / total_files * 95))
 
-                # Send progress update every 10 files or at the end
-                if (i + 1) % 10 == 0 or (i + 1) == total_files:
-                    status = f'Processing images... ({processed_count}/{total_files})'
+                # Send progress updates more frequently for large batches
+                # Every 5 files for <1000 files, every 25 for 1000-5000, every 100 for >5000
+                update_frequency = 5 if total_files < 1000 else (25 if total_files < 5000 else 100)
+                
+                # Send progress update at intervals or at the end
+                if (i + 1) % update_frequency == 0 or (i + 1) == total_files:
+                    # More informative status message
+                    status = f'Processing images... ({processed_count}/{total_files}) • {found_count} prompts • {linked_count} linked'
 
                     # Broadcast realtime progress updates
                     if hasattr(self.api, 'realtime'):
@@ -425,6 +432,21 @@ class ImageScanner:
                 # Small delay to prevent blocking
                 if i % 50 == 0:
                     await asyncio.sleep(0.01)
+
+            # Final status update before completion
+            final_status = f'Finalizing... Processed {processed_count} files, found {found_count} prompts, linked {linked_count} images'
+            if hasattr(self.api, 'realtime'):
+                await self.api.realtime.send_progress('scan', 98, final_status)
+            
+            yield {
+                'type': 'progress',
+                'progress': 98,
+                'status': final_status,
+                'processed': processed_count,
+                'found': found_count,
+                'added': added_count,
+                'linked': linked_count
+            }
 
             # Send completion
             if hasattr(self.api, 'realtime'):

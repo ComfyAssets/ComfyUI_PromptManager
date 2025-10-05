@@ -211,21 +211,51 @@ class IncrementalStatsService:
             image_count = conn.execute("SELECT COUNT(*) as cnt FROM generated_images").fetchone()['cnt']
             self.update_cached_metric('totals', 'image_count', image_count)
 
-            # Collections count
-            collection_count = conn.execute("SELECT COUNT(*) as cnt FROM collections").fetchone()['cnt']
-            self.update_cached_metric('totals', 'collection_count', collection_count)
+            # Collections count (check if table exists first)
+            try:
+                # Check if collections table exists
+                cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='collections'")
+                if cursor.fetchone():
+                    collection_count = conn.execute("SELECT COUNT(*) as cnt FROM collections").fetchone()['cnt']
+                else:
+                    collection_count = 0
+                self.update_cached_metric('totals', 'collection_count', collection_count)
+            except Exception as e:
+                LOGGER.warning(f"Failed to count collections: {e}")
+                self.update_cached_metric('totals', 'collection_count', 0)
 
-            # Model usage statistics
-            model_stats = conn.execute("""
-                SELECT model_name, COUNT(*) as usage_count
-                FROM prompts
-                WHERE model_name IS NOT NULL
-                GROUP BY model_name
-                ORDER BY usage_count DESC
-            """).fetchall()
-
-            model_usage = {row['model_name']: row['usage_count'] for row in model_stats}
-            self.update_cached_metric('models', 'usage', model_usage)
+            # Model usage statistics (check if column exists first)
+            try:
+                # Check if model_name column exists
+                cursor = conn.execute("PRAGMA table_info(prompts)")
+                columns = {row[1] for row in cursor.fetchall()}
+                
+                if 'model_name' in columns:
+                    model_stats = conn.execute("""
+                        SELECT model_name, COUNT(*) as usage_count
+                        FROM prompts
+                        WHERE model_name IS NOT NULL
+                        GROUP BY model_name
+                        ORDER BY usage_count DESC
+                    """).fetchall()
+                    model_usage = {row['model_name']: row['usage_count'] for row in model_stats}
+                elif 'model_hash' in columns:
+                    # Fallback to model_hash for v1 databases
+                    model_stats = conn.execute("""
+                        SELECT model_hash, COUNT(*) as usage_count
+                        FROM prompts
+                        WHERE model_hash IS NOT NULL
+                        GROUP BY model_hash
+                        ORDER BY usage_count DESC
+                    """).fetchall()
+                    model_usage = {row['model_hash']: row['usage_count'] for row in model_stats}
+                else:
+                    model_usage = {}
+                
+                self.update_cached_metric('models', 'usage', model_usage)
+            except Exception as e:
+                LOGGER.warning(f"Failed to calculate model stats: {e}")
+                self.update_cached_metric('models', 'usage', {})
 
             # Tag distribution
             tag_stats = self._calculate_tag_distribution_full(conn)
@@ -290,8 +320,15 @@ class IncrementalStatsService:
                     max_id = conn.execute("SELECT MAX(id) as max_id FROM generated_images").fetchone()['max_id']
                     self.update_last_processed('generated_images', datetime.now().isoformat(), max_id)
 
-            # Update collections count (simpler - just recount)
-            collection_count = conn.execute("SELECT COUNT(*) as cnt FROM collections").fetchone()['cnt']
+            # Update collections count (check if table exists)
+            try:
+                cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='collections'")
+                if cursor.fetchone():
+                    collection_count = conn.execute("SELECT COUNT(*) as cnt FROM collections").fetchone()['cnt']
+                else:
+                    collection_count = 0
+            except Exception:
+                collection_count = 0
 
             # Update cache
             self.update_cached_metric('totals', 'prompt_count', prompt_count)
@@ -316,10 +353,25 @@ class IncrementalStatsService:
                 (cutoff,)
             ).fetchone()['cnt']
 
-            recent_images = conn.execute(
-                "SELECT COUNT(*) as cnt FROM generated_images WHERE generation_time > ?",
-                (cutoff,)
-            ).fetchone()['cnt']
+            # Check for generation_time or created_at column
+            try:
+                cursor = conn.execute("PRAGMA table_info(generated_images)")
+                columns = {row[1] for row in cursor.fetchall()}
+                
+                if 'generation_time' in columns:
+                    recent_images = conn.execute(
+                        "SELECT COUNT(*) as cnt FROM generated_images WHERE generation_time > ?",
+                        (cutoff,)
+                    ).fetchone()['cnt']
+                elif 'created_at' in columns:
+                    recent_images = conn.execute(
+                        "SELECT COUNT(*) as cnt FROM generated_images WHERE created_at > ?",
+                        (cutoff,)
+                    ).fetchone()['cnt']
+                else:
+                    recent_images = 0
+            except Exception:
+                recent_images = 0
 
             return {
                 'prompts_24h': recent_prompts,
@@ -332,19 +384,38 @@ class IncrementalStatsService:
         cached_usage = self.get_cached_metric('models', 'usage') or {}
 
         with self._connect() as conn:
+            # Check if model_name or model_hash column exists
+            cursor = conn.execute("PRAGMA table_info(prompts)")
+            columns = {row[1] for row in cursor.fetchall()}
+            
             if last_id:
-                # Get new model usage
-                new_usage = conn.execute("""
-                    SELECT model_name, COUNT(*) as cnt
-                    FROM prompts
-                    WHERE id > ? AND model_name IS NOT NULL
-                    GROUP BY model_name
-                """, (last_id,)).fetchall()
-
-                # Update cached counts
-                for row in new_usage:
-                    model = row['model_name']
-                    cached_usage[model] = cached_usage.get(model, 0) + row['cnt']
+                # Get new model usage - check which column exists
+                if 'model_name' in columns:
+                    new_usage = conn.execute("""
+                        SELECT model_name, COUNT(*) as cnt
+                        FROM prompts
+                        WHERE id > ? AND model_name IS NOT NULL
+                        GROUP BY model_name
+                    """, (last_id,)).fetchall()
+                    
+                    # Update cached counts
+                    for row in new_usage:
+                        model = row['model_name']
+                        cached_usage[model] = cached_usage.get(model, 0) + row['cnt']
+                        
+                elif 'model_hash' in columns:
+                    # Fallback to model_hash for v1 databases
+                    new_usage = conn.execute("""
+                        SELECT model_hash, COUNT(*) as cnt
+                        FROM prompts
+                        WHERE id > ? AND model_hash IS NOT NULL
+                        GROUP BY model_hash
+                    """, (last_id,)).fetchall()
+                    
+                    # Update cached counts
+                    for row in new_usage:
+                        model = row['model_hash']
+                        cached_usage[model] = cached_usage.get(model, 0) + row['cnt']
 
             self.update_cached_metric('models', 'usage', cached_usage)
             return cached_usage

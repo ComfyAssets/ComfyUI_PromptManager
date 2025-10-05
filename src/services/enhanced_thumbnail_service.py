@@ -188,6 +188,60 @@ class FFmpegHandler:
             True if video format
         """
         return file_path.suffix.lower() in self.supported_formats
+    
+    def has_video_stream(self, file_path: Path) -> bool:
+        """Check if video file actually has a video stream (not audio-only).
+        
+        Args:
+            file_path: Path to video file
+            
+        Returns:
+            True if file has video stream, False if audio-only or error
+        """
+        if not self.ffmpeg_path:
+            return False
+            
+        try:
+            # Use ffprobe to check for video streams
+            # Try to find ffprobe next to ffmpeg
+            ffprobe_path = Path(self.ffmpeg_path).parent / ('ffprobe.exe' if self.ffmpeg_path.endswith('.exe') else 'ffprobe')
+            
+            if not ffprobe_path.exists():
+                # Try system ffprobe
+                ffprobe_path = shutil.which('ffprobe')
+                if not ffprobe_path:
+                    # Fallback: assume has video if we can't probe
+                    logger.debug(f"ffprobe not found, assuming {file_path} has video stream")
+                    return True
+            
+            # Check for video stream
+            cmd = [
+                str(ffprobe_path),
+                '-v', 'error',
+                '-select_streams', 'v:0',
+                '-show_entries', 'stream=codec_type',
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+                str(file_path)
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            # If output contains 'video', file has video stream
+            has_video = 'video' in result.stdout.lower()
+            
+            if not has_video:
+                logger.info(f"Audio-only file detected: {file_path}")
+            
+            return has_video
+            
+        except Exception as e:
+            logger.warning(f"Could not probe {file_path}: {e}, assuming has video")
+            return True  # Assume has video on error to avoid false negatives
 
     def generate_thumbnail(
         self,
@@ -320,10 +374,106 @@ class EnhancedThumbnailService:
             '.jpg', '.jpeg', '.png', '.gif', '.webp',
             '.bmp', '.tiff', '.tif', '.heic', '.heif'
         }
+        
+        # Persistent blacklist for files that permanently can't have thumbnails
+        self.blacklist_file = self.thumbnail_dir / 'failed_thumbnails.json'
+        self.permanent_blacklist: Set[str] = self._load_blacklist()
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _load_blacklist(self) -> Set[str]:
+        """Load persistent blacklist from file.
+        
+        Returns:
+            Set of file paths that permanently failed thumbnail generation
+        """
+        if not self.blacklist_file.exists():
+            return set()
+        
+        try:
+            with open(self.blacklist_file, 'r') as f:
+                data = json.load(f)
+                blacklist = set(data.get('failed_files', []))
+                logger.info(f"Loaded {len(blacklist)} blacklisted files from {self.blacklist_file}")
+                return blacklist
+        except Exception as e:
+            logger.error(f"Failed to load blacklist: {e}")
+            return set()
+    
+    def _save_blacklist(self) -> None:
+        """Save persistent blacklist to file."""
+        try:
+            with open(self.blacklist_file, 'w') as f:
+                json.dump({
+                    'failed_files': list(self.permanent_blacklist),
+                    'last_updated': datetime.now().isoformat()
+                }, f, indent=2)
+            logger.debug(f"Saved {len(self.permanent_blacklist)} blacklisted files")
+        except Exception as e:
+            logger.error(f"Failed to save blacklist: {e}")
+    
+    def _add_to_blacklist(self, file_path: Path, reason: str = "") -> None:
+        """Add a file to the permanent blacklist.
+        
+        Args:
+            file_path: Path to blacklist
+            reason: Optional reason for blacklisting
+        """
+        path_str = str(file_path.resolve())
+        if path_str not in self.permanent_blacklist:
+            self.permanent_blacklist.add(path_str)
+            self._save_blacklist()
+            logger.info(f"Permanently blacklisted {file_path}: {reason}")
+    
+    def _is_blacklisted(self, file_path: Path) -> bool:
+        """Check if file is permanently blacklisted.
+        
+        Args:
+            file_path: Path to check
+            
+        Returns:
+            True if blacklisted
+        """
+        return str(file_path.resolve()) in self.permanent_blacklist
+
+    def clear_blacklist(self) -> int:
+        """Clear the permanent blacklist.
+        
+        Returns:
+            Number of files removed from blacklist
+        """
+        count = len(self.permanent_blacklist)
+        self.permanent_blacklist.clear()
+        self._save_blacklist()
+        logger.info(f"Cleared {count} files from permanent blacklist")
+        return count
+    
+    def remove_from_blacklist(self, file_path: Path) -> bool:
+        """Remove a specific file from blacklist.
+        
+        Args:
+            file_path: Path to remove
+            
+        Returns:
+            True if file was blacklisted and removed
+        """
+        path_str = str(file_path.resolve())
+        if path_str in self.permanent_blacklist:
+            self.permanent_blacklist.remove(path_str)
+            self._save_blacklist()
+            logger.info(f"Removed {file_path} from blacklist")
+            return True
+        return False
+    
+    def get_blacklisted_count(self) -> int:
+        """Get count of blacklisted files.
+        
+        Returns:
+            Number of blacklisted files
+        """
+        return len(self.permanent_blacklist)
 
     def _parse_max_parallel(self, value: Any) -> int:
         """Normalize stored configuration for max parallel generation."""
@@ -444,7 +594,11 @@ class EnhancedThumbnailService:
             # Check each size
             for size_name in sizes:
                 thumbnail_path = self.get_thumbnail_path(image_path, size_name)
-
+                
+                # Skip if thumbnail file already exists (even if not in database)
+                if thumbnail_path.exists():
+                    continue
+                    
                 if not thumbnail_path.exists():
                     # Get size dimensions
                     size_dims = self.base_generator.SIZES.get(
@@ -479,6 +633,13 @@ class EnhancedThumbnailService:
         Returns:
             Updated task with status
         """
+        # Check if this file is permanently blacklisted
+        if self._is_blacklisted(task.source_path):
+            task.status = ThumbnailStatus.SKIPPED
+            task.error = "Permanently blacklisted - cannot generate thumbnail"
+            logger.debug(f"Skipping permanently blacklisted file: {task.source_path}")
+            return task
+        
         try:
             task.status = ThumbnailStatus.GENERATING
 
@@ -486,8 +647,44 @@ class EnhancedThumbnailService:
             task.thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
 
             if task.is_video:
-                # Generate video thumbnail
-                if not self.ffmpeg.ffmpeg_path:
+                # Check if video has actual video stream or is audio-only
+                if not self.ffmpeg.has_video_stream(task.source_path):
+                    # Audio-only file - use placeholder thumbnail
+                    logger.info(f"Audio-only file detected, using placeholder: {task.source_path}")
+                    placeholder_path = Path(__file__).parent.parent.parent / 'web' / 'images' / 'placeholder.png'
+                    
+                    if placeholder_path.exists():
+                        try:
+                            # Copy placeholder and resize to target size
+                            img = Image.open(placeholder_path)
+                            
+                            # Convert RGBA to RGB for JPEG compatibility
+                            if img.mode == 'RGBA':
+                                # Create white background
+                                background = Image.new('RGB', img.size, (255, 255, 255))
+                                background.paste(img, mask=img.split()[-1])
+                                img = background
+                            elif img.mode not in ('RGB', 'L'):
+                                img = img.convert('RGB')
+                            
+                            img.thumbnail(task.size, Image.Resampling.LANCZOS)
+                            img.save(task.thumbnail_path, quality=85, optimize=True)
+                            
+                            task.status = ThumbnailStatus.GENERATED
+                            task.created_at = datetime.now()
+                            task.file_size = task.thumbnail_path.stat().st_size
+                            logger.debug(f"Generated placeholder thumbnail for audio file: {task.source_path}")
+                        except Exception as e:
+                            logger.error(f"Failed to create placeholder thumbnail: {e}")
+                            task.status = ThumbnailStatus.FAILED
+                            task.error = f"Placeholder generation failed: {e}"
+                    else:
+                        logger.warning(f"Placeholder not found at {placeholder_path}, skipping")
+                        task.status = ThumbnailStatus.SKIPPED
+                        task.error = "Placeholder image not found"
+                
+                # Regular video file with video stream
+                elif not self.ffmpeg.ffmpeg_path:
                     task.status = ThumbnailStatus.FAILED
                     task.error = "ffmpeg not available"
                     logger.warning(f"Skipping video thumbnail for {task.source_path}: ffmpeg not found")
@@ -506,6 +703,8 @@ class EnhancedThumbnailService:
                         task.status = ThumbnailStatus.FAILED
                         task.error = "Video thumbnail generation failed"
                         logger.error(f"Failed to generate video thumbnail for {task.source_path}")
+                        # Add to permanent blacklist to prevent infinite retries
+                        self._add_to_blacklist(task.source_path, "ffmpeg thumbnail generation failed")
             else:
                 # Generate thumbnail directly using PIL
                 img = Image.open(task.source_path)
@@ -533,6 +732,8 @@ class EnhancedThumbnailService:
             logger.error(f"Thumbnail generation failed for {task.source_path}: {e}")
             task.status = ThumbnailStatus.FAILED
             task.error = str(e)
+            # Add to permanent blacklist - any file we can't process should be blacklisted
+            self._add_to_blacklist(task.source_path, f"Exception: {e}")
 
         return task
 
@@ -697,22 +898,36 @@ class EnhancedThumbnailService:
 
         # Final summary
         elapsed = (datetime.now() - start_time).total_seconds()
-        processed = (
-            self.current_progress.completed
-            + self.current_progress.failed
-            + self.current_progress.skipped
-        )
+        
+        # Defensive check - current_progress might be None if there was an early error
+        if self.current_progress is None:
+            summary = {
+                'total': 0,
+                'completed': 0,
+                'failed': 0,
+                'skipped': 0,
+                'processed': 0,
+                'duration': elapsed,
+                'duration_seconds': elapsed,
+                'errors': [],
+            }
+        else:
+            processed = (
+                self.current_progress.completed
+                + self.current_progress.failed
+                + self.current_progress.skipped
+            )
 
-        summary = {
-            'total': self.current_progress.total,
-            'completed': self.current_progress.completed,
-            'failed': self.current_progress.failed,
-            'skipped': self.current_progress.skipped,
-            'processed': processed,
-            'duration': elapsed,
-            'duration_seconds': elapsed,
-            'errors': self.current_progress.errors,
-        }
+            summary = {
+                'total': self.current_progress.total,
+                'completed': self.current_progress.completed,
+                'failed': self.current_progress.failed,
+                'skipped': self.current_progress.skipped,
+                'processed': processed,
+                'duration': elapsed,
+                'duration_seconds': elapsed,
+                'errors': self.current_progress.errors,
+            }
 
         if cancelled:
             summary['cancelled'] = True
@@ -741,14 +956,14 @@ class EnhancedThumbnailService:
         logger.info(f"[ThumbnailDB] _update_database called with {len(tasks)} tasks")
 
         for task in tasks:
+            # Determine size name from dimensions
+            size_name = None
+            for name, dims in self.base_generator.SIZES.items():
+                if dims == task.size:
+                    size_name = name
+                    break
+            
             if task.status == ThumbnailStatus.GENERATED:
-                # Determine size name from dimensions
-                size_name = None
-                for name, dims in self.base_generator.SIZES.items():
-                    if dims == task.size:
-                        size_name = name
-                        break
-
                 if size_name:
                     updates_by_size[size_name].append({
                         'image_path': str(task.source_path),
@@ -756,6 +971,15 @@ class EnhancedThumbnailService:
                     })
                 else:
                     logger.warning(f"[ThumbnailDB] Could not determine size_name for task with size: {task.size}")
+            
+            elif task.status in (ThumbnailStatus.FAILED, ThumbnailStatus.SKIPPED):
+                # Mark failed/skipped thumbnails with special marker to prevent re-scanning
+                if size_name:
+                    updates_by_size[size_name].append({
+                        'image_path': str(task.source_path),
+                        'thumbnail_path': 'FAILED'  # Special marker to indicate permanent failure
+                    })
+                    logger.debug(f"[ThumbnailDB] Marking {task.source_path} as FAILED in database")
 
         # Log grouped results
         for size_name, updates in updates_by_size.items():

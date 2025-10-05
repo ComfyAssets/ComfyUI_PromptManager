@@ -82,18 +82,41 @@ class StatsService:
         return prompts
 
     def _fetch_images(self) -> List[Dict[str, Any]]:
-        query = (
-            "SELECT id, prompt_id, image_path, filename, generation_time, file_size, width, height, "
-            "format, workflow_data, prompt_metadata, parameters "
-            "FROM generated_images"
-        )
         with self._connect() as conn:
+            # Get available columns
+            cursor = conn.execute("PRAGMA table_info(generated_images)")
+            available_columns = {row[1] for row in cursor.fetchall()}
+            
+            # Build query with only available columns
+            base_columns = ['id', 'prompt_id']
+            optional_columns = ['image_path', 'filename', 'generation_time', 'file_size', 
+                              'width', 'height', 'format', 'workflow_data', 
+                              'prompt_metadata', 'parameters', 'created_at']
+            
+            # Add file_path/file_name fallbacks for v1 compatibility
+            if 'file_path' in available_columns and 'image_path' not in available_columns:
+                optional_columns.append('file_path')
+            if 'file_name' in available_columns and 'filename' not in available_columns:
+                optional_columns.append('file_name')
+            
+            selected_columns = base_columns + [col for col in optional_columns if col in available_columns]
+            query = f"SELECT {', '.join(selected_columns)} FROM generated_images"
+            
             rows = conn.execute(query).fetchall()
 
         images: List[Dict[str, Any]] = []
         for row in rows:
             data = dict(row)
-            data["generation_time"] = self._parse_datetime(data.get("generation_time"))
+            
+            # Handle column name variations (v1 vs v2 compatibility)
+            if 'file_path' in data and 'image_path' not in data:
+                data['image_path'] = data['file_path']
+            if 'file_name' in data and 'filename' not in data:
+                data['filename'] = data['file_name']
+            
+            # Handle timestamp columns
+            generation_time = data.get("generation_time") or data.get("created_at")
+            data["generation_time"] = self._parse_datetime(generation_time)
             data["created_at"] = data["generation_time"]
             data["file_size"] = self._safe_int(data.get("file_size"))
             data["width"] = self._safe_int(data.get("width"))
