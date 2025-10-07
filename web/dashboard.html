@@ -424,6 +424,12 @@
               </select>
             </div>
             <div class="filter-group">
+              <label class="filter-label">Category</label>
+              <select id="categoryFilterSelect" class="select">
+                <option value="all">All Categories</option>
+              </select>
+            </div>
+            <div class="filter-group">
               <label class="filter-label">Tags</label>
               <select id="tagFilterSelect" class="select">
                 <option value="all">All Tags</option>
@@ -534,6 +540,11 @@
           <!-- Form Fields -->
           <form class="prompt-form" id="promptForm">
             <div class="input-group">
+              <label class="label">Category</label>
+              <input type="text" class="input" id="promptCategory" list="categoryDatalist" placeholder="e.g. portraits, landscapes...">
+            </div>
+
+            <div class="input-group">
               <label class="label">Tags</label>
               <input type="text" class="input" id="promptTags" placeholder="portrait, fantasy, digital art...">
             </div>
@@ -579,7 +590,7 @@
             <div class="form-row">
               <div class="input-group">
                 <label class="label" for="editPromptCategory">Category</label>
-                <input type="text" class="input" id="editPromptCategory" placeholder="e.g. portraits" />
+                <input type="text" class="input" id="editPromptCategory" list="categoryDatalist" placeholder="e.g. portraits" />
               </div>
               <div class="input-group">
                 <label class="label" for="editPromptTags">Tags</label>
@@ -843,7 +854,7 @@
 
     <!-- Core modules -->
     <script src="/prompt_manager/js/modules/core/events.js"></script>
-    <script src="/prompt_manager/js/modules/core/sse.js"></script>
+    <script src="/prompt_manager/js/modules/core/websocket.js"></script>
 
     <!-- SSE Indicators -->
     <script src="/prompt_manager/js/modules/components/status-indicator.js"></script>
@@ -1110,5 +1121,9 @@
         // ViewerIntegration removed to avoid container conflicts
       });
     </script>
+
+    <!-- Category Datalist for autocomplete -->
+    <datalist id="categoryDatalist"></datalist>
+
   </body>
 </html>

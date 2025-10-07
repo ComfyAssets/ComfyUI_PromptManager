@@ -252,7 +252,7 @@ function handleGenerationComplete(summary) {
 }
 
 /**
- * Rebuild all thumbnails
+ * Rebuild all thumbnails (V2 - uses comprehensive scan and reconciliation)
  */
 async function rebuildAllThumbnails() {
     // Get selected sizes
@@ -267,6 +267,22 @@ async function rebuildAllThumbnails() {
         return;
     }
 
+    // Open the new V2 modal with comprehensive scan and rebuild workflow
+    if (typeof ThumbnailRebuildModalV2 !== 'undefined') {
+        const modal = new ThumbnailRebuildModalV2();
+        modal.open(sizes);
+    } else {
+        // Fallback to old behavior if V2 modal not loaded
+        console.error('ThumbnailRebuildModalV2 not found, falling back to old rebuild');
+        showNotification('V2 modal not loaded, using legacy rebuild', 'warning');
+        await rebuildAllThumbnailsLegacy(sizes);
+    }
+}
+
+/**
+ * Legacy rebuild function (fallback)
+ */
+async function rebuildAllThumbnailsLegacy(sizes) {
     const sizeNames = sizes.map(s => {
         switch(s) {
             case 'small': return 'Small (150x150)';

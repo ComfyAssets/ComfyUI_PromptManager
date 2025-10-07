@@ -22,7 +22,7 @@ const STATIC_ASSETS = [
     '/prompt_manager/js/modules/core/api.js',
     '/prompt_manager/js/modules/core/state.js',
     '/prompt_manager/js/modules/core/events.js',
-    '/prompt_manager/js/modules/core/sse.js',
+    '/prompt_manager/js/modules/core/websocket.js',
     '/prompt_manager/manifest.json'
 ];
 

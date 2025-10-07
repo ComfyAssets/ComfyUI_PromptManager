@@ -11,6 +11,7 @@
     <link rel="stylesheet" href="/prompt_manager/css/notifications.css" />
     <link rel="stylesheet" href="/prompt_manager/css/migration.css" />
     <link rel="stylesheet" href="/prompt_manager/css/thumbnail-rebuild-modal.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/thumbnail-rebuild-modal-v2.css" />
     <style>
       /* Simple notification styles */
       .notification-container {
@@ -1943,7 +1944,7 @@
     <!-- External JavaScript files -->
     <!-- Core modules -->
     <script src="/prompt_manager/js/modules/core/events.js"></script>
-    <script src="/prompt_manager/js/modules/core/sse.js"></script>
+    <script src="/prompt_manager/js/modules/core/websocket.js"></script>
 
     <!-- SSE Indicators -->
     <script src="/prompt_manager/js/modules/components/status-indicator.js"></script>
@@ -1958,6 +1959,7 @@
     <script src="/prompt_manager/js/settings-ffmpeg.js"></script>
     <script src="/prompt_manager/js/components/thumbnail-modal.js"></script>
     <script src="/prompt_manager/js/components/thumbnail-rebuild-modal.js"></script>
+    <script src="/prompt_manager/js/components/thumbnail-rebuild-modal-v2.js"></script>
 
     <script src="/prompt_manager/js/settings.js"></script>
     <script src="/prompt_manager/js/settings-page.js"></script>
@@ -2046,15 +2048,22 @@
       function initThumbnailRebuildModal() {
         console.log('[ThumbnailRebuild] Initializing modal...');
 
-        // Check if ThumbnailRebuildModal class exists
-        if (typeof ThumbnailRebuildModal === 'undefined') {
-          console.error('[ThumbnailRebuild] ERROR: ThumbnailRebuildModal class not found! Script may have failed to load.');
+        // Check if ThumbnailRebuildModalV2 class exists (prefer V2, fallback to V1)
+        const ModalClass = typeof ThumbnailRebuildModalV2 !== 'undefined'
+          ? ThumbnailRebuildModalV2
+          : (typeof ThumbnailRebuildModal !== 'undefined' ? ThumbnailRebuildModal : null);
+
+        if (!ModalClass) {
+          console.error('[ThumbnailRebuild] ERROR: No ThumbnailRebuildModal class found! Scripts may have failed to load.');
           return;
         }
 
+        const isV2 = ModalClass === ThumbnailRebuildModalV2;
+        console.log(`[ThumbnailRebuild] Using ${isV2 ? 'V2' : 'V1'} modal`);
+
         // Create modal instance
         try {
-          const rebuildModal = new ThumbnailRebuildModal();
+          const rebuildModal = new ModalClass();
           console.log('[ThumbnailRebuild] Modal instance created successfully');
 
           // Wire up both rebuild buttons
@@ -2066,7 +2075,27 @@
             btnRebuildTop.addEventListener('click', function(e) {
               console.log('[ThumbnailRebuild] Top button clicked!');
               e.preventDefault();
-              rebuildModal.show();
+
+              if (isV2) {
+                // V2 modal: get selected sizes and call open()
+                const sizes = [];
+                if (document.getElementById('thumbSizeSmall')?.checked) sizes.push('small');
+                if (document.getElementById('thumbSizeMedium')?.checked) sizes.push('medium');
+                if (document.getElementById('thumbSizeLarge')?.checked) sizes.push('large');
+                if (document.getElementById('thumbSizeXLarge')?.checked) sizes.push('xlarge');
+
+                if (sizes.length === 0) {
+                  if (window.NotificationService) {
+                    window.NotificationService.show('Please select at least one thumbnail size', 'warning');
+                  }
+                  return;
+                }
+
+                rebuildModal.open(sizes);
+              } else {
+                // V1 modal: just call show()
+                rebuildModal.show();
+              }
             });
           } else {
             console.warn('[ThumbnailRebuild] Top rebuild button not found');
@@ -2077,7 +2106,27 @@
             btnRebuildBottom.addEventListener('click', function(e) {
               console.log('[ThumbnailRebuild] Bottom button clicked!');
               e.preventDefault();
-              rebuildModal.show();
+
+              if (isV2) {
+                // V2 modal: get selected sizes and call open()
+                const sizes = [];
+                if (document.getElementById('thumbSizeSmall')?.checked) sizes.push('small');
+                if (document.getElementById('thumbSizeMedium')?.checked) sizes.push('medium');
+                if (document.getElementById('thumbSizeLarge')?.checked) sizes.push('large');
+                if (document.getElementById('thumbSizeXLarge')?.checked) sizes.push('xlarge');
+
+                if (sizes.length === 0) {
+                  if (window.NotificationService) {
+                    window.NotificationService.show('Please select at least one thumbnail size', 'warning');
+                  }
+                  return;
+                }
+
+                rebuildModal.open(sizes);
+              } else {
+                // V1 modal: just call show()
+                rebuildModal.show();
+              }
             });
           } else {
             console.warn('[ThumbnailRebuild] Bottom rebuild button not found');

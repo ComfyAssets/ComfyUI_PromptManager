@@ -119,6 +119,9 @@
           <!-- Toolbar -->
           <div class="toolbar">
             <div class="filter-bar">
+              <select id="categoryFilterGallery" class="select">
+                <option value="all">All Categories</option>
+              </select>
               <select class="select">
                 <option>All Models</option>
                 <option>FLUX</option>
@@ -196,7 +199,7 @@
 
     <!-- Core modules -->
     <script src="/prompt_manager/js/modules/core/events.js"></script>
-    <script src="/prompt_manager/js/modules/core/sse.js"></script>
+    <script src="/prompt_manager/js/modules/core/websocket.js"></script>
 
     <!-- SSE Indicators -->
     <script src="/prompt_manager/js/modules/components/status-indicator.js"></script>

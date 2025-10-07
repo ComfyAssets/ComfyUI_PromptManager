@@ -28,6 +28,7 @@
   let currentSortOrder = 'newest'; // Default sort order
   let currentTagFilter = 'all';
   let currentModelFilter = 'all';
+  let currentCategoryFilter = 'all';
 
   const API_BASE_CANDIDATES = ['/api/v1', '/api/prompt_manager'];
   const DEFAULT_EMPTY_MESSAGE = 'Start by creating a new prompt or importing existing ones';
@@ -235,6 +236,13 @@
     if (modelFilterSelect) {
       modelFilterSelect.addEventListener('change', (event) => {
         currentModelFilter = event.target.value;
+      });
+    }
+
+    const categoryFilterSelect = document.getElementById('categoryFilterSelect');
+    if (categoryFilterSelect) {
+      categoryFilterSelect.addEventListener('change', (event) => {
+        currentCategoryFilter = event.target.value;
       });
     }
 
@@ -512,6 +520,7 @@
       await Promise.all([
         loadStats(),
         loadPrompts(1),
+        loadCategories(),
       ]);
     } catch (error) {
       console.error('Failed to load dashboard data:', error);
@@ -522,6 +531,48 @@
       throw error;
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadCategories() {
+    try {
+      const payload = await fetchJson('/prompts/categories');
+      const categoriesData = Array.isArray(payload?.data) ? payload.data : [];
+
+      // Populate filter dropdown
+      const categorySelect = document.getElementById('categoryFilterSelect');
+      if (categorySelect && categoriesData.length > 0) {
+        const currentValue = categorySelect.value;
+        categorySelect.innerHTML = '<option value="all">All Categories</option>';
+        categoriesData.forEach(item => {
+          // Handle both string format and object format {category: "name", count: 123}
+          const categoryName = typeof item === 'string' ? item : (item.category || item.name);
+          if (categoryName && categoryName !== '') {
+            const option = document.createElement('option');
+            option.value = categoryName;
+            option.textContent = categoryName;
+            categorySelect.appendChild(option);
+          }
+        });
+        categorySelect.value = currentValue;
+      }
+
+      // Populate datalist for autocomplete in create/edit modals
+      const categoryDatalist = document.getElementById('categoryDatalist');
+      if (categoryDatalist) {
+        categoryDatalist.innerHTML = '';
+        categoriesData.forEach(item => {
+          const categoryName = typeof item === 'string' ? item : (item.category || item.name);
+          if (categoryName && categoryName !== '') {
+            const option = document.createElement('option');
+            option.value = categoryName;
+            categoryDatalist.appendChild(option);
+          }
+        });
+      }
+    } catch (error) {
+      console.warn('Failed to load categories:', error);
+      // Non-critical error, don't throw
     }
   }
 
@@ -593,6 +644,11 @@
     // Add search parameter if present
     if (searchTerm) {
       params.append('search', searchTerm);
+    }
+
+    // Add category filter if not 'all'
+    if (currentCategoryFilter && currentCategoryFilter !== 'all') {
+      params.append('category', currentCategoryFilter);
     }
 
     // Add sort order parameters (v1 API uses order_by for field and order_dir for direction)
@@ -2768,8 +2824,9 @@
     const positivePrompt = form.querySelector('#positivePrompt')?.value?.trim() || '';
     const negativePrompt = form.querySelector('#negativePrompt')?.value?.trim() || '';
     const rawTags = form.querySelector('#promptTags')?.value || '';
+    const category = form.querySelector('#promptCategory')?.value?.trim() || '';
 
-    console.log('[createPrompt] Form data:', { positivePrompt, negativePrompt, rawTags });
+    console.log('[createPrompt] Form data:', { positivePrompt, negativePrompt, rawTags, category });
 
     // Generate title from positive prompt (first 50 chars or up to first comma/period)
     let title = positivePrompt;
@@ -2805,6 +2862,11 @@
       model: currentModel,
     };
 
+    // Add category if provided
+    if (category) {
+      payload.category = category;
+    }
+
     console.log('[createPrompt] Payload to send:', payload);
     console.log('[createPrompt] API base candidates:', API_BASE_CANDIDATES);
     console.log('[createPrompt] Current apiBase:', apiBase);
@@ -2825,10 +2887,11 @@
       hideAddPromptModal();
       form.reset();
 
-      console.log('[createPrompt] Reloading prompts and stats...');
+      console.log('[createPrompt] Reloading prompts, stats, and categories...');
       const reloadResults = await Promise.allSettled([
         loadPrompts(1),
         loadStats(),
+        loadCategories(),
       ]);
       console.log('[createPrompt] Reload results:', reloadResults);
 
@@ -2913,7 +2976,10 @@
       }
 
       hideEditPromptModal();
-      await loadPrompts(paginationState.page);
+      await Promise.all([
+        loadPrompts(paginationState.page),
+        loadCategories(),
+      ]);
 
       if (updatedPrompt && searchTermLower) {
         // Ensure highlights refresh with the current search term
