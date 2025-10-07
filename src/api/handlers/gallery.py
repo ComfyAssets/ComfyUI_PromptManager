@@ -31,14 +31,15 @@ class GalleryHandlers:
         self.logger = api.logger
 
     async def list_gallery_images(self, request: web.Request) -> web.Response:
-        """List gallery images with pagination.
+        """List gallery images with pagination and category filtering.
 
-        GET /api/v1/gallery/images?page=1&limit=50
+        GET /api/v1/gallery/images?page=1&limit=50&category=portrait
         """
         try:
             # Get parameters with defensive defaults
             page_str = request.query.get("page", "1")
             limit_str = request.query.get("limit", "50")
+            category = request.query.get("category")
 
             # Parse with error handling
             try:
@@ -54,14 +55,58 @@ class GalleryHandlers:
             # Ensure positive values
             page = max(1, page)
             limit = max(1, min(limit, 1000))  # Cap at 1000 for safety
+            offset = (page - 1) * limit
 
-            self.gallery.set_pagination(page, limit)
-            result = self.gallery.get_paginated_items()
+            # Query with category filter using JOIN
+            import sqlite3
+            db_path = self.generated_image_repo.db_path if self.generated_image_repo else self.image_repo.db_path
+
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+
+                # Build query with optional category filter
+                where_clause = ""
+                params = []
+                if category and category != 'all':
+                    where_clause = "WHERE p.category = ?"
+                    params.append(category)
+
+                # Get total count
+                count_query = f"""
+                    SELECT COUNT(*) as total
+                    FROM generated_images gi
+                    LEFT JOIN prompts p ON gi.prompt_id = p.id
+                    {where_clause}
+                """
+                cursor = conn.execute(count_query, params)
+                total = cursor.fetchone()['total']
+
+                # Get paginated results
+                data_query = f"""
+                    SELECT
+                        gi.*,
+                        p.category,
+                        p.positive_prompt,
+                        p.tags,
+                        p.rating
+                    FROM generated_images gi
+                    LEFT JOIN prompts p ON gi.prompt_id = p.id
+                    {where_clause}
+                    ORDER BY gi.generation_time DESC
+                    LIMIT ? OFFSET ?
+                """
+                cursor = conn.execute(data_query, params + [limit, offset])
+                images = [dict(row) for row in cursor.fetchall()]
 
             return web.json_response({
                 "success": True,
-                "data": result["items"],
-                "pagination": result["pagination"]
+                "data": images,
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "total": total,
+                    "total_pages": (total + limit - 1) // limit
+                }
             })
 
         except ValueError as e:

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from aiohttp import web
 
 from src.services.enhanced_thumbnail_service import EnhancedThumbnailService, ThumbnailTask
+from src.services.thumbnail_reconciliation_service import ThumbnailReconciliationService
 from src.utils.ffmpeg_finder import (
     DEFAULT_TIMEOUT as FFMPEG_TIMEOUT,
     find_ffmpeg_candidates,
@@ -75,6 +76,7 @@ class ThumbnailAPI:
         self.db = db
         self.cache = cache
         self.thumbnail_service = EnhancedThumbnailService(db, cache)
+        self.reconciliation_service = ThumbnailReconciliationService(db, cache, self.thumbnail_service)
         self.realtime = events
 
         # Track active generation tasks
@@ -93,6 +95,10 @@ class ThumbnailAPI:
         app.router.add_post('/api/v1/thumbnails/cancel', self.cancel_generation)
         app.router.add_get('/api/v1/thumbnails/status/{task_id}', self.get_task_status)
         app.router.add_post('/api/v1/thumbnails/rebuild', self.rebuild_thumbnails)
+
+        # V2 Reconciliation endpoints
+        app.router.add_post('/api/v1/thumbnails/comprehensive-scan', self.comprehensive_scan)
+        app.router.add_post('/api/v1/thumbnails/rebuild-unified', self.rebuild_unified)
 
         # Thumbnail serving
         app.router.add_get('/api/v1/thumbnails/{image_id}/{size}', self.serve_thumbnail)
@@ -1180,3 +1186,229 @@ class ThumbnailAPI:
                 {'error': str(e)},
                 status=500
             )
+
+    async def comprehensive_scan(self, request: web.Request) -> web.Response:
+        """Perform comprehensive thumbnail scan (V2).
+
+        Args:
+            request: HTTP request
+
+        Returns:
+            JSON response with task ID and initial categories
+        """
+        try:
+            data = await request.json() if request.body_exists else {}
+            sizes = data.get('sizes', ['small', 'medium', 'large'])
+            sample_limit = data.get('sample_limit', 6)
+
+            # Generate task ID
+            task_id = f"scan_{datetime.now().timestamp()}"
+
+            # Create task tracking
+            self.active_generations[task_id] = {
+                'status': 'running',
+                'progress': None,
+                'result': None,
+                'cancel_event': None,
+            }
+
+            # Start scan in background
+            asyncio.create_task(self._run_comprehensive_scan(task_id, sizes, sample_limit))
+
+            return web.json_response({
+                'task_id': task_id,
+                'message': 'Scan started'
+            })
+
+        except Exception as e:
+            logger.error(f"Comprehensive scan error: {e}")
+            return web.json_response(
+                {'error': str(e)},
+                status=500
+            )
+
+    async def _run_comprehensive_scan(self, task_id: str, sizes: List[str], sample_limit: int):
+        """Run comprehensive scan in background with progress tracking.
+
+        Args:
+            task_id: Unique task identifier
+            sizes: Thumbnail sizes to check
+            sample_limit: Sample limit for true orphans
+        """
+        try:
+            logger.info(f"Starting comprehensive scan for task {task_id}")
+
+            # Get the event loop for thread-safe updates
+            loop = asyncio.get_event_loop()
+
+            # Define progress callback
+            def progress_callback(progress_data):
+                def update():
+                    self.active_generations[task_id]['progress'] = {
+                        'phase': progress_data.phase,
+                        'current': progress_data.current,
+                        'total': progress_data.total,
+                        'percentage': progress_data.percentage,
+                        'message': progress_data.message
+                    }
+                    # Note: Disabled realtime progress to avoid duplicate progress windows
+                    # The V2 modal has its own progress tracking via polling
+
+                loop.call_soon_threadsafe(update)
+
+            # Perform scan
+            results = await self.reconciliation_service.comprehensive_scan(
+                sizes=sizes,
+                sample_limit=sample_limit,
+                progress_callback=progress_callback
+            )
+
+            # Update task status
+            self.active_generations[task_id]['status'] = 'completed'
+            self.active_generations[task_id]['result'] = {
+                'total_images': results.total_images,
+                'categories': results.categories,
+                'breakdown': results.breakdown,
+                'true_orphans': results.true_orphans,
+                'estimated_time_seconds': results.estimated_time_seconds
+            }
+
+            logger.info(f"Scan task {task_id} completed: {results.categories}")
+
+            if self.realtime:
+                await self.realtime.send_progress(
+                    'thumbnail_scan',
+                    100,
+                    'Scan complete',
+                    task_id=task_id,
+                    result=self.active_generations[task_id]['result']
+                )
+
+        except Exception as e:
+            logger.error(f"Background scan error for task {task_id}: {e}", exc_info=True)
+            self.active_generations[task_id]['status'] = 'failed'
+            self.active_generations[task_id]['error'] = str(e)
+
+            if self.realtime:
+                await self.realtime.send_toast(f'Thumbnail scan failed: {e}', 'error')
+
+    async def rebuild_unified(self, request: web.Request) -> web.Response:
+        """Execute unified rebuild operations (V2).
+
+        Args:
+            request: HTTP request
+
+        Returns:
+            JSON response with task ID
+        """
+        try:
+            data = await request.json()
+            operations = data.get('operations', {
+                'fix_broken_links': True,
+                'link_orphans': True,
+                'generate_missing': True,
+                'delete_true_orphans': False
+            })
+            sizes = data.get('sizes', ['small', 'medium', 'large'])
+            scan_results = data.get('scan_results', {})
+
+            # Generate task ID
+            task_id = f"rebuild_unified_{datetime.now().timestamp()}"
+            cancel_event = threading.Event()
+
+            # Create task tracking
+            self.active_generations[task_id] = {
+                'status': 'running',
+                'progress': None,
+                'result': None,
+                'cancel_event': cancel_event
+            }
+
+            # Start rebuild in background
+            asyncio.create_task(
+                self._run_unified_rebuild(task_id, operations, sizes, scan_results, cancel_event)
+            )
+
+            return web.json_response({
+                'task_id': task_id,
+                'message': 'Rebuild started'
+            })
+
+        except Exception as e:
+            logger.error(f"Unified rebuild error: {e}")
+            return web.json_response(
+                {'error': str(e)},
+                status=500
+            )
+
+    async def _run_unified_rebuild(
+        self,
+        task_id: str,
+        operations: Dict[str, bool],
+        sizes: List[str],
+        scan_results: Dict[str, List],
+        cancel_event: threading.Event
+    ):
+        """Run unified rebuild in background with progress tracking.
+
+        Args:
+            task_id: Unique task identifier
+            operations: Operations to perform
+            sizes: Thumbnail sizes to process
+            scan_results: Results from comprehensive scan
+            cancel_event: Event for cancellation
+        """
+        try:
+            logger.info(f"Starting unified rebuild for task {task_id}")
+
+            # Get the event loop for thread-safe updates
+            loop = asyncio.get_event_loop()
+
+            # Define progress callback
+            def progress_callback(progress_data):
+                def update():
+                    self.active_generations[task_id]['progress'] = progress_data
+                    # Note: Disabled realtime progress to avoid duplicate progress windows
+                    # The V2 modal has its own progress tracking via polling
+
+                loop.call_soon_threadsafe(update)
+
+            # Perform rebuild
+            summary = await self.reconciliation_service.rebuild_unified(
+                operations=operations,
+                sizes=sizes,
+                scan_results=scan_results,
+                progress_callback=progress_callback,
+                cancel_event=cancel_event
+            )
+
+            # Update task status
+            status = 'cancelled' if cancel_event.is_set() else 'completed'
+            self.active_generations[task_id]['status'] = status
+            self.active_generations[task_id]['result'] = summary
+
+            logger.info(f"Rebuild task {task_id} {status}: {summary}")
+
+            if self.realtime:
+                await self.realtime.send_progress(
+                    'thumbnail_rebuild',
+                    100,
+                    'Rebuild complete' if status == 'completed' else 'Rebuild cancelled',
+                    task_id=task_id,
+                    result=summary
+                )
+
+                message = f"Rebuilt {summary['completed']} thumbnails"
+                toast_type = 'success' if summary['stats']['failed'] == 0 else 'warning'
+                await self.realtime.send_toast(message, toast_type)
+
+                if summary['stats'].get('generated', 0) > 0:
+                    await self.realtime.notify_gallery_refresh()
+
+        except Exception as e:
+            logger.error(f"Background rebuild error for task {task_id}: {e}", exc_info=True)
+            self.active_generations[task_id]['status'] = 'failed'
+            self.active_generations[task_id]['error'] = str(e)
+
+            if self.realtime:
+                await self.realtime.send_toast(f'Thumbnail rebuild failed: {e}', 'error')

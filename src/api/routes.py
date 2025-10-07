@@ -562,6 +562,10 @@ class PromptManagerAPI:
             routes.get('/api/v1/thumbnails/status/{task_id}')(self.thumbnail_api.get_task_status)
             routes.post('/api/v1/thumbnails/rebuild')(self.thumbnail_api.rebuild_thumbnails)
 
+            # V2 Reconciliation endpoints
+            routes.post('/api/v1/thumbnails/comprehensive-scan')(self.thumbnail_api.comprehensive_scan)
+            routes.post('/api/v1/thumbnails/rebuild-unified')(self.thumbnail_api.rebuild_unified)
+
             # Thumbnail serving
             routes.get('/api/v1/thumbnails/{image_id}/{size}')(self.thumbnail_api.serve_thumbnail)
             routes.get('/api/v1/thumbnails/{image_id}')(self.thumbnail_api.serve_thumbnail)
