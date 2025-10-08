@@ -618,6 +618,7 @@ class PromptManagerAPI:
 
         # Settings endpoints
         routes.get("/api/prompt_manager/settings")(self.get_all_settings)
+        routes.post("/api/prompt_manager/settings")(self.update_all_settings)
         routes.get("/api/prompt_manager/settings/community")(self.get_community_settings)
         routes.post("/api/prompt_manager/settings/generate_uuid")(self.generate_uuid)
         routes.get("/api/prompt_manager/settings/export")(self.export_settings)
@@ -2891,6 +2892,36 @@ class PromptManagerAPI:
             })
         except Exception as e:
             self.logger.error(f"Error getting all settings: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def update_all_settings(self, request: web.Request) -> web.Response:
+        """Update multiple settings at once.
+        POST /api/prompt_manager/settings
+        Body: { gallery: {...}, viewer: {...}, filmstrip: {...}, etc. }
+        """
+        try:
+            settings_data = await request.json()
+            updated_count = 0
+
+            # Iterate through categories and update each setting
+            for category, category_settings in settings_data.items():
+                if isinstance(category_settings, dict):
+                    for key, value in category_settings.items():
+                        setting_key = f"{category}.{key}"
+                        success = self.settings_service.set(setting_key, value, category)
+                        if success:
+                            updated_count += 1
+
+            return web.json_response({
+                'success': True,
+                'updated': updated_count,
+                'message': f'Updated {updated_count} settings'
+            })
+        except Exception as e:
+            self.logger.error(f"Error updating all settings: {e}")
             return web.json_response({
                 'success': False,
                 'error': str(e)

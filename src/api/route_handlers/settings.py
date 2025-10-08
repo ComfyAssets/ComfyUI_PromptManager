@@ -113,6 +113,38 @@ class SettingsRouteHandler:
                 'error': str(e)
             }, status=500)
 
+    async def update_all_settings(self, request: web.Request) -> web.Response:
+        """Update multiple settings at once.
+
+        POST /api/prompt_manager/settings
+        Body: { gallery: {...}, viewer: {...}, filmstrip: {...}, etc. }
+        """
+        try:
+            settings_data = await request.json()
+            updated_count = 0
+
+            # Iterate through categories and update each setting
+            for category, category_settings in settings_data.items():
+                if isinstance(category_settings, dict):
+                    for key, value in category_settings.items():
+                        setting_key = f"{category}.{key}"
+                        success = self.settings_service.set(setting_key, value, category)
+                        if success:
+                            updated_count += 1
+
+            return web.json_response({
+                'success': True,
+                'updated': updated_count,
+                'message': f'Updated {updated_count} settings'
+            })
+
+        except Exception as e:
+            logger.error(f"Error updating all settings: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
     async def generate_uuid(self, request: web.Request) -> web.Response:
         """Generate a new PromptManager UUID.
 
