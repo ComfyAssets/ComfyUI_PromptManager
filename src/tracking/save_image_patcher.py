@@ -63,6 +63,9 @@ class SaveImagePatcher:
         self.final_only = os.getenv("PROMPTMANAGER_FINAL_ONLY", "0") == "1"
         self._queue: Queue = Queue()
         self._worker_started = False
+        # Track queued images to prevent duplicates
+        self._queued_images: set = set()
+        self._queued_lock = threading.Lock()
         # Initialize options from UI settings if available (UI overrides env)
         try:
             s = load_settings()
@@ -95,6 +98,9 @@ class SaveImagePatcher:
                 except Exception as e:
                     logger.error(f"Async tracking error: {e}", exc_info=True)
                 finally:
+                    # Remove from queued set when processing completes
+                    with self._queued_lock:
+                        self._queued_images.discard(image_path)
                     self._queue.task_done()
 
         t = threading.Thread(target=_worker, name="PM-TrackingWorker", daemon=True)
@@ -471,9 +477,16 @@ class SaveImagePatcher:
                                     if isinstance(prompt, dict):
                                         meta["prompt"] = prompt
 
-                                    self._queue.put((image_path, tracking_data, meta))
-                                    self._maybe_print(f"   💾 Tracked image {filename} with prompt (queued)")
-                                    logger.debug(f"Tracked image {filename} with prompt")
+                                    # Deduplicate: only queue if not already queued
+                                    with self._queued_lock:
+                                        if image_path not in self._queued_images:
+                                            self._queued_images.add(image_path)
+                                            self._queue.put((image_path, tracking_data, meta))
+                                            self._maybe_print(f"   💾 Tracked image {filename} with prompt (queued)")
+                                            logger.debug(f"Tracked image {filename} with prompt")
+                                        else:
+                                            self._maybe_print(f"   ⏭️ Skipped duplicate queue entry for {filename}")
+                                            logger.debug(f"Skipped duplicate queue entry for {filename}")
                                 else:
                                     self._maybe_print(f"   ⚠️ No tracking data found for image {filename}")
                                     try:
@@ -657,7 +670,14 @@ class SaveImagePatcher:
                                                 if isinstance(prompt, dict):
                                                     meta['prompt'] = prompt
 
-                                                self._queue.put((image_path, tracking_data, meta))
+                                                # Deduplicate: only queue if not already queued
+                                                with self._queued_lock:
+                                                    if image_path not in self._queued_images:
+                                                        self._queued_images.add(image_path)
+                                                        self._queue.put((image_path, tracking_data, meta))
+                                                        logger.debug(f"Queued generic save image {filename} for tracking")
+                                                    else:
+                                                        logger.debug(f"Skipped duplicate queue entry for generic save {filename}")
                                             else:
                                                 # Log summarised debug only
                                                 try:
