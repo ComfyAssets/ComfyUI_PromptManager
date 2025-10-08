@@ -357,7 +357,7 @@ const ViewerManager = (function() {
             if (!document.querySelector('link[href*="viewer.css"]')) {
                 const link = document.createElement('link');
                 link.rel = 'stylesheet';
-                link.href = '/prompt_manager/vendor/viewerjs/dist/viewer.css';
+                link.href = '/prompt_manager/lib/viewerjs/dist/viewer.css';
                 document.head.appendChild(link);
             }
 
