@@ -98,6 +98,20 @@ class GalleryHandlers:
                 cursor = conn.execute(data_query, params + [limit, offset])
                 images = [dict(row) for row in cursor.fetchall()]
 
+            # Apply field mapping for frontend compatibility
+            # Frontend expects thumbnail_url and image_url (V1 API format)
+            for image in images:
+                image_id = image.get('id')
+
+                # Map thumbnail fields to thumbnail_url
+                if image_id:
+                    image['thumbnail_url'] = f"/api/v1/generated-images/{image_id}/file?thumbnail=1"
+                    image['image_url'] = f"/api/v1/generated-images/{image_id}/file"
+                    image['url'] = image['image_url']  # Alias for compatibility
+
+                # Keep original fields for reference but prioritize mapped URLs
+                # This ensures backward compatibility with both V1 and V2 consumers
+
             return web.json_response({
                 "success": True,
                 "data": images,
