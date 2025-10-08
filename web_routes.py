@@ -89,6 +89,7 @@ def setup_routes(routes):
   # Static assets
   routes.get('/prompt_manager/css/{path:.*}')(make_static_handler('css'))
   routes.get('/prompt_manager/js/{path:.*}')(make_static_handler('js'))
+  routes.get('/prompt_manager/lib/{path:.*}')(make_static_handler('lib'))
   routes.get('/prompt_manager/vendor/{path:.*}')(make_static_handler('vendor'))
   routes.get('/prompt_manager/images/{path:.*}')(make_static_handler('images'))
 
