@@ -360,13 +360,46 @@ class DatabaseMigrator:
             self.migration_stats["status"] = MigrationStatus.FAILED.value
             return False, self.migration_stats
 
+    def _enable_wal_mode_on_v1(self) -> bool:
+        """Enable WAL mode on v1 database for concurrent access during migration."""
+        try:
+            conn = sqlite3.connect(str(self.detector.v1_db_path), timeout=30.0)
+            try:
+                # Enable WAL mode for better concurrency
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA busy_timeout=30000")
+                conn.commit()
+                LOGGER.info("WAL mode enabled on v1 database for migration")
+                return True
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            LOGGER.warning("Could not enable WAL mode on v1 database: %s", exc)
+            # Not a critical error - migration can still proceed
+            return False
+
     def create_backup(self) -> bool:
         """Create a timestamped backup of the legacy database."""
         timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         backup_name = f"{self.detector.v1_db_path.name}.backup_{timestamp}"
         self.backup_path = self.detector.v1_db_path.parent / backup_name
+
+        # Enable WAL mode first to allow concurrent access
+        self._enable_wal_mode_on_v1()
+
         try:
+            # Copy the main database file
             shutil.copy2(self.detector.v1_db_path, self.backup_path)
+
+            # Also copy WAL and SHM files if they exist
+            wal_file = self.detector.v1_db_path.with_suffix(self.detector.v1_db_path.suffix + "-wal")
+            shm_file = self.detector.v1_db_path.with_suffix(self.detector.v1_db_path.suffix + "-shm")
+
+            if wal_file.exists():
+                shutil.copy2(wal_file, self.backup_path.with_suffix(self.backup_path.suffix + "-wal"))
+            if shm_file.exists():
+                shutil.copy2(shm_file, self.backup_path.with_suffix(self.backup_path.suffix + "-shm"))
+
         except OSError as exc:
             LOGGER.error("Failed to create migration backup", exc_info=exc)
             return False
@@ -465,168 +498,190 @@ class DatabaseMigrator:
             LOGGER.info("Removing existing v2 database for clean migration")
             v2_path.unlink()
 
+        # Initialize connections as None for proper cleanup
+        v1_conn = None
+        v2_conn = None
+
         try:
-            with sqlite3.connect(v1_path) as v1_conn, sqlite3.connect(v2_path) as v2_conn:
-                v1_conn.row_factory = sqlite3.Row
-                v2_conn.row_factory = sqlite3.Row
-                self._ensure_v2_schema(v2_conn)
+            # Open v1 database with WAL mode for concurrent access
+            v1_conn = sqlite3.connect(v1_path, timeout=30.0)
+            v1_conn.execute("PRAGMA journal_mode=WAL")
+            v1_conn.execute("PRAGMA busy_timeout=30000")
+            v1_conn.row_factory = sqlite3.Row
 
-                # No need to clear records - we deleted the v2 database file above
+            # Open v2 database
+            v2_conn = sqlite3.connect(v2_path, timeout=30.0)
+            v2_conn.row_factory = sqlite3.Row
+            self._ensure_v2_schema(v2_conn)
 
-                prompts = v1_conn.execute(
-                    "SELECT * FROM prompts ORDER BY id"
-                ).fetchall()
-                images = []
+            # No need to clear records - we deleted the v2 database file above
+
+            prompts = v1_conn.execute(
+                "SELECT * FROM prompts ORDER BY id"
+            ).fetchall()
+            images = []
+            try:
+                image_columns = {
+                    row[1] for row in v1_conn.execute("PRAGMA table_info(generated_images)")
+                }
+            except sqlite3.Error as exc:  # pragma: no cover - diagnostics aid
+                LOGGER.warning("Unable to inspect generated_images table", exc_info=exc)
+                image_columns = set()
+
+            if image_columns:
                 try:
-                    image_columns = {
-                        row[1] for row in v1_conn.execute("PRAGMA table_info(generated_images)")
-                    }
-                except sqlite3.Error as exc:  # pragma: no cover - diagnostics aid
-                    LOGGER.warning("Unable to inspect generated_images table", exc_info=exc)
-                    image_columns = set()
-
-                if image_columns:
-                    try:
-                        images = v1_conn.execute("SELECT * FROM generated_images").fetchall()
-                    except sqlite3.Error as exc:  # pragma: no cover - defensive
-                        LOGGER.warning(
-                            "Failed to read generated_images table, continuing without images",
-                            exc_info=exc,
-                        )
-                        images = []
-
-                total_items = len(prompts) + len(images)
-                self.progress.items_total = total_items
-                self.progress.items_processed = 0
-
-                categories = set()
-                for index, prompt in enumerate(prompts, start=1):
-                    record = dict(prompt)
-                    positive_prompt = (
-                        record.get("text")
-                        or record.get("prompt")
-                        or record.get("positive_prompt")
-                        or ""
+                    images = v1_conn.execute("SELECT * FROM generated_images").fetchall()
+                except sqlite3.Error as exc:  # pragma: no cover - defensive
+                    LOGGER.warning(
+                        "Failed to read generated_images table, continuing without images",
+                        exc_info=exc,
                     )
-                    negative_prompt = record.get("negative_prompt") or ""
-                    category = record.get("category")
-                    tags = record.get("tags")
-                    if tags is None:
-                        tags = "[]"
-                    # Convert invalid ratings (0 or outside 1-5 range) to NULL for v2 compatibility
-                    rating = record.get("rating")
-                    if rating is not None and (rating < 1 or rating > 5):
-                        rating = None
-                    notes = record.get("notes")
-                    params = (
-                        record.get("id"),
-                        positive_prompt,
-                        negative_prompt,
-                        category,
-                        tags,
-                        rating,
-                        notes,
-                        record.get("hash"),
-                        record.get("model_hash"),
-                        record.get("sampler_settings"),
-                        record.get("generation_params"),
-                        record.get("created_at"),
-                        record.get("updated_at"),
-                    )
-                    v2_conn.execute(
-                        """
-                        INSERT OR REPLACE INTO prompts (
-                            id, positive_prompt, negative_prompt, category, tags, rating, notes,
-                            hash, model_hash, sampler_settings, generation_params, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        params,
-                    )
-                    categories.add(category)
-                    self.migration_stats["prompts_migrated"] = index
-                    self.progress.items_processed += 1
-                    progress_value = self.progress.items_processed / total_items if total_items else 1.0
-                    self.progress.update_phase(
-                        MigrationPhase.TRANSFORMING,
-                        progress_value,
-                        f"Migrated {self.progress.items_processed}/{total_items} records",
-                    )
+                    images = []
 
-                migrated_images = 0
-                for image in images:
-                    try:
-                        prompt_id = int(image["prompt_id"]) if image["prompt_id"] is not None else None
-                    except (TypeError, ValueError):
-                        continue
-                    if prompt_id is None:
-                        continue
+            total_items = len(prompts) + len(images)
+            self.progress.items_total = total_items
+            self.progress.items_processed = 0
 
-                    # Normalise legacy column names
-                    image_record = dict(image)
-                    file_path = next(
-                        (
-                            image_record.get(key)
-                            for key in ("file_path", "image_path", "path", "filepath")
-                            if image_record.get(key)
-                        ),
-                        None,
+            categories = set()
+            for index, prompt in enumerate(prompts, start=1):
+                record = dict(prompt)
+                positive_prompt = (
+                    record.get("text")
+                    or record.get("prompt")
+                    or record.get("positive_prompt")
+                    or ""
+                )
+                negative_prompt = record.get("negative_prompt") or ""
+                category = record.get("category")
+                tags = record.get("tags")
+                if tags is None:
+                    tags = "[]"
+                # Convert invalid ratings (0 or outside 1-5 range) to NULL for v2 compatibility
+                rating = record.get("rating")
+                if rating is not None and (rating < 1 or rating > 5):
+                    rating = None
+                notes = record.get("notes")
+                params = (
+                    record.get("id"),
+                    positive_prompt,
+                    negative_prompt,
+                    category,
+                    tags,
+                    rating,
+                    notes,
+                    record.get("hash"),
+                    record.get("model_hash"),
+                    record.get("sampler_settings"),
+                    record.get("generation_params"),
+                    record.get("created_at"),
+                    record.get("updated_at"),
+                )
+                v2_conn.execute(
+                    """
+                    INSERT OR REPLACE INTO prompts (
+                        id, positive_prompt, negative_prompt, category, tags, rating, notes,
+                        hash, model_hash, sampler_settings, generation_params, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    params,
+                )
+                categories.add(category)
+                self.migration_stats["prompts_migrated"] = index
+                self.progress.items_processed += 1
+                progress_value = self.progress.items_processed / total_items if total_items else 1.0
+                self.progress.update_phase(
+                    MigrationPhase.TRANSFORMING,
+                    progress_value,
+                    f"Migrated {self.progress.items_processed}/{total_items} records",
+                )
+
+            migrated_images = 0
+            for image in images:
+                try:
+                    prompt_id = int(image["prompt_id"]) if image["prompt_id"] is not None else None
+                except (TypeError, ValueError):
+                    continue
+                if prompt_id is None:
+                    continue
+
+                # Normalise legacy column names
+                image_record = dict(image)
+                file_path = next(
+                    (
+                        image_record.get(key)
+                        for key in ("file_path", "image_path", "path", "filepath")
+                        if image_record.get(key)
+                    ),
+                    None,
+                )
+                file_name = next(
+                    (
+                        image_record.get(key)
+                        for key in ("file_name", "filename", "name")
+                        if image_record.get(key)
+                    ),
+                    None,
+                )
+                if not file_name and file_path:
+                    file_name = Path(file_path).name
+
+                metadata = next(
+                    (
+                        image_record.get(key)
+                        for key in ("metadata", "meta", "raw_metadata")
+                        if key in image_record
+                    ),
+                    None,
+                )
+
+                if file_path is None and file_name is None:
+                    LOGGER.debug(
+                        "Skipping generated image record without file information",
+                        extra={"prompt_id": prompt_id},
                     )
-                    file_name = next(
-                        (
-                            image_record.get(key)
-                            for key in ("file_name", "filename", "name")
-                            if image_record.get(key)
-                        ),
-                        None,
-                    )
-                    if not file_name and file_path:
-                        file_name = Path(file_path).name
+                    continue
 
-                    metadata = next(
-                        (
-                            image_record.get(key)
-                            for key in ("metadata", "meta", "raw_metadata")
-                            if key in image_record
-                        ),
-                        None,
-                    )
+                v2_conn.execute(
+                    """
+                    INSERT INTO generated_images (prompt_id, image_path, filename, parameters)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (prompt_id, file_path, file_name, metadata),
+                )
+                migrated_images += 1
+                self.progress.items_processed += 1
+                progress_value = self.progress.items_processed / total_items if total_items else 1.0
+                self.progress.update_phase(
+                    MigrationPhase.TRANSFORMING,
+                    progress_value,
+                    f"Migrated {self.progress.items_processed}/{total_items} records",
+                )
 
-                    if file_path is None and file_name is None:
-                        LOGGER.debug(
-                            "Skipping generated image record without file information",
-                            extra={"prompt_id": prompt_id},
-                        )
-                        continue
+            v2_conn.commit()
+            self.migration_stats.setdefault("prompts_migrated", len(prompts))
+            self.migration_stats["images_migrated"] = migrated_images
+            self.migration_stats["images_linked"] = migrated_images
+            self.migration_stats["categories_migrated"] = len({c for c in categories if c})
 
-                    v2_conn.execute(
-                        """
-                        INSERT INTO generated_images (prompt_id, image_path, filename, parameters)
-                        VALUES (?, ?, ?, ?)
-                        """,
-                        (prompt_id, file_path, file_name, metadata),
-                    )
-                    migrated_images += 1
-                    self.progress.items_processed += 1
-                    progress_value = self.progress.items_processed / total_items if total_items else 1.0
-                    self.progress.update_phase(
-                        MigrationPhase.TRANSFORMING,
-                        progress_value,
-                        f"Migrated {self.progress.items_processed}/{total_items} records",
-                    )
-
-                v2_conn.commit()
-                self.migration_stats.setdefault("prompts_migrated", len(prompts))
-                self.migration_stats["images_migrated"] = migrated_images
-                self.migration_stats["images_linked"] = migrated_images
-                self.migration_stats["categories_migrated"] = len({c for c in categories if c})
-
-                # Populate missing metadata (file size, dimensions) in the new database
-                repo = GeneratedImageRepository(str(v2_path))
-                metadata_stats = repo.populate_missing_file_metadata()
-                self.migration_stats["file_metadata_updated"] = metadata_stats.get("updated", 0)
+            # Populate missing metadata (file size, dimensions) in the new database
+            repo = GeneratedImageRepository(str(v2_path))
+            metadata_stats = repo.populate_missing_file_metadata()
+            self.migration_stats["file_metadata_updated"] = metadata_stats.get("updated", 0)
         except sqlite3.Error as exc:
             LOGGER.error("Data transformation failed", exc_info=exc)
             return False
+        finally:
+            # Ensure connections are properly closed
+            if v2_conn:
+                try:
+                    v2_conn.close()
+                except Exception:
+                    pass
+            if v1_conn:
+                try:
+                    v1_conn.close()
+                except Exception:
+                    pass
 
         return True
 
