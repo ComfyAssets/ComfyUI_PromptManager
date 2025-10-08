@@ -367,15 +367,78 @@ if not _SETUP_DONE:
 # Initialize API if server is available (ComfyUI will call this)
 try:
     from server import PromptServer
+    from aiohttp import web
+
+    print(f"[PromptManager] 🔍 Checking PromptServer availability...")
+    print(f"[PromptManager]    - PromptServer.instance exists: {PromptServer.instance is not None}")
+    print(f"[PromptManager]    - _API_INITIALIZED: {_API_INITIALIZED}")
 
     if PromptServer.instance and not _API_INITIALIZED:
-        initialize_api(PromptServer.instance)
-        _API_INITIALIZED = True
-except ImportError:
+        try:
+            print(f"[PromptManager] 🚀 Starting API route registration...")
+            
+            # Import API module
+            from src.api.routes import PromptManagerAPI
+            from utils.file_system import get_file_system
+
+            # Get database path
+            fs = get_file_system()
+            db_path = str(fs.get_database_path("prompts.db"))
+            print(f"[PromptManager]    - Database path: {db_path}")
+
+            # Create API instance
+            prompt_api = PromptManagerAPI(db_path)
+            print(f"[PromptManager]    - PromptManagerAPI instance created")
+
+            # Create route table and register API routes
+            routes = web.RouteTableDef()
+            prompt_api.add_routes(routes)
+            
+            # Register web UI routes
+            try:
+                from . import web_routes
+                web_routes.setup_routes(routes)
+                print(f"[PromptManager]    - Web UI routes registered")
+            except Exception as exc:
+                print(f"[PromptManager]    - Failed to setup web routes: {exc}")
+            print(f"[PromptManager]    - Routes populated: {len(routes)} routes")
+
+            # Register with ComfyUI server (routes go on the app, not routes object)
+            PromptServer.instance.app.add_routes(routes)
+            print(f"[PromptManager]    - Routes added to PromptServer.app")
+            
+            # Debug: Check if our route is actually registered
+            for route in PromptServer.instance.app.router.routes():
+                if '/api/prompt_manager/settings' in str(route.resource):
+                    print(f"[PromptManager]    - Found settings route: {route.method} {route.resource}")
+            
+            # Debug: Try to access the route directly
+            print(f"[PromptManager]    - Total app routes: {len(list(PromptServer.instance.app.router.routes()))}")
+
+            _API_INITIALIZED = True
+            print(f"[PromptManager] ✅ API routes registered successfully!")
+            print(f"[PromptManager]    - Test endpoint: http://localhost:8188/api/prompt_manager/settings")
+            
+        except Exception as e:
+            print(f"[PromptManager] ❌ Failed to initialize API")
+            print(f"[PromptManager]    - Error: {e}")
+            import traceback
+            print(f"[PromptManager]    - Traceback:")
+            traceback.print_exc()
+    else:
+        if not PromptServer.instance:
+            print("[PromptManager] ⏳ PromptServer.instance not available yet")
+        if _API_INITIALIZED:
+            print("[PromptManager] ⏭️  API already initialized, skipping")
+            
+except ImportError as e:
     # Running outside ComfyUI context
+    print(f"[PromptManager] ⚠️  Server module not available (running outside ComfyUI)")
+    print(f"[PromptManager]    - Import error: {e}")
     pass
 except Exception as e:
-    print(f"[PromptManager] API initialization deferred: {e}")
+    print(f"[PromptManager] ⚠️  API initialization deferred due to error")
+    print(f"[PromptManager]    - Error: {e}")
 
 # Print startup message with loaded tools (only once)
 if _SETUP_DONE:
