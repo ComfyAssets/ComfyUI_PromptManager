@@ -493,11 +493,6 @@ class DatabaseMigrator:
         v2_path = self.detector.v2_db_path
         v2_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Remove existing v2 database to ensure clean schema creation
-        if v2_path.exists():
-            LOGGER.info("Removing existing v2 database for clean migration")
-            v2_path.unlink()
-
         # Initialize connections as None for proper cleanup
         v1_conn = None
         v2_conn = None
@@ -509,12 +504,52 @@ class DatabaseMigrator:
             v1_conn.execute("PRAGMA busy_timeout=30000")
             v1_conn.row_factory = sqlite3.Row
 
-            # Open v2 database
+            # Open v2 database (may already exist and be open by other processes)
             v2_conn = sqlite3.connect(v2_path, timeout=30.0)
+            v2_conn.execute("PRAGMA journal_mode=WAL")
+            v2_conn.execute("PRAGMA busy_timeout=30000")
             v2_conn.row_factory = sqlite3.Row
+
             self._ensure_v2_schema(v2_conn)
 
-            # No need to clear records - we deleted the v2 database file above
+            # Clear existing data in V2 database instead of deleting file
+            # This works even if other processes have the database open (WAL mode)
+            if v2_path.exists():
+                LOGGER.info("Clearing existing v2 database tables for clean migration")
+                try:
+                    # Disable foreign keys temporarily for deletion
+                    v2_conn.execute("PRAGMA foreign_keys = OFF")
+
+                    # Clear all tables in correct order (respecting dependencies)
+                    # Delete child tables first to avoid foreign key violations
+                    v2_conn.execute("DELETE FROM collection_items")
+                    v2_conn.execute("DELETE FROM generated_images")
+                    v2_conn.execute("DELETE FROM prompt_tracking")
+                    v2_conn.execute("DELETE FROM collections")
+                    v2_conn.execute("DELETE FROM prompts")
+                    v2_conn.execute("DELETE FROM app_settings")
+
+                    # Reset autoincrement counters
+                    v2_conn.execute("""
+                        DELETE FROM sqlite_sequence
+                        WHERE name IN ('generated_images', 'prompts', 'prompt_tracking',
+                                       'collections', 'collection_items')
+                    """)
+
+                    v2_conn.commit()
+                    v2_conn.execute("PRAGMA foreign_keys = ON")
+
+                    LOGGER.info("Successfully cleared v2 database tables")
+                except sqlite3.Error as exc:
+                    LOGGER.warning("Failed to clear some v2 database tables: %s", exc)
+                    # Continue anyway - tables might not exist yet or already be empty
+                    try:
+                        v2_conn.rollback()
+                    except sqlite3.Error:
+                        pass
+                    v2_conn.execute("PRAGMA foreign_keys = ON")
+
+            # Tables are now clear and ready for migration
 
             prompts = v1_conn.execute(
                 "SELECT * FROM prompts ORDER BY id"
