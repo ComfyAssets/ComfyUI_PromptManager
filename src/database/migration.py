@@ -18,6 +18,12 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from src.repositories.generated_image_repository import GeneratedImageRepository
+from src.utils.file_operations import (
+    FileOperationError,
+    checkpoint_wal_file,
+    close_all_sqlite_connections,
+    safe_rename_database,
+)
 
 try:  # pragma: no cover - fallback for standalone execution
     from promptmanager.loggers import get_logger
@@ -755,18 +761,37 @@ class DatabaseMigrator:
         return True
 
     def finalize_migration(self) -> bool:
-        """Rename the original database to mark migration completion."""
+        """Rename the original database to mark migration completion.
+
+        Uses Windows-safe file operations with retry logic and copy fallback.
+        """
+        migrated_path = self.detector.v1_db_path.with_suffix(
+            self.detector.v1_db_path.suffix + ".migrated"
+        )
+
+        # Force close any lingering connections before rename
+        close_all_sqlite_connections(self.detector.v1_db_path)
+
+        # Checkpoint WAL file to reduce lock contention
+        checkpoint_wal_file(self.detector.v1_db_path)
+
         try:
-            migrated_path = self.detector.v1_db_path.with_suffix(self.detector.v1_db_path.suffix + ".migrated")
-            if migrated_path.exists():
-                migrated_path.unlink()
-            self.detector.v1_db_path.rename(migrated_path)
+            # Use Windows-safe rename with copy fallback
+            safe_rename_database(
+                self.detector.v1_db_path,
+                migrated_path,
+                use_copy_fallback=True,
+            )
+
             self.migration_stats["original_renamed_to"] = str(migrated_path)
             if self.progress.start_time is not None:
-                self.migration_stats["duration_seconds"] = int(time.time() - self.progress.start_time)
+                self.migration_stats["duration_seconds"] = int(
+                    time.time() - self.progress.start_time
+                )
             completed_at = datetime.now(UTC).isoformat()
             self.migration_stats["completed_at"] = completed_at
             self.migration_stats["status"] = MigrationStatus.COMPLETED.value
+
             LOGGER.info(
                 "Migration finalised",
                 extra={
@@ -775,6 +800,7 @@ class DatabaseMigrator:
                     "duration_seconds": self.migration_stats.get("duration_seconds"),
                 },
             )
+
             self._persist_migration_settings(
                 {
                     "migration_status": MigrationStatus.COMPLETED.value,
@@ -786,10 +812,10 @@ class DatabaseMigrator:
                     "migration_categories": str(self.migration_stats.get("categories_migrated", 0)),
                 }
             )
-        except OSError as exc:
+            return True
+        except FileOperationError as exc:
             LOGGER.error("Failed to finalise migration", exc_info=exc)
             return False
-        return True
 
     def rollback(self) -> None:
         """Attempt to restore the system to its pre-migration state."""
@@ -806,16 +832,32 @@ class DatabaseMigrator:
                 LOGGER.error("Failed to restore backup", exc_info=exc)
 
     def start_fresh(self) -> bool:
-        """Archive the legacy database so the application can start with a clean slate."""
+        """Archive the legacy database so the application can start with a clean slate.
+
+        Uses Windows-safe file operations with retry logic.
+        """
+        if not self.detector.v1_db_path.exists():
+            return True
+
+        old_path = self.detector.v1_db_path.with_suffix(
+            self.detector.v1_db_path.suffix + ".old"
+        )
+
+        # Force close any lingering connections
+        close_all_sqlite_connections(self.detector.v1_db_path)
+        checkpoint_wal_file(self.detector.v1_db_path)
+
         try:
-            if not self.detector.v1_db_path.exists():
-                return True
-            old_path = self.detector.v1_db_path.with_suffix(self.detector.v1_db_path.suffix + ".old")
-            if old_path.exists():
-                old_path.unlink()
-            self.detector.v1_db_path.rename(old_path)
+            # Use Windows-safe rename with copy fallback
+            safe_rename_database(
+                self.detector.v1_db_path,
+                old_path,
+                use_copy_fallback=True,
+            )
+
             self.migration_stats["original_renamed_to"] = str(old_path)
             self.migration_stats["status"] = "fresh_start"
+
             self._persist_migration_settings(
                 {
                     "migration_status": "fresh_start",
@@ -824,7 +866,7 @@ class DatabaseMigrator:
                 }
             )
             return True
-        except OSError as exc:
+        except FileOperationError as exc:
             LOGGER.error("Failed to archive legacy database", exc_info=exc)
             return False
 
