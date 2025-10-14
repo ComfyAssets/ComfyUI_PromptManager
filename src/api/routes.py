@@ -31,7 +31,7 @@ from src.services.incremental_stats_service import IncrementalStatsService
 from src.services.background_scheduler import StatsScheduler
 from src.services.settings_service import SettingsService
 from src.api.realtime_events import RealtimeEvents
-from utils.file_system import get_file_system
+from utils.core.file_system import get_file_system
 from utils.cache import CacheManager
 from utils.logging import LogConfig
 
