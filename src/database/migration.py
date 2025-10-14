@@ -329,6 +329,14 @@ class DatabaseMigrator:
         self.migration_stats["expected_prompts"] = v1_info.get("prompt_count", 0)
         self.migration_stats["expected_images"] = v1_info.get("image_count", 0)
 
+        LOGGER.info(
+            "Captured v1 database counts before migration",
+            extra={
+                "expected_prompts": self.migration_stats["expected_prompts"],
+                "expected_images": self.migration_stats["expected_images"],
+            },
+        )
+
         self.progress.start()
 
         try:
@@ -738,6 +746,14 @@ class DatabaseMigrator:
         expected_images = self.migration_stats.get("expected_images", 0)
         v2_path = self.detector.v2_db_path
 
+        LOGGER.info(
+            "Starting migration verification",
+            extra={
+                "expected_prompts": expected_prompts,
+                "expected_images": expected_images,
+            },
+        )
+
         try:
             with sqlite3.connect(v2_path) as connection:
                 cursor = connection.execute("SELECT COUNT(*) FROM prompts")
@@ -747,6 +763,16 @@ class DatabaseMigrator:
         except sqlite3.Error as exc:
             LOGGER.error("Verification failed", exc_info=exc)
             return False
+
+        LOGGER.info(
+            "Comparing migration counts",
+            extra={
+                "expected_prompts": expected_prompts,
+                "actual_prompts": prompt_count,
+                "expected_images": expected_images,
+                "actual_images": image_count,
+            },
+        )
 
         if prompt_count != expected_prompts:
             LOGGER.error(
