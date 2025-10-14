@@ -26,7 +26,7 @@ logger = get_logger("promptmanager.tracking.prompt_tracker")
 @dataclass
 class TrackingData:
     """Data structure for tracking prompt execution."""
-    
+
     node_id: str
     unique_id: str
     prompt_text: str
@@ -38,6 +38,7 @@ class TrackingData:
     connected_nodes: Set[str] = field(default_factory=set)
     images_generated: List[str] = field(default_factory=list)
     confidence_score: float = 1.0
+    workflow_key: Optional[str] = None  # Workflow-level identifier for first-prompt-wins
 
 
 class PromptTracker:
@@ -70,6 +71,7 @@ class PromptTracker:
             "failed_pairs": 0,
             "multi_node_workflows": 0,
             "avg_confidence": 0.0,
+            "skipped_prompts": 0,  # Detailer prompts skipped via first-prompt-wins
         }
 
         logger.info("PromptTracker initialized")
@@ -85,6 +87,10 @@ class PromptTracker:
     ) -> str:
         """Register a prompt from a PromptManager node.
 
+        Implements first-prompt-wins strategy: Only the first prompt registered
+        for a unique_id will be tracked. Subsequent prompts (e.g., from detailer
+        nodes) will be ignored to ensure we capture the main generation prompt.
+
         Args:
             node_id: The node's ID in the workflow
             unique_id: ComfyUI's unique execution ID
@@ -94,16 +100,28 @@ class PromptTracker:
             extra_data: Additional metadata
 
         Returns:
-            Execution ID for this prompt
+            Execution ID for this prompt (or "skipped" if already registered)
         """
         with self._lock:
             logger.info(f"🔵 register_prompt called: node_id={node_id}, unique_id={unique_id} (type={type(unique_id)})")
             logger.debug(f"  Prompt text: {prompt[:50]}...")
 
+            # FIRST-PROMPT-WINS: If prompt already registered for this unique_id, skip it
+            if unique_id in self._active_prompts:
+                existing = self._active_prompts[unique_id]
+                logger.info(f"🟡 SKIPPED: Prompt already registered for unique_id={unique_id}")
+                logger.info(f"   First prompt (keeping): node_id={existing.node_id}, text={existing.prompt_text[:50]}...")
+                logger.info(f"   This prompt (ignoring): node_id={node_id}, text={prompt[:50]}...")
+                logger.debug(f"   This is likely a detailer/refinement node - first prompt wins!")
+
+                # Update metrics
+                self.metrics["skipped_prompts"] += 1
+
+                return "skipped"  # Return special value to indicate skip
+
             # Clean up old entries when a new workflow starts
-            # If we have entries and this is a new unique_id, it's likely a new workflow
-            if self._active_prompts and unique_id not in self._active_prompts:
-                # Check if all existing entries are old (> 60 seconds)
+            # Only clean if we have entries from a different workflow (older than 60 seconds)
+            if self._active_prompts:
                 current_time = time.time()
                 all_old = all(current_time - t.timestamp > 60 for t in self._active_prompts.values())
                 if all_old:
@@ -129,7 +147,7 @@ class PromptTracker:
 
             # Log the state after registration
             after_keys = list(self._active_prompts.keys())
-            logger.info(f"🟢 Stored prompt with unique_id={unique_id} in _active_prompts")
+            logger.info(f"🟢 REGISTERED: First prompt for unique_id={unique_id}")
             logger.debug(f"  Keys after registration: {after_keys}")
 
             # Verify storage
@@ -137,20 +155,20 @@ class PromptTracker:
                 logger.info(f"✅ Verification: unique_id={unique_id} IS in _active_prompts")
             else:
                 logger.error(f"❌ Verification FAILED: unique_id={unique_id} NOT in _active_prompts!")
-            
+
             # Update execution graph
             if node_id not in self._execution_graph:
                 self._execution_graph[node_id] = set()
-            
+
             # Update metrics
             self.metrics["total_tracked"] += 1
-            
+
             # Count multi-node workflows
-            prompt_nodes = [k for k in self._execution_graph.keys() 
+            prompt_nodes = [k for k in self._execution_graph.keys()
                           if k.startswith("PromptManager")]
             if len(prompt_nodes) > 1:
                 self.metrics["multi_node_workflows"] += 1
-            
+
             logger.debug(f"Registered prompt from node {node_id} with ID {unique_id}")
             logger.info(f"Registered tracking: unique_id={unique_id} node_id={node_id} len_active={len(self._active_prompts)}")
             return tracking.execution_id
@@ -221,17 +239,21 @@ class PromptTracker:
                 logger.warning(f"No prompt source found for SaveImage {save_node_id}")
                 return None
             
-            # If multiple sources, use the most recent or highest confidence
+            # If multiple sources, use the FIRST (oldest) one with highest confidence
+            # This implements first-prompt-wins for the SaveImage fallback path
             best_match = None
             best_score = 0.0
-            
+            best_timestamp = float('inf')  # Use oldest when scores are tied
+
             for source_id in prompt_sources:
                 for tracking in self._active_prompts.values():
                     if tracking.node_id == source_id:
                         score = self._calculate_confidence(tracking, save_node_id)
-                        if score > best_score:
+                        # Prefer higher score, or if scores are equal, prefer earlier timestamp (first prompt)
+                        if score > best_score or (score == best_score and tracking.timestamp < best_timestamp):
                             best_score = score
                             best_match = tracking
+                            best_timestamp = tracking.timestamp
             
             if best_match:
                 best_match.confidence_score = best_score
@@ -458,6 +480,7 @@ class PromptTracker:
                 "failed_pairs": 0,
                 "multi_node_workflows": 0,
                 "avg_confidence": 0.0,
+                "skipped_prompts": 0,
             }
             logger.info("Metrics reset")
     

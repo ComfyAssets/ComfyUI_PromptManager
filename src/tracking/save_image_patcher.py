@@ -144,20 +144,7 @@ class SaveImagePatcher:
             except Exception:
                 active_ids = set()
 
-        def _select_from_candidates(require_active: bool) -> Optional[tuple[str, str]]:
-            for preferred in PROMPT_NODE_PREFERENCE:
-                for class_type, key in candidates:
-                    if class_type != preferred:
-                        continue
-                    if require_active and active_ids and key not in active_ids:
-                        continue
-                    return class_type, key
-            return None
-
-        selection = _select_from_candidates(require_active=True)
-        if not selection:
-            selection = _select_from_candidates(require_active=False)
-
+        # Get active prompts with timestamps for first-prompt-wins selection
         active_prompts = getattr(self.prompt_tracker, "_active_prompts", {})
         if isinstance(active_prompts, dict):
             active_ids = {str(getattr(t, "unique_id", "")) for t in active_prompts.values()}
@@ -165,30 +152,80 @@ class SaveImagePatcher:
             active_prompts = {}
             active_ids = set()
 
+        def _select_from_candidates(require_active: bool) -> Optional[tuple[str, str, int]]:
+            """Select candidate with LOWEST node ID (workflow order, not execution order)."""
+            # Collect ALL matching candidates across all preference levels
+            all_matches = []
+            for class_type, key in candidates:
+                if class_type not in PROMPT_NODE_TYPES:
+                    continue
+                if require_active and active_ids and key not in active_ids:
+                    continue
+
+                # Convert key to int for numerical sorting
+                try:
+                    node_id_num = int(key)
+                except (ValueError, TypeError):
+                    node_id_num = float('inf')  # Put non-numeric IDs at the end
+
+                all_matches.append((class_type, key, node_id_num))
+
+            # Sort by node ID (lowest first) - this represents workflow order
+            if all_matches:
+                all_matches.sort(key=lambda x: x[2])  # Sort by node ID (lowest first)
+                return all_matches[0]
+            return None
+
+        selection = _select_from_candidates(require_active=True)
+        if not selection:
+            selection = _select_from_candidates(require_active=False)
+
         if selection:
-            class_type, unique_id = selection
+            class_type, unique_id, node_id_num = selection
             if unique_id in active_ids or not active_ids:
                 logger.info(
-                    "SaveImagePatcher: Selected %s node - key=%s", class_type, unique_id
+                    "SaveImagePatcher: Selected %s node - key=%s (node_id=%d, lowest)",
+                    class_type, unique_id, node_id_num
                 )
                 return unique_id, f"{class_type}_{unique_id}", class_type
 
         # Fall back to active prompts tracked by the PromptTracker even if they
         # are not present in the current prompt payload (common with Kiko saves).
+        # IMPORTANT: Select by LOWEST node ID (workflow order, not execution order)
         if active_prompts:
-            for preferred in PROMPT_NODE_PREFERENCE:
-                for tracking in active_prompts.values():
-                    node_id = getattr(tracking, "node_id", "")
-                    unique_id = getattr(tracking, "unique_id", None)
-                    if not node_id or not unique_id:
-                        continue
-                    if node_id.startswith(f"{preferred}_"):
-                        logger.info(
-                            "SaveImagePatcher: Falling back to active %s node - key=%s",
-                            preferred,
-                            unique_id,
-                        )
-                        return str(unique_id), node_id, preferred
+            # Collect ALL matching prompts across all types
+            all_matches = []
+            for tracking in active_prompts.values():
+                node_id = getattr(tracking, "node_id", "")
+                unique_id = getattr(tracking, "unique_id", None)
+                if not node_id or not unique_id:
+                    continue
+
+                # Check if this is a PromptManager node (any type)
+                is_prompt_node = any(node_id.startswith(f"{ptype}_") for ptype in PROMPT_NODE_TYPES)
+                if is_prompt_node:
+                    # Extract the node type
+                    node_type = node_id.split("_")[0] if "_" in node_id else ""
+
+                    # Convert unique_id to int for numerical sorting
+                    try:
+                        node_id_num = int(unique_id)
+                    except (ValueError, TypeError):
+                        node_id_num = float('inf')  # Put non-numeric IDs at the end
+
+                    all_matches.append((node_id_num, unique_id, node_id, node_type))
+
+            # Sort by node ID (lowest first) - this represents workflow order
+            if all_matches:
+                all_matches.sort(key=lambda x: x[0])  # Sort by node ID (lowest first)
+                lowest_node_id_num, lowest_unique_id, lowest_node_id, lowest_type = all_matches[0]
+                logger.info(
+                    "SaveImagePatcher: Falling back to active %s node - key=%s (node_id=%d, lowest)",
+                    lowest_type,
+                    lowest_unique_id,
+                    lowest_node_id_num,
+                )
+                return str(lowest_unique_id), lowest_node_id, lowest_type
 
         workflow_candidates: list[tuple[str, str]] = []
         if extra_pnginfo and isinstance(extra_pnginfo, dict):
