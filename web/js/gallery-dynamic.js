@@ -37,12 +37,13 @@
     function getItemsPerPage() {
         try {
             const settings = JSON.parse(localStorage.getItem('promptManagerSettings') || '{}');
-            const itemsPerPage = parseInt(settings.galleryItemsPerPage) || 200;
+            const itemsPerPage = parseInt(settings.galleryItemsPerPage) || 20;
+            console.log(`[Gallery] Items per page from settings: ${itemsPerPage}`);
             // Ensure it's within valid range
             return Math.min(Math.max(itemsPerPage, 10), 500);
         } catch (e) {
             console.warn('Failed to load gallery items per page setting, using default:', e);
-            return 200; // Default
+            return 20; // Default changed from 200 to 20
         }
     }
 
@@ -53,8 +54,34 @@
         console.log('Initializing dynamic gallery...');
 
         const container = document.getElementById('galleryContainer') || document.querySelector('.gallery-container');
-        if (container?.dataset?.viewMode) {
-            currentFilters.viewMode = container.dataset.viewMode;
+        
+        // Load default view and thumbnail size from settings
+        try {
+            const settings = JSON.parse(localStorage.getItem('promptManagerSettings') || '{}');
+
+            // Load default view
+            const defaultView = settings.galleryDefaultView || 'grid';
+            currentFilters.viewMode = defaultView;
+            if (container) {
+                container.dataset.viewMode = defaultView;
+            }
+
+            // Apply thumbnail size setting
+            const thumbnailSize = settings.galleryThumbnailSize || 'medium';
+            const sizeMap = {
+                'small': '200px',
+                'medium': '300px',
+                'large': '400px'
+            };
+            document.documentElement.style.setProperty(
+                '--gallery-thumbnail-size',
+                sizeMap[thumbnailSize] || sizeMap['medium']
+            );
+        } catch (e) {
+            console.warn('Failed to load gallery settings:', e);
+            if (container?.dataset?.viewMode) {
+                currentFilters.viewMode = container.dataset.viewMode;
+            }
         }
 
         if (currentFilters.viewMode) {
@@ -70,14 +97,20 @@
 
         // Setup event listeners
         setupFilterListeners();
-        // Pagination disabled with infinite scroll
-        // setupPaginationListeners();
+        
+        // Conditional setup based on view mode
+        const viewMode = currentFilters.viewMode || 'grid';
+        if (viewMode === 'masonry') {
+            // Masonry uses infinite scroll, hide pagination immediately
+            setupInfiniteScroll();
+            hidePagination(); // Ensure pagination is hidden for masonry on init
+        } else {
+            // Grid and list use pagination
+            setupPaginationListeners();
+        }
 
         // Load initial data
         await loadGalleryData();
-
-        // Setup infinite scroll
-        setupInfiniteScroll();
 
         // Show the container after data is loaded with a smooth fade-in
         setTimeout(() => {
@@ -89,8 +122,27 @@
         // Listen for storage changes (in case settings are changed in another tab)
         window.addEventListener('storage', (e) => {
             if (e.key === 'promptManagerSettings') {
-                // Reload gallery with new items per page setting
                 console.log('Settings changed, reloading gallery...');
+
+                try {
+                    const settings = JSON.parse(e.newValue || '{}');
+
+                    // Apply thumbnail size if changed
+                    const thumbnailSize = settings.galleryThumbnailSize || 'medium';
+                    const sizeMap = {
+                        'small': '200px',
+                        'medium': '300px',
+                        'large': '400px'
+                    };
+                    document.documentElement.style.setProperty(
+                        '--gallery-thumbnail-size',
+                        sizeMap[thumbnailSize] || sizeMap['medium']
+                    );
+                } catch (err) {
+                    console.warn('Failed to apply thumbnail size setting:', err);
+                }
+
+                // Reload gallery with new settings
                 loadGalleryData(1, false);
             }
         });
@@ -139,9 +191,26 @@
             const result = await response.json();
 
             if (result.success && result.data) {
-                currentPage = result.pagination?.current_page || page;
+                // Use 'page' from API response (not 'current_page')
+                currentPage = result.pagination?.page || result.pagination?.current_page || page;
                 totalPages = result.pagination?.total_pages || 1;
-                hasMorePages = result.pagination?.has_next || false;
+
+                // Debug: Log what the API actually returned
+                console.log(`[Gallery] API pagination response:`, result.pagination);
+
+                // Calculate has_next if not provided by API
+                if (result.pagination && typeof result.pagination.has_next !== 'undefined') {
+                    hasMorePages = result.pagination.has_next;
+                    console.log(`[Gallery] Using API has_next:`, hasMorePages);
+                } else {
+                    // Calculate from page numbers
+                    hasMorePages = currentPage < totalPages;
+                    console.log(`[Gallery] Calculated hasMorePages: ${currentPage} < ${totalPages} = ${hasMorePages}`);
+                }
+
+                // Debug logging for items per page
+                console.log(`[Gallery] Loaded ${result.data.length} items (requested: ${getItemsPerPage()})`);
+                console.log(`[Gallery] Pagination info:`, result.pagination);
 
                 // Update page tracking when loading through main function
                 lastPageLoaded = currentPage;
@@ -149,10 +218,10 @@
 
                 renderGalleryItems(result.data, append);
 
-                // Don't show pagination controls with infinite scroll
-                // if (!append) {
-                //     updatePagination(result.pagination);
-                // }
+                // Update pagination for grid/list views (not for append operations)
+                if (!append) {
+                    updatePagination(result.pagination);
+                }
 
                 if (result.data.length === 0 && !append) {
                     showEmptyState();
@@ -503,12 +572,22 @@
     }
 
     /**
-     * Update pagination controls - DISABLED for infinite scroll
+     * Update pagination controls
+     * Only show for grid/list views, hidden for masonry
      */
     function updatePagination(pagination) {
-        // Pagination disabled with infinite scroll
-        return;
         if (!pagination) return;
+
+        console.log(`[Gallery] updatePagination called with viewMode: ${currentFilters.viewMode}`);
+
+        // Only show pagination for grid/list views
+        if (currentFilters.viewMode === 'masonry') {
+            console.log('[Gallery] Masonry detected, hiding pagination');
+            hidePagination();
+            return;
+        }
+
+        console.log('[Gallery] Grid/List detected, showing pagination');
 
         // Remove existing pagination or create new
         let paginationEl = document.querySelector('.gallery-pagination');
@@ -521,12 +600,26 @@
             }
         }
 
-        const currentPageNum = pagination.current_page || currentPage;
+        // Make sure pagination is visible (it might have been hidden for masonry)
+        paginationEl.style.display = '';
+
+        // Use 'page' from API (not 'current_page')
+        const currentPageNum = pagination.page || pagination.current_page || currentPage;
         const totalPagesNum = pagination.total_pages || totalPages;
-        const totalItemsNum = pagination.total_items || 0;
+        const totalItemsNum = pagination.total || pagination.total_items || 0;
+
+        // Calculate has_prev and has_next if not provided by API
+        const hasPrev = typeof pagination.has_prev !== 'undefined'
+            ? pagination.has_prev
+            : currentPageNum > 1;
+        const hasNext = typeof pagination.has_next !== 'undefined'
+            ? pagination.has_next
+            : currentPageNum < totalPagesNum;
+
+        console.log(`[Gallery] Pagination buttons: hasPrev=${hasPrev}, hasNext=${hasNext}, page=${currentPageNum}/${totalPagesNum}`);
 
         paginationEl.innerHTML = `
-            <button class="btn btn-secondary" ${!pagination.has_prev ? 'disabled' : ''}
+            <button class="btn btn-secondary" ${!hasPrev ? 'disabled' : ''}
                     onclick="loadGalleryPage(${currentPageNum - 1})">
                 Previous
             </button>
@@ -534,7 +627,7 @@
                 Page ${currentPageNum} of ${totalPagesNum}
                 (${totalItemsNum} items)
             </span>
-            <button class="btn btn-secondary" ${!pagination.has_next ? 'disabled' : ''}
+            <button class="btn btn-secondary" ${!hasNext ? 'disabled' : ''}
                     onclick="loadGalleryPage(${currentPageNum + 1})">
                 Next
             </button>
@@ -572,7 +665,21 @@
 
             const container = document.querySelector('.gallery-container');
             currentFilters.viewMode = applyViewModeToContainer(container, normalizedMode);
-            loadGalleryData(currentPage, false);  // Don't scroll for view mode change
+
+            // Switch between infinite scroll and pagination based on view mode
+            if (normalizedMode === 'masonry') {
+                // Enable infinite scroll, hide pagination
+                teardownPagination();
+                setupInfiniteScroll();
+                hidePagination();
+            } else {
+                // Enable pagination, disable infinite scroll
+                teardownInfiniteScroll();
+                setupPaginationListeners();
+                showPagination();
+            }
+
+            loadGalleryData(1, false);  // Reload from page 1 for view mode change
         };
 
         // Model filter - first select in filter-bar
@@ -631,21 +738,76 @@
     }
 
     /**
-     * Setup pagination listeners - DISABLED for infinite scroll
+     * Setup pagination listeners for grid/list views
      */
     function setupPaginationListeners() {
-        // Pagination disabled with infinite scroll
-        // window.loadGalleryPage = (page) => {
-        //     if (page >= 1 && page <= totalPages) {
-        //         loadGalleryData(page, true);  // Set scrollToTop to true for pagination
-        //     }
-        // };
+        window.loadGalleryPage = (page) => {
+            if (page >= 1 && page <= totalPages) {
+                loadGalleryData(page, true);  // Set scrollToTop to true for pagination
+            }
+        };
+    }
+
+    /**
+     * Teardown pagination listeners
+     */
+    function teardownPagination() {
+        // Remove the loadGalleryPage function
+        if (window.loadGalleryPage) {
+            delete window.loadGalleryPage;
+        }
+    }
+
+    /**
+     * Teardown infinite scroll listeners and cleanup
+     */
+    function teardownInfiniteScroll() {
+        // Remove scroll listeners if they exist
+        // Note: We can't remove the specific handler because it's anonymous,
+        // but we set a flag to prevent it from triggering new loads
+        infiniteScrollEnabled = false;
+
+        // Clear any ongoing timers
+        if (progressiveLoadTimer) {
+            clearTimeout(progressiveLoadTimer);
+            progressiveLoadTimer = null;
+        }
+
+        // Clear batch queue
+        batchQueue = [];
+        preloadingNextBatch = false;
+
+        // Hide the infinite scroll loader
+        hideInfiniteScrollLoader();
+    }
+
+    /**
+     * Hide pagination controls
+     */
+    function hidePagination() {
+        const paginationEl = document.querySelector('.gallery-pagination');
+        if (paginationEl) {
+            paginationEl.style.display = 'none';
+        }
+    }
+
+    /**
+     * Show pagination controls
+     */
+    function showPagination() {
+        const paginationEl = document.querySelector('.gallery-pagination');
+        if (paginationEl) {
+            paginationEl.style.display = '';
+        }
     }
 
     /**
      * Setup progressive infinite scroll with intelligent preloading
      */
     function setupInfiniteScroll() {
+        // Re-enable infinite scroll when setting it up
+        infiniteScrollEnabled = true;
+        console.log('[Gallery] setupInfiniteScroll() called - infinite scroll enabled');
         let scrollTimeout;
 
         // Dynamic thresholds based on scroll behavior and viewport
@@ -682,11 +844,15 @@
 
         // Load next full page and add to rendering queue
         const loadNextBatch = async () => {
+            console.log(`[Gallery] loadNextBatch called: preloading=${preloadingNextBatch}, hasMore=${hasMorePages}`);
+
             if (preloadingNextBatch || !hasMorePages) {
+                console.log(`[Gallery] loadNextBatch aborted: preloading=${preloadingNextBatch}, hasMore=${hasMorePages}`);
                 return;
             }
 
             preloadingNextBatch = true;
+            console.log('[Gallery] Starting batch load...');
 
             try {
                 // Ensure we're loading the correct next page
@@ -709,22 +875,25 @@
                 if (currentFilters.dateTo) params.append('date_to', currentFilters.dateTo);
                 if (currentFilters.model) params.append('model', currentFilters.model);
 
-                console.log(`Loading page ${nextPage} for progressive rendering`);
+                console.log(`[Gallery] Loading page ${nextPage} for progressive rendering`);
                 const response = await fetch(`/api/v1/gallery/images?${params}`);
 
                 if (response.ok) {
                     const result = await response.json();
+                    console.log(`[Gallery] Batch load response: success=${result.success}, dataLength=${result.data?.length || 0}`);
 
                     if (result.success && result.data && result.data.length > 0) {
                         // Filter out any duplicates (safety check)
                         const newItems = result.data.filter(item => {
                             if (loadedItemIds.has(item.id)) {
-                                console.warn(`Duplicate item detected: ${item.id}`);
+                                console.warn(`[Gallery] Duplicate item detected: ${item.id}`);
                                 return false;
                             }
                             loadedItemIds.add(item.id);
                             return true;
                         });
+
+                        console.log(`[Gallery] Filtered ${newItems.length} new items (${result.data.length - newItems.length} duplicates)`);
 
                         if (newItems.length > 0) {
                             // Add to queue for progressive rendering
@@ -739,28 +908,46 @@
 
                             // Update pagination info
                             if (result.pagination) {
-                                hasMorePages = result.pagination.has_next || false;
+                                // Calculate has_next if not provided by API
+                                if (typeof result.pagination.has_next !== 'undefined') {
+                                    hasMorePages = result.pagination.has_next;
+                                    console.log(`[Gallery] Using API has_next:`, hasMorePages);
+                                } else {
+                                    // Use page from API (not current_page)
+                                    const pageNum = result.pagination.page || result.pagination.current_page || nextPage;
+                                    const totalPagesNum = result.pagination.total_pages || 1;
+                                    hasMorePages = pageNum < totalPagesNum;
+                                    console.log(`[Gallery] Calculated hasMorePages for batch: ${pageNum} < ${totalPagesNum} = ${hasMorePages}`);
+                                }
                             } else {
                                 // If no pagination info, check if we got less than requested
-                                hasMorePages = result.data.length === batchSize;
+                                hasMorePages = result.data.length === getItemsPerPage();
+                                console.log(`[Gallery] No pagination info, set hasMorePages=${hasMorePages} based on data length`);
                             }
+
+                            console.log(`[Gallery] Added ${newItems.length} items to queue (queue size: ${batchQueue.length})`);
 
                             // Start progressive rendering if not already running
                             if (!progressiveLoadTimer) {
+                                console.log('[Gallery] Starting progressive rendering');
                                 startProgressiveRendering();
                             }
                         } else {
-                            console.log('No new items to add (all duplicates)');
+                            console.log('[Gallery] No new items to add (all duplicates), setting hasMorePages=false');
                             hasMorePages = false;
                         }
                     } else {
                         // No more data
+                        console.log('[Gallery] No more data available, setting hasMorePages=false');
                         hasMorePages = false;
                     }
+                } else {
+                    console.error(`[Gallery] Batch load failed with status: ${response.status}`);
                 }
             } catch (error) {
-                console.error('Failed to preload batch:', error);
+                console.error('[Gallery] Failed to preload batch:', error);
             } finally {
+                console.log('[Gallery] Batch load complete, resetting preloadingNextBatch flag');
                 preloadingNextBatch = false;
             }
         };
@@ -822,6 +1009,7 @@
         const checkScrollPosition = () => {
             // Don't trigger if not enabled or already loading main data
             if (!infiniteScrollEnabled || isLoading) {
+                console.log(`[Gallery] checkScrollPosition - skipped: infiniteScrollEnabled=${infiniteScrollEnabled}, isLoading=${isLoading}`);
                 return;
             }
 
@@ -848,15 +1036,17 @@
             // 2. We have less than desired buffer of items remaining
             const needsMoreContent = distanceFromBottom < threshold || totalBufferedItems < desiredBuffer;
 
+            console.log(`[Gallery] Scroll check: distance=${Math.round(distanceFromBottom)}px, threshold=${Math.round(threshold)}px, buffer=${totalBufferedItems}, hasMore=${hasMorePages}, preloading=${preloadingNextBatch}, needsMore=${needsMoreContent}`);
+
             if (needsMoreContent && hasMorePages && !preloadingNextBatch) {
                 // Always load full page from API (200 items by default)
-                console.log(`Preloading next page - Distance: ${Math.round(distanceFromBottom)}px, Buffer: ${totalBufferedItems} items`);
+                console.log(`[Gallery] ✅ Triggering batch load - Distance: ${Math.round(distanceFromBottom)}px, Buffer: ${totalBufferedItems} items`);
                 loadNextBatch();
             }
 
             // Emergency load if we're REALLY close to bottom
             if (distanceFromBottom < 500 && batchQueue.length < 10 && hasMorePages && !preloadingNextBatch) {
-                console.log(`Emergency load - only ${distanceFromBottom}px from bottom!`);
+                console.log(`[Gallery] 🚨 Emergency load - only ${distanceFromBottom}px from bottom!`);
                 loadNextBatch();
             }
         };
@@ -868,28 +1058,33 @@
         };
 
         // Debounced scroll handler
-        window.addEventListener('scroll', () => {
+        const scrollHandler = () => {
             // Update metrics immediately
             updateScrollMetrics();
 
             // Debounce the loading check
             clearTimeout(scrollTimeout);
             scrollTimeout = setTimeout(handleScroll, 50); // Faster response
-        });
+        };
+
+        console.log('[Gallery] Attaching scroll event listener for infinite scroll');
+        window.addEventListener('scroll', scrollHandler);
 
         // Initial check - very important for when viewport is large
         setTimeout(() => {
+            console.log('[Gallery] Running initial scroll position check');
             checkScrollPosition();
             // Also check if we need to load more to fill the viewport
             const scrollHeight = document.documentElement.scrollHeight;
             const clientHeight = window.innerHeight;
             if (scrollHeight <= clientHeight * 2 && hasMorePages) {
-                console.log('Initial viewport needs more content');
+                console.log('[Gallery] Initial viewport needs more content');
                 loadNextBatch();
             }
         }, 500);
 
         // Periodic check for slow/stopped scrollers
+        console.log('[Gallery] Setting up periodic scroll check (every 1s)');
         setInterval(() => {
             // Always check if we have enough buffer
             checkScrollPosition();
