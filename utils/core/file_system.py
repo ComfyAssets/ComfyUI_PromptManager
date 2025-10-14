@@ -229,7 +229,24 @@ class ComfyUIFileSystem:
                 self._comfyui_root = parent
                 return parent
 
-        # 5) No fallback - raise error if ComfyUI root not found
+        # 5) Windows desktop app fallback - check if cwd has user/ and custom_nodes/
+        cwd = Path.cwd()
+        if (cwd / "user").exists() and (cwd / "custom_nodes").exists():
+            self.logger.info(f"Found ComfyUI root via user/custom_nodes detection (Windows desktop app): {cwd}")
+            self._comfyui_root = cwd
+            return cwd
+
+        # 6) Last resort - check parent of custom_nodes even without markers
+        for parent in scan_bases:
+            if parent.name == "custom_nodes":
+                candidate = parent.parent
+                # Accept if it has user/ directory (Windows desktop app pattern)
+                if (candidate / "user").exists():
+                    self.logger.info(f"Found ComfyUI root via custom_nodes parent with user/ dir: {candidate}")
+                    self._comfyui_root = candidate
+                    return candidate
+
+        # 7) No fallback - raise error if ComfyUI root not found
         error_msg = (
             "Could not find ComfyUI root directory!\n"
             "Please ensure PromptManager is installed in:\n"
