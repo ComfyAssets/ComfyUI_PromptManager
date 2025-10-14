@@ -330,11 +330,9 @@ class DatabaseMigrator:
         self.migration_stats["expected_images"] = v1_info.get("image_count", 0)
 
         LOGGER.info(
-            "Captured v1 database counts before migration",
-            extra={
-                "expected_prompts": self.migration_stats["expected_prompts"],
-                "expected_images": self.migration_stats["expected_images"],
-            },
+            f"Captured v1 database counts before migration: "
+            f"expected_prompts={self.migration_stats['expected_prompts']}, "
+            f"expected_images={self.migration_stats['expected_images']}"
         )
 
         self.progress.start()
@@ -747,11 +745,9 @@ class DatabaseMigrator:
         v2_path = self.detector.v2_db_path
 
         LOGGER.info(
-            "Starting migration verification",
-            extra={
-                "expected_prompts": expected_prompts,
-                "expected_images": expected_images,
-            },
+            f"Starting migration verification: "
+            f"expected_prompts={expected_prompts}, "
+            f"expected_images={expected_images}"
         )
 
         try:
@@ -765,13 +761,9 @@ class DatabaseMigrator:
             return False
 
         LOGGER.info(
-            "Comparing migration counts",
-            extra={
-                "expected_prompts": expected_prompts,
-                "actual_prompts": prompt_count,
-                "expected_images": expected_images,
-                "actual_images": image_count,
-            },
+            f"Comparing migration counts: "
+            f"expected_prompts={expected_prompts}, actual_prompts={prompt_count}, "
+            f"expected_images={expected_images}, actual_images={image_count}"
         )
 
         if prompt_count != expected_prompts:
