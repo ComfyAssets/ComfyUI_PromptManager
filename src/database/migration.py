@@ -324,6 +324,11 @@ class DatabaseMigrator:
             self.progress.update_phase(MigrationPhase.ERROR, 0.0, message)
             return False, {"error": message, "status": MigrationStatus.FAILED.value}
 
+        # Capture v1 counts BEFORE migration starts for verification
+        v1_info = self.detector.get_v1_database_info()
+        self.migration_stats["expected_prompts"] = v1_info.get("prompt_count", 0)
+        self.migration_stats["expected_images"] = v1_info.get("image_count", 0)
+
         self.progress.start()
 
         try:
@@ -728,9 +733,9 @@ class DatabaseMigrator:
 
     def verify_migration(self) -> bool:
         """Ensure the migrated database matches expected record counts."""
-        v1_info = self.detector.get_v1_database_info()
-        expected_prompts = v1_info.get("prompt_count", 0)
-        expected_images = v1_info.get("image_count", 0)
+        # Use counts captured BEFORE migration started (stored in migration_stats)
+        expected_prompts = self.migration_stats.get("expected_prompts", 0)
+        expected_images = self.migration_stats.get("expected_images", 0)
         v2_path = self.detector.v2_db_path
 
         try:
