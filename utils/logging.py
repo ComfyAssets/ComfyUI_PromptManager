@@ -53,26 +53,20 @@ class LogConfig:
     import os  # noqa: E402
 
     try:
-        from utils.file_system import get_file_system  # type: ignore
+        from utils.core.file_system import get_file_system  # type: ignore
 
         _fs = get_file_system()
         LOG_DIR = Path(_fs.get_logs_dir(create=True))
     except Exception:
-        try:
-            from utils.core.file_system import get_file_system as get_core_fs  # type: ignore
-
-            _core_fs = get_core_fs()
-            LOG_DIR = Path(_core_fs.get_logs_dir(create=True))
-        except Exception:
-            comfy_root = None
-            for candidate in Path.cwd().parents:
-                if (candidate / "user" / "default" / "PromptManager").exists():
-                    comfy_root = candidate
-                    break
-            if comfy_root:
-                LOG_DIR = comfy_root / "user" / "default" / "PromptManager" / "logs"
-            else:
-                LOG_DIR = Path.cwd() / "promptmanager_logs"
+        comfy_root = None
+        for candidate in Path.cwd().parents:
+            if (candidate / "user" / "default" / "PromptManager").exists():
+                comfy_root = candidate
+                break
+        if comfy_root:
+            LOG_DIR = comfy_root / "user" / "default" / "PromptManager" / "logs"
+        else:
+            LOG_DIR = Path.cwd() / "promptmanager_logs"
 
     LOG_FILE = "promptmanager.log"
     MAX_BYTES = 10 * 1024 * 1024
