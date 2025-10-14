@@ -11,7 +11,7 @@ from dataclasses import dataclass, field, field
 import json
 
 from pathlib import Path
-from utils.file_system import get_file_system
+from utils.core.file_system import get_file_system
 
 
 _fs = get_file_system()
@@ -127,7 +127,7 @@ class StorageConfig:
         # Verify we're inside ComfyUI structure before creating directories
         # The base_path should already be validated by _get_default_user_dir()
         # but double-check to prevent accidental directory creation
-        if not str(base).startswith('/') and not str(base).startswith('C:\\'):
+        if not os.path.isabs(str(base)):
             # Relative path - likely incorrect
             raise RuntimeError(
                 f"Invalid storage base path: {base}. "
