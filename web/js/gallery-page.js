@@ -180,8 +180,14 @@
       gallery.dataset.viewMode = mode;
     }
 
-    // Store preference
-    localStorage.setItem('galleryViewMode', mode);
+    // Store preference in PromptManager settings (not standalone key)
+    try {
+      const settings = JSON.parse(localStorage.getItem('promptManagerSettings') || '{}');
+      settings.galleryDefaultView = mode;
+      localStorage.setItem('promptManagerSettings', JSON.stringify(settings));
+    } catch (e) {
+      console.warn('Failed to save gallery view preference:', e);
+    }
 
     console.log('View mode changed to:', mode);
   }
@@ -284,9 +290,15 @@
    * Load saved preferences
    */
   function loadPreferences() {
-    const savedView = localStorage.getItem('galleryViewMode');
-    if (savedView) {
-      setViewMode(savedView);
+    // Read from PromptManager settings (not standalone key)
+    try {
+      const settings = JSON.parse(localStorage.getItem('promptManagerSettings') || '{}');
+      const savedView = settings.galleryDefaultView;
+      if (savedView) {
+        setViewMode(savedView);
+      }
+    } catch (e) {
+      console.warn('Failed to load gallery view preference:', e);
     }
   }
 
