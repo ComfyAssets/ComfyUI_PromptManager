@@ -278,25 +278,60 @@
           });
         }
 
-        // Initialize ViewerJS Integration
-        ViewerIntegration.init({
-          viewer: {
-            theme: 'dark',
-            fullscreen: true,
-            keyboard: true
-          },
-          filmstrip: {
-            enabled: true,
-            position: 'bottom',
-            autoHide: false,
-            lazyLoad: true
-          },
-          metadata: {
-            enabled: true,
-            position: 'right',
-            autoShow: true
-          }
-        });
+        // Initialize ViewerJS Integration with filmstrip size from settings
+        try {
+          const settings = JSON.parse(localStorage.getItem('promptManagerSettings') || '{}');
+          const filmstripSize = settings.filmstripSize || 'medium';
+
+          // Map settings to thumbnail heights
+          const sizeMap = {
+            'small': 60,
+            'medium': 80,
+            'large': 100
+          };
+
+          ViewerIntegration.init({
+            viewer: {
+              theme: 'dark',
+              fullscreen: true,
+              keyboard: true
+            },
+            filmstrip: {
+              enabled: true,
+              position: 'bottom',
+              autoHide: false,
+              lazyLoad: true,
+              thumbnailHeight: sizeMap[filmstripSize] || 80
+            },
+            metadata: {
+              enabled: true,
+              position: 'right',
+              autoShow: true
+            }
+          });
+        } catch (e) {
+          console.warn('Failed to load filmstrip size setting, using defaults:', e);
+          // Fallback to default initialization
+          ViewerIntegration.init({
+            viewer: {
+              theme: 'dark',
+              fullscreen: true,
+              keyboard: true
+            },
+            filmstrip: {
+              enabled: true,
+              position: 'bottom',
+              autoHide: false,
+              lazyLoad: true,
+              thumbnailHeight: 80
+            },
+            metadata: {
+              enabled: true,
+              position: 'right',
+              autoShow: true
+            }
+          });
+        }
 
         // Initialize Scan Manager
         ScanManager.init({
