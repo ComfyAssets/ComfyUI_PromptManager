@@ -22,10 +22,12 @@ try:
     from .logging_config import get_logger  # type: ignore
 except ImportError:
     import logging
+    _fallback_loggers_initialized = set()
 
     def get_logger(name: str):
         logger = logging.getLogger(name)
-        if not logger.handlers:
+        # Only initialize handler once per logger name to avoid duplicates
+        if name not in _fallback_loggers_initialized and not logger.handlers:
             handler = logging.StreamHandler()
             handler.setFormatter(
                 logging.Formatter(
@@ -34,6 +36,7 @@ except ImportError:
             )
             logger.addHandler(handler)
             logger.setLevel(logging.INFO)
+            _fallback_loggers_initialized.add(name)
         return logger
 
 
