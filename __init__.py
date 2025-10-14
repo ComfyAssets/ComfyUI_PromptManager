@@ -6,6 +6,17 @@ module = sys.modules.setdefault(__name__, sys.modules[__name__])
 sys.modules.setdefault("promptmanager", module)
 sys.modules.setdefault("custom_nodes.promptmanager", module)
 
+# Safe print wrapper for Windows desktop app where stdout redirect can fail
+def safe_print(message):
+    """Print that won't crash if stdout is redirected improperly."""
+    try:
+        print(message)
+        sys.stdout.flush()
+    except (OSError, IOError):
+        # Stdout redirect failed (common in Windows desktop ComfyUI)
+        # Silently continue - the node will still load
+        pass
+
 # Add package directories to Python path for clean imports
 _PACKAGE_ROOT = Path(__file__).parent.resolve()
 
@@ -28,9 +39,9 @@ except Exception:
 # Debug: Print sys.path to understand import resolution
 import os
 if os.environ.get("PROMPTMANAGER_DEBUG"):
-    print(f"[PromptManager] Package root: {_PACKAGE_ROOT}")
-    print(f"[PromptManager] Utils exists: {(_PACKAGE_ROOT / 'utils').exists()}")
-    print(f"[PromptManager] Sys.path[0:3]: {sys.path[0:3]}")
+    safe_print(f"[PromptManager] Package root: {_PACKAGE_ROOT}")
+    safe_print(f"[PromptManager] Utils exists: {(_PACKAGE_ROOT / 'utils').exists()}")
+    safe_print(f"[PromptManager] Sys.path[0:3]: {sys.path[0:3]}")
 
 # Import the node classes - v1 and v2 widgets
 from .prompt_manager_tracked import PromptManager
@@ -52,7 +63,8 @@ try:
     _tracker_nodes_available = True
 except ImportError:
     _tracker_nodes_available = False
-    print("[PromptManager] Tracker nodes not available - generation data capture disabled")
+    # Skip print on Windows desktop app - stdout redirect causes errors
+    pass
 
 # ComfyUI node registration
 NODE_CLASS_MAPPINGS = {
@@ -107,7 +119,7 @@ def ensure_database_initialized():
         # Create a database instance to ensure schema is up to date
         # This will automatically run any schema migrations
         db = PromptDatabase()
-        print(f"[PromptManager] ✅ Database initialized and schema updated at: {db.db_path}")
+        safe_print(f"[PromptManager] ✅ Database initialized and schema updated at: {db.db_path}")
 
         # Run all SQL migrations
         _run_sql_migrations(db)
@@ -123,16 +135,16 @@ def ensure_database_initialized():
             from src.database import PromptDatabase
 
             db = PromptDatabase()
-            print(f"[PromptManager] ✅ Database initialized and schema updated at: {db.db_path}")
+            safe_print(f"[PromptManager] ✅ Database initialized and schema updated at: {db.db_path}")
 
             # Run thumbnail migration if needed
             _run_thumbnail_migration(db)
 
             return db
         except Exception as e:
-            print(f"[PromptManager] Database initialization failed: {e}")
+            safe_print(f"[PromptManager] Database initialization failed: {e}")
     except Exception as e:
-        print(f"[PromptManager] Database initialization failed: {e}")
+        safe_print(f"[PromptManager] Database initialization failed: {e}")
 
     return None
 
@@ -156,20 +168,20 @@ def _run_sql_migrations(db):
         # Get migrations directory
         migrations_dir = Path(__file__).parent / 'src' / 'database' / 'migrations'
         if not migrations_dir.exists():
-            print(f"[ComfyUI-PromptManager] Migrations directory not found: {migrations_dir}")
+            safe_print(f"[ComfyUI-PromptManager] Migrations directory not found: {migrations_dir}")
             return
 
         # Get all migration files sorted by version number
         migration_files = sorted(migrations_dir.glob('*.sql'))
 
         if not migration_files:
-            print("\033[93m[ComfyUI-PromptManager] No migration files found\033[0m")
+            safe_print("\033[93m[ComfyUI-PromptManager] No migration files found\033[0m")
             return
 
         # Print header with colored output
-        print()
-        print(f"\033[94m[ComfyUI-PromptManager] Database initialized and schema updated at:\033[0m {db_path}")
-        print(f"\033[94m[ComfyUI-PromptManager] Version:\033[0m {__version__} - Applying database patches:")
+        safe_print("")
+        safe_print(f"\033[94m[ComfyUI-PromptManager] Database initialized and schema updated at:\033[0m {db_path}")
+        safe_print(f"\033[94m[ComfyUI-PromptManager] Version:\033[0m {__version__} - Applying database patches:")
 
         # Connect to database
         conn = sqlite3.connect(db_path)
@@ -220,10 +232,10 @@ def _run_sql_migrations(db):
 
             # Check if already applied
             if version in applied_migrations:
-                print(f"🫶 \033[94mPatching:\033[0m {migration_file.name}")
-                print(f"🫶 Patch already applied - skipping")
+                safe_print(f"🫶 \033[94mPatching:\033[0m {migration_file.name}")
+                safe_print(f"🫶 Patch already applied - skipping")
             else:
-                print(f"🫶 \033[94mPatching:\033[0m {migration_file.name}")
+                safe_print(f"🫶 \033[94mPatching:\033[0m {migration_file.name}")
 
                 try:
                     # Read migration file
@@ -240,7 +252,7 @@ def _run_sql_migrations(db):
                     )
                     conn.commit()
 
-                    print(f"🫶 Patch applied successfully")
+                    safe_print(f"🫶 Patch applied successfully")
                     migrations_applied += 1
 
                 except sqlite3.Error as e:
@@ -255,7 +267,7 @@ def _run_sql_migrations(db):
                                 (version, datetime.utcnow().isoformat(), migration_file.name, 'success')
                             )
                             conn.commit()
-                            print(f"🫶 Patch already applied (columns exist) - skipping")
+                            safe_print(f"🫶 Patch already applied (columns exist) - skipping")
                             migrations_applied += 1
                         except:
                             pass
@@ -271,19 +283,19 @@ def _run_sql_migrations(db):
                             # If insert fails, just continue
                             pass
 
-                        print(f"⚠️  Patch failed: {e}")
+                        safe_print(f"⚠️  Patch failed: {e}")
                         conn.rollback()
 
         cursor.close()
         conn.close()
 
         # Print summary
-        print(f"\033[94mTotal: {total_migrations} patches loaded\033[0m")
+        safe_print(f"\033[94mTotal: {total_migrations} patches loaded\033[0m")
         if migrations_applied > 0:
-            print(f"\033[92m[ComfyUI-PromptManager] ✅ {migrations_applied} new patches applied\033[0m")
+            safe_print(f"\033[92m[ComfyUI-PromptManager] ✅ {migrations_applied} new patches applied\033[0m")
 
     except Exception as e:
-        print(f"\033[93m[ComfyUI-PromptManager] ⚠️ Database patching error:\033[0m {e}")
+        safe_print(f"\033[93m[ComfyUI-PromptManager] ⚠️ Database patching error:\033[0m {e}")
 
 
 def initialize_api(server):
@@ -292,9 +304,9 @@ def initialize_api(server):
     This is called by ComfyUI with the server instance.
     """
     try:
-        print("\n" + "=" * 60)
-        print("🚀 Initializing PromptManager v2.0.0")
-        print("=" * 60)
+        safe_print("\n" + "=" * 60)
+        safe_print("🚀 Initializing PromptManager v2.0.0")
+        safe_print("=" * 60)
 
         module_name = "src.api.routes"
         api_module = sys.modules.get(module_name)
@@ -317,7 +329,7 @@ def initialize_api(server):
 
             web_routes.setup_routes(routes)
         except Exception as exc:  # pragma: no cover - defensive
-            print(f"[PromptManager] Failed to setup web routes: {exc}")
+            safe_print(f"[PromptManager] Failed to setup web routes: {exc}")
 
         async def health_proxy(request):
             return await api.health_check(request)
@@ -325,14 +337,14 @@ def initialize_api(server):
         routes.get('/prompt_manager/health')(health_proxy)
         routes.get('/api/prompt_manager/health')(health_proxy)
 
-        print("✅ PromptManager API initialized successfully")
-        print(f"📍 Access web UI at: http://localhost:8188/prompt_manager/")
-        print("=" * 60 + "\n")
+        safe_print("✅ PromptManager API initialized successfully")
+        safe_print(f"📍 Access web UI at: http://localhost:8188/prompt_manager/")
+        safe_print("=" * 60 + "\n")
 
         return api
 
     except Exception as e:
-        print(f"❌ Failed to initialize PromptManager API: {e}")
+        safe_print(f"❌ Failed to initialize PromptManager API: {e}")
         import traceback
 
         traceback.print_exc()
@@ -342,7 +354,7 @@ def initialize_api(server):
 # Auto-initialize when imported by ComfyUI
 def setup():
     """Setup function called when node is loaded."""
-    print(f"[PromptManager] Node loaded - v{__version__}")
+    safe_print(f"[PromptManager] Node loaded - v{__version__}")
 
     # Ensure required directories exist
     base_dir = Path(__file__).parent
@@ -369,14 +381,14 @@ try:
     from server import PromptServer
     from aiohttp import web
 
-    print(f"[PromptManager] 🔍 Checking PromptServer availability...")
-    print(f"[PromptManager]    - PromptServer.instance exists: {PromptServer.instance is not None}")
-    print(f"[PromptManager]    - _API_INITIALIZED: {_API_INITIALIZED}")
+    safe_print(f"[PromptManager] 🔍 Checking PromptServer availability...")
+    safe_print(f"[PromptManager]    - PromptServer.instance exists: {PromptServer.instance is not None}")
+    safe_print(f"[PromptManager]    - _API_INITIALIZED: {_API_INITIALIZED}")
 
     if PromptServer.instance and not _API_INITIALIZED:
         try:
-            print(f"[PromptManager] 🚀 Starting API route registration...")
-            
+            safe_print(f"[PromptManager] 🚀 Starting API route registration...")
+
             # Import API module
             from src.api.routes import PromptManagerAPI
             from utils.file_system import get_file_system
@@ -384,67 +396,67 @@ try:
             # Get database path
             fs = get_file_system()
             db_path = str(fs.get_database_path("prompts.db"))
-            print(f"[PromptManager]    - Database path: {db_path}")
+            safe_print(f"[PromptManager]    - Database path: {db_path}")
 
             # Create API instance
             prompt_api = PromptManagerAPI(db_path)
-            print(f"[PromptManager]    - PromptManagerAPI instance created")
+            safe_print(f"[PromptManager]    - PromptManagerAPI instance created")
 
             # Create route table and register API routes
             routes = web.RouteTableDef()
             prompt_api.add_routes(routes)
-            
+
             # Register web UI routes
             try:
                 from . import web_routes
                 web_routes.setup_routes(routes)
-                print(f"[PromptManager]    - Web UI routes registered")
+                safe_print(f"[PromptManager]    - Web UI routes registered")
             except Exception as exc:
-                print(f"[PromptManager]    - Failed to setup web routes: {exc}")
-            print(f"[PromptManager]    - Routes populated: {len(routes)} routes")
+                safe_print(f"[PromptManager]    - Failed to setup web routes: {exc}")
+            safe_print(f"[PromptManager]    - Routes populated: {len(routes)} routes")
 
             # Register with ComfyUI server (routes go on the app, not routes object)
             PromptServer.instance.app.add_routes(routes)
-            print(f"[PromptManager]    - Routes added to PromptServer.app")
-            
+            safe_print(f"[PromptManager]    - Routes added to PromptServer.app")
+
             # Debug: Check if our route is actually registered
             for route in PromptServer.instance.app.router.routes():
                 if '/api/prompt_manager/settings' in str(route.resource):
-                    print(f"[PromptManager]    - Found settings route: {route.method} {route.resource}")
-            
+                    safe_print(f"[PromptManager]    - Found settings route: {route.method} {route.resource}")
+
             # Debug: Try to access the route directly
-            print(f"[PromptManager]    - Total app routes: {len(list(PromptServer.instance.app.router.routes()))}")
+            safe_print(f"[PromptManager]    - Total app routes: {len(list(PromptServer.instance.app.router.routes()))}")
 
             _API_INITIALIZED = True
-            print(f"[PromptManager] ✅ API routes registered successfully!")
-            print(f"[PromptManager]    - Test endpoint: http://localhost:8188/api/prompt_manager/settings")
-            
+            safe_print(f"[PromptManager] ✅ API routes registered successfully!")
+            safe_print(f"[PromptManager]    - Test endpoint: http://localhost:8188/api/prompt_manager/settings")
+
         except Exception as e:
-            print(f"[PromptManager] ❌ Failed to initialize API")
-            print(f"[PromptManager]    - Error: {e}")
+            safe_print(f"[PromptManager] ❌ Failed to initialize API")
+            safe_print(f"[PromptManager]    - Error: {e}")
             import traceback
-            print(f"[PromptManager]    - Traceback:")
+            safe_print(f"[PromptManager]    - Traceback:")
             traceback.print_exc()
     else:
         if not PromptServer.instance:
-            print("[PromptManager] ⏳ PromptServer.instance not available yet")
+            safe_print("[PromptManager] ⏳ PromptServer.instance not available yet")
         if _API_INITIALIZED:
-            print("[PromptManager] ⏭️  API already initialized, skipping")
+            safe_print("[PromptManager] ⏭️  API already initialized, skipping")
             
 except ImportError as e:
     # Running outside ComfyUI context
-    print(f"[PromptManager] ⚠️  Server module not available (running outside ComfyUI)")
-    print(f"[PromptManager]    - Import error: {e}")
+    safe_print(f"[PromptManager] ⚠️  Server module not available (running outside ComfyUI)")
+    safe_print(f"[PromptManager]    - Import error: {e}")
     pass
 except Exception as e:
-    print(f"[PromptManager] ⚠️  API initialization deferred due to error")
-    print(f"[PromptManager]    - Error: {e}")
+    safe_print(f"[PromptManager] ⚠️  API initialization deferred due to error")
+    safe_print(f"[PromptManager]    - Error: {e}")
 
 # Print startup message with loaded tools (only once)
 if _SETUP_DONE:
-    print()
-    print(f"\033[94m[ComfyUI-PromptManager] Version:\033[0m {get_version()}")
+    safe_print("")
+    safe_print(f"\033[94m[ComfyUI-PromptManager] Version:\033[0m {get_version()}")
     for node_key, display_name in NODE_DISPLAY_NAME_MAPPINGS.items():
-        print(f"🫶 \033[94mLoaded:\033[0m {display_name}")
-    print(f"\033[94mTotal: {len(NODE_CLASS_MAPPINGS)} tools loaded\033[0m")
-    print()
+        safe_print(f"🫶 \033[94mLoaded:\033[0m {display_name}")
+    safe_print(f"\033[94mTotal: {len(NODE_CLASS_MAPPINGS)} tools loaded\033[0m")
+    safe_print("")
