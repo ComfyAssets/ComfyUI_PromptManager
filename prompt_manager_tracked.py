@@ -118,6 +118,7 @@ class _NoOpTracker:
             "failed_pairs": 0,
             "multi_node_workflows": 0,
             "avg_confidence": 0.0,
+            "skipped_prompts": 0,
         }
 
     # API parity with PromptTracker
