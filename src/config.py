@@ -5,12 +5,12 @@ including database paths, API settings, and ComfyUI integration.
 """
 
 import os
+import ntpath
 from pathlib import Path
 from typing import Any, Dict, Optional
-from dataclasses import dataclass, field, field
+from dataclasses import dataclass, field
 import json
 
-from pathlib import Path
 from utils.core.file_system import get_file_system
 
 
@@ -127,7 +127,12 @@ class StorageConfig:
         # Verify we're inside ComfyUI structure before creating directories
         # The base_path should already be validated by _get_default_user_dir()
         # but double-check to prevent accidental directory creation
-        if not os.path.isabs(str(base)):
+        
+        # Cross-platform absolute path check:
+        # - os.path.isabs() for current platform
+        # - ntpath.isabs() for Windows paths (works on Linux too)
+        path_str = str(base)
+        if not (os.path.isabs(path_str) or ntpath.isabs(path_str)):
             # Relative path - likely incorrect
             raise RuntimeError(
                 f"Invalid storage base path: {base}. "
@@ -136,8 +141,8 @@ class StorageConfig:
 
         # Only create directories if base_path looks valid
         # (contains 'ComfyUI' or 'user' in the path)
-        path_str = str(base).lower()
-        if 'comfyui' not in path_str and 'user' not in path_str:
+        path_str_lower = path_str.lower()
+        if 'comfyui' not in path_str_lower and 'user' not in path_str_lower:
             raise RuntimeError(
                 f"Storage path '{base}' doesn't appear to be within ComfyUI structure. "
                 "Refusing to create directories in potentially incorrect location."
