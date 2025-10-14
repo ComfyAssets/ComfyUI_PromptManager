@@ -229,6 +229,14 @@ class MigrationDetector:
 
         # Check if v1 database exists and needs migration
         if self.detect_v1_database():
+            # Special case: v1 exists but is empty, and v2 already has data
+            # This means someone created an empty v1 file or migration already happened
+            v1_info = self.get_v1_database_info()
+            if v1_info.get("prompt_count", 0) == 0 and self._v2_database_has_data():
+                LOGGER.info(
+                    "v1 database is empty but v2 has data - treating as already migrated"
+                )
+                return MigrationStatus.COMPLETED
             return MigrationStatus.PENDING
 
         # Check if there are old migration markers or v2 has data
