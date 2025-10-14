@@ -365,7 +365,7 @@ async def generate_thumbnails(args: argparse.Namespace) -> None:
     else:
         # Try to auto-detect database path
         try:
-            from utils.file_system import get_file_system
+            from utils.core.file_system import get_file_system
             fs = get_file_system()
             db_path = Path(fs.get_database_path('prompts.db'))
         except RuntimeError as e:
