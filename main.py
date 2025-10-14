@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from src.app import run_app
 from src.config import config
 from src.database import db
-from utils.file_system import get_file_system
+from utils.core.file_system import get_file_system
 try:
     from promptmanager.loggers import setup_logging, get_logger  # type: ignore
 except ImportError:  # pragma: no cover - fallback for direct execution
