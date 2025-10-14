@@ -161,7 +161,7 @@ def _run_sql_migrations(db):
             db_path = db.db_path
         else:
             # Fallback to getting path from file system
-            from utils.file_system import get_file_system
+            from utils.core.file_system import get_file_system
             fs = get_file_system()
             db_path = str(fs.get_database_path('prompts.db'))
 
@@ -391,7 +391,7 @@ try:
 
             # Import API module
             from src.api.routes import PromptManagerAPI
-            from utils.file_system import get_file_system
+            from utils.core.file_system import get_file_system
 
             # Get database path
             fs = get_file_system()
