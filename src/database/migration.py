@@ -149,11 +149,14 @@ class MigrationDetector:
         }
 
         if not self.v1_db_path.exists():
+            LOGGER.warning(f"v1 database does not exist at {self.v1_db_path}")
             return info
 
         info["exists"] = True
         info["size_bytes"] = self.v1_db_path.stat().st_size
         info["size_mb"] = round(info["size_bytes"] / (1024 * 1024), 1)
+
+        LOGGER.info(f"Reading v1 database info from {self.v1_db_path} (size: {info['size_mb']} MB)")
 
         try:
             with sqlite3.connect(self.v1_db_path) as connection:
@@ -177,8 +180,15 @@ class MigrationDetector:
                     "SELECT COUNT(DISTINCT category) FROM prompts WHERE category IS NOT NULL AND category <> ''"
                 )
                 info["category_count"] = int(cursor.fetchone()[0])
+
+                LOGGER.info(
+                    f"Successfully read v1 database info: "
+                    f"prompts={info['prompt_count']}, "
+                    f"images={info['image_count']}, "
+                    f"has_v1_schema={info['has_v1_schema']}"
+                )
         except sqlite3.Error as exc:  # pragma: no cover - corrupted database
-            LOGGER.error("Failed to read v1 database info: %s", exc)
+            LOGGER.error(f"Failed to read v1 database info: {exc}", exc_info=True)
 
         return info
 

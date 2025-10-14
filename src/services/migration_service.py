@@ -87,7 +87,20 @@ class MigrationService:
 
             LOGGER.info("Starting migration action", extra={"action": normalised})
             if normalised == "migrate":
-                success, stats = migrator.migrate()
+                # Check if migration is actually needed before attempting
+                migration_status = self.detector.check_migration_status()
+                if migration_status != MigrationStatus.PENDING:
+                    LOGGER.warning(
+                        f"Migration requested but status is {migration_status.value}. "
+                        f"No v1 database found or migration already completed."
+                    )
+                    success = False
+                    stats = {
+                        "error": f"Migration not needed. Status: {migration_status.value}",
+                        "status": migration_status.value,
+                    }
+                else:
+                    success, stats = migrator.migrate()
             else:
                 self.progress.start()
                 success = migrator.start_fresh()
