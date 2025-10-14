@@ -471,12 +471,13 @@ class Database:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
 
-                # Check for duplicates
+                # Check for duplicates - return existing ID to allow image linking
                 cursor.execute("SELECT id FROM prompts WHERE hash = ?", (prompt_hash,))
                 existing = cursor.fetchone()
                 if existing:
-                    logger.debug(f"Prompt with hash {prompt_hash[:16]}... already exists")
-                    return None
+                    existing_id = existing[0]
+                    logger.debug(f"Prompt with hash {prompt_hash[:16]}... already exists with ID {existing_id}")
+                    return existing_id  # Return existing ID so images can be linked
 
                 # Insert the prompt - use the actual schema columns
                 cursor.execute("""
