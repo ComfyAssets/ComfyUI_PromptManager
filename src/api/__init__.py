@@ -152,7 +152,12 @@ class APISystem:
     
     def _log_available_endpoints(self):
         """Log all available API endpoints."""
-        base_url = "http://localhost:8188"
+        # Get actual server URL from ComfyUI
+        try:
+            from utils.comfyui_utils import get_comfyui_server_url
+            base_url = get_comfyui_server_url()
+        except Exception:
+            base_url = "http://localhost:8188"
         
         endpoints = [
             # API Endpoints
