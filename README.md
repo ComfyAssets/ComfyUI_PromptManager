@@ -104,10 +104,9 @@ python generate_thumbnails_standalone.py --db-path /path/to/prompts.db
 ## 🧪 How to Join Beta Testing
 
 1. **Backup your `prompts.db` file** (Critical!)
-2. Checkout the `v2/beta-01` branch:
+2. Checkout the `v2/beta-02-win32` branch:
    ```bash
-   git checkout v2/beta-01
-   git submodule update --init --recursive
+   git checkout v2/beta-02-win32
    ```
 3. Restart ComfyUI
 4. Test the features and migration process
