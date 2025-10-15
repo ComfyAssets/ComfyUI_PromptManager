@@ -280,7 +280,15 @@ class APIClient:
     """HTTP client wrapper with advanced features for ComfyUI integration."""
 
     def __init__(self, base_url: str = None, timeout: int = 30):
-        self.base_url = base_url or "http://localhost:8188"
+        # Get base_url from ComfyUI server if not provided
+        if base_url is None:
+            try:
+                from utils.comfyui_utils import get_comfyui_server_url
+                base_url = get_comfyui_server_url()
+            except Exception:
+                base_url = "http://127.0.0.1:8188"  # Fallback
+
+        self.base_url = base_url
         self.timeout = ClientTimeout(total=timeout)
         self.session: Optional[ClientSession] = None
         
