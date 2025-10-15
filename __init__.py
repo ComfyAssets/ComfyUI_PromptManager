@@ -104,7 +104,7 @@ try:
         os.environ['PROMPTMANAGER_LOGGING_DISABLED'] = '0'
 
     # Now initialize the LoggingControl class
-    from src.core.logging_control import LoggingControl
+    from .src.core.logging_control import LoggingControl
     LoggingControl()
 except Exception:
     # If logging control fails, continue anyway
@@ -206,7 +206,7 @@ def ensure_database_initialized():
             import sys
             import os
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-            from src.database import PromptDatabase
+            from .src.database import PromptDatabase
 
             db = PromptDatabase()
             conditional_print(f"[PromptManager] ✅ Database initialized and schema updated at: {db.db_path}")
@@ -235,7 +235,7 @@ def _run_sql_migrations(db):
             db_path = db.db_path
         else:
             # Fallback to getting path from file system
-            from utils.core.file_system import get_file_system
+            from .utils.core.file_system import get_file_system
             fs = get_file_system()
             db_path = str(fs.get_database_path('prompts.db'))
 
@@ -412,7 +412,7 @@ def initialize_api(server):
         routes.get('/api/prompt_manager/health')(health_proxy)
 
         # Get actual server URL from ComfyUI (respects --listen and --port)
-        from utils.comfyui_utils import get_comfyui_server_url
+        from .utils.comfyui_utils import get_comfyui_server_url
         server_url = get_comfyui_server_url()
 
         conditional_print("✅ PromptManager API initialized successfully")
@@ -468,8 +468,8 @@ try:
             conditional_print(f"[PromptManager] 🚀 Starting API route registration...")
 
             # Import API module
-            from src.api.routes import PromptManagerAPI
-            from utils.core.file_system import get_file_system
+            from .src.api.routes import PromptManagerAPI
+            from .utils.core.file_system import get_file_system
 
             # Get database path
             fs = get_file_system()
@@ -506,7 +506,7 @@ try:
             conditional_print(f"[PromptManager]    - Total app routes: {len(list(PromptServer.instance.app.router.routes()))}")
 
             # Get actual server URL from ComfyUI (respects --listen and --port)
-            from utils.comfyui_utils import get_comfyui_server_url
+            from .utils.comfyui_utils import get_comfyui_server_url
             server_url = get_comfyui_server_url()
 
             _API_INITIALIZED = True
