@@ -11,6 +11,7 @@ web/vendor/viewerjs/.husky/
 
 # User data folder (should be in ComfyUI root, not here!)
 user/
+docs/
 /user/
 
 # Python
