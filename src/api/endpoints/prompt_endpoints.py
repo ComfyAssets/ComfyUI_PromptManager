@@ -6,8 +6,8 @@ extending the BaseController with prompt-specific operations.
 
 from typing import Any, Dict, List, Tuple
 
-from .api.base_controller import BaseController
-from .api.middleware import (
+from ..base_controller import BaseController
+from ..middleware import (
     RateLimiter, 
     ValidationMiddleware,
     CacheMiddleware

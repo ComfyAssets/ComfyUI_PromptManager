@@ -18,31 +18,31 @@ from typing import Any, Dict, List, Optional
 
 from aiohttp import web
 
-from .config import config
+from ..config import config
 # from src.repositories.image_repository import ImageRepository  # v1 - no longer used
 from ..repositories.prompt_repository import PromptRepository
 from ..repositories.generated_image_repository import GeneratedImageRepository
-from .galleries.image_gallery import ImageGallery
-from .metadata.extractor import MetadataExtractor
-from .database.migration import MigrationDetector, MigrationProgress
+from ..galleries.image_gallery import ImageGallery
+from ..metadata.extractor import MetadataExtractor
+from ..database.migration import MigrationDetector, MigrationProgress
 from ..services.migration_service import MigrationService
 from ..services.hybrid_stats_service import HybridStatsService
 from ..services.incremental_stats_service import IncrementalStatsService
 from ..services.background_scheduler import StatsScheduler
 from ..services.settings_service import SettingsService
-from .api.realtime_events import RealtimeEvents
+from .realtime_events import RealtimeEvents
 from utils.core.file_system import get_file_system
 from utils.cache import CacheManager
 from utils.logging import LogConfig
 
 # Handler imports for orchestrator pattern
-from .api.handlers.gallery import GalleryHandlers
-from .api.handlers.metadata import MetadataHandlers
-from .api.handlers.logs import LogsHandlers
-from .api.handlers.migration import MigrationHandlers
-from .api.handlers.prompts import PromptHandlers
-from .api.handlers.system import SystemHandlers
-from .api.handlers.maintenance import MaintenanceHandlers
+from .handlers.gallery import GalleryHandlers
+from .handlers.metadata import MetadataHandlers
+from .handlers.logs import LogsHandlers
+from .handlers.migration import MigrationHandlers
+from .handlers.prompts import PromptHandlers
+from .handlers.system import SystemHandlers
+from .handlers.maintenance import MaintenanceHandlers
 
 
 class PromptManagerAPI:
@@ -212,7 +212,7 @@ class PromptManagerAPI:
                 # Restore original path
                 sys.path = original_path
             
-            from .api.route_handlers.thumbnails import ThumbnailAPI
+            from .route_handlers.thumbnails import ThumbnailAPI
 
             # Create database instance for thumbnails
             db = PromptDatabase()
@@ -263,7 +263,7 @@ class PromptManagerAPI:
     def _init_maintenance_service(self):
         """Initialize maintenance API service."""
         try:
-            from .api.route_handlers.maintenance import MaintenanceAPI
+            from .route_handlers.maintenance import MaintenanceAPI
 
             self.maintenance_api = MaintenanceAPI(self.db_path)
             self.logger.info("Maintenance API service initialized")

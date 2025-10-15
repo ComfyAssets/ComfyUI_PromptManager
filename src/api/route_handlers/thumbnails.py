@@ -54,11 +54,11 @@ except ImportError:
     database_module = _load_database_module()
     Database = database_module.PromptDatabase
 
-from .config import config
+from ...config import config
 from utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from .api.realtime_events import RealtimeEvents
+    from ..realtime_events import RealtimeEvents
 
 logger = get_logger("promptmanager.api.thumbnails")
 

@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Union
 from PIL import Image
 
 from ..core.base import BaseMetadataViewer
-from .metadata import ComfyMetadataParser, ParsedComfyMetadata
+from .comfy_parser import ComfyMetadataParser, ParsedComfyMetadata
 
 
 class MetadataExtractor(BaseMetadataViewer):
