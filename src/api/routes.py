@@ -463,10 +463,18 @@ class PromptManagerAPI:
         ]
         if size_line:
             banner_lines.append(size_line)
+
+        # Get actual server URL from ComfyUI
+        try:
+            from utils.comfyui_utils import get_comfyui_server_url
+            server_url = get_comfyui_server_url()
+        except Exception:
+            server_url = "http://localhost:8188"
+
         banner_lines.extend(
             [
                 "",
-                "  Visit http://localhost:8188/prompt_manager/migration",
+                f"  Visit {server_url}/prompt_manager/migration",
                 "  to migrate your data or start with a fresh library.",
                 "",
             ]
