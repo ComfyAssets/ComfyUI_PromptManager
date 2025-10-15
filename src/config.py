@@ -97,12 +97,23 @@ class WebSocketConfig:
     message_queue_size: int = 1000
 
 
+def _get_default_server_address():
+    """Get default ComfyUI server address from running instance."""
+    try:
+        from utils.comfyui_utils import get_comfyui_address_and_port, format_server_address
+        address, port = get_comfyui_address_and_port()
+        return format_server_address(address, port)
+    except Exception:
+        # Fallback to default
+        return "127.0.0.1:8188"
+
+
 @dataclass
 class ComfyUIConfig:
     """ComfyUI integration configuration."""
-    
+
     enabled: bool = True
-    server_address: str = "127.0.0.1:8188"
+    server_address: str = field(default_factory=_get_default_server_address)
     client_id: str = "promptmanager"
     auto_track: bool = True
     track_metadata: bool = True
