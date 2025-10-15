@@ -93,8 +93,15 @@ def setup_routes(routes):
   routes.get('/prompt_manager/vendor/{path:.*}')(make_static_handler('vendor'))
   routes.get('/prompt_manager/images/{path:.*}')(make_static_handler('images'))
 
+  # Get actual server URL from ComfyUI
+  try:
+    from utils.comfyui_utils import get_comfyui_server_url
+    server_url = get_comfyui_server_url()
+  except Exception:
+    server_url = 'http://127.0.0.1:8188'
+
   print('PromptManager web routes registered successfully')
-  print('Access the interface at: http://localhost:8188/prompt_manager/')
+  print(f'Access the interface at: {server_url}/prompt_manager/')
 
   async def favicon(_request: web.Request) -> web.Response:
     return web.FileResponse(_safe_path('favicon.ico'))
