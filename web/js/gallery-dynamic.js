@@ -170,9 +170,12 @@
             const params = new URLSearchParams({
                 page: page,
                 limit: getItemsPerPage(),  // Use setting from localStorage
-                sort_order: currentFilters.sortOrder || 'date_desc',
+                sort_by: currentFilters.sortBy || 'created_at',
+                sort_order: currentFilters.sortOrder || 'desc',
                 view_mode: currentFilters.viewMode || 'grid'
             });
+
+            console.log(`[Gallery] Loading with sort: sort_by=${currentFilters.sortBy || 'created_at'}, sort_order=${currentFilters.sortOrder || 'desc'}`);
 
             // Add filters if present
             if (currentFilters.search) params.append('search', currentFilters.search);
@@ -682,58 +685,119 @@
             loadGalleryData(1, false);  // Reload from page 1 for view mode change
         };
 
-        // Model filter - first select in filter-bar
-        const modelSelect = document.querySelector('.filter-bar select:nth-child(1)');
+        // Get all filter selects using array-based indexing (more reliable than nth-child)
+        const allSelects = document.querySelectorAll('.filter-bar select');
+        console.log(`[Gallery] Found ${allSelects.length} select elements in filter-bar`);
+
+        // Log all select elements to debug
+        allSelects.forEach((select, idx) => {
+            const firstOption = select.querySelector('option');
+            console.log(`[Gallery] Select ${idx}: first option = "${firstOption?.textContent}"`);
+        });
+
+        // Category filter - 0=category
+        const categorySelect = allSelects[0];
+        if (categorySelect) {
+            console.log(`[Gallery] Category select found: ${categorySelect.value}`);
+            categorySelect.addEventListener('change', (e) => {
+                console.log(`[Gallery] Category changed to: ${e.target.value}`);
+                currentFilters.category = e.target.value;
+                loadGalleryData(1, false);
+            });
+        }
+
+        // Model filter - 1=model
+        const modelSelect = allSelects[1];
         if (modelSelect) {
+            console.log(`[Gallery] Model select found: ${modelSelect.value}`);
             modelSelect.addEventListener('change', (e) => {
+                console.log(`[Gallery] Model changed to: ${e.target.value}`);
                 currentFilters.model = e.target.value;
                 loadGalleryData(1, false);  // Don't scroll for filter change
             });
         }
 
-        // Date filter - second select in filter-bar
-        const dateSelect = document.querySelector('.filter-bar select:nth-child(2)');
+        // Date filter - 2=date
+        const dateSelect = allSelects[2];
         if (dateSelect) {
+            console.log(`[Gallery] Date select found: ${dateSelect.value}`);
             dateSelect.addEventListener('change', (e) => {
                 const value = e.target.value;
+                console.log(`[Gallery] Date filter changed to: ${value}`);
                 const now = new Date();
 
                 switch(value.toLowerCase()) {
                     case 'today':
                         currentFilters.dateFrom = new Date(now.setHours(0,0,0,0)).toISOString();
                         currentFilters.dateTo = new Date().toISOString();
+                        console.log(`[Gallery] Date range: ${currentFilters.dateFrom} to ${currentFilters.dateTo}`);
                         break;
                     case 'this week':
                         const weekAgo = new Date(now.setDate(now.getDate() - 7));
                         currentFilters.dateFrom = weekAgo.toISOString();
                         currentFilters.dateTo = new Date().toISOString();
+                        console.log(`[Gallery] Date range: ${currentFilters.dateFrom} to ${currentFilters.dateTo}`);
                         break;
                     case 'this month':
                         const monthAgo = new Date(now.setMonth(now.getMonth() - 1));
                         currentFilters.dateFrom = monthAgo.toISOString();
                         currentFilters.dateTo = new Date().toISOString();
+                        console.log(`[Gallery] Date range: ${currentFilters.dateFrom} to ${currentFilters.dateTo}`);
                         break;
                     default:
                         delete currentFilters.dateFrom;
                         delete currentFilters.dateTo;
+                        console.log(`[Gallery] Date filter cleared (All Time)`);
                 }
 
                 loadGalleryData(1, false);  // Don't scroll for filter change
             });
         }
 
-        // Sort order - third select in filter-bar
-        const sortSelect = document.querySelector('.filter-bar select:nth-child(3)');
+        // Sort order - 3=sort
+        const sortSelect = allSelects[3]; // 0=category, 1=model, 2=date, 3=sort
+
         if (sortSelect) {
+            console.log(`[Gallery] Sort select found, current value: "${sortSelect.value}"`);
+            console.log(`[Gallery] Sort select options:`, Array.from(sortSelect.options).map(o => o.textContent));
+
             sortSelect.addEventListener('change', (e) => {
+                console.log(`[Gallery] ✅ SORT CHANGED EVENT FIRED! New value: "${e.target.value}"`);
+
                 const sortMap = {
-                    'Newest First': 'date_desc',
-                    'Oldest First': 'date_asc',
-                    'Most Liked': 'date_desc' // Placeholder until we have likes
+                    'Newest First': 'created_at_desc',
+                    'Oldest First': 'created_at_asc',
+                    'Most Liked': 'rating_desc' // Map to rating when available
                 };
-                currentFilters.sortOrder = sortMap[e.target.value] || 'date_desc';
+                const sortValue = sortMap[e.target.value] || 'created_at_desc';
+
+                // Split into field and direction (e.g., 'created_at_desc' -> ['created_at', 'desc'])
+                const parts = sortValue.split('_');
+                const direction = parts.pop(); // Get last part (asc/desc)
+                const field = parts.join('_'); // Rejoin remaining parts (created_at, rating, etc.)
+
+                console.log(`[Gallery] Sort changed: ${e.target.value} → field=${field}, direction=${direction}`);
+
+                currentFilters.sortBy = field;
+                currentFilters.sortOrder = direction;
+
                 loadGalleryData(currentPage, false);  // Don't scroll for sort change
             });
+
+            // Initialize with the current select value
+            const sortMap = {
+                'Newest First': 'created_at_desc',
+                'Oldest First': 'created_at_asc',
+                'Most Liked': 'rating_desc'
+            };
+            const initialValue = sortMap[sortSelect.value] || 'created_at_desc';
+            const parts = initialValue.split('_');
+            const direction = parts.pop();
+            const field = parts.join('_');
+
+            currentFilters.sortBy = field;
+            currentFilters.sortOrder = direction;
+            console.log(`[Gallery] Initial sort: field=${field}, direction=${direction}`);
         }
     }
 
@@ -864,7 +928,8 @@
                 const params = new URLSearchParams({
                     page: nextPage,
                     limit: getItemsPerPage(), // Use full page size from settings
-                    sort_order: currentFilters.sortOrder || 'date_desc',
+                    sort_by: currentFilters.sortBy || 'created_at',
+                    sort_order: currentFilters.sortOrder || 'desc',
                     view_mode: currentFilters.viewMode || 'grid'
                 });
 
