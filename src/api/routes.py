@@ -144,12 +144,16 @@ class PromptManagerAPI:
 
     @staticmethod
     def _sanitize_for_json(value: Any) -> Any:
-        """Recursively replace NaN and Inf values so JSON is valid."""
+        """Recursively replace NaN, Inf values, and bytes objects so JSON is valid."""
+        import base64
 
         if isinstance(value, dict):
             return {key: PromptManagerAPI._sanitize_for_json(sub_value) for key, sub_value in value.items()}
         if isinstance(value, (list, tuple, set)):
             return [PromptManagerAPI._sanitize_for_json(item) for item in value]
+        if isinstance(value, bytes):
+            # Convert bytes to base64 string for JSON serialization
+            return base64.b64encode(value).decode('ascii')
         if isinstance(value, float):
             if math.isnan(value) or math.isinf(value):
                 return None
