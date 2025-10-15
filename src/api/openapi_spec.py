@@ -795,9 +795,16 @@ All errors follow a consistent format with HTTP status codes:
 
     def _get_servers(self) -> List[Dict[str, Any]]:
         """Get server configurations."""
+        # Get actual server URL from ComfyUI
+        try:
+            from utils.comfyui_utils import get_comfyui_server_url
+            local_url = get_comfyui_server_url()
+        except Exception:
+            local_url = 'http://127.0.0.1:8188'
+
         return [
             {
-                'url': 'http://localhost:8188',
+                'url': local_url,
                 'description': 'Local ComfyUI development server'
             },
             {
