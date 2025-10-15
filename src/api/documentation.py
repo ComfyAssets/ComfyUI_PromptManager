@@ -299,15 +299,22 @@ class DocumentationServer:
             import server
             server.PromptServer.instance.routes.add_routes(self.routes)
             self.logger.info("Documentation routes added to ComfyUI server")
-            
+
+            # Get actual server URL from ComfyUI (respects --listen and --port)
+            try:
+                from utils.comfyui_utils import get_comfyui_server_url
+                server_url = get_comfyui_server_url()
+            except Exception:
+                server_url = "http://127.0.0.1:8188"  # Fallback
+
             # Log available endpoints
             endpoints = [
-                f"Swagger UI: http://localhost:8188{self.base_path}/docs",
-                f"ReDoc: http://localhost:8188{self.base_path}/redoc", 
-                f"OpenAPI JSON: http://localhost:8188{self.base_path}/openapi.json",
-                f"OpenAPI YAML: http://localhost:8188{self.base_path}/openapi.yaml"
+                f"Swagger UI: {server_url}{self.base_path}/docs",
+                f"ReDoc: {server_url}{self.base_path}/redoc",
+                f"OpenAPI JSON: {server_url}{self.base_path}/openapi.json",
+                f"OpenAPI YAML: {server_url}{self.base_path}/openapi.yaml"
             ]
-            
+
             self.logger.info("API Documentation endpoints:")
             for endpoint in endpoints:
                 self.logger.info(f"  - {endpoint}")
@@ -376,8 +383,16 @@ class DocumentationServer:
         info = spec.get('info', {})
         servers = spec.get('servers', [])
         paths = spec.get('paths', {})
-        
-        base_url = servers[0]['url'] if servers else 'http://localhost:8188'
+
+        # Get base_url from servers or from ComfyUI server
+        if servers:
+            base_url = servers[0]['url']
+        else:
+            try:
+                from utils.comfyui_utils import get_comfyui_server_url
+                base_url = get_comfyui_server_url()
+            except Exception:
+                base_url = 'http://127.0.0.1:8188'
         
         collection = {
             'info': {
