@@ -33,13 +33,15 @@ class GalleryHandlers:
     async def list_gallery_images(self, request: web.Request) -> web.Response:
         """List gallery images with pagination and category filtering.
 
-        GET /api/v1/gallery/images?page=1&limit=50&category=portrait
+        GET /api/v1/gallery/images?page=1&limit=50&category=portrait&sort_by=created_at&sort_order=desc
         """
         try:
             # Get parameters with defensive defaults
             page_str = request.query.get("page", "1")
             limit_str = request.query.get("limit", "50")
             category = request.query.get("category")
+            sort_by = request.query.get("sort_by", "created_at")
+            sort_order = request.query.get("sort_order", "desc")
 
             # Parse with error handling
             try:
@@ -56,6 +58,26 @@ class GalleryHandlers:
             page = max(1, page)
             limit = max(1, min(limit, 1000))  # Cap at 1000 for safety
             offset = (page - 1) * limit
+
+            # Map frontend sort_by values to database columns
+            sort_column_map = {
+                'created_at': 'gi.generation_time',
+                'updated_at': 'gi.generation_time',
+                'name': 'gi.filename',
+                'rating': 'p.rating',
+                'file_size': 'gi.file_size'
+            }
+
+            # Get the actual column name, default to generation_time
+            sort_column = sort_column_map.get(sort_by, 'gi.generation_time')
+
+            # Validate sort order
+            sort_order = sort_order.lower()
+            if sort_order not in ('asc', 'desc'):
+                sort_order = 'desc'
+
+            # Build ORDER BY clause
+            order_by_clause = f"{sort_column} {sort_order.upper()}"
 
             # Query with category filter using JOIN
             import sqlite3
@@ -92,7 +114,7 @@ class GalleryHandlers:
                     FROM generated_images gi
                     LEFT JOIN prompts p ON gi.prompt_id = p.id
                     {where_clause}
-                    ORDER BY gi.generation_time DESC
+                    ORDER BY {order_by_clause}
                     LIMIT ? OFFSET ?
                 """
                 cursor = conn.execute(data_query, params + [limit, offset])
