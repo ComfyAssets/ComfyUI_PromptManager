@@ -64,6 +64,11 @@ def _get_fallback_module() -> ModuleType:
     fallback = ModuleType("promptmanager._fallback_logging")
 
     class _FallbackLoggerManager:
+        """Fallback logger that ONLY configures promptmanager logger, never root logger.
+
+        CRITICAL: Never use logging.basicConfig() or touch the root logger!
+        This will break ComfyUI's logging system.
+        """
         def __init__(self) -> None:
             self._configured = False
             self.config = {
@@ -73,19 +78,30 @@ def _get_fallback_module() -> ModuleType:
             }
 
         def setup(self, level: str | None = None) -> None:
+            """Setup OUR logger only, never the root logger."""
             if level:
                 self.config["level"] = level
             if self._configured:
                 return
 
-            logging.basicConfig(
-                level=getattr(logging, self.config["level"], logging.INFO),
-                format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
-            )
+            # CRITICAL: Configure ONLY our logger, not root!
+            pm_logger = logging.getLogger("promptmanager")
+            pm_logger.setLevel(getattr(logging, self.config["level"], logging.INFO))
+            pm_logger.propagate = True  # Let ComfyUI's root logger handle output
+
+            # Only add handler if console logging is enabled AND we don't have one
+            if self.config["console_logging"] and not pm_logger.handlers:
+                handler = logging.StreamHandler()
+                handler.setFormatter(logging.Formatter(
+                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                    "%Y-%m-%d %H:%M:%S"
+                ))
+                pm_logger.addHandler(handler)
+
             self._configured = True
 
         def get_logger(self, name: str = "promptmanager"):
+            """Get a logger under the promptmanager hierarchy."""
             self.setup()
             return logging.getLogger(name)
 

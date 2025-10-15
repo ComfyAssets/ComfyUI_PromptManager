@@ -106,6 +106,11 @@ class LogConfig:
         format_string: Optional[str] = None,
         date_format: Optional[str] = None,
     ) -> None:
+        """Setup logging ONLY for promptmanager logger, never touch root logger.
+
+        CRITICAL: This must NEVER modify the root logger or it will break ComfyUI's logging!
+        We only configure our own 'promptmanager' logger hierarchy.
+        """
         with cls._init_lock:
             main_module = sys.modules.get("__main__", sys)
             global_flag = getattr(main_module, _GLOBAL_INIT_FLAG, False)
@@ -119,9 +124,13 @@ class LogConfig:
             date_format = date_format or cls.DEFAULT_DATE_FORMAT
 
             formatter = logging.Formatter(format_string, date_format)
-            root_logger = logging.getLogger()
-            root_logger.setLevel(resolved_level or (logging.CRITICAL + 10))
-            root_logger.handlers.clear()
+
+            # CRITICAL: Get OUR logger, NOT the root logger!
+            # Never use logging.getLogger() without a name - that's the root logger!
+            pm_logger = logging.getLogger("promptmanager")
+            pm_logger.setLevel(resolved_level or logging.INFO)
+            pm_logger.handlers.clear()  # Only clear OUR handlers
+            pm_logger.propagate = True  # Let messages go to root logger (ComfyUI's config)
             cls._file_handler = None
 
             if resolved_level is None:
@@ -132,7 +141,7 @@ class LogConfig:
                 console_handler = logging.StreamHandler(sys.stdout)
                 console_handler.setLevel(resolved_level)
                 console_handler.setFormatter(formatter)
-                root_logger.addHandler(console_handler)
+                pm_logger.addHandler(console_handler)  # Add to OUR logger only
 
             log_path = None
             file_enabled = bool(log_file)
@@ -152,26 +161,25 @@ class LogConfig:
                     )
                     file_handler.setLevel(resolved_level)
                     file_handler.setFormatter(formatter)
-                    root_logger.addHandler(file_handler)
+                    pm_logger.addHandler(file_handler)  # Add to OUR logger only
                     cls._file_handler = file_handler
                     log_path = candidate
                 except (OSError, PermissionError) as exc:
-                    root_logger.warning(
+                    pm_logger.warning(
                         "promptmanager.logging file handler disabled: %s", exc
                     )
                 except Exception as exc:  # noqa: BLE001
-                    root_logger.warning(
+                    pm_logger.warning(
                         "promptmanager.logging failed to configure file handler (%s)",
                         exc,
                     )
 
             cls._configure_module_loggers()
 
-            logger = logging.getLogger("promptmanager")
-            logger.info("Logging initialized")
-            logger.info("Log level: %s", logging.getLevelName(resolved_level))
+            pm_logger.info("PromptManager logging initialized")
+            pm_logger.info("Log level: %s", logging.getLevelName(resolved_level))
             if log_path:
-                logger.info("Log file: %s", log_path)
+                pm_logger.info("Log file: %s", log_path)
 
             cls._initialised = True
 
@@ -202,6 +210,7 @@ class LogConfig:
         level: int = None,
         format_string: str = None
     ) -> None:
+        """Add file handler to OUR logger only, never root logger."""
         level = level or cls.DEFAULT_LEVEL
         format_string = format_string or cls.DEFAULT_FORMAT
         log_path = cls.LOG_DIR / filename
@@ -212,7 +221,8 @@ class LogConfig:
         )
         handler.setLevel(level)
         handler.setFormatter(logging.Formatter(format_string, cls.DEFAULT_DATE_FORMAT))
-        logging.getLogger().addHandler(handler)
+        # CRITICAL: Add to OUR logger, not root!
+        logging.getLogger("promptmanager").addHandler(handler)
 
     @classmethod
     def enable_debug(cls) -> None:
@@ -221,23 +231,25 @@ class LogConfig:
 
     @classmethod
     def disable_console(cls) -> None:
-        root_logger = logging.getLogger()
-        for handler in root_logger.handlers[:]:
-            if isinstance(handler, logging.StreamHandler):
-                root_logger.removeHandler(handler)
+        """Disable console logging for OUR logger only, never root logger."""
+        pm_logger = logging.getLogger("promptmanager")
+        for handler in pm_logger.handlers[:]:
+            if isinstance(handler, logging.StreamHandler) and handler.stream in (sys.stdout, sys.stderr):
+                pm_logger.removeHandler(handler)
 
     @classmethod
     def enable_console(cls, level: int = None) -> None:
-        root_logger = logging.getLogger()
+        """Enable console logging for OUR logger only, never root logger."""
+        pm_logger = logging.getLogger("promptmanager")
         level = level or cls.DEFAULT_LEVEL
-        for handler in root_logger.handlers:
-            if isinstance(handler, logging.StreamHandler):
+        for handler in pm_logger.handlers:
+            if isinstance(handler, logging.StreamHandler) and handler.stream in (sys.stdout, sys.stderr):
                 handler.setLevel(level)
                 return
         handler = logging.StreamHandler(sys.stdout)
         handler.setLevel(level)
         handler.setFormatter(logging.Formatter(cls.DEFAULT_FORMAT, cls.DEFAULT_DATE_FORMAT))
-        root_logger.addHandler(handler)
+        pm_logger.addHandler(handler)
 
     @classmethod
     def get_log_files(cls) -> list:
