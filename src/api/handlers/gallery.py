@@ -31,15 +31,16 @@ class GalleryHandlers:
         self.logger = api.logger
 
     async def list_gallery_images(self, request: web.Request) -> web.Response:
-        """List gallery images with pagination and category filtering.
+        """List gallery images with pagination, category filtering, and search.
 
-        GET /api/v1/gallery/images?page=1&limit=50&category=portrait&sort_by=created_at&sort_order=desc
+        GET /api/v1/gallery/images?page=1&limit=50&category=portrait&sort_by=created_at&sort_order=desc&search=sunset
         """
         try:
             # Get parameters with defensive defaults
             page_str = request.query.get("page", "1")
             limit_str = request.query.get("limit", "50")
             category = request.query.get("category")
+            search = request.query.get("search", "").strip()
             sort_by = request.query.get("sort_by", "created_at")
             sort_order = request.query.get("sort_order", "desc")
 
@@ -86,12 +87,21 @@ class GalleryHandlers:
             with sqlite3.connect(db_path) as conn:
                 conn.row_factory = sqlite3.Row
 
-                # Build query with optional category filter
-                where_clause = ""
+                # Build query with optional category and search filters
+                where_clauses = []
                 params = []
+
                 if category and category != 'all':
-                    where_clause = "WHERE p.category = ?"
+                    where_clauses.append("p.category = ?")
                     params.append(category)
+
+                if search:
+                    # Search in filename, positive_prompt, and tags
+                    search_pattern = f"%{search}%"
+                    where_clauses.append("(gi.filename LIKE ? OR p.positive_prompt LIKE ? OR p.tags LIKE ?)")
+                    params.extend([search_pattern, search_pattern, search_pattern])
+
+                where_clause = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
                 # Get total count
                 count_query = f"""

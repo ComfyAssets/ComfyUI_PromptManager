@@ -643,17 +643,31 @@
     function setupFilterListeners() {
         // Search input
         const searchInput = document.getElementById('searchInput');
+        console.log(`[Gallery] Search input element:`, searchInput);
         if (searchInput) {
+            console.log(`[Gallery] Search input found, attaching listener`);
             let searchTimer;
             searchInput.addEventListener('input', (e) => {
+                console.log(`[Gallery] Search input event fired, value: "${e.target.value}"`);
                 clearTimeout(searchTimer);
                 searchTimer = setTimeout(() => {
-                    currentFilters.search = e.target.value;
+                    const searchValue = e.target.value.trim();
+                    console.log(`[Gallery] Search triggered after debounce, value: "${searchValue}"`);
+
+                    if (searchValue) {
+                        currentFilters.search = searchValue;
+                    } else {
+                        delete currentFilters.search; // Clear search when empty
+                    }
+
                     currentPage = 1;  // Reset to first page
                     hasMorePages = true;  // Reset for new search
+                    console.log(`[Gallery] Loading gallery with search: "${currentFilters.search || '(none)'}"`);
                     loadGalleryData(1, false);  // Don't scroll for search
                 }, 500);
             });
+        } else {
+            console.error(`[Gallery] Search input element with id='searchInput' not found!`);
         }
 
         // View mode toggle buttons
