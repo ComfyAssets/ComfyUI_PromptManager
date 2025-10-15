@@ -27,6 +27,10 @@ develop-eggs/
 .eggs/
 lib/
 lib64/
+# Exception: Allow web/lib/viewerjs distribution files
+!web/lib/
+!web/lib/viewerjs/
+!web/lib/viewerjs/dist/
 parts/
 sdist/
 var/
