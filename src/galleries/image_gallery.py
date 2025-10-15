@@ -13,8 +13,8 @@ from typing import Any, Dict, List, Optional
 
 from PIL import Image
 
-from src.core.base import LegacyBaseGallery as BaseGallery
-from src.repositories.generated_image_repository import GeneratedImageRepository
+from ..core.base import LegacyBaseGallery as BaseGallery
+from ..repositories.generated_image_repository import GeneratedImageRepository
 
 
 def _sanitize_for_json(value: Any) -> Any:

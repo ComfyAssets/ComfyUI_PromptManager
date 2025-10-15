@@ -32,7 +32,7 @@ except ImportError:
 from utils.image_processing import ThumbnailGenerator, ImageProcessor
 
 from utils.logging import get_logger
-from src.config import config
+from .config import config
 from utils.cache import CacheManager
 
 try:
@@ -43,7 +43,7 @@ try:
     if str(parent_dir) not in sys.path:
         sys.path.insert(0, str(parent_dir))
     
-    from src.database import PromptDatabase as Database
+    from .database import PromptDatabase as Database
 except ImportError:
     # Use the alternative import method if direct import fails
     import importlib.util

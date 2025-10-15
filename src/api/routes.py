@@ -18,31 +18,31 @@ from typing import Any, Dict, List, Optional
 
 from aiohttp import web
 
-from src.config import config
+from .config import config
 # from src.repositories.image_repository import ImageRepository  # v1 - no longer used
-from src.repositories.prompt_repository import PromptRepository
-from src.repositories.generated_image_repository import GeneratedImageRepository
-from src.galleries.image_gallery import ImageGallery
-from src.metadata.extractor import MetadataExtractor
-from src.database.migration import MigrationDetector, MigrationProgress
-from src.services.migration_service import MigrationService
-from src.services.hybrid_stats_service import HybridStatsService
-from src.services.incremental_stats_service import IncrementalStatsService
-from src.services.background_scheduler import StatsScheduler
-from src.services.settings_service import SettingsService
-from src.api.realtime_events import RealtimeEvents
+from ..repositories.prompt_repository import PromptRepository
+from ..repositories.generated_image_repository import GeneratedImageRepository
+from .galleries.image_gallery import ImageGallery
+from .metadata.extractor import MetadataExtractor
+from .database.migration import MigrationDetector, MigrationProgress
+from ..services.migration_service import MigrationService
+from ..services.hybrid_stats_service import HybridStatsService
+from ..services.incremental_stats_service import IncrementalStatsService
+from ..services.background_scheduler import StatsScheduler
+from ..services.settings_service import SettingsService
+from .api.realtime_events import RealtimeEvents
 from utils.core.file_system import get_file_system
 from utils.cache import CacheManager
 from utils.logging import LogConfig
 
 # Handler imports for orchestrator pattern
-from src.api.handlers.gallery import GalleryHandlers
-from src.api.handlers.metadata import MetadataHandlers
-from src.api.handlers.logs import LogsHandlers
-from src.api.handlers.migration import MigrationHandlers
-from src.api.handlers.prompts import PromptHandlers
-from src.api.handlers.system import SystemHandlers
-from src.api.handlers.maintenance import MaintenanceHandlers
+from .api.handlers.gallery import GalleryHandlers
+from .api.handlers.metadata import MetadataHandlers
+from .api.handlers.logs import LogsHandlers
+from .api.handlers.migration import MigrationHandlers
+from .api.handlers.prompts import PromptHandlers
+from .api.handlers.system import SystemHandlers
+from .api.handlers.maintenance import MaintenanceHandlers
 
 
 class PromptManagerAPI:
@@ -206,13 +206,13 @@ class PromptManagerAPI:
                         del sys.modules['database.operations']
                 
                 # Now import should find our database module first
-                from src.database import PromptDatabase
+                from .database import PromptDatabase
                 
             finally:
                 # Restore original path
                 sys.path = original_path
             
-            from src.api.route_handlers.thumbnails import ThumbnailAPI
+            from .api.route_handlers.thumbnails import ThumbnailAPI
 
             # Create database instance for thumbnails
             db = PromptDatabase()
@@ -263,7 +263,7 @@ class PromptManagerAPI:
     def _init_maintenance_service(self):
         """Initialize maintenance API service."""
         try:
-            from src.api.route_handlers.maintenance import MaintenanceAPI
+            from .api.route_handlers.maintenance import MaintenanceAPI
 
             self.maintenance_api = MaintenanceAPI(self.db_path)
             self.logger.info("Maintenance API service initialized")
@@ -1394,7 +1394,7 @@ class PromptManagerAPI:
         """
         try:
             # Import here to avoid circular imports
-            from src.services.image_scanner import ImageScanner
+            from .services.image_scanner import ImageScanner
 
             # Create scanner instance
             scanner = ImageScanner(self)
@@ -2197,7 +2197,7 @@ class PromptManagerAPI:
         GET /api/prompt_manager/maintenance/stats
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from .services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             stats = service.get_statistics()
 
@@ -2218,7 +2218,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/deduplicate
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from .services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.remove_duplicates()
 
@@ -2240,7 +2240,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/clean-orphans
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from .services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.clean_orphans()
 
@@ -2262,7 +2262,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/validate-paths
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from .services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.validate_paths()
 
@@ -2284,7 +2284,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/optimize
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from .services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.optimize_database()
 
@@ -2306,7 +2306,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/backup
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from .services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.create_backup()
 
@@ -2328,7 +2328,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/fix-broken-links
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from .services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.fix_broken_links()
 
@@ -2350,7 +2350,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/remove-missing
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from .services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.remove_missing_files()
 
@@ -2372,7 +2372,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/update-file-metadata
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from .services.maintenance_service import MaintenanceService
 
             batch_size_param = request.query.get('batch_size', '500') or '500'
             try:
@@ -2403,7 +2403,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/check-integrity
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from .services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.check_integrity()
 
@@ -2425,7 +2425,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/reindex
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from .services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.reindex_database()
 
@@ -2447,7 +2447,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/tag-missing-images
         """
         try:
-            from src.services.missing_images_tagger import MissingImagesTagger
+            from .services.missing_images_tagger import MissingImagesTagger
             tagger = MissingImagesTagger(self.db_path)
 
             # Get the action from request
@@ -2489,7 +2489,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/export
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from .services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.export_backup()
 
@@ -2797,7 +2797,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/calculate-epic-stats
         """
         try:
-            from src.services.epic_stats_calculator import EpicStatsCalculator
+            from .services.epic_stats_calculator import EpicStatsCalculator
             calculator = EpicStatsCalculator(self.db_path)
 
             # This could be a long-running operation
@@ -2820,7 +2820,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/calculate-word-cloud
         """
         try:
-            from src.services.word_cloud_service import WordCloudService
+            from .services.word_cloud_service import WordCloudService
             service = WordCloudService(self.db_path)
 
             # Calculate word frequencies

@@ -12,13 +12,13 @@ from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 
-from src.config import config
-from src.services.prompt_service import PromptService
-from src.services.image_service import ImageService
-from src.repositories.prompt_repository import PromptRepository
-from src.repositories.image_repository import ImageRepository
-from src.tracking.graph_analyzer import GraphAnalyzer
-from src.tracking.workflow_tracker import WorkflowTracker
+from .config import config
+from .services.prompt_service import PromptService
+from .services.image_service import ImageService
+from .repositories.prompt_repository import PromptRepository
+from .repositories.image_repository import ImageRepository
+from .tracking.graph_analyzer import GraphAnalyzer
+from .tracking.workflow_tracker import WorkflowTracker
 try:  # pragma: no cover - metadata import path differs in tests
     from promptmanager.utils.metadata_extractor import MetadataExtractor  # type: ignore
 except ImportError:  # pragma: no cover
@@ -28,7 +28,7 @@ try:  # pragma: no cover - environment-specific import
     from promptmanager.loggers import get_logger  # type: ignore
 except ImportError:  # pragma: no cover
     from loggers import get_logger  # type: ignore
-from src.database import db
+from .database import db
 
 logger = get_logger("promptmanager.comfyui")
 
@@ -246,7 +246,7 @@ class ComfyUIClient:
         logger.debug(f"Progress for node {node_id}: {value}/{max_value}")
         
         # Broadcast progress to PromptManager clients
-        from src.api.websocket import broadcast_batch_progress
+        from .api.websocket import broadcast_batch_progress
         
         await broadcast_batch_progress(
             prompt_id,

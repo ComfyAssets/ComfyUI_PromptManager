@@ -10,7 +10,7 @@ from pathlib import Path
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.core.base_repository import BaseRepository
+from ..core.base_repository import BaseRepository
 
 try:  # pragma: no cover - environment-specific import
     from promptmanager.loggers import get_logger  # type: ignore

@@ -4,7 +4,7 @@ import logging
 from aiohttp import web
 from typing import Any, Dict
 
-from src.services.settings_service import SettingsService
+from ..services.settings_service import SettingsService
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ class SettingsRouteHandler:
             # Handle logging control if enable_logging is being updated
             if key == 'enable_logging' and success:
                 try:
-                    from src.core.logging_control import set_logging_enabled
+                    from .core.logging_control import set_logging_enabled
                     set_logging_enabled(bool(value))
                     logger.info(f"Logging {'enabled' if value else 'disabled'} by user")
                 except Exception as log_err:

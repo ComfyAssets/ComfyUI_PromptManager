@@ -7,7 +7,7 @@ from aiohttp import web
 import json
 import time
 from typing import Dict, Any
-from src.services.hybrid_stats_service import HybridStatsService
+from ..services.hybrid_stats_service import HybridStatsService
 
 
 class StatsRoutes:

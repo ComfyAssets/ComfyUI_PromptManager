@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from src.services.enhanced_thumbnail_service import EnhancedThumbnailService, ThumbnailTask
+from .services.enhanced_thumbnail_service import EnhancedThumbnailService, ThumbnailTask
 from utils.cache import CacheManager
 from utils.logging import get_logger
 
@@ -27,7 +27,7 @@ try:
     if str(parent_dir) not in sys.path:
         sys.path.insert(0, str(parent_dir))
 
-    from src.database import PromptDatabase as Database
+    from .database import PromptDatabase as Database
 except ImportError:
     import importlib.util
 

@@ -8,10 +8,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import sqlite3
 
-from src.core.base_repository import BaseRepository
+from ..core.base_repository import BaseRepository
 
 try:
-    from src.utils.file_metadata import compute_file_metadata, FileMetadata
+    from ..utils.file_metadata import compute_file_metadata, FileMetadata
 except ImportError:  # pragma: no cover - CLI/tests fallback
     from utils.file_metadata import compute_file_metadata, FileMetadata  # type: ignore
 

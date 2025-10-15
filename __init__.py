@@ -19,14 +19,8 @@ def safe_print(message):
 
 def conditional_print(message):
     """Print only if logging is enabled in settings."""
-    # Check if logging is enabled
-    try:
-        from src.core.logging_control import is_logging_enabled
-        if is_logging_enabled():
-            safe_print(message)
-    except:
-        # If we can't check settings, print anyway (fail-safe)
-        safe_print(message)
+    # Always print for now - logging control happens later in initialization
+    safe_print(message)
 
 # Add package directories to Python path for clean imports
 _PACKAGE_ROOT = Path(__file__).parent.resolve()

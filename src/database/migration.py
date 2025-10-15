@@ -17,8 +17,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from src.repositories.generated_image_repository import GeneratedImageRepository
-from src.utils.file_operations import (
+from ..repositories.generated_image_repository import GeneratedImageRepository
+from ..utils.file_operations import (
     FileOperationError,
     checkpoint_wal_file,
     close_all_sqlite_connections,

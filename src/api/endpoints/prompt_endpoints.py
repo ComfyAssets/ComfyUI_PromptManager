@@ -6,13 +6,13 @@ extending the BaseController with prompt-specific operations.
 
 from typing import Any, Dict, List, Tuple
 
-from src.api.base_controller import BaseController
-from src.api.middleware import (
+from .api.base_controller import BaseController
+from .api.middleware import (
     RateLimiter, 
     ValidationMiddleware,
     CacheMiddleware
 )
-from src.services.prompt_service import PromptService
+from ..services.prompt_service import PromptService
 try:  # pragma: no cover - environment-specific import
     from promptmanager.loggers import get_logger  # type: ignore
 except ImportError:  # pragma: no cover

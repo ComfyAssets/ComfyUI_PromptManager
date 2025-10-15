@@ -17,9 +17,9 @@ from typing import Optional
 
 from aiohttp import web
 
-from src.config import config
-from src.api.routes import PromptManagerAPI
-from src.api.websocket import ws_manager, WebSocketHandler
+from .config import config
+from .api.routes import PromptManagerAPI
+from .api.websocket import ws_manager, WebSocketHandler
 
 try:  # pragma: no cover - environment-specific import path
     from promptmanager.loggers import get_logger  # type: ignore

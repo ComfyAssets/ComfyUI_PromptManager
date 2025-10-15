@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional, List, AsyncGenerator
 from PIL import Image
 import logging
 
-from src.metadata import ComfyMetadataParser
+from .metadata import ComfyMetadataParser
 
 # Import hashing function once at module level to avoid sys.path modifications during scanning
 try:

@@ -6,8 +6,8 @@ inheriting all common functionality from BaseGallery.
 
 from typing import Any, Dict, List, Optional
 
-from src.components.base_gallery import BaseGallery, ViewMode
-from src.services.prompt_service import PromptService
+from ..components.base_gallery import BaseGallery, ViewMode
+from ..services.prompt_service import PromptService
 
 try:  # pragma: no cover - environment-specific import
     from promptmanager.loggers import get_logger  # type: ignore

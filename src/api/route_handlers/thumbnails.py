@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from aiohttp import web
 
-from src.services.enhanced_thumbnail_service import EnhancedThumbnailService, ThumbnailTask
-from src.services.thumbnail_reconciliation_service import ThumbnailReconciliationService
-from src.utils.ffmpeg_finder import (
+from ..services.enhanced_thumbnail_service import EnhancedThumbnailService, ThumbnailTask
+from ..services.thumbnail_reconciliation_service import ThumbnailReconciliationService
+from .utils.ffmpeg_finder import (
     DEFAULT_TIMEOUT as FFMPEG_TIMEOUT,
     find_ffmpeg_candidates,
     verify_ffmpeg_path,
@@ -31,7 +31,7 @@ try:
     if str(parent_dir) not in sys.path:
         sys.path.insert(0, str(parent_dir))
     
-    from src.database import PromptDatabase as Database
+    from .database import PromptDatabase as Database
 except ImportError:
     # Use the alternative import method if direct import fails
     import importlib.util
@@ -54,11 +54,11 @@ except ImportError:
     database_module = _load_database_module()
     Database = database_module.PromptDatabase
 
-from src.config import config
+from .config import config
 from utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from src.api.realtime_events import RealtimeEvents
+    from .api.realtime_events import RealtimeEvents
 
 logger = get_logger("promptmanager.api.thumbnails")
 

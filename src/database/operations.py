@@ -64,16 +64,28 @@ except ImportError:  # pragma: no cover
     from loggers import get_logger  # type: ignore
 
 # Import hashing function once at module level to avoid sys.path modifications during database operations
-try:
-    from utils.validation.hashing import generate_prompt_hash
-except ImportError:
-    # Fallback: add project root to path and try again
-    import sys
-    import os
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
-    from utils.validation.hashing import generate_prompt_hash
+# CRITICAL: There are TWO utils directories:
+#   1. /utils/ at package root (contains validation/hashing.py)
+#   2. /src/utils/ (contains file_operations.py, file_metadata.py, etc.)
+# When src/ is in sys.path, Python finds src/utils first, which doesn't have validation/
+# We use importlib with explicit path manipulation to load from package root utils
+
+import sys as _sys
+import os as _os
+import importlib.util as _importlib_util
+
+# Calculate paths
+_current_file = _os.path.abspath(__file__)
+_database_dir = _os.path.dirname(_current_file)  # src/database/
+_src_dir = _os.path.dirname(_database_dir)  # src/
+_project_root = _os.path.dirname(_src_dir)  # package root
+_hashing_module_path = _os.path.join(_project_root, 'utils', 'validation', 'hashing.py')
+
+# Load the hashing module explicitly from package root
+_spec = _importlib_util.spec_from_file_location("_hashing_module", _hashing_module_path)
+_hashing_module = _importlib_util.module_from_spec(_spec)
+_spec.loader.exec_module(_hashing_module)
+generate_prompt_hash = _hashing_module.generate_prompt_hash
 
 from .models import PromptModel
 

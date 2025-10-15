@@ -7,9 +7,9 @@ inheriting all common functionality from BaseService.
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.core.base_service import BaseService
-from src.core.validators import Validators, ValidationError
-from src.repositories.image_repository import ImageRepository
+from ..core.base_service import BaseService
+from ..core.validators import Validators, ValidationError
+from ..repositories.image_repository import ImageRepository
 
 try:  # pragma: no cover - environment-specific import
     from promptmanager.loggers import get_logger  # type: ignore
@@ -32,7 +32,7 @@ class ImageService(BaseService):
             repository: ImageRepository instance (creates default if None)
         """
         if repository is None:
-            from src.repositories.image_repository import ImageRepository
+            from .repositories.image_repository import ImageRepository
             repository = ImageRepository()
         super().__init__(repository)
         

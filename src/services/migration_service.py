@@ -5,7 +5,7 @@ from __future__ import annotations
 from threading import Lock
 from typing import Any, Callable, Dict, Optional
 
-from src.database.migration import (
+from ..database.migration import (
     DatabaseMigrator,
     MigrationDetector,
     MigrationPhase,

@@ -11,7 +11,7 @@ from typing import Optional, Any, Dict, List
 from contextlib import contextmanager
 from pathlib import Path
 
-from src.config import config
+from .config import config
 
 try:  # pragma: no cover - import path differs between runtime contexts
     from promptmanager.loggers import get_logger  # type: ignore

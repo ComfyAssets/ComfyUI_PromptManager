@@ -8,13 +8,13 @@ import os
 from typing import Any, Dict, List, Tuple
 from datetime import datetime
 
-from src.api.base_controller import BaseController
-from src.api.middleware import (
+from .api.base_controller import BaseController
+from .api.middleware import (
     RateLimiter,
     ValidationMiddleware,
     CacheMiddleware
 )
-from src.services.image_service import ImageService
+from ..services.image_service import ImageService
 
 try:  # pragma: no cover - metadata import path differs in tests
     from promptmanager.utils.metadata_extractor import MetadataExtractor  # type: ignore

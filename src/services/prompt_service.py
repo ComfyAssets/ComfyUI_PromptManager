@@ -6,9 +6,9 @@ inheriting all common functionality from BaseService.
 
 from typing import Any, Dict, List, Optional
 
-from src.core.base_service import BaseService
-from src.core.validators import Validators, ValidationError
-from src.repositories.prompt_repository import PromptRepository
+from ..core.base_service import BaseService
+from ..core.validators import Validators, ValidationError
+from ..repositories.prompt_repository import PromptRepository
 
 # Import with fallbacks
 try:

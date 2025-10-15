@@ -8,7 +8,7 @@ import json
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from functools import wraps
 
-from src.core.validators import ValidationError
+from ..core.validators import ValidationError
 
 try:  # pragma: no cover - environment-specific import
     from promptmanager.loggers import get_logger  # type: ignore

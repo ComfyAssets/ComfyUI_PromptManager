@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.core.base_repository import BaseRepository
+from ..core.base_repository import BaseRepository
 
 try:  # pragma: no cover
     from promptmanager.loggers import get_logger  # type: ignore
