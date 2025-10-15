@@ -58,6 +58,15 @@ class SettingsRouteHandler:
 
             success = self.settings_service.set(key, value, category, description)
 
+            # Handle logging control if enable_logging is being updated
+            if key == 'enable_logging' and success:
+                try:
+                    from src.core.logging_control import set_logging_enabled
+                    set_logging_enabled(bool(value))
+                    logger.info(f"Logging {'enabled' if value else 'disabled'} by user")
+                except Exception as log_err:
+                    logger.warning(f"Could not update logging control: {log_err}")
+
             return web.json_response({
                 'success': success,
                 'key': key,
