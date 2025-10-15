@@ -337,8 +337,12 @@ def initialize_api(server):
         routes.get('/prompt_manager/health')(health_proxy)
         routes.get('/api/prompt_manager/health')(health_proxy)
 
+        # Get actual server URL from ComfyUI (respects --listen and --port)
+        from utils.comfyui_utils import get_comfyui_server_url
+        server_url = get_comfyui_server_url()
+
         safe_print("✅ PromptManager API initialized successfully")
-        safe_print(f"📍 Access web UI at: http://localhost:8188/prompt_manager/")
+        safe_print(f"📍 Access web UI at: {server_url}/prompt_manager/")
         safe_print("=" * 60 + "\n")
 
         return api
@@ -427,9 +431,13 @@ try:
             # Debug: Try to access the route directly
             safe_print(f"[PromptManager]    - Total app routes: {len(list(PromptServer.instance.app.router.routes()))}")
 
+            # Get actual server URL from ComfyUI (respects --listen and --port)
+            from utils.comfyui_utils import get_comfyui_server_url
+            server_url = get_comfyui_server_url()
+
             _API_INITIALIZED = True
             safe_print(f"[PromptManager] ✅ API routes registered successfully!")
-            safe_print(f"[PromptManager]    - Test endpoint: http://localhost:8188/api/prompt_manager/settings")
+            safe_print(f"[PromptManager]    - Test endpoint: {server_url}/api/prompt_manager/settings")
 
         except Exception as e:
             safe_print(f"[PromptManager] ❌ Failed to initialize API")
