@@ -119,6 +119,11 @@ class LogConfig:
 
             setattr(main_module, _GLOBAL_INIT_FLAG, True)
 
+            # Check if logging should be disabled via environment variable
+            import os
+            if level is None and os.environ.get('PROMPTMANAGER_LOGGING_DISABLED') == '1':
+                level = logging.CRITICAL
+
             resolved_level = cls._resolve_level(level)
             format_string = format_string or cls.DEFAULT_FORMAT
             date_format = date_format or cls.DEFAULT_DATE_FORMAT
@@ -193,7 +198,17 @@ class LogConfig:
     @classmethod
     def get_logger(cls, name: str) -> logging.Logger:
         normalized = _normalize_logger_name(name) or name or "promptmanager"
-        return logging.getLogger(normalized)
+        logger = logging.getLogger(normalized)
+
+        # Apply logging control level if set
+        import os
+        if os.environ.get('PROMPTMANAGER_LOGGING_DISABLED') == '1':
+            logger.setLevel(logging.CRITICAL)
+            # Also set all handlers to CRITICAL
+            for handler in logger.handlers:
+                handler.setLevel(logging.CRITICAL)
+
+        return logger
 
     @classmethod
     def set_level(cls, level: int, logger_name: Optional[str] = None) -> None:
