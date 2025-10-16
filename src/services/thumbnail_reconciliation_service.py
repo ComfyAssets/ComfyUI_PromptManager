@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from .services.enhanced_thumbnail_service import EnhancedThumbnailService, ThumbnailTask
+from .enhanced_thumbnail_service import EnhancedThumbnailService, ThumbnailTask
 from utils.cache import CacheManager
 from utils.logging import get_logger
 
@@ -27,7 +27,7 @@ try:
     if str(parent_dir) not in sys.path:
         sys.path.insert(0, str(parent_dir))
 
-    from .database import PromptDatabase as Database
+    from ..database import PromptDatabase as Database
 except ImportError:
     import importlib.util
 
@@ -37,7 +37,7 @@ except ImportError:
         if module_name in sys.modules:
             return sys.modules[module_name]
 
-        module_path = Path(__file__).resolve().parent.parent.parent / "database" / "operations.py"
+        module_path = Path(__file__).resolve().parent.parent / "database" / "operations.py"
         spec = importlib.util.spec_from_file_location(module_name, module_path)
         module = importlib.util.module_from_spec(spec)
         assert spec and spec.loader

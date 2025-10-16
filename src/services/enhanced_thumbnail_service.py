@@ -32,7 +32,7 @@ except ImportError:
 from utils.image_processing import ThumbnailGenerator, ImageProcessor
 
 from utils.logging import get_logger
-from .config import config
+from ..config import config
 from utils.cache import CacheManager
 
 try:
@@ -43,7 +43,7 @@ try:
     if str(parent_dir) not in sys.path:
         sys.path.insert(0, str(parent_dir))
     
-    from .database import PromptDatabase as Database
+    from ..database import PromptDatabase as Database
 except ImportError:
     # Use the alternative import method if direct import fails
     import importlib.util
@@ -56,7 +56,7 @@ except ImportError:
         if module_name in sys.modules:
             return sys.modules[module_name]
 
-        module_path = Path(__file__).resolve().parent.parent.parent / "database" / "operations.py"
+        module_path = Path(__file__).resolve().parent.parent / "database" / "operations.py"
         spec = importlib.util.spec_from_file_location(module_name, module_path)
         module = importlib.util.module_from_spec(spec)
         assert spec and spec.loader
@@ -792,14 +792,12 @@ class EnhancedThumbnailService:
             batch_tasks = tasks[batch_start:batch_end]
             batch_completed = []  # Track completed tasks for this batch only
 
-            logger.info(f"Processing batch {batch_start//BATCH_SIZE + 1}: tasks {batch_start+1}-{batch_end} of {len(tasks)}")
-
             # Submit batch to thread pool
             futures = []
             for task in batch_tasks:
                 if cancel_event and cancel_event.is_set():
                     cancelled = True
-                    logger.info("Cancellation requested during batch scheduling")
+                    logger.debug("Cancellation requested during batch scheduling")
                     break
                 future = self.executor.submit(self._generate_single_thumbnail, task)
                 futures.append(future)
@@ -865,10 +863,6 @@ class EnhancedThumbnailService:
 
             # After each batch, yield to event loop to allow realtime/status updates
             await asyncio.sleep(0.1)
-            if self.current_progress:
-                logger.info(f"Batch complete: {self.current_progress.completed} completed, "
-                           f"{self.current_progress.failed} failed, "
-                           f"{self.current_progress.skipped} skipped")
 
             # Update database after each batch to persist progress
             if batch_completed:
@@ -953,8 +947,6 @@ class EnhancedThumbnailService:
             'xlarge': []
         }
 
-        logger.info(f"[ThumbnailDB] _update_database called with {len(tasks)} tasks")
-
         for task in tasks:
             # Determine size name from dimensions
             size_name = None
@@ -981,11 +973,6 @@ class EnhancedThumbnailService:
                     })
                     logger.debug(f"[ThumbnailDB] Marking {task.source_path} as FAILED in database")
 
-        # Log grouped results
-        for size_name, updates in updates_by_size.items():
-            if updates:
-                logger.info(f"[ThumbnailDB] {size_name}: {len(updates)} updates")
-
         # Update database directly using SQL
         if any(updates_by_size.values()):
             try:
@@ -1008,8 +995,6 @@ class EnhancedThumbnailService:
                         """, (update['thumbnail_path'], update['image_path']))
 
                 conn.commit()
-                total_updated = sum(len(updates) for updates in updates_by_size.values())
-                logger.info(f"[ThumbnailDB] ✅ Updated {total_updated} thumbnail records in database")
                 conn.close()
 
             except Exception as e:
@@ -1036,13 +1021,11 @@ class EnhancedThumbnailService:
             Path to thumbnail or original
         """
         from pathlib import Path
-        logger.debug(f"serve_thumbnail called with image_id={image_id}, size={size}")
 
         # Check cache first
         cache_key = f"thumbnail:{image_id}:{size}"
         cached_path = self.cache.get(cache_key) if self.cache else None
         if cached_path and Path(cached_path).exists():
-            logger.debug(f"Found in cache: {cached_path}")
             return Path(cached_path)
 
         # Try to get image info from generated_images table if image_id is numeric
@@ -1051,7 +1034,6 @@ class EnhancedThumbnailService:
 
         try:
             image_id_int = int(image_id)
-            logger.debug(f"Looking for image ID {image_id_int} in database")
 
             # Use asyncio.to_thread for the database query to make it non-blocking
             import asyncio
@@ -1070,23 +1052,18 @@ class EnhancedThumbnailService:
                 return row
 
             row = await asyncio.to_thread(query_db)
-            logger.debug(f"Database query result: {row}")
 
             if row:
-                if row['image_path']:  # image_path
+                if row['image_path']:
                     source_path = Path(row['image_path'])
-                    logger.debug(f"Found source_path: {source_path}")
-                if row[f'thumbnail_{size}_path']:  # thumbnail_X_path from database
+                if row[f'thumbnail_{size}_path']:
                     thumbnail_path = Path(row[f'thumbnail_{size}_path'])
-                    logger.debug(f"Found thumbnail_path from DB: {thumbnail_path}, exists: {thumbnail_path.exists()}")
                     if thumbnail_path.exists():
                         # Cache and return the thumbnail path from DB
                         if self.cache:
                             self.cache.set(cache_key, str(thumbnail_path), ttl=3600)
-                        logger.debug(f"Returning thumbnail from DB: {thumbnail_path}")
                         return thumbnail_path
-        except (ValueError, TypeError) as e:
-            logger.debug(f"Not a numeric ID ({image_id}), trying as path: {e}")
+        except (ValueError, TypeError):
             # image_id might be a path or file name
             # Try to resolve it relative to the output directory
             possible_path = Path(config.comfyui.output_dir) / image_id
@@ -1099,26 +1076,22 @@ class EnhancedThumbnailService:
                     source_path = possible_path
 
         if not source_path or not source_path.exists():
-            logger.warning(f"No source path found or doesn't exist: {source_path}")
+            logger.warning(f"No source path found for image_id: {image_id}")
             return None
 
         # If we didn't find it in DB, try to compute the path
         if not thumbnail_path:
             thumbnail_path = self.get_thumbnail_path(source_path, size)
-            logger.debug(f"Computed thumbnail path: {thumbnail_path}")
 
         if thumbnail_path and thumbnail_path.exists():
             # Cache the path
             if self.cache:
                 self.cache.set(cache_key, str(thumbnail_path), ttl=3600)
-            logger.debug(f"Returning computed thumbnail path: {thumbnail_path}")
             return thumbnail_path
 
         if fallback_to_original and source_path.exists():
-            logger.debug(f"Falling back to original: {source_path}")
             return source_path
 
-        logger.debug(f"No thumbnail or original found for image_id={image_id}, size={size}")
         return None
 
     def get_cache_statistics(self) -> Dict[str, Any]:
