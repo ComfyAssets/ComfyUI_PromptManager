@@ -397,7 +397,6 @@
             const formData = new FormData();
             formData.append('file', file);
 
-            console.debug('[PromptManager] metadata upload ->', endpoint);
             const response = await fetch(endpoint, {
               method: 'POST',
               body: formData
@@ -421,7 +420,6 @@
             }
 
             if (response.ok && payload?.success) {
-              console.debug('[PromptManager] metadata upload success <-', endpoint, payload);
               return payload.data || {};
             }
 
@@ -490,7 +488,6 @@
               }
             },
             applyMetadata(metadata) {
-              console.debug('[PromptManager] metadata payload', metadata);
               this.metadata = metadata;
 
               if (metadata.file_size && !Number.isNaN(Number(metadata.file_size))) {

@@ -2036,7 +2036,6 @@
       // Load maintenance statistics when page loads
       document.addEventListener('DOMContentLoaded', function() {
         // Debug: Check what notification systems are available
-        console.log('Notification systems available:', {
           NotificationService: !!window.NotificationService,
           NotificationManager: !!window.NotificationManager,
           ToastManager: !!window.ToastManager
@@ -2060,7 +2059,6 @@
 
       // Initialize thumbnail rebuild modal
       function initThumbnailRebuildModal() {
-        console.log('[ThumbnailRebuild] Initializing modal...');
 
         // Check if ThumbnailRebuildModalV2 class exists (prefer V2, fallback to V1)
         const ModalClass = typeof ThumbnailRebuildModalV2 !== 'undefined'
@@ -2073,21 +2071,17 @@
         }
 
         const isV2 = ModalClass === ThumbnailRebuildModalV2;
-        console.log(`[ThumbnailRebuild] Using ${isV2 ? 'V2' : 'V1'} modal`);
 
         // Create modal instance
         try {
           const rebuildModal = new ModalClass();
-          console.log('[ThumbnailRebuild] Modal instance created successfully');
 
           // Wire up both rebuild buttons
           const btnRebuildTop = document.getElementById('btnRebuildThumbnailsTop');
           const btnRebuildBottom = document.getElementById('btnRebuildThumbnails');
 
           if (btnRebuildTop) {
-            console.log('[ThumbnailRebuild] Wiring top rebuild button');
             btnRebuildTop.addEventListener('click', function(e) {
-              console.log('[ThumbnailRebuild] Top button clicked!');
               e.preventDefault();
 
               if (isV2) {
@@ -2116,9 +2110,7 @@
           }
 
           if (btnRebuildBottom) {
-            console.log('[ThumbnailRebuild] Wiring bottom rebuild button');
             btnRebuildBottom.addEventListener('click', function(e) {
-              console.log('[ThumbnailRebuild] Bottom button clicked!');
               e.preventDefault();
 
               if (isV2) {
@@ -2146,7 +2138,6 @@
             console.warn('[ThumbnailRebuild] Bottom rebuild button not found');
           }
 
-          console.log('[ThumbnailRebuild] Initialization complete');
         } catch (error) {
           console.error('[ThumbnailRebuild] Error during initialization:', error);
         }
@@ -2251,7 +2242,6 @@
         }
 
         try {
-          console.log(`Executing maintenance action: ${action} -> ${endpoint}`);
 
           const response = await fetch(endpoint, {
             method: 'POST',
@@ -2281,7 +2271,6 @@
           }
 
           const data = await response.json();
-          console.log(`Maintenance action ${action} response:`, data);
 
           if (data.success) {
             showNotification(data.message || `${action} completed successfully`, 'success');
@@ -2291,7 +2280,6 @@
 
             // Show results if available
             if (data.stats) {
-              console.log('Operation stats:', data.stats);
             }
             if (data.affected_count !== undefined) {
               showNotification(`Affected items: ${data.affected_count}`, 'info');

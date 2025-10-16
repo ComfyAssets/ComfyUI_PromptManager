@@ -26,7 +26,7 @@
   let editingPromptId = null;
   let searchDebounceTimer = null;
   let currentSortOrder = 'newest'; // Default sort order
-  let currentTagFilter = 'all';
+  let currentTagFilter = []; // Array of selected tag names
   let currentModelFilter = 'all';
   let currentCategoryFilter = 'all';
 
@@ -246,10 +246,24 @@
       });
     }
 
-    const tagFilterSelect = document.getElementById('tagFilterSelect');
-    if (tagFilterSelect) {
-      tagFilterSelect.addEventListener('change', (event) => {
-        currentTagFilter = event.target.value;
+    // Initialize multi-tag filter component
+    if (window.MultiTagFilter) {
+      window.MultiTagFilter.init('multiTagFilterContainer', {
+        apiEndpoint: '/api/v1/tags',
+        placeholder: 'Search tags...',
+        externalPillsContainer: 'activeFiltersPills',
+      }).then((success) => {
+        if (success) {
+          // Listen for tag selection changes and apply filters immediately
+          window.MultiTagFilter.onChange((data) => {
+            currentTagFilter = data.tags;
+            loadPrompts(1); // Reset to page 1 when filter changes
+          });
+        } else {
+          console.error('Failed to initialize MultiTagFilter');
+        }
+      }).catch((error) => {
+        console.error('Error initializing MultiTagFilter:', error);
       });
     }
 
@@ -649,6 +663,12 @@
     // Add category filter if not 'all'
     if (currentCategoryFilter && currentCategoryFilter !== 'all') {
       params.append('category', currentCategoryFilter);
+    }
+
+    // Add multi-tag AND filter
+    if (Array.isArray(currentTagFilter) && currentTagFilter.length > 0) {
+      // Send tags as comma-separated list for AND filtering
+      params.append('tags', currentTagFilter.join(','));
     }
 
     // Add sort order parameters (v1 API uses order_by for field and order_dir for direction)

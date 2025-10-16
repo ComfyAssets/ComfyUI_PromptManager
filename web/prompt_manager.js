@@ -71,7 +71,6 @@ app.registerExtension({
 
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
     if (nodeData.name === "PromptManager") {
-      console.log(`[PromptManager] Patching node type for custom UI: ${nodeData.name}`);
 
       // Store original methods
       const onNodeCreated = nodeType.prototype.onNodeCreated;
@@ -156,7 +155,6 @@ app.registerExtension({
         const originalOnResize = this.onResize;
         this.onResize = function (size) {
           this._userHasResized = true;
-          console.log("[PromptManager] User resized to:", size);
           if (originalOnResize) {
             originalOnResize.call(this, size);
           }
@@ -776,7 +774,6 @@ app.registerExtension({
             const newWindow = window.open(webUrl, "_blank");
 
             if (newWindow) {
-              console.log("[PromptManager] Web interface opened in new tab");
               this.showNotification(
                 "Web interface opened in new tab",
                 "success",
@@ -798,7 +795,6 @@ app.registerExtension({
             );
 
             if (newWindow) {
-              console.log("[PromptManager] Web interface opened in popup");
               this.showNotification("Web interface opened in popup", "success");
             } else {
               // Popup blocked: inform user without redirecting the main UI

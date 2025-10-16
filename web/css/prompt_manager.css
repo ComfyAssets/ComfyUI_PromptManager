@@ -189,6 +189,16 @@ body {
   color: #f4f4f5;
   font-size: 0.875rem;
   cursor: pointer;
+  transition: all 0.2s ease;
+  box-sizing: border-box;
+  line-height: 1.25rem;
+}
+
+.select:focus {
+  outline: none;
+  border-color: var(--primary-a30);
+  background: var(--tonal-a10);
+  box-shadow: 0 0 0 3px rgba(114, 90, 188, 0.1);
 }
 
 .textarea {
