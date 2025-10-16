@@ -11,6 +11,7 @@ from abc import abstractmethod
 from .base_gallery import BaseGallery, ViewMode, SortOrder, FilterCriteria
 from ..database import PromptDatabase, extend_prompt_database_with_gallery
 from ..utils.comfyui_integration import get_comfyui_integration
+from ..config import config
 
 try:  # pragma: no cover - import path differs between runtime contexts
     from promptmanager.loggers import get_logger  # type: ignore
@@ -235,8 +236,8 @@ class UnifiedGallery(BaseGallery):
         if not filename:
             return '/web/images/placeholder-thumb.png'
 
-        # Check for existing thumbnail
-        thumb_dir = Path(self.comfy_integration.get_output_directory()) / '.thumbnails'
+        # Use configured thumbnails directory from config
+        thumb_dir = Path(config.storage.base_path) / config.storage.thumbnails_path
         thumb_path = thumb_dir / f"thumb_{filename}"
 
         if thumb_path.exists():
@@ -366,8 +367,8 @@ class UnifiedGallery(BaseGallery):
         """
         try:
             items = self.db.get_all_items_with_images()
-            thumb_dir = Path(self.comfy_integration.get_output_directory()) / '.thumbnails'
-            thumb_dir.mkdir(exist_ok=True)
+            # Note: thumbnail directory is created by config system during initialization
+            # No need to create it here
 
             success_count = 0
             failed_count = 0
