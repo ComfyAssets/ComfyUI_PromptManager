@@ -28,12 +28,10 @@ const STATIC_ASSETS = [
 
 // Install event - cache static assets
 self.addEventListener('install', (event) => {
-    console.log('[ServiceWorker] Installing...');
 
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then((cache) => {
-                console.log('[ServiceWorker] Caching static assets');
                 return cache.addAll(STATIC_ASSETS);
             })
             .then(() => self.skipWaiting())
@@ -42,7 +40,6 @@ self.addEventListener('install', (event) => {
 
 // Activate event - clean up old caches
 self.addEventListener('activate', (event) => {
-    console.log('[ServiceWorker] Activating...');
 
     event.waitUntil(
         caches.keys().then((cacheNames) => {
@@ -55,7 +52,6 @@ self.addEventListener('activate', (event) => {
                                cacheName !== IMAGE_CACHE;
                     })
                     .map((cacheName) => {
-                        console.log('[ServiceWorker] Deleting old cache:', cacheName);
                         return caches.delete(cacheName);
                     })
             );
@@ -107,7 +103,6 @@ async function handleApiRequest(request) {
 
         return networkResponse;
     } catch (error) {
-        console.log('[ServiceWorker] Network request failed, serving from cache');
 
         // Fall back to cache
         const cachedResponse = await cache.match(request);
@@ -148,7 +143,6 @@ async function handleImageRequest(request) {
 
         return networkResponse;
     } catch (error) {
-        console.log('[ServiceWorker] Failed to fetch image:', request.url);
 
         // Return placeholder image if available
         return caches.match('/prompt_manager/images/placeholder.png')
@@ -181,7 +175,6 @@ async function handleStaticRequest(request) {
 
         return networkResponse;
     } catch (error) {
-        console.log('[ServiceWorker] Network request failed:', request.url);
 
         // Return offline page if available
         if (request.destination === 'document') {
@@ -209,7 +202,6 @@ async function updateCache(request, cache) {
 
 // Handle messages from clients
 self.addEventListener('message', (event) => {
-    console.log('[ServiceWorker] Message received:', event.data);
 
     if (event.data.action === 'skipWaiting') {
         self.skipWaiting();
@@ -230,7 +222,6 @@ self.addEventListener('message', (event) => {
 
 // Background sync for offline actions
 self.addEventListener('sync', (event) => {
-    console.log('[ServiceWorker] Background sync:', event.tag);
 
     if (event.tag === 'sync-prompts') {
         event.waitUntil(syncPrompts());
