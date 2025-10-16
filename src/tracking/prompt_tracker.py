@@ -74,7 +74,6 @@ class PromptTracker:
             "skipped_prompts": 0,  # Detailer prompts skipped via first-prompt-wins
         }
 
-        logger.info("PromptTracker initialized")
     
     def register_prompt(
         self,
@@ -103,20 +102,10 @@ class PromptTracker:
             Execution ID for this prompt (or "skipped" if already registered)
         """
         with self._lock:
-            logger.info(f"🔵 register_prompt called: node_id={node_id}, unique_id={unique_id} (type={type(unique_id)})")
-            logger.debug(f"  Prompt text: {prompt[:50]}...")
-
             # FIRST-PROMPT-WINS: If prompt already registered for this unique_id, skip it
             if unique_id in self._active_prompts:
-                existing = self._active_prompts[unique_id]
-                logger.info(f"🟡 SKIPPED: Prompt already registered for unique_id={unique_id}")
-                logger.info(f"   First prompt (keeping): node_id={existing.node_id}, text={existing.prompt_text[:50]}...")
-                logger.info(f"   This prompt (ignoring): node_id={node_id}, text={prompt[:50]}...")
-                logger.debug(f"   This is likely a detailer/refinement node - first prompt wins!")
-
                 # Update metrics
                 self.metrics["skipped_prompts"] += 1
-
                 return "skipped"  # Return special value to indicate skip
 
             # Clean up old entries when a new workflow starts
@@ -125,13 +114,8 @@ class PromptTracker:
                 current_time = time.time()
                 all_old = all(current_time - t.timestamp > 60 for t in self._active_prompts.values())
                 if all_old:
-                    logger.info(f"New workflow detected (unique_id={unique_id}), clearing {len(self._active_prompts)} old entries")
                     self._active_prompts.clear()
                     self._execution_graph.clear()
-
-            # Log the state before registration
-            before_keys = list(self._active_prompts.keys())
-            logger.debug(f"  Keys before registration: {before_keys}")
 
             tracking = TrackingData(
                 node_id=node_id,
@@ -144,17 +128,6 @@ class PromptTracker:
 
             # Store by unique_id for retrieval during save
             self._active_prompts[unique_id] = tracking
-
-            # Log the state after registration
-            after_keys = list(self._active_prompts.keys())
-            logger.info(f"🟢 REGISTERED: First prompt for unique_id={unique_id}")
-            logger.debug(f"  Keys after registration: {after_keys}")
-
-            # Verify storage
-            if unique_id in self._active_prompts:
-                logger.info(f"✅ Verification: unique_id={unique_id} IS in _active_prompts")
-            else:
-                logger.error(f"❌ Verification FAILED: unique_id={unique_id} NOT in _active_prompts!")
 
             # Update execution graph
             if node_id not in self._execution_graph:
@@ -169,8 +142,6 @@ class PromptTracker:
             if len(prompt_nodes) > 1:
                 self.metrics["multi_node_workflows"] += 1
 
-            logger.debug(f"Registered prompt from node {node_id} with ID {unique_id}")
-            logger.info(f"Registered tracking: unique_id={unique_id} node_id={node_id} len_active={len(self._active_prompts)}")
             return tracking.execution_id
     
     def register_connection(self, from_node: str, to_node: str) -> None:
@@ -205,32 +176,22 @@ class PromptTracker:
             TrackingData if found, None otherwise
         """
         with self._lock:
-            logger.debug(f"get_prompt_for_save called: save_node_id={save_node_id}, unique_id={unique_id}")
-            logger.debug(f"Active prompts count: {len(self._active_prompts)}")
-
             # Direct lookup if unique_id provided
             if unique_id:
-                logger.debug(f"Attempting direct lookup for unique_id={unique_id}")
-                logger.debug(f"Available keys in _active_prompts: {list(self._active_prompts.keys())}")
-
                 if unique_id in self._active_prompts:
-                    logger.info(f"✅ Direct lookup HIT for unique_id={unique_id}")
                     return self._active_prompts[unique_id]
-                else:
-                    # Check if it's a type mismatch issue (string vs int)
-                    for key in self._active_prompts.keys():
-                        if str(key) == str(unique_id):
-                            logger.warning(f"Found match with string conversion: key={key} (type={type(key)}), unique_id={unique_id} (type={type(unique_id)})")
 
-                    logger.info(f"❌ Direct lookup MISS for unique_id={unique_id}; active_ids={list(self._active_prompts.keys())}")
+                # Check if it's a type mismatch issue (string vs int)
+                for key in self._active_prompts.keys():
+                    if str(key) == str(unique_id):
+                        logger.warning(f"Type mismatch in unique_id lookup: key={key} (type={type(key)}), unique_id={unique_id} (type={type(unique_id)})")
+                        return self._active_prompts[key]
 
             # Fallback: if caller passed a PromptManager node_id as save_node_id, use the most recent entry
             if save_node_id and save_node_id.startswith("PromptManager"):
                 candidates = [t for t in self._active_prompts.values() if t.node_id == save_node_id]
                 if candidates:
-                    best = max(candidates, key=lambda t: t.timestamp)
-                    logger.info(f"Fallback matched by node_id={save_node_id}; using latest timestamp")
-                    return best
+                    return max(candidates, key=lambda t: t.timestamp)
             
             # Otherwise, trace through the graph
             prompt_sources = self._find_prompt_sources(save_node_id)
@@ -254,11 +215,10 @@ class PromptTracker:
                             best_score = score
                             best_match = tracking
                             best_timestamp = tracking.timestamp
-            
+
             if best_match:
                 best_match.confidence_score = best_score
-                logger.debug(f"Found prompt for save {save_node_id} with confidence {best_score:.2f}")
-            
+
             return best_match
 
     def debug_active_ids(self) -> list:
@@ -325,11 +285,8 @@ class PromptTracker:
                     image_path=normalized_path,
                     metadata=metadata_payload
                 )
-                print(f"   💾 Successfully linked image to prompt_id {prompt_id}")
             else:
                 # Track the image even without prompt_id (store metadata for later linking)
-                logger.info(f"No prompt_id yet for image {image_path}, tracking metadata for later linking")
-                # Store in tracking data for potential later linking
                 if not hasattr(tracking_data, 'pending_images'):
                     tracking_data.metadata['pending_images'] = []
                 tracking_data.metadata['pending_images'].append({
@@ -337,7 +294,6 @@ class PromptTracker:
                     'metadata': metadata,
                     'timestamp': time.time()
                 })
-                logger.info(f"Stored pending image link for {Path(normalized_path).name}")
             
             # Update metrics
             self.metrics["successful_pairs"] += 1
@@ -346,8 +302,6 @@ class PromptTracker:
             self.metrics["avg_confidence"] = (
                 (current_avg * (total - 1) + tracking_data.confidence_score) / total
             )
-            
-            logger.info(f"Recorded image {Path(image_path).name} with prompt (confidence: {tracking_data.confidence_score:.2f})")
     
     def _find_prompt_sources(self, target_node: str) -> Set[str]:
         """Find all PromptManager nodes that connect to a target node.
@@ -414,12 +368,9 @@ class PromptTracker:
     def clear_workflow_tracking(self) -> None:
         """Clear all tracking data for a new workflow."""
         with self._lock:
-            count = len(self._active_prompts)
-            if count > 0:
-                logger.info(f"Clearing {count} tracking entries for new workflow")
-                self._active_prompts.clear()
-                self._execution_graph.clear()
-                self._node_outputs.clear()
+            self._active_prompts.clear()
+            self._execution_graph.clear()
+            self._node_outputs.clear()
 
     def cleanup_old_tracking(self, max_age_seconds: int = 3600) -> int:
         """Clean up old tracking data from abandoned workflows.
@@ -439,17 +390,8 @@ class PromptTracker:
                     to_remove.append(unique_id)
             
             for unique_id in to_remove:
-                tracking = self._active_prompts.get(unique_id)
-                if tracking:
-                    age = current_time - tracking.timestamp
-                    logger.debug(f"  Removing entry {unique_id} (age: {age:.1f}s, node: {tracking.node_id})")
                 del self._active_prompts[unique_id]
 
-            if to_remove:
-                logger.info(f"Cleaned up {len(to_remove)} old tracking entries (>= {max_age_seconds}s old)")
-            else:
-                logger.debug(f"Cleanup check: {len(self._active_prompts)} entries, none older than {max_age_seconds}s")
-            
             return len(to_remove)
     
     def get_metrics(self) -> Dict[str, Any]:
@@ -482,7 +424,6 @@ class PromptTracker:
                 "avg_confidence": 0.0,
                 "skipped_prompts": 0,
             }
-            logger.info("Metrics reset")
     
     async def start_cleanup_task(self) -> None:
         """Start background task for periodic cleanup."""
