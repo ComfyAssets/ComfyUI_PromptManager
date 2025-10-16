@@ -390,10 +390,142 @@ class PromptRepository(BaseRepository):
             List of prompts in category
         """
         return self.list(category=category)
+
+    def list(self, 
+             limit: int = 100, 
+             offset: int = 0,
+             order_by: str = "created_at DESC",
+             **filters) -> List[Dict[str, Any]]:
+        """List prompts with optional filtering, including multi-tag AND filtering.
+        
+        Overrides base list() to support multi-tag filtering with AND logic.
+        When 'tags' filter is provided as a list, returns only prompts containing ALL tags.
+        
+        Args:
+            limit: Maximum number of records
+            offset: Number of records to skip
+            order_by: SQL ORDER BY clause
+            **filters: Column filters. Special handling for 'tags' as a list.
+            
+        Returns:
+            List of dictionaries containing prompt data
+            
+        Example:
+            # Single tag filter
+            prompts = repo.list(tags="portrait")
+            
+            # Multi-tag AND filter - returns prompts with BOTH tags
+            prompts = repo.list(tags=["portrait", "fantasy"])
+        """
+        # Extract tags filter if present
+        tags_filter = filters.pop('tags', None)
+        
+        # Start with base filters (non-tag filters)
+        table = self._get_table_name()
+        where_clauses = []
+        values = []
+        
+        # Handle standard filters
+        for key, value in filters.items():
+            if value is not None:
+                if isinstance(value, (list, tuple)):
+                    placeholders = ",".join(["?" for _ in value])
+                    where_clauses.append(f"{key} IN ({placeholders})")
+                    values.extend(value)
+                elif isinstance(value, str) and "%" in value:
+                    where_clauses.append(f"{key} LIKE ?")
+                    values.append(value)
+                else:
+                    where_clauses.append(f"{key} = ?")
+                    values.append(value)
+        
+        # Handle multi-tag AND filtering
+        if tags_filter is not None:
+            if isinstance(tags_filter, list):
+                # AND logic: prompt must contain ALL tags
+                for tag in tags_filter:
+                    # Tags are stored as JSON array, e.g., ["portrait", "fantasy"]
+                    # Match the tag within the JSON representation
+                    where_clauses.append(f"tags LIKE ?")
+                    # Use JSON string format with quotes
+                    values.append(f'%"{tag}"%')
+            elif isinstance(tags_filter, str):
+                # Single tag filter
+                where_clauses.append(f"tags LIKE ?")
+                values.append(f'%"{tags_filter}"%')
+        
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        
+        query = f"""
+            SELECT * FROM {table}
+            {where_sql}
+            ORDER BY {order_by}
+            LIMIT ? OFFSET ?
+        """
+        
+        values.extend([limit, offset])
+        
+        with self._get_connection() as conn:
+            cursor = conn.execute(query, values)
+            return [self._to_dict(row) for row in cursor.fetchall()]
     
+    
+    def count(self, **filters) -> int:
+        """Count prompts with optional filtering, including multi-tag AND filtering.
+
+        Overrides base count() to support multi-tag filtering with AND logic.
+
+        Args:
+            **filters: Column filters. Special handling for 'tags' as a list.
+
+        Returns:
+            Count of matching prompts
+        """
+        # Extract tags filter if present
+        tags_filter = filters.pop('tags', None)
+
+        # Start with base filters (non-tag filters)
+        table = self._get_table_name()
+        where_clauses = []
+        values = []
+
+        # Handle standard filters
+        for key, value in filters.items():
+            if value is not None:
+                if isinstance(value, (list, tuple)):
+                    placeholders = ",".join(["?" for _ in value])
+                    where_clauses.append(f"{key} IN ({placeholders})")
+                    values.extend(value)
+                elif isinstance(value, str) and "%" in value:
+                    where_clauses.append(f"{key} LIKE ?")
+                    values.append(value)
+                else:
+                    where_clauses.append(f"{key} = ?")
+                    values.append(value)
+
+        # Handle multi-tag AND filtering
+        if tags_filter is not None:
+            if isinstance(tags_filter, list):
+                # AND logic: prompt must contain ALL tags
+                for tag in tags_filter:
+                    where_clauses.append(f"tags LIKE ?")
+                    values.append(f'%"{tag}"%')
+            elif isinstance(tags_filter, str):
+                # Single tag filter
+                where_clauses.append(f"tags LIKE ?")
+                values.append(f'%"{tags_filter}"%')
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        query = f"SELECT COUNT(*) FROM {table} {where_sql}"
+
+        with self._get_connection() as conn:
+            cursor = conn.execute(query, values)
+            return cursor.fetchone()[0]
+
     def get_categories(self) -> List[Dict[str, Any]]:
         """Get all categories with counts.
-        
+
         Returns:
             List of category names with prompt counts
         """
@@ -403,7 +535,7 @@ class PromptRepository(BaseRepository):
             GROUP BY category
             ORDER BY count DESC, category ASC
         """
-        
+
         with self._get_connection() as conn:
             cursor = conn.execute(query)
             return [dict(row) for row in cursor.fetchall()]
