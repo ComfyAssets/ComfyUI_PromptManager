@@ -357,7 +357,6 @@
             GallerySettingsConnector.subscribe(function(event) {
                 if (event.type === 'update' || event.type === 'reset') {
                     // Settings have changed, gallery will auto-update via event listeners
-                    console.log('Gallery settings updated:', event.data);
                 }
             });
 
