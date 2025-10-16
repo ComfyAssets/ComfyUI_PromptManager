@@ -76,11 +76,13 @@ class PromptModel:
         Creates:
             - prompts table: Stores prompt text and metadata
             - generated_images table: Links generated images to their source prompts
+            - tags table: Stores unique tags with usage counts
         """
         self._create_prompts_table(conn)
         self._create_generated_images_table(conn)
         self._create_settings_table(conn)
         self._create_prompt_tracking_table(conn)
+        self._create_tags_table(conn)
 
         self.logger.debug("Database tables created successfully")
 
@@ -109,6 +111,8 @@ class PromptModel:
             "CREATE INDEX IF NOT EXISTS idx_generation_time ON generated_images(generation_time)",
             "CREATE INDEX IF NOT EXISTS idx_tracking_session ON prompt_tracking(session_id)",
             "CREATE INDEX IF NOT EXISTS idx_tracking_created ON prompt_tracking(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)",
+            "CREATE INDEX IF NOT EXISTS idx_tags_usage_count ON tags(usage_count DESC)",
         ]
 
         for index_sql in indexes:
@@ -192,10 +196,25 @@ class PromptModel:
             """
         )
 
+    def _create_tags_table(self, conn: sqlite3.Connection) -> None:
+        """Ensure the tags table exists for storing unique tags with usage counts."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                usage_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
         """Upgrade legacy schemas in-place so new columns and indexes exist."""
         self._migrate_prompts_table(conn)
         self._migrate_generated_images_table(conn)
+        self._migrate_tags_table(conn)
         self._fix_stats_triggers(conn)
 
     def _migrate_prompts_table(self, conn: sqlite3.Connection) -> None:
@@ -554,6 +573,82 @@ class PromptModel:
         except Exception as e:
             self.logger.warning(f"Failed to fix stats triggers: {e}")
             # Don't fail the entire migration if trigger fixing fails
+
+    def _migrate_tags_table(self, conn: sqlite3.Connection) -> None:
+        """
+        Extract unique tags from prompts table and populate tags table.
+
+        This migration runs once to populate the tags table with existing
+        tags from the prompts table, calculating usage counts.
+        """
+        try:
+            # Check if tags table exists
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='tags'"
+            )
+            if not cursor.fetchone():
+                self.logger.debug("Tags table doesn't exist yet, skipping migration")
+                return
+
+            # Check if tags table is empty (migration not yet run)
+            cursor = conn.execute("SELECT COUNT(*) as count FROM tags")
+            tag_count = cursor.fetchone()[0]
+
+            if tag_count > 0:
+                self.logger.debug(f"Tags table already populated with {tag_count} tags, skipping migration")
+                return
+
+            self.logger.info("Migrating tags from prompts table to tags table")
+
+            # Get all tags from prompts
+            cursor = conn.execute("""
+                SELECT DISTINCT tags FROM prompts
+                WHERE tags IS NOT NULL AND tags != ''
+            """)
+
+            tags_to_add = {}
+            for row in cursor.fetchall():
+                tag_string = row[0]
+
+                # Try to parse as JSON array first
+                tags_list = []
+                try:
+                    import json
+                    parsed = json.loads(tag_string)
+                    if isinstance(parsed, list):
+                        tags_list = parsed
+                    else:
+                        tags_list = [str(parsed)]
+                except (json.JSONDecodeError, TypeError):
+                    # Fall back to comma-separated parsing
+                    tags_list = tag_string.split(',')
+
+                # Clean up and count each tag
+                for tag in tags_list:
+                    # Remove any remaining JSON artifacts and whitespace
+                    tag = str(tag).strip().strip('"').strip("'").strip('[]').strip()
+                    if tag and tag not in ['', 'null', 'None']:
+                        tags_to_add[tag] = tags_to_add.get(tag, 0) + 1
+
+            # Insert unique tags with usage counts
+            for tag_name, count in tags_to_add.items():
+                try:
+                    conn.execute("""
+                        INSERT INTO tags (name, usage_count, created_at, updated_at)
+                        VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        ON CONFLICT(name) DO UPDATE SET
+                            usage_count = usage_count + excluded.usage_count,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, (tag_name, count))
+                except Exception as e:
+                    self.logger.warning(f"Failed to insert tag '{tag_name}': {e}")
+
+            conn.commit()
+            self.logger.info(f"Successfully migrated {len(tags_to_add)} unique tags to tags table")
+
+        except Exception as e:
+            self.logger.warning(f"Failed to migrate tags table: {e}")
+            # Don't fail the entire migration if tag migration fails
 
     def _get_table_columns(self, conn: sqlite3.Connection, table: str) -> Set[str]:
         try:

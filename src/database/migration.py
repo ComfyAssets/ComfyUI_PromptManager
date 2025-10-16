@@ -86,8 +86,14 @@ class MigrationDetector:
             v1_db_path=root / "prompts.db",
             v2_db_path=root / "user" / "default" / "PromptManager" / "prompts.db",
         )
+        # Cache to avoid repeated filesystem checks
+        self._v1_exists_cache: Optional[bool] = None
+        self._migration_status_cache: Optional[MigrationStatus] = None
+        self._cache_timestamp: float = 0.0
+        self._cache_ttl: float = 60.0  # Cache for 60 seconds
+
         LOGGER.info("MigrationDetector initialized with ComfyUI root: %s", self.paths.comfyui_root)
-        LOGGER.info("Looking for v1 database at: %s", self.paths.v1_db_path)
+        LOGGER.debug("Looking for v1 database at: %s", self.paths.v1_db_path)
 
     @property
     def comfyui_root(self) -> Path:
@@ -100,6 +106,18 @@ class MigrationDetector:
     @property
     def v2_db_path(self) -> Path:
         return self.paths.v2_db_path
+
+    def _is_cache_valid(self) -> bool:
+        """Check if the cache is still valid based on TTL."""
+        if self._cache_timestamp == 0.0:
+            return False
+        return (time.time() - self._cache_timestamp) < self._cache_ttl
+
+    def _invalidate_cache(self) -> None:
+        """Invalidate the cache to force fresh filesystem checks."""
+        self._v1_exists_cache = None
+        self._migration_status_cache = None
+        self._cache_timestamp = 0.0
 
     def _migration_marker_exists(self) -> bool:
         return any(
@@ -149,7 +167,8 @@ class MigrationDetector:
         }
 
         if not self.v1_db_path.exists():
-            LOGGER.warning(f"v1 database does not exist at {self.v1_db_path}")
+            # Debug level instead of warning - not having v1 database is a normal state
+            LOGGER.debug(f"v1 database does not exist at {self.v1_db_path}")
             return info
 
         info["exists"] = True
@@ -221,14 +240,21 @@ class MigrationDetector:
         return False
 
     def check_migration_status(self) -> MigrationStatus:
-        """Return the current migration status based on filesystem observations."""
+        """Return the current migration status based on filesystem observations.
+
+        Uses caching to avoid repeated filesystem checks. Cache is valid for 60 seconds.
+        """
+        # Return cached status if still valid
+        if self._is_cache_valid() and self._migration_status_cache is not None:
+            LOGGER.debug("Returning cached migration status: %s", self._migration_status_cache.value)
+            return self._migration_status_cache
+
         # Check if v2 database exists and has migration markers
         if self._v2_has_migration_marker():
             LOGGER.info("Migration already completed - v2 database contains migration markers")
-            return MigrationStatus.COMPLETED
-
+            status = MigrationStatus.COMPLETED
         # Check if v1 database exists and needs migration
-        if self.detect_v1_database():
+        elif self.detect_v1_database():
             # Special case: v1 exists but is empty, and v2 already has data
             # This means someone created an empty v1 file or migration already happened
             v1_info = self.get_v1_database_info()
@@ -236,14 +262,20 @@ class MigrationDetector:
                 LOGGER.info(
                     "v1 database is empty but v2 has data - treating as already migrated"
                 )
-                return MigrationStatus.COMPLETED
-            return MigrationStatus.PENDING
-
+                status = MigrationStatus.COMPLETED
+            else:
+                status = MigrationStatus.PENDING
         # Check if there are old migration markers or v2 has data
-        if self._migration_marker_exists() or self._v2_database_has_data():
-            return MigrationStatus.COMPLETED
+        elif self._migration_marker_exists() or self._v2_database_has_data():
+            status = MigrationStatus.COMPLETED
+        else:
+            status = MigrationStatus.NOT_NEEDED
 
-        return MigrationStatus.NOT_NEEDED
+        # Update cache
+        self._migration_status_cache = status
+        self._cache_timestamp = time.time()
+
+        return status
 
 
 class MigrationProgress:
@@ -853,6 +885,10 @@ class DatabaseMigrator:
                     "migration_categories": str(self.migration_stats.get("categories_migrated", 0)),
                 }
             )
+
+            # Invalidate cache so future checks get fresh migration status
+            self.detector._invalidate_cache()
+
             return True
         except FileOperationError as exc:
             LOGGER.error("Failed to finalise migration", exc_info=exc)
@@ -906,6 +942,10 @@ class DatabaseMigrator:
                     "migration_original_path": str(old_path),
                 }
             )
+
+            # Invalidate cache so future checks get fresh migration status
+            self.detector._invalidate_cache()
+
             return True
         except FileOperationError as exc:
             LOGGER.error("Failed to archive legacy database", exc_info=exc)
