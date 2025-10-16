@@ -118,17 +118,6 @@ class SaveImagePatcher:
         prompt_dict: Dict[str, Any] = prompt if isinstance(prompt, dict) else {}
 
         if prompt_dict:
-            logger.debug(
-                "SaveImagePatcher: Analyzing prompt data with %d keys", len(prompt_dict)
-            )
-            all_class_types = {
-                key: value.get("class_type")
-                for key, value in prompt_dict.items()
-                if isinstance(value, dict) and "class_type" in value
-            }
-            logger.debug(
-                "SaveImagePatcher: All node class_types in prompt: %s", all_class_types
-            )
 
             for key, value in prompt_dict.items():
                 if not isinstance(value, dict):
@@ -183,10 +172,6 @@ class SaveImagePatcher:
         if selection:
             class_type, unique_id, node_id_num = selection
             if unique_id in active_ids or not active_ids:
-                logger.info(
-                    "SaveImagePatcher: Selected %s node - key=%s (node_id=%d, lowest)",
-                    class_type, unique_id, node_id_num
-                )
                 return unique_id, f"{class_type}_{unique_id}", class_type
 
         # Fall back to active prompts tracked by the PromptTracker even if they
@@ -219,12 +204,6 @@ class SaveImagePatcher:
             if all_matches:
                 all_matches.sort(key=lambda x: x[0])  # Sort by node ID (lowest first)
                 lowest_node_id_num, lowest_unique_id, lowest_node_id, lowest_type = all_matches[0]
-                logger.info(
-                    "SaveImagePatcher: Falling back to active %s node - key=%s (node_id=%d, lowest)",
-                    lowest_type,
-                    lowest_unique_id,
-                    lowest_node_id_num,
-                )
                 return str(lowest_unique_id), lowest_node_id, lowest_type
 
         workflow_candidates: list[tuple[str, str]] = []
@@ -391,10 +370,8 @@ class SaveImagePatcher:
                                     if output_dir and output_dir not in ["", "output"]:
                                         # output_dir like "testing" should be under the main output directory
                                         base_resolved = Path(actual_output_dir) / output_dir
-                                        logger.debug(f"SaveImagePatcher: Resolved path with subdirectory - output_dir: {output_dir}, base_resolved: {base_resolved}")
                                     else:
                                         base_resolved = Path(actual_output_dir)
-                                        logger.debug(f"SaveImagePatcher: Resolved path without subdirectory - base_resolved: {base_resolved}")
 
                                     base_resolved = base_resolved.expanduser().resolve()
                                 except Exception as e:
@@ -436,13 +413,11 @@ class SaveImagePatcher:
                                         full_path = base_resolved / Path(subfolder) / filename
                                     else:
                                         full_path = base_resolved / filename
-                                    logger.debug(f"SaveImagePatcher: Final full_path: {full_path} (base_resolved: {base_resolved}, subfolder: {subfolder})")
                                 else:
                                     if subfolder:
                                         full_path = Path(subfolder) / filename
                                     else:
                                         full_path = Path(filename)
-                                    logger.debug(f"SaveImagePatcher: Final full_path (no base): {full_path}")
 
                                 try:
                                     full_path = full_path.expanduser().resolve()
@@ -470,27 +445,12 @@ class SaveImagePatcher:
                                 # Get tracking data
                                 tracking_data = None
 
-                                # Log the current state of the tracker
-                                if hasattr(self.prompt_tracker, '_active_prompts'):
-                                    active_ids = list(self.prompt_tracker._active_prompts.keys())
-                                    logger.debug(f"SaveImagePatcher: Active prompts in tracker: {active_ids}")
-                                    logger.debug(f"SaveImagePatcher: Looking for node_id={node_id}, unique_id={unique_id}")
-
-                                    # Log details about each active prompt
-                                    for aid in active_ids:
-                                        prompt_data = self.prompt_tracker._active_prompts.get(aid)
-                                        if prompt_data:
-                                            logger.debug(f"  - Active ID {aid}: node_id={getattr(prompt_data, 'node_id', 'N/A')}")
-
                                 self._maybe_print(f"   🔍 Looking for tracking data - node_id: {node_id}, unique_id: {unique_id}")
                                 if node_id:
-                                    logger.info(f"SaveImagePatcher: Calling get_prompt_for_save with node_id={node_id}, unique_id={unique_id}")
                                     tracking_data = self.prompt_tracker.get_prompt_for_save(
                                         node_id, unique_id
                                     )
-                                    if tracking_data:
-                                        logger.info(f"SaveImagePatcher: Successfully got tracking data for {filename}")
-                                    else:
+                                    if not tracking_data:
                                         logger.warning(f"SaveImagePatcher: No tracking data returned for {filename}")
 
                                 if tracking_data:
@@ -520,10 +480,8 @@ class SaveImagePatcher:
                                             self._queued_images.add(image_path)
                                             self._queue.put((image_path, tracking_data, meta))
                                             self._maybe_print(f"   💾 Tracked image {filename} with prompt (queued)")
-                                            logger.debug(f"Tracked image {filename} with prompt")
                                         else:
                                             self._maybe_print(f"   ⏭️ Skipped duplicate queue entry for {filename}")
-                                            logger.debug(f"Skipped duplicate queue entry for {filename}")
                                 else:
                                     self._maybe_print(f"   ⚠️ No tracking data found for image {filename}")
                                     try:
@@ -546,7 +504,6 @@ class SaveImagePatcher:
             SaveImageClass.save_images = patched_save_images
             self.patched = True
             self._maybe_print("✅ SAVEIMAGE PATCHER - Successfully patched SaveImage node")
-            logger.info("Successfully patched SaveImage node")
             # Try to patch additional custom save-like nodes generically
             self._patch_generic_save_nodes()
             return True
@@ -680,10 +637,8 @@ class SaveImagePatcher:
                                                     full_path = base_path / filename
 
                                                 image_path = str(full_path.resolve())
-                                                logger.debug(f"Generic save: Constructed full path: {image_path}")
 
                                             except Exception as e:
-                                                logger.warning(f"Failed to construct full path, using relative: {e}")
                                                 # Fallback to relative path
                                                 image_path = f"{subfolder}/{filename}" if subfolder else filename
 
@@ -712,27 +667,13 @@ class SaveImagePatcher:
                                                     if image_path not in self._queued_images:
                                                         self._queued_images.add(image_path)
                                                         self._queue.put((image_path, tracking_data, meta))
-                                                        logger.debug(f"Queued generic save image {filename} for tracking")
-                                                    else:
-                                                        logger.debug(f"Skipped duplicate queue entry for generic save {filename}")
                                             else:
-                                                # Log summarised debug only
                                                 try:
                                                     active_ids = self.prompt_tracker.debug_active_ids()
                                                 except Exception:
                                                     active_ids = []
 
-                                                # More detailed logging about why tracking failed
-                                                logger.warning(f"❌ NO TRACKING for {klass.__name__} image {filename}")
-                                                logger.info(f"  Searched for: node_id={node_id}, unique_id={unique_id}")
-                                                logger.info(f"  Active IDs in tracker: {active_ids}")
-                                                if hasattr(self.prompt_tracker, '_active_prompts'):
-                                                    for aid, data in self.prompt_tracker._active_prompts.items():
-                                                        logger.debug(f"    - ID {aid}: node_id={getattr(data, 'node_id', 'N/A')}")
-
-                                                logger.info(
-                                                    f"No tracking for {klass.__name__} image {filename}; node_id={node_id} unique_id={unique_id} active_ids={active_ids}"
-                                                )
+                                                logger.warning(f"No tracking for {klass.__name__} image {filename} (node_id={node_id}, unique_id={unique_id})")
                                 except Exception as e:
                                     logger.error(f"Error in generic save_images tracking for {klass.__name__}: {e}", exc_info=True)
 
@@ -747,8 +688,6 @@ class SaveImagePatcher:
                             continue
             except Exception:
                 continue
-        if patched_count:
-            logger.info(f"Patched {patched_count} generic save_images classes for tracking")
     
     def unpatch(self) -> bool:
         """Remove the monkey patch.
@@ -766,7 +705,6 @@ class SaveImagePatcher:
             if self.original_save_func:
                 nodes.SaveImage.save_images = self.original_save_func
                 self.patched = False
-                logger.info("Successfully unpatched SaveImage node")
                 # Try to unpatch custom nodes
                 try:
                     for klass, orig in list(self._generic_patched.items()):
