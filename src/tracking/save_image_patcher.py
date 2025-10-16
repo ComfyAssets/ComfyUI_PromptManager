@@ -540,10 +540,27 @@ class SaveImagePatcher:
             if not mod or not isinstance(mod, types.ModuleType):
                 continue
             mod_name = getattr(mod, "__name__", "")
-            if mod_name.startswith("torch.distributed"):
+            # Skip modules that won't have save_images and cause noisy warnings
+            if any(mod_name.startswith(prefix) for prefix in [
+                "torch.distributed",
+                "tensorflow",
+                "tf",
+                "_tf",
+                "tensorboard",
+                "numpy",
+                "scipy",
+                "PIL",
+                "cv2",
+                "matplotlib",
+            ]):
                 continue
             try:
-                for attr_name in dir(mod):
+                # Suppress warnings during dir() which can trigger TensorFlow deprecation warnings
+                with _warnings.catch_warnings():
+                    _warnings.simplefilter('ignore')
+                    attr_names = dir(mod)
+
+                for attr_name in attr_names:
                     # Suppress noisy deprecation/future warnings from third-party modules
                     with _warnings.catch_warnings():
                         _warnings.simplefilter('ignore', category=DeprecationWarning)
