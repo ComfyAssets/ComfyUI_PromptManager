@@ -30,7 +30,7 @@ class MaintenanceHandlers:
         GET /api/v1/maintenance/stats
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from ...services.maintenance_service import MaintenanceService
             service = MaintenanceService(self.api)
             stats = service.get_statistics()
 
@@ -51,7 +51,7 @@ class MaintenanceHandlers:
         POST /api/v1/maintenance/deduplicate
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from ...services.maintenance_service import MaintenanceService
             service = MaintenanceService(self.api)
             result = service.remove_duplicates()
 
@@ -76,7 +76,7 @@ class MaintenanceHandlers:
         POST /api/v1/maintenance/clean-orphans
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from ...services.maintenance_service import MaintenanceService
             service = MaintenanceService(self.api)
             result = service.clean_orphans()
 
@@ -101,7 +101,7 @@ class MaintenanceHandlers:
         POST /api/v1/maintenance/validate-paths
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from ...services.maintenance_service import MaintenanceService
             service = MaintenanceService(self.api)
             result = service.validate_paths()
 
@@ -126,7 +126,7 @@ class MaintenanceHandlers:
         POST /api/v1/maintenance/optimize
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from ...services.maintenance_service import MaintenanceService
             service = MaintenanceService(self.api)
             result = service.optimize_database()
 
@@ -151,7 +151,7 @@ class MaintenanceHandlers:
         POST /api/v1/maintenance/backup
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from ...services.maintenance_service import MaintenanceService
             service = MaintenanceService(self.api)
             result = service.create_backup()
 
@@ -176,7 +176,7 @@ class MaintenanceHandlers:
         POST /api/v1/maintenance/fix-broken-links
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from ...services.maintenance_service import MaintenanceService
             service = MaintenanceService(self.api)
             result = service.fix_broken_links()
 
@@ -201,7 +201,7 @@ class MaintenanceHandlers:
         POST /api/v1/maintenance/remove-missing
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from ...services.maintenance_service import MaintenanceService
             service = MaintenanceService(self.api)
             result = service.remove_missing_files()
 
@@ -226,7 +226,7 @@ class MaintenanceHandlers:
         POST /api/v1/maintenance/update-file-metadata?batch_size=500
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from ...services.maintenance_service import MaintenanceService
 
             batch_size_param = request.query.get('batch_size', '500') or '500'
             try:
@@ -257,7 +257,7 @@ class MaintenanceHandlers:
         POST /api/v1/maintenance/check-integrity
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from ...services.maintenance_service import MaintenanceService
             service = MaintenanceService(self.api)
             result = service.check_integrity()
 
@@ -282,7 +282,7 @@ class MaintenanceHandlers:
         POST /api/v1/maintenance/reindex
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from ...services.maintenance_service import MaintenanceService
             service = MaintenanceService(self.api)
             result = service.reindex_database()
 
@@ -308,7 +308,7 @@ class MaintenanceHandlers:
         Body: {action?: "tag" | "untag" | "summary"}
         """
         try:
-            from src.services.missing_images_tagger import MissingImagesTagger
+            from ...services.missing_images_tagger import MissingImagesTagger
             tagger = MissingImagesTagger(self.db_path)
 
             # Get the action from request
@@ -353,7 +353,7 @@ class MaintenanceHandlers:
         POST /api/v1/maintenance/export
         """
         try:
-            from src.services.maintenance_service import MaintenanceService
+            from ...services.maintenance_service import MaintenanceService
             service = MaintenanceService(self.api)
             result = service.export_backup()
 
@@ -378,7 +378,7 @@ class MaintenanceHandlers:
         POST /api/v1/maintenance/calculate-epic-stats
         """
         try:
-            from src.services.epic_stats_calculator import EpicStatsCalculator
+            from ...services.epic_stats_calculator import EpicStatsCalculator
             calculator = EpicStatsCalculator(self.db_path)
 
             # This could be a long-running operation
@@ -402,7 +402,7 @@ class MaintenanceHandlers:
         POST /api/v1/maintenance/calculate-word-cloud
         """
         try:
-            from src.services.word_cloud_service import WordCloudService
+            from ...services.word_cloud_service import WordCloudService
             service = WordCloudService(self.db_path)
 
             # Calculate word frequencies

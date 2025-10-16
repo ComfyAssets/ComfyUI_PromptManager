@@ -91,7 +91,7 @@ class SystemHandlers:
 
         # NEW: Use hybrid approach - instant basic stats + fast analytics
         try:
-            from src.services.hybrid_stats_service import HybridStatsService
+            from ...services.hybrid_stats_service import HybridStatsService
             hybrid_service = HybridStatsService(self.db_path)
             snapshot = hybrid_service.get_overview()
 
@@ -113,7 +113,7 @@ class SystemHandlers:
             self.logger.warning("HybridStatsService not available, using cache fallback")
             # Try simple cache as second fallback
             try:
-                from src.services.stats_cache_service import StatsCacheService
+                from ...services.stats_cache_service import StatsCacheService
                 cache_service = StatsCacheService(self.db_path)
                 snapshot = cache_service.get_overview()
                 snapshot['loadTime'] = 'cache-only'
@@ -249,7 +249,7 @@ class SystemHandlers:
             return web.json_response({"success": False, "error": "path is required"}, status=400)
 
         try:
-            from src.utils.file_system import get_file_system
+            from ...utils.file_system import get_file_system
             info = get_file_system().verify_database_path(raw_path)
             return web.json_response({"success": True, "data": info})
         except Exception as exc:
@@ -267,8 +267,8 @@ class SystemHandlers:
         except Exception:
             payload = {}
 
-        from src.utils.file_system import get_file_system
-        from src.config import config
+        from ...utils.file_system import get_file_system
+        from ...config import config
         
         fs = get_file_system()
         raw_path = (payload or {}).get("path")
@@ -311,8 +311,8 @@ class SystemHandlers:
         mode = (payload or {}).get("mode", "move")
         copy = mode == "copy"
 
-        from src.utils.file_system import get_file_system
-        from src.config import config
+        from ...utils.file_system import get_file_system
+        from ...config import config
         
         fs = get_file_system()
         try:

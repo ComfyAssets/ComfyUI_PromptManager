@@ -47,8 +47,19 @@ class MaintenanceAPI:
             max_files = data.get("max_files", 1000)  # Limit to prevent overload
 
             if not directory:
-                # Default to ComfyUI output directory
-                directory = str(Path.home() / "ai-apps/ComfyUI-3.12/output")
+                # Default to ComfyUI output directory using auto-detection
+                try:
+                    from utils.core.file_system import get_file_system
+                    fs = get_file_system()
+                    comfy_root = fs.resolve_comfyui_root()
+                    directory = str(comfy_root / "output")
+                except Exception as e:
+                    logger.error(f"Could not auto-detect ComfyUI root: {e}")
+                    return web.json_response({
+                        "success": False,
+                        "error": "Could not find ComfyUI output directory. Please specify 'directory' in request."
+                    }, status=400)
+
                 if not Path(directory).exists():
                     return web.json_response({
                         "success": False,
@@ -110,7 +121,7 @@ class MaintenanceAPI:
         }
 
         try:
-            from src.services.workflow_metadata_extractor import WorkflowMetadataExtractor
+            from ...services.workflow_metadata_extractor import WorkflowMetadataExtractor
             extractor = WorkflowMetadataExtractor(self.db_path)
 
             # Count PNG files
@@ -200,7 +211,7 @@ class MaintenanceAPI:
     async def rebuild_stats_cache(self, request: web.Request) -> web.Response:
         """Force rebuild of stats cache."""
         try:
-            from src.services.stats_cache_service import get_stats_cache_service
+            from ...services.stats_cache_service import get_stats_cache_service
 
             service = get_stats_cache_service(self.db_path)
             service.force_rebuild()

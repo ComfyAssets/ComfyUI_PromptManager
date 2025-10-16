@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from aiohttp import web
 
-from ..services.enhanced_thumbnail_service import EnhancedThumbnailService, ThumbnailTask
-from ..services.thumbnail_reconciliation_service import ThumbnailReconciliationService
-from .utils.ffmpeg_finder import (
+from ...services.enhanced_thumbnail_service import EnhancedThumbnailService, ThumbnailTask
+from ...services.thumbnail_reconciliation_service import ThumbnailReconciliationService
+from ...utils.ffmpeg_finder import (
     DEFAULT_TIMEOUT as FFMPEG_TIMEOUT,
     find_ffmpeg_candidates,
     verify_ffmpeg_path,
@@ -30,8 +30,8 @@ try:
     parent_dir = Path(__file__).parent.parent.parent
     if str(parent_dir) not in sys.path:
         sys.path.insert(0, str(parent_dir))
-    
-    from .database import PromptDatabase as Database
+
+    from ...database import PromptDatabase as Database
 except ImportError:
     # Use the alternative import method if direct import fails
     import importlib.util
@@ -183,7 +183,6 @@ class ThumbnailAPI:
                 import sqlite3
                 conn = sqlite3.connect(self.db.db_path)
                 cursor = conn.cursor()
-                logger.info(f"Starting thumbnail scan... DB path: {self.db.db_path}")
 
                 # Check for both v1 images table and v2 generated_images table
                 cursor.execute("""
@@ -191,12 +190,10 @@ class ThumbnailAPI:
                     WHERE type='table' AND name IN ('images', 'generated_images')
                 """)
                 tables = cursor.fetchall()
-                logger.info(f"Found tables: {tables}")
-                
+
                 if tables:
                     # Prefer generated_images (v2) over images (v1)
                     if ('generated_images',) in tables:
-                        logger.info("Using generated_images table (v2)")
                         cursor.execute("""
                             SELECT id, image_path, filename
                             FROM generated_images
@@ -205,15 +202,13 @@ class ThumbnailAPI:
                             AND image_path IS NOT NULL AND image_path != ''
                         """)
                     else:
-                        logger.info("Using images table (v1)")
                         cursor.execute("""
                             SELECT id, file_path, filename
                             FROM images
                             WHERE file_path IS NOT NULL AND file_path != ''
                         """)
-                    
+
                     images = cursor.fetchall()
-                    logger.info(f"Found {len(images)} images in database")
 
                     for image in images:
                         # image is a tuple: (id, path, filename)
@@ -222,26 +217,17 @@ class ThumbnailAPI:
                             # Check if it's a video or image
                             if include_videos or not self.thumbnail_service.ffmpeg.is_video(path):
                                 image_paths.append(path)
-                
-                logger.info(f"Found {len(image_paths)} valid image paths")
+
                 conn.close()
             except Exception as db_error:
                 logger.warning(f"Database query error during scan: {db_error}")
                 # Continue without database images
 
             # Scan for missing thumbnails, excluding blacklisted files
-            logger.info(f"Scanning {len(image_paths)} images for missing thumbnails")
-            logger.info(f"Currently {self.thumbnail_service.get_blacklisted_count()} files are blacklisted")
-            
-            # Filter out blacklisted files BEFORE scanning
             non_blacklisted_paths = [
-                path for path in image_paths 
+                path for path in image_paths
                 if not self.thumbnail_service._is_blacklisted(path)
             ]
-            
-            blacklisted_count = len(image_paths) - len(non_blacklisted_paths)
-            if blacklisted_count > 0:
-                logger.info(f"Filtered out {blacklisted_count} blacklisted files from scan")
             
             missing_tasks = await self.thumbnail_service.scan_missing_thumbnails(
                 non_blacklisted_paths,
@@ -313,7 +299,6 @@ class ThumbnailAPI:
                     AND image_path IS NOT NULL AND image_path != ''
                 """)
                 missing_thumbnail_count = cursor.fetchone()[0]
-                logger.info(f"Found {missing_thumbnail_count} images without thumbnail paths in database")
 
                 # Get images without thumbnails for scanning
                 # Exclude images marked as FAILED (permanently can't have thumbnails)
@@ -342,18 +327,10 @@ class ThumbnailAPI:
                 }, status=500)
 
             # Scan for missing thumbnails, excluding blacklisted files
-            logger.info(f"Scanning {len(image_paths)} images for missing thumbnails")
-            logger.info(f"Currently {self.thumbnail_service.get_blacklisted_count()} files are blacklisted")
-            
-            # Filter out blacklisted files BEFORE scanning
             non_blacklisted_paths = [
-                path for path in image_paths 
+                path for path in image_paths
                 if not self.thumbnail_service._is_blacklisted(path)
             ]
-            
-            blacklisted_count = len(image_paths) - len(non_blacklisted_paths)
-            if blacklisted_count > 0:
-                logger.info(f"Filtered out {blacklisted_count} blacklisted files from scan")
             
             tasks = await self.thumbnail_service.scan_missing_thumbnails(
                 non_blacklisted_paths,

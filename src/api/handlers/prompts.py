@@ -98,6 +98,11 @@ class PromptHandlers:
                     filter_kwargs["rating"] = int(rating)
                 except (TypeError, ValueError):
                     pass
+            # Parse tags parameter (comma-separated string to list for AND filtering)
+            if tags_param := request.query.get("tags"):
+                tags_list = [tag.strip() for tag in tags_param.split(',') if tag.strip()]
+                if tags_list:
+                    filter_kwargs["tags"] = tags_list
             search_term = request.query.get("search")
 
             include_images_param = request.query.get("include_images") or request.query.get("include")

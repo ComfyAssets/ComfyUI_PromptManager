@@ -43,6 +43,7 @@ from .handlers.migration import MigrationHandlers
 from .handlers.prompts import PromptHandlers
 from .handlers.system import SystemHandlers
 from .handlers.maintenance import MaintenanceHandlers
+from .handlers.tags import TagHandlers
 
 
 class PromptManagerAPI:
@@ -136,8 +137,9 @@ class PromptManagerAPI:
         self.prompts_handlers = PromptHandlers(self)
         self.system_handlers = SystemHandlers(self)
         self.maintenance_handlers = MaintenanceHandlers(self)
+        self.tag_handlers = TagHandlers(self)
 
-        self.logger.info("PromptManager API initialized with 7 domain handlers")
+        self.logger.info("PromptManager API initialized with 8 domain handlers")
 
         if run_migration_check:
             self._run_startup_migration_check()
@@ -206,8 +208,8 @@ class PromptManagerAPI:
                         del sys.modules['database.operations']
                 
                 # Now import should find our database module first
-                from .database import PromptDatabase
-                
+                from ..database import PromptDatabase
+
             finally:
                 # Restore original path
                 sys.path = original_path
@@ -513,6 +515,18 @@ class PromptManagerAPI:
         routes.post("/api/v1/prompts/bulk")(self.prompts_handlers.bulk_create_prompts)
         routes.delete("/api/v1/prompts/bulk")(self.prompts_handlers.bulk_delete_prompts)
 
+        # Tag endpoints - delegated to TagHandlers
+        routes.get("/api/v1/tags")(self.tag_handlers.list_tags)
+        routes.get("/api/v1/tags/search")(self.tag_handlers.search_tags)
+        routes.get("/api/v1/tags/popular")(self.tag_handlers.get_popular_tags)
+        routes.get("/api/v1/tags/stats")(self.tag_handlers.get_tag_stats)
+        routes.get("/api/v1/tags/{id}")(self.tag_handlers.get_tag)
+        routes.post("/api/v1/tags")(self.tag_handlers.create_tag)
+        routes.post("/api/v1/tags/sync")(self.tag_handlers.sync_tags)
+        routes.post("/api/v1/tags/update-counts")(self.tag_handlers.update_usage_counts)
+        routes.post("/api/v1/tags/cleanup")(self.tag_handlers.cleanup_unused_tags)
+        routes.delete("/api/v1/tags/{id}")(self.tag_handlers.delete_tag)
+
         # Gallery endpoints - delegated to GalleryHandlers
         routes.get("/api/v1/gallery/images")(self.gallery_handlers.list_gallery_images)
         routes.get("/api/v1/gallery/images/{id}")(self.gallery_handlers.get_gallery_image)
@@ -653,10 +667,7 @@ class PromptManagerAPI:
         """
         try:
             incoming = await request.json()
-            self.logger.info(f"[CREATE] Incoming payload: {incoming}")
-
             data = self._normalize_prompt_payload(incoming)
-            self.logger.info(f"[CREATE] Normalized data: {data}")
 
             prompt_text = data.get("positive_prompt") or data.get("prompt")
             if not prompt_text:
@@ -666,12 +677,8 @@ class PromptManagerAPI:
                     status=400
                 )
 
-            self.logger.info(f"[CREATE] Creating prompt with text: {prompt_text[:50]}...")
             prompt_id = self.prompt_repo.create(data)
-            self.logger.info(f"[CREATE] Created prompt with ID: {prompt_id}")
-
             prompt = self._format_prompt(self.prompt_repo.read(prompt_id))
-            self.logger.info(f"[CREATE] Read back prompt: {prompt}")
 
             # Broadcast realtime update
             await self.realtime.notify_prompt_created(prompt)
@@ -736,7 +743,6 @@ class PromptManagerAPI:
             # Use search method if search term provided, otherwise regular list
             if search_term:
                 try:
-                    self.logger.info(f"[LIST] Searching for: {search_term}")
                     search_columns = ["positive_prompt", "negative_prompt", "tags", "category", "notes"]
 
                     # Search with pagination
@@ -752,7 +758,6 @@ class PromptManagerAPI:
                         search_term,
                         columns=search_columns
                     )
-                    self.logger.info(f"[LIST] Search found {len(raw_records)} prompts (total: {search_total})")
                 except Exception as e:
                     self.logger.error(f"Search error: {e}")
                     # Fall back to empty results on search error
@@ -765,7 +770,6 @@ class PromptManagerAPI:
                     order_by=order_clause,
                     **filter_kwargs,
                 ))
-                self.logger.info(f"[LIST] Found {len(raw_records)} prompts from database")
 
             prompts = [
                 self._format_prompt(
@@ -781,7 +785,6 @@ class PromptManagerAPI:
                 total = search_total
             else:
                 total = self.prompt_repo.count(**filter_kwargs)
-            self.logger.info(f"[LIST] Total count: {total}")
 
             return web.json_response({
                 "success": True,
@@ -1394,7 +1397,7 @@ class PromptManagerAPI:
         """
         try:
             # Import here to avoid circular imports
-            from .services.image_scanner import ImageScanner
+            from ..services.image_scanner import ImageScanner
 
             # Create scanner instance
             scanner = ImageScanner(self)
@@ -2197,7 +2200,7 @@ class PromptManagerAPI:
         GET /api/prompt_manager/maintenance/stats
         """
         try:
-            from .services.maintenance_service import MaintenanceService
+            from ..services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             stats = service.get_statistics()
 
@@ -2218,7 +2221,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/deduplicate
         """
         try:
-            from .services.maintenance_service import MaintenanceService
+            from ..services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.remove_duplicates()
 
@@ -2240,7 +2243,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/clean-orphans
         """
         try:
-            from .services.maintenance_service import MaintenanceService
+            from ..services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.clean_orphans()
 
@@ -2262,7 +2265,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/validate-paths
         """
         try:
-            from .services.maintenance_service import MaintenanceService
+            from ..services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.validate_paths()
 
@@ -2284,7 +2287,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/optimize
         """
         try:
-            from .services.maintenance_service import MaintenanceService
+            from ..services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.optimize_database()
 
@@ -2306,7 +2309,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/backup
         """
         try:
-            from .services.maintenance_service import MaintenanceService
+            from ..services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.create_backup()
 
@@ -2328,7 +2331,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/fix-broken-links
         """
         try:
-            from .services.maintenance_service import MaintenanceService
+            from ..services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.fix_broken_links()
 
@@ -2350,7 +2353,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/remove-missing
         """
         try:
-            from .services.maintenance_service import MaintenanceService
+            from ..services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.remove_missing_files()
 
@@ -2372,7 +2375,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/update-file-metadata
         """
         try:
-            from .services.maintenance_service import MaintenanceService
+            from ..services.maintenance_service import MaintenanceService
 
             batch_size_param = request.query.get('batch_size', '500') or '500'
             try:
@@ -2403,7 +2406,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/check-integrity
         """
         try:
-            from .services.maintenance_service import MaintenanceService
+            from ..services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.check_integrity()
 
@@ -2425,7 +2428,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/reindex
         """
         try:
-            from .services.maintenance_service import MaintenanceService
+            from ..services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.reindex_database()
 
@@ -2489,7 +2492,7 @@ class PromptManagerAPI:
         POST /api/prompt_manager/maintenance/export
         """
         try:
-            from .services.maintenance_service import MaintenanceService
+            from ..services.maintenance_service import MaintenanceService
             service = MaintenanceService(self)
             result = service.export_backup()
 
