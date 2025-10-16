@@ -72,7 +72,6 @@ def get_prompt_tracker(db_instance=None):
             print("\n🚀 INITIALIZING PROMPT TRACKER (Positive)")
         
         if DISABLE_TRACKING:
-            logger.info("Tracking disabled for Positive widget")
             return None
         
         tracker = PromptTracker()
@@ -108,7 +107,6 @@ class PromptManagerPositive(ComfyNodeABC):
         self.output_dir = get_comfyui_integration().get_output_directory()
         self.db = PromptDatabase()
         self.tracker = get_prompt_tracker(db_instance=self.db)
-        logger.info(f"PromptManagerPositive v{self.version} initialized")
     
     @classmethod
     def INPUT_TYPES(cls) -> InputTypeDict:

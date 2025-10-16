@@ -160,7 +160,6 @@ def get_prompt_tracker(db_instance=None):
         if DEBUG:
             print("\n🚀 INITIALIZING PROMPT TRACKER AND SAVEIMAGE PATCHER")
         if DISABLE_TRACKING:
-            logger.info("PROMPTMANAGER_DISABLE_TRACKING=1 set; all PromptManager tracking disabled")
             tracker = _NoOpTracker()
         else:
             tracker = PromptTracker()
@@ -168,7 +167,6 @@ def get_prompt_tracker(db_instance=None):
             # Allow disabling patch via env for diagnostics
             disable_patch = os.getenv("PROMPTMANAGER_DISABLE_PATCH", "0") == "1"
             if disable_patch:
-                logger.info("PROMPTMANAGER_DISABLE_PATCH=1 set; skipping SaveImage patch")
             else:
                 patcher = SaveImagePatcher(tracker)
                 SingletonTracker.set_patcher(patcher)
