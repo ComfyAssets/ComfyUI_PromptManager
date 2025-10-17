@@ -5,6 +5,7 @@ Handles incremental updates when data changes.
 
 import json
 import sqlite3
+from ..database.connection_helper import get_db_connection
 from typing import Dict, Any, Optional
 from pathlib import Path
 import logging
@@ -218,7 +219,7 @@ class StatsEventHandler:
 
     def _connect(self) -> sqlite3.Connection:
         """Create database connection."""
-        return sqlite3.connect(self.db_path)
+        return get_db_connection(self.db_path)
 
 
 # Global instance for event handling
