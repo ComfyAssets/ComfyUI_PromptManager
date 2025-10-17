@@ -258,7 +258,7 @@ class PromptTracker:
                     db = self.db_instance
                     print(f"   📚 Using stored database instance")
                 else:
-                    from src.database import PromptDatabase
+                    from ..database import PromptDatabase
                     db = PromptDatabase()
                     print(f"   ⚠️ Warning: Creating new database instance (not optimal)")
 
