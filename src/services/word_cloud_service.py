@@ -7,6 +7,7 @@ import logging
 from typing import Dict, List, Tuple
 from collections import Counter
 from pathlib import Path
+from ..database.connection_helper import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class WordCloudService:
         start_time = time.time()
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 # Get all prompts
@@ -95,7 +96,7 @@ class WordCloudService:
     def _cache_word_frequencies(self, frequencies: Dict[str, int], prompts_count: int, words_count: int, calc_time: int):
         """Store calculated frequencies in cache table."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 # Clear existing cache
@@ -135,7 +136,7 @@ class WordCloudService:
             Dictionary of word -> frequency mappings
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 # Get cached frequencies
@@ -165,7 +166,7 @@ class WordCloudService:
     def get_metadata(self) -> Dict:
         """Get word cloud metadata including last calculation time."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 cursor.execute("""
@@ -201,7 +202,7 @@ class WordCloudService:
             True if recalculation is needed
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 # Check if cache is empty
