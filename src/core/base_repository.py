@@ -6,6 +6,7 @@ eliminating code duplication across different repositories.
 
 import json
 import sqlite3
+from ..database.connection_helper import DatabaseConnection
 from datetime import datetime
 from pathlib import Path
 from abc import ABC, abstractmethod
@@ -45,7 +46,7 @@ class BaseRepository(ABC):
         
         # For in-memory databases, keep a persistent connection
         if db_path == ":memory:":
-            self._connection = sqlite3.connect(db_path)
+            self._connection = DatabaseConnection.get_connection(db_path)
             self._connection.row_factory = sqlite3.Row
             self._connection.executescript(self._get_schema())
             self._connection.commit()
@@ -116,7 +117,7 @@ class BaseRepository(ABC):
     @contextmanager
     def _get_connection(self):
         """Context manager for database connections.
-        
+
         Ensures connections are properly closed and transactions committed.
         """
         # Use persistent connection for in-memory databases
@@ -129,7 +130,7 @@ class BaseRepository(ABC):
                 logger.error(f"Database error: {e}")
                 raise
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = DatabaseConnection.get_connection(self.db_path)
             conn.row_factory = sqlite3.Row
             try:
                 yield conn

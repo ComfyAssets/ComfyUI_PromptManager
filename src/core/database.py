@@ -16,6 +16,8 @@ try:  # pragma: no cover - environment-specific import
 except ImportError:  # pragma: no cover
     from loggers import get_logger  # type: ignore
 
+from ..database.connection_helper import DatabaseConnection
+
 logger = get_logger("promptmanager.database")
 
 
@@ -77,10 +79,10 @@ class DatabaseManager:
         
         # Ensure database exists
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        
-        conn = sqlite3.connect(db_path)
+
+        conn = DatabaseConnection.get_connection(db_path)
         conn.row_factory = sqlite3.Row
-        
+
         try:
             yield conn
             conn.commit()
@@ -145,10 +147,10 @@ class DatabaseManager:
         if backup_path is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             backup_path = f"{db_path}.backup_{timestamp}"
-        
-        source = sqlite3.connect(db_path)
-        dest = sqlite3.connect(backup_path)
-        
+
+        source = DatabaseConnection.get_connection(db_path)
+        dest = DatabaseConnection.get_connection(backup_path)
+
         try:
             source.backup(dest)
             logger.info(f"Database backed up to: {backup_path}")

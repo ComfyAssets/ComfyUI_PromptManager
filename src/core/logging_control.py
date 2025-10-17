@@ -53,7 +53,7 @@ class LoggingControl:
 
         try:
             from pathlib import Path
-            from src.services.settings_service import SettingsService
+            from ..services.settings_service import SettingsService
             from utils.core.file_system import get_file_system
 
             # Get database path
