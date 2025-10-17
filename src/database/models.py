@@ -9,6 +9,7 @@ import sqlite3
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Set
+from .connection_helper import DatabaseConnection
 
 # Import logging with proper fallback
 try:  # pragma: no cover - environment-specific import
@@ -47,7 +48,7 @@ class PromptModel:
             db_dir = Path(self.db_path).parent
             db_dir.mkdir(parents=True, exist_ok=True)
 
-            with sqlite3.connect(self.db_path) as conn:
+            with DatabaseConnection.get_connection(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
 
                 # Enable WAL mode for better concurrency
@@ -109,6 +110,8 @@ class PromptModel:
             "CREATE INDEX IF NOT EXISTS idx_prompt_images ON generated_images(prompt_id)",
             "CREATE INDEX IF NOT EXISTS idx_image_path ON generated_images(image_path)",
             "CREATE INDEX IF NOT EXISTS idx_generation_time ON generated_images(generation_time)",
+            "CREATE INDEX IF NOT EXISTS idx_generated_images_filename ON generated_images(filename)",
+            "CREATE INDEX IF NOT EXISTS idx_generated_images_file_size ON generated_images(file_size)",
             "CREATE INDEX IF NOT EXISTS idx_tracking_session ON prompt_tracking(session_id)",
             "CREATE INDEX IF NOT EXISTS idx_tracking_created ON prompt_tracking(created_at)",
             "CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)",
@@ -691,7 +694,7 @@ class PromptModel:
         Returns:
             sqlite3.Connection: Configured database connection
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = DatabaseConnection.get_connection(self.db_path)
         conn.row_factory = sqlite3.Row  # Enable dict-like access to rows
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
@@ -704,7 +707,7 @@ class PromptModel:
         improving query performance and reducing file size.
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with DatabaseConnection.get_connection(self.db_path) as conn:
                 conn.execute("VACUUM")
                 conn.commit()
                 self.logger.info("Database vacuum completed")
