@@ -18,6 +18,8 @@ try:  # pragma: no cover - import path differs between runtime contexts
 except ImportError:  # pragma: no cover
     from loggers import get_logger  # type: ignore
 
+from .database.connection_helper import DatabaseConnection
+
 logger = get_logger("promptmanager.database")
 
 
@@ -54,11 +56,11 @@ class Database:
     @contextmanager
     def get_connection(self):
         """Get database connection context manager.
-        
+
         Yields:
             Database connection
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = DatabaseConnection.get_connection(self.db_path)
         conn.row_factory = sqlite3.Row
         try:
             yield conn
@@ -358,12 +360,12 @@ class Database:
             backup_path = f"{self.db_path}.backup_{timestamp}"
         
         logger.info(f"Creating database backup: {backup_path}")
-        
+
         with self.get_connection() as source:
-            backup = sqlite3.connect(backup_path)
+            backup = DatabaseConnection.get_connection(backup_path)
             source.backup(backup)
             backup.close()
-        
+
         logger.info("Database backup completed")
         return backup_path
     
@@ -383,26 +385,26 @@ class Database:
         
         try:
             # Restore from backup
-            backup = sqlite3.connect(backup_path)
+            backup = DatabaseConnection.get_connection(backup_path)
             with self.get_connection() as target:
                 backup.backup(target)
             backup.close()
-            
+
             logger.info("Database restored successfully")
-            
+
             # Remove temporary backup
             Path(temp_backup).unlink()
-            
+
         except Exception as e:
             logger.error(f"Restore failed: {e}")
             logger.info(f"Restoring from temporary backup: {temp_backup}")
-            
+
             # Restore from temporary backup
-            backup = sqlite3.connect(temp_backup)
+            backup = DatabaseConnection.get_connection(temp_backup)
             with self.get_connection() as target:
                 backup.backup(target)
             backup.close()
-            
+
             raise e
     
     def vacuum(self):
