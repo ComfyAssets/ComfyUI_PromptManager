@@ -12,7 +12,7 @@ from datetime import datetime
 
 # Import connection helper if available
 try:
-    from src.database.connection_helper import get_db_connection
+    from ..database.connection_helper import get_db_connection
     USE_CONNECTION_HELPER = True
 except ImportError:
     USE_CONNECTION_HELPER = False
@@ -155,8 +155,9 @@ class WorkflowMetadataExtractor:
                 prompt_data = json.loads(metadata["prompt"])
                 return self._extract_from_prompt_data(prompt_data)
 
-        except Exception as e:
-            print(f"[MetadataExtractor] Error extracting from PNG: {e}")
+        except Exception:
+            # Silently skip files that can't be read (corrupted, non-PNG, etc.)
+            pass
 
         return {}
 
@@ -237,44 +238,6 @@ class WorkflowMetadataExtractor:
             return False  # Need at least positive prompt
 
         try:
-            if USE_CONNECTION_HELPER:
-                # Use connection helper with proper retry and WAL handling
-                from src.database.connection_helper import execute_query
-
-                # Check if prompt exists
-                prompt_hash = hashlib.sha256(
-                    f"{params.get('positive', '')}|{params.get('negative', '')}".encode()
-                ).hexdigest()
-
-                result = execute_query(
-                    self.db_path,
-                    "SELECT id FROM prompts WHERE hash = ?",
-                    (prompt_hash,),
-                    fetch_one=True
-                )
-
-                if result:
-                    # Update existing - implementation continues below
-                    pass
-                else:
-                    # Insert new - implementation continues below
-                    pass
-
-                # Continue with original logic but using helper
-                conn = sqlite3.connect(self.db_path, timeout=30.0)
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA busy_timeout=10000")
-                cursor = conn.cursor()
-            else:
-                # Fallback to original implementation with better settings
-                conn = sqlite3.connect(self.db_path, timeout=30.0)
-
-                # Enable WAL mode for better concurrency
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA busy_timeout=10000")  # Increased to 10 seconds
-
-                cursor = conn.cursor()
-
             # Generate hash for prompt
             positive = params.get("positive", "")
             negative = params.get("negative", "")
@@ -313,88 +276,96 @@ class WorkflowMetadataExtractor:
                     params["model"].encode()
                 ).hexdigest()[:16]
 
-            # Check if prompt exists
-            cursor.execute(
-                "SELECT id FROM prompts WHERE hash = ?",
-                (prompt_hash,)
-            )
-            existing = cursor.fetchone()
+            if USE_CONNECTION_HELPER:
+                # Use connection helper with proper retry and WAL handling
+                from ..database.connection_helper import get_db_connection
 
-            if existing:
-                # Update existing prompt
-                cursor.execute("""
-                    UPDATE prompts SET
-                        model_hash = COALESCE(model_hash, ?),
-                        sampler_settings = COALESCE(sampler_settings, ?),
-                        generation_params = COALESCE(generation_params, ?),
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE hash = ?
-                """, (
-                    model_hash,
-                    json.dumps(sampler_settings),
-                    json.dumps(generation_params),
-                    prompt_hash
-                ))
-                prompt_id = existing[0]
-            else:
-                # Insert new prompt
-                cursor.execute("""
-                    INSERT INTO prompts (
-                        positive_prompt, negative_prompt, hash,
-                        model_hash, sampler_settings, generation_params,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """, (
-                    positive, negative, prompt_hash,
-                    model_hash,
-                    json.dumps(sampler_settings),
-                    json.dumps(generation_params)
-                ))
-                prompt_id = cursor.lastrowid
+                # Use connection helper for all database operations
+                with get_db_connection(self.db_path) as conn:
+                    cursor = conn.cursor()
 
-            # If image path provided, update generated_images
-            if image_path and prompt_id:
-                # Check if image already exists
-                filename = Path(image_path).name
-                cursor.execute(
-                    "SELECT id FROM generated_images WHERE filename = ?",
-                    (filename,)
-                )
-                existing_image = cursor.fetchone()
+                    # Check if prompt exists
+                    cursor.execute(
+                        "SELECT id FROM prompts WHERE hash = ?",
+                        (prompt_hash,)
+                    )
+                    existing = cursor.fetchone()
 
-                if existing_image:
-                    # Update existing image
-                    cursor.execute("""
-                        UPDATE generated_images SET
-                            width = COALESCE(width, ?),
-                            height = COALESCE(height, ?),
-                            parameters = COALESCE(parameters, ?)
-                        WHERE filename = ?
-                    """, (
-                        params.get("width"),
-                        params.get("height"),
-                        json.dumps(generation_params),
-                        filename
-                    ))
-                else:
-                    # Insert new image
-                    cursor.execute("""
-                        INSERT INTO generated_images (
-                            prompt_id, filename, width, height, parameters
-                        ) VALUES (?, ?, ?, ?, ?)
-                    """, (
-                        prompt_id,
-                        filename,
-                        params.get("width"),
-                        params.get("height"),
-                        json.dumps(generation_params)
-                    ))
+                    if existing:
+                        # Update existing prompt
+                        cursor.execute("""
+                            UPDATE prompts SET
+                                model_hash = COALESCE(model_hash, ?),
+                                sampler_settings = COALESCE(sampler_settings, ?),
+                                generation_params = COALESCE(generation_params, ?),
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE hash = ?
+                        """, (
+                            model_hash,
+                            json.dumps(sampler_settings),
+                            json.dumps(generation_params),
+                            prompt_hash
+                        ))
+                        prompt_id = existing[0]
+                    else:
+                        # Insert new prompt
+                        cursor.execute("""
+                            INSERT INTO prompts (
+                                positive_prompt, negative_prompt, hash,
+                                model_hash, sampler_settings, generation_params,
+                                created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        """, (
+                            positive, negative, prompt_hash,
+                            model_hash,
+                            json.dumps(sampler_settings),
+                            json.dumps(generation_params)
+                        ))
+                        prompt_id = cursor.lastrowid
 
-            conn.commit()
-            conn.close()
+                    # If image path provided, update generated_images
+                    if image_path and prompt_id:
+                        # Check if image already exists
+                        filename = Path(image_path).name
+                        cursor.execute(
+                            "SELECT id FROM generated_images WHERE filename = ?",
+                            (filename,)
+                        )
+                        existing_image = cursor.fetchone()
 
-            print(f"[MetadataExtractor] Saved metadata for prompt {prompt_hash[:8]}...")
-            return True
+                        if existing_image:
+                            # Update existing image
+                            cursor.execute("""
+                                UPDATE generated_images SET
+                                    image_path = COALESCE(image_path, ?),
+                                    width = COALESCE(width, ?),
+                                    height = COALESCE(height, ?),
+                                    parameters = COALESCE(parameters, ?)
+                                WHERE filename = ?
+                            """, (
+                                image_path,
+                                params.get("width"),
+                                params.get("height"),
+                                json.dumps(generation_params),
+                                filename
+                            ))
+                        else:
+                            # Insert new image
+                            cursor.execute("""
+                                INSERT INTO generated_images (
+                                    prompt_id, filename, image_path, width, height, parameters
+                                ) VALUES (?, ?, ?, ?, ?, ?)
+                            """, (
+                                prompt_id,
+                                filename,
+                                image_path,
+                                params.get("width"),
+                                params.get("height"),
+                                json.dumps(generation_params)
+                            ))
+
+                # Metadata saved successfully (removed verbose logging)
+                return True
 
         except Exception as e:
             print(f"[MetadataExtractor] Database save error: {e}")
