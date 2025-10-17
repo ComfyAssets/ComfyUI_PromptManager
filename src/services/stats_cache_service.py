@@ -5,6 +5,7 @@ Reads from pre-calculated stats_snapshot table.
 
 import json
 import sqlite3
+from ..database.connection_helper import get_db_connection
 from typing import Dict, Any, Optional
 from datetime import datetime
 from pathlib import Path
@@ -287,7 +288,7 @@ class StatsCacheService:
 
     def _connect(self) -> sqlite3.Connection:
         """Create database connection."""
-        return sqlite3.connect(self.db_path)
+        return get_db_connection(self.db_path)
 
     def _get_empty_stats(self) -> Dict[str, Any]:
         """Return empty stats structure."""
