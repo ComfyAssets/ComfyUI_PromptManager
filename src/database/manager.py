@@ -5,6 +5,7 @@ with a proper service layer following single responsibility principle.
 """
 
 import sqlite3
+from .connection_helper import DatabaseConnection
 import json
 import hashlib
 import shutil
@@ -26,7 +27,7 @@ class DatabaseManager:
     @contextmanager
     def get_connection(self):
         """Context manager for database connections."""
-        conn = sqlite3.connect(str(self.db_path))
+        conn = DatabaseConnection.get_connection(str(self.db_path))
         conn.row_factory = sqlite3.Row
         try:
             yield conn

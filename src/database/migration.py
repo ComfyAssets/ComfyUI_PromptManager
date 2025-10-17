@@ -17,6 +17,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from .connection_helper import DatabaseConnection, get_db_connection
 from ..repositories.generated_image_repository import GeneratedImageRepository
 from ..utils.file_operations import (
     FileOperationError,
@@ -95,6 +96,32 @@ class MigrationDetector:
         LOGGER.info("MigrationDetector initialized with ComfyUI root: %s", self.paths.comfyui_root)
         LOGGER.debug("Looking for v1 database at: %s", self.paths.v1_db_path)
 
+        # Load persistent cache from database on initialization
+        self._load_persistent_cache()
+
+    def _load_persistent_cache(self) -> None:
+        """Load migration status from v2 database settings table for persistent caching."""
+        if not self.paths.v2_db_path.exists():
+            return
+
+        try:
+            with get_db_connection(str(self.paths.v2_db_path)) as connection:
+                cursor = connection.execute(
+                    "SELECT value FROM settings WHERE key = 'migration_status'"
+                )
+                result = cursor.fetchone()
+                if result and result[0] in ['completed', 'fresh_start']:
+                    # Set cache immediately to avoid filesystem checks
+                    self._migration_status_cache = MigrationStatus.COMPLETED
+                    self._cache_timestamp = time.time()
+                    LOGGER.debug(
+                        "Loaded persistent migration status from database: %s",
+                        result[0]
+                    )
+        except sqlite3.Error:
+            # Settings table might not exist yet, this is fine
+            pass
+
     @property
     def comfyui_root(self) -> Path:
         return self.paths.comfyui_root
@@ -134,7 +161,7 @@ class MigrationDetector:
             return False
 
         try:
-            with sqlite3.connect(self.v1_db_path) as connection:
+            with get_db_connection(str(self.v1_db_path)) as connection:
                 cursor = connection.execute("PRAGMA table_info(prompts)")
                 columns = [row[1] for row in cursor.fetchall()]
         except sqlite3.Error as exc:  # pragma: no cover - corrupted file edge case
@@ -178,7 +205,7 @@ class MigrationDetector:
         LOGGER.info(f"Reading v1 database info from {self.v1_db_path} (size: {info['size_mb']} MB)")
 
         try:
-            with sqlite3.connect(self.v1_db_path) as connection:
+            with get_db_connection(str(self.v1_db_path)) as connection:
                 connection.row_factory = sqlite3.Row
                 cursor = connection.cursor()
                 cursor.execute("PRAGMA table_info(prompts)")
@@ -215,7 +242,7 @@ class MigrationDetector:
         if not self.v2_db_path.exists():
             return False
         try:
-            with sqlite3.connect(self.v2_db_path) as connection:
+            with get_db_connection(str(self.v2_db_path)) as connection:
                 cursor = connection.execute("SELECT COUNT(*) FROM prompts")
                 return int(cursor.fetchone()[0]) > 0
         except sqlite3.Error:
@@ -226,7 +253,7 @@ class MigrationDetector:
         if not self.v2_db_path.exists():
             return False
         try:
-            with sqlite3.connect(self.v2_db_path) as connection:
+            with get_db_connection(str(self.v2_db_path)) as connection:
                 cursor = connection.execute(
                     "SELECT value FROM settings WHERE key = 'migration_status'"
                 )
@@ -428,20 +455,20 @@ class DatabaseMigrator:
             return False, self.migration_stats
 
     def _enable_wal_mode_on_v1(self) -> bool:
-        """Enable WAL mode on v1 database for concurrent access during migration."""
+        """Enable WAL mode on v1 database for concurrent access during migration.
+
+        Note: connection_helper already enables WAL mode and busy_timeout,
+        so this is just a validation step.
+        """
         try:
-            conn = sqlite3.connect(str(self.detector.v1_db_path), timeout=30.0)
-            try:
-                # Enable WAL mode for better concurrency
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA busy_timeout=30000")
-                conn.commit()
-                LOGGER.info("WAL mode enabled on v1 database for migration")
+            with get_db_connection(str(self.detector.v1_db_path)) as conn:
+                # Connection helper already sets WAL mode and busy_timeout
+                # Just verify it's enabled
+                result = conn.execute("PRAGMA journal_mode").fetchone()
+                LOGGER.info(f"V1 database journal mode: {result[0] if result else 'unknown'}")
                 return True
-            finally:
-                conn.close()
         except sqlite3.Error as exc:
-            LOGGER.warning("Could not enable WAL mode on v1 database: %s", exc)
+            LOGGER.warning("Could not verify WAL mode on v1 database: %s", exc)
             # Not a critical error - migration can still proceed
             return False
 
@@ -565,16 +592,12 @@ class DatabaseMigrator:
         v2_conn = None
 
         try:
-            # Open v1 database with WAL mode for concurrent access
-            v1_conn = sqlite3.connect(v1_path, timeout=30.0)
-            v1_conn.execute("PRAGMA journal_mode=WAL")
-            v1_conn.execute("PRAGMA busy_timeout=30000")
+            # Open v1 database (connection_helper provides WAL mode and busy_timeout)
+            v1_conn = DatabaseConnection.get_connection(str(v1_path))
             v1_conn.row_factory = sqlite3.Row
 
-            # Open v2 database (may already exist and be open by other processes)
-            v2_conn = sqlite3.connect(v2_path, timeout=30.0)
-            v2_conn.execute("PRAGMA journal_mode=WAL")
-            v2_conn.execute("PRAGMA busy_timeout=30000")
+            # Open v2 database (connection_helper provides WAL mode and busy_timeout)
+            v2_conn = DatabaseConnection.get_connection(str(v2_path))
             v2_conn.row_factory = sqlite3.Row
 
             self._ensure_v2_schema(v2_conn)
@@ -801,7 +824,7 @@ class DatabaseMigrator:
         )
 
         try:
-            with sqlite3.connect(v2_path) as connection:
+            with get_db_connection(str(v2_path)) as connection:
                 cursor = connection.execute("SELECT COUNT(*) FROM prompts")
                 prompt_count = int(cursor.fetchone()[0])
                 cursor = connection.execute("SELECT COUNT(*) FROM generated_images")
@@ -956,7 +979,7 @@ class DatabaseMigrator:
         if not settings_map:
             return
         try:
-            with sqlite3.connect(self.detector.v2_db_path) as conn:
+            with get_db_connection(str(self.detector.v2_db_path)) as conn:
                 conn.executemany(
                     """
                     INSERT INTO settings (key, value)
