@@ -11,6 +11,7 @@ import os
 import platform
 import shutil
 import sqlite3
+from ..database.connection_helper import DatabaseConnection
 import time
 from pathlib import Path
 from typing import Optional
@@ -59,7 +60,7 @@ def checkpoint_wal_file(db_path: Path) -> bool:
         True if checkpoint succeeded, False otherwise
     """
     try:
-        conn = sqlite3.connect(str(db_path), timeout=5.0)
+        conn = DatabaseConnection.get_connection(str(db_path))
         try:
             # TRUNCATE mode: checkpoint and delete WAL file
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -339,7 +340,7 @@ def safe_rename_database(
 
         # Verify the copy by connecting to it
         try:
-            conn = sqlite3.connect(str(dst), timeout=5.0)
+            conn = DatabaseConnection.get_connection(str(dst))
             conn.execute("PRAGMA integrity_check")
             conn.close()
         except sqlite3.Error as exc:
