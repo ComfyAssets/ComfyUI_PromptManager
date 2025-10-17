@@ -6,6 +6,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 import logging
+from ..database.connection_helper import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class SettingsService:
             Setting value or default
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
                 result = cursor.fetchone()
@@ -69,7 +70,7 @@ class SettingsService:
             else:
                 value_str = str(value)
 
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 # Use INSERT OR REPLACE to handle both insert and update
@@ -98,7 +99,7 @@ class SettingsService:
         settings = {}
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     "SELECT key, value FROM app_settings WHERE category = ?",
@@ -126,7 +127,7 @@ class SettingsService:
             True if successful, False otherwise
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("DELETE FROM app_settings WHERE key = ?", (key,))
                 conn.commit()
@@ -197,7 +198,7 @@ class SettingsService:
         settings = []
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 
@@ -231,7 +232,7 @@ class SettingsService:
         export = {}
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT key, value, category
