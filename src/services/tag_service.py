@@ -3,6 +3,7 @@
 import sqlite3
 import logging
 from typing import Any, Dict, List, Optional
+from ..database.connection_helper import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class TagService:
             List of tag dictionaries with id, name, and usage_count
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.execute("""
                     SELECT id, name, usage_count
@@ -53,7 +54,7 @@ class TagService:
             List of matching tag dictionaries
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.execute("""
                     SELECT id, name, usage_count
@@ -89,7 +90,7 @@ class TagService:
             Tag dictionary or None if not found
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.execute("""
                     SELECT id, name, usage_count, created_at, updated_at
@@ -113,7 +114,7 @@ class TagService:
             New tag ID or None if creation failed
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.execute("""
                     INSERT INTO tags (name, usage_count, created_at, updated_at)
                     VALUES (?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -143,7 +144,7 @@ class TagService:
             True if deleted successfully, False otherwise
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
                 conn.commit()
                 return cursor.rowcount > 0
@@ -162,7 +163,7 @@ class TagService:
             Number of tags processed
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 # Get all tags from prompts
                 cursor = conn.execute("""
                     SELECT tags FROM prompts
@@ -221,7 +222,7 @@ class TagService:
             Number of tags updated
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 # Reset all counts to 0
                 conn.execute("UPDATE tags SET usage_count = 0")
 
@@ -285,7 +286,7 @@ class TagService:
             True if successful, False otherwise
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 # Create tag if it doesn't exist, increment if it does
                 conn.execute("""
                     INSERT INTO tags (name, usage_count, created_at, updated_at)
@@ -311,7 +312,7 @@ class TagService:
             True if successful, False otherwise
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.execute("""
                     UPDATE tags
                     SET usage_count = MAX(0, usage_count - 1),
@@ -350,7 +351,7 @@ class TagService:
             Total tag count
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.execute("SELECT COUNT(*) FROM tags")
                 return cursor.fetchone()[0]
 
@@ -368,7 +369,7 @@ class TagService:
             Number of tags deleted
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.execute(
                     "DELETE FROM tags WHERE usage_count <= ?",
                     (threshold,)
