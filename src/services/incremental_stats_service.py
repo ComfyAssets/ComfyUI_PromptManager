@@ -5,6 +5,7 @@ Only processes new/changed data instead of full recalculation.
 
 import json
 import sqlite3
+from ..database.connection_helper import DatabaseConnection
 from typing import Dict, Any, Optional, List, Tuple, Set
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -102,7 +103,7 @@ class IncrementalStatsService:
 
     def _connect(self) -> sqlite3.Connection:
         """Create database connection with row factory."""
-        conn = sqlite3.connect(self.db_path)
+        conn = DatabaseConnection.get_connection(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
 

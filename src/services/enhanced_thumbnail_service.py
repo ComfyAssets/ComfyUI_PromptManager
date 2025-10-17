@@ -34,6 +34,7 @@ from utils.image_processing import ThumbnailGenerator, ImageProcessor
 from utils.logging import get_logger
 from ..config import config
 from utils.cache import CacheManager
+from ..database.connection_helper import DatabaseConnection
 
 try:
     # Ensure parent directory is in path
@@ -580,6 +581,7 @@ class EnhancedThumbnailService:
             sizes = list(self.base_generator.SIZES.keys())
 
         missing_tasks = []
+        reconciled_count = 0
 
         for image_path in image_paths:
             if not image_path.exists():
@@ -594,35 +596,109 @@ class EnhancedThumbnailService:
             # Check each size
             for size_name in sizes:
                 thumbnail_path = self.get_thumbnail_path(image_path, size_name)
-                
-                # Skip if thumbnail file already exists (even if not in database)
+
+                # If thumbnail file exists on disk, reconcile with database
                 if thumbnail_path.exists():
+                    # Update database to reflect the existing file
+                    await self._reconcile_existing_thumbnail(image_path, size_name, thumbnail_path)
+                    reconciled_count += 1
                     continue
-                    
-                if not thumbnail_path.exists():
-                    # Get size dimensions
-                    size_dims = self.base_generator.SIZES.get(
-                        size_name,
-                        (300, 300)
-                    )
 
-                    ext_name = 'jpg'
-                    if not is_video:
-                        ext_name = image_path.suffix.lower().lstrip('.') or 'jpg'
+                # Thumbnail missing - add to generation tasks
+                # Get size dimensions
+                size_dims = self.base_generator.SIZES.get(
+                    size_name,
+                    (300, 300)
+                )
 
-                    # Create task
-                    task = ThumbnailTask(
-                        image_id=hashlib.md5(str(image_path).encode()).hexdigest(),
-                        source_path=image_path,
-                        thumbnail_path=thumbnail_path,
-                        size=size_dims,
-                        format=ext_name,
-                        is_video=is_video
-                    )
-                    missing_tasks.append(task)
+                ext_name = 'jpg'
+                if not is_video:
+                    ext_name = image_path.suffix.lower().lstrip('.') or 'jpg'
+
+                # Create task
+                task = ThumbnailTask(
+                    image_id=hashlib.md5(str(image_path).encode()).hexdigest(),
+                    source_path=image_path,
+                    thumbnail_path=thumbnail_path,
+                    size=size_dims,
+                    format=ext_name,
+                    is_video=is_video
+                )
+                missing_tasks.append(task)
+
+        if reconciled_count > 0:
+            logger.info(f"[ThumbnailReconcile] ✓ Reconciled {reconciled_count} existing thumbnails with database")
 
         logger.info(f"Found {len(missing_tasks)} missing thumbnails")
         return missing_tasks
+
+    async def _reconcile_existing_thumbnail(
+        self,
+        image_path: Path,
+        size_name: str,
+        thumbnail_path: Path
+    ) -> bool:
+        """Reconcile existing thumbnail file with database.
+
+        Updates the database to reference an existing thumbnail file that
+        was found on disk but not tracked in the database.
+
+        Args:
+            image_path: Source image path
+            size_name: Thumbnail size name (small, medium, large, xlarge)
+            thumbnail_path: Path to existing thumbnail file
+
+        Returns:
+            True if reconciliation successful
+        """
+        try:
+            import sqlite3
+            conn = DatabaseConnection.get_connection(self.db.db_path)
+            cursor = conn.cursor()
+
+            column_name = f'thumbnail_{size_name}_path'
+            image_path_str = str(image_path)
+
+            # Try multiple path variations to match database records
+            path_variations = [
+                image_path_str,
+                str(image_path.resolve()),
+                str(Path(image_path_str)),
+            ]
+
+            # Remove duplicates
+            seen = set()
+            path_variations = [x for x in path_variations if not (x in seen or seen.add(x))]
+
+            row_updated = False
+            for path_variant in path_variations:
+                cursor.execute(f"""
+                    UPDATE generated_images
+                    SET {column_name} = ?
+                    WHERE image_path = ?
+                    AND ({column_name} IS NULL OR {column_name} = '' OR {column_name} = 'FAILED')
+                """, (str(thumbnail_path), path_variant))
+
+                if cursor.rowcount > 0:
+                    row_updated = True
+                    logger.debug(
+                        f"[ThumbnailReconcile] ✓ Linked {size_name} thumbnail for: {image_path.name}"
+                    )
+                    break
+
+            conn.commit()
+            conn.close()
+
+            if not row_updated:
+                logger.debug(
+                    f"[ThumbnailReconcile] ℹ️  File exists but DB already has path for {size_name}: {image_path.name}"
+                )
+
+            return row_updated
+
+        except Exception as e:
+            logger.error(f"[ThumbnailReconcile] ❌ Failed to reconcile {size_name} for {image_path}: {e}")
+            return False
 
     def _generate_single_thumbnail(self, task: ThumbnailTask) -> ThumbnailTask:
         """Generate a single thumbnail.
@@ -736,6 +812,25 @@ class EnhancedThumbnailService:
             self._add_to_blacklist(task.source_path, f"Exception: {e}")
 
         return task
+
+    async def generate_thumbnail(self, task: ThumbnailTask) -> ThumbnailTask:
+        """Generate a single thumbnail asynchronously.
+
+        Public async wrapper for _generate_single_thumbnail.
+
+        Args:
+            task: Thumbnail task to process
+
+        Returns:
+            Updated task with status
+        """
+        # Run the synchronous thumbnail generation in the executor
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self.executor,
+            self._generate_single_thumbnail,
+            task
+        )
 
     async def generate_batch(
         self,
@@ -954,7 +1049,7 @@ class EnhancedThumbnailService:
                 if dims == task.size:
                     size_name = name
                     break
-            
+
             if task.status == ThumbnailStatus.GENERATED:
                 if size_name:
                     updates_by_size[size_name].append({
@@ -963,7 +1058,7 @@ class EnhancedThumbnailService:
                     })
                 else:
                     logger.warning(f"[ThumbnailDB] Could not determine size_name for task with size: {task.size}")
-            
+
             elif task.status in (ThumbnailStatus.FAILED, ThumbnailStatus.SKIPPED):
                 # Mark failed/skipped thumbnails with special marker to prevent re-scanning
                 if size_name:
@@ -977,8 +1072,11 @@ class EnhancedThumbnailService:
         if any(updates_by_size.values()):
             try:
                 import sqlite3
-                conn = sqlite3.connect(self.db.db_path)
+                conn = DatabaseConnection.get_connection(self.db.db_path)
                 cursor = conn.cursor()
+
+                updated_count = 0
+                failed_updates = []
 
                 # Update each size column
                 for size_name, updates in updates_by_size.items():
@@ -988,14 +1086,61 @@ class EnhancedThumbnailService:
                     column_name = f'thumbnail_{size_name}_path'
 
                     for update in updates:
-                        cursor.execute(f"""
-                            UPDATE generated_images
-                            SET {column_name} = ?
-                            WHERE image_path = ?
-                        """, (update['thumbnail_path'], update['image_path']))
+                        # Try multiple path variations to match database records
+                        original_path = update['image_path']
+
+                        # Path variations to try (in order of likelihood)
+                        path_variations = [
+                            original_path,  # Original as-is
+                            str(Path(original_path).resolve()),  # Resolved absolute path
+                            str(Path(original_path)),  # Normalized path
+                        ]
+
+                        # Remove duplicates while preserving order
+                        seen = set()
+                        path_variations = [x for x in path_variations if not (x in seen or seen.add(x))]
+
+                        row_updated = False
+                        for path_variant in path_variations:
+                            cursor.execute(f"""
+                                UPDATE generated_images
+                                SET {column_name} = ?
+                                WHERE image_path = ?
+                            """, (update['thumbnail_path'], path_variant))
+
+                            if cursor.rowcount > 0:
+                                updated_count += cursor.rowcount
+                                row_updated = True
+                                logger.debug(f"[ThumbnailDB] ✓ Updated {size_name} for: {Path(original_path).name}")
+                                break  # Success - no need to try other variants
+
+                        if not row_updated:
+                            # Log failed update with path diagnostic info
+                            failed_updates.append({
+                                'path': original_path,
+                                'size': size_name,
+                                'variants_tried': path_variations
+                            })
+                            logger.warning(
+                                f"[ThumbnailDB] ⚠️  No DB match for {size_name}: {Path(original_path).name}\n"
+                                f"  Tried {len(path_variations)} path variations"
+                            )
 
                 conn.commit()
                 conn.close()
+
+                # Summary logging
+                if updated_count > 0:
+                    logger.info(f"[ThumbnailDB] ✓ Updated {updated_count} thumbnail paths in database")
+
+                if failed_updates:
+                    logger.warning(
+                        f"[ThumbnailDB] ⚠️  Failed to update {len(failed_updates)} paths in database. "
+                        f"Files may not be tracked properly."
+                    )
+                    # Log a few examples for debugging
+                    for failed in failed_updates[:3]:
+                        logger.debug(f"[ThumbnailDB] Failed update example: {failed}")
 
             except Exception as e:
                 logger.error(f"[ThumbnailDB] ❌ Database update failed: {e}")
@@ -1041,7 +1186,7 @@ class EnhancedThumbnailService:
 
             def query_db():
                 """Helper function to query database in thread."""
-                conn = sqlite3.connect(str(self.db.db_path))
+                conn = DatabaseConnection.get_connection(str(self.db.db_path))
                 conn.row_factory = sqlite3.Row
                 cursor = conn.execute(
                     f"SELECT image_path, thumbnail_{size}_path FROM generated_images WHERE id = ?",
@@ -1157,7 +1302,7 @@ class EnhancedThumbnailService:
 
         try:
             import sqlite3
-            conn = sqlite3.connect(self.db.db_path)
+            conn = DatabaseConnection.get_connection(self.db.db_path)
             cursor = conn.cursor()
 
             # Query ALL images from database

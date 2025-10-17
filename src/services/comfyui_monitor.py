@@ -46,21 +46,14 @@ class ComfyUIMonitor:
     def _load_processed_files(self):
         """Load list of already processed files from database."""
         try:
-            import sqlite3
-            conn = sqlite3.connect(self.db_path)
+            from ..database.connection_helper import get_db_connection
 
-            # Enable WAL mode for better concurrency
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")
+            with get_db_connection(self.db_path) as conn:
+                cursor = conn.cursor()
 
-            cursor = conn.cursor()
-
-            # Get all filenames already in database
-            cursor.execute("SELECT filename FROM generated_images")
-            self.processed_files = {row[0] for row in cursor.fetchall()}
-
-            cursor.close()
-            conn.close()
+                # Get all filenames already in database
+                cursor.execute("SELECT filename FROM generated_images")
+                self.processed_files = {row[0] for row in cursor.fetchall()}
 
             print(f"[ComfyUIMonitor] Loaded {len(self.processed_files)} processed files")
 
@@ -146,13 +139,11 @@ class ComfyUIMonitor:
         # Use lock to prevent database conflicts
         with self.processing_lock:
             try:
-                print(f"[ComfyUIMonitor] Processing new image: {image_path.name}")
-
                 # Extract metadata from PNG
                 params = self.extractor.extract_from_png_metadata(str(image_path))
 
                 if not params or not params.get("positive"):
-                    print(f"[ComfyUIMonitor] No metadata found in {image_path.name}")
+                    # Silently skip images without metadata (expected for non-ComfyUI images)
                     return False
 
                 # Save to database with retry logic for lock errors
@@ -160,8 +151,6 @@ class ComfyUIMonitor:
                 for attempt in range(max_retries):
                     try:
                         success = self.extractor.save_to_database(params, str(image_path))
-                        if success:
-                            print(f"[ComfyUIMonitor] ✅ Saved metadata for {image_path.name}")
                         return success
                     except Exception as e:
                         if "database is locked" in str(e) and attempt < max_retries - 1:

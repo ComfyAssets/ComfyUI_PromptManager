@@ -5,6 +5,7 @@ Gets basic counts from cache, calculates complex analytics on demand.
 
 import json
 import sqlite3
+from ..database.connection_helper import get_db_connection
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from collections import Counter
@@ -49,7 +50,7 @@ class HybridStatsService:
 
             # Add basic overview stats
             try:
-                with sqlite3.connect(self.db_path) as conn:
+                with get_db_connection(self.db_path) as conn:
                     conn.row_factory = sqlite3.Row
                     cursor = conn.cursor()
 
@@ -85,7 +86,7 @@ class HybridStatsService:
         logger.info("Epic stats not available - please use Maintenance modal to calculate")
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 

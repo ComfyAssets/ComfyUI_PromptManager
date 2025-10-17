@@ -1,4 +1,4 @@
-"""Epic Stats Calculator Service - Comprehensive stats calculation and storage."""
+"""Epic stats calculator service."""
 
 import sqlite3
 import json
@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timedelta
 from collections import Counter, defaultdict
 from pathlib import Path
+from ..database.connection_helper import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ class EpicStatsCalculator:
     def _detect_columns(self):
         """Detect which columns actually exist in the database."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("PRAGMA table_info(generated_images)")
                 columns = {row[1] for row in cursor.fetchall()}
@@ -70,7 +71,7 @@ class EpicStatsCalculator:
     def _ensure_stats_tables(self):
         """Ensure all required stats tables exist."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 # Check if stats tables exist
@@ -201,7 +202,7 @@ class EpicStatsCalculator:
         }
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 # Track progress
@@ -1082,7 +1083,7 @@ class EpicStatsCalculator:
         }
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 # Get hourly activity

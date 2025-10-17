@@ -1,10 +1,11 @@
-"""Service to find and tag images with missing files."""
+"""Missing images tagger service."""
 
 import sqlite3
 import json
 import logging
 from pathlib import Path
 from typing import List, Dict, Any
+from ..database.connection_helper import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ class MissingImagesTagger:
         missing_images = []
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 
@@ -73,7 +74,7 @@ class MissingImagesTagger:
             missing_images = self.find_missing_images()
             stats['total_missing'] = len(missing_images)
 
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 for image in missing_images:
@@ -139,7 +140,7 @@ class MissingImagesTagger:
         }
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 
@@ -211,7 +212,7 @@ class MissingImagesTagger:
         }
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 

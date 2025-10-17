@@ -9,6 +9,7 @@ import logging
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 from datetime import datetime
+from ..database.connection_helper import get_db_connection
 
 class MaintenanceService:
     """Service for database maintenance operations"""
@@ -82,7 +83,7 @@ class MaintenanceService:
     def _count_duplicates(self) -> int:
         """Count duplicate image links"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 query = """
                     SELECT COUNT(*) FROM generated_images
                     WHERE id NOT IN (
@@ -203,7 +204,7 @@ class MaintenanceService:
                 result['size_before'] = os.path.getsize(self.db_path)
 
             # Perform optimization
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 conn.execute("VACUUM")
                 conn.execute("REINDEX")
 
@@ -231,7 +232,7 @@ class MaintenanceService:
         }
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 # Check integrity
                 cursor = conn.execute("PRAGMA integrity_check")
                 check_results = cursor.fetchall()
@@ -271,8 +272,8 @@ class MaintenanceService:
             backup_path = self.db_path + f'.backup_{timestamp}'
 
             # Create backup
-            with sqlite3.connect(self.db_path) as source:
-                with sqlite3.connect(backup_path) as backup:
+            with get_db_connection(self.db_path) as source:
+                with get_db_connection(backup_path) as backup:
                     source.backup(backup)
 
             result['success'] = True
@@ -403,7 +404,7 @@ class MaintenanceService:
                                 if new_path.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif')):
                                     try:
                                         # Update the database with new path
-                                        with sqlite3.connect(self.db_path) as conn:
+                                        with get_db_connection(self.db_path) as conn:
                                             conn.execute(
                                                 "UPDATE generated_images SET image_path = ? WHERE id = ?",
                                                 (new_path, record['id'])
@@ -476,7 +477,7 @@ class MaintenanceService:
         }
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 # Get all indexes
