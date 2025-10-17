@@ -25,7 +25,7 @@ Integration with ComfyUI:
 - No competing WebSocket servers or conflicting routes
 
 Usage:
-    from src.api import initialize_api_system
+    from . import initialize_api_system
     
     # Initialize complete API system
     api_system = await initialize_api_system()

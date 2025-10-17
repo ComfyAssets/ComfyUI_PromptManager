@@ -11,6 +11,7 @@ import math
 import logging
 import os
 import sqlite3
+from ..database.connection_helper import DatabaseConnection
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -187,32 +188,8 @@ class PromptManagerAPI:
                 return
             
             # Import Database for thumbnail service
-            # Handle potential conflicts with ComfyUI's app/database module
-            import sys
-            from pathlib import Path
-            
-            # Save current sys.path
-            original_path = sys.path.copy()
-            
-            try:
-                # Temporarily prioritize our package directory
-                parent_dir = Path(__file__).parent.parent.parent
-                
-                # Modify path to ensure our database module is found first
-                sys.path = [str(parent_dir)] + [p for p in sys.path if p != str(parent_dir)]
-                
-                # Clear any cached database modules that might conflict
-                if 'database' in sys.modules:
-                    del sys.modules['database']
-                    if 'database.operations' in sys.modules:
-                        del sys.modules['database.operations']
-                
-                # Now import should find our database module first
-                from ..database import PromptDatabase
-
-            finally:
-                # Restore original path
-                sys.path = original_path
+            # Use absolute import to avoid path resolution issues
+            from ..database import PromptDatabase
             
             from .route_handlers.thumbnails import ThumbnailAPI
 
@@ -235,32 +212,26 @@ class PromptManagerAPI:
 
     def _init_comfyui_monitor(self):
         """Initialize ComfyUI output monitor for automatic metadata extraction."""
-        # DISABLED: Monitor causing database lock issues
-        # Will be re-enabled after fixing concurrent access patterns
-        self.logger.info("ComfyUI monitor temporarily disabled to prevent database locks")
-        return
+        try:
+            # Check if ComfyUI output directory exists
+            comfy_output = Path.home() / "ai-apps/ComfyUI-3.12/output"
+            if not comfy_output.exists():
+                # Try alternative common paths
+                comfy_output = Path("../../output")
+                if not comfy_output.exists():
+                    comfy_output = Path("../../../ComfyUI/output")
 
-        # Original code commented out:
-        # try:
-        #     # Check if ComfyUI output directory exists
-        #     comfy_output = Path.home() / "ai-apps/ComfyUI-3.12/output"
-        #     if not comfy_output.exists():
-        #         # Try alternative common paths
-        #         comfy_output = Path("../../output")
-        #         if not comfy_output.exists():
-        #             comfy_output = Path("../../../ComfyUI/output")
-        #
-        #     if comfy_output.exists():
-        #         from src.services.comfyui_monitor import start_comfyui_monitor
-        #
-        #         # Start monitoring ComfyUI output directory
-        #         start_comfyui_monitor(str(comfy_output), self.db_path)
-        #         self.logger.info(f"ComfyUI output monitor started for: {comfy_output}")
-        #     else:
-        #         self.logger.debug("ComfyUI output directory not found, monitor disabled")
-        #
-        # except Exception as e:
-        #     self.logger.warning(f"Failed to start ComfyUI monitor: {e}")
+            if comfy_output.exists():
+                from ..services.comfyui_monitor import start_comfyui_monitor
+
+                # Start monitoring ComfyUI output directory
+                start_comfyui_monitor(str(comfy_output), self.db_path)
+                self.logger.info(f"ComfyUI output monitor started for: {comfy_output}")
+            else:
+                self.logger.debug("ComfyUI output directory not found, monitor disabled")
+
+        except Exception as e:
+            self.logger.warning(f"Failed to start ComfyUI monitor: {e}")
 
     def _init_maintenance_service(self):
         """Initialize maintenance API service."""
@@ -377,27 +348,56 @@ class PromptManagerAPI:
 
         try:
             comfy_root = fs.resolve_comfyui_root()
-        except Exception:
+        except Exception as e:
+            self.logger.warning(f"Failed to resolve ComfyUI root: {e}")
             comfy_root = None
 
         if comfy_root is not None:
             comfy_root = self._safe_resolve_path(comfy_root)
             roots.append(comfy_root)
+            self.logger.debug(f"Added ComfyUI root to allowed paths: {comfy_root}")
 
             for subdir in ("output", "user", "input"):
                 candidate = comfy_root / subdir
                 if candidate.exists():
-                    roots.append(self._safe_resolve_path(candidate))
+                    resolved = self._safe_resolve_path(candidate)
+                    roots.append(resolved)
+                    self.logger.debug(f"Added {subdir} directory to allowed paths: {resolved}")
+
+            # Also allow sibling ComfyUI directories (e.g., ComfyUI-3.12 when running from ComfyUI)
+            # This handles cases where images were generated from other ComfyUI installations
+            try:
+                parent_dir = comfy_root.parent
+                if parent_dir.exists():
+                    for sibling in parent_dir.iterdir():
+                        # Check if it looks like a ComfyUI installation
+                        if sibling.is_dir() and sibling != comfy_root:
+                            # Must have "ComfyUI" in name and have output or input directories
+                            if "ComfyUI" in sibling.name or "comfyui" in sibling.name.lower():
+                                for subdir in ("output", "input"):
+                                    sibling_subdir = sibling / subdir
+                                    if sibling_subdir.exists():
+                                        resolved = self._safe_resolve_path(sibling_subdir)
+                                        roots.append(resolved)
+                                        self.logger.debug(f"Added sibling ComfyUI {subdir}: {resolved}")
+                                        break  # Only need to verify one subdir exists
+            except Exception as e:
+                self.logger.debug(f"Could not scan for sibling ComfyUI directories: {e}")
 
         try:
             user_dir = fs.get_user_dir(create=False)
-        except Exception:
+        except Exception as e:
+            self.logger.warning(f"Failed to get user directory: {e}")
             user_dir = None
 
         if user_dir and user_dir.exists():
-            roots.append(self._safe_resolve_path(user_dir))
+            resolved_user = self._safe_resolve_path(user_dir)
+            roots.append(resolved_user)
+            self.logger.debug(f"Added user directory to allowed paths: {resolved_user}")
 
-        return self._dedupe_existing_paths(roots)
+        deduped = self._dedupe_existing_paths(roots)
+        self.logger.debug(f"Image serving allowed from {len(deduped)} root directories: {[str(r) for r in deduped]}")
+        return deduped
 
     @staticmethod
     def _safe_resolve_path(path: Path) -> Path:
@@ -421,6 +421,65 @@ class PromptManagerAPI:
             deduped.append(path)
 
         return deduped
+
+    def _validate_image_path(self, path: Path) -> tuple[bool, Optional[str]]:
+        """Validate image path is within allowed roots.
+
+        This method provides centralized path validation for all image file serving
+        endpoints to prevent path traversal attacks.
+
+        Args:
+            path: Path to validate (can be relative or absolute)
+
+        Returns:
+            tuple: (is_valid, error_message)
+                - is_valid: True if path is allowed, False otherwise
+                - error_message: None if valid, error description if invalid
+
+        Security Notes:
+            - Resolves paths to absolute canonical form
+            - Checks if resolved path is within allowed root directories
+            - Returns 403-appropriate error messages for security violations
+        """
+        self.logger.debug(f"Validating image path: {path}")
+        
+        try:
+            resolved = path.resolve(strict=True)
+            self.logger.debug(f"Resolved path to: {resolved}")
+        except FileNotFoundError:
+            self.logger.warning(f"Image file not found during validation: {path}")
+            return False, "Image file not found"
+        except Exception as e:
+            self.logger.error(f"Path resolution error for {path}: {e}")
+            return False, "Invalid image path"
+
+        allowed_roots = self._get_allowed_image_roots()
+        if not allowed_roots:
+            # No roots configured - this shouldn't happen in production
+            # Log warning but allow for backward compatibility during transition
+            self.logger.warning(
+                "No allowed image roots configured - security validation bypassed. "
+                "This should be fixed in production."
+            )
+            return True, None
+
+        # Check if resolved path is within any allowed root
+        is_allowed = any(
+            resolved.is_relative_to(root) for root in allowed_roots
+        )
+
+        if not is_allowed:
+            # Security violation - path outside allowed directories
+            self.logger.warning(
+                f"Security: Access denied to path outside allowed roots!\n"
+                f"  Requested path: {path}\n"
+                f"  Resolved path: {resolved}\n"
+                f"  Allowed roots: {[str(r) for r in allowed_roots]}"
+            )
+            return False, "Access denied: image path outside allowed directories"
+
+        self.logger.debug(f"Path validation successful: {resolved}")
+        return True, None
 
     def _build_migration_service(self) -> MigrationService:
         """Construct the migration service anchored to the detected ComfyUI root."""
@@ -629,7 +688,6 @@ class PromptManagerAPI:
         routes.get("/api/prompt_manager/maintenance/stats")(self.maintenance_handlers.get_maintenance_stats)
         routes.post("/api/prompt_manager/maintenance/deduplicate")(self.maintenance_handlers.remove_duplicates)
         routes.post("/api/prompt_manager/maintenance/clean-orphans")(self.maintenance_handlers.clean_orphans)
-        routes.post("/api/prompt_manager/maintenance/validate-paths")(self.maintenance_handlers.validate_paths)
         routes.post("/api/prompt_manager/maintenance/optimize")(self.maintenance_handlers.optimize_database)
         routes.post("/api/prompt_manager/maintenance/backup")(self.maintenance_handlers.create_backup)
         routes.post("/api/prompt_manager/maintenance/remove-missing")(self.maintenance_handlers.remove_missing_files)
@@ -1329,6 +1387,12 @@ class PromptManagerAPI:
             candidate_path = record.get("thumbnail_path") or record.get("thumbnail_small_path")
             if candidate_path:
                 thumb_path = Path(candidate_path).expanduser()
+
+                # Security validation for thumbnail path
+                is_valid, error_msg = self._validate_image_path(thumb_path)
+                if not is_valid:
+                    return web.json_response({"error": error_msg}, status=403)
+
                 if not thumb_path.exists():
                     candidate_path = None
                 else:
@@ -1344,6 +1408,12 @@ class PromptManagerAPI:
             return web.json_response({"error": "Image path unavailable"}, status=404)
 
         path = Path(candidate_path).expanduser()
+
+        # Security validation for original image path
+        is_valid, error_msg = self._validate_image_path(path)
+        if not is_valid:
+            return web.json_response({"error": error_msg}, status=403)
+
         if not path.exists():
             return web.json_response({"error": "Image file not found"}, status=404)
 
@@ -1678,7 +1748,14 @@ class PromptManagerAPI:
 
         try:
             info = get_file_system().verify_database_path(raw_path)
-            return web.json_response({"ok": True, "data": info})
+            candidate = Path(info["resolved"])
+            if not candidate.exists():
+                return web.json_response({"ok": False, "error": "Database not found at specified path"}, status=400)
+
+            resolved = get_file_system().set_custom_database_path(str(candidate))
+            config.database.path = str(resolved)
+            self._refresh_repositories()
+            return web.json_response({"ok": True, "data": {"path": str(resolved), "custom": True}})
         except Exception as exc:
             self.logger.error("Failed to verify database path %s: %s", raw_path, exc)
             return web.json_response({"ok": False, "error": str(exc)}, status=500)
@@ -1698,16 +1775,16 @@ class PromptManagerAPI:
                 config.database.path = str(resolved)
                 self._refresh_repositories()
                 return web.json_response({"ok": True, "data": {"path": str(resolved), "custom": False}})
+            else:
+                info = fs.verify_database_path(raw_path)
+                candidate = Path(info["resolved"])
+                if not candidate.exists():
+                    return web.json_response({"ok": False, "error": "Database not found at specified path"}, status=400)
 
-            info = fs.verify_database_path(raw_path)
-            candidate = Path(info["resolved"])
-            if not candidate.exists():
-                return web.json_response({"ok": False, "error": "Database not found at specified path"}, status=400)
-
-            resolved = fs.set_custom_database_path(str(candidate))
-            config.database.path = str(resolved)
-            self._refresh_repositories()
-            return web.json_response({"ok": True, "data": {"path": str(resolved), "custom": True}})
+                resolved = fs.set_custom_database_path(str(candidate))
+                config.database.path = str(resolved)
+                self._refresh_repositories()
+                return web.json_response({"ok": True, "data": {"path": str(resolved), "custom": True}})
         except Exception as exc:
             self.logger.error("Failed to apply database path %s: %s", raw_path, exc)
             return web.json_response({"ok": False, "error": str(exc)}, status=500)
@@ -2475,7 +2552,7 @@ class PromptManagerAPI:
                 }
 
             # Broadcast realtime update
-            if hasattr(self, 'realtime') and action != 'summary':
+            if hasattr(self, 'sse'):
                 await self.realtime.send_toast(result.get('message', 'Missing images processed'), 'success')
 
             return web.json_response(result)
@@ -2534,7 +2611,7 @@ class PromptManagerAPI:
         GET /api/v1/stats/epic
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = DatabaseConnection.get_connection(self.db_path)
             cursor = conn.cursor()
 
             # Get list of ALL available tables (not just stats tables)

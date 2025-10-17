@@ -8,9 +8,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from aiohttp import web
+from ...database.connection_helper import get_db_connection
 
 if TYPE_CHECKING:
-    from src.api.routes import PromptManagerAPI
+    from ..routes import PromptManagerAPI
 
 
 class GalleryHandlers:
@@ -84,7 +85,7 @@ class GalleryHandlers:
             import sqlite3
             db_path = self.generated_image_repo.db_path if self.generated_image_repo else self.image_repo.db_path
 
-            with sqlite3.connect(db_path) as conn:
+            with get_db_connection(db_path) as conn:
                 conn.row_factory = sqlite3.Row
 
                 # Build query with optional category and search filters
@@ -221,6 +222,12 @@ class GalleryHandlers:
             candidate_path = record.get("thumbnail_path") or record.get("thumbnail_small_path")
             if candidate_path:
                 thumb_path = Path(candidate_path).expanduser()
+
+                # Security validation for thumbnail path
+                is_valid, error_msg = self.api._validate_image_path(thumb_path)
+                if not is_valid:
+                    return web.json_response({"error": error_msg}, status=403)
+
                 if not thumb_path.exists():
                     candidate_path = None
                 else:
@@ -236,6 +243,12 @@ class GalleryHandlers:
             return web.json_response({"error": "Image path unavailable"}, status=404)
 
         path = Path(candidate_path).expanduser()
+
+        # Security validation for original image path
+        is_valid, error_msg = self.api._validate_image_path(path)
+        if not is_valid:
+            return web.json_response({"error": error_msg}, status=403)
+
         if not path.exists():
             return web.json_response({"error": "Image file not found"}, status=404)
 
@@ -268,23 +281,14 @@ class GalleryHandlers:
             return web.json_response({"error": "Image path unavailable"}, status=404)
 
         candidate = Path(path).expanduser()
-        try:
-            resolved = candidate.resolve(strict=True)
-        except FileNotFoundError:
-            return web.json_response({"error": "Image file not found"}, status=404)
 
-        allowed_roots = self.api._get_allowed_image_roots()
-        if allowed_roots:
-            allowed = any(resolved.is_relative_to(root) for root in allowed_roots)
-            if not allowed:
-                # Log the mismatch for debugging
-                self.logger.warning(
-                    f"Image path security check failed: {resolved} not in allowed roots: "
-                    f"{[str(r) for r in allowed_roots]}"
-                )
-                # TEMPORARY: Allow access anyway for now (remove this in production)
-                # return web.json_response({"error": "Access denied"}, status=403)
+        # Security validation: use centralized path validation
+        is_valid, error_msg = self.api._validate_image_path(candidate)
+        if not is_valid:
+            return web.json_response({"error": error_msg}, status=403)
 
+        # Path is validated, serve the file
+        resolved = candidate.resolve(strict=True)
         return web.FileResponse(resolved)
 
     async def get_generated_image_metadata(self, request: web.Request) -> web.Response:
@@ -412,7 +416,7 @@ class GalleryHandlers:
         """
         try:
             # Import here to avoid circular imports
-            from src.services.image_scanner import ImageScanner
+            from ...services.image_scanner import ImageScanner
 
             # Create scanner instance
             scanner = ImageScanner(self.api)

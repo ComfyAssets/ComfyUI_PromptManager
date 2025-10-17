@@ -22,6 +22,7 @@ from ...utils.ffmpeg_finder import (
 )
 
 from utils.cache import CacheManager
+from ...database.connection_helper import DatabaseConnection
 
 try:
     # Ensure parent directory is in path
@@ -181,7 +182,7 @@ class ThumbnailAPI:
                 # Get all image paths from database
                 # Create direct connection to database
                 import sqlite3
-                conn = sqlite3.connect(self.db.db_path)
+                conn = DatabaseConnection.get_connection(self.db.db_path)
                 cursor = conn.cursor()
 
                 # Check for both v1 images table and v2 generated_images table
@@ -281,319 +282,14 @@ class ThumbnailAPI:
                 data = {}
 
             sizes = data.get('sizes', ['small', 'medium', 'large'])
-            force_regenerate = data.get('force', False)
+            skip_existing = data.get('skip_existing', True)
 
             # Get all image paths from database
             image_paths = []
             missing_thumbnail_count = 0
             try:
                 import sqlite3
-                conn = sqlite3.connect(self.db.db_path)
-                cursor = conn.cursor()
-
-                # First, count images without thumbnails in database
-                cursor.execute("""
-                    SELECT COUNT(*)
-                    FROM generated_images
-                    WHERE (thumbnail_small_path IS NULL OR thumbnail_small_path = '')
-                    AND image_path IS NOT NULL AND image_path != ''
-                """)
-                missing_thumbnail_count = cursor.fetchone()[0]
-
-                # Get images without thumbnails for scanning
-                # Exclude images marked as FAILED (permanently can't have thumbnails)
-                cursor.execute("""
-                    SELECT id, image_path, filename
-                    FROM generated_images
-                    WHERE (thumbnail_small_path IS NULL OR thumbnail_small_path = '')
-                    AND (thumbnail_small_path IS NULL OR thumbnail_small_path != 'FAILED')
-                    AND image_path IS NOT NULL AND image_path != ''
-                """)
-                images = cursor.fetchall()
-
-                for image in images:
-                    path = Path(image[1])  # image_path is at index 1
-                    if path.exists():
-                        image_paths.append(path)
-
-                conn.close()
-                        
-            except Exception as e:
-                logger.error(f"Error fetching images: {e}")
-                # Return empty response if we can't get images
-                return web.json_response({
-                    'error': 'Failed to fetch images from database',
-                    'details': str(e)
-                }, status=500)
-
-            # Scan for missing thumbnails, excluding blacklisted files
-            non_blacklisted_paths = [
-                path for path in image_paths
-                if not self.thumbnail_service._is_blacklisted(path)
-            ]
-            
-            tasks = await self.thumbnail_service.scan_missing_thumbnails(
-                non_blacklisted_paths,
-                sizes
-            )
-
-            if not tasks:
-                return web.json_response({
-                    'message': 'No missing thumbnails found',
-                    'missing_count': 0,
-                    'total': 0
-                })
-
-            # Generate unique task ID and cancellation flag
-            task_id = f"thumb_gen_{datetime.now().timestamp()}"
-            cancel_event = threading.Event()
-            self.active_generations[task_id] = {
-                'status': 'running',
-                'progress': None,
-                'result': None,
-                'cancel_event': cancel_event,
-            }
-
-            # Start generation in background
-            asyncio.create_task(self._generate_with_tracking(task_id, tasks, cancel_event))
-
-            return web.json_response({
-                'task_id': task_id,
-                'total': len(tasks),
-                'missing_count': len(tasks),  # Frontend expects this field
-                'message': 'Generation started'
-            })
-
-        except Exception as e:
-            logger.error(f"Generation error: {e}")
-            return web.json_response(
-                {'error': str(e)},
-                status=500
-            )
-
-    async def _generate_with_tracking(
-        self,
-        task_id: str,
-        tasks: List,
-        cancel_event: Optional[threading.Event] = None,
-    ):
-        """Generate thumbnails with progress tracking.
-
-        Args:
-            task_id: Unique task identifier
-            tasks: List of thumbnail tasks
-        """
-        try:
-            logger.info(f"Starting thumbnail generation for task {task_id} with {len(tasks)} tasks")
-
-            # Get the event loop for thread-safe updates
-            loop = asyncio.get_event_loop()
-
-            # Define progress callback that can be called from thread pool
-            def progress_callback(progress_data):
-                # Schedule update in main event loop (thread-safe)
-                def update():
-                    self.active_generations[task_id]['progress'] = progress_data
-                    # Log every progress update for debugging
-                    completed = progress_data.get('completed', 0)
-                    failed = progress_data.get('failed', 0)
-                    total = progress_data.get('total', 0)
-                    percentage = progress_data.get('percentage', 0)
-
-                    # Log every 5% or every 10 items, whichever is smaller
-                    processed = completed + failed
-                    if processed % max(1, min(10, total // 20)) == 0:
-                        logger.info(f"Task {task_id}: {percentage:.1f}% complete "
-                                  f"({completed} done, {failed} failed of {total} total)")
-
-                    if self.realtime:
-                        asyncio.create_task(
-                            self.realtime.send_progress(
-                                'thumbnails',
-                                int(progress_data.get('percentage', 0)),
-                                progress_data.get('current_file', ''),
-                                task_id=task_id,
-                                stats=progress_data,
-                            )
-                        )
-
-                # Thread-safe update via event loop
-                loop.call_soon_threadsafe(update)
-
-            # Generate thumbnails
-            result = await self.thumbnail_service.generate_batch(
-                tasks,
-                progress_callback,
-                cancel_event=cancel_event,
-            )
-
-            # Update task status
-            status = 'cancelled' if result.get('cancelled') else 'completed'
-            self.active_generations[task_id]['status'] = status
-            self.active_generations[task_id]['result'] = result
-            logger.info(f"Task {task_id} completed: {result}")
-
-            progress_snapshot = self.active_generations[task_id].get('progress') or {
-                'total': result.get('total', 0),
-                'completed': result.get('completed', 0),
-                'failed': result.get('failed', 0),
-                'skipped': result.get('skipped', 0),
-                'processed': result.get('processed', 0),
-                'percentage': 100,
-                'errors': result.get('errors', []),
-                'current_file': None,
-                'duration_seconds': result.get('duration_seconds', result.get('duration', 0)),
-            }
-
-            if self.realtime:
-                await self.realtime.send_progress(
-                    'thumbnails',
-                    100,
-                    'Thumbnail generation cancelled' if status == 'cancelled' else 'Thumbnail generation complete',
-                    task_id=task_id,
-                    stats=progress_snapshot,
-                    result=result,
-                )
-
-                summary = result or {}
-                message = (
-                    f"Generated {summary.get('completed', 0)} thumbnails"
-                    f" (failed {summary.get('failed', 0)})"
-                )
-                toast_type = 'success' if summary.get('failed', 0) == 0 else 'warning'
-                await self.realtime.send_toast(message, toast_type)
-
-                if summary.get('completed', 0):
-                    await self.realtime.notify_gallery_refresh()
-
-        except Exception as e:
-            logger.error(f"Background generation error for task {task_id}: {e}", exc_info=True)
-            self.active_generations[task_id]['status'] = 'failed'
-            self.active_generations[task_id]['error'] = str(e)
-
-            if self.realtime:
-                await self.realtime.send_progress(
-                    'thumbnails',
-                    int(self.active_generations[task_id].get('progress', {}).get('percentage', 0) or 0),
-                    'Thumbnail generation failed',
-                    task_id=task_id,
-                    error=str(e),
-                )
-                await self.realtime.send_toast(f'Thumbnail generation failed: {e}', 'error')
-
-    async def cancel_generation(self, request: web.Request) -> web.Response:
-        """Request cancellation of an active thumbnail generation task."""
-        try:
-            data = await request.json()
-        except json.JSONDecodeError:
-            data = {}
-
-        task_id = data.get('task_id') or request.query.get('task_id')
-        if not task_id:
-            return web.json_response({'error': 'task_id is required'}, status=400)
-
-        task = self.active_generations.get(task_id)
-        if not task:
-            return web.json_response({'error': 'Task not found', 'task_id': task_id}, status=404)
-
-        cancel_event = task.get('cancel_event')
-        if not isinstance(cancel_event, threading.Event):
-            return web.json_response({'error': 'Task cannot be cancelled', 'task_id': task_id}, status=409)
-
-        if cancel_event.is_set():
-            return web.json_response({'status': task.get('status', 'unknown'), 'task_id': task_id})
-
-        cancel_event.set()
-        task['status'] = 'cancelling'
-
-        if self.realtime:
-            await self.realtime.send_toast('Cancelling thumbnail generation…', 'info')
-
-        return web.json_response({'status': 'cancelling', 'task_id': task_id})
-
-    async def get_task_status(self, request: web.Request) -> web.Response:
-        """Get current status of a thumbnail generation task.
-
-        Args:
-            request: HTTP request
-
-        Returns:
-            JSON response with task status
-        """
-        task_id = request.match_info.get('task_id')
-
-        if not task_id or task_id not in self.active_generations:
-            logger.debug(f"Task {task_id} not found. Active tasks: {list(self.active_generations.keys())}")
-            return web.json_response(
-                {'error': 'Task not found', 'task_id': task_id},
-                status=404
-            )
-
-        task = self.active_generations[task_id]
-        progress = task.get('progress', {})
-
-        # Log status check for debugging
-        if progress:
-            logger.debug(f"Task {task_id} status check: {task.get('status')}, "
-                        f"progress: {progress.get('completed', 0)}/{progress.get('total', 0)} "
-                        f"({progress.get('percentage', 0)}%)")
-
-        # Return current status
-        return web.json_response({
-            'task_id': task_id,
-            'status': task.get('status', 'unknown'),
-            'progress': {
-                'completed': progress.get('completed', 0),
-                'failed': progress.get('failed', 0),
-                'skipped': progress.get('skipped', 0),
-                'total': progress.get('total', 0),
-                'percentage': progress.get('percentage', 0),
-                'current_file': progress.get('current_file', ''),
-                'estimated_time_remaining': progress.get('estimated_time_remaining', 0)
-            },
-            'result': task.get('result') if task.get('status') == 'completed' else None,
-            'error': task.get('error') if task.get('status') == 'failed' else None
-        })
-
-    async def rebuild_thumbnails(self, request: web.Request) -> web.Response:
-        """Rebuild all thumbnails (force regenerate).
-
-        Args:
-            request: HTTP request
-
-        Returns:
-            JSON response with task information
-        """
-        try:
-            # Get parameters from request
-            data = await request.json()
-            sizes = data.get('sizes')
-            skip_existing = data.get('skip_existing', True)  # NEW: default to True
-
-            # If no sizes specified, try to get from user settings/preferences
-            if not sizes:
-                # Try to load from saved preferences
-                sizes = self._get_user_thumbnail_size_preferences()
-                if sizes:
-                    logger.info("No sizes specified for rebuild, using saved preferences: %s", sizes)
-                else:
-                    # Default to common sizes if no preferences saved
-                    sizes = ['small', 'medium', 'large']
-                    logger.info("No sizes specified for rebuild, using defaults: %s", sizes)
-            else:
-                logger.info("Rebuilding thumbnails for sizes: %s", sizes)
-
-            # Clear existing cache only if NOT skipping existing
-            if not skip_existing:
-                for size in sizes:
-                    if size in self.thumbnail_service.base_generator.SIZES:
-                        await self.thumbnail_service.clear_cache(size)
-
-            # Get images from database
-            image_paths = []
-            try:
-                import sqlite3
-                conn = sqlite3.connect(self.db.db_path)
+                conn = DatabaseConnection.get_connection(self.db.db_path)
                 cursor = conn.cursor()
 
                 if skip_existing:
@@ -1389,3 +1085,296 @@ class ThumbnailAPI:
 
             if self.realtime:
                 await self.realtime.send_toast(f'Thumbnail rebuild failed: {e}', 'error')
+
+    async def cancel_generation(self, request: web.Request) -> web.Response:
+        """Cancel an active thumbnail generation task.
+
+        Args:
+            request: HTTP request
+
+        Returns:
+            JSON response with cancellation status
+        """
+        try:
+            data = await request.json()
+            task_id = data.get('task_id')
+
+            if not task_id:
+                return web.json_response(
+                    {'error': 'task_id is required'},
+                    status=400
+                )
+
+            task = self.active_generations.get(task_id)
+            if not task:
+                return web.json_response(
+                    {'error': f'Task {task_id} not found'},
+                    status=404
+                )
+
+            # Set the cancel event if it exists
+            cancel_event = task.get('cancel_event')
+            if cancel_event and isinstance(cancel_event, threading.Event):
+                cancel_event.set()
+                logger.info(f"Cancellation requested for task {task_id}")
+                return web.json_response({
+                    'success': True,
+                    'message': f'Task {task_id} cancellation requested'
+                })
+            else:
+                return web.json_response({
+                    'success': False,
+                    'message': f'Task {task_id} cannot be cancelled (no cancel_event)'
+                })
+
+        except Exception as e:
+            logger.error(f"Cancel generation error: {e}")
+            return web.json_response(
+                {'error': str(e)},
+                status=500
+            )
+
+    async def get_task_status(self, request: web.Request) -> web.Response:
+        """Get the status of a thumbnail generation task.
+
+        Args:
+            request: HTTP request
+
+        Returns:
+            JSON response with task status
+        """
+        task_id = request.match_info['task_id']
+
+        task = self.active_generations.get(task_id)
+        if not task:
+            return web.json_response(
+                {'error': f'Task {task_id} not found'},
+                status=404
+            )
+
+        response = {
+            'task_id': task_id,
+            'status': task['status'],
+            'progress': task.get('progress'),
+            'result': task.get('result')
+        }
+
+        # Include error if present
+        if 'error' in task:
+            response['error'] = task['error']
+
+        return web.json_response(response)
+
+    async def rebuild_thumbnails(self, request: web.Request) -> web.Response:
+        """Rebuild thumbnails for all images.
+
+        Args:
+            request: HTTP request
+
+        Returns:
+            JSON response with task ID
+        """
+        try:
+            # Handle empty or invalid JSON body gracefully
+            try:
+                data = await request.json() if request.body_exists else {}
+            except (json.JSONDecodeError, ValueError):
+                data = {}
+
+            sizes = data.get('sizes', ['small', 'medium', 'large'])
+            skip_existing = data.get('skip_existing', True)
+
+            # Get all image paths from database
+            image_paths = []
+            try:
+                import sqlite3
+                conn = DatabaseConnection.get_connection(self.db.db_path)
+                cursor = conn.cursor()
+
+                if skip_existing:
+                    # Only get images WITHOUT thumbnails
+                    logger.info("Skipping existing thumbnails - only generating missing")
+                    cursor.execute("""
+                        SELECT id, image_path, filename
+                        FROM generated_images
+                        WHERE (thumbnail_small_path IS NULL OR thumbnail_small_path = '')
+                        AND image_path IS NOT NULL AND image_path != ''
+                    """)
+                else:
+                    # Get ALL images (existing behavior for overwrite)
+                    logger.info("Overwriting all thumbnails - regenerating everything")
+                    cursor.execute("""
+                        SELECT id, image_path, filename
+                        FROM generated_images
+                        WHERE image_path IS NOT NULL AND image_path != ''
+                    """)
+
+                images = cursor.fetchall()
+
+                for image in images:
+                    path = Path(image[1])  # image_path is at index 1
+                    if path.exists():
+                        image_paths.append(path)
+
+                conn.close()
+
+            except Exception as e:
+                logger.error(f"Error fetching images for rebuild: {e}")
+                return web.json_response({
+                    'error': 'Failed to fetch images from database',
+                    'details': str(e)
+                }, status=500)
+
+            # Create tasks only for requested sizes
+            all_tasks = []
+            for path in image_paths:
+                is_video = self.thumbnail_service.ffmpeg.is_video(path)
+
+                for size_name in sizes:
+                    # Skip invalid size names
+                    if size_name not in self.thumbnail_service.base_generator.SIZES:
+                        logger.warning(f"Invalid size name '{size_name}' skipped")
+                        continue
+
+                    size_dims = self.thumbnail_service.base_generator.SIZES[size_name]
+                    task = ThumbnailTask(
+                        image_id=hashlib.md5(str(path).encode()).hexdigest(),
+                        source_path=path,
+                        thumbnail_path=self.thumbnail_service.get_thumbnail_path(path, size_name),
+                        size=size_dims,
+                        format=path.suffix.lower()[1:],
+                        is_video=is_video
+                    )
+                    all_tasks.append(task)
+
+            # Start rebuild
+            task_id = f"rebuild_{datetime.now().timestamp()}"
+            cancel_event = threading.Event()
+            self.active_generations[task_id] = {
+                'status': 'running',
+                'progress': None,
+                'result': None,
+                'cancel_event': cancel_event
+            }
+
+            asyncio.create_task(self._generate_with_tracking(task_id, all_tasks, cancel_event))
+
+            return web.json_response({
+                'task_id': task_id,
+                'total': len(all_tasks),
+                'message': 'Rebuild started'
+            })
+
+        except Exception as e:
+            logger.error(f"Rebuild error: {e}")
+            return web.json_response(
+                {'error': str(e)},
+                status=500
+            )
+
+    async def _generate_with_tracking(
+        self,
+        task_id: str,
+        tasks: List[ThumbnailTask],
+        cancel_event: threading.Event
+    ):
+        """Generate thumbnails with progress tracking.
+
+        Args:
+            task_id: Unique task identifier
+            tasks: List of thumbnail tasks to process
+            cancel_event: Event for cancellation
+        """
+        try:
+            # Validate event loop is running
+            try:
+                loop = asyncio.get_running_loop()
+                logger.info(f"[{task_id}] Event loop validated and running")
+            except RuntimeError as e:
+                logger.error(f"[{task_id}] No event loop running: {e}")
+                self.active_generations[task_id]['status'] = 'failed'
+                self.active_generations[task_id]['error'] = 'No event loop available'
+                return
+
+            logger.info(f"[{task_id}] Starting thumbnail generation for {len(tasks)} tasks")
+
+            completed = 0
+            failed = 0
+            total = len(tasks)
+
+            # Process tasks
+            for i, task in enumerate(tasks):
+                # Check if cancelled
+                if cancel_event.is_set():
+                    logger.info(f"[{task_id}] Cancelled after {completed} completions")
+                    break
+
+                try:
+                    # Log detailed progress at DEBUG level only
+                    logger.debug(f"[{task_id}] Processing {i+1}/{total}: {task.source_path.name}")
+
+                    # Generate thumbnail
+                    await self.thumbnail_service.generate_thumbnail(task)
+
+                    logger.debug(f"[{task_id}] Completed {i+1}/{total}: {task.source_path.name}")
+                    completed += 1
+
+                except Exception as e:
+                    logger.error(f"[{task_id}] Failed to generate thumbnail for {task.source_path}: {e}", exc_info=True)
+                    failed += 1
+
+                # Update progress
+                def update_progress():
+                    self.active_generations[task_id]['progress'] = {
+                        'current': i + 1,
+                        'total': total,
+                        'completed': completed,
+                        'failed': failed,
+                        'percentage': round(((i + 1) / total) * 100, 1)
+                    }
+
+                loop.call_soon_threadsafe(update_progress)
+
+                # Send realtime updates every 10 tasks
+                if self.realtime and (i + 1) % 10 == 0:
+                    await self.realtime.send_progress(
+                        'thumbnail_generation',
+                        round(((i + 1) / total) * 100, 1),
+                        f'Generated {completed} of {total} thumbnails',
+                        task_id=task_id
+                    )
+
+            # Update task status
+            status = 'cancelled' if cancel_event.is_set() else 'completed'
+            self.active_generations[task_id]['status'] = status
+            self.active_generations[task_id]['result'] = {
+                'completed': completed,
+                'failed': failed,
+                'total': total,
+                'cancelled': cancel_event.is_set()
+            }
+
+            logger.info(f"Generation task {task_id} {status}: {completed} completed, {failed} failed")
+
+            if self.realtime:
+                await self.realtime.send_progress(
+                    'thumbnail_generation',
+                    100,
+                    'Generation complete' if status == 'completed' else 'Generation cancelled',
+                    task_id=task_id,
+                    result=self.active_generations[task_id]['result']
+                )
+
+                if status == 'completed':
+                    message = f"Generated {completed} thumbnails"
+                    if failed > 0:
+                        message += f", {failed} failed"
+                    await self.realtime.send_toast(message, 'success' if failed == 0 else 'warning')
+
+        except Exception as e:
+            logger.error(f"Background generation error for task {task_id}: {e}", exc_info=True)
+            self.active_generations[task_id]['status'] = 'failed'
+            self.active_generations[task_id]['error'] = str(e)
+
+            if self.realtime:
+                await self.realtime.send_toast(f'Thumbnail generation failed: {e}', 'error')

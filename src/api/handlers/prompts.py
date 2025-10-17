@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 if TYPE_CHECKING:
-    from src.api.routes import PromptManagerAPI
+    from ..routes import PromptManagerAPI
 
 
 class PromptHandlers:

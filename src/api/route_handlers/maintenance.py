@@ -177,7 +177,7 @@ class MaintenanceAPI:
         try:
             import sqlite3
 
-            conn = sqlite3.connect(self.db_path)
+            conn = DatabaseConnection.get_connection(self.db_path)
 
             # Run optimization commands
             conn.execute("PRAGMA optimize")

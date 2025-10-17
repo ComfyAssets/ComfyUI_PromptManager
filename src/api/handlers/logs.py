@@ -12,7 +12,7 @@ from aiohttp import web
 from utils.logging import LogConfig
 
 if TYPE_CHECKING:
-    from src.api.routes import PromptManagerAPI
+    from ..routes import PromptManagerAPI
 
 
 class LogsHandlers:

@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aiohttp import web
+from ...database.connection_helper import get_db_connection
 
 if TYPE_CHECKING:
-    from src.api.routes import PromptManagerAPI
+    from ..routes import PromptManagerAPI
 
 
 class TagHandlers:
@@ -148,7 +149,7 @@ class TagHandlers:
         try:
             # Get tag from database
             import sqlite3
-            with sqlite3.connect(self.api.db_path) as conn:
+            with get_db_connection(self.api.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.execute("""
                     SELECT id, name, usage_count, created_at, updated_at
