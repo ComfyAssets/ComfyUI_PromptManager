@@ -167,6 +167,8 @@ def get_prompt_tracker(db_instance=None):
             # Allow disabling patch via env for diagnostics
             disable_patch = os.getenv("PROMPTMANAGER_DISABLE_PATCH", "0") == "1"
             if disable_patch:
+                if DEBUG:
+                    print("⚠️ SaveImage patching disabled via PROMPTMANAGER_DISABLE_PATCH")
             else:
                 patcher = SaveImagePatcher(tracker)
                 SingletonTracker.set_patcher(patcher)
