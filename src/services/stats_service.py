@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+from ..database.connection_helper import DatabaseConnection
 import time
 from collections import Counter, defaultdict
 from copy import deepcopy
@@ -54,7 +55,7 @@ class StatsService:
     # Data loading helpers
     # ------------------------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = DatabaseConnection.get_connection(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
