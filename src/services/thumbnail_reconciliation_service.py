@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from .enhanced_thumbnail_service import EnhancedThumbnailService, ThumbnailTask
 from utils.cache import CacheManager
 from utils.logging import get_logger
+from ..database.connection_helper import DatabaseConnection
 
 try:
     import sys
@@ -123,7 +124,7 @@ class ThumbnailReconciliationService:
         logger.info("Phase 1: Database validation")
         total_images = await self._count_images()
 
-        conn = sqlite3.connect(self.db.db_path)
+        conn = DatabaseConnection.get_connection(self.db.db_path)
         cursor = conn.cursor()
 
         cursor.execute("""
@@ -254,7 +255,7 @@ class ThumbnailReconciliationService:
                 image_id = db_hashes[file_hash]
 
                 # Get DB record for this image
-                conn = sqlite3.connect(self.db.db_path)
+                conn = DatabaseConnection.get_connection(self.db.db_path)
                 cursor = conn.cursor()
                 cursor.execute(f"""
                     SELECT thumbnail_small_path, thumbnail_medium_path,
@@ -544,7 +545,7 @@ class ThumbnailReconciliationService:
         Returns:
             Dict of {hash: image_id}
         """
-        conn = sqlite3.connect(self.db.db_path)
+        conn = DatabaseConnection.get_connection(self.db.db_path)
         cursor = conn.cursor()
 
         cursor.execute("SELECT id, image_path FROM generated_images WHERE image_path IS NOT NULL")
@@ -565,7 +566,7 @@ class ThumbnailReconciliationService:
         Returns:
             Total image count
         """
-        conn = sqlite3.connect(self.db.db_path)
+        conn = DatabaseConnection.get_connection(self.db.db_path)
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM generated_images WHERE image_path IS NOT NULL")
         count = cursor.fetchone()[0]
@@ -580,7 +581,7 @@ class ThumbnailReconciliationService:
             size: Thumbnail size (small, medium, large, xlarge)
             path: New thumbnail path
         """
-        conn = sqlite3.connect(self.db.db_path)
+        conn = DatabaseConnection.get_connection(self.db.db_path)
         cursor = conn.cursor()
 
         column_name = f'thumbnail_{size}_path'
