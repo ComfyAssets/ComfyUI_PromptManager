@@ -135,14 +135,16 @@ class LogConfig:
             pm_logger = logging.getLogger("promptmanager")
             pm_logger.setLevel(resolved_level or logging.INFO)
             pm_logger.handlers.clear()  # Only clear OUR handlers
-            pm_logger.propagate = True  # Let messages go to root logger (ComfyUI's config)
+            pm_logger.propagate = False  # Don't propagate to root logger to avoid duplication
             cls._file_handler = None
 
             if resolved_level is None:
                 cls._initialised = True
                 return
 
-            if console:
+            # Check if console logging should be enabled via environment variable
+            console_enabled = os.environ.get('PROMPTMANAGER_CONSOLE_LOGGING', '1') == '1'
+            if console and console_enabled:
                 console_handler = logging.StreamHandler(sys.stdout)
                 console_handler.setLevel(resolved_level)
                 console_handler.setFormatter(formatter)
