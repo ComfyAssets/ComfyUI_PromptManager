@@ -48,7 +48,9 @@ class PromptModel:
             db_dir = Path(self.db_path).parent
             db_dir.mkdir(parents=True, exist_ok=True)
 
-            with DatabaseConnection.get_connection(self.db_path) as conn:
+            from .connection_helper import get_db_connection
+
+            with get_db_connection(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
 
                 # Enable WAL mode for better concurrency
@@ -61,7 +63,7 @@ class PromptModel:
                 self._create_tables(conn)
                 self._migrate_schema(conn)
                 self._create_indexes(conn)
-                conn.commit()
+                # Commit is handled by the context manager
                 self.logger.info(f"Database initialized at: {self.db_path} (WAL mode enabled)")
         except Exception as e:
             self.logger.error(f"Error creating database: {e}")
@@ -687,17 +689,26 @@ class PromptModel:
         except (TypeError, ValueError):
             return None
 
-    def get_connection(self) -> sqlite3.Connection:
+    def get_connection(self):
         """
-        Get a database connection with proper configuration.
+        Get a database connection context manager with proper configuration.
 
         Returns:
-            sqlite3.Connection: Configured database connection
+            Context manager that yields a configured database connection
         """
-        conn = DatabaseConnection.get_connection(self.db_path)
-        conn.row_factory = sqlite3.Row  # Enable dict-like access to rows
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+        from contextlib import contextmanager
+        from .connection_helper import get_db_connection
+
+        @contextmanager
+        def _connection_wrapper():
+            # Use the proper context manager from connection_helper
+            # This ensures commits, retries, and proper connection handling
+            with get_db_connection(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row  # Enable dict-like access to rows
+                conn.execute("PRAGMA foreign_keys = ON")
+                yield conn
+
+        return _connection_wrapper()
 
     def vacuum_database(self) -> None:
         """
@@ -707,9 +718,11 @@ class PromptModel:
         improving query performance and reducing file size.
         """
         try:
-            with DatabaseConnection.get_connection(self.db_path) as conn:
+            from .connection_helper import get_db_connection
+
+            with get_db_connection(self.db_path) as conn:
                 conn.execute("VACUUM")
-                conn.commit()
+                # Commit is handled by the context manager
                 self.logger.info("Database vacuum completed")
         except Exception as e:
             self.logger.error(f"Error vacuuming database: {e}")

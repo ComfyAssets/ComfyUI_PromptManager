@@ -478,26 +478,76 @@ class PromptDatabase:
         import os
         from pathlib import Path
 
+        # DEBUG logging
+        debug = os.getenv("PROMPTMANAGER_DEBUG", "0") == "1"
+        if debug:
+            print(f"\n📝 [link_image_to_prompt] Starting...")
+            print(f"   prompt_id: {prompt_id}")
+            print(f"   image_path: {image_path}")
+            print(f"   metadata keys: {list(metadata.keys()) if metadata else 'None'}")
+
         if not image_path:
             raise ValueError("image_path is required")
 
         try:
             normalized_path = str(Path(image_path).expanduser().resolve())
-        except Exception:
+            if debug:
+                print(f"   normalized_path: {normalized_path}")
+        except Exception as e:
+            if debug:
+                print(f"   ⚠️ Path normalization failed: {e}")
             normalized_path = os.path.abspath(image_path)
 
         filename = os.path.basename(normalized_path)
+        if debug:
+            print(f"   filename: {filename}")
+
+        if debug:
+            print(f"   Opening database connection...")
 
         with self.model.get_connection() as conn:
+            if debug:
+                print(f"   ✅ Database connection opened")
+                print(f"   Checking for existing image...")
+
             existing = conn.execute(
-                "SELECT id FROM generated_images WHERE image_path = ? LIMIT 1",
+                "SELECT id, prompt_id FROM generated_images WHERE image_path = ? LIMIT 1",
                 (normalized_path,)
             ).fetchone()
+
             if existing:
-                self.logger.debug(
-                    f"Image {filename} already linked to prompt {prompt_id} (image_id: {existing[0]})"
-                )
-                return int(existing[0])
+                existing_id = int(existing[0])
+                existing_prompt_id = existing[1] if len(existing) > 1 else None
+
+                if debug:
+                    print(f"   ⏭️ Image already exists (id: {existing_id}, old_prompt_id: {existing_prompt_id})")
+
+                # If linked to a different prompt, update it to the new prompt
+                if existing_prompt_id != prompt_id:
+                    if debug:
+                        print(f"   🔄 Updating link: {existing_prompt_id} → {prompt_id}")
+
+                    conn.execute(
+                        "UPDATE generated_images SET prompt_id = ? WHERE id = ?",
+                        (prompt_id, existing_id)
+                    )
+                    # Commit is handled by context manager
+                    self.logger.info(
+                        f"Updated image {filename} link: prompt {existing_prompt_id} → {prompt_id} (image_id: {existing_id})"
+                    )
+                    if debug:
+                        print(f"   ✅ Successfully updated prompt link!")
+                else:
+                    if debug:
+                        print(f"   ℹ️ Already linked to correct prompt, no update needed")
+                    self.logger.debug(
+                        f"Image {filename} already linked to prompt {prompt_id} (image_id: {existing_id})"
+                    )
+
+                return existing_id
+
+            if debug:
+                print(f"   Image not found, creating new record...")
 
             # Get file info
             file_size = 0
@@ -540,9 +590,20 @@ class PromptDatabase:
                 prompt_metadata, parameters
             )
 
+            if debug:
+                print(f"   Executing INSERT query...")
+                print(f"   Query params: prompt_id={prompt_id}, filename={filename}")
+
             cursor = conn.execute(query, params)
-            conn.commit()
+
+            if debug:
+                print(f"   INSERT executed, committing...")
+
+            # Note: commit is handled by the context manager in get_connection()
             image_id = cursor.lastrowid
+
+            if debug:
+                print(f"   ✅ Successfully linked image! image_id={image_id}")
 
             self.logger.info(f"Linked image {filename} to prompt {prompt_id} (image_id: {image_id})")
             return image_id
