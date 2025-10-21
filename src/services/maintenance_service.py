@@ -488,7 +488,10 @@ class MaintenanceService:
                 for index in indexes:
                     if index[0] and not index[0].startswith('sqlite_'):
                         try:
-                            cursor.execute(f"REINDEX {index[0]}")
+                            index_name = index[0]
+                            if not index_name or not all(c.isalnum() or c in '_' for c in index_name):
+                                continue
+                            cursor.execute(f"REINDEX {index_name}")
                             reindexed += 1
                         except Exception as e:
                             self.logger.warning(f"Failed to reindex {index[0]}: {e}")

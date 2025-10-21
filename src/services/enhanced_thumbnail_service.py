@@ -83,11 +83,13 @@ class ThumbnailStatus(Enum):
 @dataclass
 class ThumbnailTask:
     """Individual thumbnail generation task."""
-    image_id: str
+    image_id: str  # Hash (legacy) or path identifier
     source_path: Path
     thumbnail_path: Path
     size: Tuple[int, int]
     format: str
+    size_name: str  # 'small', 'medium', 'large', etc.
+    db_id: Optional[int] = None  # Database image ID for unique naming (prevents collisions)
     is_video: bool = False
     status: ThumbnailStatus = ThumbnailStatus.PENDING
     error: Optional[str] = None
@@ -536,29 +538,26 @@ class EnhancedThumbnailService:
     def get_thumbnail_path(
         self,
         source_path: Path,
-        size: str = 'medium'
+        size: str = 'medium',
+        image_id: Optional[int] = None
     ) -> Path:
         """Get thumbnail path for given source.
 
         Args:
             source_path: Source image/video path
             size: Size name (small, medium, large, xlarge)
+            image_id: Database image ID (preferred for unique naming)
 
         Returns:
             Path to thumbnail
         """
-        # Generate unique hash for path
-        path_hash = hashlib.md5(str(source_path).encode()).hexdigest()
-
-        # Determine output extension
-        ext = source_path.suffix.lower()
-        if self.ffmpeg.is_video(source_path):
-            ext = '.jpg'
-        elif ext not in self.image_formats:
-            ext = '.jpg'
-
-        # Build thumbnail filename
-        filename = f"{path_hash}_{size}{ext}"
+        # Use image_id if available (new ID-based naming - no collisions!)
+        if image_id is not None:
+            filename = f"{image_id}_{size}.jpg"
+        else:
+            # Fallback to hash-based naming for backward compatibility
+            path_hash = hashlib.md5(str(source_path).encode()).hexdigest()
+            filename = f"{path_hash}_{size}.jpg"
 
         # Return full path
         return self.thumbnail_dir / size / filename
@@ -566,13 +565,15 @@ class EnhancedThumbnailService:
     async def scan_missing_thumbnails(
         self,
         image_paths: List[Path],
-        sizes: List[str] = None
+        sizes: List[str] = None,
+        skip_reconciliation: bool = False
     ) -> List[ThumbnailTask]:
         """Scan for images missing thumbnails.
 
         Args:
             image_paths: List of image paths to check
             sizes: Thumbnail sizes to check (default: all)
+            skip_reconciliation: If True, skip database reconciliation for speed (default: False)
 
         Returns:
             List of thumbnail tasks for missing thumbnails
@@ -582,6 +583,7 @@ class EnhancedThumbnailService:
 
         missing_tasks = []
         reconciled_count = 0
+        skipped_existing = 0
 
         for image_path in image_paths:
             if not image_path.exists():
@@ -597,11 +599,15 @@ class EnhancedThumbnailService:
             for size_name in sizes:
                 thumbnail_path = self.get_thumbnail_path(image_path, size_name)
 
-                # If thumbnail file exists on disk, reconcile with database
+                # If thumbnail file exists on disk
                 if thumbnail_path.exists():
-                    # Update database to reflect the existing file
-                    await self._reconcile_existing_thumbnail(image_path, size_name, thumbnail_path)
-                    reconciled_count += 1
+                    if skip_reconciliation:
+                        # Just count, don't update database (fast scan mode)
+                        skipped_existing += 1
+                    else:
+                        # Update database to reflect the existing file
+                        await self._reconcile_existing_thumbnail(image_path, size_name, thumbnail_path)
+                        reconciled_count += 1
                     continue
 
                 # Thumbnail missing - add to generation tasks
@@ -622,12 +628,16 @@ class EnhancedThumbnailService:
                     thumbnail_path=thumbnail_path,
                     size=size_dims,
                     format=ext_name,
+                    size_name=size_name,
                     is_video=is_video
                 )
                 missing_tasks.append(task)
 
+        # Log reconciliation results
         if reconciled_count > 0:
             logger.info(f"[ThumbnailReconcile] ✓ Reconciled {reconciled_count} existing thumbnails with database")
+        if skipped_existing > 0:
+            logger.info(f"[ThumbnailScan] ⚡ Fast scan mode: skipped {skipped_existing} existing thumbnails")
 
         logger.info(f"Found {len(missing_tasks)} missing thumbnails")
         return missing_tasks
@@ -1372,6 +1382,35 @@ class EnhancedThumbnailService:
                 for file in size_dir.glob('*'):
                     file.unlink()
                     deleted += 1
+            
+            # Update database to clear this size's paths
+            try:
+                conn = DatabaseConnection.get_connection(self.db.db_path)
+                cursor = conn.cursor()
+                
+                # Check which table exists
+                cursor.execute("""
+                    SELECT name FROM sqlite_master
+                    WHERE type='table' AND name IN ('images', 'generated_images')
+                """)
+                tables = [row[0] for row in cursor.fetchall()]
+                
+                if 'generated_images' in tables:
+                    # Update generated_images table (v2)
+                    column_map = {
+                        'small': 'thumbnail_small_path',
+                        'medium': 'thumbnail_medium_path', 
+                        'large': 'thumbnail_large_path',
+                        'xlarge': 'thumbnail_xlarge_path'
+                    }
+                    if size in column_map:
+                        cursor.execute(f"UPDATE generated_images SET {column_map[size]} = NULL")
+                        conn.commit()
+                        logger.info(f"Cleared {size} thumbnail paths from database")
+                
+                conn.close()
+            except Exception as e:
+                logger.error(f"Error updating database after cache clear: {e}")
         else:
             # Clear all sizes
             for size_name in self.base_generator.SIZES.keys():
@@ -1380,6 +1419,34 @@ class EnhancedThumbnailService:
                     for file in size_dir.glob('*'):
                         file.unlink()
                         deleted += 1
+            
+            # Update database to clear ALL thumbnail paths
+            try:
+                conn = DatabaseConnection.get_connection(self.db.db_path)
+                cursor = conn.cursor()
+                
+                # Check which table exists
+                cursor.execute("""
+                    SELECT name FROM sqlite_master
+                    WHERE type='table' AND name IN ('images', 'generated_images')
+                """)
+                tables = [row[0] for row in cursor.fetchall()]
+                
+                if 'generated_images' in tables:
+                    # Update generated_images table (v2)
+                    cursor.execute("""
+                        UPDATE generated_images SET 
+                            thumbnail_small_path = NULL,
+                            thumbnail_medium_path = NULL,
+                            thumbnail_large_path = NULL,
+                            thumbnail_xlarge_path = NULL
+                    """)
+                    conn.commit()
+                    logger.info("Cleared all thumbnail paths from database")
+                
+                conn.close()
+            except Exception as e:
+                logger.error(f"Error updating database after cache clear: {e}")
 
         # Clear memory cache
         self.cache.clear_pattern('thumbnail:*')

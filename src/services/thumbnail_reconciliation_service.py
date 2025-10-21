@@ -111,6 +111,7 @@ class ThumbnailReconciliationService:
             ScanResults with categorized thumbnails
         """
         logger.info(f"Starting comprehensive scan for sizes: {sizes}")
+        logger.info(f"Thumbnail directory: {self.thumbnail_dir}")
 
         categories = {
             'valid': [],
@@ -120,17 +121,17 @@ class ThumbnailReconciliationService:
             'true_orphans': []
         }
 
-        # Phase 1: Database Validation
-        logger.info("Phase 1: Database validation")
+        # Phase 1: Database Validation (V2 schema with ID-based thumbnails)
+        logger.info("Phase 1: Database validation (V2 schema)")
         total_images = await self._count_images()
 
         conn = DatabaseConnection.get_connection(self.db.db_path)
         cursor = conn.cursor()
 
+        # V2 schema: Use ID-based thumbnail paths for validation
+        # Format: {db_id}_{size}.jpg instead of {hash}_{size}.jpg
         cursor.execute("""
-            SELECT id, image_path, filename,
-                   thumbnail_small_path, thumbnail_medium_path,
-                   thumbnail_large_path, thumbnail_xlarge_path
+            SELECT id, image_path, filename
             FROM generated_images
             WHERE image_path IS NOT NULL AND image_path != ''
         """)
@@ -138,40 +139,39 @@ class ThumbnailReconciliationService:
         all_images = cursor.fetchall()
         conn.close()
 
+        skipped_count = 0
         for idx, row in enumerate(all_images):
             image_id, image_path, filename = row[0], row[1], row[2]
-            thumb_paths = {
-                'small': row[3],
-                'medium': row[4],
-                'large': row[5],
-                'xlarge': row[6]
-            }
 
             source_path = Path(image_path)
             if not source_path.exists():
+                skipped_count += 1
                 continue
 
-            for size in sizes:
-                db_path = thumb_paths.get(size)
+            # Debug: Log first 3 scanned images
+            if idx < 3:
+                logger.info(f"Scanning image {idx}: {source_path}")
+                logger.info(f"  DB ID: {image_id}")
 
-                if db_path and db_path != 'FAILED':
-                    # DB has a path - check if file exists
-                    if Path(db_path).exists():
-                        categories['valid'].append({
-                            'image_id': image_id,
-                            'size': size,
-                            'path': db_path
-                        })
-                    else:
-                        # Broken link - DB path doesn't exist on disk
-                        categories['broken_links'].append({
-                            'image_id': image_id,
-                            'size': size,
-                            'db_path': db_path,
-                            'source_path': str(source_path)
-                        })
+            for size in sizes:
+                # Use ID-based thumbnail path (new system!)
+                expected_path = self.thumbnail_service.get_thumbnail_path(
+                    source_path, size, image_id=image_id
+                )
+
+                # Debug: Log first 3 checks
+                if idx < 3:
+                    logger.info(f"  Checking {size}: {expected_path} - exists={expected_path.exists()}")
+
+                if expected_path.exists():
+                    # Thumbnail exists on disk
+                    categories['valid'].append({
+                        'image_id': image_id,
+                        'size': size,
+                        'path': str(expected_path)
+                    })
                 else:
-                    # No DB path - missing thumbnail
+                    # Thumbnail missing
                     categories['missing'].append({
                         'image_id': image_id,
                         'size': size,
@@ -180,19 +180,20 @@ class ThumbnailReconciliationService:
 
             # Progress update every 100 images
             if idx % 100 == 0 and progress_callback:
-                filename = source_path.name if source_path else f"image_{image_id}"
+                display_filename = source_path.name if source_path else f"image_{image_id}"
                 progress = ScanProgress(
                     phase='database_validation',
                     current=idx + 1,
                     total=total_images,
                     percentage=(idx + 1) / total_images * 100,
-                    message=f"Scanning: {filename}"
+                    message=f"Scanning: {display_filename}"
                 )
                 progress_callback(progress)
 
         logger.info(f"Phase 1 complete: {len(categories['valid'])} valid, "
                    f"{len(categories['broken_links'])} broken, "
-                   f"{len(categories['missing'])} missing")
+                   f"{len(categories['missing'])} missing, "
+                   f"{skipped_count} images skipped (source file not found)")
 
         # Phase 2: Disk File Scan
         logger.info("Phase 2: Disk file scan")
@@ -396,11 +397,12 @@ class ThumbnailReconciliationService:
                     logger.info("Rebuild cancelled during fix_broken_links")
                     break
 
-                # Find actual file on disk
+                # Find actual file on disk using ID-based naming
                 source_path = Path(item['source_path'])
                 correct_path = self.thumbnail_service.get_thumbnail_path(
                     source_path,
-                    item['size']
+                    item['size'],
+                    image_id=item['image_id']  # Use ID-based path!
                 )
 
                 if correct_path.exists():
@@ -598,7 +600,7 @@ class ThumbnailReconciliationService:
         """Create thumbnail tasks from missing items.
 
         Args:
-            missing_items: List of missing thumbnail items
+            missing_items: List of missing thumbnail items (must include 'image_id')
             sizes: Thumbnail sizes to generate
 
         Returns:
@@ -615,16 +617,24 @@ class ThumbnailReconciliationService:
             if size not in sizes:
                 continue
 
+            # Get database ID from missing item (critical for ID-based thumbnails!)
+            db_id = item.get('image_id')
+            if db_id is None:
+                logger.warning(f"Missing image_id for {source_path}, skipping")
+                continue
+
             is_video = self.thumbnail_service.ffmpeg.is_video(source_path)
             size_dims = self.thumbnail_service.base_generator.SIZES.get(size, (300, 300))
 
             task = ThumbnailTask(
-                image_id=hashlib.md5(str(source_path).encode()).hexdigest(),
+                image_id=hashlib.md5(str(source_path).encode()).hexdigest(),  # Keep for task tracking
                 source_path=source_path,
-                thumbnail_path=self.thumbnail_service.get_thumbnail_path(source_path, size),
+                thumbnail_path=self.thumbnail_service.get_thumbnail_path(source_path, size, image_id=db_id),  # ID-based path!
                 size=size_dims,
                 format=source_path.suffix.lower()[1:] if not is_video else 'jpg',
-                is_video=is_video
+                size_name=size,
+                is_video=is_video,
+                db_id=db_id  # Pass database ID for proper naming
             )
             tasks.append(task)
 
