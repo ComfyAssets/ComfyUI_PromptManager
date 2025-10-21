@@ -1051,6 +1051,24 @@
     });
     positiveBlock.appendChild(copyIcon);
 
+    // Add hover send button for positive prompt
+    const positiveSendIcon = document.createElement('span');
+    positiveSendIcon.className = 'prompt-send-icon';
+    positiveSendIcon.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send';
+    positiveSendIcon.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (window.ComfyUISender) {
+        window.ComfyUISender.sendToComfyUI(prompt, {
+          shiftPressed: e?.shiftKey || false,
+          type: 'positive'
+        });
+      } else {
+        console.error('ComfyUISender not loaded');
+        window.showToast?.('ComfyUI Sender service not available', 'error');
+      }
+    });
+    positiveBlock.appendChild(positiveSendIcon);
+
     const positiveTextContainer = document.createElement('div');
     positiveTextContainer.className = 'prompt-text-container';
 
@@ -1104,6 +1122,24 @@
       });
       negativeBlock.appendChild(negativeCopy);
 
+      // Add hover send button for negative prompt
+      const negativeSendIcon = document.createElement('span');
+      negativeSendIcon.className = 'prompt-send-icon';
+      negativeSendIcon.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send';
+      negativeSendIcon.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (window.ComfyUISender) {
+          window.ComfyUISender.sendToComfyUI(prompt, {
+            shiftPressed: e?.shiftKey || false,
+            type: 'negative'
+          });
+        } else {
+          console.error('ComfyUISender not loaded');
+          window.showToast?.('ComfyUI Sender service not available', 'error');
+        }
+      });
+      negativeBlock.appendChild(negativeSendIcon);
+
       const negativeTextContainer = document.createElement('div');
       negativeTextContainer.className = 'prompt-text-container';
 
@@ -1155,6 +1191,24 @@
     });
     actions.appendChild(galleryButton);
 
+    const sendButton = createSideActionButton({
+      label: 'Send to ComfyUI',
+      iconClass: 'fa-solid fa-paper-plane',
+      onClick: (e) => {
+        if (window.ComfyUISender) {
+          window.ComfyUISender.sendToComfyUI(prompt, {
+            shiftPressed: e?.shiftKey || false,
+            type: 'both'  // Main button sends both positive and negative
+          });
+        } else {
+          console.error('ComfyUISender not loaded');
+          window.showToast?.('ComfyUI Sender service not available', 'error');
+        }
+      },
+      variant: 'send',
+    });
+    actions.appendChild(sendButton);
+
     const editButton = createSideActionButton({
       label: 'Edit',
       iconClass: 'fa-solid fa-pen',
@@ -1187,7 +1241,7 @@
     button.addEventListener('click', (event) => {
       event.stopPropagation();
       try {
-        onClick?.();
+        onClick?.(event);
       } catch (error) {
         console.error(`${label} action failed`, error);
       }
