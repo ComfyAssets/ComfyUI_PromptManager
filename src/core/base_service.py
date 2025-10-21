@@ -7,7 +7,7 @@ eliminating code duplication across different services.
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, TypeVar
 
-from .core.base_repository import BaseRepository
+from .base_repository import BaseRepository
 
 # Import with fallbacks
 try:
