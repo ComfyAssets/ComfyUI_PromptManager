@@ -21,6 +21,7 @@ except ImportError:
 from ..src.database import PromptDatabase
 from ..src.components.unified_gallery import UnifiedGallery, FilterCriteria, ViewMode, SortOrder
 from ..utils.comfyui_integration import get_comfyui_integration
+from ..src.config import config
 from ..loggers import get_logger
 
 logger = get_logger(__name__)
@@ -104,8 +105,7 @@ class GalleryAPI:
             logger.error(f"Failed to get gallery items: {e}", exc_info=True)
             return {
                 'success': False,
-                'error': str(e),
-                'traceback': traceback.format_exc() if logger.level <= 10 else None
+                'error': 'Failed to retrieve gallery items'
             }
 
     async def get_gallery_models(self, request) -> Dict[str, Any]:
@@ -158,9 +158,10 @@ class GalleryAPI:
             export_path = self.gallery.export_selection(item_ids, export_format)
 
             if export_path:
-                # Generate download URL
+                # Generate download URL with sanitized filename
                 filename = Path(export_path).name
-                download_url = f"/api/promptmanager/gallery/download/{filename}"
+                safe_filename = filename.replace('"', '').replace("'", '').replace('\\', '')
+                download_url = f"/api/promptmanager/gallery/download/{safe_filename}"
 
                 return {
                     'success': True,
@@ -184,22 +185,21 @@ class GalleryAPI:
     async def get_gallery_settings(self, request) -> Dict[str, Any]:
         """Get current gallery settings"""
         try:
-            settings_path = Path(self.comfy_integration.get_output_directory()) / "promptmanager_settings.json"
-
-            if settings_path.exists():
-                with open(settings_path, 'r') as f:
-                    settings = json.load(f)
-            else:
-                # Return default settings
-                settings = {
-                    'gallery': {
-                        'itemsPerPage': 20,
-                        'viewMode': 'grid',
-                        'sortOrder': 'date_desc'
-                    },
-                    'viewer': self.gallery._viewer_config,
-                    'lastUpdated': datetime.now().isoformat()
-                }
+            # Build settings from config
+            settings = {
+                'gallery': {
+                    'itemsPerPage': config.ui.items_per_page,
+                    'viewMode': config._extra_settings.get('gallery.viewMode', 'grid'),
+                    'sortOrder': config._extra_settings.get('gallery.sortOrder', 'date_desc')
+                },
+                'viewer': self.gallery._viewer_config,
+                'ui': {
+                    'theme': config.ui.theme,
+                    'compactMode': config.ui.compact_mode,
+                    'galleryColumns': config.ui.gallery_columns
+                },
+                'lastUpdated': datetime.now().isoformat()
+            }
 
             return {
                 'success': True,
@@ -222,17 +222,31 @@ class GalleryAPI:
             else:
                 settings = request.get_json()
 
-            # Add timestamp
-            settings['lastUpdated'] = datetime.now().isoformat()
+            # Update config from settings
+            if 'gallery' in settings:
+                gallery_settings = settings['gallery']
+                if 'itemsPerPage' in gallery_settings:
+                    config.ui.items_per_page = gallery_settings['itemsPerPage']
+                if 'viewMode' in gallery_settings:
+                    config._extra_settings['gallery.viewMode'] = gallery_settings['viewMode']
+                if 'sortOrder' in gallery_settings:
+                    config._extra_settings['gallery.sortOrder'] = gallery_settings['sortOrder']
+            
+            if 'ui' in settings:
+                ui_settings = settings['ui']
+                if 'theme' in ui_settings:
+                    config.ui.theme = ui_settings['theme']
+                if 'compactMode' in ui_settings:
+                    config.ui.compact_mode = ui_settings['compactMode']
+                if 'galleryColumns' in ui_settings:
+                    config.ui.gallery_columns = ui_settings['galleryColumns']
 
-            # Save to file
-            settings_path = Path(self.comfy_integration.get_output_directory()) / "promptmanager_settings.json"
-            with open(settings_path, 'w') as f:
-                json.dump(settings, f, indent=2)
-
-            # Update gallery configuration
+            # Update viewer configuration
             if 'viewer' in settings:
                 self.gallery.update_viewer_config(settings['viewer'])
+            
+            # Persist all changes
+            config.save()
 
             return {
                 'success': True,
