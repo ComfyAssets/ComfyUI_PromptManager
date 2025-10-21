@@ -102,10 +102,33 @@
    */
   async function checkForMissingThumbnails() {
     try {
+      // Clear any stale sessionStorage data before starting new scan
+      sessionStorage.removeItem('thumbnailScanResult');
+      console.log('[ThumbnailScan] Cleared stale sessionStorage before scan');
+
+      // Fetch user's enabled thumbnail sizes from settings
+      let enabledSizes = ['small', 'medium']; // Default fallback (most common sizes)
+      try {
+        const settingsResponse = await fetch('/api/v1/settings/thumbnails');
+        if (settingsResponse.ok) {
+          const settings = await settingsResponse.json();
+          if (settings.enabled_sizes && settings.enabled_sizes.length > 0) {
+            enabledSizes = settings.enabled_sizes;
+            console.log('[ThumbnailScan] Using configured sizes:', enabledSizes);
+          } else {
+            console.warn('[ThumbnailScan] No enabled_sizes in settings, using default:', enabledSizes);
+          }
+        } else {
+          console.warn('[ThumbnailScan] Failed to fetch settings (HTTP', settingsResponse.status, '), using default:', enabledSizes);
+        }
+      } catch (settingsError) {
+        console.warn('[ThumbnailScan] Error fetching thumbnail settings, using defaults:', settingsError);
+      }
+
       const response = await fetch('/api/v1/thumbnails/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sizes: ['small', 'medium', 'large'] }),
+        body: JSON.stringify({ sizes: enabledSizes }),
       });
 
       if (!response.ok) {
@@ -115,7 +138,7 @@
 
       const result = await response.json();
       console.log('Thumbnail scan result:', result);
-      
+
       // Debug: Show which images are missing thumbnails
       if (result.missing_images && result.missing_images.length > 0) {
         console.log('Missing thumbnail images:', result.missing_images);
@@ -125,24 +148,25 @@
       if (result.missing_count > 0) {
         console.log(`Found ${result.missing_count} images without thumbnails`);
         // Store in sessionStorage for the thumbnail modal to pick up
-        sessionStorage.setItem(
-          'thumbnailScanResult',
-          JSON.stringify({
-            missing_count: result.missing_count,
-            total_operations: result.total_operations || result.missing_count * 3,
-            scanned_at: new Date().toISOString(),
-          })
-        );
+        // Use total_operations from scan result directly
+        const scanData = {
+          missing_count: result.missing_count,
+          total_operations: result.total_operations,
+          scanned_at: new Date().toISOString(),
+        };
+        sessionStorage.setItem('thumbnailScanResult', JSON.stringify(scanData));
 
-        // Initialize thumbnail modal if it exists
-        if (window.ThumbnailModal) {
-          const modal = new window.ThumbnailModal();
-          // Modal will check sessionStorage and show prompt if needed
+        // Trigger modal directly if it exists and is initialized
+        if (window.thumbnailModal && window.thumbnailModal.initialized) {
+          console.log('[ThumbnailScan] Triggering modal directly with scan result');
+          window.thumbnailModal.missingCount = result.missing_count;
+          window.thumbnailModal.showMissingThumbnailsPrompt();
+        } else {
+          console.log('[ThumbnailScan] Modal not ready yet, relying on sessionStorage auto-detection');
         }
       } else {
         console.log('All images have thumbnails');
-        // Clear any stale sessionStorage data
-        sessionStorage.removeItem('thumbnailScanResult');
+        // sessionStorage already cleared at the start
       }
     } catch (error) {
       console.warn('Failed to scan for thumbnails:', error);
@@ -229,6 +253,7 @@
     if (sortBySelect) {
       sortBySelect.addEventListener('change', (event) => {
         currentSortOrder = event.target.value;
+        loadPrompts(1); // Reset to page 1 when filter changes
       });
     }
 
@@ -236,6 +261,7 @@
     if (modelFilterSelect) {
       modelFilterSelect.addEventListener('change', (event) => {
         currentModelFilter = event.target.value;
+        loadPrompts(1); // Reset to page 1 when filter changes
       });
     }
 
@@ -243,6 +269,7 @@
     if (categoryFilterSelect) {
       categoryFilterSelect.addEventListener('change', (event) => {
         currentCategoryFilter = event.target.value;
+        loadPrompts(1); // Reset to page 1 when filter changes
       });
     }
 
@@ -264,13 +291,6 @@
         }
       }).catch((error) => {
         console.error('Error initializing MultiTagFilter:', error);
-      });
-    }
-
-    const applyFiltersButton = document.getElementById('applyFiltersButton');
-    if (applyFiltersButton) {
-      applyFiltersButton.addEventListener('click', () => {
-        loadPrompts(1); // Reset to page 1 when applying filters
       });
     }
 
@@ -1453,8 +1473,8 @@
     return Object.assign({}, image, {
       id: image.id ?? image.image_id ?? `prompt-image-${index}`,
       filename: image.file_name || image.filename || image.name || `Image ${index + 1}`,
-      thumbnail_url: image.thumbnail_url || image.thumbnail || image.preview || image.url,
-      image_url: image.url || image.full_url || image.path,
+      thumbnail_url: image.thumbnail_url || image.thumbnail || image.thumbnail_medium_url || image.preview || image.src || image.url || image.full_url || '',
+      image_url: image.url || image.full_url || image.path || image.image_url || image.src || '',
       dimensions: image.dimensions || buildDimensionsLabel(image.width, image.height),
       size: image.size || sizeLabel,
       generation_time: image.generation_time || image.created_at || image.timestamp,
@@ -1622,7 +1642,7 @@
   }
 
   function hidePromptGallery() {
-    const { overlay, gallery } = getGalleryElements();
+    const { overlay } = getGalleryElements();
     if (!overlay) {
       return;
     }
@@ -1974,10 +1994,7 @@
           return parsed.map((tag) => String(tag).trim().toLowerCase()).filter(Boolean);
         }
       } catch (error) {
-        return raw
-          .split(',')
-          .map((tag) => tag.trim().toLowerCase())
-          .filter(Boolean);
+        // fall through to comma split
       }
       return raw
         .split(',')
@@ -2210,16 +2227,6 @@
       return tags;
     }
     return '';
-  }
-
-  function parseTagsInput(value) {
-    if (!value) {
-      return [];
-    }
-    return value
-      .split(',')
-      .map((tag) => tag.trim())
-      .filter(Boolean);
   }
 
   function focusEditPositivePrompt() {
