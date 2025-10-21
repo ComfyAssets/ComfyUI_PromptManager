@@ -211,7 +211,7 @@ class Config:
         Args:
             config_file: Path to configuration file
         """
-        self.config_file = config_file or self._find_config_file()
+        found_config_file = config_file or self._find_config_file()
         self._extra_settings: Dict[str, Any] = {}
         
         # Initialize sub-configs with defaults
@@ -224,8 +224,35 @@ class Config:
         self.ui = UIConfig()
         
         # Load from file if exists
-        if self.config_file and os.path.exists(self.config_file):
-            self.load(self.config_file)
+        if found_config_file and os.path.exists(found_config_file):
+            self.load(found_config_file)
+        
+        # Always use user directory for config_file (migration from old locations)
+        try:
+            user_dir = _fs.get_user_dir(create=True)
+            self.config_file = str(user_dir / "promptmanager.json")
+        except Exception:
+            # Fallback if user dir can't be determined
+            self.config_file = found_config_file or "promptmanager.json"
+        
+        # Migrate old settings if they exist (first time only)
+        if not hasattr(self, '_initialized_once'):
+            migrated = self._migrate_old_settings()
+            
+            # If we loaded from old location or migrated settings, save to new location
+            if found_config_file != self.config_file or migrated:
+                self.save()
+                
+                # Move old config file if it exists in ComfyUI root
+                if found_config_file and found_config_file != self.config_file:
+                    old_path = Path(found_config_file)
+                    if old_path.exists() and old_path.name == "promptmanager.json":
+                        try:
+                            # Rename old file to .migrated
+                            old_path.rename(old_path.with_suffix('.json.migrated'))
+                        except Exception as e:
+                            import logging
+                            logging.warning(f"Could not rename old config file: {e}")
 
         # Override with environment variables
         self._load_from_env()
@@ -236,21 +263,125 @@ class Config:
     def _find_config_file(self) -> Optional[str]:
         """Find configuration file in standard locations.
         
+        Priority order:
+        1. User directory: ComfyUI/user/default/PromptManager/promptmanager.json
+        2. Old location for migration: ComfyUI/promptmanager.json
+        3. Current directory
+        4. Home directory
+        5. System directory
+        
         Returns:
             Path to config file or None
         """
-        search_paths = [
-            "promptmanager.json",
+        search_paths = []
+        
+        # Priority 1: User directory (official location)
+        try:
+            user_dir = _fs.get_user_dir(create=False)
+            if user_dir:
+                search_paths.append(str(user_dir / "promptmanager.json"))
+        except Exception:
+            pass
+        
+        # Priority 2-5: Fallback locations (including old location for migration)
+        search_paths.extend([
+            "promptmanager.json",  # Current directory (old location in ComfyUI root)
             "config.json",
             os.path.expanduser("~/.promptmanager/config.json"),
             "/etc/promptmanager/config.json"
-        ]
+        ])
         
         for path in search_paths:
             if os.path.exists(path):
                 return path
         
         return None
+
+    def _migrate_old_settings(self) -> bool:
+        """Migrate old promptmanager_settings.json to new Config format.
+        
+        Returns:
+            True if migration occurred, False otherwise
+        """
+        try:
+            # Check for old settings file in user directory
+            user_dir = _fs.get_user_dir(create=False)
+            if not user_dir:
+                return False
+                
+            old_settings_path = user_dir / "promptmanager_settings.json"
+            if not old_settings_path.exists():
+                return False
+            
+            # Load old settings
+            with open(old_settings_path, 'r') as f:
+                old_settings = json.load(f)
+            
+            # Migrate UI settings
+            if 'ui' in old_settings:
+                old_ui = old_settings['ui']
+                if 'default_view' in old_ui:
+                    # Map old values to new
+                    pass  # We don't have this setting in new config
+                if 'items_per_page' in old_ui:
+                    self.ui.items_per_page = old_ui['items_per_page']
+                if 'thumbnail_size' in old_ui:
+                    self._extra_settings['thumbnail.thumbnail_size'] = old_ui['thumbnail_size']
+                if 'show_tooltips' in old_ui:
+                    self._extra_settings['ui.show_tooltips'] = old_ui['show_tooltips']
+                if 'animations_enabled' in old_ui:
+                    self._extra_settings['ui.animations_enabled'] = old_ui['animations_enabled']
+            
+            # Migrate logging settings
+            if 'logging' in old_settings:
+                old_logging = old_settings['logging']
+                if 'level' in old_logging:
+                    # Map to uppercase for new format
+                    self.logging.level = old_logging['level'].upper()
+                if 'log_to_console' in old_logging:
+                    self.logging.console = old_logging['log_to_console']
+                if 'retention' in old_logging:
+                    self._extra_settings['logging.retention_days'] = old_logging['retention']
+            
+            # Migrate monitoring settings
+            if 'monitoring' in old_settings:
+                old_monitoring = old_settings['monitoring']
+                if 'auto_monitor' in old_monitoring:
+                    self._extra_settings['monitoring.auto_monitor'] = old_monitoring['auto_monitor']
+                if 'auto_extract' in old_monitoring:
+                    self._extra_settings['monitoring.auto_extract'] = old_monitoring['auto_extract']
+                if 'generate_thumbnails' in old_monitoring:
+                    self._extra_settings['thumbnail.auto_generate'] = old_monitoring['generate_thumbnails']
+            
+            # Migrate backup settings
+            if 'backup' in old_settings:
+                old_backup = old_settings['backup']
+                if 'auto_backup' in old_backup:
+                    self._extra_settings['backup.auto_backup'] = old_backup['auto_backup']
+                if 'frequency' in old_backup:
+                    self._extra_settings['backup.frequency'] = old_backup['frequency']
+                if 'max_backups' in old_backup:
+                    self._extra_settings['backup.max_backups'] = old_backup['max_backups']
+            
+            # Migrate other settings
+            if 'result_timeout' in old_settings:
+                self._extra_settings['api.result_timeout'] = old_settings['result_timeout']
+            if 'show_test_button' in old_settings:
+                self._extra_settings['ui.show_test_button'] = old_settings['show_test_button']
+            if 'webui_display_mode' in old_settings:
+                self._extra_settings['ui.webui_display_mode'] = old_settings['webui_display_mode']
+            
+            # Rename old file to .bak for safety
+            backup_path = old_settings_path.with_suffix('.json.migrated')
+            old_settings_path.rename(backup_path)
+            
+            return True
+            
+        except Exception as e:
+            # Don't fail initialization if migration fails
+            import logging
+            logging.warning(f"Failed to migrate old settings: {e}")
+            return False
     
     def load(self, config_file: str):
         """Load configuration from file.
@@ -297,11 +428,19 @@ class Config:
         """Save configuration to file.
         
         Args:
-            config_file: Path to configuration file
+            config_file: Path to configuration file. If not provided, uses:
+                1. self.config_file if set
+                2. User directory path: ComfyUI/user/default/PromptManager/promptmanager.json
         """
         config_file = config_file or self.config_file
         if not config_file:
-            config_file = "promptmanager.json"
+            # Default to user directory
+            try:
+                user_dir = _fs.get_user_dir(create=True)
+                config_file = str(user_dir / "promptmanager.json")
+            except Exception:
+                # Fallback to current directory (shouldn't happen in normal operation)
+                config_file = "promptmanager.json"
         
         data = {
             "database": {
@@ -344,6 +483,10 @@ class Config:
             },
             "settings": dict(self._extra_settings)
         }
+        
+        # Ensure directory exists
+        config_path = Path(config_file)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
         
         with open(config_file, 'w') as f:
             json.dump(data, f, indent=2)
