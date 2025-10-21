@@ -476,3 +476,129 @@ class GeneratedImageRepository(BaseRepository):
                     LOGGER.info("Added media_type column to generated_images table")
             except sqlite3.OperationalError as exc:
                 LOGGER.debug("Could not add media_type column: %s", exc)
+
+    # Test compatibility aliases and methods
+    
+    def get_by_id(self, image_id: int) -> Optional[Dict[str, Any]]:
+        """Get an image by ID.
+        
+        Args:
+            image_id: Image ID
+            
+        Returns:
+            Image data or None if not found
+        """
+        return self.read(image_id)
+    
+    def get_by_prompt_id(self, prompt_id: int) -> List[Dict[str, Any]]:
+        """Get all images for a specific prompt.
+        
+        Args:
+            prompt_id: Prompt ID
+            
+        Returns:
+            List of images for the prompt
+        """
+        return self.list_for_prompt(prompt_id)
+    
+    def get_by_path(self, image_path: str) -> Optional[Dict[str, Any]]:
+        """Get an image by file path.
+        
+        Args:
+            image_path: Full path to image file
+            
+        Returns:
+            Image data or None if not found
+        """
+        return self.find_by_path(image_path)
+    
+    def find_by_format(self, format: str) -> List[Dict[str, Any]]:
+        """Find images by format (PNG, JPG, etc).
+        
+        Args:
+            format: Image format (case-insensitive)
+            
+        Returns:
+            List of images with matching format
+        """
+        try:
+            return self.list(format=format.upper())
+        except sqlite3.OperationalError:
+            return []
+    
+    def find_by_size_range(
+        self,
+        min_width: Optional[int] = None,
+        max_width: Optional[int] = None,
+        min_height: Optional[int] = None,
+        max_height: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Find images by resolution range.
+        
+        Args:
+            min_width: Minimum width
+            max_width: Maximum width
+            min_height: Minimum height
+            max_height: Maximum height
+            
+        Returns:
+            List of images in size range
+        """
+        try:
+            with self._get_connection() as conn:
+                where_clauses = []
+                values = []
+                
+                if min_width is not None:
+                    where_clauses.append("width >= ?")
+                    values.append(min_width)
+                
+                if max_width is not None:
+                    where_clauses.append("width <= ?")
+                    values.append(max_width)
+                
+                if min_height is not None:
+                    where_clauses.append("height >= ?")
+                    values.append(min_height)
+                
+                if max_height is not None:
+                    where_clauses.append("height <= ?")
+                    values.append(max_height)
+                
+                where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+                
+                query = f"""
+                    SELECT * FROM generated_images
+                    {where_sql}
+                    ORDER BY generation_time DESC
+                """
+                
+                cursor = conn.execute(query, values)
+                return [self._to_dict(row) for row in cursor.fetchall()]
+        except sqlite3.OperationalError:
+            return []
+    
+    def get_recent(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get recent images.
+        
+        Args:
+            limit: Maximum number of images
+            
+        Returns:
+            List of recent images
+        """
+        return self.list(limit=limit, order_by="generation_time DESC")
+    
+    def count_by_prompt(self, prompt_id: int) -> int:
+        """Count images for a specific prompt.
+        
+        Args:
+            prompt_id: Prompt ID
+            
+        Returns:
+            Number of images for the prompt
+        """
+        try:
+            return self.count(prompt_id=prompt_id)
+        except sqlite3.OperationalError:
+            return 0
