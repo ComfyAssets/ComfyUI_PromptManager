@@ -173,10 +173,11 @@ class ImageGallery(BaseGallery):
         image_id = item.get("id")
 
         # Build API-safe URLs so we never expose raw filesystem paths downstream.
+        # Use v2 endpoints for generated_images table
         image_url: Optional[str] = None
         thumbnail_url: Optional[str] = None
         if image_id is not None:
-            base_url = f"/api/v1/gallery/images/{image_id}/file"
+            base_url = f"/api/v1/generated-images/{image_id}/file"
             image_url = base_url
 
             if item.get("thumbnail_medium_path"):
