@@ -16,48 +16,137 @@ function shouldActivatePromptManagerUI() {
 
 class ThumbnailModal {
     constructor() {
+        // Singleton pattern - return existing instance if one exists
+        if (ThumbnailModal.instance) {
+            console.log('[ThumbnailModal] Singleton: Returning existing instance');
+            return ThumbnailModal.instance;
+        }
+
+        console.log('[ThumbnailModal] Singleton: Creating new instance');
         this.modal = null;
         this.isGenerating = false;
         this.currentProgress = null;
         this.missingCount = 0;
-        this.selectedSizes = ['small', 'medium', 'large'];
+        this.selectedSizes = ['small', 'medium']; // Will be updated from settings
+        this.enabledSizes = ['small', 'medium']; // User's enabled sizes from settings
         this.progressUnsubscribe = null;
         this.currentTaskId = null;
+        this.initialized = false;
+
+        // Store the instance
+        ThumbnailModal.instance = this;
 
         this.init();
     }
 
-    init() {
-        console.log('ThumbnailModal: Initializing...');
+    async init() {
+        // Guard against multiple initializations
+        if (this.initialized) {
+            console.log('[ThumbnailModal] Already initialized, skipping init()');
+            return;
+        }
+
+        console.log('[ThumbnailModal] init() called');
+
+        // Fetch user's enabled sizes from settings
+        await this.fetchEnabledSizes();
+
+        console.log('[ThumbnailModal] Creating modal DOM elements...');
         this.createModal();
+        console.log('[ThumbnailModal] Modal created:', this.modal ? 'SUCCESS' : 'FAILED');
+
+        console.log('[ThumbnailModal] Attaching event listeners...');
         this.attachEventListeners();
+        console.log('[ThumbnailModal] Event listeners attached');
 
         // Check for scan results from index.html stored in sessionStorage
+        console.log('[ThumbnailModal] Checking sessionStorage...');
         const scanResult = sessionStorage.getItem('thumbnailScanResult');
-        console.log('ThumbnailModal: Checking sessionStorage for scan result:', scanResult);
+        console.log('[ThumbnailModal] Raw sessionStorage value:', scanResult);
 
         if (scanResult) {
+            console.log('[ThumbnailModal] Scan result found in sessionStorage');
             try {
                 const result = JSON.parse(scanResult);
+                console.log('[ThumbnailModal] Parsed scan result:', result);
+                console.log('[ThumbnailModal] Missing count:', result.missing_count);
+                console.log('[ThumbnailModal] Scanned at:', result.scanned_at);
 
                 // Clear the scan result so it doesn't show again on refresh
                 sessionStorage.removeItem('thumbnailScanResult');
+                console.log('[ThumbnailModal] Cleared sessionStorage key');
 
                 // Show modal if there are ANY missing thumbnails
                 if (result.missing_count > 0) {
-                    console.log('ThumbnailModal: Found', result.missing_count, 'missing thumbnails from scan');
+                    console.log('[ThumbnailModal] Found', result.missing_count, 'missing thumbnails from scan');
+                    console.log('[ThumbnailModal] Calling showMissingThumbnailsPrompt()...');
                     this.missingCount = result.missing_count;
                     this.showMissingThumbnailsPrompt();
                 } else {
-                    console.log('ThumbnailModal: No missing thumbnails found');
+                    console.log('[ThumbnailModal] No missing thumbnails detected (missing_count is 0 or falsy)');
                 }
             } catch (error) {
-                console.error('Failed to parse thumbnail scan result:', error);
+                console.error('[ThumbnailModal] Failed to parse thumbnail scan result:', error);
+                console.error('[ThumbnailModal] Error stack:', error.stack);
             }
+        } else {
+            console.log('[ThumbnailModal] No scan result found in sessionStorage');
+            console.log('[ThumbnailModal] All sessionStorage keys:', Object.keys(sessionStorage));
+        }
+
+        this.initialized = true;
+        console.log('[ThumbnailModal] Initialization complete');
+    }
+
+    async fetchEnabledSizes() {
+        try {
+            console.log('[ThumbnailModal] Fetching enabled sizes from settings...');
+            const response = await fetch('/api/v1/settings/thumbnails');
+            if (response.ok) {
+                const settings = await response.json();
+                console.log('[ThumbnailModal] Raw API response:', settings);
+                console.log('[ThumbnailModal] enabled_sizes from API:', settings.enabled_sizes);
+                if (settings.enabled_sizes && settings.enabled_sizes.length > 0) {
+                    this.enabledSizes = settings.enabled_sizes;
+                    this.selectedSizes = settings.enabled_sizes;
+                    console.log('[ThumbnailModal] Loaded enabled sizes:', this.enabledSizes);
+                } else {
+                    console.log('[ThumbnailModal] No enabled sizes in settings, using defaults:', this.enabledSizes);
+                }
+            } else {
+                console.warn('[ThumbnailModal] Failed to fetch settings, using defaults');
+            }
+        } catch (error) {
+            console.error('[ThumbnailModal] Error fetching enabled sizes:', error);
+            // Keep defaults
         }
     }
 
+    buildSizeCheckboxes() {
+        const sizeLabels = {
+            'small': 'Small (150x150)',
+            'medium': 'Medium (300x300)',
+            'large': 'Large (600x600)',
+            'xlarge': 'Extra Large (1200x1200)'
+        };
+
+        return this.enabledSizes.map(size => `
+            <label class="checkbox-label">
+                <input type="checkbox" name="thumbSize" value="${size}" checked>
+                <span>${sizeLabels[size] || size}</span>
+            </label>
+        `).join('');
+    }
+
     createModal() {
+        // Check if modal already exists in DOM
+        const existingModal = document.getElementById('thumbnailModal');
+        if (existingModal) {
+            console.log('[ThumbnailModal] Modal already exists in DOM, reusing it');
+            this.modal = existingModal;
+            return;
+        }
+
         const modalHTML = `
             <div id="thumbnailModal" class="modal" style="display: none;">
                 <div class="modal-backdrop"></div>
@@ -103,22 +192,7 @@ class ThumbnailModal {
                                 <div class="thumbnail-options">
                                     <h4>Select Thumbnail Sizes to Generate:</h4>
                                     <div class="size-checkboxes">
-                                        <label class="checkbox-label">
-                                            <input type="checkbox" name="thumbSize" value="small" checked>
-                                            <span>Small (150x150)</span>
-                                        </label>
-                                        <label class="checkbox-label">
-                                            <input type="checkbox" name="thumbSize" value="medium" checked>
-                                            <span>Medium (300x300)</span>
-                                        </label>
-                                        <label class="checkbox-label">
-                                            <input type="checkbox" name="thumbSize" value="large" checked>
-                                            <span>Large (600x600)</span>
-                                        </label>
-                                        <label class="checkbox-label">
-                                            <input type="checkbox" name="thumbSize" value="xlarge">
-                                            <span>Extra Large (1200x1200)</span>
-                                        </label>
+                                        ${this.buildSizeCheckboxes()}
                                     </div>
                                 </div>
 
@@ -246,6 +320,12 @@ class ThumbnailModal {
     }
 
     attachEventListeners() {
+        // Guard against attaching listeners multiple times
+        if (this.modal.dataset.listenersAttached === 'true') {
+            console.log('[ThumbnailModal] Event listeners already attached, skipping');
+            return;
+        }
+
         // Modal actions
         this.modal.addEventListener('click', (e) => {
             const action = e.target.closest('[data-action]')?.dataset.action;
@@ -282,6 +362,10 @@ class ThumbnailModal {
                 this.updateEstimate();
             }
         });
+
+        // Mark listeners as attached
+        this.modal.dataset.listenersAttached = 'true';
+        console.log('[ThumbnailModal] Event listeners attached successfully');
     }
 
     async checkMissingThumbnails() {
@@ -293,7 +377,7 @@ class ThumbnailModal {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    sizes: ['small', 'medium', 'large']
+                    sizes: this.enabledSizes
                 })
             });
 
@@ -319,22 +403,55 @@ class ThumbnailModal {
     }
 
     showMissingThumbnailsPrompt() {
+        console.log('[ThumbnailModal] showMissingThumbnailsPrompt() called');
+        console.log('[ThumbnailModal] Missing count:', this.missingCount);
+        console.log('[ThumbnailModal] Modal element:', this.modal ? 'EXISTS' : 'MISSING');
+
+        if (!this.modal) {
+            console.error('[ThumbnailModal] Cannot show prompt - modal element is null!');
+            return;
+        }
+
+        console.log('[ThumbnailModal] Setting modal display to flex...');
         this.modal.style.display = 'flex';
+        console.log('[ThumbnailModal] Modal display style:', this.modal.style.display);
 
         // Hide scan view, show detected view
-        this.modal.querySelector('#thumbnailScanView').style.display = 'none';
-        this.modal.querySelector('#thumbnailDetectedView').style.display = 'block';
+        console.log('[ThumbnailModal] Updating view visibility...');
+        const scanView = this.modal.querySelector('#thumbnailScanView');
+        const detectedView = this.modal.querySelector('#thumbnailDetectedView');
+
+        console.log('[ThumbnailModal] scanView element:', scanView ? 'EXISTS' : 'MISSING');
+        console.log('[ThumbnailModal] detectedView element:', detectedView ? 'EXISTS' : 'MISSING');
+
+        if (scanView) scanView.style.display = 'none';
+        if (detectedView) detectedView.style.display = 'block';
 
         // Update count
-        this.modal.querySelector('#missingCount').textContent = this.missingCount;
+        const missingCountEl = this.modal.querySelector('#missingCount');
+        console.log('[ThumbnailModal] missingCount element:', missingCountEl ? 'EXISTS' : 'MISSING');
+        if (missingCountEl) {
+            missingCountEl.textContent = this.missingCount;
+            console.log('[ThumbnailModal] Updated missing count display to:', this.missingCount);
+        }
 
         // Show appropriate buttons
-        this.modal.querySelector('#btnCancel').style.display = 'none';
-        this.modal.querySelector('#btnGenerate').style.display = 'inline-block';
-        this.modal.querySelector('#btnSkip').style.display = 'inline-block';
+        console.log('[ThumbnailModal] Updating button visibility...');
+        const btnCancel = this.modal.querySelector('#btnCancel');
+        const btnGenerate = this.modal.querySelector('#btnGenerate');
+        const btnSkip = this.modal.querySelector('#btnSkip');
+
+        if (btnCancel) btnCancel.style.display = 'none';
+        if (btnGenerate) btnGenerate.style.display = 'inline-block';
+        if (btnSkip) btnSkip.style.display = 'inline-block';
+
+        console.log('[ThumbnailModal] Button states updated');
 
         // Calculate estimate
+        console.log('[ThumbnailModal] Calculating time estimate...');
         this.updateEstimate();
+
+        console.log('[ThumbnailModal] Modal should now be visible');
     }
 
     updateSelectedSizes() {
@@ -360,9 +477,11 @@ class ThumbnailModal {
     }
 
     async startGeneration() {
+        console.log('[ThumbnailModal] startGeneration() called');
         this.isGenerating = true;
 
         // Update UI
+        console.log('[ThumbnailModal] Switching to progress view...');
         this.modal.querySelector('#thumbnailDetectedView').style.display = 'none';
         this.modal.querySelector('#thumbnailProgressView').style.display = 'block';
         this.modal.querySelector('#btnGenerate').style.display = 'none';
@@ -374,13 +493,14 @@ class ThumbnailModal {
         this.modal.querySelector('#progressTotal').textContent = this.missingCount;
 
         try {
-            const response = await fetch('/api/v1/thumbnails/generate', {
+            const response = await fetch('/api/v1/thumbnails/rebuild', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    sizes: this.selectedSizes
+                    sizes: this.selectedSizes,
+                    skip_existing: true
                 })
             });
 
@@ -431,24 +551,43 @@ class ThumbnailModal {
 
     subscribeToProgress() {
         if (!window.EventBus) {
-            console.warn('EventBus unavailable; thumbnail progress updates disabled');
+            console.warn('[ThumbnailModal] EventBus unavailable; thumbnail progress updates disabled');
             return;
         }
 
+        console.log('[ThumbnailModal] Subscribing to progress events...');
+        console.log('[ThumbnailModal] Current task ID:', this.currentTaskId);
+
         if (this.progressUnsubscribe) {
+            console.log('[ThumbnailModal] Cleaning up previous subscription');
             this.progressUnsubscribe();
             this.progressUnsubscribe = null;
         }
 
         this.progressUnsubscribe = EventBus.on('sse:progress', (event) => {
-            if (!event || event.operation !== 'thumbnails') {
+            console.log('[ThumbnailModal] Received SSE progress event:', event);
+
+            if (!event) {
+                console.log('[ThumbnailModal] Event is null or undefined, ignoring');
                 return;
             }
+
+            console.log('[ThumbnailModal] Event operation:', event.operation);
+            if (event.operation !== 'thumbnail_generation') {
+                console.log('[ThumbnailModal] Not a thumbnail operation, ignoring');
+                return;
+            }
+
+            console.log('[ThumbnailModal] Thumbnail event received!');
+            console.log('[ThumbnailModal] Event task_id:', event.task_id);
+            console.log('[ThumbnailModal] Current task_id:', this.currentTaskId);
 
             if (this.currentTaskId && event.task_id && event.task_id !== this.currentTaskId) {
+                console.log('[ThumbnailModal] Task ID mismatch, ignoring');
                 return;
             }
 
+            console.log('[ThumbnailModal] Updating progress with event data');
             this.updateProgress(event);
 
             const hasResult = Boolean(event.result);
@@ -632,15 +771,24 @@ if (typeof window !== 'undefined') {
 }
 
 if (shouldActivatePromptManagerUI()) {
+    console.log('[ThumbnailModal] PromptManager UI context detected');
+    console.log('[ThumbnailModal] Current path:', window.location?.pathname);
+    console.log('[ThumbnailModal] Document readyState:', document.readyState);
+    console.log('[ThumbnailModal] SessionStorage at load time:', sessionStorage.getItem('thumbnailScanResult'));
+
     if (document.readyState === 'loading') {
+        console.log('[ThumbnailModal] Waiting for DOMContentLoaded...');
         document.addEventListener('DOMContentLoaded', () => {
-            console.log('ThumbnailModal: DOMContentLoaded - Creating instance');
+            console.log('[ThumbnailModal] DOMContentLoaded fired - Creating instance');
+            console.log('[ThumbnailModal] SessionStorage at DOMContentLoaded:', sessionStorage.getItem('thumbnailScanResult'));
             window.thumbnailModal = new ThumbnailModal();
         });
     } else {
-        console.log('ThumbnailModal: DOM already loaded - Creating instance');
+        console.log('[ThumbnailModal] DOM already loaded - Creating instance immediately');
+        console.log('[ThumbnailModal] SessionStorage before init:', sessionStorage.getItem('thumbnailScanResult'));
         window.thumbnailModal = new ThumbnailModal();
     }
 } else {
-    console.info('ThumbnailModal: Skipping initialization outside PromptManager UI context');
+    console.info('[ThumbnailModal] Skipping initialization outside PromptManager UI context');
+    console.log('[ThumbnailModal] Current path:', window.location?.pathname);
 }
