@@ -240,6 +240,40 @@
   }
 
   /**
+   * Save thumbnail enabled sizes to backend API
+   */
+  async function saveThumbnailSizesToBackend(settings) {
+    try {
+      // Convert checkbox states to enabled_sizes array
+      const enabled_sizes = [];
+      if (settings.thumbSizeSmall) enabled_sizes.push('small');
+      if (settings.thumbSizeMedium) enabled_sizes.push('medium');
+      if (settings.thumbSizeLarge) enabled_sizes.push('large');
+      if (settings.thumbSizeXLarge) enabled_sizes.push('xlarge');
+
+      // Only send if we have at least one size enabled
+      if (enabled_sizes.length > 0) {
+        console.log('[Settings] Saving thumbnail sizes to backend:', enabled_sizes);
+
+        const response = await fetch('/api/v1/settings/thumbnails', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled_sizes })
+        });
+
+        if (response.ok) {
+          console.log('[Settings] Thumbnail sizes saved to backend successfully');
+        } else {
+          console.warn('[Settings] Failed to save thumbnail sizes to backend:', response.status);
+        }
+      }
+    } catch (error) {
+      console.error('[Settings] Error saving thumbnail sizes to backend:', error);
+      // Don't throw - this is not critical enough to block settings save
+    }
+  }
+
+  /**
    * Save all settings
    */
   async function saveSettings(options = {}) {
@@ -280,6 +314,9 @@
       if (window.saveSettingsToAPI) {
         await window.saveSettingsToAPI(newSettings);
       }
+
+      // Save thumbnail enabled sizes to backend
+      await saveThumbnailSizesToBackend(newSettings);
 
       // Mark as saved
       settings = newSettings;
