@@ -49,14 +49,16 @@ class PromptTracker:
     executions correctly.
     """
     
-    def __init__(self, db_path: str = "prompts.db"):
+    def __init__(self, db_path: str = "prompts.db", thumbnail_service=None):
         """Initialize the PromptTracker.
 
         Args:
             db_path: Path to the database file
+            thumbnail_service: Optional EnhancedThumbnailService for auto-generation
         """
         self.db_path = db_path
         self.db_instance = None  # Will be set by get_prompt_tracker if provided
+        self.thumbnail_service = thumbnail_service  # For auto-generating thumbnails
 
         # Thread-safe tracking storage
         self._lock = threading.RLock()
@@ -251,7 +253,16 @@ class PromptTracker:
 
             # Get the prompt_id from the tracking data metadata
             prompt_id = tracking_data.metadata.get('prompt_id')
-            
+
+            # DEBUG: Log what we have
+            import os
+            if os.getenv("PROMPTMANAGER_DEBUG", "0") == "1":
+                print(f"\n🔍 [record_image_saved] Image: {Path(image_path).name}")
+                print(f"   unique_id: {tracking_data.unique_id}")
+                print(f"   node_id: {tracking_data.node_id}")
+                print(f"   metadata keys: {list(tracking_data.metadata.keys())}")
+                print(f"   prompt_id from metadata: {prompt_id}")
+
             if prompt_id:
                 # Use the stored database instance if available, otherwise create new one
                 if hasattr(self, 'db_instance') and self.db_instance:
@@ -279,8 +290,8 @@ class PromptTracker:
                 else:
                     metadata_payload["parameters"] = {"absolute_path": normalized_path}
 
-                # Link the image to the prompt
-                db.link_image_to_prompt(
+                # Link the image to the prompt and get database ID for thumbnail generation
+                db_id = db.link_image_to_prompt(
                     prompt_id=prompt_id,
                     image_path=normalized_path,
                     metadata=metadata_payload
@@ -294,14 +305,111 @@ class PromptTracker:
                     'metadata': metadata,
                     'timestamp': time.time()
                 })
-            
+                db_id = None  # No DB ID yet for pending images
+
             # Update metrics
             self.metrics["successful_pairs"] += 1
-            current_avg = self.metrics["avg_confidence"]
-            total = self.metrics["successful_pairs"]
-            self.metrics["avg_confidence"] = (
-                (current_avg * (total - 1) + tracking_data.confidence_score) / total
-            )
+
+            # AUTO-GENERATE THUMBNAILS: Generate thumbnails immediately after image save
+            if self.thumbnail_service and db_id is not None:
+                try:
+                    # Generate thumbnails in background with ID-based naming
+                    self._auto_generate_thumbnails(normalized_path, db_id)
+                except Exception as e:
+                    logger.warning(f"Auto-thumbnail generation failed for {Path(normalized_path).name}: {e}")
+                    # Don't fail the entire operation if thumbnail generation fails
+    
+    def _auto_generate_thumbnails(self, image_path: str, db_id: int):
+        """Generate thumbnails for a newly saved image in background.
+
+        Respects user's thumbnail size preferences from config.
+        Only generates thumbnails for sizes that are enabled in settings.
+        Uses ID-based thumbnail naming for consistency.
+
+        Args:
+            image_path: Path to the image file
+            db_id: Database ID of the image record (for ID-based thumbnail naming)
+        """
+        try:
+            import hashlib
+            from pathlib import Path
+            from ..services.enhanced_thumbnail_service import ThumbnailTask, ThumbnailStatus
+            from ..config import config
+            
+            source_path = Path(image_path)
+            if not source_path.exists():
+                logger.debug(f"Skipping auto-thumbnail: file not found {image_path}")
+                return
+            
+            # Check if auto-generation is enabled
+            auto_generate = config.get('thumbnail.auto_generate', True)
+            if not auto_generate:
+                logger.debug(f"Auto-generation disabled in settings, skipping {source_path.name}")
+                return
+            
+            # Get enabled sizes from config
+            enabled_sizes_str = config.get('thumbnail.enabled_sizes', '')
+            if enabled_sizes_str:
+                # Parse comma-separated list
+                enabled_sizes = [s.strip() for s in enabled_sizes_str.split(',') if s.strip()]
+            else:
+                # Default to small, medium, large (not xlarge to save space)
+                enabled_sizes = ['small', 'medium', 'large']
+            
+            if not enabled_sizes:
+                logger.debug(f"No thumbnail sizes enabled, skipping {source_path.name}")
+                return
+            
+            # Check if it's a video or image
+            is_video = self.thumbnail_service.ffmpeg.is_video(source_path)
+            
+            # Generate thumbnails only for enabled sizes
+            for size_name, size_dims in self.thumbnail_service.base_generator.SIZES.items():
+                # Skip if this size is not enabled
+                if size_name not in enabled_sizes:
+                    logger.debug(f"Skipping {size_name} thumbnail (disabled in settings)")
+                    continue
+
+                # Use ID-based thumbnail naming: {db_id}_{size}.jpg
+                thumbnail_path = self.thumbnail_service.thumbnail_dir / size_name / f"{db_id}_{size_name}.jpg"
+                thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
+
+                # Create task with database ID for ID-based naming
+                task = ThumbnailTask(
+                    image_id=hashlib.md5(str(source_path).encode()).hexdigest(),
+                    source_path=source_path,
+                    thumbnail_path=thumbnail_path,
+                    size=size_dims,
+                    format='jpg',
+                    size_name=size_name,
+                    is_video=is_video,
+                    db_id=db_id  # ID-based thumbnail naming
+                )
+                
+                # Generate thumbnail synchronously (it's already in a background worker thread)
+                result = self.thumbnail_service._generate_single_thumbnail(task)
+
+                if result.status == ThumbnailStatus.GENERATED:
+                    # Update database with ID-based thumbnail path
+                    try:
+                        from ..database.utils import get_db_connection
+                        with get_db_connection(self.db.db_path) as conn:
+                            cursor = conn.cursor()
+                            column_name = f'thumbnail_{size_name}_path'
+                            cursor.execute(f"""
+                                UPDATE generated_images
+                                SET {column_name} = ?
+                                WHERE id = ?
+                            """, (str(thumbnail_path), db_id))
+                            conn.commit()
+                        logger.debug(f"Auto-generated {size_name} thumbnail for {source_path.name} -> {db_id}_{size_name}.jpg")
+                    except Exception as db_err:
+                        logger.error(f"Failed to update database thumbnail path: {db_err}")
+                elif result.status == ThumbnailStatus.FAILED:
+                    logger.debug(f"Failed to auto-generate {size_name} thumbnail: {result.error}")
+                    
+        except Exception as e:
+            logger.error(f"Error in _auto_generate_thumbnails: {e}", exc_info=True)
     
     def _find_prompt_sources(self, target_node: str) -> Set[str]:
         """Find all PromptManager nodes that connect to a target node.
