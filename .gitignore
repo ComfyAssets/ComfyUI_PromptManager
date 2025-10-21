@@ -47,6 +47,9 @@ ENV/
 env/
 .venv
 
+# Development Scripts (not needed by end users)
+scripts/
+
 # Testing
 .pytest_cache/
 .coverage
