@@ -13,7 +13,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from src.api.websocket import WebSocketManager
-from src.api.realtime_events import EventEmitter
+from src.api.realtime_events import RealtimeEvents
 
 
 class TestWebSocketManager:
@@ -138,11 +138,11 @@ class TestWebSocketManager:
 
 class TestEventEmitter:
     """Test cases for real-time event emission."""
-    
+
     @pytest.fixture
     def event_emitter(self):
-        """Create an EventEmitter instance."""
-        return EventEmitter()
+        """Create a RealtimeEvents instance."""
+        return RealtimeEvents()
     
     @pytest.fixture
     def mock_websocket_manager(self):

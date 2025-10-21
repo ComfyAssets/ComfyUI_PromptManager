@@ -1,5 +1,6 @@
 """Unit tests for gallery handlers."""
 
+import json
 import pytest
 from pathlib import Path
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
@@ -9,11 +10,42 @@ from src.api.handlers.gallery import GalleryHandlers
 
 
 @pytest.fixture
-def mock_api():
+def mock_api(tmp_path):
     """Mock PromptManagerAPI instance."""
+    # Create a temporary test database
+    db_path = tmp_path / "test.db"
+
+    import sqlite3
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS generated_images (
+            id INTEGER PRIMARY KEY,
+            filename TEXT,
+            file_path TEXT,
+            file_size INTEGER,
+            generation_time TEXT,
+            prompt_id INTEGER,
+            thumbnail_path TEXT,
+            thumbnail_small_path TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS prompts (
+            id INTEGER PRIMARY KEY,
+            category TEXT,
+            positive_prompt TEXT,
+            tags TEXT,
+            rating INTEGER
+        )
+    """)
+    conn.commit()
+    conn.close()
+
     api = Mock()
     api.image_repo = Mock()
+    api.image_repo.db_path = str(db_path)
     api.generated_image_repo = Mock()
+    api.generated_image_repo.db_path = str(db_path)
     api.prompt_repo = Mock()
     api.gallery = Mock()
     api.metadata_extractor = Mock()
@@ -21,6 +53,7 @@ def mock_api():
     api._format_prompt = Mock(side_effect=lambda x: x)
     api._sanitize_for_json = Mock(side_effect=lambda x: x)
     api._get_allowed_image_roots = Mock(return_value=[])
+    api._validate_image_path = Mock(return_value=(True, None))
     return api
 
 
@@ -34,13 +67,15 @@ class TestListGalleryImages:
     """Test list_gallery_images endpoint."""
 
     @pytest.mark.asyncio
-    async def test_list_success_with_defaults(self, handler, mock_api):
+    async def test_list_success_with_defaults(self, handler, mock_api, tmp_path):
         """Test successful listing with default pagination."""
-        # Arrange
-        mock_api.gallery.get_paginated_items.return_value = {
-            "items": [{"id": 1, "name": "test.png"}],
-            "pagination": {"page": 1, "limit": 50, "total": 1}
-        }
+        # Arrange - Insert test data
+        import sqlite3
+        db_path = mock_api.image_repo.db_path
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("INSERT INTO generated_images (id, filename, file_path, generation_time) VALUES (1, 'test.png', '/test/test.png', '2024-01-01 12:00:00')")
+            conn.commit()
+
         request = Mock()
         request.query = {"page": "1", "limit": "50"}
 
@@ -49,17 +84,17 @@ class TestListGalleryImages:
 
         # Assert
         assert response.status == 200
-        mock_api.gallery.set_pagination.assert_called_once_with(1, 50)
-        mock_api.gallery.get_paginated_items.assert_called_once()
+        data = json.loads(response.text)
+        assert data["success"] is True
+        assert len(data["data"]) == 1
+        assert data["data"][0]["filename"] == "test.png"
+        assert data["pagination"]["page"] == 1
+        assert data["pagination"]["limit"] == 50
 
     @pytest.mark.asyncio
-    async def test_list_with_custom_pagination(self, handler, mock_api):
+    async def test_list_with_custom_pagination(self, handler, mock_api, tmp_path):
         """Test listing with custom page and limit."""
         # Arrange
-        mock_api.gallery.get_paginated_items.return_value = {
-            "items": [],
-            "pagination": {"page": 3, "limit": 100, "total": 0}
-        }
         request = Mock()
         request.query = {"page": "3", "limit": "100"}
 
@@ -68,16 +103,14 @@ class TestListGalleryImages:
 
         # Assert
         assert response.status == 200
-        mock_api.gallery.set_pagination.assert_called_once_with(3, 100)
+        data = json.loads(response.text)
+        assert data["pagination"]["page"] == 3
+        assert data["pagination"]["limit"] == 100
 
     @pytest.mark.asyncio
-    async def test_list_with_invalid_page_defaults_to_1(self, handler, mock_api):
+    async def test_list_with_invalid_page_defaults_to_1(self, handler, mock_api, tmp_path):
         """Test invalid page parameter defaults to 1."""
         # Arrange
-        mock_api.gallery.get_paginated_items.return_value = {
-            "items": [],
-            "pagination": {"page": 1, "limit": 50, "total": 0}
-        }
         request = Mock()
         request.query = {"page": "invalid", "limit": "50"}
 
@@ -86,16 +119,13 @@ class TestListGalleryImages:
 
         # Assert
         assert response.status == 200
-        mock_api.gallery.set_pagination.assert_called_once_with(1, 50)
+        data = json.loads(response.text)
+        assert data["pagination"]["page"] == 1
 
     @pytest.mark.asyncio
-    async def test_list_caps_limit_at_1000(self, handler, mock_api):
+    async def test_list_caps_limit_at_1000(self, handler, mock_api, tmp_path):
         """Test limit is capped at 1000."""
         # Arrange
-        mock_api.gallery.get_paginated_items.return_value = {
-            "items": [],
-            "pagination": {"page": 1, "limit": 1000, "total": 0}
-        }
         request = Mock()
         request.query = {"page": "1", "limit": "2000"}
 
@@ -103,13 +133,16 @@ class TestListGalleryImages:
         response = await handler.list_gallery_images(request)
 
         # Assert
-        mock_api.gallery.set_pagination.assert_called_once_with(1, 1000)
+        assert response.status == 200
+        data = json.loads(response.text)
+        assert data["pagination"]["limit"] == 1000
 
     @pytest.mark.asyncio
-    async def test_list_error_handling(self, handler, mock_api):
+    async def test_list_error_handling(self, handler, mock_api, tmp_path):
         """Test error handling in list endpoint."""
-        # Arrange
-        mock_api.gallery.set_pagination.side_effect = Exception("Test error")
+        # Arrange - Set db_path to invalid path to trigger error
+        original_db_path = mock_api.generated_image_repo.db_path
+        mock_api.generated_image_repo.db_path = "/nonexistent/path.db"
         request = Mock()
         request.query = {}
 
@@ -118,6 +151,9 @@ class TestListGalleryImages:
 
         # Assert
         assert response.status == 500
+
+        # Cleanup
+        mock_api.generated_image_repo.db_path = original_db_path
 
 
 class TestGetGalleryImage:
@@ -338,7 +374,7 @@ class TestScanComfyUIImages:
             yield {"type": "progress", "processed": 10, "found": 5}
             yield {"type": "complete", "processed": 20, "found": 10, "added": 8, "linked": 15}
 
-        with patch('src.api.handlers.gallery.ImageScanner') as mock_scanner:
+        with patch('src.services.image_scanner.ImageScanner') as mock_scanner:
             mock_scanner.return_value.scan_images_generator.return_value = mock_generator()
 
             # Act
@@ -356,7 +392,7 @@ class TestScanComfyUIImages:
         async def mock_generator():
             yield {"type": "error", "message": "Test error"}
 
-        with patch('src.api.handlers.gallery.ImageScanner') as mock_scanner:
+        with patch('src.services.image_scanner.ImageScanner') as mock_scanner:
             mock_scanner.return_value.scan_images_generator.return_value = mock_generator()
 
             # Act
@@ -371,7 +407,7 @@ class TestScanComfyUIImages:
         # Arrange
         request = Mock()
 
-        with patch('src.api.handlers.gallery.ImageScanner', side_effect=Exception("Test error")):
+        with patch('src.services.image_scanner.ImageScanner', side_effect=Exception("Test error")):
             # Act
             response = await handler.scan_comfyui_images(request)
 

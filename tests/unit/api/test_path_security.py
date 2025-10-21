@@ -138,8 +138,11 @@ class TestPathValidation:
     def test_validate_invalid_path_type(self, mock_api):
         """Test handling of invalid path types."""
         # Test with string instead of Path
-        with pytest.raises(AttributeError):
-            mock_api._validate_image_path("/tmp/test.png")
+        # Should handle gracefully and return error instead of raising
+        is_valid, error_msg = mock_api._validate_image_path("/tmp/test.png")
+
+        assert is_valid is False
+        assert "Invalid image path" in error_msg
 
     def test_validate_resolution_error(self, mock_api, temp_dirs):
         """Test handling of path resolution errors."""
@@ -181,9 +184,6 @@ class TestEndpointSecurity:
     @pytest.mark.asyncio
     async def test_get_generated_image_file_validates_path(self, mock_handler):
         """Test that get_generated_image_file() calls path validation."""
-        from aiohttp import web
-        from aiohttp.test_utils import make_mocked_request
-
         # Setup mock record
         with tempfile.TemporaryDirectory() as tmpdir:
             test_file = Path(tmpdir) / "test.png"
@@ -193,9 +193,10 @@ class TestEndpointSecurity:
                 "file_path": str(test_file)
             })
 
-            # Create mock request
-            request = make_mocked_request('GET', '/api/v1/generated-images/1/file')
+            # Create mock request with match_info
+            request = Mock()
             request.match_info = {'image_id': '1'}
+            request.query = {}
 
             # Call endpoint
             response = await mock_handler.get_generated_image_file(request)
@@ -208,8 +209,6 @@ class TestEndpointSecurity:
     @pytest.mark.asyncio
     async def test_get_generated_image_file_rejects_invalid_path(self, mock_handler):
         """Test that get_generated_image_file() rejects invalid paths."""
-        from aiohttp.test_utils import make_mocked_request
-
         # Setup validation to fail
         mock_handler.api._validate_image_path = Mock(
             return_value=(False, "Access denied: path outside allowed directories")
@@ -223,21 +222,22 @@ class TestEndpointSecurity:
                 "file_path": str(test_file)
             })
 
-            request = make_mocked_request('GET', '/api/v1/generated-images/1/file')
+            # Create mock request with match_info
+            request = Mock()
             request.match_info = {'image_id': '1'}
+            request.query = {}
 
             response = await mock_handler.get_generated_image_file(request)
 
             # Should return 403
             assert response.status == 403
-            body = await response.json()
+            import json
+            body = json.loads(response.text)
             assert "Access denied" in body["error"]
 
     @pytest.mark.asyncio
     async def test_get_gallery_image_file_validates_path(self, mock_handler):
         """Test that get_gallery_image_file() calls path validation."""
-        from aiohttp.test_utils import make_mocked_request
-
         with tempfile.TemporaryDirectory() as tmpdir:
             test_file = Path(tmpdir) / "test.png"
             test_file.write_text("test")
@@ -246,8 +246,10 @@ class TestEndpointSecurity:
                 "file_path": str(test_file)
             })
 
-            request = make_mocked_request('GET', '/api/v1/gallery/images/1/file')
+            # Create mock request with match_info
+            request = Mock()
             request.match_info = {'id': '1'}
+            request.query = {}
 
             response = await mock_handler.get_gallery_image_file(request)
 
@@ -257,8 +259,6 @@ class TestEndpointSecurity:
     @pytest.mark.asyncio
     async def test_get_gallery_image_file_validates_thumbnail_path(self, mock_handler):
         """Test that thumbnail paths are also validated."""
-        from aiohttp.test_utils import make_mocked_request
-
         with tempfile.TemporaryDirectory() as tmpdir:
             thumb_file = Path(tmpdir) / "thumb.png"
             thumb_file.write_text("thumb")
@@ -267,8 +267,10 @@ class TestEndpointSecurity:
                 "thumbnail_path": str(thumb_file)
             })
 
-            request = make_mocked_request('GET', '/api/v1/gallery/images/1/file?thumbnail=1')
+            # Create mock request with match_info and query params
+            request = Mock()
             request.match_info = {'id': '1'}
+            request.query = {'thumbnail': '1'}
 
             response = await mock_handler.get_gallery_image_file(request)
 

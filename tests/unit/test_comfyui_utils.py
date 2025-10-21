@@ -133,7 +133,7 @@ class TestGetComfyUIServerURL:
 
     def test_fallback_when_import_fails(self):
         """Test fallback when server module can't be imported."""
-        with patch('utils.comfyui_utils.PromptServer', side_effect=ImportError):
+        with patch('utils.comfyui_utils.PromptServer', None):
             from utils.comfyui_utils import get_comfyui_server_url
             result = get_comfyui_server_url()
 
@@ -145,6 +145,7 @@ class TestGetComfyUIServerURL:
         # Simulate missing attributes
         delattr(mock_server, 'address')
         delattr(mock_server, 'port')
+        mock_server.ssl_context = None  # Ensure no TLS
 
         with patch('utils.comfyui_utils.PromptServer') as MockPromptServer:
             MockPromptServer.instance = mock_server
@@ -217,7 +218,7 @@ class TestGetComfyUIAddressAndPort:
 
     def test_fallback_when_import_fails(self):
         """Test fallback when import fails."""
-        with patch('utils.comfyui_utils.PromptServer', side_effect=ImportError):
+        with patch('utils.comfyui_utils.PromptServer', None):
             from utils.comfyui_utils import get_comfyui_address_and_port
             address, port = get_comfyui_address_and_port()
 
@@ -346,7 +347,7 @@ class TestIntegrationScenarios:
     def test_running_outside_comfyui(self):
         """Test running outside ComfyUI context (e.g., tests)."""
         # Simulate: Running tests or standalone mode
-        with patch('utils.comfyui_utils.PromptServer', side_effect=ImportError):
+        with patch('utils.comfyui_utils.PromptServer', None):
             from utils.comfyui_utils import get_comfyui_server_url
             url = get_comfyui_server_url()
 

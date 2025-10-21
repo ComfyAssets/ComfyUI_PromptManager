@@ -115,7 +115,7 @@ def populated_db(db_operations):
     # Insert test prompts
     test_prompts = [
         {
-            'positive_prompt': 'A beautiful landscape with mountains and lakes',
+            'prompt': 'A beautiful landscape with mountains and lakes',
             'negative_prompt': 'blurry, low quality',
             'category': 'landscapes',
             'tags': ['nature', 'mountains', 'lakes'],
@@ -123,7 +123,7 @@ def populated_db(db_operations):
             'notes': 'Test landscape prompt'
         },
         {
-            'positive_prompt': 'Portrait of a cyberpunk character',
+            'prompt': 'Portrait of a cyberpunk character',
             'negative_prompt': 'ugly, distorted',
             'category': 'portraits',
             'tags': ['cyberpunk', 'character', 'portrait'],
@@ -131,7 +131,7 @@ def populated_db(db_operations):
             'notes': 'Test character prompt'
         },
         {
-            'positive_prompt': 'Abstract geometric patterns',
+            'prompt': 'Abstract geometric patterns',
             'negative_prompt': 'realistic, photo',
             'category': 'abstract',
             'tags': ['geometric', 'abstract', 'patterns'],
@@ -155,13 +155,13 @@ def populated_db(db_operations):
 @pytest.fixture
 def prompt_repository(db_model):
     """Create a PromptRepository instance."""
-    return PromptRepository(db_model)
+    return PromptRepository(db_model.db_path)
 
 
 @pytest.fixture
 def image_repository(db_model):
-    """Create a GeneratedImageRepository instance.""" 
-    return GeneratedImageRepository(db_model)
+    """Create a GeneratedImageRepository instance."""
+    return GeneratedImageRepository(db_model.db_path)
 
 
 # ============================================================================
@@ -169,9 +169,9 @@ def image_repository(db_model):
 # ============================================================================
 
 @pytest.fixture
-def image_service(test_config, db_model):
+def image_service(image_repository):
     """Create an ImageService instance."""
-    return ImageService(test_config, db_model)
+    return ImageService(repository=image_repository)
 
 
 @pytest.fixture
@@ -230,14 +230,7 @@ def sample_prompt_data():
         'category': 'landscapes',
         'tags': ['landscape', 'nature', 'sunset', 'mountains', '8k'],
         'rating': 4,
-        'notes': 'Beautiful landscape prompt for testing',
-        'metadata': {
-            'model': 'test_checkpoint.safetensors',
-            'steps': 20,
-            'cfg_scale': 7.5,
-            'seed': 12345,
-            'sampler': 'euler'
-        }
+        'notes': 'Beautiful landscape prompt for testing'
     }
 
 
@@ -429,17 +422,17 @@ async def async_db_operations(test_db_path):
 def large_dataset(populated_db):
     """Create a large dataset for performance testing."""
     db_operations, _ = populated_db
-    
+
     # Add many more prompts for performance testing
     for i in range(100):
         db_operations.save_prompt(
-            positive_prompt=f'Performance test prompt {i}',
+            prompt=f'Performance test prompt {i}',
             negative_prompt=f'negative {i}',
             category=f'category_{i % 10}',
             tags=[f'tag_{i}', f'perf_test'],
             rating=(i % 5) + 1
         )
-    
+
     return db_operations
 
 
@@ -479,14 +472,14 @@ def setup_test_environment():
 
 def create_test_prompt(
     positive: str = "test prompt",
-    negative: str = "test negative", 
+    negative: str = "test negative",
     category: str = "test",
     tags: List[str] = None,
     rating: int = 3
 ) -> Dict[str, Any]:
     """Helper function to create test prompt data."""
     return {
-        'positive_prompt': positive,
+        'prompt': positive,
         'negative_prompt': negative,
         'category': category,
         'tags': tags or ['test'],
