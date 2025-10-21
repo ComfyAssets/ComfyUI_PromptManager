@@ -66,34 +66,34 @@ const MaintenanceModal = (function() {
                 <div class="modal-content">
                     <div class="modal-header">
                         <h2 class="modal-title">
-                            <span>🔧</span>
+                            <span class="modal-icon">🔧</span>
                             Database Maintenance
                         </h2>
                         <button class="modal-close" aria-label="Close">×</button>
                     </div>
 
                     <div class="modal-body">
-                        <!-- Statistics -->
+                        <!-- Statistics Dashboard -->
                         <div class="maintenance-stats">
-                            <h3><span>📊</span> Statistics</h3>
+                            <h3><span class="section-icon">📊</span> Database Health</h3>
                             <div class="stats-grid">
                                 <div class="stat-item">
                                     <div class="stat-value" id="stat-prompts">-</div>
-                                    <div class="stat-label">Prompts</div>
+                                    <div class="stat-label">Total Prompts</div>
                                 </div>
                                 <div class="stat-item">
                                     <div class="stat-value" id="stat-images">-</div>
-                                    <div class="stat-label">Images</div>
+                                    <div class="stat-label">Total Images</div>
                                 </div>
-                                <div class="stat-item warning" id="stat-duplicates-container">
+                                <div class="stat-item" id="stat-duplicates-container">
                                     <div class="stat-value" id="stat-duplicates">-</div>
                                     <div class="stat-label">Duplicate Links</div>
                                 </div>
-                                <div class="stat-item error" id="stat-orphaned-container">
+                                <div class="stat-item" id="stat-orphaned-container">
                                     <div class="stat-value" id="stat-orphaned">-</div>
                                     <div class="stat-label">Orphaned Images</div>
                                 </div>
-                                <div class="stat-item error" id="stat-missing-container">
+                                <div class="stat-item" id="stat-missing-container">
                                     <div class="stat-value" id="stat-missing">-</div>
                                     <div class="stat-label">Missing Files</div>
                                 </div>
@@ -106,80 +106,81 @@ const MaintenanceModal = (function() {
 
                         <!-- Quick Actions -->
                         <div class="quick-actions">
-                            <h3><span>⚡</span> Quick Actions</h3>
+                            <h3><span class="section-icon">⚡</span> Quick Maintenance</h3>
                             <div class="actions-grid">
-                                <button class="action-button" data-action="deduplicate">
-                                    <span class="action-icon">🔄</span>
-                                    Remove Duplicates
-                                </button>
-                                <button class="action-button" data-action="clean-orphans">
-                                    <span class="action-icon">🧹</span>
-                                    Clean Orphans
-                                </button>
-                                <button class="action-button" data-action="validate-paths">
-                                    <span class="action-icon">✔️</span>
-                                    Validate Paths
-                                </button>
-                                <button class="action-button" data-action="fix-broken-links">
-                                    <span class="action-icon">🔗</span>
-                                    Fix Broken Links
-                                </button>
-                                <button class="action-button" data-action="optimize">
-                                    <span class="action-icon">⚙️</span>
-                                    Optimize Database
-                                </button>
-                                <button class="action-button" data-action="backup">
-                                    <span class="action-icon">💾</span>
-                                    Create Backup
-                                </button>
-                                <button class="action-button danger" data-action="remove-missing">
-                                    <span class="action-icon">❌</span>
-                                    Remove Missing Files
-                                </button>
-                                <button class="action-button primary" data-action="calculate-epic-stats">
+                                <button class="action-button primary" data-action="calculate-epic-stats" title="Calculate comprehensive statistics for the dashboard">
                                     <span class="action-icon">📊</span>
                                     Calculate Epic Stats
                                 </button>
-                                <button class="action-button" data-action="recalculate-word-cloud">
+                                <button class="action-button" data-action="recalculate-word-cloud" title="Regenerate word cloud from all prompts">
                                     <span class="action-icon">☁️</span>
                                     Refresh Word Cloud
                                 </button>
-                                <button class="action-button" data-action="tag-missing-images">
+                                <button class="action-button" data-action="deduplicate" title="Remove duplicate image links">
+                                    <span class="action-icon">🔄</span>
+                                    Remove Duplicates
+                                </button>
+                                <button class="action-button" data-action="clean-orphans" title="Clean up orphaned image records">
+                                    <span class="action-icon">🧹</span>
+                                    Clean Orphans
+                                </button>
+                                <button class="action-button" data-action="validate-paths" title="Verify all image file paths">
+                                    <span class="action-icon">✔️</span>
+                                    Validate Paths
+                                </button>
+                                <button class="action-button" data-action="fix-broken-links" title="Repair broken image associations">
+                                    <span class="action-icon">🔗</span>
+                                    Fix Broken Links
+                                </button>
+                                <button class="action-button" data-action="tag-missing-images" title="Tag images with missing files">
                                     <span class="action-icon">🏷️</span>
                                     Tag Missing Images
+                                </button>
+                                <button class="action-button" data-action="optimize" title="Optimize database performance">
+                                    <span class="action-icon">⚙️</span>
+                                    Optimize Database
+                                </button>
+                                <button class="action-button" data-action="backup" title="Create database backup">
+                                    <span class="action-icon">💾</span>
+                                    Create Backup
+                                </button>
+                                <button class="action-button danger" data-action="remove-missing" title="Permanently remove records for missing files">
+                                    <span class="action-icon">❌</span>
+                                    Remove Missing Files
                                 </button>
                             </div>
                         </div>
 
                         <!-- Advanced Operations -->
                         <div class="advanced-operations">
-                            <h3><span>🔬</span> Advanced Operations</h3>
+                            <h3><span class="section-icon">🔬</span> Advanced Operations</h3>
+                            <p class="section-description">Select multiple operations to run in sequence</p>
                             <div class="operation-list">
-                                <div class="operation-item">
+                                <label class="operation-item">
                                     <input type="checkbox" id="op-integrity" data-operation="check-integrity">
-                                    <label for="op-integrity" class="operation-label">
-                                        Full Database Integrity Check
-                                        <div class="operation-description">Verify database structure and foreign key constraints</div>
-                                    </label>
-                                </div>
-                                <div class="operation-item">
+                                    <div class="operation-content">
+                                        <div class="operation-title">Full Database Integrity Check</div>
+                                        <div class="operation-description">Comprehensive verification of database structure and constraints</div>
+                                    </div>
+                                </label>
+                                <label class="operation-item">
                                     <input type="checkbox" id="op-reindex" data-operation="reindex">
-                                    <label for="op-reindex" class="operation-label">
-                                        Rebuild All Indexes
-                                        <div class="operation-description">Recreate database indexes for better performance</div>
-                                    </label>
-                                </div>
-                                <div class="operation-item">
+                                    <div class="operation-content">
+                                        <div class="operation-title">Rebuild All Indexes</div>
+                                        <div class="operation-description">Recreate database indexes for optimal query performance</div>
+                                    </div>
+                                </label>
+                                <label class="operation-item">
                                     <input type="checkbox" id="op-export" data-operation="export">
-                                    <label for="op-export" class="operation-label">
-                                        Export Database Backup
-                                        <div class="operation-description">Create a complete backup with timestamp</div>
-                                    </label>
-                                </div>
+                                    <div class="operation-content">
+                                        <div class="operation-title">Export Database Backup</div>
+                                        <div class="operation-description">Create timestamped backup file for safe keeping</div>
+                                    </div>
+                                </label>
                             </div>
-                            <button class="run-selected-button" id="run-selected">
-                                <span>▶</span>
-                                Run Selected Operations
+                            <button class="run-selected-button" id="run-selected" disabled>
+                                <span class="button-icon">▶</span>
+                                <span class="button-text">Run Selected Operations</span>
                             </button>
                         </div>
 
@@ -198,12 +199,15 @@ const MaintenanceModal = (function() {
 
                     <div class="modal-footer">
                         <div class="footer-info">
-                            <div class="database-size">
-                                <span>📁</span>
-                                <span id="footer-db-size">-</span>
+                            <div class="database-info">
+                                <span class="info-icon">📁</span>
+                                <span class="info-label">Database:</span>
+                                <span class="info-value" id="footer-db-size">-</span>
                             </div>
-                            <div class="last-updated">
-                                Last updated: <span id="footer-last-updated">-</span>
+                            <div class="update-info">
+                                <span class="info-icon">🕐</span>
+                                <span class="info-label">Updated:</span>
+                                <span class="info-value" id="footer-last-updated">-</span>
                             </div>
                         </div>
                         <button class="btn btn-secondary" id="close-maintenance">Close</button>

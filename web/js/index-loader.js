@@ -148,17 +148,23 @@
     const sizes = ['small', 'medium', 'large'];
 
     try {
+      console.log('[IndexLoader] Starting thumbnail scan with sizes:', sizes);
       const response = await fetch('/api/v1/thumbnails/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sizes }),
       });
 
+      console.log('[IndexLoader] Scan response status:', response.status, response.statusText);
+
       if (!response.ok) {
+        const errorText = await response.text();
+        console.error('[IndexLoader] Scan failed:', errorText);
         throw new Error(`${response.status} ${response.statusText}`);
       }
 
       const result = await response.json();
+      console.log('[IndexLoader] Scan result:', result);
       if (result.missing_count > 0) {
         sessionStorage.setItem(
           'thumbnailScanResult',
@@ -174,8 +180,10 @@
       sessionStorage.removeItem('thumbnailScanResult');
       return { meta: 'No missing thumbnails detected' };
     } catch (error) {
-      console.warn('Thumbnail scan failed:', error);
-      throw new Error('Thumbnail scan failed');
+      console.error('[IndexLoader] Thumbnail scan error:', error);
+      console.error('[IndexLoader] Error stack:', error.stack);
+      // Don't throw - allow loader to continue even if scan fails
+      return { meta: 'Thumbnail scan skipped (error)' };
     }
   }
 

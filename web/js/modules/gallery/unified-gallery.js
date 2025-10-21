@@ -449,8 +449,14 @@ const UnifiedGallery = (function() {
             if (response.ok) {
                 const result = await response.json();
                 showNotification(`Exported ${itemIds.length} items`, 'success');
-                // Trigger download
-                window.location.href = result.download_url;
+                // Trigger download - validate URL is relative
+                const url = result.download_url;
+                if (url && (url.startsWith('/') || url.startsWith('./'))) {
+                    window.location.href = url;
+                } else {
+                    console.error('Invalid download URL:', url);
+                    showNotification('Invalid export URL', 'error');
+                }
             }
         } catch (error) {
             console.error('Export failed:', error);
@@ -466,7 +472,7 @@ const UnifiedGallery = (function() {
         if (!loader) {
             loader = document.createElement('div');
             loader.className = 'gallery-loader';
-            loader.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading...';
+            loader.innerHTML = '<div class="loader-content"><i class="fas fa-spinner fa-spin"></i><span class="loader-text">Loading...</span></div>';
             galleryContainer.appendChild(loader);
         }
         loader.style.display = 'block';

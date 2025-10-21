@@ -260,7 +260,7 @@ const ScanManager = (function() {
     }
     if (elements.startBtn) {
       elements.startBtn.disabled = true;
-      elements.startBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Scanning...';
+      elements.startBtn.innerHTML = '<span class="btn-content"><i class="fa-solid fa-spinner fa-spin"></i><span class="btn-text">Scanning...</span></span>';
     }
 
     // Start progress indicator if available
