@@ -27,12 +27,6 @@
         maxBackups: 10,
         databasePathCustom: false,
 
-        // Cache
-        cacheEnabled: true,
-        cacheSize: 100,
-        cacheTTL: 3600,
-        cacheWarming: false,
-
         // Performance
         lazyLoading: true,
         cacheMetadata: true,
@@ -166,6 +160,15 @@
                     thumbnailCacheDuration: backendSettings.cache_duration || localSettings.thumbnailCacheDuration || 86400
                 };
 
+                // Convert enabled_sizes array to checkbox boolean values
+                if (backendSettings.enabled_sizes && Array.isArray(backendSettings.enabled_sizes)) {
+                    settings.thumbSizeSmall = backendSettings.enabled_sizes.includes('small');
+                    settings.thumbSizeMedium = backendSettings.enabled_sizes.includes('medium');
+                    settings.thumbSizeLarge = backendSettings.enabled_sizes.includes('large');
+                    settings.thumbSizeXLarge = backendSettings.enabled_sizes.includes('xlarge');
+                    console.log('[Settings] Loaded thumbnail size preferences from backend:', backendSettings.enabled_sizes);
+                }
+
                 // Save merged settings to localStorage for offline access
                 localStorage.setItem('promptManagerSettings', JSON.stringify(settings));
 
@@ -251,7 +254,14 @@
                 enable_thumbnails: settings.enableThumbnails ?? true,
                 thumbnail_size: String(settings.thumbnailSize || '256'),
                 auto_generate: settings.autoGenerateThumbnails ?? false,
-                cache_duration: settings.thumbnailCacheDuration || 86400
+                cache_duration: settings.thumbnailCacheDuration || 86400,
+                // Collect enabled thumbnail sizes from checkboxes
+                enabled_sizes: [
+                    settings.thumbSizeSmall && 'small',
+                    settings.thumbSizeMedium && 'medium',
+                    settings.thumbSizeLarge && 'large',
+                    settings.thumbSizeXLarge && 'xlarge'
+                ].filter(Boolean) // Remove false/undefined values
             };
 
             const response = await fetch('/api/v1/settings/thumbnails', {
@@ -322,10 +332,6 @@
                             <span class="nav-icon">💾</span>
                             <span>Database Settings</span>
                         </button>
-                        <button class="settings-nav-item" data-panel="cache">
-                            <span class="nav-icon">⚡</span>
-                            <span>Cache Settings</span>
-                        </button>
                         <button class="settings-nav-item" data-panel="performance">
                             <span class="nav-icon">🚀</span>
                             <span>Performance Settings</span>
@@ -379,7 +385,6 @@
 
             <!-- Fixed Action Buttons -->
             <div class="settings-actions">
-                <button class="btn btn-primary" onclick="saveAllSettings()">💾 Save All</button>
                 <button class="btn" onclick="window.exportSettingsFunc()">📤 Export</button>
                 <button class="btn" onclick="window.importSettingsFunc()">📥 Import</button>
                 <button class="btn btn-danger" onclick="window.resetSettingsFunc()">🔄 Reset</button>
@@ -418,21 +423,6 @@
                         ${renderToggle('Backup Enabled', 'backupEnabled', settings.backupEnabled, 'Enable automatic backups')}
                         ${renderSettingRow('Backup Interval (seconds)', 'number', 'backupInterval', settings.backupInterval, 'How often to create backups', 300, 86400)}
                         ${renderSettingRow('Max Backups', 'number', 'maxBackups', settings.maxBackups, 'Maximum number of backup files to keep', 1, 100)}
-                    </div>
-                </div>
-            </section>
-
-            <!-- Cache Panel -->
-            <section id="cache" class="settings-panel">
-                <div class="card">
-                    <div class="card-header">
-                        <h3 class="card-title">Cache Settings</h3>
-                    </div>
-                    <div class="card-body">
-                    ${renderToggle('Cache Enabled', 'cacheEnabled', settings.cacheEnabled, 'Enable caching for better performance')}
-                    ${renderSettingRow('Cache Size (MB)', 'number', 'cacheSize', settings.cacheSize, 'Maximum cache size in megabytes', 10, 1000)}
-                    ${renderSettingRow('Cache TTL (seconds)', 'number', 'cacheTTL', settings.cacheTTL, 'How long to keep cached items', 60, 86400)}
-                    ${renderToggle('Cache Warming', 'cacheWarming', settings.cacheWarming, 'Pre-populate cache on startup')}
                     </div>
                 </div>
             </section>
@@ -807,7 +797,7 @@
             updateDatabaseStatus('Please enter a database path to verify.', 'status-warn');
             return;
         }
-        updateDatabaseStatus('<i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Verifying path…', 'status-info');
+        updateDatabaseStatus('<span class="spinner-content"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i><span class="spinner-text">Verifying path…</span></span>', 'status-info');
         lastVerifiedDatabase = null;
         pendingMigrationPath = null;
         try {
@@ -931,7 +921,7 @@
             closeDbMigrationModal();
             return;
         }
-        updateDatabaseStatus('<i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Migrating database…', 'status-info');
+        updateDatabaseStatus('<span class="spinner-content"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i><span class="spinner-text">Migrating database…</span></span>', 'status-info');
         try {
             const response = await fetch(DB_API_ENDPOINTS.migrate, {
                 method: 'POST',
@@ -1052,18 +1042,21 @@
         const form = document.getElementById('settingsForm');
         if (!form) return;
 
-        // Handle form changes
+        // Auto-save on any change with debouncing
         let saveTimeout;
         form.addEventListener('change', async (e) => {
-            // Auto-save on change if enabled
-            const settings = await loadSettings();
-            if (settings.autoSave) {
-                // Debounce saves to avoid too many API calls
-                clearTimeout(saveTimeout);
-                saveTimeout = setTimeout(() => {
-                    saveAllSettings();
-                }, 1000);
-            }
+            // Debounce saves to avoid too many API calls
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(async () => {
+                await saveAllSettings(true); // true = silent mode for auto-save
+                // Show brief toast notification
+                showToast('Settings saved', 'success', { duration: 2000 });
+                
+                // Update cache display if cache size changed
+                if (e.target.name === 'cacheSize' && typeof window.updateCacheDisplay === 'function') {
+                    window.updateCacheDisplay();
+                }
+            }, 500); // Save 500ms after user stops making changes
         });
 
         // Initialize disk usage display if on thumbnails panel
@@ -1079,8 +1072,8 @@
         }
 
         try {
-            const response = await fetch('/api/v1/thumbnails/clear', {
-                method: 'POST'
+            const response = await fetch('/api/v1/thumbnails/cache', {
+                method: 'DELETE'
             });
 
             if (!response.ok) {
@@ -1219,7 +1212,7 @@
     window.confirmDbMigration = confirmDbMigration;
     window.closeDbMigrationModal = closeDbMigrationModal;
 
-    window.saveAllSettings = async function() {
+    window.saveAllSettings = async function(silent = false) {
         const form = document.getElementById('settingsForm');
         if (!form) return;
 
@@ -1252,7 +1245,7 @@
 
         // Merge with defaults and save
         const merged = { ...defaultSettings, ...settings };
-        await saveSettings(merged);
+        await saveSettings(merged, { silent });
     };
 
     // Test notifications
@@ -1419,6 +1412,7 @@
         if (!window.MigrationService) {
             console.warn('MigrationService not available');
             setMigrationStatus('error', 'Migration service unavailable', '❌');
+            showToast('Migration service unavailable', 'error');
             return null;
         }
 
