@@ -611,9 +611,12 @@ class BackupManager:
             # Handle compressed backups
             if backup.suffix == '.gz':
                 if '.tar.gz' in backup.name:
-                    # Extract tar.gz archive
+                    # Extract tar.gz archive with path validation
                     import tarfile
                     with tarfile.open(backup, 'r:gz') as tar:
+                        for member in tar.getmembers():
+                            if member.name.startswith('/') or '..' in member.name:
+                                raise ValueError(f"Potentially dangerous tar member: {member.name}")
                         tar.extractall(target_path.parent)
                 else:
                     # Decompress single file
