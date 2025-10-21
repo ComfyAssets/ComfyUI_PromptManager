@@ -202,6 +202,9 @@ async function updateCache(request, cache) {
 
 // Handle messages from clients
 self.addEventListener('message', (event) => {
+    if (!event.data || typeof event.data !== 'object') {
+        return;
+    }
 
     if (event.data.action === 'skipWaiting') {
         self.skipWaiting();
