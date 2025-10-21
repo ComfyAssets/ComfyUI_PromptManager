@@ -6,6 +6,30 @@ module = sys.modules.setdefault(__name__, sys.modules[__name__])
 sys.modules.setdefault("promptmanager", module)
 sys.modules.setdefault("custom_nodes.promptmanager", module)
 
+# Import platform-aware symbols for cross-platform emoji support
+# Windows terminals don't render emojis well, so we use ASCII alternatives
+try:
+    from .utils.platform_symbols import (
+        check, cross, warning, rocket, pin, search, hourglass, skip, hands,
+        brain, tracker, image, get_symbol, format_with_symbols
+    )
+except ImportError:
+    # Fallback if utils not available yet - just use the emojis
+    def check(): return '✅'
+    def cross(): return '❌'
+    def warning(): return '⚠️'
+    def rocket(): return '🚀'
+    def pin(): return '📍'
+    def search(): return '🔍'
+    def hourglass(): return '⏳'
+    def skip(): return '⏭️'
+    def hands(): return '🫶'
+    def brain(): return '🧠'
+    def tracker(): return '📝'
+    def image(): return '🖼️'
+    def get_symbol(emoji): return emoji
+    def format_with_symbols(text): return text
+
 # Safe print wrapper for Windows desktop app where stdout redirect can fail
 def safe_print(message):
     """Print that won't crash if stdout is redirected improperly."""
@@ -124,6 +148,7 @@ from .prompt_manager_tracked import PromptManager
 from .prompt_manager_v2 import PromptManagerV2
 from .prompt_manager_positive import PromptManagerPositive
 from .prompt_manager_negative import PromptManagerNegative
+from .prompt_manager_detailer import PromptManagerDetailer
 
 # Import text-only versions (no CLIP encoding)
 from .prompt_manager_text import PromptManagerText
@@ -146,6 +171,7 @@ NODE_CLASS_MAPPINGS = {
     "PromptManagerV2": PromptManagerV2,  # V2 combined widget
     "PromptManagerPositive": PromptManagerPositive,  # V2 positive only
     "PromptManagerNegative": PromptManagerNegative,  # V2 negative only
+    "PromptManagerDetailer": PromptManagerDetailer,  # V2 detailer (silent mode)
     # Text-only versions (no CLIP encoding)
     "PromptManagerText": PromptManagerText,  # V1 text-only
     "PromptManagerV2Text": PromptManagerV2Text,  # V2 text-only
@@ -154,23 +180,24 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "PromptManager": "🧠 Prompt Manager",
-    "PromptManagerV2": "🧠 Prompt Manager V2",
-    "PromptManagerPositive": "🧠 Prompt Manager (Positive)",
-    "PromptManagerNegative": "🧠 Prompt Manager (Negative)",
+    "PromptManager": f"{brain()} Prompt Manager",
+    "PromptManagerV2": f"{brain()} Prompt Manager V2",
+    "PromptManagerPositive": f"{brain()} Prompt Manager (Positive)",
+    "PromptManagerNegative": f"{brain()} Prompt Manager (Negative)",
+    "PromptManagerDetailer": "🔧 Prompt Manager (Detailer)",
     # Text-only versions
-    "PromptManagerText": "🧠 Prompt Manager (text)",
-    "PromptManagerV2Text": "🧠 Prompt Manager V2 (text)",
-    "PromptManagerPositiveText": "🧠 Prompt Manager (Positive/text)",
-    "PromptManagerNegativeText": "🧠 Prompt Manager (Negative/text)",
+    "PromptManagerText": f"{brain()} Prompt Manager (text)",
+    "PromptManagerV2Text": f"{brain()} Prompt Manager V2 (text)",
+    "PromptManagerPositiveText": f"{brain()} Prompt Manager (Positive/text)",
+    "PromptManagerNegativeText": f"{brain()} Prompt Manager (Negative/text)",
 }
 
 # Add tracker nodes if available
 if _tracker_nodes_available:
     NODE_CLASS_MAPPINGS["PromptManagerTracker"] = PromptManagerTracker
     NODE_CLASS_MAPPINGS["PromptManagerImageTracker"] = PromptManagerImageTracker
-    NODE_DISPLAY_NAME_MAPPINGS["PromptManagerTracker"] = "📝 PM Tracker"
-    NODE_DISPLAY_NAME_MAPPINGS["PromptManagerImageTracker"] = "🖼️ PM Image Tracker"
+    NODE_DISPLAY_NAME_MAPPINGS["PromptManagerTracker"] = f"{tracker()} PM Tracker"
+    NODE_DISPLAY_NAME_MAPPINGS["PromptManagerImageTracker"] = f"{image()} PM Image Tracker"
 
 # Web directory for ComfyUI to serve static files
 WEB_DIRECTORY = "./web"
@@ -193,7 +220,7 @@ def ensure_database_initialized():
         # Create a database instance to ensure schema is up to date
         # This will automatically run any schema migrations
         db = PromptDatabase()
-        conditional_print(f"[PromptManager] ✅ Database initialized and schema updated at: {db.db_path}")
+        conditional_print(f"[PromptManager] {check()} Database initialized and schema updated at: {db.db_path}")
 
         # Run all SQL migrations
         _run_sql_migrations(db)
@@ -209,7 +236,7 @@ def ensure_database_initialized():
             from .src.database import PromptDatabase
 
             db = PromptDatabase()
-            conditional_print(f"[PromptManager] ✅ Database initialized and schema updated at: {db.db_path}")
+            conditional_print(f"[PromptManager] {check()} Database initialized and schema updated at: {db.db_path}")
 
             # Run thumbnail migration if needed
             _run_thumbnail_migration(db)
@@ -306,10 +333,10 @@ def _run_sql_migrations(db):
 
             # Check if already applied
             if version in applied_migrations:
-                conditional_print(f"🫶 \033[94mPatching:\033[0m {migration_file.name}")
-                conditional_print(f"🫶 Patch already applied - skipping")
+                conditional_print(f"{hands()} \033[94mPatching:\033[0m {migration_file.name}")
+                conditional_print(f"{hands()} Patch already applied - skipping")
             else:
-                conditional_print(f"🫶 \033[94mPatching:\033[0m {migration_file.name}")
+                conditional_print(f"{hands()} \033[94mPatching:\033[0m {migration_file.name}")
 
                 try:
                     # Read migration file
@@ -326,7 +353,7 @@ def _run_sql_migrations(db):
                     )
                     conn.commit()
 
-                    conditional_print(f"🫶 Patch applied successfully")
+                    conditional_print(f"{hands()} Patch applied successfully")
                     migrations_applied += 1
 
                 except sqlite3.Error as e:
@@ -341,7 +368,7 @@ def _run_sql_migrations(db):
                                 (version, datetime.utcnow().isoformat(), migration_file.name, 'success')
                             )
                             conn.commit()
-                            conditional_print(f"🫶 Patch already applied (columns exist) - skipping")
+                            conditional_print(f"{hands()} Patch already applied (columns exist) - skipping")
                             migrations_applied += 1
                         except:
                             pass
@@ -357,7 +384,7 @@ def _run_sql_migrations(db):
                             # If insert fails, just continue
                             pass
 
-                        conditional_print(f"⚠️  Patch failed: {e}")
+                        conditional_print(f"{warning()} Patch failed: {e}")
                         conn.rollback()
 
         cursor.close()
@@ -366,10 +393,10 @@ def _run_sql_migrations(db):
         # Print summary (only if logging enabled)
         conditional_print(f"\033[94mTotal: {total_migrations} patches loaded\033[0m")
         if migrations_applied > 0:
-            conditional_print(f"\033[92m[ComfyUI-PromptManager] ✅ {migrations_applied} new patches applied\033[0m")
+            conditional_print(f"\033[92m[ComfyUI-PromptManager] {check()} {migrations_applied} new patches applied\033[0m")
 
     except Exception as e:
-        conditional_print(f"\033[93m[ComfyUI-PromptManager] ⚠️ Database patching error:\033[0m {e}")
+        conditional_print(f"\033[93m[ComfyUI-PromptManager] {warning()} Database patching error:\033[0m {e}")
 
 
 def initialize_api(server):
@@ -379,7 +406,7 @@ def initialize_api(server):
     """
     try:
         conditional_print("\n" + "=" * 60)
-        conditional_print("🚀 Initializing PromptManager v2.0.0")
+        conditional_print(f"{rocket()} Initializing PromptManager v2.0.0")
         conditional_print("=" * 60)
 
         module_name = "src.api.routes"
@@ -415,14 +442,14 @@ def initialize_api(server):
         from .utils.comfyui_utils import get_comfyui_server_url
         server_url = get_comfyui_server_url()
 
-        conditional_print("✅ PromptManager API initialized successfully")
-        conditional_print(f"📍 Access web UI at: {server_url}/prompt_manager/")
+        conditional_print(f"{check()} PromptManager API initialized successfully")
+        conditional_print(f"{pin()} Access web UI at: {server_url}/prompt_manager/")
         conditional_print("=" * 60 + "\n")
 
         return api
 
     except Exception as e:
-        conditional_print(f"❌ Failed to initialize PromptManager API: {e}")
+        conditional_print(f"{cross()} Failed to initialize PromptManager API: {e}")
         import traceback
 
         traceback.print_exc()
@@ -459,13 +486,13 @@ try:
     from server import PromptServer
     from aiohttp import web
 
-    conditional_print(f"[PromptManager] 🔍 Checking PromptServer availability...")
+    conditional_print(f"[PromptManager] {search()} Checking PromptServer availability...")
     conditional_print(f"[PromptManager]    - PromptServer.instance exists: {PromptServer.instance is not None}")
     conditional_print(f"[PromptManager]    - _API_INITIALIZED: {_API_INITIALIZED}")
 
     if PromptServer.instance and not _API_INITIALIZED:
         try:
-            conditional_print(f"[PromptManager] 🚀 Starting API route registration...")
+            conditional_print(f"[PromptManager] {rocket()} Starting API route registration...")
 
             # Import API module
             from .src.api.routes import PromptManagerAPI
@@ -510,28 +537,28 @@ try:
             server_url = get_comfyui_server_url()
 
             _API_INITIALIZED = True
-            conditional_print(f"[PromptManager] ✅ API routes registered successfully!")
+            conditional_print(f"[PromptManager] {check()} API routes registered successfully!")
             conditional_print(f"[PromptManager]    - Test endpoint: {server_url}/api/prompt_manager/settings")
 
         except Exception as e:
-            conditional_print(f"[PromptManager] ❌ Failed to initialize API")
+            conditional_print(f"[PromptManager] {cross()} Failed to initialize API")
             conditional_print(f"[PromptManager]    - Error: {e}")
             import traceback
             conditional_print(f"[PromptManager]    - Traceback:")
             traceback.print_exc()
     else:
         if not PromptServer.instance:
-            conditional_print("[PromptManager] ⏳ PromptServer.instance not available yet")
+            conditional_print(f"[PromptManager] {hourglass()} PromptServer.instance not available yet")
         if _API_INITIALIZED:
-            conditional_print("[PromptManager] ⏭️  API already initialized, skipping")
+            conditional_print(f"[PromptManager] {skip()} API already initialized, skipping")
 
 except ImportError as e:
     # Running outside ComfyUI context
-    conditional_print(f"[PromptManager] ⚠️  Server module not available (running outside ComfyUI)")
+    conditional_print(f"[PromptManager] {warning()} Server module not available (running outside ComfyUI)")
     conditional_print(f"[PromptManager]    - Import error: {e}")
     pass
 except Exception as e:
-    conditional_print(f"[PromptManager] ⚠️  API initialization deferred due to error")
+    conditional_print(f"[PromptManager] {warning()} API initialization deferred due to error")
     conditional_print(f"[PromptManager]    - Error: {e}")
 
 # Print startup message with loaded tools (only once)
@@ -539,6 +566,6 @@ if _SETUP_DONE:
     safe_print("")
     safe_print(f"\033[94m[ComfyUI-PromptManager] Version:\033[0m {get_version()}")
     for node_key, display_name in NODE_DISPLAY_NAME_MAPPINGS.items():
-        safe_print(f"🫶 \033[94mLoaded:\033[0m {display_name}")
+        safe_print(f"{hands()} \033[94mLoaded:\033[0m {display_name}")
     safe_print(f"\033[94mTotal: {len(NODE_CLASS_MAPPINGS)} tools loaded\033[0m")
     safe_print("")
