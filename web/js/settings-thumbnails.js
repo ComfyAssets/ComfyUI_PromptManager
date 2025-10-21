@@ -144,12 +144,15 @@ async function generateMissingThumbnails() {
  * Start polling for generation progress
  */
 function startProgressPolling(taskId) {
+    console.log('[Thumbnails] Starting progress polling for task:', taskId);
+
     if (thumbnailStatusInterval) {
         clearInterval(thumbnailStatusInterval);
     }
 
     thumbnailStatusInterval = setInterval(async () => {
         try {
+            console.log('[Thumbnails] Polling status for task:', taskId);
             const response = await fetch(`/api/v1/thumbnails/status/${taskId}`);
 
             if (!response.ok) {
@@ -163,15 +166,18 @@ function startProgressPolling(taskId) {
             }
 
             const status = await response.json();
+            console.log('[Thumbnails] Received status:', status);
 
             // Update progress
             const progress = status.progress || {};
+            console.log('[Thumbnails] Progress data:', progress);
             const total = progress.total || 0;
             const completed = progress.completed || 0;
             const failed = progress.failed || 0;
             const skipped = progress.skipped || 0;
             const processed = completed + failed + skipped;
 
+            console.log('[Thumbnails] Updating UI:', { processed, total, completed, failed, skipped });
             updateThumbnailProgress(processed, total);
 
             // Update status text
@@ -180,7 +186,15 @@ function startProgressPolling(taskId) {
             }
 
             // Check if complete, cancelled, or failed
+            console.log('[Thumbnails] Checking completion:', {
+                statusValue: status.status,
+                processed,
+                total,
+                isComplete: status.status === 'completed' || processed >= total
+            });
+
             if (status.status === 'completed' || processed >= total) {
+                console.log('[Thumbnails] Task completed, calling handleGenerationComplete');
                 clearInterval(thumbnailStatusInterval);
                 handleGenerationComplete(status.result || {
                     completed,
@@ -481,6 +495,8 @@ function updateThumbnailStatus(message) {
     const statusElement = document.getElementById('thumbnailStatus');
     if (statusElement) {
         statusElement.textContent = message;
+    } else {
+        console.warn('[Thumbnails] Status element not found, message:', message);
     }
 }
 
@@ -495,6 +511,13 @@ function updateThumbnailProgress(current, total) {
         const percentage = total > 0 ? Math.round((current / total) * 100) : 0;
         progressBar.style.width = `${percentage}%`;
         progressText.textContent = `${current} / ${total} (${percentage}%)`;
+    } else {
+        console.warn('[Thumbnails] Progress elements not found', {
+            progressBar: !!progressBar,
+            progressText: !!progressText,
+            current,
+            total
+        });
     }
 }
 
@@ -502,13 +525,31 @@ function updateThumbnailProgress(current, total) {
  * Reset thumbnail controls after generation
  */
 function resetThumbnailControls() {
-    document.getElementById('generateThumbnailsBtn').disabled = false;
-    document.querySelector('button[onclick="scanForMissingThumbnails()"]').disabled = false;
+    const generateBtn = document.getElementById('generateThumbnailsBtn');
+    const scanBtn = document.querySelector('button[onclick="scanForMissingThumbnails()"]');
+    const progressContainer = document.getElementById('thumbnailProgressContainer');
+
+    if (generateBtn) {
+        generateBtn.disabled = false;
+    } else {
+        console.warn('[Thumbnails] Generate button not found in resetThumbnailControls');
+    }
+
+    if (scanBtn) {
+        scanBtn.disabled = false;
+    } else {
+        console.warn('[Thumbnails] Scan button not found in resetThumbnailControls');
+    }
+
     thumbnailGenerationTask = null;
 
     // Hide progress after a delay
     setTimeout(() => {
-        document.getElementById('thumbnailProgressContainer').style.display = 'none';
+        if (progressContainer) {
+            progressContainer.style.display = 'none';
+        } else {
+            console.warn('[Thumbnails] Progress container not found in resetThumbnailControls');
+        }
     }, 3000);
 }
 
@@ -645,13 +686,30 @@ async function updateDiskUsage() {
 document.addEventListener('DOMContentLoaded', () => {
     // Check if on settings page with thumbnails section
     const thumbnailSection = document.getElementById('thumbnails');
+    console.log('[Thumbnails] DOMContentLoaded - thumbnail section found:', !!thumbnailSection);
+    console.log('[Thumbnails] Current pathname:', window.location.pathname);
+    console.log('[Thumbnails] pmActive check:', (window.location?.pathname || '').includes('/prompt_manager'));
+
     if (thumbnailSection) {
         // Don't auto-scan on settings page - scanning happens on index.html
         // User can manually trigger scan using the "Scan for Missing" button
+        console.log('[Thumbnails] Initializing thumbnail settings UI');
         updateThumbnailStatus('Click "Scan for Missing" to check for missing thumbnails');
 
         // Fetch and display disk usage
         updateDiskUsage();
+
+        // Verify button wiring
+        const scanBtn = document.querySelector('button[onclick="scanForMissingThumbnails()"]');
+        const generateBtn = document.getElementById('generateThumbnailsBtn');
+        console.log('[Thumbnails] Button verification:', {
+            scanBtn: !!scanBtn,
+            generateBtn: !!generateBtn,
+            scanBtnText: scanBtn?.textContent.trim(),
+            generateBtnText: generateBtn?.textContent.trim()
+        });
+    } else {
+        console.log('[Thumbnails] Thumbnail section not found on this page');
     }
 });
 
