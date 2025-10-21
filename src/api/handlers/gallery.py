@@ -138,7 +138,18 @@ class GalleryHandlers:
 
                 # Map thumbnail fields to thumbnail_url
                 if image_id:
-                    image['thumbnail_url'] = f"/api/v1/generated-images/{image_id}/file?thumbnail=1"
+                    # Prefer database thumbnail paths to avoid hash collisions
+                    # Check for thumbnail paths in priority order: medium > small > large
+                    if image.get('thumbnail_medium_path'):
+                        image['thumbnail_url'] = f"/api/v1/thumbnails/{image_id}/medium"
+                    elif image.get('thumbnail_small_path'):
+                        image['thumbnail_url'] = f"/api/v1/thumbnails/{image_id}/small"
+                    elif image.get('thumbnail_large_path'):
+                        image['thumbnail_url'] = f"/api/v1/thumbnails/{image_id}/large"
+                    else:
+                        # Fallback to hash-based lookup if no thumbnail paths in database
+                        image['thumbnail_url'] = f"/api/v1/generated-images/{image_id}/file?thumbnail=1"
+
                     image['image_url'] = f"/api/v1/generated-images/{image_id}/file"
                     image['url'] = image['image_url']  # Alias for compatibility
 
@@ -271,14 +282,45 @@ class GalleryHandlers:
         if not record:
             return web.json_response({"error": "Image not found"}, status=404)
 
-        path = record.get("file_path")
-        if request.query.get("thumbnail"):
-            metadata = record.get("metadata") or {}
-            if isinstance(metadata, dict) and metadata.get("thumbnail_path"):
-                path = metadata.get("thumbnail_path")
-
-        if not path:
+        image_path = record.get("image_path") or record.get("file_path")
+        if not image_path:
             return web.json_response({"error": "Image path unavailable"}, status=404)
+
+        # Handle thumbnail request
+        if request.query.get("thumbnail"):
+            # Get thumbnail size (default to medium)
+            size = request.query.get("size", "medium")
+            if size not in ["small", "medium", "large", "xlarge"]:
+                size = "medium"
+
+            # Generate thumbnail path using the same logic as thumbnail service
+            # Thumbnails are stored as: {thumbnail_dir}/{size}/{md5_hash}_{size}.ext
+            import hashlib
+            from ...config import config
+
+            source_path = Path(image_path)
+            thumbnail_dir = Path(config.storage.base_path) / config.storage.thumbnails_path
+
+            # Generate MD5 hash of full source path (matching thumbnail service logic)
+            path_hash = hashlib.md5(str(source_path).encode()).hexdigest()
+
+            # Determine extension (thumbnails are typically .jpg)
+            ext = source_path.suffix.lower()
+            if ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+                ext = '.jpg'
+
+            # Build thumbnail filename: {hash}_{size}.ext
+            thumbnail_filename = f"{path_hash}_{size}{ext}"
+            thumbnail_path = thumbnail_dir / size / thumbnail_filename
+
+            # Check if thumbnail exists
+            if thumbnail_path.exists():
+                path = str(thumbnail_path)
+            else:
+                # Fallback to full image if thumbnail doesn't exist
+                path = image_path
+        else:
+            path = image_path
 
         candidate = Path(path).expanduser()
 
@@ -289,7 +331,19 @@ class GalleryHandlers:
 
         # Path is validated, serve the file
         resolved = candidate.resolve(strict=True)
-        return web.FileResponse(resolved)
+
+        # Create response with proper caching headers
+        response = web.FileResponse(resolved)
+
+        # For thumbnails, add cache control headers
+        if request.query.get("thumbnail"):
+            # Cache thumbnails for 1 hour, but allow revalidation
+            response.headers['Cache-Control'] = 'public, max-age=3600, must-revalidate'
+        else:
+            # Cache full images for longer (1 day)
+            response.headers['Cache-Control'] = 'public, max-age=86400'
+
+        return response
 
     async def get_generated_image_metadata(self, request: web.Request) -> web.Response:
         """Return extracted metadata for a generated image.

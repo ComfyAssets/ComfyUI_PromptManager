@@ -253,9 +253,10 @@ def load_image_records(conn: sqlite3.Connection, batch_size: Optional[int] = Non
     )
 
     if batch_size:
+        batch_size = max(1, int(batch_size))
         query += f" LIMIT {batch_size}"
 
-    cursor = conn.execute(query)
+    cursor = conn.execute(query, ())
 
     records: List[ImageRecord] = []
     for image_id, raw_path, media_type in cursor.fetchall():

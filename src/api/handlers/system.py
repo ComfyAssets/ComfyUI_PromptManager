@@ -177,17 +177,19 @@ class SystemHandlers:
 
     async def vacuum_database(self, request: web.Request) -> web.Response:
         """Vacuum database to optimize storage.
-        
+
         POST /api/v1/system/vacuum
         """
         try:
-            self.prompt_repo.vacuum()
-            
+            from ...database import PromptDatabase
+            db = PromptDatabase(self.db_path)
+            db.model.vacuum_database()
+
             return web.json_response({
                 "success": True,
                 "message": "Database optimized successfully"
             })
-            
+
         except Exception as e:
             self.logger.error(f"Error vacuuming database: {e}")
             return web.json_response(

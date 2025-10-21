@@ -7,13 +7,14 @@ import hashlib
 import json
 import shutil
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from aiohttp import web
 
-from ...services.enhanced_thumbnail_service import EnhancedThumbnailService, ThumbnailTask
+from ...services.enhanced_thumbnail_service import EnhancedThumbnailService, ThumbnailTask, ThumbnailStatus
 from ...services.thumbnail_reconciliation_service import ThumbnailReconciliationService
 from ...utils.ffmpeg_finder import (
     DEFAULT_TIMEOUT as FFMPEG_TIMEOUT,
@@ -22,7 +23,7 @@ from ...utils.ffmpeg_finder import (
 )
 
 from utils.cache import CacheManager
-from ...database.connection_helper import DatabaseConnection
+from ...database.connection_helper import DatabaseConnection, get_db_connection
 
 try:
     # Ensure parent directory is in path
@@ -100,6 +101,7 @@ class ThumbnailAPI:
         # V2 Reconciliation endpoints
         app.router.add_post('/api/v1/thumbnails/comprehensive-scan', self.comprehensive_scan)
         app.router.add_post('/api/v1/thumbnails/rebuild-unified', self.rebuild_unified)
+        app.router.add_post('/api/v1/thumbnails/rebuild-all-from-scratch', self.rebuild_all_from_scratch)
 
         # Thumbnail serving
         app.router.add_get('/api/v1/thumbnails/{image_id}/{size}', self.serve_thumbnail)
@@ -139,7 +141,7 @@ class ThumbnailAPI:
             except (json.JSONDecodeError, ValueError):
                 data = {}
 
-            sizes = data.get('sizes', ['small', 'medium', 'large'])
+            sizes = data.get('sizes', ['small', 'medium'])
             sample_limit = data.get('sample_limit', 6)
 
             # Use the service method to scan thumbnails
@@ -173,10 +175,13 @@ class ThumbnailAPI:
             except (json.JSONDecodeError, ValueError):
                 data = {}
 
-            sizes = data.get('sizes', ['small', 'medium', 'large'])
+            # Get user's enabled sizes, or use provided sizes, or fall back to default
+            default_sizes = self._get_user_thumbnail_size_preferences() or ['small', 'medium']
+            sizes = data.get('sizes', default_sizes)
             include_videos = data.get('include_videos', True)
 
-            image_paths = []
+            missing_images = []
+            total_operations = 0
 
             try:
                 # Get all image paths from database
@@ -185,76 +190,63 @@ class ThumbnailAPI:
                 conn = DatabaseConnection.get_connection(self.db.db_path)
                 cursor = conn.cursor()
 
-                # Check for both v1 images table and v2 generated_images table
+                # Check if this is a v2 database (has generated_images table)
                 cursor.execute("""
                     SELECT name FROM sqlite_master
-                    WHERE type='table' AND name IN ('images', 'generated_images')
+                    WHERE type='table' AND name = 'generated_images'
                 """)
-                tables = cursor.fetchall()
+                has_v2_table = cursor.fetchone() is not None
 
-                if tables:
-                    # Prefer generated_images (v2) over images (v1)
-                    if ('generated_images',) in tables:
-                        cursor.execute("""
-                            SELECT id, image_path, filename
-                            FROM generated_images
-                            WHERE (thumbnail_small_path IS NULL OR thumbnail_small_path = '')
-                            AND (thumbnail_small_path IS NULL OR thumbnail_small_path != 'FAILED')
-                            AND image_path IS NOT NULL AND image_path != ''
-                        """)
-                    else:
-                        cursor.execute("""
-                            SELECT id, file_path, filename
-                            FROM images
-                            WHERE file_path IS NOT NULL AND file_path != ''
-                        """)
+                if has_v2_table:
+                    # V2 schema: Get images and check for missing ID-based thumbnails
+                    cursor.execute("""
+                        SELECT id, image_path, filename,
+                               thumbnail_small_path, thumbnail_medium_path, thumbnail_large_path
+                        FROM generated_images
+                        WHERE image_path IS NOT NULL AND image_path != ''
+                    """)
 
                     images = cursor.fetchall()
 
                     for image in images:
-                        # image is a tuple: (id, path, filename)
+                        # image is a tuple: (id, path, filename, small, medium, large)
+                        db_id = image[0]  # id at index 0
                         path = Path(image[1])  # path is at index 1
-                        if path.exists():
+                        if not path.exists():
+                            continue
+
+                        # Check which sizes are missing (use ID-based paths)
+                        missing_sizes = []
+                        for size_name in sizes:
+                            expected_thumbnail = self.thumbnail_service.get_thumbnail_path(path, size_name, image_id=db_id)
+                            if not expected_thumbnail.exists():
+                                missing_sizes.append(size_name)
+                                total_operations += 1
+
+                        if missing_sizes:
+                            # Check if blacklisted
+                            if self.thumbnail_service._is_blacklisted(path):
+                                continue
                             # Check if it's a video or image
                             if include_videos or not self.thumbnail_service.ffmpeg.is_video(path):
-                                image_paths.append(path)
+                                missing_images.append({
+                                    'path': str(path),
+                                    'missing_sizes': missing_sizes
+                                })
+                else:
+                    # V1 schema fallback - use hash-based checking
+                    logger.warning("V1 schema detected - ID-based thumbnails not supported")
 
                 conn.close()
             except Exception as db_error:
                 logger.warning(f"Database query error during scan: {db_error}")
                 # Continue without database images
 
-            # Scan for missing thumbnails, excluding blacklisted files
-            non_blacklisted_paths = [
-                path for path in image_paths
-                if not self.thumbnail_service._is_blacklisted(path)
-            ]
-            
-            missing_tasks = await self.thumbnail_service.scan_missing_thumbnails(
-                non_blacklisted_paths,
-                sizes
-            )
-
-            # Group by image for better reporting
-            missing_by_image = {}
-            for task in missing_tasks:
-                image_id = task.image_id
-                if image_id not in missing_by_image:
-                    missing_by_image[image_id] = {
-                        'path': str(task.source_path),
-                        'missing_sizes': []
-                    }
-
-                # Determine size name from dimensions
-                for size_name, dims in self.thumbnail_service.base_generator.SIZES.items():
-                    if dims == task.size:
-                        missing_by_image[image_id]['missing_sizes'].append(size_name)
-                        break
-
+            # Return the results using ID-based path checking
             return web.json_response({
-                'missing_count': len(missing_by_image),
-                'total_operations': len(missing_tasks),
-                'missing_images': list(missing_by_image.values()),
+                'missing_count': len(missing_images),
+                'total_operations': total_operations,
+                'missing_images': missing_images,
                 'sizes_checked': sizes
             })
 
@@ -281,7 +273,7 @@ class ThumbnailAPI:
             except (json.JSONDecodeError, ValueError):
                 data = {}
 
-            sizes = data.get('sizes', ['small', 'medium', 'large'])
+            sizes = data.get('sizes', ['small', 'medium'])
             skip_existing = data.get('skip_existing', True)
 
             # Get all image paths from database
@@ -312,10 +304,13 @@ class ThumbnailAPI:
 
                 images = cursor.fetchall()
 
+                # Store tuples of (db_id, path) instead of just path
+                image_data = []
                 for image in images:
+                    db_id = image[0]  # id is at index 0
                     path = Path(image[1])  # image_path is at index 1
                     if path.exists():
-                        image_paths.append(path)
+                        image_data.append((db_id, path))
 
                 conn.close()
 
@@ -328,7 +323,7 @@ class ThumbnailAPI:
 
             # Create tasks only for requested sizes
             all_tasks = []
-            for path in image_paths:
+            for db_id, path in image_data:
                 is_video = self.thumbnail_service.ffmpeg.is_video(path)
 
                 for size_name in sizes:
@@ -341,10 +336,12 @@ class ThumbnailAPI:
                     task = ThumbnailTask(
                         image_id=hashlib.md5(str(path).encode()).hexdigest(),
                         source_path=path,
-                        thumbnail_path=self.thumbnail_service.get_thumbnail_path(path, size_name),
+                        thumbnail_path=self.thumbnail_service.get_thumbnail_path(path, size_name, image_id=db_id),
                         size=size_dims,
                         format=path.suffix.lower()[1:],
-                        is_video=is_video
+                        size_name=size_name,
+                        is_video=is_video,
+                        db_id=db_id  # ID-based thumbnail naming
                     )
                     all_tasks.append(task)
 
@@ -400,10 +397,30 @@ class ThumbnailAPI:
                 }
 
             base_dir = Path(config.storage.base_path)
-            images_dir = base_dir / config.storage.images_path
             thumbnails_dir = self.thumbnail_service.thumbnail_dir
 
-            images_stats = _directory_stats(images_dir)
+            # Query database for actual image statistics
+            # Images are tracked in generated_images table with their full ComfyUI output paths
+            import sqlite3
+            conn = DatabaseConnection.get_connection(self.db.db_path)
+            conn.row_factory = sqlite3.Row  # Enable dict-like access
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT
+                    COUNT(*) as file_count,
+                    COALESCE(SUM(file_size), 0) as size_bytes
+                FROM generated_images
+                WHERE file_size IS NOT NULL
+            """)
+            row = cursor.fetchone()
+            images_stats = {
+                'path': 'ComfyUI output directory',
+                'size_bytes': row['size_bytes'] if row else 0,
+                'size_mb': round((row['size_bytes'] if row else 0) / MB, 2),
+                'file_count': row['file_count'] if row else 0,
+            }
+            conn.close()
             thumbnail_stats = self.thumbnail_service.get_cache_statistics()
             thumbnail_total_bytes = thumbnail_stats.get('total_size', 0)
 
@@ -498,6 +515,10 @@ class ThumbnailAPI:
         """
         image_id = request.match_info['image_id']
         size = request.match_info.get('size', 'medium')
+        
+        valid_sizes = {'small', 'medium', 'large'}
+        if size not in valid_sizes:
+            size = 'medium'
 
         try:
             # Get thumbnail path
@@ -621,12 +642,16 @@ class ThumbnailAPI:
             )
             max_parallel = 4
 
+        # Get user's enabled sizes preference
+        enabled_sizes = self._get_user_thumbnail_size_preferences() or ['small', 'medium']
+
         settings = {
             'cache_dir': str(self.thumbnail_service.thumbnail_dir),
             'auto_generate': config.get('thumbnail.auto_generate', True),
+            'enabled_sizes': enabled_sizes,  # Add user's enabled sizes
             'sizes': {
                 size: {
-                    'enabled': True,
+                    'enabled': size in enabled_sizes,  # Mark as enabled only if user has it enabled
                     'dimensions': f'{dims[0]}x{dims[1]}'
                 }
                 for size, dims in self.thumbnail_service.base_generator.SIZES.items()
@@ -743,11 +768,14 @@ class ThumbnailAPI:
 
             # Reinitialize service if needed
             if 'cache_dir' in data:
-                self.thumbnail_service.thumbnail_dir = Path(data['cache_dir'])
+                cache_dir = Path(data['cache_dir']).resolve()
+                if not str(cache_dir).startswith('/') or '..' in str(cache_dir):
+                    return web.json_response({'error': 'Invalid cache directory'}, status=400)
+                self.thumbnail_service.thumbnail_dir = cache_dir
                 self.thumbnail_service.thumbnail_dir.mkdir(parents=True, exist_ok=True)
 
             if 'max_parallel' in updates:
-                self.thumbnail_service.set_parallel_workers(updates['max_parallel'])
+               self.thumbnail_service.set_parallel_workers(updates['max_parallel'])
 
             return web.json_response({
                 'success': True,
@@ -871,7 +899,10 @@ class ThumbnailAPI:
         """
         try:
             data = await request.json() if request.body_exists else {}
-            sizes = data.get('sizes', ['small', 'medium', 'large'])
+
+            # Get user's enabled sizes, or use provided sizes, or fall back to default
+            default_sizes = self._get_user_thumbnail_size_preferences() or ['small', 'medium']
+            sizes = data.get('sizes', default_sizes)
             sample_limit = data.get('sample_limit', 6)
 
             # Generate task ID
@@ -948,14 +979,16 @@ class ThumbnailAPI:
 
             logger.info(f"Scan task {task_id} completed: {results.categories}")
 
-            if self.realtime:
-                await self.realtime.send_progress(
-                    'thumbnail_scan',
-                    100,
-                    'Scan complete',
-                    task_id=task_id,
-                    result=self.active_generations[task_id]['result']
-                )
+            # Note: send_progress disabled - V2 modal has its own progress tracking via polling
+            # Prevents duplicate floating progress dialogs
+            # if self.realtime:
+            #     await self.realtime.send_progress(
+            #         'thumbnail_scan',
+            #         100,
+            #         'Scan complete',
+            #         task_id=task_id,
+            #         result=self.active_generations[task_id]['result']
+            #     )
 
         except Exception as e:
             logger.error(f"Background scan error for task {task_id}: {e}", exc_info=True)
@@ -982,7 +1015,7 @@ class ThumbnailAPI:
                 'generate_missing': True,
                 'delete_true_orphans': False
             })
-            sizes = data.get('sizes', ['small', 'medium', 'large'])
+            sizes = data.get('sizes', ['small', 'medium'])
             scan_results = data.get('scan_results', {})
 
             # Generate task ID
@@ -1062,14 +1095,16 @@ class ThumbnailAPI:
 
             logger.info(f"Rebuild task {task_id} {status}: {summary}")
 
+            # Note: send_progress disabled - V2 modal has its own progress tracking via polling
+            # Prevents duplicate floating progress dialogs
             if self.realtime:
-                await self.realtime.send_progress(
-                    'thumbnail_rebuild',
-                    100,
-                    'Rebuild complete' if status == 'completed' else 'Rebuild cancelled',
-                    task_id=task_id,
-                    result=summary
-                )
+                # await self.realtime.send_progress(
+                #     'thumbnail_rebuild',
+                #     100,
+                #     'Rebuild complete' if status == 'completed' else 'Rebuild cancelled',
+                #     task_id=task_id,
+                #     result=summary
+                # )
 
                 message = f"Rebuilt {summary['completed']} thumbnails"
                 toast_type = 'success' if summary['stats']['failed'] == 0 else 'warning'
@@ -1085,6 +1120,266 @@ class ThumbnailAPI:
 
             if self.realtime:
                 await self.realtime.send_toast(f'Thumbnail rebuild failed: {e}', 'error')
+
+    async def rebuild_all_from_scratch(self, request: web.Request) -> web.Response:
+        """Nuclear option: Delete all thumbnails, rescan output folder, regenerate everything.
+
+        This performs a complete rebuild from scratch:
+        1. Delete all thumbnail files from disk
+        2. Reset all database thumbnail paths to NULL
+        3. Scan output folder for all images (like "Scan ComfyUI Images")
+        4. Add any missing images to database
+        5. Generate all thumbnails for selected sizes
+
+        Args:
+            request: HTTP request
+
+        Returns:
+            JSON response with task ID
+        """
+        try:
+            data = await request.json()
+            sizes = data.get('sizes', ['small', 'medium'])
+
+            logger.info(f"Starting nuclear rebuild-all-from-scratch with sizes: {sizes}")
+
+            # Generate task ID
+            task_id = f"rebuild_all_{datetime.now().timestamp()}"
+            cancel_event = threading.Event()
+
+            # Create task tracking
+            self.active_generations[task_id] = {
+                'status': 'running',
+                'progress': None,
+                'result': None,
+                'cancel_event': cancel_event
+            }
+
+            # Start rebuild in background
+            asyncio.create_task(
+                self._run_rebuild_all_from_scratch(task_id, sizes, cancel_event)
+            )
+
+            return web.json_response({
+                'task_id': task_id,
+                'message': 'Rebuild All from Scratch started'
+            })
+
+        except Exception as e:
+            logger.error(f"Rebuild-all-from-scratch error: {e}")
+            return web.json_response(
+                {'error': str(e)},
+                status=500
+            )
+
+    async def _run_rebuild_all_from_scratch(
+        self,
+        task_id: str,
+        sizes: List[str],
+        cancel_event: threading.Event
+    ):
+        """Run full rebuild from scratch in background.
+
+        Args:
+            task_id: Unique task identifier
+            sizes: Thumbnail sizes to generate
+            cancel_event: Event for cancellation
+        """
+        try:
+            logger.info(f"Starting rebuild-all-from-scratch for task {task_id}")
+
+            # Get the event loop for thread-safe updates
+            loop = asyncio.get_event_loop()
+
+            # Progress callback
+            def progress_callback(progress_data):
+                def update():
+                    self.active_generations[task_id]['progress'] = progress_data
+                loop.call_soon_threadsafe(update)
+
+            # Step 1: Delete all thumbnail files
+            logger.info("Step 1: Deleting all thumbnail files...")
+            deleted_count = 0
+            for size in ['small', 'medium', 'large', 'xlarge']:
+                size_dir = self.thumbnail_service.thumbnail_dir / size
+                if size_dir.exists():
+                    for thumb_file in size_dir.glob('*'):
+                        try:
+                            thumb_file.unlink()
+                            deleted_count += 1
+                        except Exception as e:
+                            logger.warning(f"Failed to delete {thumb_file}: {e}")
+
+            logger.info(f"Deleted {deleted_count} thumbnail files")
+
+            progress_callback({
+                'operation': 'deleting_thumbnails',
+                'percentage': 10,
+                'current_file': f'Deleted {deleted_count} files',
+                'stats': {'deleted': deleted_count}
+            })
+
+            # Step 2: Reset all database thumbnail paths
+            logger.info("Step 2: Resetting database thumbnail paths...")
+            from ...database.connection_helper import get_db_connection
+
+            with get_db_connection(self.db.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE generated_images
+                    SET thumbnail_small_path = NULL,
+                        thumbnail_medium_path = NULL,
+                        thumbnail_large_path = NULL,
+                        thumbnail_xlarge_path = NULL
+                """)
+                reset_count = cursor.rowcount
+
+            logger.info(f"Reset {reset_count} database records")
+
+            progress_callback({
+                'operation': 'resetting_database',
+                'percentage': 20,
+                'current_file': f'Reset {reset_count} records',
+                'stats': {'reset': reset_count}
+            })
+
+            # Step 3: Scan output folder and add missing images to database
+            logger.info("Step 3: Scanning output folder for images...")
+            from ...tracking.prompt_tracker import PromptTracker
+
+            tracker = PromptTracker(self.db)
+            output_dir = Path.home() / 'ai-apps/ComfyUI/output'
+
+            if output_dir.exists():
+                image_files = []
+                for ext in ['*.png', '*.jpg', '*.jpeg', '*.webp']:
+                    image_files.extend(output_dir.rglob(ext))
+
+                added_count = 0
+                for idx, img_path in enumerate(image_files):
+                    if cancel_event.is_set():
+                        logger.info("Rebuild cancelled during scan")
+                        break
+
+                    # Try to add to database (will skip if already exists)
+                    try:
+                        tracker.track_generation(
+                            image_path=str(img_path),
+                            prompt="",  # Will be extracted from metadata if available
+                            metadata={}
+                        )
+                        added_count += 1
+                    except Exception as e:
+                        pass  # Already exists, skip
+
+                    if idx % 100 == 0:
+                        progress_callback({
+                            'operation': 'scanning_output',
+                            'percentage': 20 + (idx / len(image_files) * 30),
+                            'current_file': img_path.name,
+                            'stats': {'scanned': idx + 1, 'total': len(image_files)}
+                        })
+
+                logger.info(f"Scanned {len(image_files)} files, added {added_count} new images")
+
+            progress_callback({
+                'operation': 'scanning_complete',
+                'percentage': 50,
+                'current_file': 'Scan complete',
+                'stats': {'scanned': len(image_files) if 'image_files' in locals() else 0}
+            })
+
+            # Step 4: Get all images from database and create thumbnail tasks
+            logger.info("Step 4: Preparing thumbnail generation for all images...")
+            with get_db_connection(self.db.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT id, image_path
+                    FROM generated_images
+                    WHERE image_path IS NOT NULL AND image_path != ''
+                """)
+                all_images = cursor.fetchall()
+
+            # Create tasks for all size combinations
+            from ...services.enhanced_thumbnail_service import ThumbnailTask
+            tasks = []
+
+            for db_id, image_path in all_images:
+                source_path = Path(image_path)
+                if not source_path.exists():
+                    continue
+
+                for size in sizes:
+                    is_video = self.thumbnail_service.ffmpeg.is_video(source_path)
+                    size_dims = self.thumbnail_service.base_generator.SIZES.get(size, (300, 300))
+
+                    task = ThumbnailTask(
+                        image_id=hashlib.md5(str(source_path).encode()).hexdigest(),
+                        source_path=source_path,
+                        thumbnail_path=self.thumbnail_service.get_thumbnail_path(source_path, size, image_id=db_id),
+                        size=size_dims,
+                        format=source_path.suffix.lower()[1:] if not is_video else 'jpg',
+                        size_name=size,
+                        is_video=is_video,
+                        db_id=db_id
+                    )
+                    tasks.append(task)
+
+            logger.info(f"Created {len(tasks)} thumbnail generation tasks")
+
+            # Step 5: Generate all thumbnails
+            logger.info("Step 5: Generating all thumbnails...")
+
+            def gen_progress_callback(prog):
+                if progress_callback:
+                    progress_callback({
+                        'operation': 'generating_all',
+                        'percentage': 50 + (prog.get('completed', 0) / len(tasks) * 50),
+                        'current_file': prog.get('current_file'),
+                        'stats': {
+                            'generated': prog.get('completed', 0),
+                            'failed': prog.get('failed', 0),
+                            'total': len(tasks)
+                        }
+                    })
+
+            result = await self.thumbnail_service.generate_batch(
+                tasks,
+                progress_callback=gen_progress_callback,
+                cancel_event=cancel_event
+            )
+
+            # Update task status
+            status = 'cancelled' if cancel_event.is_set() else 'completed'
+            summary = {
+                'completed': result.get('completed', 0),
+                'failed': result.get('failed', 0),
+                'total': len(tasks),
+                'deleted_old': deleted_count,
+                'reset_database': reset_count,
+                'scanned_files': len(image_files) if 'image_files' in locals() else 0
+            }
+
+            self.active_generations[task_id]['status'] = status
+            self.active_generations[task_id]['result'] = {'stats': summary}
+
+            logger.info(f"Rebuild-all task {task_id} {status}: {summary}")
+
+            if self.realtime:
+                message = f"Rebuilt {summary['completed']} thumbnails from scratch"
+                toast_type = 'success' if summary['failed'] == 0 else 'warning'
+                await self.realtime.send_toast(message, toast_type)
+
+                if summary['completed'] > 0:
+                    await self.realtime.notify_gallery_refresh()
+
+        except Exception as e:
+            logger.error(f"Background rebuild-all error for task {task_id}: {e}", exc_info=True)
+            self.active_generations[task_id]['status'] = 'failed'
+            self.active_generations[task_id]['error'] = str(e)
+
+            if self.realtime:
+                await self.realtime.send_toast(f'Rebuild All failed: {e}', 'error')
 
     async def cancel_generation(self, request: web.Request) -> web.Response:
         """Cancel an active thumbnail generation task.
@@ -1181,42 +1476,53 @@ class ThumbnailAPI:
             except (json.JSONDecodeError, ValueError):
                 data = {}
 
-            sizes = data.get('sizes', ['small', 'medium', 'large'])
+            sizes = data.get('sizes', ['small', 'medium'])
             skip_existing = data.get('skip_existing', True)
 
-            # Get all image paths from database
-            image_paths = []
+            # Get all image paths and their existing thumbnails from database
+            image_data = []
             try:
                 import sqlite3
                 conn = DatabaseConnection.get_connection(self.db.db_path)
                 cursor = conn.cursor()
 
-                if skip_existing:
-                    # Only get images WITHOUT thumbnails
-                    logger.info("Skipping existing thumbnails - only generating missing")
-                    cursor.execute("""
-                        SELECT id, image_path, filename
-                        FROM generated_images
-                        WHERE (thumbnail_small_path IS NULL OR thumbnail_small_path = '')
-                        AND image_path IS NOT NULL AND image_path != ''
-                    """)
-                else:
-                    # Get ALL images (existing behavior for overwrite)
-                    logger.info("Overwriting all thumbnails - regenerating everything")
-                    cursor.execute("""
-                        SELECT id, image_path, filename
-                        FROM generated_images
-                        WHERE image_path IS NOT NULL AND image_path != ''
-                    """)
+                # Get ALL images with their thumbnail paths
+                cursor.execute("""
+                    SELECT id, image_path, filename,
+                           thumbnail_small_path, thumbnail_medium_path, thumbnail_large_path
+                    FROM generated_images
+                    WHERE image_path IS NOT NULL AND image_path != ''
+                """)
 
                 images = cursor.fetchall()
+                conn.close()
 
                 for image in images:
+                    db_id = image[0]  # id is at index 0
                     path = Path(image[1])  # image_path is at index 1
-                    if path.exists():
-                        image_paths.append(path)
+                    if not path.exists():
+                        continue
 
-                conn.close()
+                    # Determine which sizes need to be generated
+                    missing_sizes = []
+                    for size_name in sizes:
+                        # Get the expected thumbnail path WITH database ID for unique naming
+                        expected_thumbnail_path = self.thumbnail_service.get_thumbnail_path(path, size_name, image_id=db_id)
+
+                        if skip_existing:
+                            # Check if thumbnail file actually exists on disk
+                            needs_generation = not expected_thumbnail_path.exists()
+                        else:
+                            # Regenerate all requested sizes
+                            needs_generation = True
+
+                        if needs_generation:
+                            missing_sizes.append(size_name)
+
+                    if missing_sizes:
+                        image_data.append((db_id, path, missing_sizes))
+
+                logger.info(f"Found {len(image_data)} images needing thumbnail generation")
 
             except Exception as e:
                 logger.error(f"Error fetching images for rebuild: {e}")
@@ -1225,12 +1531,12 @@ class ThumbnailAPI:
                     'details': str(e)
                 }, status=500)
 
-            # Create tasks only for requested sizes
+            # Create tasks only for missing sizes
             all_tasks = []
-            for path in image_paths:
+            for db_id, path, missing_sizes in image_data:
                 is_video = self.thumbnail_service.ffmpeg.is_video(path)
 
-                for size_name in sizes:
+                for size_name in missing_sizes:
                     # Skip invalid size names
                     if size_name not in self.thumbnail_service.base_generator.SIZES:
                         logger.warning(f"Invalid size name '{size_name}' skipped")
@@ -1240,9 +1546,11 @@ class ThumbnailAPI:
                     task = ThumbnailTask(
                         image_id=hashlib.md5(str(path).encode()).hexdigest(),
                         source_path=path,
-                        thumbnail_path=self.thumbnail_service.get_thumbnail_path(path, size_name),
+                        thumbnail_path=self.thumbnail_service.get_thumbnail_path(path, size_name, image_id=db_id),
                         size=size_dims,
                         format=path.suffix.lower()[1:],
+                        size_name=size_name,
+                        db_id=db_id,
                         is_video=is_video
                     )
                     all_tasks.append(task)
@@ -1301,6 +1609,7 @@ class ThumbnailAPI:
             completed = 0
             failed = 0
             total = len(tasks)
+            start_time = time.time()
 
             # Process tasks
             for i, task in enumerate(tasks):
@@ -1314,10 +1623,47 @@ class ThumbnailAPI:
                     logger.debug(f"[{task_id}] Processing {i+1}/{total}: {task.source_path.name}")
 
                     # Generate thumbnail
-                    await self.thumbnail_service.generate_thumbnail(task)
+                    task = await self.thumbnail_service.generate_thumbnail(task)
 
-                    logger.debug(f"[{task_id}] Completed {i+1}/{total}: {task.source_path.name}")
-                    completed += 1
+                    # Check if thumbnail generation was successful
+                    if task.status == ThumbnailStatus.GENERATED:
+                        # Update database with thumbnail path ONLY if generation succeeded
+                        try:
+                            column_map = {
+                                'small': 'thumbnail_small_path',
+                                'medium': 'thumbnail_medium_path',
+                                'large': 'thumbnail_large_path',
+                                'xlarge': 'thumbnail_xlarge_path'
+                            }
+
+                            if task.size_name in column_map and task.db_id is not None:
+                                column_name = column_map[task.size_name]
+                                # Use context manager for proper connection handling
+                                with get_db_connection(self.db.db_path) as conn:
+                                    cursor = conn.cursor()
+                                    # Use db_id for precise update (handles duplicate filenames correctly!)
+                                    cursor.execute(
+                                        f"UPDATE generated_images SET {column_name} = ? WHERE id = ?",
+                                        (str(task.thumbnail_path), task.db_id)
+                                    )
+                                    rows_affected = cursor.rowcount
+                                    logger.info(f"[{task_id}] DB updated - ID {task.db_id}, {column_name}, rows: {rows_affected}")
+                            else:
+                                logger.warning(f"[{task_id}] DB update skipped - invalid size_name or db_id")
+                        except Exception as db_error:
+                            logger.error(f"[{task_id}] DB update failed for ID {task.db_id}: {db_error}", exc_info=True)
+
+                        logger.debug(f"[{task_id}] Completed {i+1}/{total}: {task.source_path.name}")
+                        completed += 1
+                    elif task.status == ThumbnailStatus.FAILED:
+                        logger.error(f"[{task_id}] Generation failed for {task.source_path}: {task.error}")
+                        failed += 1
+                    elif task.status == ThumbnailStatus.SKIPPED:
+                        logger.info(f"[{task_id}] Generation skipped for {task.source_path}: {task.error}")
+                        # Don't count skipped as completed or failed
+                    else:
+                        logger.warning(f"[{task_id}] Unexpected status {task.status} for {task.source_path}")
+                        failed += 1
 
                 except Exception as e:
                     logger.error(f"[{task_id}] Failed to generate thumbnail for {task.source_path}: {e}", exc_info=True)
@@ -1325,23 +1671,48 @@ class ThumbnailAPI:
 
                 # Update progress
                 def update_progress():
+                    # Calculate time remaining
+                    elapsed = time.time() - start_time
+                    if i + 1 > 0:
+                        avg_time_per_task = elapsed / (i + 1)
+                        remaining_tasks = total - (i + 1)
+                        estimated_time_remaining = int(avg_time_per_task * remaining_tasks)
+                    else:
+                        estimated_time_remaining = 0
+
                     self.active_generations[task_id]['progress'] = {
                         'current': i + 1,
                         'total': total,
                         'completed': completed,
                         'failed': failed,
-                        'percentage': round(((i + 1) / total) * 100, 1)
+                        'percentage': round(((i + 1) / total) * 100, 1),
+                        'estimated_time_remaining': estimated_time_remaining
                     }
 
                 loop.call_soon_threadsafe(update_progress)
 
                 # Send realtime updates every 10 tasks
                 if self.realtime and (i + 1) % 10 == 0:
+                    # Calculate time remaining for SSE event
+                    elapsed = time.time() - start_time
+                    if i + 1 > 0:
+                        avg_time_per_task = elapsed / (i + 1)
+                        remaining_tasks = total - (i + 1)
+                        estimated_time_remaining = int(avg_time_per_task * remaining_tasks)
+                    else:
+                        estimated_time_remaining = 0
+
                     await self.realtime.send_progress(
                         'thumbnail_generation',
                         round(((i + 1) / total) * 100, 1),
                         f'Generated {completed} of {total} thumbnails',
-                        task_id=task_id
+                        task_id=task_id,
+                        stats={
+                            'completed': completed,
+                            'failed': failed,
+                            'total': total,
+                            'estimated_time_remaining': estimated_time_remaining
+                        }
                     )
 
             # Update task status

@@ -217,7 +217,7 @@ class DocumentationServer:
                     spec,
                     headers={
                         'Cache-Control': 'public, max-age=3600',
-                        'Access-Control-Allow-Origin': '*'
+                        'Access-Control-Allow-Origin': 'http://localhost:3000, http://localhost:8188'
                     }
                 )
             except Exception as e:
@@ -239,7 +239,7 @@ class DocumentationServer:
                     content_type='application/x-yaml',
                     headers={
                         'Cache-Control': 'public, max-age=3600',
-                        'Access-Control-Allow-Origin': '*'
+                        'Access-Control-Allow-Origin': 'http://localhost:3000, http://localhost:8188'
                     }
                 )
             except ImportError:

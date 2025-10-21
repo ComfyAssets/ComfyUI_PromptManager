@@ -650,6 +650,7 @@ class PromptManagerAPI:
             # V2 Reconciliation endpoints
             routes.post('/api/v1/thumbnails/comprehensive-scan')(self.thumbnail_api.comprehensive_scan)
             routes.post('/api/v1/thumbnails/rebuild-unified')(self.thumbnail_api.rebuild_unified)
+            routes.post('/api/v1/thumbnails/rebuild-all-from-scratch')(self.thumbnail_api.rebuild_all_from_scratch)
 
             # Thumbnail serving
             routes.get('/api/v1/thumbnails/{image_id}/{size}')(self.thumbnail_api.serve_thumbnail)
@@ -688,6 +689,7 @@ class PromptManagerAPI:
         routes.get("/api/prompt_manager/maintenance/stats")(self.maintenance_handlers.get_maintenance_stats)
         routes.post("/api/prompt_manager/maintenance/deduplicate")(self.maintenance_handlers.remove_duplicates)
         routes.post("/api/prompt_manager/maintenance/clean-orphans")(self.maintenance_handlers.clean_orphans)
+        routes.post("/api/prompt_manager/maintenance/validate-paths")(self.maintenance_handlers.validate_paths)
         routes.post("/api/prompt_manager/maintenance/optimize")(self.maintenance_handlers.optimize_database)
         routes.post("/api/prompt_manager/maintenance/backup")(self.maintenance_handlers.create_backup)
         routes.post("/api/prompt_manager/maintenance/remove-missing")(self.maintenance_handlers.remove_missing_files)
@@ -1676,17 +1678,19 @@ class PromptManagerAPI:
 
     async def vacuum_database(self, request: web.Request) -> web.Response:
         """Vacuum database to optimize storage.
-        
+
         POST /api/v1/system/vacuum
         """
         try:
-            self.prompt_repo.vacuum()
-            
+            from ..database import PromptDatabase
+            db = PromptDatabase(self.db_path)
+            db.vacuum_database()
+
             return web.json_response({
                 "success": True,
                 "message": "Database optimized successfully"
             })
-            
+
         except Exception as e:
             self.logger.error(f"Error vacuuming database: {e}")
             return web.json_response(
@@ -2162,8 +2166,8 @@ class PromptManagerAPI:
     async def download_log(self, request: web.Request) -> web.StreamResponse:
         """Stream the selected log file to the client."""
         name = request.match_info.get("name")
-        if not name:
-            return web.json_response({"success": False, "error": "Missing log name"}, status=400)
+        if not name or ".." in name or "/" in name or "\\" in name:
+            return web.json_response({"success": False, "error": "Invalid log name"}, status=400)
 
         path = self._resolve_log_path(name)
         if not path:

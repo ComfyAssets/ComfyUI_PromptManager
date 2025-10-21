@@ -36,7 +36,7 @@ class MaintenanceHandlers:
 
             return web.json_response({
                 "success": True,
-                "data": stats
+                "stats": stats
             })
         except Exception as e:
             self.logger.error(f"Error getting maintenance stats: {e}")

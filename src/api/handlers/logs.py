@@ -195,8 +195,8 @@ class LogsHandlers:
         GET /api/v1/logs/download/{name}
         """
         name = request.match_info.get("name")
-        if not name:
-            return web.json_response({"success": False, "error": "Missing log name"}, status=400)
+        if not name or ".." in name or "/" in name or "\\" in name:
+            return web.json_response({"success": False, "error": "Invalid log name"}, status=400)
 
         path = self._resolve_log_path(name)
         if not path:
