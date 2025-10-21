@@ -43,36 +43,44 @@ class UnifiedGallery(BaseGallery):
 
     def _load_viewer_config(self) -> Dict[str, Any]:
         """Load ViewerJS configuration from settings."""
+        # Default viewer config
+        defaults = {
+            'theme': 'dark',
+            'toolbar': True,
+            'navbar': True,
+            'title': True,
+            'keyboard': True,
+            'backdrop': True,
+            'button': True,
+            'fullscreen': True,
+            'inline': False,
+            'viewed': True,
+            'tooltip': True,
+            'movable': True,
+            'zoomable': True,
+            'rotatable': True,
+            'scalable': True,
+            'transition': True,
+            'loading': True,
+            'loop': True,
+            'slideOnTouch': True
+        }
+        
         try:
-            # Load from settings file or database
-            settings_path = Path(self.comfy_integration.get_output_directory()) / "promptmanager_settings.json"
-            if settings_path.exists():
-                with open(settings_path, 'r') as f:
-                    settings = json.load(f)
-                    return settings.get('viewer', {
-                        'theme': 'dark',
-                        'toolbar': True,
-                        'navbar': True,
-                        'title': True,
-                        'keyboard': True,
-                        'backdrop': True,
-                        'button': True,
-                        'fullscreen': True,
-                        'inline': False,
-                        'viewed': True,
-                        'tooltip': True,
-                        'movable': True,
-                        'zoomable': True,
-                        'rotatable': True,
-                        'scalable': True,
-                        'transition': True,
-                        'loading': True,
-                        'loop': True,
-                        'slideOnTouch': True
-                    })
+            # Load from config._extra_settings with 'viewer.' prefix
+            viewer_config = {}
+            for key in defaults:
+                config_key = f'viewer.{key}'
+                if config_key in config._extra_settings:
+                    viewer_config[key] = config._extra_settings[config_key]
+                else:
+                    viewer_config[key] = defaults[key]
+            
+            return viewer_config
+            
         except Exception as e:
             logger.warning(f"Failed to load viewer config: {e}")
-            return {}
+            return defaults
 
     def get_items(self, page: int = 1, filter_criteria: Optional[FilterCriteria] = None) -> Dict[str, Any]:
         """
@@ -291,32 +299,25 @@ class UnifiedGallery(BaseGallery):
 
         return badges
 
-    def update_viewer_config(self, config: Dict[str, Any]) -> bool:
+    def update_viewer_config(self, viewer_config: Dict[str, Any]) -> bool:
         """
         Update ViewerJS configuration.
 
         Args:
-            config: New viewer configuration
+            viewer_config: New viewer configuration
 
         Returns:
             True if successful
         """
         try:
-            self._viewer_config.update(config)
+            self._viewer_config.update(viewer_config)
 
-            # Save to settings file
-            settings_path = Path(self.comfy_integration.get_output_directory()) / "promptmanager_settings.json"
-
-            if settings_path.exists():
-                with open(settings_path, 'r') as f:
-                    settings = json.load(f)
-            else:
-                settings = {}
-
-            settings['viewer'] = self._viewer_config
-
-            with open(settings_path, 'w') as f:
-                json.dump(settings, f, indent=2)
+            # Save to config._extra_settings with 'viewer.' prefix
+            for key, value in self._viewer_config.items():
+                config._extra_settings[f'viewer.{key}'] = value
+            
+            # Persist to disk
+            config.save()
 
             return True
 
