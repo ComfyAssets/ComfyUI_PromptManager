@@ -72,7 +72,36 @@ def get_prompt_tracker(db_instance=None):
         if DISABLE_TRACKING:
             return None
         
-        tracker = PromptTracker()
+        # Initialize thumbnail service for auto-generation
+        thumbnail_service = None
+        try:
+            # Try relative imports first (when loaded as package)
+            try:
+                from .src.services.enhanced_thumbnail_service import EnhancedThumbnailService
+                from .utils.cache import CacheManager
+            except ImportError:
+                # Fall back to absolute imports (when running as script)
+                from src.services.enhanced_thumbnail_service import EnhancedThumbnailService
+                from utils.cache import CacheManager
+
+            cache_manager = CacheManager()
+            if db_instance:
+                thumbnail_service = EnhancedThumbnailService(db=db_instance, cache=cache_manager)
+            else:
+                try:
+                    from .src.database import PromptDatabase
+                except ImportError:
+                    from src.database import PromptDatabase
+                db = PromptDatabase()
+                thumbnail_service = EnhancedThumbnailService(db=db, cache=cache_manager)
+
+            if DEBUG:
+                print("✅ Thumbnail service initialized for auto-generation")
+        except Exception as e:
+            logger.warning(f"Could not initialize thumbnail service: {e}")
+            # Continue without auto-generation
+        
+        tracker = PromptTracker(thumbnail_service=thumbnail_service)
         
         # Patch SaveImage if needed
         if not os.getenv("PROMPTMANAGER_DISABLE_PATCH", "0") == "1":
@@ -278,16 +307,30 @@ class PromptManagerV2(ComfyNodeABC):
                             print(f"💾 Saved prompt to database with ID {prompt_id}")
                         
                         # Link the prompt_id to the tracking data
+                        if DEBUG:
+                            has_active = hasattr(self.tracker, '_active_prompts')
+                            in_active = unique_id in self.tracker._active_prompts if has_active else False
+                            print(f"\n🔗 Attempting to link prompt_id {prompt_id}:")
+                            print(f"   unique_id: {unique_id}")
+                            print(f"   has _active_prompts: {has_active}")
+                            print(f"   unique_id in _active_prompts: {in_active}")
+                            if has_active:
+                                print(f"   active_prompts keys: {list(self.tracker._active_prompts.keys())}")
+
                         if prompt_id and hasattr(self.tracker, '_active_prompts') and unique_id in self.tracker._active_prompts:
                             try:
                                 self.tracker._active_prompts[unique_id].metadata['prompt_id'] = prompt_id
                                 logger.info(f"PromptManagerV2: Linked prompt_id {prompt_id} to tracking data")
                                 if DEBUG:
                                     print(f"✅ Successfully linked prompt_id {prompt_id} to tracker metadata")
+                                    print(f"   Metadata now: {self.tracker._active_prompts[unique_id].metadata}")
                             except Exception as e:
                                 logger.warning(f"Failed to link prompt_id to tracking data: {e}")
                                 if DEBUG:
                                     print(f"❌ Failed to link prompt_id to tracking data: {e}")
+                        elif prompt_id:
+                            if DEBUG:
+                                print(f"⚠️ Could not link prompt_id {prompt_id} - tracking data not found!")
                 except Exception as e:
                     logger.warning(f"Failed to save prompt to database: {e}")
                     if DEBUG:

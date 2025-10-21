@@ -72,7 +72,36 @@ def get_prompt_tracker(db_instance=None):
         if DISABLE_TRACKING:
             return None
 
-        tracker = PromptTracker()
+        # Initialize thumbnail service for auto-generation
+        thumbnail_service = None
+        try:
+            # Try relative imports first (when loaded as package)
+            try:
+                from .src.services.enhanced_thumbnail_service import EnhancedThumbnailService
+                from .utils.cache import CacheManager
+            except ImportError:
+                # Fall back to absolute imports (when running as script)
+                from src.services.enhanced_thumbnail_service import EnhancedThumbnailService
+                from utils.cache import CacheManager
+
+            cache_manager = CacheManager()
+            if db_instance:
+                thumbnail_service = EnhancedThumbnailService(db=db_instance, cache=cache_manager)
+            else:
+                try:
+                    from .src.database import PromptDatabase
+                except ImportError:
+                    from src.database import PromptDatabase
+                db = PromptDatabase()
+                thumbnail_service = EnhancedThumbnailService(db=db, cache=cache_manager)
+
+            if DEBUG:
+                print("✅ Thumbnail service initialized for auto-generation")
+        except Exception as e:
+            logger.warning(f"Could not initialize thumbnail service: {e}")
+            # Continue without auto-generation
+        
+        tracker = PromptTracker(thumbnail_service=thumbnail_service)
 
         # Patch SaveImage if needed
         if not os.getenv("PROMPTMANAGER_DISABLE_PATCH", "0") == "1":
