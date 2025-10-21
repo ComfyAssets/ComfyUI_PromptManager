@@ -137,6 +137,17 @@ const ThumbnailRebuildModalV2 = (function() {
                 case STATES.SUMMARY:
                     body.innerHTML = this.renderSummary();
                     footer.innerHTML = '<button class="btn btn-success" data-action="close">Done</button>';
+                    // Directly attach Done button listener to ensure it works
+                    setTimeout(() => {
+                        const doneBtn = footer.querySelector('.btn-success');
+                        if (doneBtn) {
+                            console.log('[ThumbnailModal] Attaching Done button directly');
+                            doneBtn.onclick = () => {
+                                console.log('[ThumbnailModal] Done clicked via onclick');
+                                this.close();
+                            };
+                        }
+                    }, 0);
                     break;
             }
 
@@ -150,10 +161,14 @@ const ThumbnailRebuildModalV2 = (function() {
                 cancelBtn.addEventListener('click', () => this.cancel());
             }
 
-            // Close button
+            // Close/Done button
             const closeBtn = this.modal.querySelector('[data-action="close"]');
             if (closeBtn) {
-                closeBtn.addEventListener('click', () => this.close());
+                console.log('[ThumbnailModal] Attaching close button listener');
+                closeBtn.addEventListener('click', (e) => {
+                    console.log('[ThumbnailModal] Done button clicked', e);
+                    this.close();
+                }, { once: true });  // Use once to prevent multiple listeners
             }
 
             // Start rebuild button
@@ -242,7 +257,20 @@ const ThumbnailRebuildModalV2 = (function() {
             }
 
             const cats = this.scanResults.categories;
-            const totalOps = (cats.broken_links || 0) + (cats.linkable_orphans || 0) + (cats.missing || 0);
+            const breakdown = this.scanResults.breakdown || {};
+            
+            // Calculate unique images from breakdown
+            const uniqueImages = new Set();
+            ['broken_links', 'linkable_orphans', 'missing'].forEach(category => {
+                if (breakdown[category]) {
+                    breakdown[category].forEach(item => {
+                        if (item.image_id) uniqueImages.add(item.image_id);
+                    });
+                }
+            });
+            
+            const totalThumbnails = (cats.broken_links || 0) + (cats.linkable_orphans || 0) + (cats.missing || 0);
+            const uniqueImageCount = uniqueImages.size;
             const trueOrphans = this.scanResults.true_orphans || {};
 
             return `
@@ -300,6 +328,14 @@ const ThumbnailRebuildModalV2 = (function() {
                         </label>
 
                         <label class="radio-option">
+                            <input type="radio" name="strategy" value="rebuild_all">
+                            <div class="option-content">
+                                <strong>🔥 Rebuild All from Scratch</strong>
+                                <p>Delete all thumbnails, rescan output folder, update database, and regenerate everything</p>
+                            </div>
+                        </label>
+
+                        <label class="radio-option">
                             <input type="radio" name="strategy" value="custom">
                             <div class="option-content">
                                 <strong>Custom Selection</strong>
@@ -334,8 +370,18 @@ const ThumbnailRebuildModalV2 = (function() {
                     </div>
 
                     <div class="operation-summary">
-                        <p><strong>Total Operations:</strong> <span id="totalOps">${totalOps.toLocaleString()}</span></p>
-                        <p><strong>Estimated Time:</strong> <span id="estimatedTime">${this.formatTime(this.scanResults.estimated_time_seconds || 0)}</span></p>
+                        <p style="margin-bottom: 0.5rem;">
+                            <strong>Images Affected:</strong> 
+                            <span id="uniqueImages">${uniqueImageCount.toLocaleString()}</span>
+                        </p>
+                        <p style="margin-bottom: 0.5rem;">
+                            <strong>Total Thumbnails:</strong> 
+                            <span id="totalThumbnails">${totalThumbnails.toLocaleString()}</span>
+                        </p>
+                        <p style="margin-bottom: 0;">
+                            <strong>Estimated Time:</strong> 
+                            <span id="estimatedTime">${this.formatTime(this.scanResults.estimated_time_seconds || 0)}</span>
+                        </p>
                     </div>
                 </div>
             `;
@@ -405,6 +451,9 @@ const ThumbnailRebuildModalV2 = (function() {
             const stats = this.summaryStats || {};
             const hasFailures = (stats.failed || 0) > 0;
 
+            // Check if this was a rebuild-all-from-scratch operation
+            const isRebuildAll = stats.deleted_old !== undefined || stats.scanned_files !== undefined;
+
             return `
                 <div class="summary-view">
                     <div class="summary-icon ${hasFailures ? 'warning' : 'success'}">
@@ -415,10 +464,18 @@ const ThumbnailRebuildModalV2 = (function() {
                     <p class="summary-message">Your thumbnail library has been synchronized.</p>
 
                     <div class="summary-stats">
-                        ${stats.fixed_links ? `<p>✓ Fixed ${stats.fixed_links.toLocaleString()} broken links</p>` : ''}
-                        ${stats.linked_orphans ? `<p>✓ Linked ${stats.linked_orphans.toLocaleString()} orphaned files</p>` : ''}
-                        ${stats.generated ? `<p>✓ Generated ${stats.generated.toLocaleString()} new thumbnails</p>` : ''}
-                        ${stats.failed ? `<p>⚠️  ${stats.failed} files failed</p>` : ''}
+                        ${isRebuildAll ? `
+                            ${stats.deleted_old ? `<p>🗑️ Deleted ${stats.deleted_old.toLocaleString()} old thumbnails</p>` : ''}
+                            ${stats.reset_database ? `<p>🔄 Reset ${stats.reset_database.toLocaleString()} database records</p>` : ''}
+                            ${stats.scanned_files ? `<p>🔍 Scanned ${stats.scanned_files.toLocaleString()} image files</p>` : ''}
+                            ${stats.generated ? `<p>✓ Generated ${stats.generated.toLocaleString()} new thumbnails</p>` : ''}
+                            ${stats.failed ? `<p>⚠️  ${stats.failed.toLocaleString()} files failed</p>` : ''}
+                        ` : `
+                            ${stats.fixed_links ? `<p>✓ Fixed ${stats.fixed_links.toLocaleString()} broken links</p>` : ''}
+                            ${stats.linked_orphans ? `<p>✓ Linked ${stats.linked_orphans.toLocaleString()} orphaned files</p>` : ''}
+                            ${stats.generated ? `<p>✓ Generated ${stats.generated.toLocaleString()} new thumbnails</p>` : ''}
+                            ${stats.failed ? `<p>⚠️  ${stats.failed.toLocaleString()} files failed</p>` : ''}
+                        `}
                     </div>
 
                     <p class="summary-total">
@@ -437,11 +494,14 @@ const ThumbnailRebuildModalV2 = (function() {
 
         async startScan() {
             try {
+                const scanSizes = this.selectedSizes || ['small', 'medium', 'large', 'xlarge'];
+                console.log('[ThumbnailModal] Starting scan with sizes:', scanSizes);
+
                 const response = await fetch('/api/v1/thumbnails/comprehensive-scan', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
-                        sizes: this.selectedSizes || ['small', 'medium', 'large', 'xlarge'],
+                        sizes: scanSizes,
                         sample_limit: 6
                     })
                 });
@@ -522,24 +582,6 @@ const ThumbnailRebuildModalV2 = (function() {
             // Get selected strategy
             const strategy = document.querySelector('input[name="strategy"]:checked').value;
 
-            // Get operations
-            let operations;
-            if (strategy === 'auto') {
-                operations = {
-                    fix_broken_links: true,
-                    link_orphans: true,
-                    generate_missing: true,
-                    delete_true_orphans: false
-                };
-            } else {
-                operations = {
-                    fix_broken_links: document.querySelector('input[name="fix_broken"]').checked,
-                    link_orphans: document.querySelector('input[name="link_orphans"]').checked,
-                    generate_missing: document.querySelector('input[name="generate_missing"]').checked,
-                    delete_true_orphans: false
-                };
-            }
-
             // Get selected sizes
             const sizeCheckboxes = document.querySelectorAll('input[name="size"]:checked');
             const sizes = Array.from(sizeCheckboxes).map(cb => cb.value);
@@ -549,16 +591,53 @@ const ThumbnailRebuildModalV2 = (function() {
                 return;
             }
 
+            console.log('[ThumbnailModal] Starting rebuild with strategy:', strategy);
+            console.log('[ThumbnailModal] Sizes:', sizes);
+
             try {
-                const response = await fetch('/api/v1/thumbnails/rebuild-unified', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        operations: operations,
-                        sizes: sizes,
-                        scan_results: this.scanResults.breakdown
-                    })
-                });
+                let response;
+
+                // Handle "Rebuild All from Scratch" strategy
+                if (strategy === 'rebuild_all') {
+                    console.log('[ThumbnailModal] Using nuclear rebuild-all endpoint');
+                    response = await fetch('/api/v1/thumbnails/rebuild-all-from-scratch', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            sizes: sizes
+                        })
+                    });
+                } else {
+                    // Get operations for auto or custom strategies
+                    let operations;
+                    if (strategy === 'auto') {
+                        operations = {
+                            fix_broken_links: true,
+                            link_orphans: true,
+                            generate_missing: true,
+                            delete_true_orphans: false
+                        };
+                    } else {
+                        operations = {
+                            fix_broken_links: document.querySelector('input[name="fix_broken"]').checked,
+                            link_orphans: document.querySelector('input[name="link_orphans"]').checked,
+                            generate_missing: document.querySelector('input[name="generate_missing"]').checked,
+                            delete_true_orphans: false
+                        };
+                    }
+
+                    console.log('[ThumbnailModal] Operations:', operations);
+
+                    response = await fetch('/api/v1/thumbnails/rebuild-unified', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            operations: operations,
+                            sizes: sizes,
+                            scan_results: this.scanResults.breakdown
+                        })
+                    });
+                }
 
                 if (!response.ok) throw new Error('Rebuild failed');
 
@@ -593,9 +672,26 @@ const ThumbnailRebuildModalV2 = (function() {
                     // Check completion
                     if (data.status === 'completed' || data.status === 'cancelled') {
                         clearInterval(this.pollingInterval);
-                        this.summaryStats = data.result?.stats || {};
-                        this.summaryStats.completed = data.result?.completed || 0;
-                        this.summaryStats.duration_seconds = data.result?.duration_seconds || 0;
+
+                        // Handle both unified rebuild (has stats key) and rebuild-all (flat structure)
+                        if (data.result?.stats) {
+                            // Unified rebuild structure
+                            this.summaryStats = data.result.stats;
+                            this.summaryStats.completed = data.result.completed || 0;
+                            this.summaryStats.duration_seconds = data.result.duration_seconds || 0;
+                        } else {
+                            // Rebuild-all-from-scratch structure
+                            this.summaryStats = {
+                                generated: data.result?.completed || 0,
+                                failed: data.result?.failed || 0,
+                                completed: data.result?.total || 0,
+                                duration_seconds: data.result?.duration_seconds || 0,
+                                deleted_old: data.result?.deleted_old || 0,
+                                reset_database: data.result?.reset_database || 0,
+                                scanned_files: data.result?.scanned_files || 0
+                            };
+                        }
+
                         this.setState(STATES.SUMMARY);
                     } else if (data.status === 'failed') {
                         clearInterval(this.pollingInterval);
@@ -612,6 +708,14 @@ const ThumbnailRebuildModalV2 = (function() {
             const operation = progress.operation || '';
             const percentage = progress.percentage || 0;
             const stats = progress.stats || {};
+
+            // Store stats for time remaining calculation
+            this.currentStats = {
+                fixed: stats.fixed_links || 0,
+                linked: stats.linked_orphans || 0,
+                generated: stats.generated || 0,
+                failed: stats.failed || 0
+            };
 
             // Update operation status
             if (operation === 'fixing_broken_links') {
@@ -643,10 +747,10 @@ const ThumbnailRebuildModalV2 = (function() {
             const statGenerated = document.getElementById('statGenerated');
             const statFailed = document.getElementById('statFailed');
 
-            if (statFixed) statFixed.textContent = stats.fixed_links || 0;
-            if (statLinked) statLinked.textContent = stats.linked_orphans || 0;
-            if (statGenerated) statGenerated.textContent = stats.generated || 0;
-            if (statFailed) statFailed.textContent = stats.failed || 0;
+            if (statFixed) statFixed.textContent = this.currentStats.fixed;
+            if (statLinked) statLinked.textContent = this.currentStats.linked;
+            if (statGenerated) statGenerated.textContent = this.currentStats.generated;
+            if (statFailed) statFailed.textContent = this.currentStats.failed;
         }
 
         updateElapsedTime() {
@@ -659,6 +763,34 @@ const ThumbnailRebuildModalV2 = (function() {
             const elapsedEl = document.getElementById('elapsed');
             if (elapsedEl) {
                 elapsedEl.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            }
+
+            // Calculate remaining time based on progress
+            const remainingEl = document.getElementById('remaining');
+            if (remainingEl && this.scanResults) {
+                const cats = this.scanResults.categories || {};
+                const totalThumbnails = (cats.broken_links || 0) + (cats.linkable_orphans || 0) + (cats.missing || 0);
+                
+                if (totalThumbnails > 0 && this.currentStats) {
+                    const completed = (this.currentStats.fixed || 0) + (this.currentStats.linked || 0) + (this.currentStats.generated || 0);
+                    const progress = completed / totalThumbnails;
+                    
+                    if (progress > 0 && progress < 1) {
+                        // Estimate based on current rate
+                        const remainingMs = (elapsed / progress) - elapsed;
+                        const remMinutes = Math.floor(remainingMs / 60000);
+                        const remSeconds = Math.floor((remainingMs % 60000) / 1000);
+                        remainingEl.textContent = `${remMinutes}:${remSeconds.toString().padStart(2, '0')}`;
+                    } else if (progress >= 1) {
+                        remainingEl.textContent = '0:00';
+                    }
+                } else if (elapsed > 5000) {
+                    // After 5 seconds with no progress, show estimated time from backend
+                    const estimatedSec = this.scanResults.estimated_time_seconds || 0;
+                    const estMinutes = Math.floor(estimatedSec / 60);
+                    const estSeconds = estimatedSec % 60;
+                    remainingEl.textContent = `~${estMinutes}:${estSeconds.toString().padStart(2, '0')}`;
+                }
             }
 
             setTimeout(() => this.updateElapsedTime(), 1000);
@@ -680,6 +812,8 @@ const ThumbnailRebuildModalV2 = (function() {
 
             const dialog = document.createElement('div');
             dialog.className = 'modal-overlay orphans-dialog';
+            dialog.style.display = 'flex';
+            dialog.style.zIndex = '10000';  // Higher than main modal (9999)
             dialog.innerHTML = `
                 <div class="modal modal-medium">
                     <div class="modal-header">
@@ -719,36 +853,72 @@ const ThumbnailRebuildModalV2 = (function() {
 
             if (!errors.length) return;
 
+            // Limit display to first 100 errors for performance
+            const displayLimit = 100;
+            const displayErrors = errors.slice(0, displayLimit);
+            const hasMore = errors.length > displayLimit;
+
             const dialog = document.createElement('div');
             dialog.className = 'modal-overlay errors-dialog';
+            dialog.style.display = 'flex';
+            dialog.style.zIndex = '10000';  // Higher than main modal (9999)
             dialog.innerHTML = `
-                <div class="modal modal-medium">
-                    <div class="modal-header">
-                        <h2>⚠️ Failed Items</h2>
+                <div class="modal modal-medium" style="max-height: 80vh; display: flex; flex-direction: column;">
+                    <div class="modal-header" style="flex-shrink: 0;">
+                        <h2>⚠️ Failed Items (${errors.length})</h2>
                         <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">
                             <i class="fas fa-times"></i>
                         </button>
                     </div>
-                    <div class="modal-body">
-                        <p><strong>${errors.length} items failed during rebuild:</strong></p>
+                    <div class="modal-body" style="overflow-y: auto; flex: 1; min-height: 0;">
+                        ${hasMore ? `
+                            <div class="alert alert-info" style="margin-bottom: 1rem;">
+                                <i class="fas fa-info-circle"></i>
+                                Showing first ${displayLimit} of ${errors.length} errors.
+                                Most are likely "<strong>Thumbnail file not found on disk</strong>" -
+                                click "Generate Thumbnails" to fix these automatically.
+                            </div>
+                        ` : ''}
 
-                        <ul class="error-list">
-                            ${errors.map(err => `
-                                <li>
+                        <ul class="error-list" style="max-height: none; overflow: visible;">
+                            ${displayErrors.map(err => `
+                                <li style="margin-bottom: 0.5rem; padding: 0.5rem; background: rgba(255,255,255,0.05); border-radius: 4px;">
                                     <strong>${err.operation || 'Unknown'}:</strong>
-                                    ${err.path || err.image_id || 'Unknown file'}<br>
-                                    <span class="error-message">${err.error}</span>
+                                    ${err.image_id ? `Image #${err.image_id}` : (err.path || 'Unknown file')}<br>
+                                    <span class="error-message" style="color: #ff6b6b;">${err.error}</span>
                                 </li>
                             `).join('')}
                         </ul>
+
+                        ${hasMore ? `
+                            <p style="margin-top: 1rem; color: #888; font-style: italic;">
+                                ... and ${errors.length - displayLimit} more errors
+                            </p>
+                        ` : ''}
                     </div>
-                    <div class="modal-footer">
+                    <div class="modal-footer" style="flex-shrink: 0; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 1rem;">
                         <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Close</button>
                     </div>
                 </div>
             `;
 
             document.body.appendChild(dialog);
+
+            // Close on overlay click
+            dialog.addEventListener('click', (e) => {
+                if (e.target === dialog) {
+                    dialog.remove();
+                }
+            });
+
+            // Close on Escape key
+            const escapeHandler = (e) => {
+                if (e.key === 'Escape') {
+                    dialog.remove();
+                    document.removeEventListener('keydown', escapeHandler);
+                }
+            };
+            document.addEventListener('keydown', escapeHandler);
         }
 
         async cancel() {
