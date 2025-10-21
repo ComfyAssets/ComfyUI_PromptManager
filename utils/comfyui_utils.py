@@ -5,6 +5,13 @@ This module provides helper functions for integrating with ComfyUI's server inst
 
 from typing import Optional, Tuple
 
+# Import PromptServer at module level for mocking support in tests
+try:
+    from server import PromptServer
+except ImportError:
+    # Running outside ComfyUI context
+    PromptServer = None  # type: ignore
+
 
 def get_comfyui_server_url() -> str:
     """Get the ComfyUI server URL from PromptServer instance.
@@ -16,9 +23,7 @@ def get_comfyui_server_url() -> str:
         Falls back to "http://127.0.0.1:8188" if PromptServer is not available.
     """
     try:
-        from server import PromptServer
-
-        if PromptServer.instance is not None:
+        if PromptServer and PromptServer.instance is not None:
             # Get actual address and port from running server
             address = getattr(PromptServer.instance, 'address', '127.0.0.1')
             port = getattr(PromptServer.instance, 'port', 8188)
@@ -34,8 +39,8 @@ def get_comfyui_server_url() -> str:
                 display_address = address
 
             return f"{scheme}://{display_address}:{port}"
-    except (ImportError, AttributeError):
-        # Running outside ComfyUI context or PromptServer not initialized yet
+    except AttributeError:
+        # PromptServer not initialized yet
         pass
 
     # Fallback to default
@@ -50,13 +55,11 @@ def get_comfyui_address_and_port() -> Tuple[str, int]:
         Falls back to ("127.0.0.1", 8188) if PromptServer is not available.
     """
     try:
-        from server import PromptServer
-
-        if PromptServer.instance is not None:
+        if PromptServer and PromptServer.instance is not None:
             address = getattr(PromptServer.instance, 'address', '127.0.0.1')
             port = getattr(PromptServer.instance, 'port', 8188)
             return (address, port)
-    except (ImportError, AttributeError):
+    except AttributeError:
         pass
 
     return ("127.0.0.1", 8188)
