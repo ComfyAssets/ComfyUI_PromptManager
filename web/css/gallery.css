@@ -456,17 +456,33 @@
     gap: 1rem;
 }
 
+/* Button content wrapper for spinners */
+.btn-content,
+.spinner-content {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
 /* Only the icon should spin, not the text */
-.loader-content i.fa-spin {
+.loader-content i.fa-spin,
+.btn-content i.fa-spin,
+.spinner-content i.fa-spin {
     animation: spin 1s linear infinite;
 }
 
-.loader-content p {
+.loader-content p,
+.loader-content span,
+.btn-content .btn-text,
+.btn-content span:not(.btn-text),
+.spinner-content .spinner-text,
+.spinner-content span {
     margin: 0;
-    color: var(--text-primary);
-    font-size: 0.875rem;
+    color: inherit;
+    font-size: inherit;
     /* Ensure the text doesn't inherit any animation */
     animation: none !important;
+    transform: none !important;
 }
 
 @keyframes spin {

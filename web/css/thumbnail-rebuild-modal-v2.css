@@ -835,6 +835,74 @@
 }
 
 /* ===========================
+   Error List Styling
+   =========================== */
+.error-list {
+    margin-top: 16px;
+    padding: 12px;
+    background: rgba(204, 0, 0, 0.1);
+    border: 1px solid rgba(204, 0, 0, 0.3);
+    border-radius: 4px;
+}
+
+.error-list h4 {
+    margin: 0 0 8px 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: #ff4444;
+}
+
+.error-items {
+    max-height: 200px;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+/* Scrollbar styling for error list */
+.error-items::-webkit-scrollbar {
+    width: 8px;
+}
+
+.error-items::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+}
+
+.error-items::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+}
+
+.error-items::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+.error-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 0;
+    font-size: 12px;
+    color: #ffcccc;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.error-item:last-child {
+    border-bottom: none;
+}
+
+.error-item i {
+    color: #ff4444;
+    margin-top: 2px;
+    flex-shrink: 0;
+}
+
+.error-item span {
+    word-break: break-word;
+    line-height: 1.4;
+}
+
+/* ===========================
    Responsive Adjustments
    =========================== */
 @media (max-width: 768px) {
