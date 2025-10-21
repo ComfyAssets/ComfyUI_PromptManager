@@ -45,6 +45,7 @@ from .handlers.prompts import PromptHandlers
 from .handlers.system import SystemHandlers
 from .handlers.maintenance import MaintenanceHandlers
 from .handlers.tags import TagHandlers
+from .handlers.comfyui import ComfyUIHandlers
 
 
 class PromptManagerAPI:
@@ -130,6 +131,9 @@ class PromptManagerAPI:
         # Initialize ComfyUI output monitor if available
         self._init_comfyui_monitor()
 
+        # Initialize ComfyUI node registry
+        self._init_comfyui_node_registry()
+
         # Initialize domain handlers (orchestrator pattern)
         self.gallery_handlers = GalleryHandlers(self)
         self.metadata_handlers = MetadataHandlers(self)
@@ -139,8 +143,9 @@ class PromptManagerAPI:
         self.system_handlers = SystemHandlers(self)
         self.maintenance_handlers = MaintenanceHandlers(self)
         self.tag_handlers = TagHandlers(self)
+        self.comfyui_handlers = ComfyUIHandlers(self)
 
-        self.logger.info("PromptManager API initialized with 8 domain handlers")
+        self.logger.info("PromptManager API initialized with 9 domain handlers")
 
         if run_migration_check:
             self._run_startup_migration_check()
@@ -232,6 +237,31 @@ class PromptManagerAPI:
 
         except Exception as e:
             self.logger.warning(f"Failed to start ComfyUI monitor: {e}")
+
+    def _init_comfyui_node_registry(self):
+        """Initialize ComfyUI node registry for Send to ComfyUI feature."""
+        try:
+            from ..services.comfyui_node_registry import initialize_node_registry
+            import asyncio
+
+            # Initialize the registry (synchronous wrapper for async function)
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+            if loop.is_running():
+                # If event loop is already running, schedule initialization
+                asyncio.ensure_future(initialize_node_registry())
+            else:
+                # Otherwise run it directly
+                loop.run_until_complete(initialize_node_registry())
+
+            self.logger.info("ComfyUI Node Registry initialized for Send to ComfyUI feature")
+
+        except Exception as e:
+            self.logger.warning(f"Failed to initialize ComfyUI node registry: {e}")
 
     def _init_maintenance_service(self):
         """Initialize maintenance API service."""
@@ -600,6 +630,11 @@ class PromptManagerAPI:
         routes.post("/api/v1/metadata/extract")(self.metadata_handlers.extract_metadata)
         routes.post("/prompt_manager/api/v1/metadata/extract")(self.metadata_handlers.extract_metadata)
         routes.post("/api/prompt_manager/api/v1/metadata/extract")(self.metadata_handlers.extract_metadata)
+
+        # ComfyUI Integration endpoints - delegated to ComfyUIHandlers
+        routes.post("/prompt_manager/api/register-nodes")(self.comfyui_handlers.register_nodes)
+        routes.get("/prompt_manager/api/get-registry")(self.comfyui_handlers.get_registry)
+        routes.post("/prompt_manager/api/send-prompt")(self.comfyui_handlers.send_prompt)
 
         # Migration endpoints - delegated to MigrationHandlers
         routes.get("/api/v1/migration/info")(self.migration_handlers.get_migration_info)
