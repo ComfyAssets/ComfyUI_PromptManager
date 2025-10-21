@@ -675,7 +675,7 @@
             const originalText = btn.innerHTML;
 
             btn.disabled = true;
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Calculating...';
+            btn.innerHTML = '<span class="btn-content"><i class="fas fa-spinner fa-spin"></i><span class="btn-text">Calculating...</span></span>';
             document.getElementById('wordCloudMessage').className = 'status-message';
 
             try {
@@ -707,7 +707,7 @@
             const originalText = btn.innerHTML;
 
             btn.disabled = true;
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Checking...';
+            btn.innerHTML = '<span class="btn-content"><i class="fas fa-spinner fa-spin"></i><span class="btn-text">Checking...</span></span>';
 
             await loadWordCloudStatus();
 
