@@ -145,6 +145,32 @@ class PromptRepository(BaseRepository):
     
     # Prompt-specific methods
     
+    def create(self, data: Dict[str, Any]) -> int:
+        """Create a new prompt with validation.
+        
+        Args:
+            data: Prompt data dictionary
+            
+        Returns:
+            ID of created prompt
+            
+        Raises:
+            ValueError: If required fields are missing or data is invalid
+        """
+        # Validate required fields
+        prompt_text = data.get("positive_prompt") or data.get("prompt")
+        if not prompt_text:
+            raise ValueError("Missing required field: positive_prompt")
+        
+        # Validate rating if provided
+        rating = data.get("rating")
+        if rating is not None:
+            if not isinstance(rating, int) or rating < 1 or rating > 5:
+                raise ValueError("Rating must be an integer between 1 and 5")
+        
+        # Call parent create
+        return super().create(data)
+    
     def calculate_hash(self, prompt: str, negative_prompt: str = "") -> str:
         """Calculate SHA256 hash for prompt uniqueness.
         
@@ -264,10 +290,10 @@ class PromptRepository(BaseRepository):
     
     def get(self, prompt_id: int) -> Optional[Dict[str, Any]]:
         """Get a prompt by ID.
-        
+
         Args:
             prompt_id: The prompt ID
-            
+
         Returns:
             Prompt data or None if not found
         """
@@ -277,6 +303,17 @@ class PromptRepository(BaseRepository):
                 (prompt_id,)
             )
             return self._to_dict(cursor.fetchone())
+
+    def get_by_id(self, prompt_id: int) -> Optional[Dict[str, Any]]:
+        """Alias for get() - get a prompt by ID.
+
+        Args:
+            prompt_id: The prompt ID
+
+        Returns:
+            Prompt data or None if not found
+        """
+        return self.get(prompt_id)
     
     def find_by_hash(self, hash_value: str) -> Optional[Dict[str, Any]]:
         """Find prompt by hash.
@@ -665,6 +702,143 @@ class PromptRepository(BaseRepository):
         with self._get_connection() as conn:
             cursor = conn.execute(query, values)
             return cursor.rowcount
+
+    # Test compatibility aliases and methods
+    
+    def find_by_text(self, text: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """Find prompts by text search in prompt or negative_prompt.
+        
+        Args:
+            text: Search text
+            limit: Maximum results
+            
+        Returns:
+            List of matching prompts
+        """
+        table = self._get_table_name()
+        query = f"""
+            SELECT * FROM {table}
+            WHERE prompt LIKE ? OR negative_prompt LIKE ?
+            ORDER BY created_at DESC
+            LIMIT ?
+        """
+        
+        search_pattern = f"%{text}%"
+        
+        with self._get_connection() as conn:
+            cursor = conn.execute(query, (search_pattern, search_pattern, limit))
+            return [self._to_dict(row) for row in cursor.fetchall()]
+    
+    def find_by_category(self, category: str) -> List[Dict[str, Any]]:
+        """Alias for get_by_category() for test compatibility."""
+        return self.get_by_category(category)
+    
+    def find_by_rating_range(self, min_rating: int = None, max_rating: int = None) -> List[Dict[str, Any]]:
+        """Find prompts by rating range.
+        
+        Args:
+            min_rating: Minimum rating (inclusive)
+            max_rating: Maximum rating (inclusive)
+            
+        Returns:
+            List of prompts in rating range
+        """
+        where_clauses = []
+        values = []
+        
+        if min_rating is not None:
+            where_clauses.append("rating >= ?")
+            values.append(min_rating)
+        
+        if max_rating is not None:
+            where_clauses.append("rating <= ?")
+            values.append(max_rating)
+        
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        
+        query = f"""
+            SELECT * FROM {self._get_table_name()}
+            {where_sql}
+            ORDER BY rating DESC, created_at DESC
+        """
+        
+        with self._get_connection() as conn:
+            cursor = conn.execute(query, values)
+            return [self._to_dict(row) for row in cursor.fetchall()]
+    
+    def find_by_tags(self, tags: List[str]) -> List[Dict[str, Any]]:
+        """Find prompts containing any of the specified tags.
+        
+        Args:
+            tags: List of tags to search for
+            
+        Returns:
+            List of prompts with matching tags
+        """
+        if not tags:
+            return []
+        
+        # Use list() with single tag for OR logic
+        # For multiple tags, we search for prompts containing any tag
+        where_clauses = []
+        values = []
+        
+        for tag in tags:
+            where_clauses.append("tags LIKE ?")
+            values.append(f'%"{tag}"%')
+        
+        where_sql = "WHERE " + " OR ".join(where_clauses)
+        
+        query = f"""
+            SELECT * FROM {self._get_table_name()}
+            {where_sql}
+            ORDER BY created_at DESC
+        """
+        
+        with self._get_connection() as conn:
+            cursor = conn.execute(query, values)
+            return [self._to_dict(row) for row in cursor.fetchall()]
+    
+    def get_all_categories(self) -> List[str]:
+        """Get all unique category names.
+        
+        Returns:
+            List of category names
+        """
+        categories_with_counts = self.get_categories()
+        return [cat['category'] for cat in categories_with_counts]
+    
+    def count_total(self) -> int:
+        """Count total number of prompts.
+        
+        Returns:
+            Total prompt count
+        """
+        return self.count()
+    
+    def get_paginated(self, page: int = 1, per_page: int = 20) -> Dict[str, Any]:
+        """Get paginated prompts.
+        
+        Args:
+            page: Page number (1-indexed)
+            per_page: Items per page
+            
+        Returns:
+            Dictionary with items, total, page, per_page, and pages
+        """
+        offset = (page - 1) * per_page
+        total = self.count()
+        items = self.list(limit=per_page, offset=offset)
+        
+        return {
+            'items': items,
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+            'pages': (total + per_page - 1) // per_page  # Ceiling division
+        }
+
+
 def _parse_tag_string(value: str) -> List[str]:
     """Parse a comma-separated tag string into a normalized list."""
     return [
