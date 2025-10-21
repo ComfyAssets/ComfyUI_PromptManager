@@ -6,6 +6,7 @@
     <title>Prompt Manager — Settings</title>
     <link rel="stylesheet" href="/prompt_manager/css/style.css" />
     <link rel="stylesheet" href="/prompt_manager/css/blue-theme-update.css" />
+    <link rel="stylesheet" href="/prompt_manager/css/professional-dark.css" />
     <link rel="stylesheet" href="/prompt_manager/css/components.css" />
     <link rel="stylesheet" href="/prompt_manager/css/settings.css" />
     <link rel="stylesheet" href="/prompt_manager/css/notifications.css" />
@@ -247,7 +248,6 @@
                 <a class="settings-nav-item active" data-section="database">
                   <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i> Database
                 </a>
-                <a class="settings-nav-item" data-section="cache"> <i class="fa-solid fa-box" aria-hidden="true"></i> Cache </a>
                 <a class="settings-nav-item" data-section="thumbnails">
                   <i class="fa-solid fa-images" aria-hidden="true"></i> Thumbnails
                 </a>
@@ -568,91 +568,6 @@
                 </div>
               </section>
 
-              <!-- Cache Section -->
-              <section class="settings-section" id="cache">
-                <div class="card">
-                  <h3 class="settings-category-header">
-                    <span class="settings-category-icon"><i class="fa-solid fa-box" aria-hidden="true"></i></span>
-                    Cache Settings
-                  </h3>
-
-                  <div class="form-group">
-                    <div class="form-label">
-                      <span class="label-text">Enable Cache</span>
-                      <span class="label-hint"
-                        >Use in-memory caching for better performance</span
-                      >
-                    </div>
-                    <label class="toggle">
-                      <input type="checkbox" id="cacheEnabled" checked />
-                      <span class="toggle-slider"></span>
-                    </label>
-                  </div>
-
-                  <div class="form-group">
-                    <div class="form-label">
-                      <span class="label-text">Cache Size (MB)</span>
-                      <span class="label-hint"
-                        >Maximum memory allocated for cache</span
-                      >
-                    </div>
-                    <input
-                      type="number"
-                      class="search-input"
-                      id="cacheSize"
-                      value="256"
-                      min="64"
-                      max="2048"
-                    />
-                  </div>
-
-                  <div class="form-group">
-                    <div class="form-label">
-                      <span class="label-text">Cache TTL (minutes)</span>
-                      <span class="label-hint"
-                        >How long to keep items in cache</span
-                      >
-                    </div>
-                    <input
-                      type="number"
-                      class="search-input"
-                      id="cacheTTL"
-                      value="60"
-                      min="5"
-                      max="1440"
-                    />
-                  </div>
-
-                  <div class="form-group">
-                    <div class="form-label">
-                      <span class="label-text">Cache Warming</span>
-                      <span class="label-hint"
-                        >Pre-load frequently accessed prompts on startup</span
-                      >
-                    </div>
-                    <label class="toggle">
-                      <input type="checkbox" id="cacheWarming" checked />
-                      <span class="toggle-slider"></span>
-                    </label>
-                  </div>
-
-                  <div class="settings-divider"></div>
-
-                  <div class="form-group full-width">
-                    <div class="form-label">
-                      <span class="label-text">Cache Statistics</span>
-                      <span class="label-hint"
-                        >Current cache usage: 124MB / 256MB (48%)</span
-                      >
-                    </div>
-                    <div class="settings-action-buttons">
-                      <button class="btn btn-secondary">Clear Cache</button>
-                      <button class="btn btn-secondary">Optimize Cache</button>
-                    </div>
-                  </div>
-                </div>
-              </section>
-
               <!-- Thumbnails Section -->
               <section class="settings-section" id="thumbnails">
                 <div class="card">
@@ -718,24 +633,24 @@
                   <div class="form-group">
                     <div class="form-label">
                       <span class="label-text">Thumbnail Sizes</span>
-                      <span class="label-hint">Select which sizes to generate</span>
+                      <span class="label-hint">Select which sizes to generate - each size serves different purposes</span>
                     </div>
                     <div class="checkbox-group">
                       <label class="checkbox-label">
-                        <input type="checkbox" id="thumbSizeSmall" checked />
-                        <span>Small (150x150)</span>
+                        <input type="checkbox" id="thumbSizeSmall" name="thumbSizeSmall" checked />
+                        <span>Small (150x150) <span class="info-icon" title="Used in: Gallery grid small mode, compact views">ⓘ</span></span>
                       </label>
                       <label class="checkbox-label">
-                        <input type="checkbox" id="thumbSizeMedium" checked />
-                        <span>Medium (300x300)</span>
+                        <input type="checkbox" id="thumbSizeMedium" name="thumbSizeMedium" checked />
+                        <span>Medium (300x300) <span class="info-icon" title="Used in: Default gallery view, film strip (most commonly used)">ⓘ</span></span>
                       </label>
                       <label class="checkbox-label">
-                        <input type="checkbox" id="thumbSizeLarge" checked />
-                        <span>Large (600x600)</span>
+                        <input type="checkbox" id="thumbSizeLarge" name="thumbSizeLarge" checked />
+                        <span>Large (600x600) <span class="info-icon" title="Used in: Gallery large mode, high-DPI displays, detailed previews">ⓘ</span></span>
                       </label>
                       <label class="checkbox-label">
-                        <input type="checkbox" id="thumbSizeXLarge" />
-                        <span>X-Large (1200x1200)</span>
+                        <input type="checkbox" id="thumbSizeXLarge" name="thumbSizeXLarge" />
+                        <span>X-Large (1200x1200) <span class="info-icon" title="Used in: 4K/5K displays, modal views (uses more disk space)">ⓘ</span></span>
                       </label>
                     </div>
                   </div>
@@ -1972,7 +1887,6 @@
     <script src="/prompt_manager/js/settings-thumbnails.js"></script>
     <script src="/prompt_manager/js/settings-ffmpeg.js"></script>
     <script src="/prompt_manager/js/components/thumbnail-modal.js"></script>
-    <script src="/prompt_manager/js/components/thumbnail-rebuild-modal.js"></script>
     <script src="/prompt_manager/js/components/thumbnail-rebuild-modal-v2.js"></script>
 
     <script src="/prompt_manager/js/settings.js"></script>
@@ -2036,6 +1950,7 @@
       // Load maintenance statistics when page loads
       document.addEventListener('DOMContentLoaded', function() {
         // Debug: Check what notification systems are available
+        console.log('Notification systems available:', {
           NotificationService: !!window.NotificationService,
           NotificationManager: !!window.NotificationManager,
           ToastManager: !!window.ToastManager
@@ -2148,8 +2063,12 @@
           const response = await fetch('/api/prompt_manager/maintenance/stats');
           const data = await response.json();
 
-          if (data.success) {
+          console.log('Maintenance stats API response:', data);
+
+          if (data.success && data.stats) {
             updateMaintenanceStats(data.stats);
+          } else {
+            console.warn('Maintenance stats not available:', data.error || 'No stats returned');
           }
         } catch (error) {
           console.error('Failed to load maintenance statistics:', error);
@@ -2157,16 +2076,38 @@
       }
 
       function updateMaintenanceStats(stats) {
-        document.getElementById('stat-prompts').textContent = stats.prompts.toLocaleString();
-        document.getElementById('stat-images').textContent = stats.images.toLocaleString();
-        document.getElementById('stat-duplicates').textContent = stats.duplicates.toLocaleString();
-        document.getElementById('stat-orphaned').textContent = stats.orphaned.toLocaleString();
-        document.getElementById('stat-missing').textContent =
-          stats.missing_files >= 0 ? stats.missing_files.toLocaleString() : 'Not calculated';
+        // Safety check: ensure stats object is valid
+        if (!stats || typeof stats !== 'object') {
+          console.error('Invalid stats object:', stats);
+          return;
+        }
+
+        // Safely update each stat with fallback values
+        const promptsEl = document.getElementById('stat-prompts');
+        if (promptsEl) promptsEl.textContent = (stats.prompts || 0).toLocaleString();
+
+        const imagesEl = document.getElementById('stat-images');
+        if (imagesEl) imagesEl.textContent = (stats.images || 0).toLocaleString();
+
+        const duplicatesEl = document.getElementById('stat-duplicates');
+        if (duplicatesEl) duplicatesEl.textContent = (stats.duplicates || 0).toLocaleString();
+
+        const orphanedEl = document.getElementById('stat-orphaned');
+        if (orphanedEl) orphanedEl.textContent = (stats.orphaned || 0).toLocaleString();
+
+        const missingEl = document.getElementById('stat-missing');
+        if (missingEl) {
+          missingEl.textContent = (stats.missing_files >= 0)
+            ? stats.missing_files.toLocaleString()
+            : 'Not calculated';
+        }
 
         // Format database size
-        const sizeMB = (stats.database_size / (1024 * 1024)).toFixed(2);
-        document.getElementById('stat-size').textContent = `${sizeMB} MB`;
+        const sizeEl = document.getElementById('stat-size');
+        if (sizeEl && stats.database_size !== undefined) {
+          const sizeMB = (stats.database_size / (1024 * 1024)).toFixed(2);
+          sizeEl.textContent = `${sizeMB} MB`;
+        }
 
         // Update container classes based on values
         const duplicatesContainer = document.getElementById('stat-duplicates-container');
