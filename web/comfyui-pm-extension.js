@@ -24,6 +24,9 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
+// Scanning lock to prevent concurrent registry updates
+let isScanning = false;
+
 /**
  * Get all nodes from the current graph
  */
@@ -101,80 +104,91 @@ function getTextWidget(node) {
  * Scan the current workflow and register prompt-compatible nodes
  */
 async function scanAndRegisterNodes() {
-    const graph = app.graph;
-    if (!graph) {
-        console.warn('[PromptManager] No active graph to scan');
+    // Prevent concurrent scans that race and clear each other's data
+    if (isScanning) {
+        console.log('[PromptManager] Scan already in progress, skipping');
         return;
     }
 
-    const nodes = getAllGraphNodes(graph);
-    console.log(`[PromptManager] Scanning ${nodes.length} total nodes in graph`);
-    const compatibleNodes = [];
-
-    for (const node of nodes) {
-        console.log(`[PromptManager] Checking node: ${node.type} (id: ${node.id})`);
-        if (isPromptCompatibleNode(node)) {
-            console.log(`[PromptManager] ✓ Compatible node found: ${node.type}`);
-            const widget = getTextWidget(node);
-            const widgetNames = node.widgets ? node.widgets.map(w => w.name) : [];
-
-            const nodeInfo = {
-                node_id: node.id,
-                graph_id: 'root', // Currently only support root graph
-                type: node.type,
-                title: node.title || node.type,
-                widgets: widgetNames,
-                bgcolor: node.bgcolor || null,
-                graph_name: graph.title || 'root',
-                metadata: {
-                    has_text_widget: widget !== null,
-                    widget_count: node.widgets?.length || 0,
-                }
-            };
-
-            compatibleNodes.push(nodeInfo);
+    isScanning = true;
+    try {
+        const graph = app.graph;
+        if (!graph) {
+            console.warn('[PromptManager] No active graph to scan');
+            return;
         }
-    }
 
-    console.log(`[PromptManager] Found ${compatibleNodes.length} prompt-compatible nodes`);
+        const nodes = getAllGraphNodes(graph);
+        console.log(`[PromptManager] Scanning ${nodes.length} total nodes in graph`);
+        const compatibleNodes = [];
 
-    // Register nodes with the backend
-    if (compatibleNodes.length > 0) {
-        try {
-            const response = await fetch('/prompt_manager/api/register-nodes', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    nodes: compatibleNodes
-                })
-            });
+        for (const node of nodes) {
+            console.log(`[PromptManager] Checking node: ${node.type} (id: ${node.id})`);
+            if (isPromptCompatibleNode(node)) {
+                console.log(`[PromptManager] ✓ Compatible node found: ${node.type}`);
+                const widget = getTextWidget(node);
+                const widgetNames = node.widgets ? node.widgets.map(w => w.name) : [];
 
-            const result = await response.json();
-            if (result.success) {
-                console.log(`[PromptManager] Registered ${result.count} nodes successfully`);
-            } else {
-                console.error('[PromptManager] Failed to register nodes:', result.error);
+                const nodeInfo = {
+                    node_id: node.id,
+                    graph_id: 'root', // Currently only support root graph
+                    type: node.type,
+                    title: node.title || node.type,
+                    widgets: widgetNames,
+                    bgcolor: node.bgcolor || null,
+                    graph_name: graph.title || 'root',
+                    metadata: {
+                        has_text_widget: widget !== null,
+                        widget_count: node.widgets?.length || 0,
+                    }
+                };
+
+                compatibleNodes.push(nodeInfo);
             }
-        } catch (error) {
-            console.error('[PromptManager] Error registering nodes:', error);
         }
-    } else {
-        // Register empty array to clear the registry
-        try {
-            await fetch('/prompt_manager/api/register-nodes', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    nodes: []
-                })
-            });
-        } catch (error) {
-            console.error('[PromptManager] Error clearing registry:', error);
+
+        console.log(`[PromptManager] Found ${compatibleNodes.length} prompt-compatible nodes`);
+
+        // Register nodes with the backend
+        if (compatibleNodes.length > 0) {
+            try {
+                const response = await fetch('/prompt_manager/api/register-nodes', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        nodes: compatibleNodes
+                    })
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    console.log(`[PromptManager] Registered ${result.count} nodes successfully`);
+                } else {
+                    console.error('[PromptManager] Failed to register nodes:', result.error);
+                }
+            } catch (error) {
+                console.error('[PromptManager] Error registering nodes:', error);
+            }
+        } else {
+            // Register empty array to clear the registry
+            try {
+                await fetch('/prompt_manager/api/register-nodes', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        nodes: []
+                    })
+                });
+            } catch (error) {
+                console.error('[PromptManager] Error clearing registry:', error);
+            }
         }
+    } finally {
+        isScanning = false;
     }
 }
 
