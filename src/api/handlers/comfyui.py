@@ -281,7 +281,10 @@ class ComfyUIHandlers:
                     node = await self.node_registry.get_node(node_id)
                     if not node:
                         self.logger.warning(f"[COMFYUI] Node {node_id} not found in registry")
-                        failed_nodes.append({"node_id": node_id, "error": "Not in registry"})
+                        failed_nodes.append({
+                            "node_id": node_id, 
+                            "error": "Not in registry. Check if you have multiple ComfyUI tabs/sessions open - they may be registering different nodes."
+                        })
                         continue
 
                     # Send positive prompt if requested
