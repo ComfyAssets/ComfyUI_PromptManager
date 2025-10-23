@@ -163,12 +163,14 @@ class ComfyUINodeRegistry:
                     )
 
                     self._nodes[unique_id] = prompt_node
+                    self.logger.info(f"Registered node: {unique_id} (type: {prompt_node.node_type}, title: {prompt_node.title})")
 
                 except (KeyError, ValueError, TypeError) as e:
                     self.logger.warning(f"Failed to register node {node_data}: {e}")
                     continue
 
             self.logger.info(f"Registered {len(self._nodes)} prompt nodes")
+            self.logger.info(f"Registry now contains: {list(self._nodes.keys())}")
 
             # Signal that registry was updated
             self._registry_updated.set()
