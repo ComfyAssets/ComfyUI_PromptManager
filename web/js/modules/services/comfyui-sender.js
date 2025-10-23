@@ -232,69 +232,50 @@
           return;
         }
 
-        // Determine mode based on shift key
-        const mode = shiftPressed ? 'replace' : 'append';
-
-        // If only one node, send directly (unless shift is pressed for mode selection)
-        if (nodeCount === 1 && !shiftPressed) {
-          const nodeId = Object.keys(nodes)[0];
-          const node = nodes[nodeId];
-
-          const typeLabel = type === 'both' ? 'both prompts' : `${type} prompt`;
+        // Always show node selector modal so users can choose append vs replace mode
+        showNodeSelectorModal(nodes, async (selectedNodeIds, selectedMode) => {
+          const typeLabel = type === 'both' ? 'prompts' : `${type} prompt`;
           window.showToast?.(
-            `Sending ${typeLabel} to "${node.title || node.type}"...`,
+            `Sending ${typeLabel} to ${selectedNodeIds.length} node(s)...`,
             'info',
             { duration: 2 }
           );
 
           try {
-            const result = await sendPromptToNodes(prompt.id, [nodeId], mode, type);
-
-            window.showToast?.(
-              `✅ ${typeLabel.charAt(0).toUpperCase() + typeLabel.slice(1)} sent to ComfyUI (${mode} mode)`,
-              'success'
+            const result = await sendPromptToNodes(
+              prompt.id,
+              selectedNodeIds,
+              selectedMode,
+              type
             );
+
+            const message = result.sent_count === selectedNodeIds.length
+              ? `✅ Prompt sent to ${result.sent_count} node(s) (${selectedMode} mode)`
+              : `⚠️ Sent to ${result.sent_count} of ${selectedNodeIds.length} node(s)`;
+
+            window.showToast?.(message, 'success');
+
+            if (result.failed_nodes && result.failed_nodes.length > 0) {
+              console.warn('[ComfyUISender] Some nodes failed:', result.failed_nodes);
+              // Show helpful error message if multiple tabs detected
+              const multiTabError = result.failed_nodes.find(n => 
+                n.error && n.error.includes('multiple ComfyUI tabs')
+              );
+              if (multiTabError) {
+                window.showToast?.(
+                  'Tip: Close other ComfyUI browser tabs/sessions to avoid node conflicts',
+                  'warning',
+                  { duration: 8 }
+                );
+              }
+            }
           } catch (error) {
             window.showToast?.(
               `Failed to send prompt: ${error.message}`,
               'error'
             );
           }
-        } else {
-          // Multiple nodes or shift pressed - show selector
-          showNodeSelectorModal(nodes, async (selectedNodeIds, selectedMode) => {
-            const typeLabel = type === 'both' ? 'prompts' : `${type} prompt`;
-            window.showToast?.(
-              `Sending ${typeLabel} to ${selectedNodeIds.length} node(s)...`,
-              'info',
-              { duration: 2 }
-            );
-
-            try {
-              const result = await sendPromptToNodes(
-                prompt.id,
-                selectedNodeIds,
-                selectedMode,
-                type
-              );
-
-              const message = result.sent_count === selectedNodeIds.length
-                ? `✅ Prompt sent to ${result.sent_count} node(s) (${selectedMode} mode)`
-                : `⚠️ Sent to ${result.sent_count} of ${selectedNodeIds.length} node(s)`;
-
-              window.showToast?.(message, 'success');
-
-              if (result.failed_nodes && result.failed_nodes.length > 0) {
-                console.warn('[ComfyUISender] Some nodes failed:', result.failed_nodes);
-              }
-            } catch (error) {
-              window.showToast?.(
-                `Failed to send prompt: ${error.message}`,
-                'error'
-              );
-            }
-          });
-        }
+        });
       } catch (error) {
         window.showToast?.(
           `Error: ${error.message}`,
