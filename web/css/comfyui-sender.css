@@ -136,7 +136,7 @@
 /* Hover Send Button (on prompt blocks) */
 .prompt-send-icon {
   position: absolute;
-  top: 12px;
+  top: 48px;  /* Position below the copy button area */
   right: 12px;
   opacity: 0;
   transition: opacity 0.2s ease;
