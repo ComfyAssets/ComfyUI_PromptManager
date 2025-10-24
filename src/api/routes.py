@@ -134,6 +134,18 @@ class PromptManagerAPI:
         # Initialize ComfyUI node registry
         self._init_comfyui_node_registry()
 
+        # Initialize pending prompt management (conditional saving)
+        self.pending_registry = None
+        self.cleanup_scheduler = None
+        try:
+            self._init_pending_prompt_management()
+        except Exception as e:
+            print(f"❌ EXCEPTION in _init_pending_prompt_management: {e}")
+            import traceback
+            traceback.print_exc()
+            self.pending_registry = None
+            self.cleanup_scheduler = None
+
         # Initialize domain handlers (orchestrator pattern)
         self.gallery_handlers = GalleryHandlers(self)
         self.metadata_handlers = MetadataHandlers(self)
@@ -262,6 +274,52 @@ class PromptManagerAPI:
 
         except Exception as e:
             self.logger.warning(f"Failed to initialize ComfyUI node registry: {e}")
+
+    def _init_pending_prompt_management(self):
+        """Initialize pending prompt management and cleanup scheduler."""
+        try:
+            from ..tracking import PendingPromptRegistry
+            from ..services.pending_prompt_cleanup_scheduler import (
+                PendingPromptCleanupScheduler,
+            )
+
+            # Initialize with sensible defaults
+            ttl_seconds = 86400  # 24 hours
+            cleanup_interval = 21600  # 6 hours
+
+            self.pending_registry = PendingPromptRegistry(
+                ttl_seconds=ttl_seconds
+            )
+
+            self.cleanup_scheduler = PendingPromptCleanupScheduler(
+                self.pending_registry,
+                interval_seconds=cleanup_interval,
+            )
+            self.cleanup_scheduler.start()
+            
+            self.logger.info(
+                "Conditional prompt saving initialized (TTL=%ds, cleanup=%ds)",
+                ttl_seconds,
+                cleanup_interval,
+            )
+
+            # Expose pending registry to ComfyUI integration
+            try:
+                try:
+                    from utils.comfyui_integration import get_comfyui_integration
+                except ImportError:
+                    from ..utils.comfyui_integration import get_comfyui_integration
+
+                integration = get_comfyui_integration()
+                integration.set_pending_registry(self.pending_registry)
+                self.logger.info("Exposed pending registry to ComfyUI integration")
+            except Exception as e:
+                self.logger.error(f"Failed to expose pending registry to ComfyUI: {e}", exc_info=True)
+
+        except Exception as e:
+            self.logger.error(f"Failed to initialize pending prompt management: {e}", exc_info=True)
+            self.pending_registry = None
+            self.cleanup_scheduler = None
 
     def _init_maintenance_service(self):
         """Initialize maintenance API service."""

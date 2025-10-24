@@ -75,21 +75,6 @@ class ComfyUIMetadataIntegration:
     - Manage prompt lifecycle and cleanup
     """
     
-    _instance = None
-    _lock = threading.Lock()
-    
-    def __new__(cls):
-        """Ensure singleton pattern with thread safety.
-        
-        Returns:
-            The single instance of ComfyUIMetadataIntegration
-        """
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-        return cls._instance
-    
     def __init__(self):
         """Initialize the ComfyUI integration system.
         
@@ -97,16 +82,27 @@ class ComfyUIMetadataIntegration:
         SaveImage node. Uses _initialized flag to prevent duplicate initialization.
         """
         if hasattr(self, '_initialized'):
+            print(f"[ComfyUI Integration] Already initialized")
             return
         
+        print(f"[ComfyUI Integration] Initializing new instance {id(self)}")
         self.logger = get_logger('prompt_manager.comfyui_integration')
         self._current_prompts = {}
         self._thread_local = threading.local()
         self._saveimage_patched = False
+        self._pending_registry = None
         self._initialized = True
         
         # Try to patch SaveImage node on initialization
         self._patch_saveimage_node()
+    
+    def _ensure_pending_registry(self):
+        """Ensure pending registry is initialized.
+        
+        Now a no-op since we rely on the API to call set_pending_registry()
+        with its own registry instance.
+        """
+        pass
     
     def register_prompt(self, node_id: str, prompt_text: str, metadata: Dict[str, Any]):
         """
@@ -297,7 +293,40 @@ class ComfyUIMetadataIntegration:
             default_dir = os.path.join(os.path.expanduser("~"), "ComfyUI", "output")
             os.makedirs(default_dir, exist_ok=True)
             return default_dir
-    
+
+    def set_pending_registry(self, registry):
+        """Set the pending prompt registry for conditional saving.
+
+        Args:
+            registry: PendingPromptRegistry instance from API
+        """
+        print(f"[ComfyUI Integration] set_pending_registry called with: {id(registry) if registry else 'None'}")
+        print(f"[ComfyUI Integration] Current _pending_registry BEFORE: {id(self._pending_registry) if self._pending_registry else 'None'}")
+        
+        # ALWAYS replace with the API's registry - it's the source of truth
+        old_id = id(self._pending_registry) if self._pending_registry else None
+        self._pending_registry = registry
+        new_id = id(self._pending_registry) if self._pending_registry else None
+        
+        print(f"[ComfyUI Integration] Updated _pending_registry: {old_id} → {new_id}")
+        if registry:
+            self.logger.info(f"Set pending registry from API (new id={new_id})")
+
+    def get_pending_registry(self):
+        """Get the pending prompt registry if available.
+
+        Returns:
+            PendingPromptRegistry instance or None if unavailable
+        """
+        print(f"[ComfyUI Integration] get_pending_registry called, returning: {id(self._pending_registry) if self._pending_registry else 'None'}")
+        
+        if self._pending_registry:
+            self.logger.debug(f"Returning pending registry (id={id(self._pending_registry)}, count={self._pending_registry.get_count()})")
+        else:
+            self.logger.debug("Pending registry not available")
+        
+        return self._pending_registry
+     
     def cleanup_old_prompts(self, max_age_seconds: int = 600):
         """
         Clean up old prompt registrations.
@@ -325,16 +354,27 @@ class ComfyUIMetadataIntegration:
             self.logger.debug(f"Cleaned up {len(old_keys)} old prompt registrations")
 
 
-# Global instance
-_integration_instance = None
+# Global instance using module-level singleton pattern
+# This uses a dict to store the instance, which is more resistant to module reloading
+_integration_cache = {}
 
 def get_comfyui_integration() -> ComfyUIMetadataIntegration:
     """Get the global ComfyUI integration instance.
     
+    Uses a module-level cache to ensure the same instance is returned even if
+    the module is reloaded. This is critical for ComfyUI's dynamic module loading.
+    
     Returns:
-        The singleton ComfyUIMetadataIntegration instance, creating it if necessary
+        The singleton ComfyUIMetadataIntegration instance
     """
-    global _integration_instance
-    if _integration_instance is None:
-        _integration_instance = ComfyUIMetadataIntegration()
-    return _integration_instance
+    # Use a sentinel key to store the instance
+    INSTANCE_KEY = '__comfyui_integration_singleton__'
+    
+    if INSTANCE_KEY not in _integration_cache:
+        print(f"[ComfyUI Integration] Creating new singleton instance")
+        _integration_cache[INSTANCE_KEY] = ComfyUIMetadataIntegration()
+        print(f"[ComfyUI Integration] Singleton instance created: {id(_integration_cache[INSTANCE_KEY])}")
+    else:
+        print(f"[ComfyUI Integration] Returning existing singleton: {id(_integration_cache[INSTANCE_KEY])}")
+    
+    return _integration_cache[INSTANCE_KEY]

@@ -289,11 +289,48 @@ class PromptManagerV2(ComfyNodeABC):
                 if DEBUG:
                     print(f"🔗 V2 Registered prompt EARLY - node_id: {node_id}, unique_id: {unique_id}, execution_id: {execution_id}")
             
-            # Save prompt to database and get prompt_id
+            # Register prompt to pending registry (conditional saving v3)
+            # or fallback to immediate database save (v2 behavior)
+            tracking_id = None
             prompt_id = None
             if positive_text and not DISABLE_TRACKING:
                 try:
-                    if hasattr(self, "db") and self.db:
+                    # Try to use pending registry from API (conditional saving)
+                    pending_registry = None
+                    try:
+                        integration = get_comfyui_integration()
+                        pending_registry = integration.get_pending_registry()
+                    except Exception as e:
+                        if DEBUG:
+                            print(f"⚠️ PromptManagerV2: Failed to get pending registry: {e}")
+
+                    if pending_registry:
+                        # Register to pending registry (conditional saving v3)
+                        if DEBUG:
+                            print(f"   📝 Using pending registry (id={id(pending_registry)}, count={pending_registry.get_count()})")
+                        tracking_id = pending_registry.register_prompt(
+                            positive_prompt=positive_text,
+                            negative_prompt=negative_text,
+                            metadata={
+                                "node_id": "PromptManagerV2",
+                                "unique_id": unique_id,
+                                "execution_id": execution_id,
+                            }
+                        )
+                        logger.info(
+                            f"PromptManagerV2: Registered prompt to pending registry with tracking_id {tracking_id}"
+                        )
+                        if DEBUG:
+                            print(f"⏳ Pending: Registered with tracking_id {tracking_id} (registry now has {pending_registry.get_count()} prompts)")
+                        
+                        # Add tracking_id to tracking data so it can be used when image is saved
+                        if self.tracker and unique_id and hasattr(self.tracker, '_active_prompts'):
+                            if unique_id in self.tracker._active_prompts:
+                                self.tracker._active_prompts[unique_id].metadata['tracking_id'] = tracking_id
+                                if DEBUG:
+                                    print(f"   ✅ Added tracking_id to tracking metadata")
+                    elif hasattr(self, "db") and self.db:
+                        # Fallback to immediate database save (v2 behavior)
                         prompt_hash_db = generate_prompt_hash(positive_text)
                         prompt_id = self.db.save_prompt(
                             text=positive_text,
@@ -305,7 +342,7 @@ class PromptManagerV2(ComfyNodeABC):
                         )
                         if DEBUG:
                             print(f"💾 Saved prompt to database with ID {prompt_id}")
-                        
+
                         # Link the prompt_id to the tracking data
                         if DEBUG:
                             has_active = hasattr(self.tracker, '_active_prompts')
@@ -332,9 +369,9 @@ class PromptManagerV2(ComfyNodeABC):
                             if DEBUG:
                                 print(f"⚠️ Could not link prompt_id {prompt_id} - tracking data not found!")
                 except Exception as e:
-                    logger.warning(f"Failed to save prompt to database: {e}")
+                    logger.warning(f"Failed to register prompt: {e}")
                     if DEBUG:
-                        print(f"⚠️ Failed to save prompt to database: {e}")
+                        print(f"⚠️ Failed to register prompt: {e}")
             
             # Encode prompts with CLIP (matching original implementation)
             tokens_positive = clip.tokenize(positive_text)

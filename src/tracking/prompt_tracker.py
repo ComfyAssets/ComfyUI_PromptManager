@@ -297,15 +297,97 @@ class PromptTracker:
                     metadata=metadata_payload
                 )
             else:
-                # Track the image even without prompt_id (store metadata for later linking)
-                if not hasattr(tracking_data, 'pending_images'):
-                    tracking_data.metadata['pending_images'] = []
-                tracking_data.metadata['pending_images'].append({
-                    'path': normalized_path,
-                    'metadata': metadata,
-                    'timestamp': time.time()
-                })
-                db_id = None  # No DB ID yet for pending images
+                # No prompt_id yet - check if there's a pending prompt to accept
+                tracking_id = tracking_data.metadata.get('tracking_id')
+                
+                if tracking_id:
+                    # Try to accept the pending prompt
+                    try:
+                        from ..services.prompt_acceptance_service import PromptAcceptanceService
+                        from ..repositories.prompt_repository import PromptRepository
+                        from ..tracking import PendingPromptRegistry
+                        
+                        # Get or create pending registry and repo
+                        try:
+                            from utils.comfyui_integration import get_comfyui_integration
+                        except ImportError:
+                            from utils.comfyui_integration import get_comfyui_integration
+                        
+                        integration = get_comfyui_integration()
+                        pending_registry = integration.get_pending_registry()
+                        
+                        print(f"   📋 Got pending registry (id={id(pending_registry)}, count={pending_registry.get_count() if pending_registry else 'N/A'})")
+                        
+                        if pending_registry:
+                            # Create acceptance service
+                            prompt_repo = PromptRepository(self.db_path)
+                            acceptance_service = PromptAcceptanceService(pending_registry, prompt_repo)
+                            
+                            # Accept the pending prompt
+                            print(f"   🔍 Looking for tracking_id: {tracking_id}")
+                            persisted_prompt = acceptance_service.accept_prompt(tracking_id)
+                            
+                            if persisted_prompt:
+                                prompt_id = persisted_prompt.get('id')
+                                if prompt_id:
+                                    # Update tracking data with the new prompt_id
+                                    tracking_data.metadata['prompt_id'] = prompt_id
+                                    
+                                    # Now link the image to the accepted prompt
+                                    if hasattr(self, 'db_instance') and self.db_instance:
+                                        db = self.db_instance
+                                    else:
+                                        from ..database import PromptDatabase
+                                        db = PromptDatabase()
+                                    
+                                    metadata_payload = {
+                                        "unique_id": tracking_data.unique_id,
+                                        "node_id": tracking_data.node_id,
+                                        "confidence_score": tracking_data.confidence_score,
+                                        "generation_time": datetime.fromtimestamp(tracking_data.timestamp).isoformat(),
+                                        "workflow_data": tracking_data.workflow_data,
+                                    }
+                                    if metadata:
+                                        metadata_payload.update(metadata)
+                                    
+                                    params = metadata_payload.get("parameters")
+                                    if isinstance(params, dict):
+                                        params.setdefault("absolute_path", normalized_path)
+                                        params.setdefault("relative_path", Path(normalized_path).name)
+                                    else:
+                                        metadata_payload["parameters"] = {"absolute_path": normalized_path}
+                                    
+                                    # Link the image to the accepted prompt
+                                    db_id = db.link_image_to_prompt(
+                                        prompt_id=prompt_id,
+                                        image_path=normalized_path,
+                                        metadata=metadata_payload
+                                    )
+                                else:
+                                    # Accepted but no ID returned
+                                    db_id = None
+                            else:
+                                # Failed to accept prompt
+                                db_id = None
+                        else:
+                            # No pending registry available
+                            db_id = None
+                    except Exception as e:
+                        import traceback
+                        print(f"   ❌ Failed to accept pending prompt: {e}")
+                        if os.getenv("PROMPTMANAGER_DEBUG", "0") == "1":
+                            traceback.print_exc()
+                        db_id = None
+                else:
+                    # No tracking_id or prompt_id - store as pending for later linking
+                    if not hasattr(tracking_data, 'pending_images'):
+                        tracking_data.metadata['pending_images'] = []
+                    tracking_data.metadata['pending_images'].append({
+                        'path': normalized_path,
+                        'metadata': metadata,
+                        'timestamp': time.time()
+                    })
+                    db_id = None  # No DB ID yet for pending images
 
             # Update metrics
             self.metrics["successful_pairs"] += 1
@@ -392,7 +474,7 @@ class PromptTracker:
                 if result.status == ThumbnailStatus.GENERATED:
                     # Update database with ID-based thumbnail path
                     try:
-                        from ..database.utils import get_db_connection
+                        from ..database.connection_helper import get_db_connection
                         with get_db_connection(self.db.db_path) as conn:
                             cursor = conn.cursor()
                             column_name = f'thumbnail_{size_name}_path'
