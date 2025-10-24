@@ -101,24 +101,43 @@ def get_prompt_tracker(db_instance=None):
             logger.warning(f"Could not initialize thumbnail service: {e}")
             # Continue without auto-generation
         
-        tracker = PromptTracker(thumbnail_service=thumbnail_service)
-        
+        # Get correct database path
+        db_path = None
+        if db_instance and hasattr(db_instance, 'db_path'):
+            db_path = db_instance.db_path
+        else:
+            # Fallback: create a PromptDatabase to get the correct path
+            try:
+                from .src.database import PromptDatabase
+            except ImportError:
+                from src.database import PromptDatabase
+            temp_db = PromptDatabase()
+            db_path = temp_db.db_path
+
+        if DEBUG:
+            print(f"📊 Using database path: {db_path}")
+
+        tracker = PromptTracker(db_path=db_path, thumbnail_service=thumbnail_service)
+
         # Patch SaveImage if needed
         if not os.getenv("PROMPTMANAGER_DISABLE_PATCH", "0") == "1":
             patcher = SaveImagePatcher(tracker)
             SingletonTracker.set_patcher(patcher)
-            
+
             if DEBUG:
                 print("🔧 Attempting to patch SaveImage node...")
             if not patcher.patch():
                 logger.warning("Failed to patch SaveImage, falling back to file watcher")
             elif DEBUG:
                 print("✅ SaveImage patched successfully!")
-        
+
         SingletonTracker.set_tracker(tracker)
-    
+
     if db_instance and tracker:
         tracker.db_instance = db_instance
+        # Also update db_path in case it changed
+        if hasattr(db_instance, 'db_path'):
+            tracker.db_path = db_instance.db_path
     
     return tracker
 
