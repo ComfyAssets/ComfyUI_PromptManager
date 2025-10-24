@@ -82,11 +82,10 @@ class ComfyUIMetadataIntegration:
         SaveImage node. Uses _initialized flag to prevent duplicate initialization.
         """
         if hasattr(self, '_initialized'):
-            print(f"[ComfyUI Integration] Already initialized")
             return
-        
-        print(f"[ComfyUI Integration] Initializing new instance {id(self)}")
+
         self.logger = get_logger('prompt_manager.comfyui_integration')
+        self.logger.debug(f"Initializing new instance {id(self)}")
         self._current_prompts = {}
         self._thread_local = threading.local()
         self._saveimage_patched = False
@@ -147,10 +146,8 @@ class ComfyUIMetadataIntegration:
                 # Create singleton registry with 24-hour TTL
                 storage.registry = PendingPromptRegistry(ttl_seconds=86400)
                 self.logger.info("Initialized singleton pending registry for custom node")
-                print("[ComfyUI Integration] ✅ Initialized singleton pending registry")
             except Exception as e:
                 self.logger.warning(f"Could not initialize pending registry: {e}")
-                print(f"[ComfyUI Integration] ⚠️  Failed to initialize pending registry: {e}")
 
         # Use the singleton registry
         self._pending_registry = storage.registry
@@ -351,15 +348,12 @@ class ComfyUIMetadataIntegration:
         Args:
             registry: PendingPromptRegistry instance from API
         """
-        print(f"[ComfyUI Integration] set_pending_registry called with: {id(registry) if registry else 'None'}")
-        print(f"[ComfyUI Integration] Current _pending_registry BEFORE: {id(self._pending_registry) if self._pending_registry else 'None'}")
-        
         # ALWAYS replace with the API's registry - it's the source of truth
         old_id = id(self._pending_registry) if self._pending_registry else None
         self._pending_registry = registry
         new_id = id(self._pending_registry) if self._pending_registry else None
-        
-        print(f"[ComfyUI Integration] Updated _pending_registry: {old_id} → {new_id}")
+
+        self.logger.debug(f"Updated _pending_registry: {old_id} → {new_id}")
         if registry:
             self.logger.info(f"Set pending registry from API (new id={new_id})")
 
@@ -374,15 +368,9 @@ class ComfyUIMetadataIntegration:
         # Ensure registry is initialized
         self._ensure_pending_registry()
 
-        registry_id = id(self._pending_registry) if self._pending_registry else 'None'
-        registry_count = self._pending_registry.get_count() if self._pending_registry else 'N/A'
-
-        print(f"[ComfyUI Integration] get_pending_registry called")
-        print(f"   Integration instance: {id(self)}")
-        print(f"   Registry instance: {registry_id}")
-        print(f"   Registry count: {registry_count}")
-
         if self._pending_registry:
+            registry_id = id(self._pending_registry)
+            registry_count = self._pending_registry.get_count()
             self.logger.debug(f"Returning pending registry (id={registry_id}, count={registry_count})")
         else:
             self.logger.debug("Pending registry not available")
@@ -431,10 +419,14 @@ def get_comfyui_integration() -> ComfyUIMetadataIntegration:
     """
     import sys
     import types
+    import os
+
+    debug = os.getenv("PROMPTMANAGER_DEBUG", "0") == "1"
 
     # Get or create the storage module
     if _INTEGRATION_STORAGE_KEY not in sys.modules:
-        print(f"[ComfyUI Integration] Creating storage module")
+        if debug:
+            print(f"[ComfyUI Integration] Creating storage module")
         storage_module = types.ModuleType(_INTEGRATION_STORAGE_KEY)
         storage_module.instance = None
         sys.modules[_INTEGRATION_STORAGE_KEY] = storage_module
@@ -443,10 +435,10 @@ def get_comfyui_integration() -> ComfyUIMetadataIntegration:
 
     # Get or create the singleton instance
     if storage.instance is None:
-        print(f"[ComfyUI Integration] Creating new singleton instance")
+        if debug:
+            print(f"[ComfyUI Integration] Creating new singleton instance")
         storage.instance = ComfyUIMetadataIntegration()
-        print(f"[ComfyUI Integration] Singleton instance created: {id(storage.instance)}")
-    else:
-        print(f"[ComfyUI Integration] Returning existing singleton: {id(storage.instance)}")
+        if debug:
+            print(f"[ComfyUI Integration] Singleton instance created: {id(storage.instance)}")
 
     return storage.instance
