@@ -682,6 +682,7 @@ class PromptManagerAPI:
         routes.get("/api/v1/generated-images/{image_id}/file")(self.gallery_handlers.get_generated_image_file)
         routes.post("/api/v1/gallery/scan")(self.gallery_handlers.scan_for_images)
         routes.post("/api/scan")(self.gallery_handlers.scan_comfyui_images)  # Simple scan endpoint for frontend
+        routes.get("/api/scan/stream")(self.gallery_handlers.scan_comfyui_images_stream)  # SSE streaming scan
 
         # Metadata endpoints - delegated to MetadataHandlers
         routes.get("/api/v1/metadata/{filename}")(self.metadata_handlers.get_image_metadata)
