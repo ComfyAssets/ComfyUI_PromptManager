@@ -319,27 +319,32 @@ class PromptTracker:
                         print(f"   📋 Got pending registry (id={id(pending_registry)}, count={pending_registry.get_count() if pending_registry else 'N/A'})")
                         
                         if pending_registry:
+                            # If we're in record_image_saved(), an image WAS saved,
+                            # so we should ALWAYS accept the prompt (user kept an image)
+                            # The save_canceled setting controls whether prompts are saved
+                            # when NO images are saved (not implemented here - that's for workflow cancellation)
+
                             # Create acceptance service
                             prompt_repo = PromptRepository(self.db_path)
                             acceptance_service = PromptAcceptanceService(pending_registry, prompt_repo)
-                            
+
                             # Accept the pending prompt
                             print(f"   🔍 Looking for tracking_id: {tracking_id}")
                             persisted_prompt = acceptance_service.accept_prompt(tracking_id)
-                            
+
                             if persisted_prompt:
                                 prompt_id = persisted_prompt.get('id')
                                 if prompt_id:
                                     # Update tracking data with the new prompt_id
                                     tracking_data.metadata['prompt_id'] = prompt_id
-                                    
+
                                     # Now link the image to the accepted prompt
                                     if hasattr(self, 'db_instance') and self.db_instance:
                                         db = self.db_instance
                                     else:
                                         from ..database import PromptDatabase
                                         db = PromptDatabase()
-                                    
+
                                     metadata_payload = {
                                         "unique_id": tracking_data.unique_id,
                                         "node_id": tracking_data.node_id,
@@ -349,20 +354,23 @@ class PromptTracker:
                                     }
                                     if metadata:
                                         metadata_payload.update(metadata)
-                                    
+
                                     params = metadata_payload.get("parameters")
                                     if isinstance(params, dict):
                                         params.setdefault("absolute_path", normalized_path)
                                         params.setdefault("relative_path", Path(normalized_path).name)
                                     else:
                                         metadata_payload["parameters"] = {"absolute_path": normalized_path}
-                                    
+
                                     # Link the image to the accepted prompt
                                     db_id = db.link_image_to_prompt(
                                         prompt_id=prompt_id,
                                         image_path=normalized_path,
                                         metadata=metadata_payload
                                     )
+
+                                    if os.getenv("PROMPTMANAGER_DEBUG", "0") == "1":
+                                        print(f"   ✅ Accepted pending prompt and linked to image (prompt_id={prompt_id})")
                                 else:
                                     # Accepted but no ID returned
                                     db_id = None
@@ -475,7 +483,9 @@ class PromptTracker:
                     # Update database with ID-based thumbnail path
                     try:
                         from ..database.connection_helper import get_db_connection
-                        with get_db_connection(self.db.db_path) as conn:
+                        # Use db_instance.db_path if available, otherwise use db_path directly
+                        db_path = self.db_instance.db_path if (hasattr(self, 'db_instance') and self.db_instance) else self.db_path
+                        with get_db_connection(db_path) as conn:
                             cursor = conn.cursor()
                             column_name = f'thumbnail_{size_name}_path'
                             cursor.execute(f"""
