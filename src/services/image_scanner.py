@@ -76,7 +76,8 @@ class ImageScanner:
                 return metadata if metadata else {}
 
         except Exception as e:
-            self.logger.error(f"Failed to extract metadata from {image_path}: {e}")
+            # Log at debug level to avoid flooding logs with corrupted files
+            self.logger.debug(f"Skipping {Path(image_path).name}: {type(e).__name__}")
             return None
 
     def extract_basic_metadata(self, file_path: str) -> Dict[str, Any]:
