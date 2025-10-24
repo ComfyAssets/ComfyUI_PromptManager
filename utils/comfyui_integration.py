@@ -98,11 +98,62 @@ class ComfyUIMetadataIntegration:
     
     def _ensure_pending_registry(self):
         """Ensure pending registry is initialized.
-        
-        Now a no-op since we rely on the API to call set_pending_registry()
-        with its own registry instance.
+
+        Uses sys.modules singleton pattern to ensure the same registry instance
+        is used across module reloads. The API can override this with
+        set_pending_registry() if needed.
         """
-        pass
+        import sys
+        import types
+
+        # Storage key for the singleton registry
+        _REGISTRY_STORAGE_KEY = '__promptmanager_pending_registry_singleton__'
+
+        # Get or create the storage module
+        if _REGISTRY_STORAGE_KEY not in sys.modules:
+            storage_module = types.ModuleType(_REGISTRY_STORAGE_KEY)
+            storage_module.registry = None
+            sys.modules[_REGISTRY_STORAGE_KEY] = storage_module
+
+        storage = sys.modules[_REGISTRY_STORAGE_KEY]
+
+        # If registry doesn't exist in singleton storage, create it
+        if storage.registry is None:
+            try:
+                # Try multiple import strategies
+                PendingPromptRegistry = None
+
+                # Strategy 1: Relative import from utils
+                try:
+                    from ..src.tracking import PendingPromptRegistry
+                except (ImportError, ValueError):
+                    pass
+
+                # Strategy 2: Absolute import (when running as package)
+                if PendingPromptRegistry is None:
+                    try:
+                        from promptmanager.src.tracking import PendingPromptRegistry
+                    except ImportError:
+                        pass
+
+                # Strategy 3: Direct import after path manipulation
+                if PendingPromptRegistry is None:
+                    import os
+                    package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    if package_root not in sys.path:
+                        sys.path.insert(0, package_root)
+                    from src.tracking import PendingPromptRegistry
+
+                # Create singleton registry with 24-hour TTL
+                storage.registry = PendingPromptRegistry(ttl_seconds=86400)
+                self.logger.info("Initialized singleton pending registry for custom node")
+                print("[ComfyUI Integration] ✅ Initialized singleton pending registry")
+            except Exception as e:
+                self.logger.warning(f"Could not initialize pending registry: {e}")
+                print(f"[ComfyUI Integration] ⚠️  Failed to initialize pending registry: {e}")
+
+        # Use the singleton registry
+        self._pending_registry = storage.registry
     
     def register_prompt(self, node_id: str, prompt_text: str, metadata: Dict[str, Any]):
         """
@@ -315,16 +366,27 @@ class ComfyUIMetadataIntegration:
     def get_pending_registry(self):
         """Get the pending prompt registry if available.
 
+        Creates a default registry if one doesn't exist yet.
+
         Returns:
             PendingPromptRegistry instance or None if unavailable
         """
-        print(f"[ComfyUI Integration] get_pending_registry called, returning: {id(self._pending_registry) if self._pending_registry else 'None'}")
-        
+        # Ensure registry is initialized
+        self._ensure_pending_registry()
+
+        registry_id = id(self._pending_registry) if self._pending_registry else 'None'
+        registry_count = self._pending_registry.get_count() if self._pending_registry else 'N/A'
+
+        print(f"[ComfyUI Integration] get_pending_registry called")
+        print(f"   Integration instance: {id(self)}")
+        print(f"   Registry instance: {registry_id}")
+        print(f"   Registry count: {registry_count}")
+
         if self._pending_registry:
-            self.logger.debug(f"Returning pending registry (id={id(self._pending_registry)}, count={self._pending_registry.get_count()})")
+            self.logger.debug(f"Returning pending registry (id={registry_id}, count={registry_count})")
         else:
             self.logger.debug("Pending registry not available")
-        
+
         return self._pending_registry
      
     def cleanup_old_prompts(self, max_age_seconds: int = 600):
@@ -354,27 +416,37 @@ class ComfyUIMetadataIntegration:
             self.logger.debug(f"Cleaned up {len(old_keys)} old prompt registrations")
 
 
-# Global instance using module-level singleton pattern
-# This uses a dict to store the instance, which is more resistant to module reloading
-_integration_cache = {}
+# Global instance using sys.modules pattern (survives module reloads)
+# Same pattern as SingletonTracker to handle ComfyUI's dynamic module loading
+_INTEGRATION_STORAGE_KEY = '__promptmanager_comfyui_integration_singleton__'
 
 def get_comfyui_integration() -> ComfyUIMetadataIntegration:
     """Get the global ComfyUI integration instance.
-    
-    Uses a module-level cache to ensure the same instance is returned even if
-    the module is reloaded. This is critical for ComfyUI's dynamic module loading.
-    
+
+    Uses sys.modules storage to ensure the same instance is returned even when
+    this module is reloaded. This is critical for ComfyUI's dynamic module loading.
+
     Returns:
         The singleton ComfyUIMetadataIntegration instance
     """
-    # Use a sentinel key to store the instance
-    INSTANCE_KEY = '__comfyui_integration_singleton__'
-    
-    if INSTANCE_KEY not in _integration_cache:
+    import sys
+    import types
+
+    # Get or create the storage module
+    if _INTEGRATION_STORAGE_KEY not in sys.modules:
+        print(f"[ComfyUI Integration] Creating storage module")
+        storage_module = types.ModuleType(_INTEGRATION_STORAGE_KEY)
+        storage_module.instance = None
+        sys.modules[_INTEGRATION_STORAGE_KEY] = storage_module
+
+    storage = sys.modules[_INTEGRATION_STORAGE_KEY]
+
+    # Get or create the singleton instance
+    if storage.instance is None:
         print(f"[ComfyUI Integration] Creating new singleton instance")
-        _integration_cache[INSTANCE_KEY] = ComfyUIMetadataIntegration()
-        print(f"[ComfyUI Integration] Singleton instance created: {id(_integration_cache[INSTANCE_KEY])}")
+        storage.instance = ComfyUIMetadataIntegration()
+        print(f"[ComfyUI Integration] Singleton instance created: {id(storage.instance)}")
     else:
-        print(f"[ComfyUI Integration] Returning existing singleton: {id(_integration_cache[INSTANCE_KEY])}")
-    
-    return _integration_cache[INSTANCE_KEY]
+        print(f"[ComfyUI Integration] Returning existing singleton: {id(storage.instance)}")
+
+    return storage.instance
