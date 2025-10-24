@@ -466,7 +466,7 @@ class GalleryHandlers:
         """Scan ComfyUI output directory for images with prompts.
 
         POST /api/scan
-        Returns: JSON response with scan results
+        Returns: JSON with scan results
         """
         try:
             # Import here to avoid circular imports
@@ -481,9 +481,19 @@ class GalleryHandlers:
             prompts_added = 0
             images_linked = 0
 
-            # Process scan results
+            # Process scan results and send WebSocket progress updates
             async for data in scanner.scan_images_generator():
                 if data['type'] == 'progress':
+                    # Send WebSocket progress update
+                    await self.api.realtime.send_progress(
+                        operation='scan',
+                        progress=data.get('progress', 0),
+                        message=data.get('status', 'Scanning...'),  # Scanner uses 'status' field
+                        stats={
+                            'processed': data.get('processed', 0),
+                            'found': data.get('found', 0),
+                        }
+                    )
                     files_scanned = data.get('processed', 0)
                     prompts_found = data.get('found', 0)
                 elif data['type'] == 'complete':
@@ -491,6 +501,19 @@ class GalleryHandlers:
                     prompts_found = data.get('found', 0)
                     prompts_added = data.get('added', 0)
                     images_linked = data.get('linked', 0)
+                    
+                    # Send final progress update
+                    await self.api.realtime.send_progress(
+                        operation='scan',
+                        progress=100,
+                        message='Scan complete!',
+                        stats={
+                            'processed': files_scanned,
+                            'found': prompts_found,
+                            'added': prompts_added,
+                            'linked': images_linked,
+                        }
+                    )
                     break
                 elif data['type'] == 'error':
                     return web.json_response({
@@ -513,3 +536,46 @@ class GalleryHandlers:
                 "success": False,
                 "message": str(e)
             }, status=500)
+
+    async def scan_comfyui_images_stream(self, request: web.Request) -> web.StreamResponse:
+        """Stream scan progress using Server-Sent Events.
+
+        GET /api/scan/stream
+        Returns: text/event-stream with progress updates
+        """
+        import json
+        from ...services.image_scanner import ImageScanner
+
+        response = web.StreamResponse()
+        response.headers['Content-Type'] = 'text/event-stream'
+        response.headers['Cache-Control'] = 'no-cache'
+        response.headers['Connection'] = 'keep-alive'
+
+        await response.prepare(request)
+
+        try:
+            # Create scanner instance
+            scanner = ImageScanner(self.api)
+
+            # Stream scan progress
+            async for data in scanner.scan_images_generator():
+                # Format as Server-Sent Event
+                event_data = f"data: {json.dumps(data)}\n\n"
+                await response.write(event_data.encode('utf-8'))
+
+                # Break if complete or error
+                if data['type'] in ['complete', 'error']:
+                    break
+
+        except Exception as e:
+            self.logger.error(f"Error in scan stream: {e}")
+            error_data = {
+                'type': 'error',
+                'message': str(e)
+            }
+            await response.write(f"data: {json.dumps(error_data)}\n\n".encode('utf-8'))
+
+        finally:
+            await response.write_eof()
+
+        return response
