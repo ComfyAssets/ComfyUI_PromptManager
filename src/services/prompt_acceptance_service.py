@@ -85,6 +85,13 @@ class PromptAcceptanceService:
     ) -> Optional[Dict[str, Any]]:
         """Persist a pending prompt to the database.
         
+        If a prompt with the same hash already exists, this will:
+        1. Find the existing prompt
+        2. Update its timestamp to bring it to the top of the dashboard
+        3. Return the existing prompt (so images get associated with it)
+        
+        This encourages prompt reuse and keeps actively used prompts visible.
+        
         Args:
             pending_prompt: The pending prompt to persist
             additional_metadata: Optional metadata to merge with existing metadata
@@ -92,6 +99,9 @@ class PromptAcceptanceService:
         Returns:
             Dictionary with persisted prompt data including ID, or None on error
         """
+        import sqlite3
+        from datetime import datetime
+        
         try:
             prompt_data = {
                 "positive_prompt": pending_prompt.positive_prompt,
@@ -113,6 +123,37 @@ class PromptAcceptanceService:
             
             persisted = self.prompt_repo.get(prompt_id)
             return persisted
+        
+        except sqlite3.IntegrityError as e:
+            if "UNIQUE constraint failed: prompts.hash" in str(e):
+                # Duplicate prompt detected - find and refresh the existing one
+                prompt_hash = self.prompt_repo.calculate_hash(
+                    pending_prompt.positive_prompt,
+                    pending_prompt.negative_prompt or ""
+                )
+                
+                existing = self.prompt_repo.find_by_hash(prompt_hash)
+                
+                if existing:
+                    # Update timestamp to bring it to the top of the dashboard
+                    self.prompt_repo.update(
+                        existing['id'],
+                        {'updated_at': datetime.utcnow().isoformat()}
+                    )
+                    
+                    logger.info(
+                        f"Prompt {pending_prompt.tracking_id} matches existing prompt {existing['id']} "
+                        f"- refreshed timestamp to surface in dashboard"
+                    )
+                    
+                    # Return refreshed prompt
+                    return self.prompt_repo.get(existing['id'])
+                else:
+                    logger.error(f"Hash constraint failed but couldn't find existing prompt: {prompt_hash}")
+                    return None
+            else:
+                # Some other integrity error
+                raise
         
         except Exception as e:
             logger.error(
