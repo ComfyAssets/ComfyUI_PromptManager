@@ -267,11 +267,13 @@ class PromptTracker:
                 # Use the stored database instance if available, otherwise create new one
                 if hasattr(self, 'db_instance') and self.db_instance:
                     db = self.db_instance
-                    print(f"   📚 Using stored database instance")
+                    if os.getenv("PROMPTMANAGER_DEBUG", "0") == "1":
+                        print(f"   📚 Using stored database instance")
                 else:
                     from ..database import PromptDatabase
                     db = PromptDatabase()
-                    print(f"   ⚠️ Warning: Creating new database instance (not optimal)")
+                    if os.getenv("PROMPTMANAGER_DEBUG", "0") == "1":
+                        print(f"   ⚠️ Warning: Creating new database instance (not optimal)")
 
                 metadata_payload = {
                     "unique_id": tracking_data.unique_id,
@@ -315,8 +317,9 @@ class PromptTracker:
                         
                         integration = get_comfyui_integration()
                         pending_registry = integration.get_pending_registry()
-                        
-                        print(f"   📋 Got pending registry (id={id(pending_registry)}, count={pending_registry.get_count() if pending_registry else 'N/A'})")
+
+                        if os.getenv("PROMPTMANAGER_DEBUG", "0") == "1":
+                            print(f"   📋 Got pending registry (id={id(pending_registry)}, count={pending_registry.get_count() if pending_registry else 'N/A'})")
                         
                         if pending_registry:
                             # If we're in record_image_saved(), an image WAS saved,
@@ -329,7 +332,8 @@ class PromptTracker:
                             acceptance_service = PromptAcceptanceService(pending_registry, prompt_repo)
 
                             # Accept the pending prompt
-                            print(f"   🔍 Looking for tracking_id: {tracking_id}")
+                            if os.getenv("PROMPTMANAGER_DEBUG", "0") == "1":
+                                print(f"   🔍 Looking for tracking_id: {tracking_id}")
                             persisted_prompt = acceptance_service.accept_prompt(tracking_id)
 
                             if persisted_prompt:
@@ -382,8 +386,8 @@ class PromptTracker:
                             db_id = None
                     except Exception as e:
                         import traceback
-                        print(f"   ❌ Failed to accept pending prompt: {e}")
                         if os.getenv("PROMPTMANAGER_DEBUG", "0") == "1":
+                            print(f"   ❌ Failed to accept pending prompt: {e}")
                             traceback.print_exc()
                         db_id = None
                 else:
