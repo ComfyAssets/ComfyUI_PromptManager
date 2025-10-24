@@ -179,9 +179,20 @@ class BaseRepository(ABC):
         
         placeholders = ",".join(["?" for _ in filtered_values])
         columns_str = ",".join(filtered_columns)
-        
+
         query = f"INSERT INTO {table} ({columns_str}) VALUES ({placeholders})"
-        
+
+        # Debug logging
+        import os
+        if os.getenv("PROMPTMANAGER_DEBUG", "0") == "1":
+            print(f"\n🔍 [BaseRepository.create] SQL Debug:")
+            print(f"   Table: {table}")
+            print(f"   Schema columns: {schema_columns}")
+            print(f"   Processed values: {processed_values}")
+            print(f"   Filtered columns: {filtered_columns}")
+            print(f"   Filtered values: {filtered_values}")
+            print(f"   Query: {query}")
+
         with self._get_connection() as conn:
             cursor = conn.execute(query, filtered_values)
             return cursor.lastrowid
