@@ -223,6 +223,9 @@ class Config:
         self.logging = LoggingConfig()
         self.ui = UIConfig()
         
+        # Set default values for extra settings
+        self._extra_settings.setdefault('storage.prompts.save_canceled', False)
+        
         # Load from file if exists
         if found_config_file and os.path.exists(found_config_file):
             self.load(found_config_file)
