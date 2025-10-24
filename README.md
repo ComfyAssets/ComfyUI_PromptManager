@@ -20,6 +20,10 @@ We're excited to announce that Prompt Manager v2 is ready for beta testing! This
 - **🌫️ Smart Blur** - New blur option with customizable tag triggers for sensitive content
 - **⚙️ Settings Panel** - Comprehensive configuration options
 - **➕ Add Prompt Dialog** - Streamlined prompt creation interface
+- **🚫 Prompt Cancel Support** - Option to save prompts even when generation is cancelled (configurable in settings)
+- **✈️ Send to PromptManager Node** - inspired by LoraManager for seamless workflow integration
+- **🧹 Code Cleanup & Optimizations** - Improved codebase organization, performance enhancements, and bug fixes
+-
 
 ### 🚧 Still in Development
 
@@ -38,47 +42,8 @@ We're excited to announce that Prompt Manager v2 is ready for beta testing! This
 - **generate_thumbnails.py** - Works with ComfyUI's configuration system, can auto-detect paths
 - **generate_thumbnails_standalone.py** - Completely standalone, doesn't require ComfyUI environment
 
-#### **High-Performance Thumbnail Generator Scripts**
-
-For power users with large collections, we provide command-line scripts that can generate thumbnails **significantly faster** than the web UI:
-
-##### Option 1: ComfyUI-Integrated Script
-
-Works with ComfyUI configuration and can auto-detect paths when run from ComfyUI directory:
-
-```bash
-# Auto-detect paths (run from ComfyUI root or custom_nodes/ComfyUI_PromptManager)
-python scripts/generate_thumbnails.py --use-preferences
-
-# Or provide explicit paths from anywhere
-python scripts/generate_thumbnails.py \
-  --comfy-root ~/ComfyUI \
-  --db-path ~/ComfyUI/user/default/PromptManager/prompts.db \
-  --sizes small medium large \
-  --parallel 0
-
-# Maximum speed - uses all CPU cores
-python scripts/generate_thumbnails.py --parallel 0 --yes
-
-# Force regenerate everything (useful after migration)
-python scripts/generate_thumbnails.py --force --yes
-```
-
-##### Option 2: Standalone Script (works anywhere with explicit paths)
-
-```bash
-# Works from any directory with explicit paths
-python scripts/generate_thumbnails_standalone.py \
-  --db-path ~/ComfyUI/user/default/PromptManager/prompts.db \
-  --output-dir ~/ComfyUI/user/default/PromptManager/thumbnails \
-  --sizes small medium large \
-  --parallel 8
-
-# Minimal example - uses sensible defaults
-python generate_thumbnails_standalone.py --db-path /path/to/prompts.db
-```
-
 **Features:**
+
 - **⚡ Maximum Performance**: Process thousands of thumbnails using all CPU cores
 - **🎯 Respects UI Preferences**: Use `--use-preferences` to match your UI size selections
 - **⏸️ Graceful Cancellation**: Press Ctrl+C to stop anytime without losing progress
@@ -106,7 +71,7 @@ python generate_thumbnails_standalone.py --db-path /path/to/prompts.db
 1. **Backup your `prompts.db` file** (Critical!)
 2. Checkout the `v2/beta-02-win32` branch:
    ```bash
-   git checkout v2/beta-02-win32
+   git checkout v2/beta-03
    ```
 3. Restart ComfyUI
 4. Test the features and migration process
