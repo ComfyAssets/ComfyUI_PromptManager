@@ -78,8 +78,9 @@ class ComfyUIMetadataIntegration:
     def __init__(self):
         """Initialize the ComfyUI integration system.
         
-        Sets up prompt tracking data structures and attempts to patch the
-        SaveImage node. Uses _initialized flag to prevent duplicate initialization.
+        Sets up prompt tracking data structures. Patching is now done lazily
+        when the first PromptManager node executes, rather than at module load.
+        This prevents affecting workflows that don't use PromptManager.
         """
         if hasattr(self, '_initialized'):
             return
@@ -88,12 +89,13 @@ class ComfyUIMetadataIntegration:
         self.logger.debug(f"Initializing new instance {id(self)}")
         self._current_prompts = {}
         self._thread_local = threading.local()
+        self._lock = threading.Lock()
         self._saveimage_patched = False
         self._pending_registry = None
         self._initialized = True
         
-        # Try to patch SaveImage node on initialization
-        self._patch_saveimage_node()
+        # NOTE: Patching now happens lazily in register_prompt()
+        # to avoid affecting workflows that don't use PromptManager
     
     def _ensure_pending_registry(self):
         """Ensure pending registry is initialized.
@@ -160,11 +162,22 @@ class ComfyUIMetadataIntegration:
         their prompt text for later inclusion in image metadata. The prompt is stored
         in both thread-local and global storage to handle cross-thread access scenarios.
         
+        On first call, this method will patch SaveImage to enable metadata integration.
+        This lazy patching ensures we only affect workflows that actually use PromptManager.
+        
         Args:
             node_id: Unique identifier for this prompt (typically the node ID)
             prompt_text: The actual prompt text that was encoded by PromptManager
             metadata: Additional metadata from PromptManager (category, tags, etc.)
         """
+        # Lazy patching: patch SaveImage on first PromptManager node execution
+        if not self._saveimage_patched:
+            with self._lock:
+                # Double-check after acquiring lock (thread-safe singleton pattern)
+                if not self._saveimage_patched:
+                    self.logger.info("First PromptManager node detected - patching SaveImage")
+                    self._patch_saveimage_node()
+        
         thread_id = threading.current_thread().ident
         
         # Store in thread-local storage
@@ -246,7 +259,8 @@ class ComfyUIMetadataIntegration:
         5. Calls the original method with modified data
         
         The patching is designed to be minimally invasive and maintain full
-        compatibility with existing ComfyUI functionality.
+        compatibility with existing ComfyUI functionality. If ANY error occurs
+        in our code, it gracefully falls back to the original behavior.
         """
         try:
             import nodes
@@ -260,59 +274,70 @@ class ComfyUIMetadataIntegration:
             integration = self  # Capture self reference
             
             def patched_save_images(self_node, images, filename_prefix="ComfyUI", prompt=None, extra_pnginfo=None):
-                """Patched save_images method that includes PromptManager prompts."""
+                """Patched save_images method that includes PromptManager prompts.
                 
-                # Get current prompt text from PromptManager
-                current_prompt_text = integration.get_current_prompt_text()
-                
-                if current_prompt_text:
-                    integration.logger.debug(f"Including PromptManager prompt in SaveImage metadata: {current_prompt_text[:50]}...")
+                CRITICAL: This function must NEVER break image saving. Any errors
+                in our code should be caught and logged, then fall through to the
+                original save_images method.
+                """
+                try:
+                    # Get current prompt text from PromptManager
+                    current_prompt_text = integration.get_current_prompt_text()
                     
-                    # If no prompt provided, create one with our text
-                    if prompt is None:
-                        prompt = {}
-                    
-                    # Ensure prompt has the standard structure ComfyUI expects
-                    if not isinstance(prompt, dict):
-                        prompt = {}
-                    
-                    # Find PromptManager nodes and fix them for standard parser compatibility
-                    prompt_updated = False
-                    for node_id, node_data in prompt.items():
-                        if isinstance(node_data, dict):
-                            class_type = node_data.get('class_type', '')
-                            if 'promptmanager' in class_type.lower():
-                                # Update the inputs to include our actual prompt text
-                                if 'inputs' not in node_data:
-                                    node_data['inputs'] = {}
-                                node_data['inputs']['text'] = current_prompt_text
-                                
-                                # SIMPLE FIX: Change class_type to CLIPTextEncode for standard parser compatibility
-                                # Keep original class_type in metadata for reference
-                                if '_meta' not in node_data:
-                                    node_data['_meta'] = {}
-                                node_data['_meta']['original_class_type'] = class_type
-                                node_data['class_type'] = 'CLIPTextEncode'
-                                
-                                prompt_updated = True
-                                integration.logger.debug(f"Fixed PromptManager node {node_id} - changed class_type to CLIPTextEncode for compatibility")
-                    
-                    # If no PromptManager nodes found, add a standalone one
-                    if not prompt_updated:
-                        virtual_node_id = "promptmanager_text"
-                        prompt[virtual_node_id] = {
-                            "class_type": "CLIPTextEncode",  # Use CLIPTextEncode for compatibility
-                            "inputs": {
-                                "text": current_prompt_text
-                            },
-                            "_meta": {
-                                "original_class_type": "PromptManager",
-                                "virtual": True
+                    if current_prompt_text:
+                        integration.logger.debug(f"Including PromptManager prompt in SaveImage metadata: {current_prompt_text[:50]}...")
+                        
+                        # If no prompt provided, create one with our text
+                        if prompt is None:
+                            prompt = {}
+                        
+                        # Ensure prompt has the standard structure ComfyUI expects
+                        if not isinstance(prompt, dict):
+                            prompt = {}
+                        
+                        # Find PromptManager nodes and fix them for standard parser compatibility
+                        prompt_updated = False
+                        for node_id, node_data in prompt.items():
+                            if isinstance(node_data, dict):
+                                class_type = node_data.get('class_type', '')
+                                if 'promptmanager' in class_type.lower():
+                                    # Update the inputs to include our actual prompt text
+                                    if 'inputs' not in node_data:
+                                        node_data['inputs'] = {}
+                                    node_data['inputs']['text'] = current_prompt_text
+                                    
+                                    # SIMPLE FIX: Change class_type to CLIPTextEncode for standard parser compatibility
+                                    # Keep original class_type in metadata for reference
+                                    if '_meta' not in node_data:
+                                        node_data['_meta'] = {}
+                                    node_data['_meta']['original_class_type'] = class_type
+                                    node_data['class_type'] = 'CLIPTextEncode'
+                                    
+                                    prompt_updated = True
+                                    integration.logger.debug(f"Fixed PromptManager node {node_id} - changed class_type to CLIPTextEncode for compatibility")
+                        
+                        # If no PromptManager nodes found, add a standalone one
+                        if not prompt_updated:
+                            virtual_node_id = "promptmanager_text"
+                            prompt[virtual_node_id] = {
+                                "class_type": "CLIPTextEncode",  # Use CLIPTextEncode for compatibility
+                                "inputs": {
+                                    "text": current_prompt_text
+                                },
+                                "_meta": {
+                                    "original_class_type": "PromptManager",
+                                    "virtual": True
+                                }
                             }
-                        }
-                        integration.logger.debug("Added standalone CLIPTextEncode node with PromptManager text")
+                            integration.logger.debug("Added standalone CLIPTextEncode node with PromptManager text")
                 
-                # Call original method with potentially modified prompt
+                except Exception as e:
+                    # CRITICAL: Never let our errors break image saving
+                    integration.logger.error(f"Error in PromptManager metadata integration: {e}")
+                    integration.logger.warning("Falling back to original SaveImage behavior")
+                    # Continue with original behavior below
+                
+                # ALWAYS call original method, even if our code failed
                 return original_save_images(self_node, images, filename_prefix, prompt, extra_pnginfo)
             
             # Apply the patch
@@ -323,6 +348,7 @@ class ComfyUIMetadataIntegration:
         except Exception as e:
             self.logger.error(f"Failed to patch SaveImage node: {e}")
             self.logger.warning("PromptManager prompts may not appear in standard ComfyUI metadata")
+            # Don't raise - allow module to continue loading
     
     def get_output_directory(self):
         """
