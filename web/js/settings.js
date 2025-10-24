@@ -26,6 +26,7 @@
         backupInterval: 3600,
         maxBackups: 10,
         databasePathCustom: false,
+        saveCanceledPrompts: false,
 
         // Performance
         lazyLoading: true,
@@ -206,6 +207,44 @@
 
     // Export for use in other files
     window.loadSettings = loadSettings;
+
+    // Save settings to backend API
+    async function saveSettingsToAPI(settings) {
+        try {
+            // Save specific settings to backend via SettingsService
+            const backendSettings = {
+                'storage.prompts.save_canceled': settings.saveCanceledPrompts ?? false,
+                'enable_logging': settings.enableLogging ?? true,
+            };
+
+            for (const [key, value] of Object.entries(backendSettings)) {
+                try {
+                    const response = await fetch(`/api/prompt_manager/settings/${encodeURIComponent(key)}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            value: value,
+                            category: key.split('.')[0] || 'general'
+                        })
+                    });
+
+                    if (!response.ok) {
+                        console.warn(`Failed to save setting ${key} to backend:`, response.statusText);
+                    }
+                } catch (error) {
+                    console.error(`Error saving setting ${key}:`, error);
+                }
+            }
+
+            return true;
+        } catch (error) {
+            console.error('Error saving settings to API:', error);
+            return false;
+        }
+    }
+
+    // Export for use in other files
+    window.saveSettingsToAPI = saveSettingsToAPI;
 
     // Save settings to backend API and localStorage
     async function saveSettings(settings, options = {}) {
