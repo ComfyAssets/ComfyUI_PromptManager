@@ -308,6 +308,31 @@ class SaveImagePatcher:
                     self._maybe_print(f"   ✅ Patcher passing through {node_class_name} result to ComfyUI")
                     return result
 
+                # Check if workflow contains PromptManager nodes
+                # Skip tracking if this workflow doesn't use PromptManager
+                has_promptmanager = False
+                if prompt and isinstance(prompt, dict):
+                    for node_id, node_data in prompt.items():
+                        if isinstance(node_data, dict):
+                            class_type = node_data.get('class_type', '')
+                            if 'promptmanager' in class_type.lower():
+                                has_promptmanager = True
+                                break
+
+                if not has_promptmanager:
+                    self._maybe_print("   ⏭️ No PromptManager nodes in workflow - skipping tracking")
+                    # Just call the original function and return
+                    result = self.original_save_func(
+                        self_node,
+                        images,
+                        filename_prefix,
+                        prompt,
+                        extra_pnginfo,
+                        *args,
+                        **kwargs
+                    )
+                    return result
+
                 # Extract tracking information
                 unique_id, node_id, class_type = self._select_prompt_node(prompt, extra_pnginfo)
 
