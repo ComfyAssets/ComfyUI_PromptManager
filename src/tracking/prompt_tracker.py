@@ -49,16 +49,25 @@ class PromptTracker:
     executions correctly.
     """
     
-    def __init__(self, db_path: str = "prompts.db", thumbnail_service=None):
+    def __init__(self, db_path: str = "prompts.db", thumbnail_service=None, config=None):
         """Initialize the PromptTracker.
 
         Args:
             db_path: Path to the database file
             thumbnail_service: Optional EnhancedThumbnailService for auto-generation
+            config: Optional Config object for tracking settings
         """
         self.db_path = db_path
         self.db_instance = None  # Will be set by get_prompt_tracker if provided
         self.thumbnail_service = thumbnail_service  # For auto-generating thumbnails
+        
+        # Load config or use defaults
+        if config and hasattr(config, 'tracking'):
+            self.tracking_config = config.tracking
+        else:
+            # Import here to avoid circular dependency
+            from ..config import TrackingConfig
+            self.tracking_config = TrackingConfig()
 
         # Thread-safe tracking storage
         self._lock = threading.RLock()
@@ -175,23 +184,62 @@ class PromptTracker:
             unique_id: Optional unique ID if provided by ComfyUI
 
         Returns:
-            TrackingData if found, None otherwise
+            TrackingData if found and recent, None otherwise
         """
+        import time
+        
+        # Use configured max age instead of hardcoded value
+        max_age = self.tracking_config.max_age_seconds
+        
         with self._lock:
             # Direct lookup if unique_id provided
             if unique_id:
                 if unique_id in self._active_prompts:
-                    return self._active_prompts[unique_id]
+                    tracking_data = self._active_prompts[unique_id]
+                    
+                    # CRITICAL: Validate age to prevent cross-workflow contamination
+                    age = time.time() - tracking_data.timestamp
+                    if age > max_age:
+                        logger.warning(
+                            f"Rejected stale tracking data for node {unique_id} "
+                            f"(age: {age:.1f}s > {max_age}s)"
+                        )
+                        # Remove stale entry
+                        del self._active_prompts[unique_id]
+                        return None
+                    
+                    return tracking_data
 
                 # Check if it's a type mismatch issue (string vs int)
                 for key in self._active_prompts.keys():
                     if str(key) == str(unique_id):
+                        tracking_data = self._active_prompts[key]
+                        
+                        # Validate age
+                        age = time.time() - tracking_data.timestamp
+                        if age > max_age:
+                            logger.warning(
+                                f"Rejected stale tracking data for node {key} "
+                                f"(age: {age:.1f}s > {max_age}s)"
+                            )
+                            del self._active_prompts[key]
+                            return None
+                        
                         logger.warning(f"Type mismatch in unique_id lookup: key={key} (type={type(key)}), unique_id={unique_id} (type={type(unique_id)})")
-                        return self._active_prompts[key]
+                        return tracking_data
 
             # Fallback: if caller passed a PromptManager node_id as save_node_id, use the most recent entry
             if save_node_id and save_node_id.startswith("PromptManager"):
-                candidates = [t for t in self._active_prompts.values() if t.node_id == save_node_id]
+                candidates = []
+                for t in self._active_prompts.values():
+                    if t.node_id == save_node_id:
+                        # Validate age
+                        age = time.time() - t.timestamp
+                        if age <= max_age:
+                            candidates.append(t)
+                        else:
+                            logger.debug(f"Skipped stale candidate (age: {age:.1f}s)")
+                
                 if candidates:
                     return max(candidates, key=lambda t: t.timestamp)
             
@@ -211,6 +259,12 @@ class PromptTracker:
             for source_id in prompt_sources:
                 for tracking in self._active_prompts.values():
                     if tracking.node_id == source_id:
+                        # Validate age
+                        age = time.time() - tracking.timestamp
+                        if age > max_age:
+                            logger.debug(f"Skipped stale tracking data in graph search (age: {age:.1f}s)")
+                            continue
+                        
                         score = self._calculate_confidence(tracking, save_node_id)
                         # Prefer higher score, or if scores are equal, prefer earlier timestamp (first prompt)
                         if score > best_score or (score == best_score and tracking.timestamp < best_timestamp):
