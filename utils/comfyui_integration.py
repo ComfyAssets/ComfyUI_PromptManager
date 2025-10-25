@@ -207,8 +207,11 @@ class ComfyUIMetadataIntegration:
         Get the current prompt text for metadata inclusion.
         
         Retrieves the most appropriate prompt text for inclusion in image metadata.
-        Uses a fallback strategy: thread-local storage first, then global storage,
-        with recency checks to avoid stale prompts.
+        Uses a fallback strategy: thread-local storage first, then global storage
+        for the CURRENT thread only.
+        
+        CRITICAL: This method will ONLY return prompts from the current thread
+        to prevent cross-workflow contamination.
         
         Args:
             node_id: Optional specific node ID to retrieve prompt for
@@ -225,7 +228,7 @@ class ComfyUIMetadataIntegration:
                 latest = max(self._thread_local.prompts.values(), key=lambda x: x['timestamp'])
                 return latest['text']
         
-        # Fallback to global storage
+        # Fallback to global storage FOR CURRENT THREAD ONLY
         thread_id = threading.current_thread().ident
         with self._lock:
             # Look for prompts from current thread
@@ -235,14 +238,9 @@ class ComfyUIMetadataIntegration:
             if thread_prompts:
                 latest = max(thread_prompts.values(), key=lambda x: x['timestamp'])
                 return latest['text']
-            
-            # Last resort: return the most recent prompt from any thread
-            if self._current_prompts:
-                latest = max(self._current_prompts.values(), key=lambda x: x['timestamp'])
-                # Only return if it's recent (within last 5 minutes)
-                if time.time() - latest['timestamp'] < 300:
-                    return latest['text']
         
+        # If no prompts found for current thread, return None
+        # DO NOT fall back to other threads - prevents cross-workflow contamination
         return None
     
     def _patch_saveimage_node(self):
@@ -253,10 +251,11 @@ class ComfyUIMetadataIntegration:
         include PromptManager prompts in the image metadata. The patching:
         
         1. Wraps the original save_images method
-        2. Retrieves current PromptManager prompt text
-        3. Modifies the workflow data to include the prompt
-        4. Changes PromptManager class_type to CLIPTextEncode for compatibility
-        5. Calls the original method with modified data
+        2. Checks if current workflow contains PromptManager nodes
+        3. Retrieves current PromptManager prompt text if applicable
+        4. Modifies the workflow data to include the prompt
+        5. Changes PromptManager class_type to CLIPTextEncode for compatibility
+        6. Calls the original method with modified data
         
         The patching is designed to be minimally invasive and maintain full
         compatibility with existing ComfyUI functionality. If ANY error occurs
@@ -279,8 +278,25 @@ class ComfyUIMetadataIntegration:
                 CRITICAL: This function must NEVER break image saving. Any errors
                 in our code should be caught and logged, then fall through to the
                 original save_images method.
+                
+                Only injects metadata if the workflow actually contains PromptManager nodes.
                 """
                 try:
+                    # CRITICAL: Check if this workflow contains PromptManager nodes
+                    has_promptmanager = False
+                    if prompt and isinstance(prompt, dict):
+                        for node_id, node_data in prompt.items():
+                            if isinstance(node_data, dict):
+                                class_type = node_data.get('class_type', '')
+                                if 'promptmanager' in class_type.lower():
+                                    has_promptmanager = True
+                                    break
+                    
+                    # Only inject metadata if this workflow uses PromptManager
+                    if not has_promptmanager:
+                        integration.logger.debug("Workflow does not contain PromptManager nodes - skipping metadata injection")
+                        return original_save_images(self_node, images, filename_prefix, prompt, extra_pnginfo)
+                    
                     # Get current prompt text from PromptManager
                     current_prompt_text = integration.get_current_prompt_text()
                     
@@ -349,6 +365,7 @@ class ComfyUIMetadataIntegration:
             self.logger.error(f"Failed to patch SaveImage node: {e}")
             self.logger.warning("PromptManager prompts may not appear in standard ComfyUI metadata")
             # Don't raise - allow module to continue loading
+            # Don't raise - allow module to continue loading
     
     def get_output_directory(self):
         """
@@ -411,12 +428,15 @@ class ComfyUIMetadataIntegration:
         prevent memory leaks and ensure that only recent, relevant prompts are
         used for metadata inclusion.
         
+        Clears both global and thread-local storage.
+        
         Args:
             max_age_seconds: Maximum age in seconds before a prompt registration
                            is considered stale and removed (default: 600 seconds/10 minutes)
         """
         current_time = time.time()
         
+        # Clean global storage
         with self._lock:
             old_keys = [
                 key for key, prompt_data in self._current_prompts.items()
@@ -426,8 +446,21 @@ class ComfyUIMetadataIntegration:
             for key in old_keys:
                 del self._current_prompts[key]
         
+        # Clean thread-local storage
+        if hasattr(self._thread_local, 'prompts'):
+            old_node_ids = [
+                node_id for node_id, prompt_data in self._thread_local.prompts.items()
+                if current_time - prompt_data['timestamp'] > max_age_seconds
+            ]
+            
+            for node_id in old_node_ids:
+                del self._thread_local.prompts[node_id]
+            
+            if old_node_ids:
+                self.logger.debug(f"Cleaned up {len(old_node_ids)} thread-local prompts")
+        
         if old_keys:
-            self.logger.debug(f"Cleaned up {len(old_keys)} old prompt registrations")
+            self.logger.debug(f"Cleaned up {len(old_keys)} global prompt registrations")
 
 
 # Global instance using sys.modules pattern (survives module reloads)
