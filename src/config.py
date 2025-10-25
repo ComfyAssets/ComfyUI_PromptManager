@@ -202,6 +202,16 @@ class UIConfig:
     compact_mode: bool = False
 
 
+
+
+@dataclass
+class TrackingConfig:
+    """Prompt tracking configuration settings."""
+    
+    max_age_seconds: int = 300  # Max age for tracking data (5 minutes default)
+    cleanup_interval: int = 3600  # How often to run cleanup (1 hour default)
+    auto_cleanup: bool = True  # Automatically cleanup old tracking data
+
 class Config:
     """Main configuration class."""
     
@@ -222,6 +232,7 @@ class Config:
         self.storage = StorageConfig()
         self.logging = LoggingConfig()
         self.ui = UIConfig()
+        self.tracking = TrackingConfig()
         
         # Set default values for extra settings
         self._extra_settings.setdefault('storage.prompts.save_canceled', False)
