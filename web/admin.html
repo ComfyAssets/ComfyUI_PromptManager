@@ -1273,7 +1273,7 @@
                     console.log(`Star ${starNum}: ${isActive ? 'active' : 'inactive'}`);
                     const starIcon = isActive ? '⭐' : '☆'; // filled star vs outline star
                     const color = isActive ? '#fbbf24' : '#9ca3af'; // yellow-400 : gray-400
-                    return `<button class="star-btn" data-star="${starNum}" data-prompt-id="${promptId}" style="font-size: 1.125rem; color: ${color}; background: none; border: none; cursor: pointer; transition: all 0.2s;" onclick="window.admin.setRating(${promptId}, ${starNum})">${starIcon}</button>`;
+                  return `<button class="star-btn" data-star="${starNum}" data-prompt-id="${promptId}" style="font-size: 1.125rem; color: ${color}; background: none; border: none; cursor: pointer; transition: all 0.2s; width: 1.125rem; height: 1.125rem; display: inline-flex; align-items: center; justify-content: center; padding: 0; line-height: 1;" onclick="window.admin.setRating(${promptId}, ${starNum})">${starIcon}</button>`;
                 }).join("");
             }
 
