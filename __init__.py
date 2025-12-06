@@ -39,15 +39,18 @@ def get_version():
 
 from .prompt_manager import PromptManager
 from .prompt_manager_text import PromptManagerText
+from .prompt_search_list import PromptSearchList
 
 NODE_CLASS_MAPPINGS = {
     "PromptManager": PromptManager,
     "PromptManagerText": PromptManagerText,
+    "PromptSearchList": PromptSearchList,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptManager": "Prompt Manager",
     "PromptManagerText": "Prompt Manager Text",
+    "PromptSearchList": "Prompt Search List",
 }
 
 # Define path to web directory for UI components

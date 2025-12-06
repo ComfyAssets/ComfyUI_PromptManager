@@ -2,94 +2,11 @@
 
 A comprehensive ComfyUI custom node that extends the standard text encoder with persistent prompt storage, advanced search capabilities, automatic image gallery system, and powerful ComfyUI workflow metadata analysis using SQLite.
 
-# 🚀 Prompt Manager v2 Beta - Now Available!
+## 📋 A Note on v2 Development
 
-## ⚠️ IMPORTANT: BACKUP YOUR DATA FIRST!
-**Before testing v2, you MUST backup your `prompts.db` file!** The v1 to v2 migration is irreversible. Copy your `prompts.db` to a safe location before proceeding.
-
-## 🎉 Beta Testing Now Open
-
-We're excited to announce that Prompt Manager v2 is ready for beta testing! This is a complete rewrite with major improvements and new features.
-
-### ✨ What's Working in Beta
-
-- **🖼️ Gallery System** - Completely redesigned with improved performance
-- **📊 New Prompt Tracking** - Advanced tracking system with better metadata handling
-- **🎛️ 3 New Widgets** - Enhanced UI components for better workflow integration
-- **🎬 Film Strip View** - Visual prompt browsing with thumbnail preview
-- **🌫️ Smart Blur** - New blur option with customizable tag triggers for sensitive content
-- **⚙️ Settings Panel** - Comprehensive configuration options
-- **➕ Add Prompt Dialog** - Streamlined prompt creation interface
-
-### 🚧 Still in Development
-
-- **📋 Metadata Viewer** - Being ported from v1
-- **📁 Collections** - New organizational system coming soon
-
-### ⚠️ Known Issues & Important Notes
-
-- **⏳ Initial Stats Processing**: The first time you load v2, stats parsing can take **2-3 minutes** for large databases. We're actively optimizing this - it's one of the main reasons for the beta!
-- **🔄 v1 → v2 Migration**: We especially need testers who can help validate the migration process from v1 databases
-- The migration is one-way - once converted, you cannot go back to v1
-
-### 📊 Beta Testing Focus Areas
-
-1. **Database Migration** - Test the v1 to v2 migration with your existing data (after backing up!)
-2. **Performance** - Report initial load times and any performance issues
-3. **Gallery Functionality** - Test the new gallery with your image collections
-4. **Widget Integration** - Verify the 3 new widgets work in your workflows
-5. **Film Strip View** - Test thumbnail generation and navigation
-6. **Blur Feature** - Configure and test the tag-triggered blur system
-
-## 🧪 How to Join Beta Testing
-
-1. **Backup your `prompts.db` file** (Critical!)
-2. Checkout the `v2/beta-02-win32` branch:
-   ```bash
-   git checkout v2/beta-02-win32
-   ```
-3. Restart ComfyUI
-4. Test the features and migration process
-5. Report issues or feedback via [Issues](../../issues) or [Discussions](../../discussions)
-
-## 🤝 Help Shape the Future of Prompt Manager!
-
-**Join our growing community and influence the features YOU want!**
-
-This beta is more than just testing - it's your chance to:
-- **Shape Development** - Your feedback directly influences what we build next
-- **Request Features** - Tell us what tools would make your workflow better
-- **Build Community** - Connect with other power users and share workflows
-- **Priority Access** - Beta testers get early access to new features
-
-We're building Prompt Manager WITH the community, not just for it. Your use cases, workflow needs, and feature ideas are what drive our roadmap. Whether you need better organization tools, advanced search capabilities, or integration features - we want to hear about it!
-
-👥 **Join the conversation:**
-- Share your workflows and use cases
-- Vote on upcoming features
-- Collaborate with other creators
-- Help prioritize our development roadmap
-
-## 📊 Progress
-
-**Beta completion status:**
-
-- [█████████░] 90% complete
-
-✅ Core migration system
-✅ Gallery redesign
-✅ New widgets & UI
-✅ Prompt tracking system
-✅ Film strip view
-✅ Blur feature with triggers
-✅ Settings panel
-⬜ Performance optimization
-⬜ Metadata viewer port
-⬜ Collections system
+V2 development will take longer as life has taken me in other directions for the moment. I will still work on it but not as actively as before. In the meantime, I will backport some of the features users have requested from v2 over to v1. Once v2 is ready, I will update here. Thank you for your continued support!
 
 ---
-
-💡 Your feedback is crucial for making v2 stable and performant. Together, we're building the prompt management system the community needs!
 
 ## Overview
 
@@ -113,6 +30,17 @@ A text-focused variant that outputs raw STRING for maximum flexibility:
 - **📝 Pure Text Output**: Outputs STRING type for use with any text-accepting node
 - **🔗 Text Concatenation**: Built-in prepend/append functionality for dynamic text assembly
 - **⚡ Lightweight Processing**: No CLIP encoding overhead for text-only workflows
+
+### **PromptSearchList** (Batch Processing Node)
+
+A search node that outputs prompts as a list for batch processing workflows:
+
+- **🔍 Database Search**: Search prompts by text, category, tags, and rating
+- **📋 List Output**: Uses `OUTPUT_IS_LIST` for native batch processing support
+- **🔗 Batch Compatible**: Connect directly to batch processing nodes like String OutputList
+- **⚡ Read-Only**: Lightweight search operation without database writes
+
+This node enables powerful batch workflows by allowing you to search your prompt database and process multiple prompts in a single execution.
 
 ### **Shared Features**
 
@@ -329,6 +257,20 @@ For text-only workflows or when you need STRING output:
    - **Append Text**: Text added after your main prompt
 4. **Connect the STRING output** to any node that accepts text input
 
+#### Using PromptSearchList (Batch Processing)
+
+For batch processing workflows that need multiple prompts:
+
+1. **Add the PromptSearchList node** to your workflow
+2. **Configure search filters**:
+   - **text**: Search for prompts containing this text
+   - **category**: Filter by specific category
+   - **tags**: Comma-separated tags to filter by (e.g., "anime, detailed")
+   - **min_rating**: Minimum rating (0-5) to include
+   - **limit**: Maximum number of results (1-1000, default 50)
+3. **Connect the prompts output** to batch-compatible nodes like String OutputList
+4. **Each matching prompt** will be processed as a separate batch item
+
 #### Shared Metadata Options
 
 Both nodes support the same metadata fields:
@@ -528,9 +470,29 @@ PromptManagerText → Text Processor → Style Applicator → Final Text Node
 "cyberpunk city" → style processing → "neon-lit cyberpunk metropolis at night"
 ```
 
+### PromptSearchList (Batch Processing) Examples
+
+#### Example 6: Batch Processing with Tags
+
+```
+Tags: "anime, detailed"
+Limit: 10
+→ Outputs: List of up to 10 prompts with both "anime" and "detailed" tags
+→ Each prompt is processed as a separate batch item
+```
+
+#### Example 7: Category-Based Batch
+
+```
+Category: "portraits"
+Min Rating: 4
+Limit: 20
+→ Outputs: List of up to 20 highly-rated portrait prompts for batch generation
+```
+
 ### Traditional Examples
 
-#### Example 6: Abstract Art
+#### Example 8: Abstract Art
 
 ```
 Input: "Swirling colors in an abstract geometric pattern"
@@ -581,6 +543,7 @@ CREATE TABLE generated_images (
 
 - **`prompt_manager.py`** - Main ComfyUI node implementation (CLIP encoding)
 - **`prompt_manager_text.py`** - Text-only node implementation (STRING output)
+- **`prompt_search_list.py`** - Batch search node implementation (LIST output)
 - **`database/models.py`** - Database schema and connection management
 - **`database/operations.py`** - CRUD operations and search functionality
 - **`py/api.py`** - Web API endpoints for the interface
@@ -604,6 +567,7 @@ ComfyUI_PromptManager/
 ├── __init__.py                    # Node registration
 ├── prompt_manager.py             # Main node implementation (CLIP encoding)
 ├── prompt_manager_text.py        # Text-only node implementation (STRING output)
+├── prompt_search_list.py         # Batch search node implementation (LIST output)
 ├── database/
 │   ├── __init__.py
 │   ├── models.py                 # Database schema
@@ -812,6 +776,14 @@ MIT License - see LICENSE file for details.
 - **Version control**: Track prompt iterations and effectiveness
 
 ## Changelog
+
+### v3.0.10 (Batch Processing Node)
+
+- **📋 PromptSearchList Node**: New node that searches the prompt database and outputs results as a list
+- **🔗 Batch Processing Support**: Uses `OUTPUT_IS_LIST` for native ComfyUI batch processing compatibility
+- **🔍 Full Search Capabilities**: Search by text, category, tags, minimum rating, and result limit
+- **⚡ Lightweight Operation**: Read-only search with no database writes
+- **🎯 Workflow Integration**: Connect directly to batch processing nodes like String OutputList
 
 ### v3.0.9 (Output-Wide Gallery & Video Support)
 
