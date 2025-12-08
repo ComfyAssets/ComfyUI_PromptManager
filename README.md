@@ -56,6 +56,7 @@ Both nodes include the complete PromptManager feature set:
 - **🔬 Workflow Analysis**: Extract and analyze ComfyUI workflow data from PNG images
 - **📋 Metadata Viewer**: Standalone tool for analyzing ComfyUI-generated images
 - **🛠️ System Management**: Built-in diagnostics, backup/restore, and maintenance tools
+- **🏷️ AI AutoTag**: Automatically tag your image collection using JoyCaption vision models
 
 ![Image Gallery](images/pm-02.png)
 
@@ -362,6 +363,53 @@ Import existing ComfyUI images into your database:
    - Prompts extracted and linked
    - Any errors or issues encountered
 5. **Access imported data** through the normal gallery interface
+
+### 🏷️ AI AutoTag
+
+Automatically tag your entire image collection using JoyCaption vision models:
+
+#### **Model Options**
+
+- **JoyCaption Beta One FP16**: Full precision model for highest quality tagging (requires more VRAM)
+- **JoyCaption Beta One GGUF (FP8)**: Quantized model for lower VRAM usage with minimal quality loss
+
+#### **Two Tagging Modes**
+
+1. **AutoTag (Batch Mode)**: Tag your entire collection automatically
+   - Click **"🏷️ AutoTag"** in the admin dashboard
+   - Choose your model type (FP16 or GGUF)
+   - Select how to handle already-tagged images:
+     - **Skip images with existing tags**: Preserve your meticulous manual tagging work
+     - **Re-tag all images**: Overwrite existing tags with fresh AI analysis
+   - Customize the system prompt to match your collection style
+   - Monitor real-time progress as images are processed
+
+2. **Review Mode**: Tag images one-by-one with approval
+   - Review each image and its AI-generated tags before applying
+   - Edit, add, or remove tags before saving
+   - Skip images you don't want to tag
+   - Perfect for curating high-quality tag assignments
+
+#### **Handling Existing Tags**
+
+For users who have meticulously tagged their collections from the start:
+- AutoTag respects your existing work with the **"Skip tagged"** option
+- **"auto-scanned"** placeholder tags don't count as real tags
+- Choose to re-tag specific images while preserving others
+- Review mode asks before overwriting on each image
+
+#### **Customization**
+
+Adjust the system prompt to match your tagging style:
+- Focus on specific attributes (style, mood, composition, subjects)
+- Match your existing tag vocabulary
+- Optimize for your collection's theme (anime, photography, landscapes, etc.)
+
+#### **Requirements**
+
+- Sufficient VRAM for the chosen model (FP16 requires more, GGUF is lighter)
+- Models are downloaded automatically on first use
+- Feature requests and improvements are welcome!
 
 ### 🌐 Web Interface Features
 
@@ -770,12 +818,22 @@ MIT License - see LICENSE file for details.
 
 ### Integration Ideas
 
-- **Auto-tagging**: Use AI to automatically categorize prompts
 - **Workflow linking**: Connect prompts to specific workflow templates
 - **Image analysis**: Analyze generated images to improve suggestions
 - **Version control**: Track prompt iterations and effectiveness
 
 ## Changelog
+
+### v3.0.23 (AI AutoTag Release)
+
+- **🏷️ AI AutoTag**: Automatically tag your entire image collection using JoyCaption vision models
+- **🤖 Dual Model Support**: Choose between JoyCaption Beta One FP16 (high quality) or GGUF FP8 (lower VRAM)
+- **📋 Two Tagging Modes**: Batch mode for bulk tagging, Review mode for one-by-one approval
+- **⚙️ Smart Tag Handling**: Skip already-tagged images or re-tag all - respects your existing work
+- **✏️ Customizable Prompts**: Adjust the system prompt to match your collection style and tag vocabulary
+- **🔄 Real-time Progress**: SSE-based streaming progress updates during batch operations
+- **📦 Tag Accordion UI**: Collapsible tag display shows first row with expandable section for large tag sets
+- **🎯 Review Confirmation**: Prompts before overwriting existing tags in review mode
 
 ### v3.0.10 (Batch Processing Node)
 
