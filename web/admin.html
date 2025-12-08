@@ -236,9 +236,13 @@
                                 class="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg transition-colors">
                             📁 Restore DB
                         </button>
-                        <button id="scanBtn" 
+                        <button id="scanBtn"
                                 class="px-4 py-2 bg-pink-600 hover:bg-pink-700 text-white text-sm font-medium rounded-lg transition-colors">
                             📸 Scan Images
+                        </button>
+                        <button id="autoTagBtn"
+                                class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            🏷️ Auto Tag
                         </button>
                         <button id="logsBtn" 
                                 class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors">
@@ -819,6 +823,323 @@
         </div>
     </div>
 
+    <!-- Auto Tag Modal -->
+    <div id="autoTagModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl p-6 max-w-lg w-full mx-4 border border-gray-700">
+            <div class="flex items-center justify-between mb-6">
+                <h3 class="text-xl font-semibold text-gray-100">🏷️ Auto Tag Images</h3>
+                <button onclick="hideModal('autoTagModal')" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
+                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Model Selection -->
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-gray-400 mb-3">Model Selection</label>
+                <div class="space-y-3">
+                    <label class="flex items-center justify-between p-4 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-650 border border-gray-600">
+                        <div class="flex items-center">
+                            <input type="radio" name="autoTagModel" value="gguf" checked class="w-4 h-4 text-purple-600 bg-gray-700 border-gray-600 focus:ring-purple-500">
+                            <div class="ml-3">
+                                <span class="text-gray-100 font-medium">GGUF Model</span>
+                                <span class="text-gray-400 text-sm ml-2">(Recommended, ~4.5GB)</span>
+                            </div>
+                        </div>
+                        <div id="ggufModelStatus" class="flex items-center space-x-2">
+                            <span class="text-gray-400 text-sm">Checking...</span>
+                        </div>
+                    </label>
+                    <label class="flex items-center justify-between p-4 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-650 border border-gray-600">
+                        <div class="flex items-center">
+                            <input type="radio" name="autoTagModel" value="hf" class="w-4 h-4 text-purple-600 bg-gray-700 border-gray-600 focus:ring-purple-500">
+                            <div class="ml-3">
+                                <span class="text-gray-100 font-medium">HuggingFace Model</span>
+                                <span class="text-gray-400 text-sm ml-2">(~16GB)</span>
+                            </div>
+                        </div>
+                        <div id="hfModelStatus" class="flex items-center space-x-2">
+                            <span class="text-gray-400 text-sm">Checking...</span>
+                        </div>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Prompt Template -->
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-gray-400 mb-2">Tag Generation Prompt</label>
+                <textarea id="autoTagPrompt" rows="6"
+                    class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 text-gray-100 text-sm font-mono resize-none custom-scrollbar"
+                    placeholder="Enter prompt template...">Generate only comma-separated Danbooru tags (lowercase_underscores, no spaces).
+Include: subject_count (1girl/1boy/etc), gender, ethnicity (asian, caucasian, etc), age_approx (teen, young_woman), body_attributes, face_features, hairstyle, appearance, clothing, accessories, pose, expression, action, camera_angle, camera_shot, scene_composition (wide_shot, long_shot, dutch_angle), environment, background_elements, lighting, mood.
+Prioritize visual accuracy.
+No sentences, no commentary, no captions. Only tags. Keep length short but descriptive.</textarea>
+            </div>
+
+            <!-- Tagged Images Handling (for Auto Tag mode) -->
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-gray-400 mb-3">Already Tagged Images</label>
+                <div class="space-y-2">
+                    <label class="flex items-center p-3 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-650 border border-gray-600">
+                        <input type="radio" name="autoTagMode" value="skip" checked class="w-4 h-4 text-purple-600 bg-gray-700 border-gray-600 focus:ring-purple-500">
+                        <span class="ml-3 text-gray-100">Skip images with existing tags</span>
+                    </label>
+                    <label class="flex items-center p-3 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-650 border border-gray-600">
+                        <input type="radio" name="autoTagMode" value="retag" class="w-4 h-4 text-purple-600 bg-gray-700 border-gray-600 focus:ring-purple-500">
+                        <span class="ml-3 text-gray-100">Re-tag all images</span>
+                    </label>
+                </div>
+                <p class="text-gray-500 text-xs mt-2">Note: "auto-scanned" is not counted as a real tag</p>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="flex justify-end space-x-3">
+                <button onclick="hideModal('autoTagModal')"
+                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                    Cancel
+                </button>
+                <button id="startReviewBtn"
+                        class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors">
+                    👁️ Review
+                </button>
+                <button id="startAutoTagBtn"
+                        class="px-6 py-2 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-lg transition-colors">
+                    🏷️ Auto Tag
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Auto Tag Review Modal -->
+    <div id="autoTagReviewModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl p-6 max-w-4xl w-full mx-4 border border-gray-700">
+            <div class="flex items-center justify-between mb-6">
+                <h3 class="text-xl font-semibold text-gray-100">
+                    👁️ Review Tags
+                    <span class="text-gray-400 text-base font-normal">(<span id="reviewCurrentIndex">1</span> of <span id="reviewTotalCount">0</span>)</span>
+                </h3>
+                <button onclick="window.admin.cancelReview()" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
+                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- Image Preview -->
+                <div class="bg-gray-900 rounded-lg p-4">
+                    <img id="reviewImage" src="" alt="Review image" class="w-full h-64 object-contain rounded">
+                    <p id="reviewImageName" class="text-gray-400 text-sm mt-2 text-center truncate">image_name.png</p>
+                </div>
+
+                <!-- Generated Tags -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-400 mb-3">Generated Tags (click to remove)</label>
+                    <div id="reviewTagsContainer" class="p-4 bg-gray-900 rounded-lg">
+                        <!-- Visible tags (first row) -->
+                        <div id="reviewTagsVisible" class="flex flex-wrap gap-2">
+                            <!-- First row of tags -->
+                        </div>
+                        <!-- Accordion for remaining tags -->
+                        <div id="reviewTagsAccordion" class="hidden mt-3">
+                            <div id="reviewTagsHidden" class="flex flex-wrap gap-2 max-h-[180px] overflow-y-auto custom-scrollbar">
+                                <!-- Remaining tags -->
+                            </div>
+                        </div>
+                        <!-- Toggle button -->
+                        <button id="reviewTagsToggle" class="hidden mt-3 text-sm text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1">
+                            <span id="reviewTagsToggleIcon">▼</span>
+                            <span id="reviewTagsToggleText">Show all tags</span>
+                            <span id="reviewTagsCount" class="text-gray-500"></span>
+                        </button>
+                    </div>
+                    <p class="text-gray-500 text-xs mt-2">Click the × on tags to remove them before applying</p>
+                </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="flex justify-between mt-6">
+                <button id="skipReviewBtn"
+                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                    ⏭️ Skip
+                </button>
+                <div class="flex space-x-3">
+                    <button onclick="window.admin.cancelReview()"
+                            class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors">
+                        Cancel All
+                    </button>
+                    <button id="applyReviewBtn"
+                            class="px-6 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors">
+                        ✅ Apply & Next
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Auto Tag Progress Modal -->
+    <div id="autoTagProgressModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700">
+            <h3 class="text-xl font-semibold text-gray-100 mb-6">🏷️ Auto Tagging Progress</h3>
+
+            <!-- Current File -->
+            <div class="mb-4">
+                <p class="text-gray-400 text-sm">Processing:</p>
+                <p id="autoTagCurrentFile" class="text-gray-100 font-medium truncate">Initializing...</p>
+            </div>
+
+            <!-- Progress Bar -->
+            <div class="mb-6">
+                <div class="flex justify-between text-sm text-gray-400 mb-2">
+                    <span>Progress</span>
+                    <span id="autoTagProgressPercent">0%</span>
+                </div>
+                <div class="w-full bg-gray-700 rounded-full h-3">
+                    <div id="autoTagProgressBar" class="bg-purple-600 h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <!-- Stats -->
+            <div class="grid grid-cols-3 gap-4 mb-6">
+                <div class="bg-gray-700 rounded-lg p-3 text-center">
+                    <div class="text-2xl font-bold text-purple-400" id="autoTagProcessed">0</div>
+                    <div class="text-xs text-gray-400">Processed</div>
+                </div>
+                <div class="bg-gray-700 rounded-lg p-3 text-center">
+                    <div class="text-2xl font-bold text-green-400" id="autoTagApplied">0</div>
+                    <div class="text-xs text-gray-400">Tags Applied</div>
+                </div>
+                <div class="bg-gray-700 rounded-lg p-3 text-center">
+                    <div class="text-2xl font-bold text-yellow-400" id="autoTagSkipped">0</div>
+                    <div class="text-xs text-gray-400">Skipped</div>
+                </div>
+            </div>
+
+            <!-- Cancel Button -->
+            <div class="flex justify-center">
+                <button id="cancelAutoTagBtn"
+                        class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Auto Tag Loading Model Modal -->
+    <div id="autoTagLoadingModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700 text-center">
+            <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
+            <h3 class="text-xl font-semibold text-gray-100 mb-2">Loading Model</h3>
+            <p id="autoTagLoadingStatus" class="text-gray-400">Initializing...</p>
+            <p class="text-gray-500 text-sm mt-4">This may take 30-60 seconds on first load</p>
+        </div>
+    </div>
+
+    <!-- Re-tag Confirmation Modal -->
+    <div id="retagConfirmModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl p-6 max-w-lg w-full mx-4 border border-gray-700">
+            <h3 class="text-xl font-semibold text-gray-100 mb-4">🏷️ Image Already Tagged</h3>
+
+            <!-- Image preview -->
+            <div class="mb-4">
+                <img id="retagPreviewImage" src="" alt="Preview" class="w-full h-48 object-contain bg-gray-900 rounded-lg">
+                <p id="retagImageName" class="text-gray-400 text-sm mt-2 text-center truncate"></p>
+            </div>
+
+            <!-- Existing tags -->
+            <div class="mb-4">
+                <p class="text-gray-300 text-sm mb-2">Current tags:</p>
+                <div id="retagExistingTags" class="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
+                    <!-- Tags will be inserted here -->
+                </div>
+            </div>
+
+            <p class="text-gray-400 mb-6">This image already has tags. Would you like to generate new tags?</p>
+
+            <!-- Buttons -->
+            <div class="flex gap-3 justify-end">
+                <button id="retagSkipBtn"
+                        class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                    Skip
+                </button>
+                <button id="retagSkipAllBtn"
+                        class="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white font-medium rounded-lg transition-colors">
+                    Skip All Tagged
+                </button>
+                <button id="retagConfirmBtn"
+                        class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-lg transition-colors">
+                    Re-tag
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Auto Tag Download Modal -->
+    <div id="autoTagDownloadModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700">
+            <h3 class="text-xl font-semibold text-gray-100 mb-6">📥 Downloading Model</h3>
+
+            <!-- Model Name -->
+            <div class="mb-4">
+                <p class="text-gray-400 text-sm">Downloading:</p>
+                <p id="downloadModelName" class="text-gray-100 font-medium">GGUF Model</p>
+            </div>
+
+            <!-- Progress Bar -->
+            <div class="mb-6">
+                <div class="flex justify-between text-sm text-gray-400 mb-2">
+                    <span id="downloadStatus">Preparing...</span>
+                    <span id="downloadProgressPercent">0%</span>
+                </div>
+                <div class="w-full bg-gray-700 rounded-full h-3">
+                    <div id="downloadProgressBar" class="bg-blue-600 h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <!-- Cancel Button -->
+            <div class="flex justify-center">
+                <button id="cancelDownloadBtn"
+                        class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <style>
+        /* Tag chip styles for Auto Tag feature */
+        .tag-chip {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.25rem 0.5rem;
+            background-color: #374151;
+            border: 1px solid #4B5563;
+            border-radius: 0.375rem;
+            font-size: 0.875rem;
+            color: #D1D5DB;
+            transition: all 0.2s;
+        }
+        .tag-chip:hover {
+            background-color: #4B5563;
+        }
+        .tag-chip .tag-remove {
+            margin-left: 0.375rem;
+            padding: 0.125rem;
+            border-radius: 0.25rem;
+            cursor: pointer;
+            color: #9CA3AF;
+            transition: all 0.2s;
+        }
+        .tag-chip .tag-remove:hover {
+            color: #EF4444;
+            background-color: rgba(239, 68, 68, 0.2);
+        }
+        .hover\:bg-gray-650:hover {
+            background-color: #525252;
+        }
+    </style>
+
     <script>
         class PromptAdmin {
             constructor() {
@@ -871,6 +1192,7 @@
                 document.getElementById("backupBtn").addEventListener("click", () => this.backupDatabase());
                 document.getElementById("restoreBtn").addEventListener("click", () => this.showRestoreModal());
                 document.getElementById("scanBtn").addEventListener("click", () => this.showScanModal());
+                document.getElementById("autoTagBtn").addEventListener("click", () => this.showAutoTagModal());
                 document.getElementById("logsBtn").addEventListener("click", () => this.showLogsModal());
                 document.getElementById("metadataBtn").addEventListener("click", () => this.openMetadataViewer());
                 document.getElementById("galleryBtn").addEventListener("click", () => this.openGallery());
@@ -934,6 +1256,22 @@
                 document.getElementById("downloadLogsBtn").addEventListener("click", () => this.downloadLogs());
                 document.getElementById("clearLogsBtn").addEventListener("click", () => this.clearLogs());
                 document.getElementById("updateLogConfigBtn").addEventListener("click", () => this.updateLogConfig());
+
+                // Auto Tag modals
+                document.getElementById("startAutoTagBtn").addEventListener("click", () => this.startAutoTag());
+                document.getElementById("startReviewBtn").addEventListener("click", () => this.startReview());
+                document.getElementById("skipReviewBtn").addEventListener("click", () => this.skipReviewImage());
+                document.getElementById("applyReviewBtn").addEventListener("click", () => this.applyReviewTags());
+                document.getElementById("cancelAutoTagBtn").addEventListener("click", () => this.cancelAutoTag());
+                document.getElementById("cancelDownloadBtn").addEventListener("click", () => this.cancelDownload());
+
+                // Re-tag confirmation modal buttons
+                document.getElementById("retagSkipBtn").addEventListener("click", () => this.handleRetagChoice('skip'));
+                document.getElementById("retagSkipAllBtn").addEventListener("click", () => this.handleRetagChoice('skipAll'));
+                document.getElementById("retagConfirmBtn").addEventListener("click", () => this.handleRetagChoice('retag'));
+
+                // Tags accordion toggle
+                document.getElementById("reviewTagsToggle").addEventListener("click", () => this.toggleReviewTags());
 
                 // Close modals on backdrop click
                 document.querySelectorAll("[id$='Modal']").forEach((modal) => {
@@ -1234,17 +1572,35 @@
                                         </div>
                                     </div>
                                     
-                                    <div class="flex flex-wrap items-center gap-2">
-                                        ${tags.map(tag => `
-                                            <span class="inline-flex items-center space-x-1 bg-blue-600/20 text-blue-300 px-3 py-1 rounded-full text-sm border border-blue-600/30">
-                                                <span>${this.escapeHtml(tag)}</span>
-                                                <button class="text-blue-300 hover:text-blue-100 ml-1" onclick="window.admin.removeTag(${prompt.id}, '${this.escapeHtml(tag)}')">&times;</button>
-                                            </span>
-                                        `).join("")}
-                                        <button class="inline-flex items-center space-x-1 bg-gray-600 hover:bg-gray-500 text-gray-300 px-3 py-1 rounded-full text-sm transition-colors" onclick="window.admin.addTag(${prompt.id})">
-                                            <span>+</span>
-                                            <span>Add Tags</span>
-                                        </button>
+                                    <div class="tags-accordion" data-prompt-id="${prompt.id}">
+                                        <div class="flex flex-wrap items-center gap-2">
+                                            ${tags.slice(0, 10).map(tag => `
+                                                <span class="inline-flex items-center space-x-1 bg-blue-600/20 text-blue-300 px-3 py-1 rounded-full text-sm border border-blue-600/30">
+                                                    <span>${this.escapeHtml(tag)}</span>
+                                                    <button class="text-blue-300 hover:text-blue-100 ml-1" onclick="window.admin.removeTag(${prompt.id}, '${this.escapeHtml(tag)}')">&times;</button>
+                                                </span>
+                                            `).join("")}
+                                            <button class="inline-flex items-center space-x-1 bg-gray-600 hover:bg-gray-500 text-gray-300 px-3 py-1 rounded-full text-sm transition-colors" onclick="window.admin.addTag(${prompt.id})">
+                                                <span>+</span>
+                                                <span>Add Tags</span>
+                                            </button>
+                                        </div>
+                                        ${tags.length > 10 ? `
+                                            <div class="tags-hidden hidden mt-2">
+                                                <div class="flex flex-wrap items-center gap-2 max-h-[180px] overflow-y-auto custom-scrollbar p-2 bg-gray-800/50 rounded-lg">
+                                                    ${tags.slice(10).map(tag => `
+                                                        <span class="inline-flex items-center space-x-1 bg-blue-600/20 text-blue-300 px-3 py-1 rounded-full text-sm border border-blue-600/30">
+                                                            <span>${this.escapeHtml(tag)}</span>
+                                                            <button class="text-blue-300 hover:text-blue-100 ml-1" onclick="window.admin.removeTag(${prompt.id}, '${this.escapeHtml(tag)}')">&times;</button>
+                                                        </span>
+                                                    `).join("")}
+                                                </div>
+                                            </div>
+                                            <button class="tags-toggle-btn mt-2 text-sm text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1" onclick="window.admin.toggleMainTags(${prompt.id})">
+                                                <span class="toggle-icon">▼</span>
+                                                <span class="toggle-text">Show ${tags.length - 10} more tags</span>
+                                            </button>
+                                        ` : ''}
                                     </div>
                                 </div>
                                 
@@ -3892,7 +4248,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
             copyAllMetadata() {
                 if (!this.currentMetadata) return;
-                
+
                 const allData = `Checkpoint: ${this.currentMetadata.checkpoint || 'Unknown'}
 Positive Prompt: ${this.currentMetadata.positivePrompt}
 Negative Prompt: ${this.currentMetadata.negativePrompt}
@@ -3900,8 +4256,535 @@ Steps: ${this.currentMetadata.steps || 'Unknown'}
 CFG Scale: ${this.currentMetadata.cfgScale || 'Unknown'}
 Sampler: ${this.currentMetadata.sampler || 'Unknown'}
 Seed: ${this.currentMetadata.seed || 'Unknown'}`;
-                
+
                 this.copyToClipboard(allData);
+            }
+
+            // ==========================================
+            // Auto Tag Feature Methods
+            // ==========================================
+
+            // State for AutoTag feature
+            autoTagState = {
+                eventSource: null,
+                downloadEventSource: null,
+                reviewImages: [],
+                reviewIndex: 0,
+                currentTags: [],
+                cancelled: false,
+                skipAllTagged: false,
+                retagResolve: null,  // Promise resolver for retag confirmation
+                tagsExpanded: false  // Track accordion state
+            };
+
+            async showAutoTagModal() {
+                this.showModal("autoTagModal");
+                await this.checkAutoTagModels();
+            }
+
+            async checkAutoTagModels() {
+                const ggufStatus = document.getElementById("ggufModelStatus");
+                const hfStatus = document.getElementById("hfModelStatus");
+
+                ggufStatus.innerHTML = '<span class="text-gray-400 text-sm">Checking...</span>';
+                hfStatus.innerHTML = '<span class="text-gray-400 text-sm">Checking...</span>';
+
+                try {
+                    const response = await fetch('/prompt_manager/autotag/models');
+                    const data = await response.json();
+
+                    if (data.success) {
+                        // Update GGUF status
+                        if (data.models.gguf.downloaded) {
+                            ggufStatus.innerHTML = '<span class="text-green-400 text-sm">✓ Downloaded</span>';
+                        } else {
+                            ggufStatus.innerHTML = `<button onclick="window.admin.downloadModel('gguf')" class="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded transition-colors">Download</button>`;
+                        }
+
+                        // Update HF status
+                        if (data.models.hf.downloaded) {
+                            hfStatus.innerHTML = '<span class="text-green-400 text-sm">✓ Downloaded</span>';
+                        } else {
+                            hfStatus.innerHTML = `<button onclick="window.admin.downloadModel('hf')" class="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded transition-colors">Download</button>`;
+                        }
+                    } else {
+                        ggufStatus.innerHTML = '<span class="text-red-400 text-sm">Error</span>';
+                        hfStatus.innerHTML = '<span class="text-red-400 text-sm">Error</span>';
+                    }
+                } catch (error) {
+                    console.error('Error checking models:', error);
+                    ggufStatus.innerHTML = '<span class="text-red-400 text-sm">Error</span>';
+                    hfStatus.innerHTML = '<span class="text-red-400 text-sm">Error</span>';
+                }
+            }
+
+            async downloadModel(modelType) {
+                const modelName = modelType === 'gguf' ? 'GGUF Model' : 'HuggingFace Model';
+                document.getElementById('downloadModelName').textContent = modelName;
+                document.getElementById('downloadStatus').textContent = 'Preparing...';
+                document.getElementById('downloadProgressPercent').textContent = '0%';
+                document.getElementById('downloadProgressBar').style.width = '0%';
+
+                this.hideModal("autoTagModal");
+                this.showModal("autoTagDownloadModal");
+
+                try {
+                    this.autoTagState.downloadEventSource = new EventSource(`/prompt_manager/autotag/download/${modelType}`);
+
+                    this.autoTagState.downloadEventSource.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+
+                        if (data.status === 'downloading') {
+                            const percent = Math.round(data.progress * 100);
+                            document.getElementById('downloadStatus').textContent = data.message || 'Downloading...';
+                            document.getElementById('downloadProgressPercent').textContent = `${percent}%`;
+                            document.getElementById('downloadProgressBar').style.width = `${percent}%`;
+                        } else if (data.status === 'complete') {
+                            this.autoTagState.downloadEventSource.close();
+                            this.hideModal("autoTagDownloadModal");
+                            this.showModal("autoTagModal");
+                            this.checkAutoTagModels();
+                            this.showNotification('Model downloaded successfully!', 'success');
+                        } else if (data.status === 'error') {
+                            this.autoTagState.downloadEventSource.close();
+                            this.hideModal("autoTagDownloadModal");
+                            this.showModal("autoTagModal");
+                            this.showNotification(`Download failed: ${data.message}`, 'error');
+                        }
+                    };
+
+                    this.autoTagState.downloadEventSource.onerror = () => {
+                        this.autoTagState.downloadEventSource.close();
+                        this.hideModal("autoTagDownloadModal");
+                        this.showModal("autoTagModal");
+                        this.showNotification('Download connection lost', 'error');
+                    };
+                } catch (error) {
+                    console.error('Download error:', error);
+                    this.hideModal("autoTagDownloadModal");
+                    this.showModal("autoTagModal");
+                    this.showNotification('Failed to start download', 'error');
+                }
+            }
+
+            cancelDownload() {
+                if (this.autoTagState.downloadEventSource) {
+                    this.autoTagState.downloadEventSource.close();
+                    this.autoTagState.downloadEventSource = null;
+                }
+                this.hideModal("autoTagDownloadModal");
+                this.showModal("autoTagModal");
+            }
+
+            async startAutoTag() {
+                const modelType = document.querySelector('input[name="autoTagModel"]:checked').value;
+                const prompt = document.getElementById('autoTagPrompt').value;
+                const skipTagged = document.querySelector('input[name="autoTagMode"]:checked').value === 'skip';
+
+                // Check if model is downloaded
+                const response = await fetch('/prompt_manager/autotag/models');
+                const data = await response.json();
+
+                if (data.success && !data.models[modelType].downloaded) {
+                    this.showNotification('Please download the selected model first', 'warning');
+                    return;
+                }
+
+                this.hideModal("autoTagModal");
+                this.showModal("autoTagProgressModal");
+
+                // Reset progress display
+                document.getElementById('autoTagCurrentFile').textContent = 'Loading model...';
+                document.getElementById('autoTagProgressPercent').textContent = '0%';
+                document.getElementById('autoTagProgressBar').style.width = '0%';
+                document.getElementById('autoTagProcessed').textContent = '0';
+                document.getElementById('autoTagApplied').textContent = '0';
+                document.getElementById('autoTagSkipped').textContent = '0';
+
+                this.autoTagState.cancelled = false;
+
+                try {
+                    const formData = new URLSearchParams();
+                    formData.append('model_type', modelType);
+                    formData.append('prompt', prompt);
+                    formData.append('skip_tagged', skipTagged ? 'true' : 'false');
+
+                    this.autoTagState.eventSource = new EventSource(`/prompt_manager/autotag/start?${formData.toString()}`);
+
+                    this.autoTagState.eventSource.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+
+                        if (data.type === 'progress') {
+                            document.getElementById('autoTagCurrentFile').textContent = data.status || 'Processing...';
+                            document.getElementById('autoTagProgressPercent').textContent = `${data.progress || 0}%`;
+                            document.getElementById('autoTagProgressBar').style.width = `${data.progress || 0}%`;
+                            if (data.processed !== undefined) {
+                                document.getElementById('autoTagProcessed').textContent = data.processed;
+                                document.getElementById('autoTagApplied').textContent = data.tagged || 0;
+                                document.getElementById('autoTagSkipped').textContent = data.skipped || 0;
+                            }
+                        } else if (data.type === 'complete') {
+                            this.autoTagState.eventSource.close();
+                            this.hideModal("autoTagProgressModal");
+                            this.showNotification(`Auto tagging complete! Applied tags to ${data.tagged || 0} prompts.`, 'success');
+                            this.search(); // Refresh the prompt list
+                        } else if (data.type === 'error') {
+                            this.autoTagState.eventSource.close();
+                            this.hideModal("autoTagProgressModal");
+                            this.showNotification(`Auto tag error: ${data.message}`, 'error');
+                        } else if (data.type === 'cancelled') {
+                            this.autoTagState.eventSource.close();
+                            this.hideModal("autoTagProgressModal");
+                            this.showNotification('Auto tagging cancelled', 'info');
+                        }
+                    };
+
+                    this.autoTagState.eventSource.onerror = (error) => {
+                        console.error('AutoTag SSE error:', error);
+                        console.error('EventSource readyState:', this.autoTagState.eventSource.readyState);
+                        this.autoTagState.eventSource.close();
+                        this.hideModal("autoTagProgressModal");
+                        this.showNotification('Connection lost during auto tagging', 'error');
+                    };
+                } catch (error) {
+                    console.error('Auto tag error:', error);
+                    this.hideModal("autoTagProgressModal");
+                    this.showNotification('Failed to start auto tagging', 'error');
+                }
+            }
+
+            cancelAutoTag() {
+                this.autoTagState.cancelled = true;
+                if (this.autoTagState.eventSource) {
+                    this.autoTagState.eventSource.close();
+                    this.autoTagState.eventSource = null;
+                }
+                this.hideModal("autoTagProgressModal");
+                this.showNotification('Auto tagging cancelled', 'info');
+            }
+
+            async startReview() {
+                const modelType = document.querySelector('input[name="autoTagModel"]:checked').value;
+
+                // Check if model is downloaded
+                const response = await fetch('/prompt_manager/autotag/models');
+                const data = await response.json();
+
+                if (data.success && !data.models[modelType].downloaded) {
+                    this.showNotification('Please download the selected model first', 'warning');
+                    return;
+                }
+
+                this.hideModal("autoTagModal");
+
+                // Show loading modal while we fetch images and load model
+                this.showModal("autoTagLoadingModal");
+                document.getElementById('autoTagLoadingStatus').textContent = 'Fetching images from database...';
+
+                // Get ALL images with linked prompts from the database
+                try {
+                    const scanResponse = await fetch('/prompt_manager/images/all');
+                    const scanData = await scanResponse.json();
+
+                    if (!scanData.success || !scanData.images || scanData.images.length === 0) {
+                        this.hideModal("autoTagLoadingModal");
+                        this.showNotification('No images with linked prompts found in database', 'warning');
+                        return;
+                    }
+
+                    this.autoTagState.reviewImages = scanData.images;
+                    this.autoTagState.reviewIndex = 0;
+                    this.autoTagState.modelType = modelType;
+                    this.autoTagState.prompt = document.getElementById('autoTagPrompt').value;
+                    this.autoTagState.modelLoaded = false;
+                    this.autoTagState.skipAllTagged = false;  // Reset skip flag for new session
+
+                    document.getElementById('reviewTotalCount').textContent = scanData.images.length;
+
+                    // Update loading status - model will load on first image
+                    document.getElementById('autoTagLoadingStatus').textContent =
+                        `Found ${scanData.images.length} images. Loading ${modelType.toUpperCase()} model...`;
+
+                    // Load first image (this will load the model)
+                    await this.loadNextReviewImage();
+
+                    // Hide loading, show review modal
+                    this.hideModal("autoTagLoadingModal");
+                    this.showModal("autoTagReviewModal");
+                } catch (error) {
+                    console.error('Error starting review:', error);
+                    this.hideModal("autoTagLoadingModal");
+                    this.showNotification('Failed to start review mode', 'error');
+                }
+            }
+
+            // Check if tags array has "real" tags (excluding auto-scanned)
+            getRealTags(tags) {
+                if (!tags || !Array.isArray(tags)) return [];
+                return tags.filter(tag => tag !== 'auto-scanned');
+            }
+
+            // Show the re-tag confirmation modal
+            async showRetagConfirmation(image, imageUrl, realTags) {
+                return new Promise((resolve) => {
+                    this.autoTagState.retagResolve = resolve;
+
+                    // Set up the modal content
+                    document.getElementById('retagPreviewImage').src = imageUrl;
+                    document.getElementById('retagImageName').textContent = image.image_path.split('/').pop();
+
+                    // Display existing tags
+                    const tagsContainer = document.getElementById('retagExistingTags');
+                    tagsContainer.innerHTML = realTags.map(tag =>
+                        `<span class="px-2 py-1 bg-purple-600 text-white text-xs rounded">${this.escapeHtml(tag)}</span>`
+                    ).join('');
+
+                    // Show modal
+                    this.showModal('retagConfirmModal');
+                });
+            }
+
+            // Handle user's choice in re-tag modal
+            handleRetagChoice(choice) {
+                this.hideModal('retagConfirmModal');
+
+                if (choice === 'skipAll') {
+                    this.autoTagState.skipAllTagged = true;
+                }
+
+                if (this.autoTagState.retagResolve) {
+                    this.autoTagState.retagResolve(choice);
+                    this.autoTagState.retagResolve = null;
+                }
+            }
+
+            async loadNextReviewImage() {
+                if (this.autoTagState.reviewIndex >= this.autoTagState.reviewImages.length) {
+                    this.hideModal("autoTagReviewModal");
+                    this.showNotification('Review complete!', 'success');
+                    this.search();
+                    return;
+                }
+
+                const image = this.autoTagState.reviewImages[this.autoTagState.reviewIndex];
+                document.getElementById('reviewCurrentIndex').textContent = this.autoTagState.reviewIndex + 1;
+
+                // Build image URL from image_path (database field)
+                const imagePath = image.image_path;
+                const filename = imagePath.split('/').pop();
+                // Use the serve endpoint with relative path
+                const relPath = imagePath.includes('/output/') ?
+                    imagePath.substring(imagePath.indexOf('/output/') + 8) : filename;
+                const imageUrl = `/prompt_manager/images/serve/${relPath}`;
+
+                // Check if image already has real tags (excluding auto-scanned)
+                const realTags = this.getRealTags(image.prompt_tags);
+
+                if (realTags.length > 0) {
+                    // Skip if "Skip All Tagged" was selected
+                    if (this.autoTagState.skipAllTagged) {
+                        this.autoTagState.reviewIndex++;
+                        return this.loadNextReviewImage();
+                    }
+
+                    // Show confirmation modal
+                    const choice = await this.showRetagConfirmation(image, imageUrl, realTags);
+
+                    if (choice === 'skip' || choice === 'skipAll') {
+                        this.autoTagState.reviewIndex++;
+                        return this.loadNextReviewImage();
+                    }
+                    // choice === 'retag' - continue with tagging
+                }
+
+                document.getElementById('reviewImage').src = imageUrl;
+                document.getElementById('reviewImageName').textContent = filename || 'Unknown';
+                document.getElementById('reviewTagsVisible').innerHTML = '<div class="text-gray-400">Generating tags...</div>';
+                document.getElementById('reviewTagsHidden').innerHTML = '';
+                document.getElementById('reviewTagsAccordion').classList.add('hidden');
+                document.getElementById('reviewTagsToggle').classList.add('hidden');
+
+                // Store prompt_id from database for applying tags later
+                this.autoTagState.currentPromptId = image.prompt_id;
+                this.autoTagState.tagsExpanded = false;  // Reset accordion for new image
+
+                try {
+                    const response = await fetch('/prompt_manager/autotag/single', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            image_path: image.image_path,
+                            model_type: this.autoTagState.modelType,
+                            prompt: this.autoTagState.prompt
+                        })
+                    });
+
+                    const data = await response.json();
+
+                    if (data.success) {
+                        this.autoTagState.currentTags = data.tags;
+                        // Use prompt_id from database, fallback to API response
+                        this.autoTagState.currentPromptId = image.prompt_id || data.prompt_id;
+                        this.renderReviewTags();
+                    } else {
+                        document.getElementById('reviewTagsVisible').innerHTML =
+                            `<div class="text-red-400">Error: ${data.error}</div>`;
+                    }
+                } catch (error) {
+                    console.error('Error generating tags:', error);
+                    document.getElementById('reviewTagsVisible').innerHTML =
+                        '<div class="text-red-400">Failed to generate tags</div>';
+                }
+            }
+
+            renderReviewTags() {
+                const visibleContainer = document.getElementById('reviewTagsVisible');
+                const hiddenContainer = document.getElementById('reviewTagsHidden');
+                const accordion = document.getElementById('reviewTagsAccordion');
+                const toggleBtn = document.getElementById('reviewTagsToggle');
+                const toggleIcon = document.getElementById('reviewTagsToggleIcon');
+                const toggleText = document.getElementById('reviewTagsToggleText');
+                const countSpan = document.getElementById('reviewTagsCount');
+
+                if (this.autoTagState.currentTags.length === 0) {
+                    visibleContainer.innerHTML = '<div class="text-gray-400">No tags generated</div>';
+                    hiddenContainer.innerHTML = '';
+                    accordion.classList.add('hidden');
+                    toggleBtn.classList.add('hidden');
+                    return;
+                }
+
+                // Show first ~10 tags in visible row, rest in accordion
+                const visibleCount = Math.min(10, this.autoTagState.currentTags.length);
+                const visibleTags = this.autoTagState.currentTags.slice(0, visibleCount);
+                const hiddenTags = this.autoTagState.currentTags.slice(visibleCount);
+
+                const createTagChip = (tag, index) => `
+                    <span class="tag-chip">
+                        ${this.escapeHtml(tag)}
+                        <span class="tag-remove" onclick="window.admin.removeReviewTag(${index})">×</span>
+                    </span>
+                `;
+
+                visibleContainer.innerHTML = visibleTags.map((tag, i) => createTagChip(tag, i)).join('');
+
+                if (hiddenTags.length > 0) {
+                    hiddenContainer.innerHTML = hiddenTags.map((tag, i) => createTagChip(tag, visibleCount + i)).join('');
+                    toggleBtn.classList.remove('hidden');
+                    countSpan.textContent = `(${hiddenTags.length} more)`;
+
+                    // Reset accordion state
+                    if (!this.autoTagState.tagsExpanded) {
+                        accordion.classList.add('hidden');
+                        toggleIcon.textContent = '▼';
+                        toggleText.textContent = 'Show all tags';
+                    }
+                } else {
+                    hiddenContainer.innerHTML = '';
+                    accordion.classList.add('hidden');
+                    toggleBtn.classList.add('hidden');
+                }
+            }
+
+            toggleReviewTags() {
+                const accordion = document.getElementById('reviewTagsAccordion');
+                const toggleIcon = document.getElementById('reviewTagsToggleIcon');
+                const toggleText = document.getElementById('reviewTagsToggleText');
+
+                this.autoTagState.tagsExpanded = !this.autoTagState.tagsExpanded;
+
+                if (this.autoTagState.tagsExpanded) {
+                    accordion.classList.remove('hidden');
+                    toggleIcon.textContent = '▲';
+                    toggleText.textContent = 'Show less';
+                } else {
+                    accordion.classList.add('hidden');
+                    toggleIcon.textContent = '▼';
+                    toggleText.textContent = 'Show all tags';
+                }
+            }
+
+            toggleMainTags(promptId) {
+                const container = document.querySelector(`.tags-accordion[data-prompt-id="${promptId}"]`);
+                if (!container) return;
+
+                const hiddenSection = container.querySelector('.tags-hidden');
+                const toggleBtn = container.querySelector('.tags-toggle-btn');
+                if (!hiddenSection || !toggleBtn) return;
+
+                const toggleIcon = toggleBtn.querySelector('.toggle-icon');
+                const toggleText = toggleBtn.querySelector('.toggle-text');
+                const isHidden = hiddenSection.classList.contains('hidden');
+
+                if (isHidden) {
+                    hiddenSection.classList.remove('hidden');
+                    toggleIcon.textContent = '▲';
+                    toggleText.textContent = 'Show less';
+                } else {
+                    hiddenSection.classList.add('hidden');
+                    toggleIcon.textContent = '▼';
+                    // Recalculate the count from the hidden tags
+                    const hiddenTags = hiddenSection.querySelectorAll('span.inline-flex').length;
+                    toggleText.textContent = `Show ${hiddenTags} more tags`;
+                }
+            }
+
+            removeReviewTag(index) {
+                this.autoTagState.currentTags.splice(index, 1);
+                this.renderReviewTags();
+            }
+
+            skipReviewImage() {
+                this.autoTagState.reviewIndex++;
+                this.loadNextReviewImage();
+            }
+
+            async applyReviewTags() {
+                if (this.autoTagState.currentTags.length === 0) {
+                    this.skipReviewImage();
+                    return;
+                }
+
+                const promptId = this.autoTagState.currentPromptId;
+
+                if (!promptId) {
+                    this.showNotification('No linked prompt found for this image', 'warning');
+                    this.skipReviewImage();
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/prompt_manager/autotag/apply', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            prompt_id: promptId,
+                            tags: this.autoTagState.currentTags
+                        })
+                    });
+
+                    const data = await response.json();
+
+                    if (data.success) {
+                        this.showNotification(`Applied ${this.autoTagState.currentTags.length} tags`, 'success');
+                    } else {
+                        this.showNotification(data.error || 'Failed to apply tags', 'warning');
+                    }
+                } catch (error) {
+                    console.error('Error applying tags:', error);
+                    this.showNotification('Failed to apply tags', 'error');
+                }
+
+                this.autoTagState.reviewIndex++;
+                this.loadNextReviewImage();
+            }
+
+            cancelReview() {
+                this.autoTagState.reviewImages = [];
+                this.autoTagState.reviewIndex = 0;
+                this.autoTagState.currentTags = [];
+                this.autoTagState.skipAllTagged = false;
+                this.hideModal("autoTagReviewModal");
             }
         }
 

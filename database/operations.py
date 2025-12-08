@@ -195,7 +195,7 @@ class PromptDatabase:
         params.extend([limit, offset])
         
         query = " ".join(query_parts)
-        
+
         with self.model.get_connection() as conn:
             cursor = conn.execute(query, params)
             rows = cursor.fetchall()
@@ -368,12 +368,12 @@ class PromptDatabase:
     def get_all_tags(self) -> List[str]:
         """
         Get all unique tags from the database.
-        
+
         Returns:
             List of tag names
         """
         all_tags = set()
-        
+
         with self.model.get_connection() as conn:
             cursor = conn.execute("SELECT tags FROM prompts WHERE tags IS NOT NULL")
             for row in cursor.fetchall():
@@ -381,32 +381,43 @@ class PromptDatabase:
                     tags = json.loads(row['tags'])
                     if isinstance(tags, list):
                         all_tags.update(tags)
+                    elif isinstance(tags, str):
+                        # Handle corrupted data (comma-separated string stored as JSON)
+                        parsed_tags = [t.strip() for t in tags.split(',') if t.strip()]
+                        all_tags.update(parsed_tags)
                 except (json.JSONDecodeError, TypeError):
                     continue
-        
+
         return sorted(list(all_tags))
     
     def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
         """
         Convert a database row to a dictionary with parsed JSON fields.
-        
+
         Args:
             row: SQLite row object
-            
+
         Returns:
             Dictionary representation of the row
         """
         data = dict(row)
-        
+
         # Parse tags JSON
         if data.get('tags'):
             try:
-                data['tags'] = json.loads(data['tags'])
+                parsed = json.loads(data['tags'])
+                if isinstance(parsed, list):
+                    data['tags'] = parsed
+                elif isinstance(parsed, str):
+                    # Handle corrupted data (comma-separated string stored as JSON)
+                    data['tags'] = [t.strip() for t in parsed.split(',') if t.strip()]
+                else:
+                    data['tags'] = []
             except (json.JSONDecodeError, TypeError):
                 data['tags'] = []
         else:
             data['tags'] = []
-        
+
         return data
     
     def export_prompts(self, file_path: str, format: str = "json") -> bool:
@@ -714,6 +725,43 @@ class PromptDatabase:
                 (limit,)
             )
             return [self._image_row_to_dict(row) for row in cursor.fetchall()]
+
+    def get_all_images(self) -> List[Dict[str, Any]]:
+        """
+        Get all generated images with their linked prompts.
+
+        Returns:
+            List of all image records with prompt text and tags
+        """
+        with self.model.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT gi.*, p.text as prompt_text, p.tags as prompt_tags
+                FROM generated_images gi
+                LEFT JOIN prompts p ON gi.prompt_id = p.id
+                ORDER BY gi.generation_time DESC
+                """
+            )
+            rows = cursor.fetchall()
+            result = []
+            for row in rows:
+                data = self._image_row_to_dict(row)
+                # Parse prompt_tags JSON
+                if row['prompt_tags']:
+                    try:
+                        tags = json.loads(row['prompt_tags'])
+                        if isinstance(tags, list):
+                            data['prompt_tags'] = tags
+                        elif isinstance(tags, str):
+                            data['prompt_tags'] = [t.strip() for t in tags.split(',') if t.strip()]
+                        else:
+                            data['prompt_tags'] = []
+                    except (json.JSONDecodeError, TypeError):
+                        data['prompt_tags'] = []
+                else:
+                    data['prompt_tags'] = []
+                result.append(data)
+            return result
 
     def search_images_by_prompt(self, search_term: str) -> List[Dict[str, Any]]:
         """
