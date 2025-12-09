@@ -824,6 +824,14 @@ MIT License - see LICENSE file for details.
 
 ## Changelog
 
+### v3.0.24 (Manual Prompt Creation)
+
+- **➕ Add Prompt Button**: New "Add Prompt" button in the admin dashboard Bulk Actions bar
+- **📝 Direct Prompt Creation**: Create prompts directly from the UI without generating images
+- **🛡️ Protection from Pruning**: New prompts are automatically protected from orphan cleanup by default
+- **🏷️ Full Metadata Support**: Set category, tags, rating, and notes when creating prompts
+- **🔒 Orphan Protection Toggle**: Option to protect or unprotect prompts from maintenance cleanup
+
 ### v3.0.23 (AI AutoTag Release)
 
 - **🏷️ AI AutoTag**: Automatically tag your entire image collection using JoyCaption vision models

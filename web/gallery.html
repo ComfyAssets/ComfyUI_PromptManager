@@ -191,6 +191,10 @@
                                 class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-lg transition-colors">
                             🏷️ Auto Tag
                         </button>
+                        <button id="addPromptBtn"
+                                class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            ➕ Add Prompt
+                        </button>
                     </div>
                 </div>
             </div>
@@ -780,6 +784,101 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
         </div>
     </div>
 
+    <!-- Add Prompt Modal -->
+    <div id="addPromptModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl p-6 max-w-2xl w-full mx-4 border border-gray-700 max-h-[90vh] overflow-y-auto custom-scrollbar">
+            <div class="flex items-center justify-between mb-6">
+                <h3 class="text-xl font-semibold text-gray-100">➕ Add New Prompt</h3>
+                <button onclick="window.gallery.hideAddPromptModal()" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
+                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Prompt Text -->
+            <div class="mb-5">
+                <label class="block text-sm font-medium text-gray-400 mb-2">Prompt Text <span class="text-red-400">*</span></label>
+                <textarea id="addPromptText" rows="4"
+                    class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 text-gray-100 text-sm resize-none custom-scrollbar"
+                    placeholder="Enter your prompt text here..."></textarea>
+            </div>
+
+            <!-- Category and Rating Row -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+                <!-- Category -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-400 mb-2">Category</label>
+                    <div class="relative">
+                        <input type="text" id="addPromptCategory" list="categoryList"
+                            class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 text-gray-100 text-sm"
+                            placeholder="Select or type category...">
+                        <datalist id="categoryList"></datalist>
+                    </div>
+                </div>
+
+                <!-- Rating -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-400 mb-2">Rating</label>
+                    <div class="flex items-center space-x-1" id="addPromptRating">
+                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="1">☆</button>
+                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="2">☆</button>
+                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="3">☆</button>
+                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="4">☆</button>
+                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="5">☆</button>
+                        <button type="button" class="ml-2 text-xs text-gray-500 hover:text-gray-300" id="clearRatingBtn">Clear</button>
+                    </div>
+                    <input type="hidden" id="addPromptRatingValue" value="">
+                </div>
+            </div>
+
+            <!-- Tags -->
+            <div class="mb-5">
+                <label class="block text-sm font-medium text-gray-400 mb-2">Tags</label>
+                <div class="relative">
+                    <div id="addPromptTagsContainer" class="flex flex-wrap gap-2 p-3 bg-gray-700 border border-gray-600 rounded-lg min-h-[44px]">
+                        <input type="text" id="addPromptTagInput"
+                            class="flex-1 min-w-[150px] bg-transparent border-none outline-none text-gray-100 text-sm placeholder-gray-500"
+                            placeholder="Type to add tags...">
+                    </div>
+                    <div id="tagSuggestions" class="absolute left-0 right-0 top-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg hidden z-10 max-h-48 overflow-y-auto custom-scrollbar"></div>
+                </div>
+                <p class="text-gray-500 text-xs mt-1">Press Enter or comma to add a tag. Click a tag to remove it.</p>
+            </div>
+
+            <!-- Notes -->
+            <div class="mb-5">
+                <label class="block text-sm font-medium text-gray-400 mb-2">Notes</label>
+                <textarea id="addPromptNotes" rows="2"
+                    class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 text-gray-100 text-sm resize-none custom-scrollbar"
+                    placeholder="Optional notes about this prompt..."></textarea>
+            </div>
+
+            <!-- Protection Option -->
+            <div class="mb-6">
+                <label class="flex items-start p-4 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-650 border border-gray-600">
+                    <input type="checkbox" id="addPromptProtected" checked class="w-4 h-4 mt-0.5 text-green-600 bg-gray-700 border-gray-600 rounded focus:ring-green-500">
+                    <div class="ml-3">
+                        <span class="text-gray-100 font-medium">Protect from orphan cleanup</span>
+                        <p class="text-gray-400 text-sm mt-1">Keep this prompt even if it has no linked images. Uncheck if you want this prompt to be automatically removed during maintenance when it has no images.</p>
+                    </div>
+                </label>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="flex justify-end space-x-3">
+                <button onclick="window.gallery.hideAddPromptModal()"
+                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                    Cancel
+                </button>
+                <button id="saveNewPromptBtn"
+                        class="px-6 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors">
+                    ➕ Add Prompt
+                </button>
+            </div>
+        </div>
+    </div>
+
     <style>
         /* Tag chip styles for Auto Tag feature */
         .tag-chip {
@@ -837,6 +936,7 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                 document.getElementById('listViewBtn').addEventListener('click', () => this.setViewMode('list'));
                 document.getElementById('settingsBtn').addEventListener('click', () => this.showSettings());
                 document.getElementById('autoTagBtn').addEventListener('click', () => this.showAutoTagModal());
+                document.getElementById('addPromptBtn').addEventListener('click', () => this.showAddPromptModal());
                 document.getElementById('retryBtn').addEventListener('click', () => this.loadImages());
                 document.getElementById('prevPageBtn').addEventListener('click', () => this.previousPage());
                 document.getElementById('nextPageBtn').addEventListener('click', () => this.nextPage());
@@ -883,8 +983,19 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                 document.getElementById('cancelDownloadBtn').addEventListener('click', () => this.cancelDownload());
                 document.getElementById('unloadModelBtn').addEventListener('click', () => this.unloadModel());
 
+                // Add Prompt modal event listeners
+                document.getElementById('saveNewPromptBtn').addEventListener('click', () => this.saveNewPrompt());
+                document.getElementById('addPromptTagInput').addEventListener('input', (e) => this.handleTagInput(e));
+                document.getElementById('addPromptTagInput').addEventListener('keydown', (e) => this.handleTagKeydown(e));
+                document.getElementById('clearRatingBtn').addEventListener('click', () => this.clearRating());
+
+                // Rating stars click handlers
+                document.querySelectorAll('#addPromptRating .rating-star').forEach(star => {
+                    star.addEventListener('click', (e) => this.setRating(parseInt(e.target.dataset.rating)));
+                });
+
                 // Close AutoTag modals on outside click
-                ['autoTagModal', 'autoTagReviewModal', 'autoTagProgressModal', 'autoTagDownloadModal'].forEach(modalId => {
+                ['autoTagModal', 'autoTagReviewModal', 'autoTagProgressModal', 'autoTagDownloadModal', 'addPromptModal'].forEach(modalId => {
                     document.getElementById(modalId).addEventListener('click', (e) => {
                         if (e.target.id === modalId) {
                             this.hideModal(modalId);
@@ -1198,7 +1309,7 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                             📋 COPY ALL
                         </button>
                     </div>
-                    
+
                     <!-- Scrollable Content -->
                     <div id="metadata-content" class="flex-1 overflow-y-auto p-4 space-y-6">
                         <!-- Loading state -->
@@ -3561,6 +3672,284 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         }
                     };
                 });
+            }
+
+            // ==========================================
+            // Add Prompt Feature Methods
+            // ==========================================
+
+            // State for Add Prompt feature
+            addPromptState = {
+                allTags: [],
+                allCategories: [],
+                selectedTags: [],
+                selectedRating: null
+            };
+
+            async showAddPromptModal() {
+                // Reset form
+                this.resetAddPromptForm();
+
+                // Load tags and categories for autocomplete
+                await this.loadTagsAndCategories();
+
+                this.showModal('addPromptModal');
+                document.getElementById('addPromptText').focus();
+            }
+
+            hideAddPromptModal() {
+                this.hideModal('addPromptModal');
+                this.hideSuggestions();
+            }
+
+            resetAddPromptForm() {
+                document.getElementById('addPromptText').value = '';
+                document.getElementById('addPromptCategory').value = '';
+                document.getElementById('addPromptNotes').value = '';
+                document.getElementById('addPromptTagInput').value = '';
+                document.getElementById('addPromptProtected').checked = true;
+                document.getElementById('addPromptRatingValue').value = '';
+                this.addPromptState.selectedTags = [];
+                this.addPromptState.selectedRating = null;
+                this.renderSelectedTags();
+                this.updateRatingStars(0);
+            }
+
+            async loadTagsAndCategories() {
+                try {
+                    // Load tags
+                    const tagsResponse = await fetch('/prompt_manager/tags');
+                    const tagsData = await tagsResponse.json();
+                    if (tagsData.success) {
+                        // Filter out the __protected__ tag from suggestions
+                        this.addPromptState.allTags = tagsData.tags.filter(tag => tag !== '__protected__');
+                    }
+
+                    // Load categories
+                    const categoriesResponse = await fetch('/prompt_manager/categories');
+                    const categoriesData = await categoriesResponse.json();
+                    if (categoriesData.success) {
+                        this.addPromptState.allCategories = categoriesData.categories;
+                        this.populateCategoryDatalist();
+                    }
+                } catch (error) {
+                    console.error('Error loading tags/categories:', error);
+                }
+            }
+
+            populateCategoryDatalist() {
+                const datalist = document.getElementById('categoryList');
+                datalist.innerHTML = this.addPromptState.allCategories
+                    .map(cat => `<option value="${this.escapeHtml(cat)}">`)
+                    .join('');
+            }
+
+            handleTagInput(e) {
+                const query = e.target.value.toLowerCase().trim();
+
+                if (query.length < 1) {
+                    this.hideSuggestions();
+                    return;
+                }
+
+                // Filter tags that match query and aren't already selected
+                const suggestions = this.addPromptState.allTags
+                    .filter(tag =>
+                        tag.toLowerCase().includes(query) &&
+                        !this.addPromptState.selectedTags.includes(tag)
+                    )
+                    .slice(0, 10);
+
+                if (suggestions.length > 0) {
+                    this.showSuggestions(suggestions);
+                } else {
+                    this.hideSuggestions();
+                }
+            }
+
+            handleTagKeydown(e) {
+                if (e.key === 'Enter' || e.key === ',') {
+                    e.preventDefault();
+                    const input = e.target;
+                    const value = input.value.replace(',', '').trim();
+
+                    if (value && !this.addPromptState.selectedTags.includes(value)) {
+                        this.addTag(value);
+                        input.value = '';
+                        this.hideSuggestions();
+                    }
+                } else if (e.key === 'Backspace' && e.target.value === '') {
+                    // Remove last tag on backspace with empty input
+                    if (this.addPromptState.selectedTags.length > 0) {
+                        this.removeTag(this.addPromptState.selectedTags.length - 1);
+                    }
+                } else if (e.key === 'Escape') {
+                    this.hideSuggestions();
+                } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                    this.navigateSuggestions(e.key === 'ArrowDown' ? 1 : -1);
+                    e.preventDefault();
+                }
+            }
+
+            showSuggestions(suggestions) {
+                const container = document.getElementById('tagSuggestions');
+                container.innerHTML = suggestions
+                    .map((tag, index) => `
+                        <div class="px-3 py-2 hover:bg-gray-600 cursor-pointer text-gray-200 text-sm suggestion-item"
+                             data-index="${index}"
+                             onclick="window.gallery.selectSuggestion('${this.escapeHtml(tag)}')">
+                            ${this.escapeHtml(tag)}
+                        </div>
+                    `)
+                    .join('');
+                container.classList.remove('hidden');
+            }
+
+            hideSuggestions() {
+                document.getElementById('tagSuggestions').classList.add('hidden');
+            }
+
+            navigateSuggestions(direction) {
+                const container = document.getElementById('tagSuggestions');
+                const items = container.querySelectorAll('.suggestion-item');
+                if (items.length === 0) return;
+
+                const current = container.querySelector('.bg-gray-600');
+                let nextIndex = 0;
+
+                if (current) {
+                    current.classList.remove('bg-gray-600');
+                    nextIndex = parseInt(current.dataset.index) + direction;
+                    if (nextIndex < 0) nextIndex = items.length - 1;
+                    if (nextIndex >= items.length) nextIndex = 0;
+                } else if (direction === -1) {
+                    nextIndex = items.length - 1;
+                }
+
+                items[nextIndex].classList.add('bg-gray-600');
+            }
+
+            selectSuggestion(tag) {
+                this.addTag(tag);
+                document.getElementById('addPromptTagInput').value = '';
+                this.hideSuggestions();
+                document.getElementById('addPromptTagInput').focus();
+            }
+
+            addTag(tag) {
+                if (!this.addPromptState.selectedTags.includes(tag)) {
+                    this.addPromptState.selectedTags.push(tag);
+                    this.renderSelectedTags();
+                }
+            }
+
+            removeTag(index) {
+                this.addPromptState.selectedTags.splice(index, 1);
+                this.renderSelectedTags();
+            }
+
+            renderSelectedTags() {
+                const container = document.getElementById('addPromptTagsContainer');
+                const input = document.getElementById('addPromptTagInput');
+
+                // Remove existing tag chips (keep only the input)
+                container.querySelectorAll('.tag-chip').forEach(el => el.remove());
+
+                // Add tag chips before the input
+                this.addPromptState.selectedTags.forEach((tag, index) => {
+                    const chip = document.createElement('span');
+                    chip.className = 'tag-chip';
+                    chip.innerHTML = `
+                        ${this.escapeHtml(tag)}
+                        <span class="tag-remove" onclick="window.gallery.removeTag(${index})">×</span>
+                    `;
+                    container.insertBefore(chip, input);
+                });
+            }
+
+            setRating(rating) {
+                this.addPromptState.selectedRating = rating;
+                document.getElementById('addPromptRatingValue').value = rating;
+                this.updateRatingStars(rating);
+            }
+
+            clearRating() {
+                this.addPromptState.selectedRating = null;
+                document.getElementById('addPromptRatingValue').value = '';
+                this.updateRatingStars(0);
+            }
+
+            updateRatingStars(rating) {
+                const stars = document.querySelectorAll('#addPromptRating .rating-star');
+                stars.forEach((star, index) => {
+                    if (index < rating) {
+                        star.textContent = '★';
+                        star.classList.remove('text-gray-500');
+                        star.classList.add('text-yellow-400');
+                    } else {
+                        star.textContent = '☆';
+                        star.classList.remove('text-yellow-400');
+                        star.classList.add('text-gray-500');
+                    }
+                });
+            }
+
+            async saveNewPrompt() {
+                const text = document.getElementById('addPromptText').value.trim();
+                const category = document.getElementById('addPromptCategory').value.trim();
+                const notes = document.getElementById('addPromptNotes').value.trim();
+                const isProtected = document.getElementById('addPromptProtected').checked;
+                const rating = this.addPromptState.selectedRating;
+
+                // Validation
+                if (!text) {
+                    this.showNotification('Prompt text is required', 'error');
+                    document.getElementById('addPromptText').focus();
+                    return;
+                }
+
+                // Build tags array - add __protected__ if checkbox is checked
+                let tags = [...this.addPromptState.selectedTags];
+                if (isProtected && !tags.includes('__protected__')) {
+                    tags.push('__protected__');
+                }
+
+                // Disable button during save
+                const saveBtn = document.getElementById('saveNewPromptBtn');
+                saveBtn.disabled = true;
+                saveBtn.textContent = 'Saving...';
+
+                try {
+                    const response = await fetch('/prompt_manager/save', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            text: text,
+                            category: category || null,
+                            tags: tags,
+                            rating: rating,
+                            notes: notes || null
+                        })
+                    });
+
+                    const data = await response.json();
+
+                    if (data.success) {
+                        const message = data.is_duplicate
+                            ? 'Prompt already exists (updated metadata)'
+                            : 'Prompt added successfully!';
+                        this.showNotification(message, 'success');
+                        this.hideAddPromptModal();
+                    } else {
+                        this.showNotification(`Failed to save prompt: ${data.error}`, 'error');
+                    }
+                } catch (error) {
+                    console.error('Error saving prompt:', error);
+                    this.showNotification('Failed to save prompt', 'error');
+                } finally {
+                    saveBtn.disabled = false;
+                    saveBtn.textContent = '➕ Add Prompt';
+                }
             }
 
             // ==========================================
