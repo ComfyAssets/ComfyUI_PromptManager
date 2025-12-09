@@ -824,6 +824,13 @@ MIT License - see LICENSE file for details.
 
 ## Changelog
 
+### v3.0.25 (Film Strip & QoL Improvements)
+
+- **🎞️ Film Strip Preview**: Backported from V2 - thumbnail strip under each prompt showing linked images
+- **🖼️ Quick Image Viewer**: Click any filmstrip thumbnail to open full-size image viewer
+- **📸 Smart Thumbnails**: Automatically uses generated thumbnails for faster loading, falls back to full images
+- **⬆️ Auto-Scroll on Pagination**: Page navigation now smoothly scrolls to top after loading
+
 ### v3.0.24 (Manual Prompt Creation)
 
 - **➕ Add Prompt Button**: New "Add Prompt" button in the admin dashboard Bulk Actions bar
