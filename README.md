@@ -824,6 +824,13 @@ MIT License - see LICENSE file for details.
 
 ## Changelog
 
+### v3.0.26 (Top Bar Button)
+
+- **🔘 Top Bar PM Button**: Added a "PM" button to the ComfyUI top bar for quick access to the admin dashboard
+- **🚀 No Node Required**: Open PromptManager without having to add the node to your workflow first
+- **🎨 Teal Button Design**: Distinctive teal-colored button positioned before the settings gear
+- **🔄 Frontend Compatibility**: Works with both new ComfyUI frontend (v1.3.1+) and legacy versions
+
 ### v3.0.25 (Film Strip & QoL Improvements)
 
 - **🎞️ Film Strip Preview**: Backported from V2 - thumbnail strip under each prompt showing linked images
