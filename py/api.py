@@ -3205,15 +3205,19 @@ class PromptManagerAPI:
                     }
             
             # Prune orphaned prompts (prompts with no linked images)
+            # Note: Prompts with the __protected__ tag are excluded from orphan cleanup
+            # This allows users to add prompts manually without images that won't be deleted
             if 'prune_orphaned_prompts' in operations:
                 try:
                     with self.db.model.get_connection() as conn:
                         # Find prompts that have no images linked to them
+                        # Exclude prompts with the __protected__ tag
                         cursor = conn.execute("""
-                            SELECT p.id 
-                            FROM prompts p 
-                            LEFT JOIN generated_images gi ON p.id = gi.prompt_id 
+                            SELECT p.id
+                            FROM prompts p
+                            LEFT JOIN generated_images gi ON p.id = gi.prompt_id
                             WHERE gi.prompt_id IS NULL
+                            AND (p.tags IS NULL OR p.tags NOT LIKE '%"__protected__"%')
                         """)
                         orphaned_prompts = cursor.fetchall()
                         orphaned_count = len(orphaned_prompts)
@@ -3231,7 +3235,7 @@ class PromptManagerAPI:
                     results['prune_orphaned_prompts'] = {
                         'success': True,
                         'removed_count': removed_count,
-                        'message': f'Removed {removed_count} orphaned prompts (prompts with no linked images)'
+                        'message': f'Removed {removed_count} orphaned prompts (prompts with no linked images, excluding protected prompts)'
                     }
                 except Exception as e:
                     results['prune_orphaned_prompts'] = {
