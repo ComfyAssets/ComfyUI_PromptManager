@@ -204,11 +204,15 @@
                                 class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors">
                             🏷️ Add Tags
                         </button>
-                        <button id="bulkCategoryBtn" disabled 
+                        <button id="bulkCategoryBtn" disabled
                                 class="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors">
                             📁 Set Category
                         </button>
-                        <button id="statsBtn" 
+                        <button id="addPromptBtn"
+                                class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition-colors">
+                            ➕ Add Prompt
+                        </button>
+                        <button id="statsBtn"
                                 class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition-colors">
                             📊 Stats
                         </button>
@@ -823,6 +827,101 @@
         </div>
     </div>
 
+    <!-- Add Prompt Modal -->
+    <div id="addPromptModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-xl p-6 max-w-2xl w-full mx-4 border border-gray-700 max-h-[90vh] overflow-y-auto custom-scrollbar">
+            <div class="flex items-center justify-between mb-6">
+                <h3 class="text-xl font-semibold text-gray-100">➕ Add New Prompt</h3>
+                <button onclick="window.admin.hideModal('addPromptModal')" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
+                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Prompt Text -->
+            <div class="mb-5">
+                <label class="block text-sm font-medium text-gray-400 mb-2">Prompt Text <span class="text-red-400">*</span></label>
+                <textarea id="addPromptText" rows="4"
+                    class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 text-gray-100 text-sm resize-none custom-scrollbar"
+                    placeholder="Enter your prompt text here..."></textarea>
+            </div>
+
+            <!-- Category and Rating Row -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+                <!-- Category -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-400 mb-2">Category</label>
+                    <div class="relative">
+                        <input type="text" id="addPromptCategory" list="addPromptCategoryList"
+                            class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 text-gray-100 text-sm"
+                            placeholder="Select or type category...">
+                        <datalist id="addPromptCategoryList"></datalist>
+                    </div>
+                </div>
+
+                <!-- Rating -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-400 mb-2">Rating</label>
+                    <div class="flex items-center space-x-1" id="addPromptRating">
+                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="1">☆</button>
+                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="2">☆</button>
+                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="3">☆</button>
+                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="4">☆</button>
+                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="5">☆</button>
+                        <button type="button" class="ml-2 text-xs text-gray-500 hover:text-gray-300" id="clearAddPromptRatingBtn">Clear</button>
+                    </div>
+                    <input type="hidden" id="addPromptRatingValue" value="">
+                </div>
+            </div>
+
+            <!-- Tags -->
+            <div class="mb-5">
+                <label class="block text-sm font-medium text-gray-400 mb-2">Tags</label>
+                <div class="relative">
+                    <div id="addPromptTagsContainer" class="flex flex-wrap gap-2 p-3 bg-gray-700 border border-gray-600 rounded-lg min-h-[44px]">
+                        <input type="text" id="addPromptTagInput"
+                            class="flex-1 min-w-[150px] bg-transparent border-none outline-none text-gray-100 text-sm placeholder-gray-500"
+                            placeholder="Type to add tags...">
+                    </div>
+                    <div id="addPromptTagSuggestions" class="absolute left-0 right-0 top-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg hidden z-10 max-h-48 overflow-y-auto custom-scrollbar"></div>
+                </div>
+                <p class="text-gray-500 text-xs mt-1">Press Enter or comma to add a tag. Click a tag to remove it.</p>
+            </div>
+
+            <!-- Notes -->
+            <div class="mb-5">
+                <label class="block text-sm font-medium text-gray-400 mb-2">Notes</label>
+                <textarea id="addPromptNotes" rows="2"
+                    class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 text-gray-100 text-sm resize-none custom-scrollbar"
+                    placeholder="Optional notes about this prompt..."></textarea>
+            </div>
+
+            <!-- Protection Option -->
+            <div class="mb-6">
+                <label class="flex items-start p-4 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-650 border border-gray-600">
+                    <input type="checkbox" id="addPromptProtected" checked class="w-4 h-4 mt-0.5 text-green-600 bg-gray-700 border-gray-600 rounded focus:ring-green-500">
+                    <div class="ml-3">
+                        <span class="text-gray-100 font-medium">Protect from orphan cleanup</span>
+                        <p class="text-gray-400 text-sm mt-1">Keep this prompt even if it has no linked images. Uncheck if you want this prompt to be automatically removed during maintenance when it has no images.</p>
+                    </div>
+                </label>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="flex justify-end space-x-3">
+                <button onclick="window.admin.hideModal('addPromptModal')"
+                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                    Cancel
+                </button>
+                <button id="saveNewPromptBtn"
+                        class="px-6 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors">
+                    ➕ Add Prompt
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Auto Tag Modal -->
     <div id="autoTagModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
         <div class="bg-gray-800 rounded-xl p-6 max-w-lg w-full mx-4 border border-gray-700">
@@ -1193,6 +1292,7 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                 document.getElementById("restoreBtn").addEventListener("click", () => this.showRestoreModal());
                 document.getElementById("scanBtn").addEventListener("click", () => this.showScanModal());
                 document.getElementById("autoTagBtn").addEventListener("click", () => this.showAutoTagModal());
+                document.getElementById("addPromptBtn").addEventListener("click", () => this.showAddPromptModal());
                 document.getElementById("logsBtn").addEventListener("click", () => this.showLogsModal());
                 document.getElementById("metadataBtn").addEventListener("click", () => this.openMetadataViewer());
                 document.getElementById("galleryBtn").addEventListener("click", () => this.openGallery());
@@ -1272,6 +1372,10 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
 
                 // Tags accordion toggle
                 document.getElementById("reviewTagsToggle").addEventListener("click", () => this.toggleReviewTags());
+
+                // Add Prompt modal
+                document.getElementById("saveNewPromptBtn").addEventListener("click", () => this.saveNewPrompt());
+                this.setupAddPromptModal();
 
                 // Close modals on backdrop click
                 document.querySelectorAll("[id$='Modal']").forEach((modal) => {
@@ -4276,6 +4380,194 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 retagResolve: null,  // Promise resolver for retag confirmation
                 tagsExpanded: false  // Track accordion state
             };
+
+            // ==================== Add Prompt Modal ====================
+
+            showAddPromptModal() {
+                // Clear form
+                document.getElementById('addPromptText').value = '';
+                document.getElementById('addPromptCategory').value = '';
+                document.getElementById('addPromptRatingValue').value = '';
+                document.getElementById('addPromptNotes').value = '';
+                document.getElementById('addPromptProtected').checked = true;
+
+                // Clear tags
+                this.addPromptTags = [];
+                this.renderAddPromptTags();
+
+                // Reset rating stars
+                this.updateAddPromptRatingStars(0);
+
+                // Populate categories datalist
+                this.populateAddPromptCategories();
+
+                this.showModal('addPromptModal');
+            }
+
+            setupAddPromptModal() {
+                this.addPromptTags = [];
+
+                // Rating stars
+                const ratingContainer = document.getElementById('addPromptRating');
+                const ratingStars = ratingContainer.querySelectorAll('.rating-star');
+                ratingStars.forEach(star => {
+                    star.addEventListener('click', () => {
+                        const rating = parseInt(star.dataset.rating);
+                        document.getElementById('addPromptRatingValue').value = rating;
+                        this.updateAddPromptRatingStars(rating);
+                    });
+                });
+
+                // Clear rating button
+                document.getElementById('clearAddPromptRatingBtn').addEventListener('click', () => {
+                    document.getElementById('addPromptRatingValue').value = '';
+                    this.updateAddPromptRatingStars(0);
+                });
+
+                // Tag input
+                const tagInput = document.getElementById('addPromptTagInput');
+                tagInput.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ',') {
+                        e.preventDefault();
+                        const tag = tagInput.value.trim().replace(/,/g, '');
+                        if (tag && !this.addPromptTags.includes(tag)) {
+                            this.addPromptTags.push(tag);
+                            this.renderAddPromptTags();
+                        }
+                        tagInput.value = '';
+                    }
+                });
+
+                // Tag suggestions
+                tagInput.addEventListener('input', () => {
+                    this.showAddPromptTagSuggestions(tagInput.value);
+                });
+            }
+
+            updateAddPromptRatingStars(rating) {
+                const stars = document.querySelectorAll('#addPromptRating .rating-star');
+                stars.forEach((star, index) => {
+                    if (index < rating) {
+                        star.textContent = '★';
+                        star.classList.add('text-yellow-400');
+                        star.classList.remove('text-gray-500');
+                    } else {
+                        star.textContent = '☆';
+                        star.classList.remove('text-yellow-400');
+                        star.classList.add('text-gray-500');
+                    }
+                });
+            }
+
+            renderAddPromptTags() {
+                const container = document.getElementById('addPromptTagsContainer');
+                const input = document.getElementById('addPromptTagInput');
+
+                // Remove existing tag chips
+                container.querySelectorAll('.tag-chip').forEach(chip => chip.remove());
+
+                // Add tag chips
+                this.addPromptTags.forEach(tag => {
+                    const chip = document.createElement('span');
+                    chip.className = 'tag-chip inline-flex items-center px-2 py-1 bg-blue-600 text-white text-xs rounded cursor-pointer hover:bg-blue-700';
+                    chip.innerHTML = `${tag} <span class="ml-1">&times;</span>`;
+                    chip.addEventListener('click', () => {
+                        this.addPromptTags = this.addPromptTags.filter(t => t !== tag);
+                        this.renderAddPromptTags();
+                    });
+                    container.insertBefore(chip, input);
+                });
+            }
+
+            showAddPromptTagSuggestions(query) {
+                const suggestionsContainer = document.getElementById('addPromptTagSuggestions');
+                if (!query) {
+                    suggestionsContainer.classList.add('hidden');
+                    return;
+                }
+
+                const matchingTags = this.tags.filter(tag =>
+                    tag.toLowerCase().includes(query.toLowerCase()) &&
+                    !this.addPromptTags.includes(tag)
+                ).slice(0, 10);
+
+                if (matchingTags.length === 0) {
+                    suggestionsContainer.classList.add('hidden');
+                    return;
+                }
+
+                suggestionsContainer.innerHTML = matchingTags.map(tag => `
+                    <div class="px-3 py-2 hover:bg-gray-600 cursor-pointer text-sm text-gray-200" data-tag="${tag}">
+                        ${tag}
+                    </div>
+                `).join('');
+
+                suggestionsContainer.querySelectorAll('[data-tag]').forEach(el => {
+                    el.addEventListener('click', () => {
+                        const tag = el.dataset.tag;
+                        if (!this.addPromptTags.includes(tag)) {
+                            this.addPromptTags.push(tag);
+                            this.renderAddPromptTags();
+                        }
+                        document.getElementById('addPromptTagInput').value = '';
+                        suggestionsContainer.classList.add('hidden');
+                    });
+                });
+
+                suggestionsContainer.classList.remove('hidden');
+            }
+
+            populateAddPromptCategories() {
+                const datalist = document.getElementById('addPromptCategoryList');
+                datalist.innerHTML = this.categories.map(cat => `<option value="${cat}">`).join('');
+            }
+
+            async saveNewPrompt() {
+                const text = document.getElementById('addPromptText').value.trim();
+                const category = document.getElementById('addPromptCategory').value.trim();
+                const rating = document.getElementById('addPromptRatingValue').value;
+                const notes = document.getElementById('addPromptNotes').value.trim();
+                const isProtected = document.getElementById('addPromptProtected').checked;
+
+                if (!text) {
+                    this.showNotification('Prompt text is required', 'error');
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/prompt_manager/prompts', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            text: text,
+                            category: category || null,
+                            rating: rating ? parseInt(rating) : null,
+                            tags: this.addPromptTags,
+                            notes: notes || null,
+                            is_protected: isProtected
+                        })
+                    });
+
+                    const data = await response.json();
+
+                    if (data.success) {
+                        this.showNotification('Prompt added successfully!', 'success');
+                        this.hideModal('addPromptModal');
+                        // Refresh the prompts list
+                        this.search();
+                        // Reload categories and tags in case new ones were added
+                        this.loadCategories();
+                        this.loadTags();
+                    } else {
+                        this.showNotification(data.error || 'Failed to add prompt', 'error');
+                    }
+                } catch (error) {
+                    console.error('Error adding prompt:', error);
+                    this.showNotification('Failed to add prompt', 'error');
+                }
+            }
+
+            // ==================== End Add Prompt Modal ====================
 
             async showAutoTagModal() {
                 this.showModal("autoTagModal");
