@@ -482,6 +482,10 @@ class PromptManagerAPI:
         async def apply_autotag_route(request):
             return await self.apply_autotag(request)
 
+        @routes.post("/prompt_manager/autotag/unload")
+        async def unload_autotag_model_route(request):
+            return await self.unload_autotag_model(request)
+
         @routes.get("/prompt_manager/scan_output_dir")
         async def scan_output_dir_route(request):
             return await self.scan_output_dir(request)
@@ -4266,7 +4270,7 @@ class PromptManagerAPI:
         Get status of available AutoTag models.
         GET /prompt_manager/autotag/models
 
-        Returns model availability, download status, and configuration.
+        Returns model availability, download status, loaded status, and configuration.
         """
         try:
             from .autotag import get_autotag_service
@@ -4277,7 +4281,9 @@ class PromptManagerAPI:
             return web.json_response({
                 'success': True,
                 'models': models_status,
-                'default_prompt': service.default_prompt
+                'default_prompt': service.default_prompt,
+                'model_loaded': service.is_model_loaded(),
+                'loaded_model_type': service.get_loaded_model_type()
             })
 
         except Exception as e:
@@ -4359,6 +4365,7 @@ class PromptManagerAPI:
         Query params:
             model_type: "gguf" or "hf"
             prompt: custom prompt text
+            keep_in_memory: "true" or "false" (default true) - keep model loaded after processing
 
         Streams SSE progress updates during processing.
         """
@@ -4370,6 +4377,7 @@ class PromptManagerAPI:
         model_type = request.query.get('model_type', 'gguf')
         custom_prompt = request.query.get('prompt', '')
         skip_tagged = request.query.get('skip_tagged', 'true').lower() == 'true'
+        keep_in_memory = request.query.get('keep_in_memory', 'true').lower() == 'true'
         use_gpu = True
 
         async def stream_response():
@@ -4489,9 +4497,14 @@ class PromptManagerAPI:
                         errors += 1
                         processed += 1
 
-                service.unload_model()
+                # Only unload model if keep_in_memory is False
+                if not keep_in_memory:
+                    service.unload_model()
+                    model_status = 'Model unloaded'
+                else:
+                    model_status = 'Model kept in memory'
 
-                yield f"data: {json.dumps({'type': 'complete', 'progress': 100, 'processed': processed, 'tagged': tagged, 'skipped': skipped, 'errors': errors, 'status': 'Complete'})}\n\n"
+                yield f"data: {json.dumps({'type': 'complete', 'progress': 100, 'processed': processed, 'tagged': tagged, 'skipped': skipped, 'errors': errors, 'status': 'Complete', 'model_status': model_status, 'model_loaded': keep_in_memory})}\n\n"
 
             except Exception as e:
                 self.logger.error(f"AutoTag error: {e}")
@@ -4646,6 +4659,40 @@ class PromptManagerAPI:
 
         except Exception as e:
             self.logger.error(f"Apply autotag error: {e}")
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def unload_autotag_model(self, request):
+        """
+        Manually unload the AutoTag model from memory.
+        POST /prompt_manager/autotag/unload
+
+        Used to free up VRAM when the model is no longer needed.
+        """
+        try:
+            from .autotag import get_autotag_service
+
+            service = get_autotag_service()
+
+            if not service.is_model_loaded():
+                return web.json_response({
+                    'success': True,
+                    'message': 'No model was loaded'
+                })
+
+            model_type = service.get_loaded_model_type()
+            service.unload_model()
+
+            return web.json_response({
+                'success': True,
+                'message': f'{model_type.upper()} model unloaded successfully',
+                'model_loaded': False
+            })
+
+        except Exception as e:
+            self.logger.error(f"Unload autotag model error: {e}")
             return web.json_response({
                 'success': False,
                 'error': str(e)
