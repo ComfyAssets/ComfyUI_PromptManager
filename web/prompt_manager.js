@@ -2,8 +2,171 @@
 
 import { app } from "../../scripts/app.js";
 
+// ============================================================================
+// Top Bar Button Integration (similar to rgthree-comfy approach)
+// ============================================================================
+
+let pmButtonGroup = null;
+
+/**
+ * Create a DOM element with optional attributes and children
+ * @param {string} tag - HTML tag name
+ * @param {Object} attrs - Attributes and properties
+ * @returns {HTMLElement}
+ */
+function $el(tag, attrs = {}) {
+  const element = document.createElement(tag);
+
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === "children") {
+      if (Array.isArray(value)) {
+        value.forEach(child => child && element.appendChild(child));
+      } else if (value) {
+        element.appendChild(value);
+      }
+    } else if (key === "child") {
+      if (value) element.appendChild(value);
+    } else if (key === "text") {
+      element.textContent = value;
+    } else if (key === "html") {
+      element.innerHTML = value;
+    } else if (key === "style" && typeof value === "object") {
+      Object.assign(element.style, value);
+    } else if (key === "classList") {
+      element.className = value;
+    } else if (key.startsWith("on") && typeof value === "function") {
+      element.addEventListener(key.slice(2).toLowerCase(), value);
+    } else {
+      element.setAttribute(key, value);
+    }
+  }
+
+  return element;
+}
+
+/**
+ * Add PromptManager button to the top bar
+ */
+function addPMTopBarButton() {
+  // Remove existing button group if present
+  if (pmButtonGroup?.parentElement) {
+    pmButtonGroup.parentElement.removeChild(pmButtonGroup);
+    pmButtonGroup = null;
+  }
+
+  // Check if app.menu exists (new frontend)
+  if (!app.menu?.settingsGroup?.element) {
+    console.log("[PromptManager] New frontend menu not found, trying legacy approach");
+    addPMTopBarButtonLegacy();
+    return;
+  }
+
+  // Create button group container
+  pmButtonGroup = $el("div", {
+    classList: "comfyui-button-group promptmanager-top-button-group",
+    style: {
+      display: "flex",
+      gap: "4px",
+      marginRight: "8px",
+    }
+  });
+
+  // Create PM button
+  const pmButton = $el("button", {
+    classList: "comfyui-button comfyui-menu-mobile-collapse primary",
+    title: "PromptManager - Open Admin Dashboard",
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "4px 10px",
+      background: "#14b8a6",
+      color: "white",
+      border: "none",
+      borderRadius: "4px",
+      fontWeight: "bold",
+      fontSize: "12px",
+      cursor: "pointer",
+      transition: "background 0.2s",
+    },
+    onclick: () => {
+      window.open("/prompt_manager/admin", "_blank");
+    },
+    onmouseenter: (e) => { e.target.style.background = "#0d9488"; },
+    onmouseleave: (e) => { e.target.style.background = "#14b8a6"; },
+    text: "PM"
+  });
+
+  pmButtonGroup.appendChild(pmButton);
+
+  // Insert before the settings group
+  app.menu.settingsGroup.element.before(pmButtonGroup);
+  console.log("[PromptManager] Top bar button added (new frontend)");
+}
+
+/**
+ * Legacy approach for older ComfyUI versions
+ */
+function addPMTopBarButtonLegacy() {
+  // Try multiple selectors for different ComfyUI versions
+  const topBar = document.querySelector(".comfyui-menu") ||
+                 document.querySelector(".comfy-menu") ||
+                 document.querySelector("#comfy-main-menu");
+
+  if (!topBar) {
+    // Retry after a short delay if UI not loaded yet
+    setTimeout(addPMTopBarButtonLegacy, 500);
+    return;
+  }
+
+  // Check if button already exists
+  if (document.getElementById("pm-toolbar-btn")) {
+    return;
+  }
+
+  const btn = document.createElement("button");
+  btn.id = "pm-toolbar-btn";
+  btn.innerText = "PM";
+  btn.title = "Open PromptManager Admin Dashboard";
+
+  // Teal button styling
+  btn.style.cssText = `
+    margin-left: 8px;
+    padding: 4px 12px;
+    background: #14b8a6;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-weight: bold;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.2s;
+  `;
+
+  btn.onmouseenter = () => btn.style.background = "#0d9488";
+  btn.onmouseleave = () => btn.style.background = "#14b8a6";
+
+  btn.onclick = () => {
+    window.open("/prompt_manager/admin", "_blank");
+  };
+
+  topBar.appendChild(btn);
+  console.log("[PromptManager] Toolbar button added (legacy frontend)");
+}
+
+// ============================================================================
+// Extension Registration
+// ============================================================================
+
 app.registerExtension({
   name: "PromptManager.UI",
+
+  async setup() {
+    // Add the top bar button after a short delay to ensure UI is ready
+    setTimeout(() => {
+      addPMTopBarButton();
+    }, 100);
+  },
 
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
     if (nodeData.name === "PromptManager" || nodeData.name === "PromptManagerText") {
