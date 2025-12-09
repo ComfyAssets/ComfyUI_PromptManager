@@ -67,6 +67,93 @@
             flex-direction: column !important;
             z-index: 10000 !important;
         }
+
+        /* Film Strip Styles */
+        .prompt-film-strip {
+            --film-strip-thumbnail-size: 112px;
+            --film-strip-gap: 8px;
+            display: flex;
+            flex-wrap: nowrap;
+            gap: var(--film-strip-gap);
+            padding: 8px 0;
+            overflow-x: auto;
+            scrollbar-width: thin;
+            scrollbar-color: #4b5563 transparent;
+        }
+
+        .prompt-film-strip::-webkit-scrollbar {
+            height: 4px;
+        }
+
+        .prompt-film-strip::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .prompt-film-strip::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 2px;
+        }
+
+        .film-strip-thumbnail {
+            flex-shrink: 0;
+            width: var(--film-strip-thumbnail-size);
+            height: var(--film-strip-thumbnail-size);
+            border-radius: 6px;
+            overflow: hidden;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: all 0.15s ease;
+            background: #1f2937;
+        }
+
+        .film-strip-thumbnail:hover {
+            border-color: #3b82f6;
+            transform: scale(1.05);
+        }
+
+        .film-strip-thumbnail img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .film-strip-thumbnail--more {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #374151 0%, #1f2937 100%);
+            color: #9ca3af;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .film-strip-thumbnail--more:hover {
+            background: linear-gradient(135deg, #4b5563 0%, #374151 100%);
+            color: #e5e7eb;
+        }
+
+        .film-strip-empty {
+            color: #6b7280;
+            font-size: 12px;
+            font-style: italic;
+            padding: 8px 0;
+        }
+
+        /* Film strip size variants */
+        .film-strip-size-small {
+            --film-strip-thumbnail-size: 72px;
+            --film-strip-gap: 6px;
+        }
+
+        .film-strip-size-medium {
+            --film-strip-thumbnail-size: 112px;
+            --film-strip-gap: 8px;
+        }
+
+        .film-strip-size-large {
+            --film-strip-thumbnail-size: 144px;
+            --film-strip-gap: 10px;
+        }
     </style>
 </head>
 <body class="bg-gray-925 text-gray-100 min-h-screen">
@@ -1633,11 +1720,36 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                 container.innerHTML = sortedPrompts.map((prompt) => this.renderPromptItem(prompt)).join("");
                 this.selectedPrompts.clear();
                 this.updateBulkActionButtons();
-                
+
                 // Add hover behavior to all star ratings
                 sortedPrompts.forEach(prompt => {
                     this.addStarHoverBehavior(prompt.id);
                 });
+
+                // Load film strips for each prompt (async, non-blocking)
+                this.loadAllFilmStrips(sortedPrompts);
+            }
+
+            async loadAllFilmStrips(prompts) {
+                // Load filmstrips in batches to avoid overwhelming the server
+                const batchSize = 5;
+                for (let i = 0; i < prompts.length; i += batchSize) {
+                    const batch = prompts.slice(i, i + batchSize);
+                    await Promise.all(batch.map(prompt => this.loadFilmStripForPrompt(prompt.id)));
+                }
+            }
+
+            async loadFilmStripForPrompt(promptId) {
+                const container = document.getElementById(`filmStrip-${promptId}`);
+                if (!container) return;
+
+                try {
+                    const images = await this.loadFilmStripImages(promptId);
+                    container.innerHTML = this.createFilmStrip(images, promptId);
+                } catch (error) {
+                    console.error(`Error loading filmstrip for prompt ${promptId}:`, error);
+                    container.innerHTML = `<div class="film-strip-empty">Failed to load images</div>`;
+                }
             }
 
             renderPromptItem(prompt) {
@@ -1706,8 +1818,13 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                                             </button>
                                         ` : ''}
                                     </div>
+
+                                    <!-- Film Strip -->
+                                    <div class="film-strip-container mt-3 pt-3 border-t border-gray-600/50" id="filmStrip-${prompt.id}">
+                                        <div class="film-strip-empty">Loading images...</div>
+                                    </div>
                                 </div>
-                                
+
                                 <div class="flex flex-col space-y-2">
                                     <button class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-lg transition-colors" onclick="window.admin.viewGallery(${prompt.id})">
                                         🖼️ Gallery
@@ -1726,11 +1843,9 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
             }
 
             renderStars(rating, promptId) {
-                console.log(`Rendering stars for prompt ${promptId} with rating ${rating}`);
                 return Array.from({ length: 5 }, (_, i) => {
                     const starNum = i + 1;
                     const isActive = starNum <= rating;
-                    console.log(`Star ${starNum}: ${isActive ? 'active' : 'inactive'}`);
                     const starIcon = isActive ? '⭐' : '☆'; // filled star vs outline star
                     const color = isActive ? '#fbbf24' : '#9ca3af'; // yellow-400 : gray-400
                     return `<button class="star-btn" data-star="${starNum}" data-prompt-id="${promptId}" style="font-size: 1.125rem; color: ${color}; background: none; border: none; cursor: pointer; transition: all 0.2s; width: 1.125rem; height: 1.125rem; display: inline-flex; align-items: center; justify-content: center; padding: 0; line-height: 1;" onclick="window.admin.setRating(${promptId}, ${starNum})">${starIcon}</button>`;
@@ -3272,6 +3387,8 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                     return;
                 }
                 await this.loadRecentPrompts(page);
+                // Scroll to top of results after page loads
+                window.scrollTo({ top: 0, behavior: 'smooth' });
             }
 
             async changeLimit(newLimit) {
@@ -4568,6 +4685,182 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
 
             // ==================== End Add Prompt Modal ====================
+
+            // ==================== Film Strip Functions ====================
+
+            getImageUrl(image) {
+                // If the image already has a url property, use it
+                if (image.url) return image.url;
+
+                // Otherwise construct from image_path
+                if (image.image_path) {
+                    // Extract relative path from the full path
+                    // The image_path might be absolute, we need to serve it via the API
+                    const path = image.image_path;
+                    // Try to get filename for serving
+                    const filename = image.filename || path.split(/[/\\]/).pop();
+                    // Use the image ID if available, otherwise use the path-based serve endpoint
+                    if (image.id) {
+                        return `/prompt_manager/images/${image.id}/file`;
+                    }
+                    // Fallback: serve by path (encode the path)
+                    return `/prompt_manager/images/serve/${encodeURIComponent(path)}`;
+                }
+                return null;
+            }
+
+            getThumbnailUrl(image) {
+                // If thumbnail_url already exists, use it
+                if (image.thumbnail_url) return image.thumbnail_url;
+
+                // Try to construct thumbnail URL from filename
+                // Thumbnails are stored as: thumbnails/{stem}_thumb{ext}
+                if (image.filename) {
+                    const lastDot = image.filename.lastIndexOf('.');
+                    if (lastDot > 0) {
+                        const stem = image.filename.substring(0, lastDot);
+                        const ext = image.filename.substring(lastDot);
+                        return `/prompt_manager/images/serve/thumbnails/${stem}_thumb${ext}`;
+                    }
+                }
+
+                // Fall back to full image URL
+                return this.getImageUrl(image);
+            }
+
+            async loadFilmStripImages(promptId) {
+                try {
+                    const response = await fetch(`/prompt_manager/prompts/${promptId}/images`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success && data.images) {
+                            return data.images;
+                        }
+                    }
+                    return [];
+                } catch (error) {
+                    console.error(`Error loading images for prompt ${promptId}:`, error);
+                    return [];
+                }
+            }
+
+            createFilmStrip(images, promptId, maxThumbnails = 5) {
+                if (!images || images.length === 0) {
+                    return `<div class="film-strip-empty">No images</div>`;
+                }
+
+                const displayImages = images.slice(0, maxThumbnails);
+                const remaining = images.length - maxThumbnails;
+
+                let html = `<div class="prompt-film-strip film-strip-size-medium" data-prompt-id="${promptId}">`;
+
+                displayImages.forEach((image, index) => {
+                    const imageUrl = this.getImageUrl(image);
+                    const thumbnailUrl = this.getThumbnailUrl(image);
+
+                    if (!thumbnailUrl) {
+                        // Skip images with no valid URL
+                        return;
+                    }
+
+                    html += `
+                        <div class="film-strip-thumbnail"
+                             data-index="${index}"
+                             data-prompt-id="${promptId}"
+                             onclick="window.admin.openFilmStripViewer(${promptId}, ${index})">
+                            <img src="${thumbnailUrl}"
+                                 alt="Image ${index + 1}"
+                                 loading="lazy"
+                                 onerror="this.src='${imageUrl}'; this.onerror=null;">
+                        </div>
+                    `;
+                });
+
+                if (remaining > 0) {
+                    html += `
+                        <div class="film-strip-thumbnail film-strip-thumbnail--more"
+                             onclick="window.admin.viewGallery(${promptId})">
+                            +${remaining}
+                        </div>
+                    `;
+                }
+
+                html += `</div>`;
+                return html;
+            }
+
+            async openFilmStripViewer(promptId, startIndex = 0) {
+                // Use the existing gallery function to open the viewer
+                // Store images temporarily for the viewer
+                const images = await this.loadFilmStripImages(promptId);
+                if (images.length === 0) {
+                    this.showNotification('No images found for this prompt', 'warning');
+                    return;
+                }
+
+                // Store for viewer
+                this.filmStripImages = images;
+                this.filmStripCurrentPrompt = promptId;
+
+                // Create a temporary container for ViewerJS
+                const container = document.createElement('div');
+                container.id = 'filmStripViewerContainer';
+                container.style.display = 'none';
+
+                images.forEach((image, index) => {
+                    const imageUrl = this.getImageUrl(image);
+                    if (!imageUrl) return;
+
+                    const img = document.createElement('img');
+                    img.src = imageUrl;
+                    img.alt = image.filename || `Image ${index + 1}`;
+                    img.dataset.caption = this.formatFilmStripCaption(image);
+                    container.appendChild(img);
+                });
+
+                document.body.appendChild(container);
+
+                // Initialize ViewerJS
+                const viewer = new Viewer(container, {
+                    inline: false,
+                    navbar: true,
+                    toolbar: {
+                        zoomIn: 1,
+                        zoomOut: 1,
+                        oneToOne: 1,
+                        reset: 1,
+                        prev: 1,
+                        play: false,
+                        next: 1,
+                        rotateLeft: 1,
+                        rotateRight: 1,
+                        flipHorizontal: 1,
+                        flipVertical: 1
+                    },
+                    title: [1, (image, imageData) => image.alt || 'Image'],
+                    hidden: () => {
+                        viewer.destroy();
+                        container.remove();
+                    },
+                    initialViewIndex: startIndex
+                });
+
+                viewer.show();
+            }
+
+            formatFilmStripCaption(image) {
+                const parts = [];
+                if (image.filename) parts.push(image.filename);
+                if (image.width && image.height) parts.push(`${image.width}x${image.height}`);
+                return parts.join(' | ') || 'Image';
+            }
+
+            async renderFilmStripForPrompt(promptId, container) {
+                const images = await this.loadFilmStripImages(promptId);
+                container.innerHTML = this.createFilmStrip(images, promptId);
+            }
+
+            // ==================== End Film Strip Functions ====================
 
             async showAutoTagModal() {
                 this.showModal("autoTagModal");
