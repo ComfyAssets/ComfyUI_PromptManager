@@ -1021,11 +1021,13 @@ class PromptManagerAPI:
                     thumbnails_dir = output_path / "thumbnails"
                     if thumbnails_dir.exists():
                         thumbnail_ext = '.jpg' if is_video else extension
-                        thumbnail_rel_path = f"thumbnails/{media_path.stem}_thumb{thumbnail_ext}"
+                        # Use full relative path to support subdirectories
+                        thumbnail_rel_path = Path("thumbnails") / rel_path.parent / f"{media_path.stem}_thumb{thumbnail_ext}"
                         thumbnail_abs_path = output_path / thumbnail_rel_path
                         
                         if thumbnail_abs_path.exists():
-                            thumbnail_url = f'/prompt_manager/images/serve/{Path(thumbnail_rel_path).as_posix()}'
+                            from urllib.parse import quote
+                            thumbnail_url = f'/prompt_manager/images/serve/{quote(thumbnail_rel_path.as_posix(), safe="/")}'
                     
                     image_info = {
                         'id': str(hash(str(media_path))),
@@ -1146,7 +1148,9 @@ class PromptManagerAPI:
                         
                         # Also try to delete associated thumbnail if it exists
                         try:
-                            thumbnail_path = output_path / "thumbnails" / f"{file_path.stem}_thumb{file_path.suffix}"
+                            # Use full relative path to support subdirectories
+                            rel_path = file_path.relative_to(output_path)
+                            thumbnail_path = output_path / "thumbnails" / rel_path.parent / f"{file_path.stem}_thumb{file_path.suffix}"
                             if thumbnail_path.exists():
                                 os.remove(thumbnail_path)
                                 self.logger.debug(f"Deleted associated thumbnail: {thumbnail_path}")
@@ -1906,12 +1910,14 @@ class PromptManagerAPI:
                     thumbnail_url = None
                     if thumbnails_dir.exists():
                         # For videos, look for thumbnail with .jpg extension
+                        # Use full relative path to support subdirectories
                         thumbnail_ext = '.jpg' if is_video else extension
-                        thumbnail_rel_path = f"thumbnails/{media_path.stem}_thumb{thumbnail_ext}"
+                        thumbnail_rel_path = Path("thumbnails") / rel_path.parent / f"{media_path.stem}_thumb{thumbnail_ext}"
                         thumbnail_abs_path = output_path / thumbnail_rel_path
                         
                         if thumbnail_abs_path.exists():
-                            thumbnail_url = f'/prompt_manager/images/serve/{Path(thumbnail_rel_path).as_posix()}'
+                            from urllib.parse import quote
+                            thumbnail_url = f'/prompt_manager/images/serve/{quote(thumbnail_rel_path.as_posix(), safe="/")}'
                     
                     images.append({
                         'id': str(hash(str(media_path))),  # Simple hash for ID
@@ -2159,10 +2165,11 @@ class PromptManagerAPI:
                     is_video = any(media_file.name.lower().endswith(ext) for ext in video_extensions)
                     
                     # For videos, always save thumbnail as .jpg
+                    # Include parent directory structure to avoid collisions with same-named files
                     if is_video:
-                        thumbnail_path = thumbnails_dir / f"{rel_path.stem}_thumb.jpg"
+                        thumbnail_path = thumbnails_dir / rel_path.parent / f"{rel_path.stem}_thumb.jpg"
                     else:
-                        thumbnail_path = thumbnails_dir / f"{rel_path.stem}_thumb{rel_path.suffix}"
+                        thumbnail_path = thumbnails_dir / rel_path.parent / f"{rel_path.stem}_thumb{rel_path.suffix}"
                     
                     # Skip if thumbnail already exists and is newer than original
                     if (thumbnail_path.exists() and 
@@ -2375,10 +2382,11 @@ class PromptManagerAPI:
                         rel_path = media_file.relative_to(output_path)
                         
                         # For videos, always save thumbnail as .jpg
+                        # Include parent directory structure to avoid collisions with same-named files
                         if is_video:
-                            thumbnail_path = thumbnails_dir / f"{rel_path.stem}_thumb.jpg"
+                            thumbnail_path = thumbnails_dir / rel_path.parent / f"{rel_path.stem}_thumb.jpg"
                         else:
-                            thumbnail_path = thumbnails_dir / f"{rel_path.stem}_thumb{rel_path.suffix}"
+                            thumbnail_path = thumbnails_dir / rel_path.parent / f"{rel_path.stem}_thumb{rel_path.suffix}"
                         
                         # SAFETY: Ensure thumbnail path is within our thumbnails directory
                         try:
@@ -4739,9 +4747,12 @@ class PromptManagerAPI:
                                 thumbnail_url = None
                                 thumbnails_dir = output_path / "thumbnails"
                                 if thumbnails_dir.exists():
-                                    thumbnail_path = thumbnails_dir / f"{image_path.stem}_thumb{image_path.suffix}"
+                                    # Use full relative path to support subdirectories
+                                    thumbnail_rel = Path("thumbnails") / rel_path.parent / f"{image_path.stem}_thumb{image_path.suffix}"
+                                    thumbnail_path = output_path / thumbnail_rel
                                     if thumbnail_path.exists():
-                                        thumbnail_url = f'/prompt_manager/images/serve/thumbnails/{image_path.stem}_thumb{image_path.suffix}'
+                                        from urllib.parse import quote
+                                        thumbnail_url = f'/prompt_manager/images/serve/{quote(thumbnail_rel.as_posix(), safe="/")}'
 
                                 images.append({
                                     'filename': image_path.name,
