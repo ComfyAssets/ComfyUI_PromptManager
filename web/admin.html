@@ -421,25 +421,52 @@
 
     <!-- Settings Modal -->
     <div id="settingsModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700">
+        <div class="bg-gray-800 rounded-xl p-6 max-w-lg w-full mx-4 border border-gray-700 max-h-[90vh] overflow-y-auto">
             <h3 class="text-xl font-semibold text-gray-100 mb-6">⚙️ Settings</h3>
-            
+
             <div class="space-y-6">
-                <div>
-                    <label class="block text-sm font-medium text-gray-400 mb-2">Search Results Auto-Hide (seconds)</label>
-                    <input type="number" id="resultTimeout" min="0" max="300" value="30" 
-                           class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
-                    <p class="text-xs text-gray-500 mt-2">Set to 0 to disable auto-hide. Controls how long search results stay visible in the ComfyUI node.</p>
+                <!-- Gallery Settings Section -->
+                <div class="border-b border-gray-700 pb-4">
+                    <h4 class="text-sm font-semibold text-gray-300 mb-4 uppercase tracking-wide">📁 Gallery Settings</h4>
+
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-400 mb-2">Image Scan Directory</label>
+                        <input type="text" id="galleryRootPath" placeholder="Leave empty for auto-detect"
+                               class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                        <p class="text-xs text-gray-500 mt-2">Custom path to scan for images. Leave empty to use ComfyUI's default output directory.</p>
+                    </div>
+
+                    <div class="mb-4">
+                        <div class="flex items-center justify-between">
+                            <label class="block text-sm font-medium text-gray-400">Currently Monitoring</label>
+                            <button id="refreshMonitoringStatus" class="text-xs text-blue-400 hover:text-blue-300">🔄 Refresh</button>
+                        </div>
+                        <div id="monitoringStatus" class="mt-2 px-3 py-2 bg-gray-900 rounded-lg text-xs text-gray-400 font-mono">
+                            Loading...
+                        </div>
+                    </div>
                 </div>
-                
-                <div>
-                    <label class="block text-sm font-medium text-gray-400 mb-2">Web UI Display Mode</label>
-                    <select id="webuiDisplayMode" 
-                            class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
-                        <option value="popup">Popup Window (Current)</option>
-                        <option value="newtab">New Tab</option>
-                    </select>
-                    <p class="text-xs text-gray-500 mt-2">Choose how the Web UI opens when clicked from ComfyUI nodes.</p>
+
+                <!-- UI Settings Section -->
+                <div class="border-b border-gray-700 pb-4">
+                    <h4 class="text-sm font-semibold text-gray-300 mb-4 uppercase tracking-wide">🖥️ UI Settings</h4>
+
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-400 mb-2">Search Results Auto-Hide (seconds)</label>
+                        <input type="number" id="resultTimeout" min="0" max="300" value="30"
+                               class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                        <p class="text-xs text-gray-500 mt-2">Set to 0 to disable auto-hide. Controls how long search results stay visible in the ComfyUI node.</p>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-400 mb-2">Web UI Display Mode</label>
+                        <select id="webuiDisplayMode"
+                                class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                            <option value="popup">Popup Window (Current)</option>
+                            <option value="newtab">New Tab</option>
+                        </select>
+                        <p class="text-xs text-gray-500 mt-2">Choose how the Web UI opens when clicked from ComfyUI nodes.</p>
+                    </div>
                 </div>
             </div>
 
@@ -1407,6 +1434,7 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                 // Settings modal
                 document.getElementById("saveSettings").addEventListener("click", () => this.saveSettings());
                 document.getElementById("cancelSettings").addEventListener("click", () => this.hideModal("settingsModal"));
+                document.getElementById("refreshMonitoringStatus").addEventListener("click", () => this.updateMonitoringStatus());
 
                 // Bulk tag modal
                 document.getElementById("confirmBulkTag").addEventListener("click", () => this.confirmBulkTag());
@@ -1499,6 +1527,8 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                         if (data.success && data.settings) {
                             this.settings.resultTimeout = data.settings.result_timeout || 5;
                             this.settings.webuiDisplayMode = data.settings.webui_display_mode || 'popup';
+                            this.settings.galleryRootPath = data.settings.gallery_root_path || '';
+                            this.settings.monitoredDirectories = data.settings.monitored_directories || [];
                         }
                     }
                 } catch (error) {
@@ -1942,28 +1972,56 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
             showSettingsModal() {
                 document.getElementById("resultTimeout").value = this.settings.resultTimeout;
                 document.getElementById("webuiDisplayMode").value = this.settings.webuiDisplayMode;
+                document.getElementById("galleryRootPath").value = this.settings.galleryRootPath || '';
+                this.updateMonitoringStatus();
                 this.showModal("settingsModal");
+            }
+
+            async updateMonitoringStatus() {
+                const statusEl = document.getElementById("monitoringStatus");
+                try {
+                    const response = await fetch("/prompt_manager/settings");
+                    if (response.ok) {
+                        const data = await response.json();
+                        const dirs = data.settings?.monitored_directories || [];
+                        if (dirs.length > 0) {
+                            statusEl.innerHTML = dirs.map(d => `<div class="truncate" title="${d}">✓ ${d}</div>`).join('');
+                        } else {
+                            statusEl.textContent = 'No directories being monitored (auto-detect on restart)';
+                        }
+                    }
+                } catch (error) {
+                    statusEl.textContent = 'Unable to fetch status';
+                }
             }
 
             async saveSettings() {
                 const timeout = parseInt(document.getElementById("resultTimeout").value);
                 const displayMode = document.getElementById("webuiDisplayMode").value;
-                
+                const galleryPath = document.getElementById("galleryRootPath").value.trim();
+
                 this.settings.resultTimeout = timeout;
                 this.settings.webuiDisplayMode = displayMode;
+                this.settings.galleryRootPath = galleryPath;
 
                 try {
                     const response = await fetch("/prompt_manager/settings", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ 
+                        body: JSON.stringify({
                             result_timeout: timeout,
-                            webui_display_mode: displayMode 
+                            webui_display_mode: displayMode,
+                            gallery_root_path: galleryPath
                         }),
                     });
 
                     if (response.ok) {
-                        this.showNotification("Settings saved successfully", "success");
+                        const data = await response.json();
+                        if (data.restart_required) {
+                            this.showNotification("Settings saved. Restart ComfyUI for gallery path changes to take effect.", "warning");
+                        } else {
+                            this.showNotification("Settings saved successfully", "success");
+                        }
                         this.hideModal("settingsModal");
                     } else {
                         throw new Error("Failed to save settings");

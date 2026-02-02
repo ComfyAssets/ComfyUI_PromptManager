@@ -271,19 +271,30 @@ class ImageMonitor:
     def start_monitoring(self, output_directories: Optional[list] = None):
         """
         Start monitoring ComfyUI output directories for new images.
-        
+
         Begins filesystem watching on the specified directories. If no directories
-        are provided, the system will attempt to auto-detect ComfyUI output locations.
+        are provided, the system will first check GalleryConfig.MONITORING_DIRECTORIES,
+        then fall back to auto-detecting ComfyUI output locations.
         All monitoring is done recursively to catch images in subdirectories.
-        
+
         Args:
-            output_directories: List of directory paths to monitor. If None, uses auto-detection.
+            output_directories: List of directory paths to monitor. If None, uses config or auto-detection.
         """
         if self.observer:
             self.logger.warning("Image monitoring already running")
             return
-        
-        # Auto-detect ComfyUI output directory if none provided
+
+        # Check config first, then auto-detect if not configured
+        if not output_directories:
+            try:
+                from py.config import GalleryConfig
+                if GalleryConfig.MONITORING_DIRECTORIES:
+                    output_directories = GalleryConfig.MONITORING_DIRECTORIES
+                    self.logger.info(f"Using configured monitoring directories: {output_directories}")
+            except ImportError:
+                pass
+
+        # Auto-detect ComfyUI output directory if still none
         if not output_directories:
             output_directories = self.detect_comfyui_output_dirs()
         

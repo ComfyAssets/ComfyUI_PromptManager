@@ -1300,14 +1300,36 @@ class PromptManagerAPI:
     async def get_settings(self, request):
         """Get current settings."""
         try:
-            from .config import PromptManagerConfig
-            
+            from .config import PromptManagerConfig, GalleryConfig
+
+            # Get monitored directories from image monitor singleton if available
+            monitored_dirs = []
+            try:
+                import sys
+                # Check for the module in sys.modules (handles different import paths)
+                monitor_module = None
+                for mod_name in list(sys.modules.keys()):
+                    if 'image_monitor' in mod_name and hasattr(sys.modules[mod_name], '_monitor_instance'):
+                        monitor_module = sys.modules[mod_name]
+                        break
+
+                if monitor_module and monitor_module._monitor_instance is not None:
+                    monitored_dirs = getattr(monitor_module._monitor_instance, 'monitored_directories', [])
+                elif GalleryConfig.MONITORING_DIRECTORIES:
+                    monitored_dirs = GalleryConfig.MONITORING_DIRECTORIES
+            except Exception:
+                # Fallback to config
+                if GalleryConfig.MONITORING_DIRECTORIES:
+                    monitored_dirs = GalleryConfig.MONITORING_DIRECTORIES
+
             # Return actual configuration settings
             return web.json_response({
-                "success": True, 
+                "success": True,
                 "settings": {
                     "result_timeout": PromptManagerConfig.RESULT_TIMEOUT,
-                    "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE
+                    "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE,
+                    "gallery_root_path": GalleryConfig.MONITORING_DIRECTORIES[0] if GalleryConfig.MONITORING_DIRECTORIES else "",
+                    "monitored_directories": monitored_dirs
                 }
             })
         except Exception as e:
@@ -1319,12 +1341,59 @@ class PromptManagerAPI:
     async def save_settings(self, request):
         """Save settings."""
         try:
+            from .config import PromptManagerConfig, GalleryConfig
+            import json
+            import os
+
             data = await request.json()
-            # For now, just acknowledge the save
-            # In the future, we could store this in database or config file
-            return web.json_response(
-                {"success": True, "message": "Settings saved successfully"}
-            )
+            restart_required = False
+
+            # Update in-memory config
+            if 'result_timeout' in data:
+                PromptManagerConfig.RESULT_TIMEOUT = data['result_timeout']
+            if 'webui_display_mode' in data:
+                PromptManagerConfig.WEBUI_DISPLAY_MODE = data['webui_display_mode']
+
+            # Handle gallery root path
+            if 'gallery_root_path' in data:
+                new_path = data['gallery_root_path'].strip()
+                old_path = GalleryConfig.MONITORING_DIRECTORIES[0] if GalleryConfig.MONITORING_DIRECTORIES else ""
+
+                if new_path != old_path:
+                    if new_path:
+                        GalleryConfig.MONITORING_DIRECTORIES = [new_path]
+                    else:
+                        GalleryConfig.MONITORING_DIRECTORIES = []  # Reset to auto-detect
+                    restart_required = True
+
+            # Save to config file for persistence
+            config_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            config_file = os.path.join(config_dir, 'config.json')
+
+            config_data = {
+                'web_ui': {
+                    'result_timeout': PromptManagerConfig.RESULT_TIMEOUT,
+                    'webui_display_mode': PromptManagerConfig.WEBUI_DISPLAY_MODE
+                },
+                'gallery': {
+                    'monitoring': {
+                        'directories': GalleryConfig.MONITORING_DIRECTORIES
+                    }
+                }
+            }
+
+            try:
+                with open(config_file, 'w') as f:
+                    json.dump(config_data, f, indent=2)
+                self.logger.info(f"Settings saved to {config_file}")
+            except Exception as save_err:
+                self.logger.warning(f"Could not save config file: {save_err}")
+
+            return web.json_response({
+                "success": True,
+                "message": "Settings saved successfully",
+                "restart_required": restart_required
+            })
         except Exception as e:
             return web.json_response(
                 {"success": False, "error": f"Failed to save settings: {str(e)}"},
