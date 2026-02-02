@@ -75,11 +75,11 @@ class ImageGenerationHandler(FileSystemEventHandler):
             event: FileSystemEvent object containing event details
         """
         if not event.is_directory and self.is_image_file(event.src_path):
-            self.logger.debug(f"New image detected: {event.src_path}")
+            self.logger.info(f"New image detected: {event.src_path}")
             # Small delay to ensure file is fully written
             threading.Timer(
-                self.processing_delay, 
-                self.process_new_image, 
+                self.processing_delay,
+                self.process_new_image,
                 args=[event.src_path]
             ).start()
     
@@ -108,15 +108,15 @@ class ImageGenerationHandler(FileSystemEventHandler):
             image_path: Full path to the newly created image file
         """
         try:
-            self.logger.debug(f"Processing image: {image_path}")
-            
+            self.logger.info(f"Processing image: {image_path}")
+
             if not os.path.exists(image_path):
                 self.logger.warning(f"Image file no longer exists: {image_path}")
                 return
-            
+
             # Get current prompt context first
             current_prompt = self.prompt_tracker.get_current_prompt()
-            self.logger.debug(f"Current prompt context: {current_prompt['id'] if current_prompt else 'None'}")
+            self.logger.info(f"Current prompt context: {current_prompt['id'] if current_prompt else 'None'}")
             
             if not current_prompt:
                 self.logger.debug(f"No active prompt context for image: {image_path}")
@@ -301,13 +301,13 @@ class ImageMonitor:
             if os.path.exists(output_dir):
                 self.observer.schedule(self.handler, output_dir, recursive=True)
                 self.monitored_directories.append(output_dir)
-                self.logger.debug(f"Monitoring directory: {output_dir}")
+                self.logger.info(f"Monitoring directory (recursive): {output_dir}")
             else:
                 self.logger.warning(f"Directory does not exist: {output_dir}")
-        
+
         if self.monitored_directories:
             self.observer.start()
-            self.logger.debug(f"Image monitoring started for {len(self.monitored_directories)} directories")
+            self.logger.info(f"Image monitoring started for {len(self.monitored_directories)} directories")
         else:
             self.logger.warning("No valid directories to monitor")
     
@@ -367,15 +367,49 @@ class ImageMonitor:
     
     def get_status(self) -> Dict[str, Any]:
         """Get monitoring status information.
-        
+
         Returns:
             Dictionary containing:
             - running: Boolean indicating if monitoring is active
             - monitored_directories: List of currently monitored directory paths
             - handler_active: Boolean indicating if the event handler is active
+            - observer_alive: Boolean indicating if observer thread is alive
         """
+        observer_alive = False
+        if self.observer is not None:
+            try:
+                observer_alive = self.observer.is_alive()
+            except Exception:
+                pass
         return {
             'running': self.observer is not None,
             'monitored_directories': self.monitored_directories,
-            'handler_active': self.handler is not None
+            'handler_active': self.handler is not None,
+            'observer_alive': observer_alive
         }
+
+
+# Singleton instance management
+_monitor_instance: Optional[ImageMonitor] = None
+_monitor_lock = threading.Lock()
+
+
+def get_image_monitor(db_manager, prompt_tracker) -> ImageMonitor:
+    """Get or create the singleton ImageMonitor instance.
+
+    This ensures only one ImageMonitor exists across all PromptManager nodes,
+    preventing duplicate image detection when multiple nodes are used.
+
+    Args:
+        db_manager: Database manager instance for storing image relationships
+        prompt_tracker: Prompt tracking instance for getting active prompt context
+
+    Returns:
+        The singleton ImageMonitor instance
+    """
+    global _monitor_instance
+    if _monitor_instance is None:
+        with _monitor_lock:
+            if _monitor_instance is None:
+                _monitor_instance = ImageMonitor(db_manager, prompt_tracker)
+    return _monitor_instance
