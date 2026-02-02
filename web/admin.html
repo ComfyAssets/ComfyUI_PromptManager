@@ -4713,14 +4713,28 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 // If thumbnail_url already exists, use it
                 if (image.thumbnail_url) return image.thumbnail_url;
 
-                // Try to construct thumbnail URL from filename
-                // Thumbnails are stored as: thumbnails/{stem}_thumb{ext}
+                // Try to construct thumbnail URL from filename and relative_path
+                // Thumbnails are stored as: thumbnails/{parent_dir}/{stem}_thumb{ext}
+                // to avoid collisions with same-named files in different directories
                 if (image.filename) {
                     const lastDot = image.filename.lastIndexOf('.');
                     if (lastDot > 0) {
                         const stem = image.filename.substring(0, lastDot);
                         const ext = image.filename.substring(lastDot);
-                        return `/prompt_manager/images/serve/thumbnails/${stem}_thumb${ext}`;
+                        
+                        // Get parent directory from relative_path if available
+                        let parentDir = '';
+                        if (image.relative_path) {
+                            const relPath = image.relative_path.replace(/\\/g, '/');
+                            const lastSlash = relPath.lastIndexOf('/');
+                            if (lastSlash > 0) {
+                                parentDir = relPath.substring(0, lastSlash) + '/';
+                            }
+                        }
+                        
+                        // URL encode the path components (but preserve slashes)
+                        const encodedParentDir = parentDir.split('/').map(p => encodeURIComponent(p)).join('/');
+                        return `/prompt_manager/images/serve/thumbnails/${encodedParentDir}${encodeURIComponent(stem)}_thumb${ext}`;
                     }
                 }
 

@@ -1067,7 +1067,8 @@ class PromptManagerAPI:
                         thumbnail_abs_path = output_path / thumbnail_rel_path
 
                         if thumbnail_abs_path.exists():
-                            thumbnail_url = f'/prompt_manager/images/serve/{Path(thumbnail_rel_path).as_posix()}'
+                            from urllib.parse import quote
+                            thumbnail_url = f'/prompt_manager/images/serve/{quote(thumbnail_rel_path.as_posix(), safe="/")}'
                     
                     image_info = {
                         'id': str(hash(str(media_path))),
@@ -1950,6 +1951,7 @@ class PromptManagerAPI:
                     thumbnail_url = None
                     if thumbnails_dir.exists():
                         # For videos, look for thumbnail with .jpg extension
+                        # Use full relative path to support subdirectories
                         thumbnail_ext = '.jpg' if is_video else extension
                         # Preserve subdirectory structure in thumbnail path
                         rel_path_no_ext = rel_path.with_suffix('')
@@ -1957,7 +1959,8 @@ class PromptManagerAPI:
                         thumbnail_abs_path = output_path / thumbnail_rel_path
 
                         if thumbnail_abs_path.exists():
-                            thumbnail_url = f'/prompt_manager/images/serve/{Path(thumbnail_rel_path).as_posix()}'
+                            from urllib.parse import quote
+                            thumbnail_url = f'/prompt_manager/images/serve/{quote(thumbnail_rel_path.as_posix(), safe="/")}'
                     
                     images.append({
                         'id': str(hash(str(media_path))),  # Simple hash for ID
