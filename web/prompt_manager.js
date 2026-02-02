@@ -1,6 +1,7 @@
 // PromptManager/web/prompt_manager.js
 
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 
 // ============================================================================
 // Top Bar Button Integration (similar to rgthree-comfy approach)
@@ -158,6 +159,47 @@ function addPMTopBarButtonLegacy() {
 // Extension Registration
 // ============================================================================
 
+/**
+ * CRITICAL FIX: Sync all PromptManager widget values from DOM
+ * This must be called before any serialization happens
+ */
+function syncPromptManagerWidgets() {
+  const graph = app.graph;
+  if (!graph) return;
+
+  const nodes = graph._nodes || graph.nodes || [];
+
+  for (const node of nodes) {
+    if (node.type === "PromptManager" || node.type === "PromptManagerText") {
+      if (node.widgets && node.widgets.length > 0) {
+        if (!node.widgets_values) {
+          node.widgets_values = [];
+        }
+
+        node.widgets.forEach((widget, idx) => {
+          if (widget) {
+            // CRITICAL: For multiline widgets, inputEl.value is the true source
+            const actualValue = widget.inputEl ? widget.inputEl.value : widget.value;
+            if (actualValue !== undefined) {
+              const oldValue = node.widgets_values[idx];
+              node.widgets_values[idx] = actualValue;
+
+              // Also sync widget.value
+              if (widget.inputEl && widget.value !== actualValue) {
+                widget.value = actualValue;
+              }
+
+              if (widget.name === "text" && oldValue !== actualValue) {
+                console.log(`[PromptManager] graphToPrompt sync: "${String(oldValue).substring(0, 30)}..." -> "${String(actualValue).substring(0, 30)}..."`);
+              }
+            }
+          }
+        });
+      }
+    }
+  }
+}
+
 app.registerExtension({
   name: "PromptManager.UI",
 
@@ -166,6 +208,56 @@ app.registerExtension({
     setTimeout(() => {
       addPMTopBarButton();
     }, 100);
+
+    // CRITICAL: Wrap app.graphToPrompt to sync widget values BEFORE serialization
+    // This runs before any other extension's wrapper can access stale data
+    const originalGraphToPrompt = app.graphToPrompt.bind(app);
+    app.graphToPrompt = async function(...args) {
+      console.log("[PromptManager] graphToPrompt intercepted - syncing widgets NOW");
+      syncPromptManagerWidgets();
+      return originalGraphToPrompt(...args);
+    };
+    console.log("[PromptManager] Wrapped app.graphToPrompt for value sync");
+
+    // CRITICAL FIX: Intercept api.queuePrompt to fix prompt data at the LAST moment
+    // This catches any cached/stale data that other extensions might have passed through
+    const originalQueuePrompt = api.queuePrompt.bind(api);
+    api.queuePrompt = async function(number, { output, workflow }) {
+      console.log("[PromptManager] api.queuePrompt intercepted - fixing prompt data");
+
+      // Find PromptManager nodes in the output and fix their text values
+      const graph = app.graph;
+      if (graph && output) {
+        const nodes = graph._nodes || graph.nodes || [];
+        for (const node of nodes) {
+          if ((node.type === "PromptManager" || node.type === "PromptManagerText") && output[node.id]) {
+            // Find the text widget and get its current DOM value
+            const textWidget = node.widgets?.find(w => w.name === "text");
+            if (textWidget && textWidget.inputEl) {
+              const currentValue = textWidget.inputEl.value;
+              const outputNode = output[node.id];
+
+              // The output structure has "inputs" with widget values
+              if (outputNode.inputs && outputNode.inputs.text !== currentValue) {
+                console.log(`[PromptManager] FIXING node ${node.id} text: "${String(outputNode.inputs.text).substring(0, 30)}..." -> "${currentValue.substring(0, 30)}..."`);
+                outputNode.inputs.text = currentValue;
+              }
+            }
+          }
+        }
+      }
+
+      return originalQueuePrompt(number, { output, workflow });
+    };
+    console.log("[PromptManager] Wrapped api.queuePrompt for final data fix");
+  },
+
+  /**
+   * CRITICAL: Also hook beforeQueuePrompt as a backup sync point
+   */
+  async beforeQueuePrompt(promptInfo) {
+    console.log("[PromptManager] beforeQueuePrompt - additional sync");
+    syncPromptManagerWidgets();
   },
 
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
@@ -180,6 +272,62 @@ app.registerExtension({
         if (onNodeCreated) {
           onNodeCreated.apply(this, arguments);
         }
+
+        // CRITICAL FIX: Ensure text widget always returns current value during serialization
+        // This fixes the issue where graphToPrompt reads stale cached values
+        const self = this;
+        setTimeout(() => {
+          const textWidget = self.widgets?.find((w) => w.name === "text");
+          if (textWidget) {
+            console.log("[PromptManager] Patching text widget for proper serialization");
+
+            // Store reference to the widget for the closure
+            const widgetRef = textWidget;
+            const originalSerializeValue = textWidget.serializeValue;
+
+            // Override serializeValue - use arrow function to capture widgetRef
+            textWidget.serializeValue = (nodeId, widgetIndex) => {
+              // Always return the current DOM value using our stored reference
+              if (widgetRef.inputEl) {
+                const currentValue = widgetRef.inputEl.value;
+                // Sync widget.value as well
+                widgetRef.value = currentValue;
+                console.log(`[PromptManager] serializeValue returning: "${currentValue.substring(0, 50)}..."`);
+                return currentValue;
+              }
+              // Fallback to widget.value
+              console.log(`[PromptManager] serializeValue fallback to widget.value: "${String(widgetRef.value).substring(0, 50)}..."`);
+              return widgetRef.value;
+            };
+
+            // Add aggressive sync listeners for all value change events
+            if (textWidget.inputEl) {
+              const syncValue = function() {
+                const currentVal = textWidget.inputEl.value;
+                textWidget.value = currentVal;
+                // Also update widgets_values array
+                const widgetIndex = self.widgets?.indexOf(textWidget);
+                if (self.widgets_values && widgetIndex >= 0) {
+                  self.widgets_values[widgetIndex] = currentVal;
+                }
+              };
+
+              // Sync on every keystroke
+              textWidget.inputEl.addEventListener('input', syncValue);
+              // Sync on change (for paste, autocomplete, etc.)
+              textWidget.inputEl.addEventListener('change', syncValue);
+              // Sync when focus leaves the field
+              textWidget.inputEl.addEventListener('blur', syncValue);
+              // Sync on keyup as backup
+              textWidget.inputEl.addEventListener('keyup', syncValue);
+
+              // Initial sync
+              syncValue();
+
+              console.log("[PromptManager] Added comprehensive input listeners to text widget");
+            }
+          }
+        }, 50); // Shorter delay to beat other extensions
 
         // Initialize properties for search state (non-serialized runtime state)
         this.properties = this.properties || {};
@@ -261,12 +409,40 @@ app.registerExtension({
           }
         };
 
-        // Hook into serialization to preserve resize flag and prevent runtime data from being saved
+        // Hook into serialization to preserve resize flag, sync widget values, and prevent runtime data from being saved
         const originalSerialize = this.serialize;
         this.serialize = function () {
+          // CRITICAL: Sync widget values BEFORE serialization
+          // This ensures graphToPrompt reads current values, not cached ones
+          // For multiline widgets, the value is stored in inputEl.value
+          if (this.widgets && this.widgets.length > 0) {
+            if (!this.widgets_values) {
+              this.widgets_values = [];
+            }
+            this.widgets.forEach((widget, idx) => {
+              if (widget) {
+                // Get the actual value - inputEl.value for DOM widgets, otherwise widget.value
+                const actualValue = widget.inputEl ? widget.inputEl.value : widget.value;
+                if (actualValue !== undefined) {
+                  this.widgets_values[idx] = actualValue;
+                  // Sync widget.value with inputEl.value
+                  if (widget.inputEl && widget.value !== actualValue) {
+                    widget.value = actualValue;
+                  }
+                }
+              }
+            });
+            console.log(`[PromptManager] serialize: Synced ${this.widgets.length} widget values`);
+          }
+
           const data = originalSerialize ? originalSerialize.call(this) : {};
           data._userHasResized = this._userHasResized;
-          
+
+          // Ensure widgets_values is included in serialization
+          if (this.widgets_values) {
+            data.widgets_values = [...this.widgets_values];
+          }
+
           // Ensure search results are never saved to workflow
           if (data.properties && data.properties.searchResults) {
             delete data.properties.searchResults;
@@ -274,7 +450,7 @@ app.registerExtension({
           if (data.properties && data.properties.selectedPromptIndex) {
             delete data.properties.selectedPromptIndex;
           }
-          
+
           return data;
         };
 
@@ -677,32 +853,88 @@ app.registerExtension({
         // Find the text widget and set its value
         const textWidget = this.widgets?.find((w) => w.name === "text");
         if (textWidget) {
+          const textWidgetIndex = this.widgets.indexOf(textWidget);
+
+          console.log(`[PromptManager] DEBUG: Setting prompt on node ${this.id}`);
+          console.log(`[PromptManager] DEBUG: textWidget found at index ${textWidgetIndex}`);
+          console.log(`[PromptManager] DEBUG: Old value: ${textWidget.value?.substring(0, 50)}...`);
+          console.log(`[PromptManager] DEBUG: New value: ${prompt.text.substring(0, 50)}...`);
+
+          // Set the widget value
           textWidget.value = prompt.text;
+
+          // CRITICAL: For multiline widgets, the value is stored in the DOM element (inputEl)
+          // graphToPrompt calls serializeValue() which reads from inputEl.value
+          if (textWidget.inputEl) {
+            textWidget.inputEl.value = prompt.text;
+            console.log(`[PromptManager] DEBUG: Updated inputEl.value directly`);
+          }
+
+          // CRITICAL: Also update widgets_values array if it exists
+          // ComfyUI's graphToPrompt reads from this array for execution
+          if (this.widgets_values && textWidgetIndex >= 0) {
+            this.widgets_values[textWidgetIndex] = prompt.text;
+            console.log(`[PromptManager] DEBUG: Updated widgets_values[${textWidgetIndex}]`);
+          }
+
+          // Trigger widget callback to notify ComfyUI of value change
+          if (textWidget.callback) {
+            textWidget.callback(prompt.text, app.canvas, this, null, null);
+            console.log(`[PromptManager] DEBUG: Called textWidget.callback`);
+          }
 
           // Also set metadata if available
           const categoryWidget = this.widgets?.find(
             (w) => w.name === "category",
           );
           if (categoryWidget && prompt.category) {
+            const categoryIdx = this.widgets.indexOf(categoryWidget);
             categoryWidget.value = prompt.category;
+            if (categoryWidget.inputEl) {
+              categoryWidget.inputEl.value = prompt.category;
+            }
+            if (this.widgets_values && categoryIdx >= 0) {
+              this.widgets_values[categoryIdx] = prompt.category;
+            }
+            if (categoryWidget.callback) {
+              categoryWidget.callback(prompt.category, app.canvas, this, null, null);
+            }
           }
 
           const tagsWidget = this.widgets?.find((w) => w.name === "tags");
           if (tagsWidget && prompt.tags) {
-            tagsWidget.value = Array.isArray(prompt.tags)
+            const tagsIdx = this.widgets.indexOf(tagsWidget);
+            const tagsValue = Array.isArray(prompt.tags)
               ? prompt.tags.join(", ")
               : prompt.tags;
+            tagsWidget.value = tagsValue;
+            if (tagsWidget.inputEl) {
+              tagsWidget.inputEl.value = tagsValue;
+            }
+            if (this.widgets_values && tagsIdx >= 0) {
+              this.widgets_values[tagsIdx] = tagsValue;
+            }
+            if (tagsWidget.callback) {
+              tagsWidget.callback(tagsValue, app.canvas, this, null, null);
+            }
           }
 
           // Visual feedback
           this.highlightSelectedResult(index);
 
-          // Trigger widget change events
+          // Trigger widget change events and mark graph as needing re-execution
           this.setDirtyCanvas(true, true);
+
+          // Force graph to recognize value change for execution cache invalidation
+          if (app.graph) {
+            app.graph.setDirtyCanvas(true, true);
+          }
 
           console.log(
             `[PromptManager] Loaded prompt: ${prompt.text.substring(0, 50)}...`,
           );
+          console.log(`[PromptManager] DEBUG: Final widget value: ${textWidget.value?.substring(0, 50)}...`);
+          console.log(`[PromptManager] DEBUG: widgets_values: ${JSON.stringify(this.widgets_values?.slice(0, 3))}...`);
         }
       };
 
