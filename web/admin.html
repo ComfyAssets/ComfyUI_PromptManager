@@ -4652,7 +4652,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }
 
                 try {
-                    const response = await fetch('/prompt_manager/prompts', {
+                    const response = await fetch('/prompt_manager/save', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
