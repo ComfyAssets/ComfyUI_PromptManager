@@ -91,9 +91,13 @@ class PromptModel:
                 workflow_data TEXT,
                 prompt_metadata TEXT,
                 parameters TEXT,
-                FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE
+                FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE,
+                UNIQUE(prompt_id, filename)
             )
         """)
+
+        # Add unique constraint to existing databases (migration)
+        self._migrate_add_unique_constraint(conn)
         
         # Check if we need to migrate from old schema with workflow_name
         self._migrate_workflow_name_removal(conn)
@@ -249,10 +253,100 @@ class PromptModel:
             self.logger.error(f"Foreign key migration error: {e}")
             # If migration fails, continue with existing schema
     
+    def _migrate_add_unique_constraint(self, conn: sqlite3.Connection) -> None:
+        """
+        Add UNIQUE constraint on (prompt_id, filename) to prevent duplicate image entries.
+
+        This migration:
+        1. Checks if the constraint already exists
+        2. Removes duplicate entries (keeping the most recent)
+        3. Recreates the table with the UNIQUE constraint
+
+        Args:
+            conn: Active database connection
+        """
+        try:
+            # Check if the unique constraint already exists by looking at table info
+            cursor = conn.execute("PRAGMA index_list(generated_images)")
+            indexes = cursor.fetchall()
+
+            # Check if we have a unique index on prompt_id, filename
+            has_unique_constraint = False
+            for idx in indexes:
+                if idx[2] == 1:  # unique flag
+                    cursor = conn.execute(f"PRAGMA index_info({idx[1]})")
+                    columns = [col[2] for col in cursor.fetchall()]
+                    if 'prompt_id' in columns and 'filename' in columns:
+                        has_unique_constraint = True
+                        break
+
+            if has_unique_constraint:
+                return  # Already migrated
+
+            self.logger.info("Migrating database: adding UNIQUE constraint on (prompt_id, filename)")
+
+            # First, remove duplicates keeping only the most recent (highest id)
+            conn.execute("""
+                DELETE FROM generated_images
+                WHERE id NOT IN (
+                    SELECT MAX(id) FROM generated_images
+                    GROUP BY prompt_id, filename
+                )
+            """)
+
+            duplicates_removed = conn.total_changes
+            if duplicates_removed > 0:
+                self.logger.info(f"Removed {duplicates_removed} duplicate image entries")
+
+            # Create new table with UNIQUE constraint
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS generated_images_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    prompt_id INTEGER NOT NULL,
+                    image_path TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    generation_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    file_size INTEGER,
+                    width INTEGER,
+                    height INTEGER,
+                    format TEXT,
+                    workflow_data TEXT,
+                    prompt_metadata TEXT,
+                    parameters TEXT,
+                    FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE,
+                    UNIQUE(prompt_id, filename)
+                )
+            """)
+
+            # Copy data
+            conn.execute("""
+                INSERT INTO generated_images_new
+                (id, prompt_id, image_path, filename, generation_time, file_size,
+                 width, height, format, workflow_data, prompt_metadata, parameters)
+                SELECT id, prompt_id, image_path, filename, generation_time, file_size,
+                       width, height, format, workflow_data, prompt_metadata, parameters
+                FROM generated_images
+            """)
+
+            # Drop old table and rename new one
+            conn.execute("DROP TABLE generated_images")
+            conn.execute("ALTER TABLE generated_images_new RENAME TO generated_images")
+
+            # Recreate indexes
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_prompt_images ON generated_images(prompt_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_image_path ON generated_images(image_path)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_generation_time ON generated_images(generation_time)")
+
+            self.logger.info("UNIQUE constraint migration completed successfully")
+
+        except Exception as e:
+            self.logger.error(f"UNIQUE constraint migration error: {e}")
+            # Continue with existing schema if migration fails
+
     def migrate_database(self) -> None:
         """
         Apply any pending database migrations.
-        
+
         This method serves as an entry point for future schema migrations.
         Add new migration logic here as the database evolves.
         """

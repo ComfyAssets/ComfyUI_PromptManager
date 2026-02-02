@@ -82,6 +82,34 @@ except Exception as e:
     except:
         pass
 
+# Start image monitoring globally at module import time
+# This ensures images are linked regardless of which node is used in the workflow
+try:
+    from .database.operations import PromptDatabase
+    from .utils.image_monitor import get_image_monitor
+    from .utils.prompt_tracker import get_prompt_tracker
+    from .utils.logging_config import get_logger
+
+    _init_logger = get_logger("prompt_manager.init")
+    _init_logger.info("Starting global image monitoring system...")
+
+    # Initialize database and get singleton instances
+    _global_db = PromptDatabase()
+    _global_prompt_tracker = get_prompt_tracker(_global_db)
+    _global_image_monitor = get_image_monitor(_global_db, _global_prompt_tracker)
+
+    # Start monitoring
+    _global_image_monitor.start_monitoring()
+    _init_logger.info("Global image monitoring system started successfully")
+
+except Exception as e:
+    try:
+        from .utils.logging_config import get_logger
+        _init_logger = get_logger("prompt_manager.init")
+        _init_logger.error(f"Failed to start image monitoring: {e}")
+    except:
+        print(f"[ComfyUI-PromptManager] Warning: Failed to start image monitoring: {e}")
+
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
 # Print startup message with loaded tools

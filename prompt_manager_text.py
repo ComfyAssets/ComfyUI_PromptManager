@@ -37,8 +37,8 @@ except ImportError:
 try:
     from .database.operations import PromptDatabase
     from .utils.comfyui_integration import get_comfyui_integration
-    from .utils.image_monitor import ImageMonitor
-    from .utils.prompt_tracker import PromptExecutionContext, PromptTracker
+    from .utils.image_monitor import get_image_monitor
+    from .utils.prompt_tracker import PromptExecutionContext, get_prompt_tracker
 except ImportError:
     # For direct imports when not in a package
     import os
@@ -47,8 +47,8 @@ except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from database.operations import PromptDatabase
     from utils.comfyui_integration import get_comfyui_integration
-    from utils.image_monitor import ImageMonitor
-    from utils.prompt_tracker import PromptExecutionContext, PromptTracker
+    from utils.image_monitor import get_image_monitor
+    from utils.prompt_tracker import PromptExecutionContext, get_prompt_tracker
 
 
 class PromptManagerText(ComfyNodeABC):
@@ -67,8 +67,9 @@ class PromptManagerText(ComfyNodeABC):
         self.logger.debug("Initializing PromptManagerText node")
 
         self.db = PromptDatabase()
-        self.prompt_tracker = PromptTracker(self.db)
-        self.image_monitor = ImageMonitor(self.db, self.prompt_tracker)
+        # Use singleton getters to ensure only one tracker/monitor exists
+        self.prompt_tracker = get_prompt_tracker(self.db)
+        self.image_monitor = get_image_monitor(self.db, self.prompt_tracker)
         self.comfyui_integration = get_comfyui_integration()
 
         # Start image monitoring automatically
@@ -455,25 +456,6 @@ class PromptManagerText(ComfyNodeABC):
         """
         self.cleanup_gallery_system()
 
-    @classmethod
-    def IS_CHANGED(cls, text="", category="", tags="", search_text="", 
-                    prepend_text="", append_text="", **kwargs):
-        """
-        ComfyUI method to determine if node needs re-execution.
-        
-        This method now properly tracks input changes to avoid unnecessary
-        re-execution while still ensuring prompts are saved when inputs change.
-        
-        Returns:
-            A hash of the input values that changes when any input changes
-        """
-        # Create a hash of all the text inputs that affect the output
-        # This ensures the node only re-executes when inputs actually change
-        import hashlib
-        
-        # Combine all text inputs that affect the output
-        combined = f"{text}|{category}|{tags}|{prepend_text}|{append_text}"
-        
-        # Return a hash that will change when inputs change
-        # Note: We don't include search_text as it doesn't affect the output
-        return hashlib.sha256(combined.encode()).hexdigest()
+    # NOTE: IS_CHANGED intentionally removed to match CLIPTextEncode behavior
+    # ComfyUI's default caching (based on input values) should handle cache invalidation
+    # The previous IS_CHANGED implementation was causing input/cache mismatch issues

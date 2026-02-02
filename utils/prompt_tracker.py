@@ -408,16 +408,41 @@ class PromptExecutionContext:
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit the execution context.
-        
+
         Currently does not clear the prompt context to allow images to be
         generated after prompt execution completes. The prompt will be cleaned
         up automatically after the timeout period.
-        
+
         Args:
             exc_type: Exception type (if an exception occurred)
-            exc_val: Exception value (if an exception occurred) 
+            exc_val: Exception value (if an exception occurred)
             exc_tb: Exception traceback (if an exception occurred)
         """
         # Don't clear immediately - let the timeout handle it
         # This allows images to be generated after the prompt execution completes
         pass
+
+
+# Singleton instance management
+_tracker_instance: Optional[PromptTracker] = None
+_tracker_lock = threading.Lock()
+
+
+def get_prompt_tracker(db_manager) -> PromptTracker:
+    """Get or create the singleton PromptTracker instance.
+
+    This ensures only one PromptTracker exists across all PromptManager nodes,
+    preventing duplicate image linking when multiple nodes are used.
+
+    Args:
+        db_manager: Database manager instance for prompt operations
+
+    Returns:
+        The singleton PromptTracker instance
+    """
+    global _tracker_instance
+    if _tracker_instance is None:
+        with _tracker_lock:
+            if _tracker_instance is None:
+                _tracker_instance = PromptTracker(db_manager)
+    return _tracker_instance

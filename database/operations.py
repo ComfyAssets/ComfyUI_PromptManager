@@ -654,11 +654,12 @@ class PromptDatabase:
                 # Proceed with linking
                 filename = os.path.basename(image_path)
                 file_info = metadata.get('file_info', {}) if metadata else {}
-                
+
+                # Use INSERT OR IGNORE to skip duplicates (same prompt_id + filename)
                 cursor = conn.execute(
                     """
-                    INSERT INTO generated_images 
-                    (prompt_id, image_path, filename, file_size, width, height, format, 
+                    INSERT OR IGNORE INTO generated_images
+                    (prompt_id, image_path, filename, file_size, width, height, format,
                      workflow_data, prompt_metadata, parameters)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -676,6 +677,11 @@ class PromptDatabase:
                     )
                 )
                 conn.commit()
+
+                if cursor.lastrowid == 0:
+                    self.logger.debug(f"Image {filename} already linked to prompt {prompt_id_int}")
+                    return 0
+
                 return cursor.lastrowid
                 
         except Exception as e:
@@ -685,18 +691,18 @@ class PromptDatabase:
     def get_prompt_images(self, prompt_id: str) -> List[Dict[str, Any]]:
         """
         Get all images associated with a prompt.
-        
+
         Args:
             prompt_id: The prompt ID
-            
+
         Returns:
             List of image records
         """
         with self.model.get_connection() as conn:
             cursor = conn.execute(
                 """
-                SELECT * FROM generated_images 
-                WHERE prompt_id = ? 
+                SELECT * FROM generated_images
+                WHERE prompt_id = ?
                 ORDER BY generation_time DESC
                 """,
                 (prompt_id,)
