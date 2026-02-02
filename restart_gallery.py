@@ -30,16 +30,16 @@ sys.path.insert(0, current_dir)
 try:
     # Import and initialize the gallery system
     from database.operations import PromptDatabase
-    from utils.prompt_tracker import PromptTracker
-    from utils.image_monitor import ImageMonitor
-    
+    from utils.prompt_tracker import get_prompt_tracker
+    from utils.image_monitor import get_image_monitor
+
     print("[RESTART] Restarting PromptManager Gallery System...")
-    
-    # Initialize components
+
+    # Initialize components using singleton getters
     db = PromptDatabase()
-    tracker = PromptTracker(db)
-    monitor = ImageMonitor(db, tracker)
-    
+    tracker = get_prompt_tracker(db)
+    monitor = get_image_monitor(db, tracker)
+
     print("[SUCCESS] Components initialized successfully")
     
     # Test image monitoring directories
