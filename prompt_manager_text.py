@@ -456,6 +456,19 @@ class PromptManagerText(ComfyNodeABC):
         """
         self.cleanup_gallery_system()
 
-    # NOTE: IS_CHANGED intentionally removed to match CLIPTextEncode behavior
-    # ComfyUI's default caching (based on input values) should handle cache invalidation
-    # The previous IS_CHANGED implementation was causing input/cache mismatch issues
+    @classmethod
+    def IS_CHANGED(cls, text="", category="", tags="", search_text="",
+                   prepend_text="", append_text="", **kwargs):
+        """
+        ComfyUI method to determine if node needs re-execution.
+
+        Returns a hash of input values that affect the text output.
+        This enables proper branch execution - only re-execute when inputs change.
+        """
+        import hashlib
+
+        # Combine all text inputs that affect the output
+        # Note: search_text doesn't affect output, so it's excluded
+        combined = f"{text}|{prepend_text}|{append_text}"
+
+        return hashlib.sha256(combined.encode()).hexdigest()
