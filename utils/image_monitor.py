@@ -84,14 +84,18 @@ class ImageGenerationHandler(FileSystemEventHandler):
             ).start()
     
     def is_image_file(self, filepath: str) -> bool:
-        """Check if file is a supported image format.
-        
+        """Check if file is a supported image format and not a thumbnail.
+
         Args:
             filepath: Path to the file to check
-            
+
         Returns:
-            True if the file has a supported image extension, False otherwise
+            True if the file has a supported image extension and is not
+            inside a thumbnails directory, False otherwise
         """
+        # Skip files in thumbnails directory - those are derivatives, not generated images
+        if '/thumbnails/' in filepath or '\\thumbnails\\' in filepath:
+            return False
         return filepath.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif'))
     
     def process_new_image(self, image_path: str):

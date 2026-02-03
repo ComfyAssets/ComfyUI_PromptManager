@@ -1068,8 +1068,8 @@ class PromptManagerAPI:
 
                         if thumbnail_abs_path.exists():
                             from urllib.parse import quote
-                            thumbnail_url = f'/prompt_manager/images/serve/{quote(thumbnail_rel_path.as_posix(), safe="/")}'
-                    
+                            thumbnail_url = f'/prompt_manager/images/serve/{quote(thumbnail_rel_path, safe="/")}'
+
                     image_info = {
                         'id': str(hash(str(media_path))),
                         'filename': media_path.name,
@@ -2029,8 +2029,8 @@ class PromptManagerAPI:
 
                         if thumbnail_abs_path.exists():
                             from urllib.parse import quote
-                            thumbnail_url = f'/prompt_manager/images/serve/{quote(thumbnail_rel_path.as_posix(), safe="/")}'
-                    
+                            thumbnail_url = f'/prompt_manager/images/serve/{quote(thumbnail_rel_path, safe="/")}'
+
                     images.append({
                         'id': str(hash(str(media_path))),  # Simple hash for ID
                         'filename': media_path.name,
@@ -2251,10 +2251,10 @@ class PromptManagerAPI:
                     if any(file.lower().endswith(ext) for ext in media_extensions):
                         media_files.append(Path(root) / file)
             
-            total_media = len(media_files)
-            self.logger.info(f"Found {total_media} media files to process for thumbnails")
-            
-            if total_media == 0:
+            total_images = len(media_files)
+            self.logger.info(f"Found {total_images} media files to process for thumbnails")
+
+            if total_images == 0:
                 return web.json_response({
                     'success': True,
                     'count': 0,
@@ -4883,15 +4883,18 @@ class PromptManagerAPI:
                                 if thumbnails_dir.exists():
                                     # Preserve subdirectory structure in thumbnail path
                                     rel_path_no_ext = rel_path.with_suffix('')
-                                    thumbnail_path = thumbnails_dir / f"{rel_path_no_ext.as_posix()}_thumb{image_path.suffix}"
-                                    if thumbnail_path.exists():
-                                        thumbnail_url = f'/prompt_manager/images/serve/thumbnails/{rel_path_no_ext.as_posix()}_thumb{image_path.suffix}'
+                                    thumbnail_rel_path = f"thumbnails/{rel_path_no_ext.as_posix()}_thumb{image_path.suffix}"
+                                    thumbnail_abs_path = thumbnails_dir / f"{rel_path_no_ext.as_posix()}_thumb{image_path.suffix}"
+                                    if thumbnail_abs_path.exists():
+                                        from urllib.parse import quote
+                                        thumbnail_url = f'/prompt_manager/images/serve/{quote(thumbnail_rel_path, safe="/")}'
 
+                                from urllib.parse import quote as url_quote
                                 images.append({
                                     'filename': image_path.name,
                                     'path': str(image_path),
                                     'relative_path': str(rel_path),
-                                    'url': f'/prompt_manager/images/serve/{rel_path.as_posix()}',
+                                    'url': f'/prompt_manager/images/serve/{url_quote(rel_path.as_posix(), safe="/")}',
                                     'thumbnail_url': thumbnail_url
                                 })
 
