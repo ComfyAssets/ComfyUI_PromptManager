@@ -57,7 +57,7 @@ function addPMTopBarButton() {
 
   // Check if app.menu exists (new frontend)
   if (!app.menu?.settingsGroup?.element) {
-    console.log("[PromptManager] New frontend menu not found, trying legacy approach");
+    // New frontend menu not found, try legacy approach
     addPMTopBarButtonLegacy();
     return;
   }
@@ -102,7 +102,6 @@ function addPMTopBarButton() {
 
   // Insert before the settings group
   app.menu.settingsGroup.element.before(pmButtonGroup);
-  console.log("[PromptManager] Top bar button added (new frontend)");
 }
 
 /**
@@ -152,7 +151,6 @@ function addPMTopBarButtonLegacy() {
   };
 
   topBar.appendChild(btn);
-  console.log("[PromptManager] Toolbar button added (legacy frontend)");
 }
 
 // ============================================================================
@@ -189,9 +187,7 @@ function syncPromptManagerWidgets() {
                 widget.value = actualValue;
               }
 
-              if (widget.name === "text" && oldValue !== actualValue) {
-                console.log(`[PromptManager] graphToPrompt sync: "${String(oldValue).substring(0, 30)}..." -> "${String(actualValue).substring(0, 30)}..."`);
-              }
+              // text widget value synced from DOM
             }
           }
         });
@@ -213,18 +209,16 @@ app.registerExtension({
     // This runs before any other extension's wrapper can access stale data
     const originalGraphToPrompt = app.graphToPrompt.bind(app);
     app.graphToPrompt = async function(...args) {
-      console.log("[PromptManager] graphToPrompt intercepted - syncing widgets NOW");
       syncPromptManagerWidgets();
       return originalGraphToPrompt(...args);
     };
-    console.log("[PromptManager] Wrapped app.graphToPrompt for value sync");
 
     // CRITICAL FIX: Intercept api.queuePrompt to fix prompt data at the LAST moment
     // This catches any cached/stale data that other extensions might have passed through
+    // NOTE: The third parameter (...rest) carries partialExecutionTargets and previewMethod
+    // which ComfyUI uses for branch execution. Dropping it breaks partial execution.
     const originalQueuePrompt = api.queuePrompt.bind(api);
-    api.queuePrompt = async function(number, { output, workflow }) {
-      console.log("[PromptManager] api.queuePrompt intercepted - fixing prompt data");
-
+    api.queuePrompt = async function(number, { output, workflow }, ...rest) {
       // Find PromptManager nodes in the output and fix their text values
       const graph = app.graph;
       if (graph && output) {
@@ -239,7 +233,6 @@ app.registerExtension({
 
               // The output structure has "inputs" with widget values
               if (outputNode.inputs && outputNode.inputs.text !== currentValue) {
-                console.log(`[PromptManager] FIXING node ${node.id} text: "${String(outputNode.inputs.text).substring(0, 30)}..." -> "${currentValue.substring(0, 30)}..."`);
                 outputNode.inputs.text = currentValue;
               }
             }
@@ -247,23 +240,19 @@ app.registerExtension({
         }
       }
 
-      return originalQueuePrompt(number, { output, workflow });
+      return originalQueuePrompt(number, { output, workflow }, ...rest);
     };
-    console.log("[PromptManager] Wrapped api.queuePrompt for final data fix");
   },
 
   /**
    * CRITICAL: Also hook beforeQueuePrompt as a backup sync point
    */
   async beforeQueuePrompt(promptInfo) {
-    console.log("[PromptManager] beforeQueuePrompt - additional sync");
     syncPromptManagerWidgets();
   },
 
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
     if (nodeData.name === "PromptManager" || nodeData.name === "PromptManagerText") {
-      console.log(`[PromptManager] Patching node type for custom UI: ${nodeData.name}`);
-
       // Store original methods
       const onNodeCreated = nodeType.prototype.onNodeCreated;
 
@@ -279,8 +268,6 @@ app.registerExtension({
         setTimeout(() => {
           const textWidget = self.widgets?.find((w) => w.name === "text");
           if (textWidget) {
-            console.log("[PromptManager] Patching text widget for proper serialization");
-
             // Store reference to the widget for the closure
             const widgetRef = textWidget;
             const originalSerializeValue = textWidget.serializeValue;
@@ -292,11 +279,8 @@ app.registerExtension({
                 const currentValue = widgetRef.inputEl.value;
                 // Sync widget.value as well
                 widgetRef.value = currentValue;
-                console.log(`[PromptManager] serializeValue returning: "${currentValue.substring(0, 50)}..."`);
                 return currentValue;
               }
-              // Fallback to widget.value
-              console.log(`[PromptManager] serializeValue fallback to widget.value: "${String(widgetRef.value).substring(0, 50)}..."`);
               return widgetRef.value;
             };
 
@@ -323,8 +307,6 @@ app.registerExtension({
 
               // Initial sync
               syncValue();
-
-              console.log("[PromptManager] Added comprehensive input listeners to text widget");
             }
           }
         }, 50); // Shorter delay to beat other extensions
@@ -403,7 +385,6 @@ app.registerExtension({
         const originalOnResize = this.onResize;
         this.onResize = function (size) {
           this._userHasResized = true;
-          console.log("[PromptManager] User resized to:", size);
           if (originalOnResize) {
             originalOnResize.call(this, size);
           }
@@ -432,7 +413,6 @@ app.registerExtension({
                 }
               }
             });
-            console.log(`[PromptManager] serialize: Synced ${this.widgets.length} widget values`);
           }
 
           const data = originalSerialize ? originalSerialize.call(this) : {};
@@ -677,9 +657,7 @@ app.registerExtension({
             }
           }
         } catch (error) {
-          console.log(
-            "[PromptManager] Could not load settings, using defaults",
-          );
+          // Settings not available, use defaults
         }
       };
 
@@ -855,11 +833,6 @@ app.registerExtension({
         if (textWidget) {
           const textWidgetIndex = this.widgets.indexOf(textWidget);
 
-          console.log(`[PromptManager] DEBUG: Setting prompt on node ${this.id}`);
-          console.log(`[PromptManager] DEBUG: textWidget found at index ${textWidgetIndex}`);
-          console.log(`[PromptManager] DEBUG: Old value: ${textWidget.value?.substring(0, 50)}...`);
-          console.log(`[PromptManager] DEBUG: New value: ${prompt.text.substring(0, 50)}...`);
-
           // Set the widget value
           textWidget.value = prompt.text;
 
@@ -867,20 +840,17 @@ app.registerExtension({
           // graphToPrompt calls serializeValue() which reads from inputEl.value
           if (textWidget.inputEl) {
             textWidget.inputEl.value = prompt.text;
-            console.log(`[PromptManager] DEBUG: Updated inputEl.value directly`);
           }
 
           // CRITICAL: Also update widgets_values array if it exists
           // ComfyUI's graphToPrompt reads from this array for execution
           if (this.widgets_values && textWidgetIndex >= 0) {
             this.widgets_values[textWidgetIndex] = prompt.text;
-            console.log(`[PromptManager] DEBUG: Updated widgets_values[${textWidgetIndex}]`);
           }
 
           // Trigger widget callback to notify ComfyUI of value change
           if (textWidget.callback) {
             textWidget.callback(prompt.text, app.canvas, this, null, null);
-            console.log(`[PromptManager] DEBUG: Called textWidget.callback`);
           }
 
           // Also set metadata if available
@@ -930,11 +900,6 @@ app.registerExtension({
             app.graph.setDirtyCanvas(true, true);
           }
 
-          console.log(
-            `[PromptManager] Loaded prompt: ${prompt.text.substring(0, 50)}...`,
-          );
-          console.log(`[PromptManager] DEBUG: Final widget value: ${textWidget.value?.substring(0, 50)}...`);
-          console.log(`[PromptManager] DEBUG: widgets_values: ${JSON.stringify(this.widgets_values?.slice(0, 3))}...`);
         }
       };
 
@@ -1099,16 +1064,11 @@ app.registerExtension({
             const newWindow = window.open(webUrl, "_blank");
 
             if (newWindow) {
-              console.log("[PromptManager] Web interface opened in new tab");
               this.showNotification(
                 "Web interface opened in new tab",
                 "success",
               );
             } else {
-              // Fallback if popup was blocked
-              console.log(
-                "[PromptManager] Popup blocked, trying alternative method",
-              );
               window.location.href = webUrl;
             }
           } else {
@@ -1120,13 +1080,8 @@ app.registerExtension({
             );
 
             if (newWindow) {
-              console.log("[PromptManager] Web interface opened in popup");
               this.showNotification("Web interface opened in popup", "success");
             } else {
-              // Fallback if popup was blocked
-              console.log(
-                "[PromptManager] Popup blocked, trying alternative method",
-              );
               window.location.href = webUrl;
             }
           }

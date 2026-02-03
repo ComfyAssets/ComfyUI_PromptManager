@@ -169,13 +169,6 @@ class PromptManager(ComfyNodeABC):
         Raises:
             RuntimeError: If clip input is invalid
         """
-        # Debug: Log text being encoded - this should print EVERY time the node executes
-        import time
-        print(f"\n{'='*60}")
-        print(f"[PromptManager] encode_prompt() CALLED at {time.time()}")
-        print(f"[PromptManager] text = {repr(text)[:100]}")
-        print(f"{'='*60}\n")
-
         # Combine prepend, main text, and append text
         final_text = ""
         if prepend_text and prepend_text.strip():
