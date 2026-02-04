@@ -181,6 +181,9 @@
             </div>
         </header>
 
+        <!-- Dashboard View -->
+        <div id="dashboardView">
+
         <!-- Stats Grid -->
         <div class="px-6 py-6">
             <div class="max-w-7xl mx-auto">
@@ -207,7 +210,8 @@
                             </div>
                         </div>
                     </div>
-                    <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl p-6 border border-gray-700">
+                    <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl p-6 border border-gray-700 cursor-pointer hover:border-green-500/50 transition-colors"
+                         onclick="window.location.hash = '#/tags'" title="Click to manage tags">
                         <div class="flex items-center justify-between">
                             <div>
                                 <p class="text-gray-400 text-sm font-medium">Unique Tags</p>
@@ -417,6 +421,84 @@
                 </div>
             </div>
         </div>
+        </div><!-- /dashboardView -->
+
+        <!-- Tags Page View -->
+        <div id="tagsPageView" class="hidden flex-1 flex flex-col">
+            <!-- Tags Header -->
+            <div class="px-6 py-4 border-b border-gray-700/50 bg-gray-850/50">
+                <div class="max-w-7xl mx-auto flex items-center justify-between">
+                    <div class="flex items-center space-x-4">
+                        <button onclick="window.location.hash=''" class="text-gray-400 hover:text-white transition-colors text-sm flex items-center space-x-1">
+                            <span>&larr;</span><span>Dashboard</span>
+                        </button>
+                        <h2 class="text-xl font-semibold text-gray-100">Tags</h2>
+                        <span id="tagsTotalBadge" class="text-sm font-medium text-gray-400 bg-gray-700 px-3 py-1 rounded-full">0 tags</span>
+                    </div>
+                    <div id="filterModeToggle" class="hidden items-center space-x-2">
+                        <span class="text-sm text-gray-400">Filter:</span>
+                        <button id="filterModeAnd" class="px-3 py-1 text-xs font-medium rounded bg-green-600 text-white">AND</button>
+                        <button id="filterModeOr" class="px-3 py-1 text-xs font-medium rounded bg-gray-700 text-gray-300 hover:bg-gray-600">OR</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Two-Panel Layout -->
+            <div class="flex-1 flex overflow-hidden">
+                <!-- Left Panel: Tag List -->
+                <div class="w-80 flex-shrink-0 border-r border-gray-700/50 flex flex-col bg-gray-850/30">
+                    <!-- Tag Search & Sort -->
+                    <div class="p-4 space-y-3 border-b border-gray-700/30">
+                        <input type="text" id="tagSearchInput" placeholder="Search tags..."
+                               class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 text-sm focus:ring-2 focus:ring-green-500 focus:border-green-500">
+                        <select id="tagSortSelect" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 text-sm">
+                            <option value="alpha_asc">A &rarr; Z</option>
+                            <option value="alpha_desc">Z &rarr; A</option>
+                            <option value="count_desc">Most Used</option>
+                            <option value="count_asc">Least Used</option>
+                        </select>
+                    </div>
+                    <!-- Tag List -->
+                    <div id="tagsListContainer" class="flex-1 overflow-y-auto custom-scrollbar">
+                        <div id="tagsList" class="p-2 space-y-1"></div>
+                        <div id="tagsLoader" class="p-4 text-center hidden">
+                            <div class="w-6 h-6 border-2 border-green-500/30 border-t-green-500 rounded-full animate-spin mx-auto"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Panel: Prompts Display -->
+                <div class="flex-1 flex flex-col overflow-hidden">
+                    <!-- Active Tags Pills -->
+                    <div id="activeTagsPills" class="px-6 py-3 border-b border-gray-700/30 hidden">
+                        <div class="flex flex-wrap gap-2 items-center">
+                            <span class="text-sm text-gray-400 mr-1">Filtering:</span>
+                            <div id="tagPillsContainer" class="flex flex-wrap gap-2"></div>
+                            <span id="tagPromptsCountBadge" class="text-xs text-gray-500 ml-auto"></span>
+                        </div>
+                    </div>
+                    <!-- Prompts Grid -->
+                    <div id="tagPromptsContainer" class="flex-1 overflow-y-auto custom-scrollbar">
+                        <div id="tagPromptsGrid" class="p-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+                        <div id="tagPromptsLoader" class="p-4 text-center hidden">
+                            <div class="w-6 h-6 border-2 border-green-500/30 border-t-green-500 rounded-full animate-spin mx-auto"></div>
+                        </div>
+                    </div>
+                    <!-- Empty State -->
+                    <div id="tagPromptsEmpty" class="flex-1 flex items-center justify-center">
+                        <div class="text-center text-gray-500">
+                            <span class="text-4xl block mb-3">🏷️</span>
+                            <p class="text-lg font-medium">Select a tag to view prompts</p>
+                            <p class="text-sm mt-1">Click a tag from the list or use checkboxes for multi-tag filtering</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        <!-- Context Menu for Tag Operations -->
+        <div id="tagContextMenu" class="hidden fixed z-50 bg-gray-800 border border-gray-600 rounded-lg shadow-xl py-1 min-w-[160px]">
+        </div>
+        </div><!-- /tagsPageView -->
+
     </div>
 
     <!-- Settings Modal -->
@@ -1375,12 +1457,50 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                     totalPages: 1
                 };
 
+                this.tagsPage = null;
+
                 this.init();
             }
 
             init() {
                 this.bindEvents();
+                this.initRouter();
                 this.loadInitialData();
+            }
+
+            initRouter() {
+                window.addEventListener('hashchange', () => this.handleRoute());
+                this.handleRoute();
+            }
+
+            handleRoute() {
+                const hash = window.location.hash;
+                if (hash === '#/tags' || hash.startsWith('#/tags/')) {
+                    this.showTagsPage();
+                } else {
+                    this.showDashboard();
+                }
+            }
+
+            showDashboard() {
+                const dashboard = document.getElementById('dashboardView');
+                const tagsPage = document.getElementById('tagsPageView');
+                if (dashboard) dashboard.classList.remove('hidden');
+                if (tagsPage) tagsPage.classList.add('hidden');
+            }
+
+            showTagsPage() {
+                const dashboard = document.getElementById('dashboardView');
+                const tagsPage = document.getElementById('tagsPageView');
+                if (dashboard) dashboard.classList.add('hidden');
+                if (tagsPage) tagsPage.classList.remove('hidden');
+
+                // Lazy-initialize TagsPageManager
+                if (!this.tagsPage && typeof TagsPageManager !== 'undefined') {
+                    this.tagsPage = new TagsPageManager(this);
+                } else if (this.tagsPage) {
+                    this.tagsPage.loadTagsList();
+                }
             }
 
             bindEvents() {
@@ -5497,5 +5617,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
         });
     </script>
+    <script src="/prompt_manager/js/tags-page.js"></script>
 </body>
 </html>

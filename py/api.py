@@ -145,6 +145,32 @@ class PromptManagerAPI:
         async def get_categories_route(request):
             return await self.get_categories(request)
 
+        # Tag management endpoints (must be registered BEFORE /prompt_manager/tags)
+        @routes.get("/prompt_manager/tags/stats")
+        async def get_tags_stats_route(request):
+            return await self.get_tags_stats(request)
+
+        @routes.get("/prompt_manager/tags/filter")
+        async def get_tags_filter_route(request):
+            return await self.get_tags_filter(request)
+
+        # Bulk tag operations (register BEFORE {tag_name} to avoid path param match)
+        @routes.post("/prompt_manager/tags/merge")
+        async def merge_tags_route(request):
+            return await self.merge_tags_endpoint(request)
+
+        @routes.put("/prompt_manager/tags/{tag_name}")
+        async def rename_tag_route(request):
+            return await self.rename_tag_endpoint(request)
+
+        @routes.delete("/prompt_manager/tags/{tag_name}")
+        async def delete_tag_route(request):
+            return await self.delete_tag_endpoint(request)
+
+        @routes.get("/prompt_manager/tags/{tag_name}/prompts")
+        async def get_tag_prompts_route(request):
+            return await self.get_tag_prompts(request)
+
         @routes.get("/prompt_manager/tags")
         async def get_tags_route(request):
             return await self.get_tags(request)
@@ -331,6 +357,43 @@ class PromptManagerAPI:
                 return web.Response(text=f"Not Found: {filepath}", status=404)
 
             # Get extension and content type
+            ext = os.path.splitext(file_path)[1].lower()
+            content_type = MIME_TYPES.get(ext, "application/octet-stream")
+
+            with open(file_path, "rb") as f:
+                content = f.read()
+
+            return web.Response(
+                body=content,
+                content_type=content_type,
+            )
+
+        # Serve static JS files from web/js directory
+        @routes.get("/prompt_manager/js/{filepath:.*}")
+        async def serve_js_static(request):
+            """Serve static JavaScript files from web/js directory."""
+            import os
+
+            MIME_TYPES = {
+                ".js": "application/javascript",
+                ".css": "text/css",
+                ".json": "application/json",
+                ".map": "application/json",
+            }
+
+            filepath = request.match_info.get("filepath", "")
+
+            if ".." in filepath or filepath.startswith("/"):
+                return web.Response(text="Forbidden", status=403)
+
+            current_dir = os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__))
+            )
+            file_path = os.path.join(current_dir, "web", "js", filepath)
+
+            if not os.path.exists(file_path) or not os.path.isfile(file_path):
+                return web.Response(text=f"Not Found: {filepath}", status=404)
+
             ext = os.path.splitext(file_path)[1].lower()
             content_type = MIME_TYPES.get(ext, "application/octet-stream")
 
@@ -752,6 +815,249 @@ class PromptManagerAPI:
                     "tags": [],
                 },
                 status=500,
+            )
+
+    async def get_tags_stats(self, request):
+        """Get tags with usage counts, search, sort, and pagination."""
+        try:
+            limit = int(request.query.get("limit", 50))
+            offset = int(request.query.get("offset", 0))
+            search = request.query.get("search", "").strip() or None
+            sort = request.query.get("sort", "alpha_asc")
+
+            result = self.db.get_tags_with_counts(limit, offset, search, sort)
+            untagged_count = self.db.get_untagged_prompts_count()
+
+            return web.json_response({
+                "success": True,
+                "tags": result['tags'],
+                "untagged_count": untagged_count,
+                "pagination": {
+                    "total": result['total'],
+                    "limit": result['limit'],
+                    "offset": result['offset'],
+                    "has_more": result['has_more']
+                }
+            })
+        except Exception as e:
+            self.logger.error(f"Tags stats error: {e}", exc_info=True)
+            return web.json_response(
+                {"success": False, "error": str(e)},
+                status=500,
+            )
+
+    def _enrich_prompt_images(self, prompts):
+        """Add url and thumbnail_url to each image in prompt results."""
+        from pathlib import Path
+        from urllib.parse import quote as url_quote
+
+        output_dir = self._find_comfyui_output_dir()
+        output_path = Path(output_dir) if output_dir else None
+
+        for prompt in prompts:
+            for image in prompt.get('images', []):
+                image_path_str = image.get('image_path', '')
+                if not image_path_str:
+                    continue
+
+                img_path = Path(image_path_str)
+
+                # Set fallback url via image ID
+                if image.get('id'):
+                    image['url'] = f"/prompt_manager/images/{image['id']}/file"
+
+                # Try to compute relative path and thumbnail URL
+                if output_path:
+                    try:
+                        rel_path = img_path.resolve().relative_to(output_path.resolve())
+                        image['relative_path'] = str(rel_path)
+                        image['url'] = f"/prompt_manager/images/serve/{url_quote(rel_path.as_posix(), safe='/')}"
+
+                        # Check for thumbnail
+                        rel_no_ext = rel_path.with_suffix('')
+                        thumb_rel = f"thumbnails/{rel_no_ext.as_posix()}_thumb{rel_path.suffix}"
+                        thumb_abs = output_path / thumb_rel
+                        if thumb_abs.exists():
+                            image['thumbnail_url'] = f"/prompt_manager/images/serve/{url_quote(thumb_rel, safe='/')}"
+                    except (ValueError, RuntimeError):
+                        pass
+
+        return prompts
+
+    async def get_tag_prompts(self, request):
+        """Get prompts for a single tag."""
+        try:
+            from urllib.parse import unquote
+            tag_name = unquote(request.match_info.get("tag_name", ""))
+            if not tag_name:
+                return web.json_response(
+                    {"success": False, "error": "Tag name required"},
+                    status=400,
+                )
+
+            limit = int(request.query.get("limit", 20))
+            offset = int(request.query.get("offset", 0))
+
+            result = self.db.get_prompts_by_tags([tag_name], 'and', limit, offset)
+            self._enrich_prompt_images(result['prompts'])
+
+            return web.json_response({
+                "success": True,
+                "tag": tag_name,
+                "prompts": result['prompts'],
+                "pagination": {
+                    "total": result['total'],
+                    "limit": result['limit'],
+                    "offset": result['offset'],
+                    "has_more": result['has_more']
+                }
+            })
+        except Exception as e:
+            self.logger.error(f"Tag prompts error: {e}", exc_info=True)
+            return web.json_response(
+                {"success": False, "error": str(e)},
+                status=500,
+            )
+
+    async def get_tags_filter(self, request):
+        """Get prompts matching multiple tags with AND/OR mode, or untagged prompts."""
+        try:
+            untagged = request.query.get("untagged", "").lower() == "true"
+
+            if untagged:
+                limit = int(request.query.get("limit", 20))
+                offset = int(request.query.get("offset", 0))
+                result = self.db.get_untagged_prompts(limit, offset)
+                self._enrich_prompt_images(result['prompts'])
+                return web.json_response({
+                    "success": True,
+                    "tags": [],
+                    "mode": "untagged",
+                    "prompts": result['prompts'],
+                    "pagination": {
+                        "total": result['total'],
+                        "limit": result['limit'],
+                        "offset": result['offset'],
+                        "has_more": result['has_more']
+                    }
+                })
+
+            tags_str = request.query.get("tags", "").strip()
+            if not tags_str:
+                return web.json_response(
+                    {"success": False, "error": "Tags parameter required"},
+                    status=400,
+                )
+
+            tags_list = [t.strip() for t in tags_str.split(",") if t.strip()]
+            mode = request.query.get("mode", "and").lower()
+            if mode not in ("and", "or"):
+                mode = "and"
+
+            limit = int(request.query.get("limit", 20))
+            offset = int(request.query.get("offset", 0))
+
+            result = self.db.get_prompts_by_tags(tags_list, mode, limit, offset)
+            self._enrich_prompt_images(result['prompts'])
+
+            return web.json_response({
+                "success": True,
+                "tags": tags_list,
+                "mode": mode,
+                "prompts": result['prompts'],
+                "pagination": {
+                    "total": result['total'],
+                    "limit": result['limit'],
+                    "offset": result['offset'],
+                    "has_more": result['has_more']
+                }
+            })
+        except Exception as e:
+            self.logger.error(f"Tags filter error: {e}", exc_info=True)
+            return web.json_response(
+                {"success": False, "error": str(e)},
+                status=500,
+            )
+
+    async def rename_tag_endpoint(self, request):
+        """Rename a tag across all prompts."""
+        try:
+            from urllib.parse import unquote
+            tag_name = unquote(request.match_info.get("tag_name", ""))
+            if not tag_name:
+                return web.json_response(
+                    {"success": False, "error": "Tag name required"}, status=400
+                )
+
+            body = await request.json()
+            new_name = body.get("new_name", "").strip()
+            if not new_name:
+                return web.json_response(
+                    {"success": False, "error": "New tag name required"}, status=400
+                )
+
+            result = self.db.rename_tag_all_prompts(tag_name, new_name)
+            return web.json_response({
+                "success": True,
+                "old_name": tag_name,
+                "new_name": new_name,
+                "affected_count": result['affected_count']
+            })
+        except Exception as e:
+            self.logger.error(f"Rename tag error: {e}", exc_info=True)
+            return web.json_response(
+                {"success": False, "error": str(e)}, status=500
+            )
+
+    async def delete_tag_endpoint(self, request):
+        """Delete a tag from all prompts."""
+        try:
+            from urllib.parse import unquote
+            tag_name = unquote(request.match_info.get("tag_name", ""))
+            if not tag_name:
+                return web.json_response(
+                    {"success": False, "error": "Tag name required"}, status=400
+                )
+
+            result = self.db.delete_tag_all_prompts(tag_name)
+            return web.json_response({
+                "success": True,
+                "tag_name": tag_name,
+                "affected_count": result['affected_count']
+            })
+        except Exception as e:
+            self.logger.error(f"Delete tag error: {e}", exc_info=True)
+            return web.json_response(
+                {"success": False, "error": str(e)}, status=500
+            )
+
+    async def merge_tags_endpoint(self, request):
+        """Merge source tags into a target tag."""
+        try:
+            body = await request.json()
+            source_tags = body.get("source_tags", [])
+            target_tag = body.get("target_tag", "").strip()
+
+            if not source_tags:
+                return web.json_response(
+                    {"success": False, "error": "Source tags required"}, status=400
+                )
+            if not target_tag:
+                return web.json_response(
+                    {"success": False, "error": "Target tag required"}, status=400
+                )
+
+            result = self.db.merge_tags(source_tags, target_tag)
+            return web.json_response({
+                "success": True,
+                "target_tag": target_tag,
+                "affected_count": result['affected_count'],
+                "tags_merged": result['tags_merged']
+            })
+        except Exception as e:
+            self.logger.error(f"Merge tags error: {e}", exc_info=True)
+            return web.json_response(
+                {"success": False, "error": str(e)}, status=500
             )
 
     async def save_prompt(self, request):

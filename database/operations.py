@@ -389,7 +389,348 @@ class PromptDatabase:
                     continue
 
         return sorted(list(all_tags))
-    
+
+    def get_tags_with_counts(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        search: Optional[str] = None,
+        sort: str = "alpha_asc"
+    ) -> Dict[str, Any]:
+        """
+        Get all unique tags with their usage counts, with search/sort/pagination.
+
+        Args:
+            limit: Maximum number of tags to return
+            offset: Number of tags to skip
+            search: Optional case-insensitive substring filter
+            sort: Sort order - alpha_asc, alpha_desc, count_desc, count_asc
+
+        Returns:
+            Dict with tags list, total count, and pagination info
+        """
+        tag_counts: Dict[str, int] = {}
+
+        with self.model.get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT tags FROM prompts WHERE tags IS NOT NULL AND tags != '' AND tags != '[]'"
+            )
+            for row in cursor.fetchall():
+                try:
+                    tags = json.loads(row['tags'])
+                    if isinstance(tags, list):
+                        for tag in tags:
+                            if isinstance(tag, str) and tag.strip():
+                                tag_counts[tag.strip()] = tag_counts.get(tag.strip(), 0) + 1
+                    elif isinstance(tags, str):
+                        for t in tags.split(','):
+                            t = t.strip()
+                            if t:
+                                tag_counts[t] = tag_counts.get(t, 0) + 1
+                except (json.JSONDecodeError, TypeError):
+                    continue
+
+        # Apply search filter
+        if search:
+            search_lower = search.lower()
+            tag_counts = {k: v for k, v in tag_counts.items() if search_lower in k.lower()}
+
+        # Sort
+        if sort == "alpha_desc":
+            sorted_tags = sorted(tag_counts.items(), key=lambda x: x[0].lower(), reverse=True)
+        elif sort == "count_desc":
+            sorted_tags = sorted(tag_counts.items(), key=lambda x: (-x[1], x[0].lower()))
+        elif sort == "count_asc":
+            sorted_tags = sorted(tag_counts.items(), key=lambda x: (x[1], x[0].lower()))
+        else:  # alpha_asc
+            sorted_tags = sorted(tag_counts.items(), key=lambda x: x[0].lower())
+
+        total = len(sorted_tags)
+        paginated = sorted_tags[offset:offset + limit]
+
+        return {
+            'tags': [{'name': name, 'count': count} for name, count in paginated],
+            'total': total,
+            'limit': limit,
+            'offset': offset,
+            'has_more': (offset + limit) < total
+        }
+
+    def get_prompts_by_tags(
+        self,
+        tags: List[str],
+        mode: str = "and",
+        limit: int = 20,
+        offset: int = 0
+    ) -> Dict[str, Any]:
+        """
+        Get prompts that match the given tags with AND/OR filtering.
+
+        Args:
+            tags: List of tag names to filter by
+            mode: 'and' (must have all tags) or 'or' (must have any tag)
+            limit: Maximum number of prompts to return
+            offset: Number of prompts to skip
+
+        Returns:
+            Dict with prompts list (including preview images), total count, pagination
+        """
+        if not tags:
+            return {'prompts': [], 'total': 0, 'limit': limit, 'offset': offset, 'has_more': False}
+
+        with self.model.get_connection() as conn:
+            # Build tag filter conditions using quoted strings to prevent partial matches
+            tag_conditions = []
+            params = []
+            for tag in tags:
+                tag_conditions.append('tags LIKE ?')
+                params.append(f'%"{tag}"%')
+
+            joiner = ' AND ' if mode == 'and' else ' OR '
+            where_clause = f"tags IS NOT NULL AND ({joiner.join(tag_conditions)})"
+
+            # Get total count
+            count_query = f"SELECT COUNT(*) as total FROM prompts WHERE {where_clause}"
+            cursor = conn.execute(count_query, params)
+            total = cursor.fetchone()['total']
+
+            # Get paginated results
+            data_query = f"SELECT * FROM prompts WHERE {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            cursor = conn.execute(data_query, params + [limit, offset])
+            rows = cursor.fetchall()
+
+            prompts = []
+            for row in rows:
+                prompt = self._row_to_dict(row)
+
+                # Get first 3 images (lightweight - skip heavy JSON fields)
+                img_cursor = conn.execute(
+                    """SELECT id, prompt_id, image_path, filename, generation_time, width, height, format
+                       FROM generated_images
+                       WHERE prompt_id = ?
+                       ORDER BY generation_time DESC
+                       LIMIT 3""",
+                    (prompt['id'],)
+                )
+                images = [dict(img_row) for img_row in img_cursor.fetchall()]
+
+                # Get total image count
+                count_cursor = conn.execute(
+                    "SELECT COUNT(*) as cnt FROM generated_images WHERE prompt_id = ?",
+                    (prompt['id'],)
+                )
+                image_count = count_cursor.fetchone()['cnt']
+
+                prompt['images'] = images
+                prompt['image_count'] = image_count
+                prompts.append(prompt)
+
+            return {
+                'prompts': prompts,
+                'total': total,
+                'limit': limit,
+                'offset': offset,
+                'has_more': (offset + limit) < total
+            }
+
+    def rename_tag_all_prompts(self, old_name: str, new_name: str) -> Dict[str, Any]:
+        """
+        Rename a tag across all prompts that use it.
+
+        Args:
+            old_name: Current tag name
+            new_name: New tag name
+
+        Returns:
+            Dict with success status and affected_count
+        """
+        if not old_name or not old_name.strip():
+            raise ValueError("Old tag name cannot be empty")
+        if not new_name or not new_name.strip():
+            raise ValueError("New tag name cannot be empty")
+
+        old_name = old_name.strip()
+        new_name = new_name.strip()
+        affected = 0
+
+        with self.model.get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT id, tags FROM prompts WHERE tags LIKE ?",
+                (f'%"{old_name}"%',)
+            )
+            for row in cursor.fetchall():
+                try:
+                    tags = json.loads(row['tags'])
+                    if not isinstance(tags, list) or old_name not in tags:
+                        continue
+                    tags.remove(old_name)
+                    if new_name not in tags:
+                        tags.append(new_name)
+                    conn.execute(
+                        "UPDATE prompts SET tags = ?, updated_at = ? WHERE id = ?",
+                        (json.dumps(tags), datetime.datetime.now(datetime.timezone.utc).isoformat(), row['id'])
+                    )
+                    affected += 1
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            conn.commit()
+
+        self.logger.info(f"Renamed tag '{old_name}' -> '{new_name}' in {affected} prompts")
+        return {'success': True, 'affected_count': affected}
+
+    def delete_tag_all_prompts(self, tag_name: str) -> Dict[str, Any]:
+        """
+        Remove a tag from all prompts that use it.
+
+        Args:
+            tag_name: Tag name to remove
+
+        Returns:
+            Dict with success status and affected_count
+        """
+        if not tag_name or not tag_name.strip():
+            raise ValueError("Tag name cannot be empty")
+
+        tag_name = tag_name.strip()
+        affected = 0
+
+        with self.model.get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT id, tags FROM prompts WHERE tags LIKE ?",
+                (f'%"{tag_name}"%',)
+            )
+            for row in cursor.fetchall():
+                try:
+                    tags = json.loads(row['tags'])
+                    if not isinstance(tags, list) or tag_name not in tags:
+                        continue
+                    tags.remove(tag_name)
+                    conn.execute(
+                        "UPDATE prompts SET tags = ?, updated_at = ? WHERE id = ?",
+                        (json.dumps(tags), datetime.datetime.now(datetime.timezone.utc).isoformat(), row['id'])
+                    )
+                    affected += 1
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            conn.commit()
+
+        self.logger.info(f"Deleted tag '{tag_name}' from {affected} prompts")
+        return {'success': True, 'affected_count': affected}
+
+    def merge_tags(self, source_tags: List[str], target_tag: str) -> Dict[str, Any]:
+        """
+        Merge one or more source tags into a target tag across all prompts.
+
+        Args:
+            source_tags: List of tag names to merge from
+            target_tag: Tag name to merge into
+
+        Returns:
+            Dict with success status, affected_count, and tags_merged
+        """
+        if not source_tags:
+            raise ValueError("Source tags list cannot be empty")
+        if not target_tag or not target_tag.strip():
+            raise ValueError("Target tag cannot be empty")
+
+        target_tag = target_tag.strip()
+        source_tags = [t.strip() for t in source_tags if t.strip()]
+        affected = 0
+        tags_merged = 0
+
+        with self.model.get_connection() as conn:
+            for src_tag in source_tags:
+                cursor = conn.execute(
+                    "SELECT id, tags FROM prompts WHERE tags LIKE ?",
+                    (f'%"{src_tag}"%',)
+                )
+                src_affected = 0
+                for row in cursor.fetchall():
+                    try:
+                        tags = json.loads(row['tags'])
+                        if not isinstance(tags, list) or src_tag not in tags:
+                            continue
+                        tags.remove(src_tag)
+                        if target_tag not in tags:
+                            tags.append(target_tag)
+                        conn.execute(
+                            "UPDATE prompts SET tags = ?, updated_at = ? WHERE id = ?",
+                            (json.dumps(tags), datetime.datetime.now(datetime.timezone.utc).isoformat(), row['id'])
+                        )
+                        src_affected += 1
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                if src_affected > 0:
+                    tags_merged += 1
+                    affected += src_affected
+            conn.commit()
+
+        self.logger.info(f"Merged {tags_merged} tags into '{target_tag}', affected {affected} prompts")
+        return {'success': True, 'affected_count': affected, 'tags_merged': tags_merged}
+
+    def get_untagged_prompts_count(self) -> int:
+        """
+        Get the count of prompts that have no tags.
+
+        Returns:
+            Number of untagged prompts
+        """
+        with self.model.get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT COUNT(*) as total FROM prompts WHERE tags IS NULL OR tags = '' OR tags = '[]'"
+            )
+            return cursor.fetchone()['total']
+
+    def get_untagged_prompts(self, limit: int = 20, offset: int = 0) -> Dict[str, Any]:
+        """
+        Get prompts that have no tags, with pagination.
+
+        Args:
+            limit: Maximum number of prompts to return
+            offset: Number of prompts to skip
+
+        Returns:
+            Dict with prompts list, total count, and pagination
+        """
+        with self.model.get_connection() as conn:
+            where = "tags IS NULL OR tags = '' OR tags = '[]'"
+
+            cursor = conn.execute(f"SELECT COUNT(*) as total FROM prompts WHERE {where}")
+            total = cursor.fetchone()['total']
+
+            cursor = conn.execute(
+                f"SELECT * FROM prompts WHERE {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (limit, offset)
+            )
+            rows = cursor.fetchall()
+
+            prompts = []
+            for row in rows:
+                prompt = self._row_to_dict(row)
+                img_cursor = conn.execute(
+                    """SELECT id, prompt_id, image_path, filename, generation_time, width, height, format
+                       FROM generated_images WHERE prompt_id = ?
+                       ORDER BY generation_time DESC LIMIT 3""",
+                    (prompt['id'],)
+                )
+                images = [dict(img_row) for img_row in img_cursor.fetchall()]
+                count_cursor = conn.execute(
+                    "SELECT COUNT(*) as cnt FROM generated_images WHERE prompt_id = ?",
+                    (prompt['id'],)
+                )
+                image_count = count_cursor.fetchone()['cnt']
+                prompt['images'] = images
+                prompt['image_count'] = image_count
+                prompts.append(prompt)
+
+            return {
+                'prompts': prompts,
+                'total': total,
+                'limit': limit,
+                'offset': offset,
+                'has_more': (offset + limit) < total
+            }
+
     def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
         """
         Convert a database row to a dictionary with parsed JSON fields.
