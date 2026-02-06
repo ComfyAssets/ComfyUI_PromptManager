@@ -40,6 +40,10 @@ class TagsPageManager {
         // Context menu state
         this.contextMenuTag = null;
 
+        // Document listener refs for cleanup
+        this._onDocClick = null;
+        this._onDocKeydown = null;
+
         this.bindEvents();
         this.initInfiniteScroll();
         this.buildContextMenu();
@@ -105,8 +109,7 @@ class TagsPageManager {
             });
             if (this.tagSearch) params.set('search', this.tagSearch);
 
-            const resp = await fetch(`/prompt_manager/tags/stats?${params}`);
-            const data = await resp.json();
+            const data = await this.fetchJson(`/prompt_manager/tags/stats?${params}`);
 
             if (data.success) {
                 this.tags = data.tags;
@@ -127,8 +130,17 @@ class TagsPageManager {
             }
         } catch (err) {
             console.error('Failed to load tags:', err);
+            const container = document.getElementById('tagsList');
+            if (container) {
+                container.replaceChildren();
+                const errDiv = document.createElement('div');
+                errDiv.className = 'text-center py-8 text-red-400 text-sm';
+                errDiv.textContent = 'Failed to load tags. Try refreshing.';
+                container.appendChild(errDiv);
+            }
         } finally {
             this.isLoadingTags = false;
+            requestAnimationFrame(() => this.refreshTagObserver());
         }
     }
 
@@ -136,8 +148,8 @@ class TagsPageManager {
         if (this.isLoadingTags || !this.hasMoreTags) return;
         this.isLoadingTags = true;
 
-        const loader = document.getElementById('tagsLoader');
-        if (loader) loader.classList.remove('hidden');
+        const spinner = document.querySelector('#tagsLoader .tags-loader-spinner');
+        if (spinner) spinner.classList.remove('hidden');
 
         try {
             const params = new URLSearchParams({
@@ -147,22 +159,35 @@ class TagsPageManager {
             });
             if (this.tagSearch) params.set('search', this.tagSearch);
 
-            const resp = await fetch(`/prompt_manager/tags/stats?${params}`);
-            const data = await resp.json();
+            const data = await this.fetchJson(`/prompt_manager/tags/stats?${params}`);
 
             if (data.success) {
-                this.tags = this.tags.concat(data.tags);
+                const newTags = data.tags;
+                this.tags = this.tags.concat(newTags);
                 this.hasMoreTags = data.pagination.has_more;
                 this.tagOffset += this.tagLimit;
                 this.maxTagCount = Math.max(1, ...this.tags.map(t => t.count));
-                this.renderTagsList();
+                this.appendTagElements(newTags);
             }
         } catch (err) {
             console.error('Failed to load more tags:', err);
+            this.hasMoreTags = false;
         } finally {
             this.isLoadingTags = false;
-            if (loader) loader.classList.add('hidden');
+            if (spinner) spinner.classList.add('hidden');
+            requestAnimationFrame(() => this.refreshTagObserver());
         }
+    }
+
+    appendTagElements(newTags) {
+        const container = document.getElementById('tagsList');
+        if (!container || newTags.length === 0) return;
+
+        const fragment = document.createDocumentFragment();
+        newTags.forEach(tag => {
+            fragment.appendChild(this.createTagElement(tag));
+        });
+        container.appendChild(fragment);
     }
 
     renderTagsList() {
@@ -287,13 +312,15 @@ class TagsPageManager {
         });
         menu.replaceChildren(fragment);
 
-        // Close on click outside
-        document.addEventListener('click', (e) => {
+        // Close on click outside (store refs for cleanup)
+        this._onDocClick = (e) => {
             if (!menu.contains(e.target)) this.hideContextMenu();
-        });
-        document.addEventListener('keydown', (e) => {
+        };
+        this._onDocKeydown = (e) => {
             if (e.key === 'Escape') this.hideContextMenu();
-        });
+        };
+        document.addEventListener('click', this._onDocClick);
+        document.addEventListener('keydown', this._onDocKeydown);
     }
 
     showContextMenu(e, tagName) {
@@ -329,14 +356,15 @@ class TagsPageManager {
         if (!newName || newName.trim() === '' || newName.trim() === tagName) return;
 
         try {
-            const resp = await fetch(`/prompt_manager/tags/${encodeURIComponent(tagName)}`, {
+            const data = await this.fetchJson(`/prompt_manager/tags/${encodeURIComponent(tagName)}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ new_name: newName.trim() })
             });
-            const data = await resp.json();
             if (data.success) {
-                this.admin.showNotification(`Renamed "${tagName}" → "${newName.trim()}" (${data.affected_count} prompts)`, 'success');
+                let msg = `Renamed "${tagName}" → "${newName.trim()}" (${data.affected_count} prompts)`;
+                if (data.warning) msg += ` — ${data.warning}`;
+                this.admin.showNotification(msg, data.warning ? 'warning' : 'success');
                 // Update selectedTags if the renamed tag was selected
                 const idx = this.selectedTags.indexOf(tagName);
                 if (idx >= 0) this.selectedTags[idx] = newName.trim();
@@ -357,12 +385,13 @@ class TagsPageManager {
         if (!confirm(`Delete tag "${tagName}" from all prompts? This cannot be undone.`)) return;
 
         try {
-            const resp = await fetch(`/prompt_manager/tags/${encodeURIComponent(tagName)}`, {
+            const data = await this.fetchJson(`/prompt_manager/tags/${encodeURIComponent(tagName)}`, {
                 method: 'DELETE'
             });
-            const data = await resp.json();
             if (data.success) {
-                this.admin.showNotification(`Deleted tag "${tagName}" from ${data.affected_count} prompts`, 'success');
+                let msg = `Deleted tag "${tagName}" from ${data.affected_count} prompts`;
+                if (data.warning) msg += ` — ${data.warning}`;
+                this.admin.showNotification(msg, data.warning ? 'warning' : 'success');
                 this.selectedTags = this.selectedTags.filter(t => t !== tagName);
                 this.updateUrlHash();
                 this.loadTagsList();
@@ -387,17 +416,15 @@ class TagsPageManager {
         if (!targetTag || targetTag.trim() === '' || targetTag.trim() === tagName) return;
 
         try {
-            const resp = await fetch('/prompt_manager/tags/merge', {
+            const data = await this.fetchJson('/prompt_manager/tags/merge', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ source_tags: [tagName], target_tag: targetTag.trim() })
             });
-            const data = await resp.json();
             if (data.success) {
-                this.admin.showNotification(
-                    `Merged "${tagName}" → "${targetTag.trim()}" (${data.affected_count} prompts)`,
-                    'success'
-                );
+                let msg = `Merged "${tagName}" → "${targetTag.trim()}" (${data.affected_count} prompts)`;
+                if (data.warning) msg += ` — ${data.warning}`;
+                this.admin.showNotification(msg, data.warning ? 'warning' : 'success');
                 this.selectedTags = this.selectedTags.filter(t => t !== tagName);
                 this.updateUrlHash();
                 this.loadTagsList();
@@ -424,6 +451,15 @@ class TagsPageManager {
         this.updateActiveTagPills();
         this.updateUrlHash();
         this.loadTagPrompts();
+    }
+
+    scrollToTag(name) {
+        const container = document.getElementById('tagsListContainer');
+        if (!container) return;
+        const tagEl = container.querySelector(`[data-tag-name="${CSS.escape(name)}"]`);
+        if (tagEl) {
+            tagEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
     }
 
     toggleTagFilter(name) {
@@ -585,8 +621,7 @@ class TagsPageManager {
                 url = `/prompt_manager/tags/filter?${params}`;
             }
 
-            const resp = await fetch(url);
-            const data = await resp.json();
+            const data = await this.fetchJson(url);
 
             if (data.success) {
                 this.prompts = data.prompts;
@@ -595,6 +630,8 @@ class TagsPageManager {
                 this.promptOffset = this.promptLimit;
                 this.renderTagPrompts();
                 this.updatePromptCountBadge();
+                this.updateLoadMoreButton();
+                requestAnimationFrame(() => this.refreshPromptObserver());
             }
         } catch (err) {
             console.error('Failed to load tag prompts:', err);
@@ -614,8 +651,8 @@ class TagsPageManager {
         if (this.isLoadingPrompts || !this.hasMorePrompts) return;
         this.isLoadingPrompts = true;
 
-        const loader = document.getElementById('tagPromptsLoader');
-        if (loader) loader.classList.remove('hidden');
+        const spinner = document.querySelector('#tagPromptsLoader .prompts-loader-spinner');
+        if (spinner) spinner.classList.remove('hidden');
 
         try {
             const params = new URLSearchParams({
@@ -637,31 +674,75 @@ class TagsPageManager {
                 url = `/prompt_manager/tags/filter?${params}`;
             }
 
-            const resp = await fetch(url);
-            const data = await resp.json();
+            const data = await this.fetchJson(url);
 
             if (data.success) {
+                const startIndex = this.prompts.length;
                 this.prompts = this.prompts.concat(data.prompts);
                 this.hasMorePrompts = data.pagination.has_more;
                 this.promptOffset += this.promptLimit;
-                this.renderTagPrompts();
+                this.appendTagPrompts(data.prompts, startIndex);
                 this.updatePromptCountBadge();
             }
         } catch (err) {
             console.error('Failed to load more prompts:', err);
+            this.hasMorePrompts = false;
         } finally {
             this.isLoadingPrompts = false;
-            if (loader) loader.classList.add('hidden');
+            if (spinner) spinner.classList.add('hidden');
+            this.updateLoadMoreButton();
+            requestAnimationFrame(() => this.refreshPromptObserver());
         }
     }
 
     updatePromptCountBadge() {
         const badge = document.getElementById('tagPromptsCountBadge');
         if (badge) {
-            badge.textContent = this.promptTotal > 0
-                ? `${this.prompts.length} of ${this.promptTotal} prompts`
-                : '';
+            if (this.promptTotal > 0) {
+                const remaining = this.promptTotal - this.prompts.length;
+                badge.textContent = remaining > 0
+                    ? `${this.prompts.length} of ${this.promptTotal} prompts — scroll for more`
+                    : `${this.promptTotal} prompts`;
+            } else {
+                badge.textContent = '';
+            }
         }
+    }
+
+    updateLoadMoreButton() {
+        const btn = document.getElementById('loadMorePromptsBtn');
+        if (!btn) return;
+        if (this.hasMorePrompts) {
+            const remaining = this.promptTotal - this.prompts.length;
+            btn.textContent = `Load more prompts (${remaining} remaining)`;
+            btn.classList.remove('hidden');
+        } else {
+            btn.classList.add('hidden');
+        }
+    }
+
+    appendTagPrompts(newPrompts, startIndex) {
+        const grid = document.getElementById('tagPromptsGrid');
+        if (!grid || newPrompts.length === 0) return;
+
+        const fragment = document.createDocumentFragment();
+        newPrompts.forEach((p, i) => {
+            const card = this.createPromptCard(p);
+            card.style.opacity = '0';
+            card.style.transform = 'translateY(8px)';
+            card.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+            card.style.transitionDelay = (i % 9) * 30 + 'ms';
+            fragment.appendChild(card);
+        });
+        grid.appendChild(fragment);
+
+        requestAnimationFrame(() => {
+            const cards = grid.querySelectorAll('.tag-prompt-card');
+            for (let i = startIndex; i < cards.length; i++) {
+                cards[i].style.opacity = '1';
+                cards[i].style.transform = 'translateY(0)';
+            }
+        });
     }
 
     renderTagPrompts() {
@@ -810,15 +891,23 @@ class TagsPageManager {
 
         card.appendChild(metaRow);
 
-        // Tags
+        // Tags (clickable — selects tag on left panel)
         if (prompt.tags && prompt.tags.length > 0) {
             const tagsDiv = document.createElement('div');
             tagsDiv.className = 'flex flex-wrap gap-1 mt-2';
-            prompt.tags.forEach(tag => {
+            prompt.tags.forEach(tagName => {
                 const tagSpan = document.createElement('span');
-                const isActive = this.selectedTags.includes(tag);
-                tagSpan.className = `px-2 py-0.5 rounded text-xs ${isActive ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-300'}`;
-                tagSpan.textContent = tag;
+                const isActive = this.selectedTags.includes(tagName);
+                tagSpan.className = `px-2 py-0.5 rounded text-xs cursor-pointer transition-colors ${
+                    isActive
+                        ? 'bg-green-600 text-white hover:bg-green-500'
+                        : 'bg-gray-700 text-gray-300 hover:bg-green-600/40 hover:text-green-200'
+                }`;
+                tagSpan.textContent = tagName;
+                tagSpan.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.toggleTagFilter(tagName);
+                });
                 tagsDiv.appendChild(tagSpan);
             });
             card.appendChild(tagsDiv);
@@ -836,13 +925,16 @@ class TagsPageManager {
         // If there might be more images, load them all
         if (prompt.image_count > images.length) {
             try {
-                const resp = await fetch(`/prompt_manager/prompts/${prompt.id}/images`);
-                const data = await resp.json();
+                const data = await this.fetchJson(`/prompt_manager/prompts/${prompt.id}/images`);
                 if (data.success && data.images) {
                     images = data.images;
                 }
             } catch (err) {
                 console.error('Failed to load all images:', err);
+                this.admin.showNotification(
+                    `Showing ${images.length} of ${prompt.image_count} images — full load failed`,
+                    'warning'
+                );
             }
         }
 
@@ -897,8 +989,10 @@ class TagsPageManager {
     clearPrompts() {
         this.prompts = [];
         this.promptTotal = 0;
+        this.hasMorePrompts = false;
         const grid = document.getElementById('tagPromptsGrid');
         if (grid) grid.replaceChildren();
+        this.updateLoadMoreButton();
         const emptyState = document.getElementById('tagPromptsEmpty');
         if (emptyState) emptyState.classList.remove('hidden');
         this.updatePromptCountBadge();
@@ -927,6 +1021,24 @@ class TagsPageManager {
                 }
             }, { root: document.getElementById('tagPromptsContainer'), threshold: 0.1 });
             this.promptObserver.observe(promptsLoader);
+        }
+    }
+
+    refreshPromptObserver() {
+        if (!this.promptObserver || !this.hasMorePrompts) return;
+        const loader = document.getElementById('tagPromptsLoader');
+        if (loader) {
+            this.promptObserver.unobserve(loader);
+            this.promptObserver.observe(loader);
+        }
+    }
+
+    refreshTagObserver() {
+        if (!this.tagObserver || !this.hasMoreTags) return;
+        const loader = document.getElementById('tagsLoader');
+        if (loader) {
+            this.tagObserver.unobserve(loader);
+            this.tagObserver.observe(loader);
         }
     }
 
@@ -970,15 +1082,39 @@ class TagsPageManager {
         const orBtn = document.getElementById('filterModeOr');
         if (andBtn) andBtn.addEventListener('click', () => this.setFilterMode('and'));
         if (orBtn) orBtn.addEventListener('click', () => this.setFilterMode('or'));
+
+        // Load More button (fallback for infinite scroll)
+        const loadMoreBtn = document.getElementById('loadMorePromptsBtn');
+        if (loadMoreBtn) {
+            loadMoreBtn.addEventListener('click', () => this.loadMoreTagPrompts());
+        }
     }
 
     destroy() {
         this.destroyInfiniteScroll();
         this.hideContextMenu();
         clearTimeout(this.searchTimer);
+        if (this._onDocClick) {
+            document.removeEventListener('click', this._onDocClick);
+            this._onDocClick = null;
+        }
+        if (this._onDocKeydown) {
+            document.removeEventListener('keydown', this._onDocKeydown);
+            this._onDocKeydown = null;
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────
+
+    async fetchJson(url, options = {}) {
+        const resp = await fetch(url, options);
+        if (!resp.ok) {
+            let errorMsg;
+            try { errorMsg = (await resp.json()).error; } catch { errorMsg = resp.statusText; }
+            throw new Error(`Server error ${resp.status}: ${errorMsg}`);
+        }
+        return resp.json();
+    }
 
     getThumbnailUrl(image) {
         if (image.thumbnail_url) return image.thumbnail_url;
