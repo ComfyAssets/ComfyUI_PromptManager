@@ -552,6 +552,7 @@ class PromptDatabase:
         old_name = old_name.strip()
         new_name = new_name.strip()
         affected = 0
+        skipped = 0
 
         with self.model.get_connection() as conn:
             cursor = conn.execute(
@@ -571,12 +572,14 @@ class PromptDatabase:
                         (json.dumps(tags), datetime.datetime.now(datetime.timezone.utc).isoformat(), row['id'])
                     )
                     affected += 1
-                except (json.JSONDecodeError, TypeError):
+                except (json.JSONDecodeError, TypeError) as e:
+                    skipped += 1
+                    self.logger.warning(f"Skipped prompt {row['id']} during tag rename: {e}")
                     continue
             conn.commit()
 
-        self.logger.info(f"Renamed tag '{old_name}' -> '{new_name}' in {affected} prompts")
-        return {'success': True, 'affected_count': affected}
+        self.logger.info(f"Renamed tag '{old_name}' -> '{new_name}' in {affected} prompts (skipped {skipped})")
+        return {'success': True, 'affected_count': affected, 'skipped_count': skipped}
 
     def delete_tag_all_prompts(self, tag_name: str) -> Dict[str, Any]:
         """
@@ -593,6 +596,7 @@ class PromptDatabase:
 
         tag_name = tag_name.strip()
         affected = 0
+        skipped = 0
 
         with self.model.get_connection() as conn:
             cursor = conn.execute(
@@ -610,12 +614,14 @@ class PromptDatabase:
                         (json.dumps(tags), datetime.datetime.now(datetime.timezone.utc).isoformat(), row['id'])
                     )
                     affected += 1
-                except (json.JSONDecodeError, TypeError):
+                except (json.JSONDecodeError, TypeError) as e:
+                    skipped += 1
+                    self.logger.warning(f"Skipped prompt {row['id']} during tag delete: {e}")
                     continue
             conn.commit()
 
-        self.logger.info(f"Deleted tag '{tag_name}' from {affected} prompts")
-        return {'success': True, 'affected_count': affected}
+        self.logger.info(f"Deleted tag '{tag_name}' from {affected} prompts (skipped {skipped})")
+        return {'success': True, 'affected_count': affected, 'skipped_count': skipped}
 
     def merge_tags(self, source_tags: List[str], target_tag: str) -> Dict[str, Any]:
         """
@@ -637,6 +643,7 @@ class PromptDatabase:
         source_tags = [t.strip() for t in source_tags if t.strip()]
         affected = 0
         tags_merged = 0
+        skipped = 0
 
         with self.model.get_connection() as conn:
             for src_tag in source_tags:
@@ -658,15 +665,17 @@ class PromptDatabase:
                             (json.dumps(tags), datetime.datetime.now(datetime.timezone.utc).isoformat(), row['id'])
                         )
                         src_affected += 1
-                    except (json.JSONDecodeError, TypeError):
+                    except (json.JSONDecodeError, TypeError) as e:
+                        skipped += 1
+                        self.logger.warning(f"Skipped prompt {row['id']} during tag merge: {e}")
                         continue
                 if src_affected > 0:
                     tags_merged += 1
                     affected += src_affected
             conn.commit()
 
-        self.logger.info(f"Merged {tags_merged} tags into '{target_tag}', affected {affected} prompts")
-        return {'success': True, 'affected_count': affected, 'tags_merged': tags_merged}
+        self.logger.info(f"Merged {tags_merged} tags into '{target_tag}', affected {affected} prompts (skipped {skipped})")
+        return {'success': True, 'affected_count': affected, 'tags_merged': tags_merged, 'skipped_count': skipped}
 
     def get_untagged_prompts_count(self) -> int:
         """
@@ -1085,7 +1094,8 @@ class PromptDatabase:
                 """
                 SELECT gi.*, p.text as prompt_text, p.tags as prompt_tags
                 FROM generated_images gi
-                LEFT JOIN prompts p ON gi.prompt_id = p.id
+                INNER JOIN prompts p ON gi.prompt_id = p.id
+                WHERE gi.image_path IS NOT NULL AND gi.image_path != ''
                 ORDER BY gi.generation_time DESC
                 """
             )

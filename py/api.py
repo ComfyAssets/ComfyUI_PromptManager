@@ -820,8 +820,13 @@ class PromptManagerAPI:
     async def get_tags_stats(self, request):
         """Get tags with usage counts, search, sort, and pagination."""
         try:
-            limit = int(request.query.get("limit", 50))
-            offset = int(request.query.get("offset", 0))
+            try:
+                limit = int(request.query.get("limit", 50))
+                offset = int(request.query.get("offset", 0))
+            except (ValueError, TypeError):
+                return web.json_response(
+                    {"success": False, "error": "Invalid limit or offset parameter"}, status=400
+                )
             search = request.query.get("search", "").strip() or None
             sort = request.query.get("sort", "alpha_asc")
 
@@ -895,8 +900,13 @@ class PromptManagerAPI:
                     status=400,
                 )
 
-            limit = int(request.query.get("limit", 20))
-            offset = int(request.query.get("offset", 0))
+            try:
+                limit = int(request.query.get("limit", 20))
+                offset = int(request.query.get("offset", 0))
+            except (ValueError, TypeError):
+                return web.json_response(
+                    {"success": False, "error": "Invalid limit or offset parameter"}, status=400
+                )
 
             result = self.db.get_prompts_by_tags([tag_name], 'and', limit, offset)
             self._enrich_prompt_images(result['prompts'])
@@ -925,8 +935,13 @@ class PromptManagerAPI:
             untagged = request.query.get("untagged", "").lower() == "true"
 
             if untagged:
-                limit = int(request.query.get("limit", 20))
-                offset = int(request.query.get("offset", 0))
+                try:
+                    limit = int(request.query.get("limit", 20))
+                    offset = int(request.query.get("offset", 0))
+                except (ValueError, TypeError):
+                    return web.json_response(
+                        {"success": False, "error": "Invalid limit or offset parameter"}, status=400
+                    )
                 result = self.db.get_untagged_prompts(limit, offset)
                 self._enrich_prompt_images(result['prompts'])
                 return web.json_response({
@@ -954,8 +969,13 @@ class PromptManagerAPI:
             if mode not in ("and", "or"):
                 mode = "and"
 
-            limit = int(request.query.get("limit", 20))
-            offset = int(request.query.get("offset", 0))
+            try:
+                limit = int(request.query.get("limit", 20))
+                offset = int(request.query.get("offset", 0))
+            except (ValueError, TypeError):
+                return web.json_response(
+                    {"success": False, "error": "Invalid limit or offset parameter"}, status=400
+                )
 
             result = self.db.get_prompts_by_tags(tags_list, mode, limit, offset)
             self._enrich_prompt_images(result['prompts'])
@@ -989,7 +1009,12 @@ class PromptManagerAPI:
                     {"success": False, "error": "Tag name required"}, status=400
                 )
 
-            body = await request.json()
+            try:
+                body = await request.json()
+            except Exception:
+                return web.json_response(
+                    {"success": False, "error": "Invalid JSON body"}, status=400
+                )
             new_name = body.get("new_name", "").strip()
             if not new_name:
                 return web.json_response(
@@ -997,12 +1022,16 @@ class PromptManagerAPI:
                 )
 
             result = self.db.rename_tag_all_prompts(tag_name, new_name)
-            return web.json_response({
+            resp = {
                 "success": True,
                 "old_name": tag_name,
                 "new_name": new_name,
                 "affected_count": result['affected_count']
-            })
+            }
+            if result.get('skipped_count', 0) > 0:
+                resp['skipped_count'] = result['skipped_count']
+                resp['warning'] = f"{result['skipped_count']} prompt(s) had corrupted tag data and were skipped"
+            return web.json_response(resp)
         except Exception as e:
             self.logger.error(f"Rename tag error: {e}", exc_info=True)
             return web.json_response(
@@ -1020,11 +1049,15 @@ class PromptManagerAPI:
                 )
 
             result = self.db.delete_tag_all_prompts(tag_name)
-            return web.json_response({
+            resp = {
                 "success": True,
                 "tag_name": tag_name,
                 "affected_count": result['affected_count']
-            })
+            }
+            if result.get('skipped_count', 0) > 0:
+                resp['skipped_count'] = result['skipped_count']
+                resp['warning'] = f"{result['skipped_count']} prompt(s) had corrupted tag data and were skipped"
+            return web.json_response(resp)
         except Exception as e:
             self.logger.error(f"Delete tag error: {e}", exc_info=True)
             return web.json_response(
@@ -1034,7 +1067,12 @@ class PromptManagerAPI:
     async def merge_tags_endpoint(self, request):
         """Merge source tags into a target tag."""
         try:
-            body = await request.json()
+            try:
+                body = await request.json()
+            except Exception:
+                return web.json_response(
+                    {"success": False, "error": "Invalid JSON body"}, status=400
+                )
             source_tags = body.get("source_tags", [])
             target_tag = body.get("target_tag", "").strip()
 
@@ -1048,12 +1086,16 @@ class PromptManagerAPI:
                 )
 
             result = self.db.merge_tags(source_tags, target_tag)
-            return web.json_response({
+            resp = {
                 "success": True,
                 "target_tag": target_tag,
                 "affected_count": result['affected_count'],
                 "tags_merged": result['tags_merged']
-            })
+            }
+            if result.get('skipped_count', 0) > 0:
+                resp['skipped_count'] = result['skipped_count']
+                resp['warning'] = f"{result['skipped_count']} prompt(s) had corrupted tag data and were skipped"
+            return web.json_response(resp)
         except Exception as e:
             self.logger.error(f"Merge tags error: {e}", exc_info=True)
             return web.json_response(
@@ -4878,6 +4920,10 @@ class PromptManagerAPI:
                 tagged = 0
                 skipped = 0
                 errors = 0
+                tagged_prompt_ids = set()  # Track prompts already tagged this run
+
+                import time as _time
+                last_update_time = _time.monotonic()
 
                 for i, image_data in enumerate(images):
                     image_path = image_data.get('image_path')
@@ -4887,9 +4933,26 @@ class PromptManagerAPI:
                         skipped += 1
                         continue
 
+                    # Skip if we already tagged this prompt during this run
+                    if prompt_id in tagged_prompt_ids:
+                        skipped += 1
+                        now = _time.monotonic()
+                        if (now - last_update_time) >= 0.5 or i == total_files - 1:
+                            progress = 10 + int((i + 1) / total_files * 85)
+                            yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'status': f'Skipping {i+1}/{total_files} (prompt already processed)...', 'processed': processed, 'tagged': tagged, 'skipped': skipped})}\n\n"
+                            await asyncio.sleep(0.01)
+                            last_update_time = now
+                        continue
+
                     # Check if file exists
                     if not Path(image_path).exists():
                         skipped += 1
+                        now = _time.monotonic()
+                        if (now - last_update_time) >= 0.5 or i == total_files - 1:
+                            progress = 10 + int((i + 1) / total_files * 85)
+                            yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'status': f'Skipping {i+1}/{total_files} (file missing)...', 'processed': processed, 'tagged': tagged, 'skipped': skipped})}\n\n"
+                            await asyncio.sleep(0.01)
+                            last_update_time = now
                         continue
 
                     # Check if image already has real tags (skip_tagged option)
@@ -4900,11 +4963,14 @@ class PromptManagerAPI:
                         # Filter out "auto-scanned" - it's not a real tag
                         real_tags = [t for t in prompt_tags if t != 'auto-scanned']
                         if real_tags:
+                            tagged_prompt_ids.add(prompt_id)  # Don't re-check other images for this prompt
                             skipped += 1
-                            if i % 5 == 0 or i == total_files - 1:
+                            now = _time.monotonic()
+                            if (now - last_update_time) >= 0.5 or i == total_files - 1:
                                 progress = 10 + int((i + 1) / total_files * 85)
                                 yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'status': f'Skipping {i+1}/{total_files} (already tagged)...', 'processed': processed, 'tagged': tagged, 'skipped': skipped})}\n\n"
                                 await asyncio.sleep(0.01)
+                                last_update_time = now
                             continue
 
                     try:
@@ -4917,7 +4983,7 @@ class PromptManagerAPI:
                         processed += 1
 
                         if tags:
-                            # Get existing prompt
+                            # Get existing prompt (live read, not snapshot)
                             existing_prompt = self.db.get_prompt_by_id(prompt_id)
                             if existing_prompt:
                                 existing_tags = existing_prompt.get('tags', [])
@@ -4939,10 +5005,14 @@ class PromptManagerAPI:
                         else:
                             skipped += 1
 
-                        if i % 5 == 0 or i == total_files - 1:
-                            progress = 10 + int((i + 1) / total_files * 85)
-                            yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'status': f'Processing {i+1}/{total_files}...', 'processed': processed, 'tagged': tagged, 'skipped': skipped})}\n\n"
-                            await asyncio.sleep(0.01)
+                        # Mark this prompt as done so other images for it are skipped
+                        tagged_prompt_ids.add(prompt_id)
+
+                        # Always send progress after LLM inference (each call is slow)
+                        progress = 10 + int((i + 1) / total_files * 85)
+                        yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'status': f'Processing {i+1}/{total_files}...', 'processed': processed, 'tagged': tagged, 'skipped': skipped})}\n\n"
+                        await asyncio.sleep(0.01)
+                        last_update_time = _time.monotonic()
 
                     except Exception as img_err:
                         self.logger.error(f"Error processing {image_path}: {img_err}")

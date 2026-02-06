@@ -15,8 +15,7 @@ Key features:
 The integration works by:
 1. PromptManager nodes register their prompts during execution
 2. SaveImage node is patched to include registered prompts in metadata
-3. PromptManager class_type is changed to CLIPTextEncode for parser compatibility
-4. Standard tools can then extract prompts from the generated images
+3. Standard tools can then extract prompts from the generated images
 
 Typical usage:
     from utils.comfyui_integration import get_comfyui_integration
@@ -61,7 +60,6 @@ class ComfyUIMetadataIntegration:
     Key responsibilities:
     - Register prompts from PromptManager nodes during execution
     - Patch SaveImage to include PromptManager prompts in metadata
-    - Convert PromptManager class_type to CLIPTextEncode for compatibility
     - Manage prompt lifecycle and cleanup
     """
     
@@ -184,15 +182,16 @@ class ComfyUIMetadataIntegration:
         
         This method modifies ComfyUI's SaveImage.save_images method to automatically
         include PromptManager prompts in the image metadata. The patching:
-        
+
         1. Wraps the original save_images method
         2. Retrieves current PromptManager prompt text
-        3. Modifies the workflow data to include the prompt
-        4. Changes PromptManager class_type to CLIPTextEncode for compatibility
-        5. Calls the original method with modified data
-        
-        The patching is designed to be minimally invasive and maintain full
-        compatibility with existing ComfyUI functionality.
+        3. Updates the text input in PromptManager nodes to reflect actual prompt
+        4. Calls the original method with the updated data
+
+        NOTE: We intentionally do NOT change class_type to CLIPTextEncode anymore.
+        That approach was corrupting saved workflows - when users saved and reloaded
+        workflows, ComfyUI would instantiate CLIPTextEncode instead of PromptManager,
+        causing errors with prepend_text/append_text inputs.
         """
         try:
             import nodes
@@ -222,41 +221,18 @@ class ComfyUIMetadataIntegration:
                     if not isinstance(prompt, dict):
                         prompt = {}
                     
-                    # Find PromptManager nodes and fix them for standard parser compatibility
-                    prompt_updated = False
+                    # Find PromptManager nodes and ensure prompt text is captured
+                    # NOTE: We do NOT change class_type anymore - that was corrupting saved workflows
+                    # when users reload them. PromptManager stays as PromptManager.
                     for node_id, node_data in prompt.items():
                         if isinstance(node_data, dict):
                             class_type = node_data.get('class_type', '')
                             if 'promptmanager' in class_type.lower():
-                                # Update the inputs to include our actual prompt text
+                                # Ensure the text input reflects the actual prompt used
                                 if 'inputs' not in node_data:
                                     node_data['inputs'] = {}
                                 node_data['inputs']['text'] = current_prompt_text
-                                
-                                # SIMPLE FIX: Change class_type to CLIPTextEncode for standard parser compatibility
-                                # Keep original class_type in metadata for reference
-                                if '_meta' not in node_data:
-                                    node_data['_meta'] = {}
-                                node_data['_meta']['original_class_type'] = class_type
-                                node_data['class_type'] = 'CLIPTextEncode'
-                                
-                                prompt_updated = True
-                                integration.logger.debug(f"Fixed PromptManager node {node_id} - changed class_type to CLIPTextEncode for compatibility")
-                    
-                    # If no PromptManager nodes found, add a standalone one
-                    if not prompt_updated:
-                        virtual_node_id = "promptmanager_text"
-                        prompt[virtual_node_id] = {
-                            "class_type": "CLIPTextEncode",  # Use CLIPTextEncode for compatibility
-                            "inputs": {
-                                "text": current_prompt_text
-                            },
-                            "_meta": {
-                                "original_class_type": "PromptManager",
-                                "virtual": True
-                            }
-                        }
-                        integration.logger.debug("Added standalone CLIPTextEncode node with PromptManager text")
+                                integration.logger.debug(f"Updated PromptManager node {node_id} with prompt text")
                 
                 # Call original method with potentially modified prompt
                 return original_save_images(self_node, images, filename_prefix, prompt, extra_pnginfo)
