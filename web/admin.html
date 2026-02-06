@@ -461,8 +461,10 @@
                     <!-- Tag List -->
                     <div id="tagsListContainer" class="flex-1 overflow-y-auto custom-scrollbar">
                         <div id="tagsList" class="p-2 space-y-1"></div>
-                        <div id="tagsLoader" class="p-4 text-center hidden">
-                            <div class="w-6 h-6 border-2 border-green-500/30 border-t-green-500 rounded-full animate-spin mx-auto"></div>
+                        <div id="tagsLoader" class="text-center">
+                            <div class="tags-loader-spinner p-4 hidden">
+                                <div class="w-6 h-6 border-2 border-green-500/30 border-t-green-500 rounded-full animate-spin mx-auto"></div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -480,8 +482,13 @@
                     <!-- Prompts Grid -->
                     <div id="tagPromptsContainer" class="flex-1 overflow-y-auto custom-scrollbar">
                         <div id="tagPromptsGrid" class="p-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
-                        <div id="tagPromptsLoader" class="p-4 text-center hidden">
-                            <div class="w-6 h-6 border-2 border-green-500/30 border-t-green-500 rounded-full animate-spin mx-auto"></div>
+                        <div id="tagPromptsLoader" class="text-center">
+                            <div class="prompts-loader-spinner p-4 hidden">
+                                <div class="w-6 h-6 border-2 border-green-500/30 border-t-green-500 rounded-full animate-spin mx-auto"></div>
+                            </div>
+                            <button id="loadMorePromptsBtn" class="hidden px-4 py-2 my-3 text-sm text-gray-400 hover:text-green-400 border border-gray-700 hover:border-green-500/50 rounded-lg transition-colors">
+                                Load more prompts
+                            </button>
                         </div>
                     </div>
                     <!-- Empty State -->
@@ -1487,6 +1494,10 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                 const tagsPage = document.getElementById('tagsPageView');
                 if (dashboard) dashboard.classList.remove('hidden');
                 if (tagsPage) tagsPage.classList.add('hidden');
+                if (this.tagsPage) {
+                    this.tagsPage.destroy();
+                    this.tagsPage = null;
+                }
             }
 
             showTagsPage() {
