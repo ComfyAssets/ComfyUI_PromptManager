@@ -144,6 +144,7 @@ class PromptManagerBase:
 
             try:
                 from .py.config import PromptManagerConfig
+
                 max_results = PromptManagerConfig.MAX_SEARCH_RESULTS
             except Exception:
                 max_results = 100

@@ -38,7 +38,11 @@ class APITestCase(AioHTTPTestCase):
         return app
 
     async def tearDownAsync(self):
-        for path in (self._temp_db.name, self._temp_db.name + "-wal", self._temp_db.name + "-shm"):
+        for path in (
+            self._temp_db.name,
+            self._temp_db.name + "-wal",
+            self._temp_db.name + "-shm",
+        ):
             if os.path.exists(path):
                 os.unlink(path)
 
@@ -86,7 +90,9 @@ class TestRecentPrompts(APITestCase):
     async def test_recent_pagination(self):
         for i in range(15):
             self._save_prompt(f"Prompt {i:02d}")
-        resp = await self.client.request("GET", "/prompt_manager/recent?limit=5&offset=0")
+        resp = await self.client.request(
+            "GET", "/prompt_manager/recent?limit=5&offset=0"
+        )
         data = await resp.json()
         self.assertEqual(len(data["results"]), 5)
         self.assertEqual(data["pagination"]["total"], 15)
@@ -95,7 +101,9 @@ class TestRecentPrompts(APITestCase):
     async def test_recent_last_page(self):
         for i in range(7):
             self._save_prompt(f"Prompt {i}")
-        resp = await self.client.request("GET", "/prompt_manager/recent?limit=5&offset=5")
+        resp = await self.client.request(
+            "GET", "/prompt_manager/recent?limit=5&offset=5"
+        )
         data = await resp.json()
         self.assertEqual(len(data["results"]), 2)
         self.assertFalse(data["pagination"]["has_more"])
@@ -116,7 +124,9 @@ class TestSearch(APITestCase):
     async def test_search_by_category(self):
         self._save_prompt("Nature scene", category="nature")
         self._save_prompt("Urban view", category="urban")
-        resp = await self.client.request("GET", "/prompt_manager/search?category=nature")
+        resp = await self.client.request(
+            "GET", "/prompt_manager/search?category=nature"
+        )
         data = await resp.json()
         self.assertEqual(len(data["results"]), 1)
 
@@ -128,7 +138,9 @@ class TestSearch(APITestCase):
         self.assertEqual(len(data["results"]), 1)
 
     async def test_search_empty_result(self):
-        resp = await self.client.request("GET", "/prompt_manager/search?text=nonexistent_xyz")
+        resp = await self.client.request(
+            "GET", "/prompt_manager/search?text=nonexistent_xyz"
+        )
         data = await resp.json()
         self.assertTrue(data["success"])
         self.assertEqual(len(data["results"]), 0)
@@ -140,7 +152,11 @@ class TestSaveAndDelete(APITestCase):
         resp = await self.client.request(
             "POST",
             "/prompt_manager/save",
-            json={"text": "New prompt via API", "category": "test", "tags": ["api", "test"]},
+            json={
+                "text": "New prompt via API",
+                "category": "test",
+                "tags": ["api", "test"],
+            },
         )
         self.assertEqual(resp.status, 200)
         data = await resp.json()
@@ -148,7 +164,9 @@ class TestSaveAndDelete(APITestCase):
         self.assertIn("prompt_id", data)
 
     async def test_save_empty_text(self):
-        resp = await self.client.request("POST", "/prompt_manager/save", json={"text": ""})
+        resp = await self.client.request(
+            "POST", "/prompt_manager/save", json={"text": ""}
+        )
         self.assertEqual(resp.status, 400)
         data = await resp.json()
         self.assertFalse(data["success"])
@@ -307,7 +325,9 @@ class TestResponseEnvelope(APITestCase):
             resp = await self.client.request(method, path)
             data = await resp.json()
             self.assertIn("success", data, f"Missing 'success' key in {method} {path}")
-            self.assertTrue(data["success"], f"Expected success=True for {method} {path}")
+            self.assertTrue(
+                data["success"], f"Expected success=True for {method} {path}"
+            )
 
     async def test_error_responses_have_success_false(self):
         resp = await self.client.request("DELETE", "/prompt_manager/delete/99999")

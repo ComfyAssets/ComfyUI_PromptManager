@@ -228,8 +228,17 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
         return (conditioning, encoding_text)
 
     @classmethod
-    def IS_CHANGED(cls, clip, text="", category="", tags="", search_text="",
-                   prepend_text="", append_text="", **kwargs):
+    def IS_CHANGED(
+        cls,
+        clip,
+        text="",
+        category="",
+        tags="",
+        search_text="",
+        prepend_text="",
+        append_text="",
+        **kwargs,
+    ):
         """
         ComfyUI method to determine if node needs re-execution.
 

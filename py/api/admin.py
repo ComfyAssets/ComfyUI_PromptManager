@@ -82,7 +82,10 @@ class AdminRoutesMixin:
         except Exception as e:
             self.logger.error(f"Scan duplicates error: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to scan duplicate images: {str(e)}"},
+                {
+                    "success": False,
+                    "error": f"Failed to scan duplicate images: {str(e)}",
+                },
                 status=500,
             )
 
@@ -118,8 +121,16 @@ class AdminRoutesMixin:
 
             output_path = Path(output_dir)
 
-            image_extensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff']
-            video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.gif']
+            image_extensions = [
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".gif",
+                ".webp",
+                ".bmp",
+                ".tiff",
+            ]
+            video_extensions = [".mp4", ".avi", ".mov", ".mkv", ".webm", ".gif"]
             all_extensions = image_extensions + video_extensions
 
             media_files = []
@@ -127,7 +138,7 @@ class AdminRoutesMixin:
             for ext in all_extensions:
                 for pattern in [f"*{ext.lower()}", f"*{ext.upper()}"]:
                     for media_path in output_path.rglob(pattern):
-                        if 'thumbnails' not in media_path.parts:
+                        if "thumbnails" not in media_path.parts:
                             normalized_path = str(media_path).lower()
                             if normalized_path not in seen_paths:
                                 seen_paths.add(normalized_path)
@@ -149,41 +160,44 @@ class AdminRoutesMixin:
                     rel_path = media_path.relative_to(output_path)
                     extension = media_path.suffix.lower()
                     is_video = extension in [ext.lower() for ext in video_extensions]
-                    media_type = 'video' if is_video else 'image'
+                    media_type = "video" if is_video else "image"
 
                     # Check if thumbnail exists
                     thumbnail_url = None
                     thumbnails_dir = output_path / "thumbnails"
                     if thumbnails_dir.exists():
-                        thumbnail_ext = '.jpg' if is_video else extension
-                        rel_path_no_ext = rel_path.with_suffix('')
+                        thumbnail_ext = ".jpg" if is_video else extension
+                        rel_path_no_ext = rel_path.with_suffix("")
                         thumbnail_rel_path = f"thumbnails/{rel_path_no_ext.as_posix()}_thumb{thumbnail_ext}"
                         thumbnail_abs_path = output_path / thumbnail_rel_path
 
                         if thumbnail_abs_path.exists():
                             from urllib.parse import quote
+
                             thumbnail_url = f'/prompt_manager/images/serve/{quote(thumbnail_rel_path, safe="/")}'
 
                     image_info = {
-                        'id': str(hash(str(media_path))),
-                        'filename': media_path.name,
-                        'path': str(media_path),
-                        'relative_path': str(rel_path),
-                        'url': f'/prompt_manager/images/serve/{rel_path.as_posix()}',
-                        'thumbnail_url': thumbnail_url,
-                        'size': stat.st_size,
-                        'modified_time': stat.st_mtime,
-                        'extension': extension,
-                        'media_type': media_type,
-                        'is_video': is_video,
-                        'hash': file_hash
+                        "id": str(hash(str(media_path))),
+                        "filename": media_path.name,
+                        "path": str(media_path),
+                        "relative_path": str(rel_path),
+                        "url": f"/prompt_manager/images/serve/{rel_path.as_posix()}",
+                        "thumbnail_url": thumbnail_url,
+                        "size": stat.st_size,
+                        "modified_time": stat.st_mtime,
+                        "extension": extension,
+                        "media_type": media_type,
+                        "is_video": is_video,
+                        "hash": file_hash,
                     }
 
                     file_hashes[file_hash].append(image_info)
                     processed += 1
 
                     if processed % 100 == 0:
-                        self.logger.info(f"Processed {processed}/{len(media_files)} files for duplicate detection")
+                        self.logger.info(
+                            f"Processed {processed}/{len(media_files)} files for duplicate detection"
+                        )
 
                 except Exception as e:
                     self.logger.error(f"Error processing file {media_path}: {e}")
@@ -193,12 +207,10 @@ class AdminRoutesMixin:
             duplicates = []
             for file_hash, images in file_hashes.items():
                 if len(images) > 1:
-                    images.sort(key=lambda x: x['modified_time'])
-                    duplicates.append({
-                        'hash': file_hash,
-                        'images': images,
-                        'count': len(images)
-                    })
+                    images.sort(key=lambda x: x["modified_time"])
+                    duplicates.append(
+                        {"hash": file_hash, "images": images, "count": len(images)}
+                    )
 
             self.logger.info(f"Found {len(duplicates)} groups of duplicate images")
             return duplicates
@@ -219,7 +231,7 @@ class AdminRoutesMixin:
         """Delete duplicate image files from disk."""
         try:
             data = await request.json()
-            image_paths = data.get('image_paths', [])
+            image_paths = data.get("image_paths", [])
 
             if not image_paths:
                 return web.json_response(
@@ -236,7 +248,9 @@ class AdminRoutesMixin:
                     # Ensure the path is within the output directory for security
                     output_dir = self._find_comfyui_output_dir()
                     if not output_dir:
-                        failed_files.append(f"{image_path} (output directory not found)")
+                        failed_files.append(
+                            f"{image_path} (output directory not found)"
+                        )
                         failed_count += 1
                         continue
 
@@ -247,7 +261,9 @@ class AdminRoutesMixin:
                     try:
                         file_path.resolve().relative_to(output_path.resolve())
                     except ValueError:
-                        self.logger.warning(f"Attempted to delete file outside output directory: {image_path}")
+                        self.logger.warning(
+                            f"Attempted to delete file outside output directory: {image_path}"
+                        )
                         failed_files.append(f"{image_path} (outside output directory)")
                         failed_count += 1
                         continue
@@ -260,13 +276,21 @@ class AdminRoutesMixin:
                         # Also try to delete associated thumbnail if it exists
                         try:
                             rel_path = file_path.relative_to(output_path)
-                            rel_path_no_ext = rel_path.with_suffix('')
-                            thumbnail_path = output_path / "thumbnails" / f"{rel_path_no_ext.as_posix()}_thumb{file_path.suffix}"
+                            rel_path_no_ext = rel_path.with_suffix("")
+                            thumbnail_path = (
+                                output_path
+                                / "thumbnails"
+                                / f"{rel_path_no_ext.as_posix()}_thumb{file_path.suffix}"
+                            )
                             if thumbnail_path.exists():
                                 os.remove(thumbnail_path)
-                                self.logger.debug(f"Deleted associated thumbnail: {thumbnail_path}")
+                                self.logger.debug(
+                                    f"Deleted associated thumbnail: {thumbnail_path}"
+                                )
                         except Exception as e:
-                            self.logger.warning(f"Could not delete thumbnail for {image_path}: {e}")
+                            self.logger.warning(
+                                f"Could not delete thumbnail for {image_path}: {e}"
+                            )
                     else:
                         failed_files.append(f"{image_path} (file not found)")
                         failed_count += 1
@@ -280,7 +304,7 @@ class AdminRoutesMixin:
                 "success": True,
                 "deleted_count": deleted_count,
                 "failed_count": failed_count,
-                "message": f"Deleted {deleted_count} files successfully"
+                "message": f"Deleted {deleted_count} files successfully",
             }
 
             if failed_count > 0:
@@ -292,7 +316,10 @@ class AdminRoutesMixin:
         except Exception as e:
             self.logger.error(f"Delete duplicate images error: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to delete duplicate images: {str(e)}"},
+                {
+                    "success": False,
+                    "error": f"Failed to delete duplicate images: {str(e)}",
+                },
                 status=500,
             )
 
@@ -319,29 +346,40 @@ class AdminRoutesMixin:
             monitored_dirs = []
             try:
                 import sys
+
                 monitor_module = None
                 for mod_name in list(sys.modules.keys()):
-                    if 'image_monitor' in mod_name and hasattr(sys.modules[mod_name], '_monitor_instance'):
+                    if "image_monitor" in mod_name and hasattr(
+                        sys.modules[mod_name], "_monitor_instance"
+                    ):
                         monitor_module = sys.modules[mod_name]
                         break
 
                 if monitor_module and monitor_module._monitor_instance is not None:
-                    monitored_dirs = getattr(monitor_module._monitor_instance, 'monitored_directories', [])
+                    monitored_dirs = getattr(
+                        monitor_module._monitor_instance, "monitored_directories", []
+                    )
                 elif GalleryConfig.MONITORING_DIRECTORIES:
                     monitored_dirs = GalleryConfig.MONITORING_DIRECTORIES
             except Exception:
                 if GalleryConfig.MONITORING_DIRECTORIES:
                     monitored_dirs = GalleryConfig.MONITORING_DIRECTORIES
 
-            return web.json_response({
-                "success": True,
-                "settings": {
-                    "result_timeout": PromptManagerConfig.RESULT_TIMEOUT,
-                    "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE,
-                    "gallery_root_path": GalleryConfig.MONITORING_DIRECTORIES[0] if GalleryConfig.MONITORING_DIRECTORIES else "",
-                    "monitored_directories": monitored_dirs
+            return web.json_response(
+                {
+                    "success": True,
+                    "settings": {
+                        "result_timeout": PromptManagerConfig.RESULT_TIMEOUT,
+                        "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE,
+                        "gallery_root_path": (
+                            GalleryConfig.MONITORING_DIRECTORIES[0]
+                            if GalleryConfig.MONITORING_DIRECTORIES
+                            else ""
+                        ),
+                        "monitored_directories": monitored_dirs,
+                    },
                 }
-            })
+            )
         except Exception as e:
             return web.json_response(
                 {"success": False, "error": f"Failed to get settings: {str(e)}"},
@@ -357,66 +395,91 @@ class AdminRoutesMixin:
             restart_required = False
 
             # Update in-memory config
-            if 'result_timeout' in data:
-                PromptManagerConfig.RESULT_TIMEOUT = data['result_timeout']
-            if 'webui_display_mode' in data:
-                PromptManagerConfig.WEBUI_DISPLAY_MODE = data['webui_display_mode']
+            if "result_timeout" in data:
+                PromptManagerConfig.RESULT_TIMEOUT = data["result_timeout"]
+            if "webui_display_mode" in data:
+                PromptManagerConfig.WEBUI_DISPLAY_MODE = data["webui_display_mode"]
 
             # Handle gallery root path
-            if 'gallery_root_path' in data:
-                new_path = data['gallery_root_path'].strip()
-                old_path = GalleryConfig.MONITORING_DIRECTORIES[0] if GalleryConfig.MONITORING_DIRECTORIES else ""
+            if "gallery_root_path" in data:
+                new_path = data["gallery_root_path"].strip()
+                old_path = (
+                    GalleryConfig.MONITORING_DIRECTORIES[0]
+                    if GalleryConfig.MONITORING_DIRECTORIES
+                    else ""
+                )
 
                 if new_path != old_path:
                     if new_path:
                         from pathlib import Path as _Path
+
                         resolved = _Path(new_path).resolve()
                         if not resolved.is_dir():
-                            return web.json_response({
-                                'success': False,
-                                'error': f'Gallery path does not exist or is not a directory: {new_path}'
-                            }, status=400)
-                        blocked = ['/etc', '/usr', '/bin', '/sbin', '/boot', '/proc', '/sys', '/dev',
-                                   '/var/log', '/root', 'C:\\Windows', 'C:\\Program Files']
+                            return web.json_response(
+                                {
+                                    "success": False,
+                                    "error": f"Gallery path does not exist or is not a directory: {new_path}",
+                                },
+                                status=400,
+                            )
+                        blocked = [
+                            "/etc",
+                            "/usr",
+                            "/bin",
+                            "/sbin",
+                            "/boot",
+                            "/proc",
+                            "/sys",
+                            "/dev",
+                            "/var/log",
+                            "/root",
+                            "C:\\Windows",
+                            "C:\\Program Files",
+                        ]
                         for b in blocked:
                             if str(resolved).startswith(b):
-                                return web.json_response({
-                                    'success': False,
-                                    'error': 'Gallery path cannot point to a system directory'
-                                }, status=400)
+                                return web.json_response(
+                                    {
+                                        "success": False,
+                                        "error": "Gallery path cannot point to a system directory",
+                                    },
+                                    status=400,
+                                )
                         GalleryConfig.MONITORING_DIRECTORIES = [new_path]
                     else:
                         GalleryConfig.MONITORING_DIRECTORIES = []
                     restart_required = True
 
             # Save to config file for persistence
-            config_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            config_file = os.path.join(config_dir, 'config.json')
+            config_dir = os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            )
+            config_file = os.path.join(config_dir, "config.json")
 
             config_data = {
-                'web_ui': {
-                    'result_timeout': PromptManagerConfig.RESULT_TIMEOUT,
-                    'webui_display_mode': PromptManagerConfig.WEBUI_DISPLAY_MODE
+                "web_ui": {
+                    "result_timeout": PromptManagerConfig.RESULT_TIMEOUT,
+                    "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE,
                 },
-                'gallery': {
-                    'monitoring': {
-                        'directories': GalleryConfig.MONITORING_DIRECTORIES
-                    }
-                }
+                "gallery": {
+                    "monitoring": {"directories": GalleryConfig.MONITORING_DIRECTORIES}
+                },
             }
 
             try:
-                with open(config_file, 'w') as f:
+                with open(config_file, "w") as f:
                     json.dump(config_data, f, indent=2)
                 self.logger.info(f"Settings saved to {config_file}")
             except Exception as save_err:
                 self.logger.warning(f"Could not save config file: {save_err}")
 
-            return web.json_response({
-                "success": True,
-                "message": "Settings saved successfully",
-                "restart_required": restart_required
-            })
+            return web.json_response(
+                {
+                    "success": True,
+                    "message": "Settings saved successfully",
+                    "restart_required": restart_required,
+                }
+            )
         except Exception as e:
             return web.json_response(
                 {"success": False, "error": f"Failed to save settings: {str(e)}"},
@@ -435,53 +498,59 @@ class AdminRoutesMixin:
                     with sqlite3.connect(db_path) as conn:
                         conn.row_factory = sqlite3.Row
                         cursor = conn.execute("SELECT COUNT(*) as count FROM prompts")
-                        prompt_count = cursor.fetchone()['count']
+                        prompt_count = cursor.fetchone()["count"]
 
-                        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='generated_images'")
+                        cursor = conn.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table' AND name='generated_images'"
+                        )
                         has_images_table = cursor.fetchone() is not None
 
                         if has_images_table:
-                            cursor = conn.execute("SELECT COUNT(*) as count FROM generated_images")
-                            image_count = cursor.fetchone()['count']
+                            cursor = conn.execute(
+                                "SELECT COUNT(*) as count FROM generated_images"
+                            )
+                            image_count = cursor.fetchone()["count"]
                         else:
                             image_count = 0
 
-                        results['database'] = {
-                            'status': 'ok',
-                            'prompt_count': prompt_count,
-                            'has_images_table': has_images_table,
-                            'image_count': image_count
+                        results["database"] = {
+                            "status": "ok",
+                            "prompt_count": prompt_count,
+                            "has_images_table": has_images_table,
+                            "image_count": image_count,
                         }
                 else:
-                    results['database'] = {
-                        'status': 'error',
-                        'message': f'Database file not found: {db_path}'
+                    results["database"] = {
+                        "status": "error",
+                        "message": f"Database file not found: {db_path}",
                     }
             except Exception as e:
-                results['database'] = {
-                    'status': 'error',
-                    'message': f'Database error: {str(e)}'
+                results["database"] = {
+                    "status": "error",
+                    "message": f"Database error: {str(e)}",
                 }
 
             # Check dependencies
             dependencies = {}
             try:
                 import watchdog
-                dependencies['watchdog'] = True
+
+                dependencies["watchdog"] = True
             except ImportError:
-                dependencies['watchdog'] = False
+                dependencies["watchdog"] = False
 
             try:
                 from PIL import Image
-                dependencies['PIL'] = True
+
+                dependencies["PIL"] = True
             except ImportError:
-                dependencies['PIL'] = False
+                dependencies["PIL"] = False
 
-            dependencies['sqlite3'] = True  # Always available in Python
+            dependencies["sqlite3"] = True  # Always available in Python
 
-            results['dependencies'] = {
-                'status': 'ok' if all(dependencies.values()) else 'error',
-                'dependencies': dependencies
+            results["dependencies"] = {
+                "status": "ok" if all(dependencies.values()) else "error",
+                "dependencies": dependencies,
             }
 
             # Check output directories
@@ -493,64 +562,60 @@ class AdminRoutesMixin:
                 if os.path.exists(abs_path):
                     output_dirs.append(abs_path)
 
-            results['comfyui_output'] = {
-                'status': 'ok' if output_dirs else 'warning',
-                'output_dirs': output_dirs
+            results["comfyui_output"] = {
+                "status": "ok" if output_dirs else "warning",
+                "output_dirs": output_dirs,
             }
 
             # Check image monitor status
             try:
                 from ...utils.image_monitor import _monitor_instance
+
                 if _monitor_instance is not None:
                     monitor_status = _monitor_instance.get_status()
-                    results['image_monitor'] = {
-                        'status': 'ok' if monitor_status.get('observer_alive') else 'error',
-                        **monitor_status
+                    results["image_monitor"] = {
+                        "status": (
+                            "ok" if monitor_status.get("observer_alive") else "error"
+                        ),
+                        **monitor_status,
                     }
                 else:
-                    results['image_monitor'] = {
-                        'status': 'error',
-                        'message': 'Image monitor not initialized'
+                    results["image_monitor"] = {
+                        "status": "error",
+                        "message": "Image monitor not initialized",
                     }
             except Exception as e:
-                results['image_monitor'] = {
-                    'status': 'error',
-                    'message': f'Failed to get monitor status: {str(e)}'
+                results["image_monitor"] = {
+                    "status": "error",
+                    "message": f"Failed to get monitor status: {str(e)}",
                 }
 
-            return web.json_response({
-                'success': True,
-                'diagnostics': results
-            })
+            return web.json_response({"success": True, "diagnostics": results})
 
         except Exception as e:
             self.logger.error(f"Diagnostics error: {e}", exc_info=True)
-            return web.json_response({
-                'success': False,
-                'error': str(e)
-            }, status=500)
+            return web.json_response({"success": False, "error": str(e)}, status=500)
 
     async def test_image_link(self, request):
         """Test creating an image link."""
         try:
             data = await request.json()
-            prompt_id = data.get('prompt_id')
-            test_image_path = data.get('image_path', '/test/fake/image.png')
+            prompt_id = data.get("prompt_id")
+            test_image_path = data.get("image_path", "/test/fake/image.png")
 
             if not prompt_id:
-                return web.json_response({
-                    'success': False,
-                    'error': 'prompt_id is required'
-                }, status=400)
+                return web.json_response(
+                    {"success": False, "error": "prompt_id is required"}, status=400
+                )
 
             test_metadata = {
-                'file_info': {
-                    'size': 1024000,
-                    'dimensions': [512, 512],
-                    'format': 'PNG'
+                "file_info": {
+                    "size": 1024000,
+                    "dimensions": [512, 512],
+                    "format": "PNG",
                 },
-                'workflow': {'test': True},
-                'prompt': {'test_prompt': 'This is a test image'}
+                "workflow": {"test": True},
+                "prompt": {"test_prompt": "This is a test image"},
             }
 
             try:
@@ -558,125 +623,176 @@ class AdminRoutesMixin:
                     self.db.link_image_to_prompt,
                     prompt_id=str(prompt_id),
                     image_path=test_image_path,
-                    metadata=test_metadata
+                    metadata=test_metadata,
                 )
 
-                return web.json_response({
-                    'success': True,
-                    'result': {
-                        'status': 'ok',
-                        'image_id': image_id,
-                        'message': f'Test image linked successfully with ID {image_id}'
+                return web.json_response(
+                    {
+                        "success": True,
+                        "result": {
+                            "status": "ok",
+                            "image_id": image_id,
+                            "message": f"Test image linked successfully with ID {image_id}",
+                        },
                     }
-                })
+                )
             except Exception as e:
-                return web.json_response({
-                    'success': False,
-                    'result': {
-                        'status': 'error',
-                        'message': f'Failed to create test link: {str(e)}'
+                return web.json_response(
+                    {
+                        "success": False,
+                        "result": {
+                            "status": "error",
+                            "message": f"Failed to create test link: {str(e)}",
+                        },
                     }
-                })
+                )
 
         except Exception as e:
             self.logger.error(f"Test link error: {e}", exc_info=True)
-            return web.json_response({
-                'success': False,
-                'error': str(e)
-            }, status=500)
+            return web.json_response({"success": False, "error": str(e)}, status=500)
 
     async def run_maintenance(self, request):
         """Perform comprehensive database maintenance and optimization."""
         try:
-            data = await request.json() if request.content_type == 'application/json' else {}
-            operations = data.get('operations', ['cleanup_duplicates', 'vacuum', 'cleanup_orphaned_images'])
+            data = (
+                await request.json()
+                if request.content_type == "application/json"
+                else {}
+            )
+            operations = data.get(
+                "operations",
+                ["cleanup_duplicates", "vacuum", "cleanup_orphaned_images"],
+            )
 
             results = {}
 
             def _run_maintenance():
-                if 'cleanup_duplicates' in operations:
+                if "cleanup_duplicates" in operations:
                     try:
                         duplicates_removed = self.db.cleanup_duplicates()
-                        results['cleanup_duplicates'] = {
-                            'success': True, 'removed_count': duplicates_removed,
-                            'message': f'Removed {duplicates_removed} duplicate prompts'
+                        results["cleanup_duplicates"] = {
+                            "success": True,
+                            "removed_count": duplicates_removed,
+                            "message": f"Removed {duplicates_removed} duplicate prompts",
                         }
                     except Exception as e:
-                        results['cleanup_duplicates'] = {'success': False, 'error': str(e), 'message': 'Failed to cleanup duplicates'}
+                        results["cleanup_duplicates"] = {
+                            "success": False,
+                            "error": str(e),
+                            "message": "Failed to cleanup duplicates",
+                        }
 
-                if 'vacuum' in operations:
+                if "vacuum" in operations:
                     try:
                         self.db.model.vacuum_database()
-                        results['vacuum'] = {'success': True, 'message': 'Database vacuum completed successfully'}
+                        results["vacuum"] = {
+                            "success": True,
+                            "message": "Database vacuum completed successfully",
+                        }
                     except Exception as e:
-                        results['vacuum'] = {'success': False, 'error': str(e), 'message': 'Failed to vacuum database'}
+                        results["vacuum"] = {
+                            "success": False,
+                            "error": str(e),
+                            "message": "Failed to vacuum database",
+                        }
 
-                if 'cleanup_orphaned_images' in operations:
+                if "cleanup_orphaned_images" in operations:
                     try:
                         orphaned_removed = self.db.cleanup_missing_images()
-                        results['cleanup_orphaned_images'] = {
-                            'success': True, 'removed_count': orphaned_removed,
-                            'message': f'Removed {orphaned_removed} orphaned image records'
+                        results["cleanup_orphaned_images"] = {
+                            "success": True,
+                            "removed_count": orphaned_removed,
+                            "message": f"Removed {orphaned_removed} orphaned image records",
                         }
                     except Exception as e:
-                        results['cleanup_orphaned_images'] = {'success': False, 'error': str(e), 'message': 'Failed to cleanup orphaned images'}
+                        results["cleanup_orphaned_images"] = {
+                            "success": False,
+                            "error": str(e),
+                            "message": "Failed to cleanup orphaned images",
+                        }
 
-                if 'check_hash_duplicates' in operations:
+                if "check_hash_duplicates" in operations:
                     try:
                         hash_duplicates = self.db.check_hash_duplicates()
-                        results['check_hash_duplicates'] = {
-                            'success': True, 'duplicate_hashes': len(hash_duplicates),
-                            'message': f'Found {len(hash_duplicates)} duplicate hash groups'
+                        results["check_hash_duplicates"] = {
+                            "success": True,
+                            "duplicate_hashes": len(hash_duplicates),
+                            "message": f"Found {len(hash_duplicates)} duplicate hash groups",
                         }
                     except Exception as e:
-                        results['check_hash_duplicates'] = {'success': False, 'error': str(e), 'message': 'Failed to check hash duplicates'}
+                        results["check_hash_duplicates"] = {
+                            "success": False,
+                            "error": str(e),
+                            "message": "Failed to check hash duplicates",
+                        }
 
-                if 'statistics' in operations:
+                if "statistics" in operations:
                     try:
                         db_info = self.db.model.get_database_info()
-                        results['statistics'] = {'success': True, 'info': db_info, 'message': 'Database statistics retrieved'}
+                        results["statistics"] = {
+                            "success": True,
+                            "info": db_info,
+                            "message": "Database statistics retrieved",
+                        }
                     except Exception as e:
-                        results['statistics'] = {'success': False, 'error': str(e), 'message': 'Failed to get database statistics'}
+                        results["statistics"] = {
+                            "success": False,
+                            "error": str(e),
+                            "message": "Failed to get database statistics",
+                        }
 
-                if 'prune_orphaned_prompts' in operations:
+                if "prune_orphaned_prompts" in operations:
                     try:
                         removed_count = self.db.prune_orphaned_prompts()
-                        results['prune_orphaned_prompts'] = {
-                            'success': True, 'removed_count': removed_count,
-                            'message': f'Removed {removed_count} orphaned prompts (prompts with no linked images, excluding protected prompts)'
+                        results["prune_orphaned_prompts"] = {
+                            "success": True,
+                            "removed_count": removed_count,
+                            "message": f"Removed {removed_count} orphaned prompts (prompts with no linked images, excluding protected prompts)",
                         }
                     except Exception as e:
-                        results['prune_orphaned_prompts'] = {'success': False, 'error': str(e), 'message': 'Failed to prune orphaned prompts'}
+                        results["prune_orphaned_prompts"] = {
+                            "success": False,
+                            "error": str(e),
+                            "message": "Failed to prune orphaned prompts",
+                        }
 
-                if 'check_consistency' in operations:
+                if "check_consistency" in operations:
                     try:
                         consistency_issues = self.db.check_consistency()
-                        results['check_consistency'] = {
-                            'success': True, 'issues_found': len(consistency_issues),
-                            'issues': consistency_issues[:10],
-                            'message': f'Found {len(consistency_issues)} consistency issues'
+                        results["check_consistency"] = {
+                            "success": True,
+                            "issues_found": len(consistency_issues),
+                            "issues": consistency_issues[:10],
+                            "message": f"Found {len(consistency_issues)} consistency issues",
                         }
                     except Exception as e:
-                        results['check_consistency'] = {'success': False, 'error': str(e), 'message': 'Failed to check database consistency'}
+                        results["check_consistency"] = {
+                            "success": False,
+                            "error": str(e),
+                            "message": "Failed to check database consistency",
+                        }
 
             await self._run_in_executor(_run_maintenance)
 
-            all_successful = all(result.get('success', False) for result in results.values())
+            all_successful = all(
+                result.get("success", False) for result in results.values()
+            )
 
-            return web.json_response({
-                'success': True,
-                'operations_completed': len(results),
-                'all_successful': all_successful,
-                'results': results,
-                'message': f'Maintenance completed: {len(results)} operations processed'
-            })
+            return web.json_response(
+                {
+                    "success": True,
+                    "operations_completed": len(results),
+                    "all_successful": all_successful,
+                    "results": results,
+                    "message": f"Maintenance completed: {len(results)} operations processed",
+                }
+            )
 
         except Exception as e:
             self.logger.error(f"Maintenance error: {e}", exc_info=True)
-            return web.json_response({
-                'success': False,
-                'error': f'Maintenance failed: {str(e)}'
-            }, status=500)
+            return web.json_response(
+                {"success": False, "error": f"Maintenance failed: {str(e)}"}, status=500
+            )
 
     async def backup_database(self, request):
         """Backup the entire prompts.db database file."""
@@ -684,17 +800,16 @@ class AdminRoutesMixin:
             db_path = "prompts.db"
 
             if not os.path.exists(db_path):
-                return web.json_response({
-                    'success': False,
-                    'error': 'Database file not found'
-                }, status=404)
+                return web.json_response(
+                    {"success": False, "error": "Database file not found"}, status=404
+                )
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as temp_file:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as temp_file:
                 temp_path = temp_file.name
 
             shutil.copy2(db_path, temp_path)
 
-            with open(temp_path, 'rb') as f:
+            with open(temp_path, "rb") as f:
                 file_data = f.read()
 
             os.unlink(temp_path)
@@ -704,19 +819,19 @@ class AdminRoutesMixin:
 
             return web.Response(
                 body=file_data,
-                content_type='application/octet-stream',
+                content_type="application/octet-stream",
                 headers={
-                    'Content-Disposition': f'attachment; filename="{filename}"',
-                    'Content-Length': str(len(file_data))
-                }
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Length": str(len(file_data)),
+                },
             )
 
         except Exception as e:
             self.logger.error(f"Backup error: {e}", exc_info=True)
-            return web.json_response({
-                'success': False,
-                'error': f'Failed to backup database: {str(e)}'
-            }, status=500)
+            return web.json_response(
+                {"success": False, "error": f"Failed to backup database: {str(e)}"},
+                status=500,
+            )
 
     async def restore_database(self, request):
         """Restore the prompts.db database from uploaded file."""
@@ -724,28 +839,33 @@ class AdminRoutesMixin:
             reader = await request.multipart()
             field = await reader.next()
 
-            if not field or field.name != 'database_file':
-                return web.json_response({
-                    'success': False,
-                    'error': 'No database file uploaded. Expected field name: database_file'
-                }, status=400)
+            if not field or field.name != "database_file":
+                return web.json_response(
+                    {
+                        "success": False,
+                        "error": "No database file uploaded. Expected field name: database_file",
+                    },
+                    status=400,
+                )
 
             MAX_RESTORE_SIZE = 100 * 1024 * 1024  # 100MB
             file_data = await field.read()
 
             if not file_data:
-                return web.json_response({
-                    'success': False,
-                    'error': 'Uploaded file is empty'
-                }, status=400)
+                return web.json_response(
+                    {"success": False, "error": "Uploaded file is empty"}, status=400
+                )
 
             if len(file_data) > MAX_RESTORE_SIZE:
-                return web.json_response({
-                    'success': False,
-                    'error': f'File too large. Maximum size is {MAX_RESTORE_SIZE // (1024*1024)}MB'
-                }, status=400)
+                return web.json_response(
+                    {
+                        "success": False,
+                        "error": f"File too large. Maximum size is {MAX_RESTORE_SIZE // (1024*1024)}MB",
+                    },
+                    status=400,
+                )
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as temp_file:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as temp_file:
                 temp_path = temp_file.name
                 temp_file.write(file_data)
 
@@ -753,20 +873,22 @@ class AdminRoutesMixin:
                 with sqlite3.connect(temp_path) as conn:
                     conn.row_factory = sqlite3.Row
 
-                    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='prompts'")
+                    cursor = conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name='prompts'"
+                    )
                     if not cursor.fetchone():
                         raise ValueError("Database does not contain a 'prompts' table")
 
                     cursor = conn.execute("PRAGMA table_info(prompts)")
-                    columns = [row['name'] for row in cursor.fetchall()]
-                    required_columns = ['id', 'text', 'created_at']
+                    columns = [row["name"] for row in cursor.fetchall()]
+                    required_columns = ["id", "text", "created_at"]
 
                     for col in required_columns:
                         if col not in columns:
                             raise ValueError(f"Database missing required column: {col}")
 
                     cursor = conn.execute("SELECT COUNT(*) as count FROM prompts")
-                    prompt_count = cursor.fetchone()['count']
+                    prompt_count = cursor.fetchone()["count"]
 
                 db_path = "prompts.db"
                 backup_path = f"{db_path}.backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -782,37 +904,46 @@ class AdminRoutesMixin:
                     from ...database.operations import PromptDatabase
                 except ImportError:
                     import sys
-                    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+                    sys.path.insert(
+                        0,
+                        os.path.dirname(
+                            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                        ),
+                    )
                     from database.operations import PromptDatabase
                 self.db = PromptDatabase()
 
-                return web.json_response({
-                    'success': True,
-                    'message': f'Database restored successfully. Found {prompt_count} prompts.',
-                    'prompt_count': prompt_count,
-                    'backup_created': backup_path if os.path.exists(db_path) else None
-                })
+                return web.json_response(
+                    {
+                        "success": True,
+                        "message": f"Database restored successfully. Found {prompt_count} prompts.",
+                        "prompt_count": prompt_count,
+                        "backup_created": (
+                            backup_path if os.path.exists(db_path) else None
+                        ),
+                    }
+                )
 
             except sqlite3.Error as e:
-                return web.json_response({
-                    'success': False,
-                    'error': f'Invalid SQLite database: {str(e)}'
-                }, status=400)
+                return web.json_response(
+                    {"success": False, "error": f"Invalid SQLite database: {str(e)}"},
+                    status=400,
+                )
             except ValueError as e:
-                return web.json_response({
-                    'success': False,
-                    'error': str(e)
-                }, status=400)
+                return web.json_response(
+                    {"success": False, "error": str(e)}, status=400
+                )
             finally:
                 if os.path.exists(temp_path):
                     os.unlink(temp_path)
 
         except Exception as e:
             self.logger.error(f"Restore error: {e}", exc_info=True)
-            return web.json_response({
-                'success': False,
-                'error': f'Failed to restore database: {str(e)}'
-            }, status=500)
+            return web.json_response(
+                {"success": False, "error": f"Failed to restore database: {str(e)}"},
+                status=500,
+            )
 
     async def scan_images(self, request):
         """Scan ComfyUI output images for prompt metadata and add them to the database."""
@@ -850,7 +981,10 @@ class AdminRoutesMixin:
                     from ...utils.hashing import generate_prompt_hash
                 except ImportError:
                     import sys
-                    current_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+                    current_dir = os.path.dirname(
+                        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    )
                     sys.path.insert(0, current_dir)
                     from utils.hashing import generate_prompt_hash
 
@@ -862,66 +996,106 @@ class AdminRoutesMixin:
                         processed_count += 1
 
                         if metadata:
-                            self.logger.debug(f"Found metadata in {os.path.basename(png_file)}: {list(metadata.keys())}")
+                            self.logger.debug(
+                                f"Found metadata in {os.path.basename(png_file)}: {list(metadata.keys())}"
+                            )
 
                             parsed_data = self._parse_comfyui_prompt(metadata)
-                            self.logger.debug(f"Parsed data keys: {list(parsed_data.keys())}, has prompt: {bool(parsed_data.get('prompt'))}, has parameters: {bool(parsed_data.get('parameters'))}")
+                            self.logger.debug(
+                                f"Parsed data keys: {list(parsed_data.keys())}, has prompt: {bool(parsed_data.get('prompt'))}, has parameters: {bool(parsed_data.get('parameters'))}"
+                            )
 
-                            if parsed_data.get('prompt') or parsed_data.get('parameters'):
+                            if parsed_data.get("prompt") or parsed_data.get(
+                                "parameters"
+                            ):
                                 found_count += 1
                                 prompt_text = self._extract_readable_prompt(parsed_data)
 
                                 if prompt_text:
-                                    self.logger.debug(f"Found prompt in {os.path.basename(png_file)} (type: {type(prompt_text)}): {str(prompt_text)[:100]}...")
+                                    self.logger.debug(
+                                        f"Found prompt in {os.path.basename(png_file)} (type: {type(prompt_text)}): {str(prompt_text)[:100]}..."
+                                    )
                                 else:
-                                    self.logger.debug(f"No readable prompt found in {os.path.basename(png_file)}, parsed_data keys: {list(parsed_data.keys())}")
+                                    self.logger.debug(
+                                        f"No readable prompt found in {os.path.basename(png_file)}, parsed_data keys: {list(parsed_data.keys())}"
+                                    )
 
                                 if prompt_text and not isinstance(prompt_text, str):
-                                    self.logger.debug(f"Converting prompt_text from {type(prompt_text)} to string")
+                                    self.logger.debug(
+                                        f"Converting prompt_text from {type(prompt_text)} to string"
+                                    )
                                     prompt_text = str(prompt_text)
 
                                 if prompt_text and prompt_text.strip():
                                     try:
-                                        prompt_hash = generate_prompt_hash(prompt_text.strip())
-                                        self.logger.debug(f"Generated hash for prompt: {prompt_hash[:16]}...")
+                                        prompt_hash = generate_prompt_hash(
+                                            prompt_text.strip()
+                                        )
+                                        self.logger.debug(
+                                            f"Generated hash for prompt: {prompt_hash[:16]}..."
+                                        )
 
                                         existing = await self._run_in_executor(
                                             self.db.get_prompt_by_hash, prompt_hash
                                         )
                                         if existing:
-                                            self.logger.debug(f"Found existing prompt ID {existing['id']} for image {os.path.basename(png_file)}")
+                                            self.logger.debug(
+                                                f"Found existing prompt ID {existing['id']} for image {os.path.basename(png_file)}"
+                                            )
                                             try:
                                                 await self._run_in_executor(
-                                                    self.db.link_image_to_prompt, existing['id'], str(png_file)
+                                                    self.db.link_image_to_prompt,
+                                                    existing["id"],
+                                                    str(png_file),
                                                 )
                                                 linked_count += 1
-                                                self.logger.debug(f"Linked image {os.path.basename(png_file)} to existing prompt {existing['id']}")
+                                                self.logger.debug(
+                                                    f"Linked image {os.path.basename(png_file)} to existing prompt {existing['id']}"
+                                                )
                                             except Exception as e:
-                                                self.logger.error(f"Failed to link image {png_file} to existing prompt: {e}")
+                                                self.logger.error(
+                                                    f"Failed to link image {png_file} to existing prompt: {e}"
+                                                )
                                         else:
-                                            self.logger.debug(f"Saving new prompt from {os.path.basename(png_file)}")
+                                            self.logger.debug(
+                                                f"Saving new prompt from {os.path.basename(png_file)}"
+                                            )
                                             prompt_id = await self._run_in_executor(
                                                 self.db.save_prompt,
-                                                prompt_text.strip(), 'scanned', ['auto-scanned'],
-                                                f'Auto-scanned from {os.path.basename(png_file)}',
-                                                prompt_hash
+                                                prompt_text.strip(),
+                                                "scanned",
+                                                ["auto-scanned"],
+                                                f"Auto-scanned from {os.path.basename(png_file)}",
+                                                prompt_hash,
                                             )
 
                                             if prompt_id:
                                                 added_count += 1
-                                                self.logger.info(f"Successfully saved new prompt with ID {prompt_id} from {os.path.basename(png_file)}")
+                                                self.logger.info(
+                                                    f"Successfully saved new prompt with ID {prompt_id} from {os.path.basename(png_file)}"
+                                                )
                                                 try:
                                                     await self._run_in_executor(
-                                                        self.db.link_image_to_prompt, prompt_id, str(png_file)
+                                                        self.db.link_image_to_prompt,
+                                                        prompt_id,
+                                                        str(png_file),
                                                     )
-                                                    self.logger.debug(f"Linked image {os.path.basename(png_file)} to new prompt {prompt_id}")
+                                                    self.logger.debug(
+                                                        f"Linked image {os.path.basename(png_file)} to new prompt {prompt_id}"
+                                                    )
                                                 except Exception as e:
-                                                    self.logger.error(f"Failed to link image {png_file} to new prompt: {e}")
+                                                    self.logger.error(
+                                                        f"Failed to link image {png_file} to new prompt: {e}"
+                                                    )
                                             else:
-                                                self.logger.error(f"Failed to save prompt from {os.path.basename(png_file)} - no ID returned")
+                                                self.logger.error(
+                                                    f"Failed to save prompt from {os.path.basename(png_file)} - no ID returned"
+                                                )
 
                                     except Exception as e:
-                                        self.logger.error(f"Failed to save prompt from {png_file}: {e}")
+                                        self.logger.error(
+                                            f"Failed to save prompt from {png_file}: {e}"
+                                        )
 
                         # Update progress every 10 files
                         if i % 10 == 0 or i == total_files - 1:
@@ -936,7 +1110,9 @@ class AdminRoutesMixin:
                         self.logger.error(f"Error processing {png_file}: {e}")
                         continue
 
-                self.logger.info(f"Scan completed: processed={processed_count}, found={found_count}, new_prompts_added={added_count}, images_linked_to_existing={linked_count}")
+                self.logger.info(
+                    f"Scan completed: processed={processed_count}, found={found_count}, new_prompts_added={added_count}, images_linked_to_existing={linked_count}"
+                )
                 yield f"data: {json.dumps({'type': 'complete', 'processed': processed_count, 'found': found_count, 'added': added_count, 'linked': linked_count})}\n\n"
 
             except Exception as e:
@@ -946,18 +1122,18 @@ class AdminRoutesMixin:
 
         response = web.StreamResponse(
             status=200,
-            reason='OK',
+            reason="OK",
             headers={
-                'Content-Type': 'text/event-stream',
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive'
-            }
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
         )
 
         await response.prepare(request)
 
         async for chunk in stream_response():
-            await response.write(chunk.encode('utf-8'))
+            await response.write(chunk.encode("utf-8"))
 
         await response.write_eof()
         return response

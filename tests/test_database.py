@@ -34,7 +34,9 @@ class DatabaseTestCase(unittest.TestCase):
             if os.path.exists(f):
                 os.unlink(f)
 
-    def _save(self, text="Test prompt", category=None, tags=None, rating=None, notes=None):
+    def _save(
+        self, text="Test prompt", category=None, tags=None, rating=None, notes=None
+    ):
         """Helper to save a prompt and return its ID."""
         return self.db.save_prompt(
             text=text,
@@ -50,7 +52,9 @@ class TestPromptCRUD(DatabaseTestCase):
     """Test basic create, read, update, delete operations."""
 
     def test_save_and_retrieve(self):
-        pid = self._save("A beautiful sunset", category="nature", tags=["sunset", "sky"], rating=5)
+        pid = self._save(
+            "A beautiful sunset", category="nature", tags=["sunset", "sky"], rating=5
+        )
         prompt = self.db.get_prompt_by_id(pid)
         self.assertEqual(prompt["text"], "A beautiful sunset")
         self.assertEqual(prompt["category"], "nature")
@@ -84,7 +88,9 @@ class TestPromptCRUD(DatabaseTestCase):
 
     def test_update_metadata(self):
         pid = self._save("Updatable prompt", category="old", tags=["old_tag"], rating=2)
-        self.db.update_prompt_metadata(pid, category="new", tags=["new_tag"], rating=5, notes="updated")
+        self.db.update_prompt_metadata(
+            pid, category="new", tags=["new_tag"], rating=5, notes="updated"
+        )
         prompt = self.db.get_prompt_by_id(pid)
         self.assertEqual(prompt["category"], "new")
         self.assertIn("new_tag", prompt["tags"])
@@ -204,10 +210,27 @@ class TestSearch(DatabaseTestCase):
 
     def setUp(self):
         super().setUp()
-        self._save("Beautiful mountain landscape", category="nature", tags=["mountain", "landscape"], rating=5)
-        self._save("City skyline at night", category="urban", tags=["city", "night"], rating=4)
-        self._save("Portrait of an artist", category="portrait", tags=["person", "art"], rating=3)
-        self._save("Abstract geometric shapes", category="abstract", tags=["art", "geometric"], rating=2)
+        self._save(
+            "Beautiful mountain landscape",
+            category="nature",
+            tags=["mountain", "landscape"],
+            rating=5,
+        )
+        self._save(
+            "City skyline at night", category="urban", tags=["city", "night"], rating=4
+        )
+        self._save(
+            "Portrait of an artist",
+            category="portrait",
+            tags=["person", "art"],
+            rating=3,
+        )
+        self._save(
+            "Abstract geometric shapes",
+            category="abstract",
+            tags=["art", "geometric"],
+            rating=2,
+        )
 
     def test_search_by_text(self):
         results = self.db.search_prompts(text="mountain")
@@ -428,7 +451,10 @@ class TestEdgeCases(DatabaseTestCase):
         self.assertEqual(prompt["text"], long_text.strip())
 
     def test_tag_with_special_characters(self):
-        pid = self._save("Special tags", tags=["tag-with-dash", "tag_with_underscore", "tag.with.dots"])
+        pid = self._save(
+            "Special tags",
+            tags=["tag-with-dash", "tag_with_underscore", "tag.with.dots"],
+        )
         prompt = self.db.get_prompt_by_id(pid)
         self.assertEqual(len(prompt["tags"]), 3)
 
