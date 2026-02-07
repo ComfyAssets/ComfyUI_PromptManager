@@ -199,8 +199,9 @@ class PromptManagerAPI(
                     )
 
             except Exception as e:
+                self.logger.exception("Failed to load web UI")
                 return web.Response(
-                    text=f"<h1>Error</h1><p>Failed to load web UI: {str(e)}</p>",
+                    text="<h1>Error</h1><p>Failed to load web UI. Check server logs for details.</p>",
                     content_type="text/html",
                     status=500,
                 )
@@ -232,8 +233,9 @@ class PromptManagerAPI(
                 )
 
             except Exception as e:
+                self.logger.exception("Failed to load gallery")
                 return web.Response(
-                    text=f"<h1>Error</h1><p>Failed to load gallery: {str(e)}</p>",
+                    text="<h1>Error</h1><p>Failed to load gallery. Check server logs for details.</p>",
                     content_type="text/html",
                     status=500,
                 )
@@ -265,8 +267,9 @@ class PromptManagerAPI(
                 )
 
             except Exception as e:
+                self.logger.exception("Failed to load admin UI")
                 return web.Response(
-                    text=f"<h1>Error</h1><p>Failed to load admin UI: {str(e)}</p>",
+                    text="<h1>Error</h1><p>Failed to load admin UI. Check server logs for details.</p>",
                     content_type="text/html",
                     status=500,
                 )
@@ -298,8 +301,9 @@ class PromptManagerAPI(
                 )
 
             except Exception as e:
+                self.logger.exception("Failed to load gallery")
                 return web.Response(
-                    text=f"<h1>Error</h1><p>Failed to load gallery: {str(e)}</p>",
+                    text="<h1>Error</h1><p>Failed to load gallery. Check server logs for details.</p>",
                     content_type="text/html",
                     status=500,
                 )
