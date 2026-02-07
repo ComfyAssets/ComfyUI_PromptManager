@@ -3,22 +3,8 @@ PromptManager: Main custom node implementation that extends CLIPTextEncode
 with persistent prompt storage and search capabilities.
 """
 
-import datetime
-import hashlib
-import json
-import os
 import time
-import webbrowser
-from typing import Any, Dict, List, Optional, Tuple
-
-# Import logging system
-try:
-    from .utils.logging_config import get_logger
-except ImportError:
-    import sys
-
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from utils.logging_config import get_logger
+from typing import Any, Tuple
 
 try:
     from comfy.comfy_types import IO, ComfyNodeABC, InputTypeDict
@@ -35,23 +21,16 @@ except ImportError:
     InputTypeDict = dict
 
 try:
-    from .database.operations import PromptDatabase
-    from .utils.comfyui_integration import get_comfyui_integration
-    from .utils.image_monitor import get_image_monitor
-    from .utils.prompt_tracker import PromptExecutionContext, get_prompt_tracker
+    from .prompt_manager_base import PromptManagerBase
 except ImportError:
-    # For direct imports when not in a package
     import os
     import sys
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from database.operations import PromptDatabase
-    from utils.comfyui_integration import get_comfyui_integration
-    from utils.image_monitor import get_image_monitor
-    from utils.prompt_tracker import PromptExecutionContext, get_prompt_tracker
+    from prompt_manager_base import PromptManagerBase
 
 
-class PromptManager(ComfyNodeABC):
+class PromptManager(PromptManagerBase, ComfyNodeABC):
     """
     A ComfyUI custom node that functions like CLIPTextEncode but adds:
     - Persistent storage of all prompts in SQLite database
@@ -61,18 +40,7 @@ class PromptManager(ComfyNodeABC):
     """
 
     def __init__(self):
-        self.logger = get_logger("prompt_manager.node")
-        self.logger.debug("Initializing PromptManager node")
-
-        self.db = PromptDatabase()
-        # Use singleton getters to ensure only one tracker/monitor exists
-        self.prompt_tracker = get_prompt_tracker(self.db)
-        self.image_monitor = get_image_monitor(self.db, self.prompt_tracker)
-        self.comfyui_integration = get_comfyui_integration()
-
-        # Start image monitoring automatically
-        self._start_gallery_system()
-        self.logger.debug("PromptManager node initialization completed")
+        super().__init__(logger_name="prompt_manager.node")
 
     @classmethod
     def INPUT_TYPES(cls) -> InputTypeDict:
@@ -183,9 +151,6 @@ class PromptManager(ComfyNodeABC):
         # For database storage, save the original main text with metadata about prepend/append
         storage_text = text
 
-        # Search functionality is now handled by the JavaScript UI
-        # The search parameters are still available for backend processing if needed
-
         # Validate CLIP model
         if clip is None:
             error_msg = (
@@ -210,7 +175,7 @@ class PromptManager(ComfyNodeABC):
 
             try:
                 prompt_id = self._save_prompt_to_database(
-                    text=storage_text.strip(),  # Always strip whitespace
+                    text=storage_text.strip(),
                     category=category.strip() if category else None,
                     tags=extended_tags if extended_tags else None,
                 )
@@ -218,7 +183,7 @@ class PromptManager(ComfyNodeABC):
                 # Set current prompt for image tracking
                 if prompt_id:
                     execution_id = self.prompt_tracker.set_current_prompt(
-                        prompt_text=encoding_text.strip(),  # Use final combined text for tracking
+                        prompt_text=encoding_text.strip(),
                         additional_data={
                             "category": category.strip() if category else None,
                             "tags": extended_tags,
@@ -227,7 +192,7 @@ class PromptManager(ComfyNodeABC):
                                 prepend_text.strip() if prepend_text else None
                             ),
                             "append_text": append_text.strip() if append_text else None,
-                            "final_text": encoding_text.strip(),  # Store final combined text
+                            "final_text": encoding_text.strip(),
                         },
                     )
                     self.logger.debug(
@@ -237,7 +202,6 @@ class PromptManager(ComfyNodeABC):
             except Exception as e:
                 # Log error but don't fail the encoding
                 self.logger.warning(f"Failed to save prompt to database: {e}")
-                # Already logged above, no need for additional print
 
         # Perform standard CLIP text encoding using the combined text
         self.logger.debug(
@@ -247,7 +211,7 @@ class PromptManager(ComfyNodeABC):
         conditioning = clip.encode_from_tokens_scheduled(tokens)
 
         # Register with ComfyUI integration for standard metadata compatibility
-        node_id = f"promptmanager_{int(time.time() * 1000)}"  # Unique node ID
+        node_id = f"promptmanager_{int(time.time() * 1000)}"
         self.comfyui_integration.register_prompt(
             node_id,
             encoding_text.strip(),
@@ -263,228 +227,6 @@ class PromptManager(ComfyNodeABC):
         self.logger.info(f"CLIP encoding completed, text: {repr(encoding_text)[:80]}")
         return (conditioning, encoding_text)
 
-    def _save_prompt_to_database(
-        self, text: str, category: Optional[str] = None, tags: Optional[list] = None
-    ) -> Optional[int]:
-        """
-        Save the prompt to the SQLite database.
-
-        Args:
-            text: The prompt text
-            category: Optional category
-            tags: List of tags
-
-        Returns:
-            The prompt ID if saved successfully, None otherwise
-        """
-        try:
-            # Generate hash for duplicate detection
-            prompt_hash = self._generate_hash(text)
-            self.logger.debug(f"Generated hash for prompt: {prompt_hash[:16]}...")
-
-            # Check if prompt already exists
-            existing = self.db.get_prompt_by_hash(prompt_hash)
-            if existing:
-                self.logger.info(
-                    f"Found existing prompt with ID {existing['id']}, updating metadata"
-                )
-                # Update metadata if this is a duplicate with new info
-                if any([category, tags]):
-                    self.db.update_prompt_metadata(
-                        prompt_id=existing["id"], category=category, tags=tags
-                    )
-                    self.logger.debug("Updated metadata for existing prompt")
-                return existing["id"]
-
-            # Save new prompt
-            self.logger.debug(
-                f"Saving new prompt with category: {category}, tags: {tags}"
-            )
-            prompt_id = self.db.save_prompt(
-                text=text, category=category, tags=tags, prompt_hash=prompt_hash
-            )
-
-            if prompt_id:
-                self.logger.debug(f"Successfully saved new prompt with ID: {prompt_id}")
-            else:
-                self.logger.warning("Failed to save prompt - no ID returned")
-
-            return prompt_id
-
-        except Exception as e:
-            self.logger.error(f"Error saving prompt to database: {e}")
-            # Already logged above, no need for additional print
-            return None
-
-    def _generate_hash(self, text: str) -> str:
-        """
-        Generate SHA256 hash for the prompt text.
-        
-        Args:
-            text: The prompt text to hash
-            
-        Returns:
-            Hexadecimal string representation of the SHA256 hash
-        """
-        # Normalize text for consistent hashing (strip whitespace, normalize case)
-        normalized_text = text.strip().lower()
-        return hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
-
-    def _parse_tags(self, tags_string: str) -> Optional[list]:
-        """
-        Parse comma-separated tags string into a list.
-        
-        Args:
-            tags_string: Comma-separated string of tags
-            
-        Returns:
-            List of parsed tags, or None if no valid tags found
-        """
-        if not tags_string or not tags_string.strip():
-            return None
-
-        tags = [tag.strip() for tag in tags_string.split(",") if tag.strip()]
-        return tags if tags else None
-
-    def _search_prompts(self, search_text: str = "") -> List[Dict[str, Any]]:
-        """
-        Search for past prompts by text content.
-        
-        Args:
-            search_text: Text to search for in prompt database
-            
-        Returns:
-            List of matching prompt dictionaries with metadata
-        """
-        try:
-            if not search_text or not search_text.strip():
-                return []
-
-            results = self.db.search_prompts(
-                text=search_text.strip(),
-                category=None,
-                tags=None,
-                rating_min=None,
-                limit=50,
-            )
-
-            return results
-
-        except Exception as e:
-            self.logger.error(f"Error searching prompts: {e}")
-            return []
-
-    def _open_web_interface(self):
-        """
-        Open the web interface in the default browser.
-        
-        Attempts to locate and open the web interface HTML file.
-        Logs warnings if the interface is not properly configured.
-        """
-        try:
-            # Look for a web interface directory
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            web_dir = os.path.join(current_dir, "web_interface")
-
-            if os.path.exists(web_dir):
-                # If web interface exists, try to start it
-                index_path = os.path.join(web_dir, "index.html")
-                if os.path.exists(index_path):
-                    webbrowser.open(f"file://{index_path}")
-                    self.logger.info("Web interface opened in browser")
-                else:
-                    self.logger.warning(
-                        f"Web interface directory found but no index.html. Please check {web_dir} for setup instructions"
-                    )
-            else:
-                self.logger.info(
-                    "Web interface not yet implemented. This feature will open a web-based prompt management interface when the web_interface directory is created."
-                )
-
-        except Exception as e:
-            self.logger.error(f"Error opening web interface: {e}")
-
-    def search_prompts_api(self, search_text: str = "") -> List[Dict[str, Any]]:
-        """
-        API method for JavaScript UI to search prompts.
-        
-        Args:
-            search_text: Text to search for in prompts
-            
-        Returns:
-            List of matching prompt dictionaries
-        """
-        return self._search_prompts(search_text=search_text)
-
-    def get_recent_prompts_api(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """
-        API method for JavaScript UI to get recent prompts.
-        
-        Args:
-            limit: Maximum number of recent prompts to retrieve
-            
-        Returns:
-            List of recent prompt dictionaries ordered by creation time
-        """
-        try:
-            return self.db.get_recent_prompts(limit=limit)
-        except Exception as e:
-            self.logger.error(f"Error getting recent prompts: {e}")
-            return []
-
-    def _start_gallery_system(self):
-        """
-        Initialize and start the gallery monitoring system.
-        
-        Starts the image monitor which watches for new generated images
-        and links them to their source prompts in the database.
-        """
-        try:
-            self.logger.debug("Starting gallery system...")
-
-            # Start image monitoring
-            self.image_monitor.start_monitoring()
-
-            self.logger.debug("Gallery system started successfully")
-
-        except Exception as e:
-            self.logger.error(f"Failed to start gallery system: {e}")
-            self.logger.warning("Gallery features will be disabled")
-
-    def get_gallery_status(self) -> Dict[str, Any]:
-        """
-        Get status of the gallery system.
-        
-        Returns:
-            Dictionary containing status information for image monitor and prompt tracker
-        """
-        return {
-            "image_monitor": self.image_monitor.get_status(),
-            "prompt_tracker": self.prompt_tracker.get_status(),
-        }
-
-    def cleanup_gallery_system(self):
-        """
-        Clean up gallery system resources.
-        
-        Stops image monitoring and releases associated resources.
-        Called automatically during object destruction.
-        """
-        try:
-            if hasattr(self, "image_monitor"):
-                self.image_monitor.stop_monitoring()
-            self.logger.debug("Gallery system cleaned up")
-        except Exception as e:
-            self.logger.error(f"Error cleaning up gallery system: {e}")
-
-    def __del__(self):
-        """
-        Cleanup when object is destroyed.
-        
-        Ensures proper resource cleanup by stopping the gallery system.
-        """
-        self.cleanup_gallery_system()
-
     @classmethod
     def IS_CHANGED(cls, clip, text="", category="", tags="", search_text="",
                    prepend_text="", append_text="", **kwargs):
@@ -496,8 +238,5 @@ class PromptManager(ComfyNodeABC):
         """
         import hashlib
 
-        # Combine all text inputs that affect the conditioning output
-        # Note: search_text doesn't affect output, so it's excluded
         combined = f"{text}|{prepend_text}|{append_text}"
-
         return hashlib.sha256(combined.encode()).hexdigest()

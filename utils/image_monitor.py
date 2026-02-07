@@ -61,8 +61,16 @@ class ImageGenerationHandler(FileSystemEventHandler):
         self.db_manager = db_manager
         self.prompt_tracker = prompt_tracker
         self.metadata_extractor = ComfyUIMetadataExtractor()
-        self.processing_delay = 2.0  # Wait 2 seconds before processing
         self.logger = get_logger('prompt_manager.image_monitor')
+
+        # Read from GalleryConfig if available, otherwise use defaults
+        try:
+            from ..py.config import GalleryConfig
+            self.processing_delay = GalleryConfig.PROCESSING_DELAY
+            self.supported_extensions = tuple(GalleryConfig.SUPPORTED_EXTENSIONS)
+        except Exception:
+            self.processing_delay = 2.0
+            self.supported_extensions = ('.png', '.jpg', '.jpeg', '.webp', '.gif')
         
     def on_created(self, event):
         """Handle filesystem creation events.
@@ -96,7 +104,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
         # Skip files in thumbnails directory - those are derivatives, not generated images
         if '/thumbnails/' in filepath or '\\thumbnails\\' in filepath:
             return False
-        return filepath.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif'))
+        return filepath.lower().endswith(self.supported_extensions)
     
     def process_new_image(self, image_path: str):
         """Process a newly created image file for gallery integration.
@@ -287,6 +295,15 @@ class ImageMonitor:
         if self.observer:
             self.logger.warning("Image monitoring already running")
             return
+
+        # Check if monitoring is enabled in config
+        try:
+            from ..py.config import GalleryConfig
+            if not GalleryConfig.MONITORING_ENABLED:
+                self.logger.info("Image monitoring disabled in config")
+                return
+        except Exception:
+            pass
 
         # Check config first, then auto-detect if not configured
         if not output_directories:

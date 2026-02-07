@@ -79,7 +79,7 @@ class GalleryConfig:
     PROCESSING_DELAY = 2.0  # Seconds to wait before processing new files
     
     # Prompt tracking settings
-    PROMPT_TIMEOUT = 120  # Seconds to keep prompt context active
+    PROMPT_TIMEOUT = 600  # Seconds to keep prompt context active (10 min for long generations)
     CLEANUP_INTERVAL = 300  # Seconds between cleanup of expired prompts
     
     # Database settings

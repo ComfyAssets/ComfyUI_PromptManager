@@ -9,6 +9,7 @@ This module provides centralized logging configuration with support for:
 - Log viewer API integration
 """
 
+import collections
 import logging
 import logging.handlers
 import os
@@ -70,7 +71,7 @@ class PromptManagerLogger:
         }
         
         # Memory buffer for recent logs (for web viewer)
-        self._log_buffer = []
+        self._log_buffer = collections.deque(maxlen=self.config['buffer_size'])
         self._buffer_lock = threading.Lock()
         
         # Initialize loggers
@@ -176,10 +177,6 @@ class PromptManagerLogger:
             }
             
             self._log_buffer.append(log_entry)
-            
-            # Maintain buffer size limit
-            if len(self._log_buffer) > self.config['buffer_size']:
-                self._log_buffer = self._log_buffer[-self.config['buffer_size']:]
     
     def get_recent_logs(self, limit: int = 100, level: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get recent log entries from memory buffer.
@@ -192,14 +189,14 @@ class PromptManagerLogger:
             List of log entry dictionaries, most recent first
         """
         with self._buffer_lock:
-            logs = self._log_buffer[:]
-        
+            logs = list(self._log_buffer)
+
         # Filter by level if specified
         if level:
             level_num = getattr(logging, level.upper(), None)
             if level_num:
                 logs = [log for log in logs if getattr(logging, log['level']) >= level_num]
-        
+
         # Return most recent first
         return list(reversed(logs[-limit:]))
     

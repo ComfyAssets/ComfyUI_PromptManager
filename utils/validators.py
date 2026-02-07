@@ -135,10 +135,10 @@ def validate_tags(tags: Union[str, List[str], None]) -> bool:
         
         if len(tag.strip()) > 50:
             raise ValueError("Individual tags cannot exceed 50 characters")
-        
-        # Check for invalid characters (optional - you can adjust this)
-        if not re.match(r'^[a-zA-Z0-9\s\-_]+$', tag.strip()):
-            raise ValueError(f"Tag '{tag}' contains invalid characters")
+
+        # Reject control characters and null bytes
+        if re.search(r'[\x00-\x1f]', tag.strip()):
+            raise ValueError(f"Tag '{tag}' contains invalid control characters")
     
     if len(tags) > 20:  # Reasonable limit
         raise ValueError("Maximum 20 tags allowed")
@@ -177,10 +177,10 @@ def validate_category(category: Optional[str]) -> bool:
     
     if len(category) > 100:
         raise ValueError("Category cannot exceed 100 characters")
-    
-    # Check for invalid characters (adjust as needed)
-    if not re.match(r'^[a-zA-Z0-9\s\-_]+$', category):
-        raise ValueError("Category contains invalid characters")
+
+    # Reject control characters and null bytes
+    if re.search(r'[\x00-\x1f]', category):
+        raise ValueError("Category contains invalid control characters")
     
     return True
 
