@@ -1,3 +1,6 @@
+# Tailwind standalone CLI (downloaded by `make css-setup`)
+tailwindcss
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -16,6 +19,8 @@ eggs/
 .eggs/
 lib/
 lib64/
+!web/lib/
+!web/lib/**
 parts/
 sdist/
 var/
