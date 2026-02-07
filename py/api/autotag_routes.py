@@ -93,8 +93,8 @@ class AutotagRoutesMixin:
                     yield f"data: {json.dumps({'type': 'error', 'message': 'Download failed'})}\n\n"
 
             except Exception as e:
-                self.logger.error(f"Download model error: {e}")
-                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                self.logger.exception("Download model error")
+                yield f"data: {json.dumps({'type': 'error', 'message': 'An internal error occurred. Check server logs for details.'})}\n\n"
 
         response = web.StreamResponse(
             status=200,
@@ -274,8 +274,8 @@ class AutotagRoutesMixin:
                 self.logger.error(f"AutoTag error: {e}")
                 import traceback
 
-                self.logger.error(f"AutoTag traceback: {traceback.format_exc()}")
-                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                self.logger.exception("AutoTag error")
+                yield f"data: {json.dumps({'type': 'error', 'message': 'An internal error occurred. Check server logs for details.'})}\n\n"
 
         response = web.StreamResponse(
             status=200,

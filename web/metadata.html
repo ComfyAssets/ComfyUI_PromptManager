@@ -477,20 +477,34 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
             };
         }
 
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
         function showFullPrompt(type) {
             if (currentWorkflowData) {
                 const prompt = type === 'positive' ? currentWorkflowData.positivePrompt : currentWorkflowData.negativePrompt;
+                const safeType = escapeHtml(type.charAt(0).toUpperCase() + type.slice(1));
                 const newWindow = window.open('', '_blank');
-                newWindow.document.write(`
-                    <html>
-                        <head><title>${type.charAt(0).toUpperCase() + type.slice(1)} Prompt</title></head>
-                        <body style="background: #111; color: #fff; font-family: monospace; padding: 20px;">
-                            <h2>${type.charAt(0).toUpperCase() + type.slice(1)} Prompt</h2>
-                            <div style="background: #222; padding: 15px; border-radius: 5px; white-space: pre-wrap; line-height: 1.5;">${prompt}</div>
-                            <button onclick="navigator.clipboard.writeText(\`${prompt.replace(/`/g, '\\`')}\`).then(() => alert('Copied!'))" style="margin-top: 20px; padding: 10px 20px; background: #444; color: #fff; border: none; border-radius: 5px; cursor: pointer;">Copy to Clipboard</button>
-                        </body>
-                    </html>
-                `);
+                const doc = newWindow.document;
+                doc.open();
+                doc.write('<!DOCTYPE html><html><head><title>' + safeType + ' Prompt</title></head><body></body></html>');
+                doc.close();
+                doc.body.style.cssText = 'background:#111;color:#fff;font-family:monospace;padding:20px;';
+                const h2 = doc.createElement('h2');
+                h2.textContent = type.charAt(0).toUpperCase() + type.slice(1) + ' Prompt';
+                doc.body.appendChild(h2);
+                const pre = doc.createElement('pre');
+                pre.style.cssText = 'background:#222;padding:15px;border-radius:5px;white-space:pre-wrap;line-height:1.5;';
+                pre.textContent = prompt;
+                doc.body.appendChild(pre);
+                const btn = doc.createElement('button');
+                btn.textContent = 'Copy to Clipboard';
+                btn.style.cssText = 'margin-top:20px;padding:10px 20px;background:#444;color:#fff;border:none;border-radius:5px;cursor:pointer;';
+                btn.addEventListener('click', function() { navigator.clipboard.writeText(pre.textContent).then(function() { alert('Copied!'); }); });
+                doc.body.appendChild(btn);
             }
         }
 

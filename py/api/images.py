@@ -817,11 +817,12 @@ class ImageRoutesMixin:
                 )
 
             except Exception as e:
+                self.logger.exception("Thumbnail generation failed")
                 await send_progress(
                     "error",
                     {
-                        "error": str(e),
-                        "message": f"Thumbnail generation failed: {str(e)}",
+                        "error": "An internal error occurred",
+                        "message": "Thumbnail generation failed. Check server logs for details.",
                     },
                 )
 

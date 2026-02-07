@@ -1116,9 +1116,8 @@ class AdminRoutesMixin:
                 yield f"data: {json.dumps({'type': 'complete', 'processed': processed_count, 'found': found_count, 'added': added_count, 'linked': linked_count})}\n\n"
 
             except Exception as e:
-                self.logger.error(f"Scan error: {e}")
-                self.logger.error(f"Scan error traceback: {traceback.format_exc()}")
-                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                self.logger.exception("Scan error")
+                yield f"data: {json.dumps({'type': 'error', 'message': 'An internal error occurred. Check server logs for details.'})}\n\n"
 
         response = web.StreamResponse(
             status=200,
