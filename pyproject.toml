@@ -13,3 +13,15 @@ Repository = "https://github.com/ComfyAssets/ComfyUI_PromptManager"
 PublisherId = "kiko9"
 DisplayName = "ComfyUI_PromptManager"
 Icon = "https://avatars.githubusercontent.com/u/213204677?s=200"
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.flake8]
+max-line-length = 88
+extend-ignore = ["E203", "W503"]
+exclude = ["reference/", ".git", "__pycache__", "web/", "venv/"]
+
+[tool.bandit]
+exclude_dirs = ["tests", "reference"]
