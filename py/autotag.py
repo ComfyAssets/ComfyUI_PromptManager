@@ -16,13 +16,16 @@ try:
     from ..utils.logging_config import get_logger
 except ImportError:
     import logging
+
     def get_logger(name: str) -> logging.Logger:
         logger = logging.getLogger(name)
         if not logger.handlers:
             handler = logging.StreamHandler()
-            handler.setFormatter(logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            ))
+            handler.setFormatter(
+                logging.Formatter(
+                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+                )
+            )
             logger.addHandler(handler)
             logger.setLevel(logging.DEBUG)
         return logger
@@ -46,7 +49,7 @@ MODELS = {
         "size": "~16GB",
         "repo": "fancyfeast/llama-joycaption-beta-one-hf-llava",
         "subdir": "llama-joycaption-beta-one-hf-llava",
-    }
+    },
 }
 
 # Default prompts
@@ -84,7 +87,7 @@ class AutoTagService:
             models_dir: Directory for storing models. If None, uses ComfyUI's
                        folder_paths.models_dir / "LLM" path.
         """
-        self.logger = get_logger('autotag.service')
+        self.logger = get_logger("autotag.service")
 
         # Determine models directory
         if models_dir:
@@ -93,11 +96,14 @@ class AutoTagService:
             # Use ComfyUI's folder_paths system
             try:
                 import folder_paths
+
                 self.models_dir = Path(folder_paths.models_dir) / "LLM"
             except ImportError:
                 # Fallback for standalone usage (not running in ComfyUI)
                 self.logger.warning("folder_paths not available, using fallback path")
-                self.models_dir = Path(__file__).parent.parent.parent.parent / "models" / "LLM"
+                self.models_dir = (
+                    Path(__file__).parent.parent.parent.parent / "models" / "LLM"
+                )
 
         self.logger.info(f"AutoTag service initialized. Models dir: {self.models_dir}")
 
@@ -148,29 +154,27 @@ class AutoTagService:
 
         for model_type, config in MODELS.items():
             model_status = {
-                'name': config['name'],
-                'description': config['description'],
-                'size': config['size'],
-                'downloaded': False,
-                'model_path': None
+                "name": config["name"],
+                "description": config["description"],
+                "size": config["size"],
+                "downloaded": False,
+                "model_path": None,
             }
 
-            if model_type == 'gguf':
+            if model_type == "gguf":
                 model_exists, mmproj_exists = self._check_gguf_models()
-                model_status['model_exists'] = model_exists
-                model_status['mmproj_exists'] = mmproj_exists
-                model_status['downloaded'] = model_exists and mmproj_exists
-                if model_status['downloaded']:
-                    model_status['model_path'] = str(
-                        self.models_dir / config['subdir'] / config['filename']
+                model_status["model_exists"] = model_exists
+                model_status["mmproj_exists"] = mmproj_exists
+                model_status["downloaded"] = model_exists and mmproj_exists
+                if model_status["downloaded"]:
+                    model_status["model_path"] = str(
+                        self.models_dir / config["subdir"] / config["filename"]
                     )
             else:  # hf
-                model_status['downloaded'] = self._check_hf_model()
-                if model_status['downloaded']:
+                model_status["downloaded"] = self._check_hf_model()
+                if model_status["downloaded"]:
                     # Get the actual path (local or cache)
-                    model_status['model_path'] = str(
-                        self._get_hf_model_path()
-                    )
+                    model_status["model_path"] = str(self._get_hf_model_path())
 
             status[model_type] = model_status
 
@@ -182,10 +186,10 @@ class AutoTagService:
         Returns:
             Tuple of (model_exists, mmproj_exists)
         """
-        config = MODELS['gguf']
-        gguf_dir = self.models_dir / config['subdir']
-        model_path = gguf_dir / config['filename']
-        mmproj_path = gguf_dir / config['mmproj_filename']
+        config = MODELS["gguf"]
+        gguf_dir = self.models_dir / config["subdir"]
+        model_path = gguf_dir / config["filename"]
+        mmproj_path = gguf_dir / config["mmproj_filename"]
         return model_path.exists(), mmproj_path.exists()
 
     def _check_hf_model(self) -> bool:
@@ -196,17 +200,17 @@ class AutoTagService:
         Returns:
             True if model directory contains config.json
         """
-        config = MODELS['hf']
+        config = MODELS["hf"]
 
         # Check local directory first
-        model_dir = self.models_dir / config['subdir']
+        model_dir = self.models_dir / config["subdir"]
         self.logger.debug(f"Checking local HF model path: {model_dir}")
         if (model_dir / "config.json").exists():
             self.logger.debug("Found HF model in local directory")
             return True
 
         # Check HuggingFace cache as fallback
-        hf_cache_path = self._get_hf_cache_path(config['repo'])
+        hf_cache_path = self._get_hf_cache_path(config["repo"])
         if hf_cache_path:
             self.logger.debug(f"Found HF model in cache: {hf_cache_path}")
             return True
@@ -251,15 +255,15 @@ class AutoTagService:
         Returns:
             Path to the model directory, or None if not found
         """
-        config = MODELS['hf']
+        config = MODELS["hf"]
 
         # Check local directory first
-        model_dir = self.models_dir / config['subdir']
+        model_dir = self.models_dir / config["subdir"]
         if (model_dir / "config.json").exists():
             return model_dir
 
         # Check HuggingFace cache as fallback
-        cache_path = self._get_hf_cache_path(config['repo'])
+        cache_path = self._get_hf_cache_path(config["repo"])
         if cache_path:
             return cache_path
 
@@ -268,7 +272,7 @@ class AutoTagService:
     def download_model(
         self,
         model_type: str,
-        progress_callback: Optional[Callable[[str, float], None]] = None
+        progress_callback: Optional[Callable[[str, float], None]] = None,
     ) -> bool:
         """Download a model with optional progress updates.
 
@@ -283,7 +287,9 @@ class AutoTagService:
             ValueError: If model_type is not valid
         """
         if model_type not in MODELS:
-            raise ValueError(f"Invalid model type: {model_type}. Must be 'gguf' or 'hf'")
+            raise ValueError(
+                f"Invalid model type: {model_type}. Must be 'gguf' or 'hf'"
+            )
 
         try:
             from huggingface_hub import hf_hub_download, snapshot_download
@@ -294,7 +300,7 @@ class AutoTagService:
             return False
 
         try:
-            if model_type == 'gguf':
+            if model_type == "gguf":
                 return self._download_gguf_models(progress_callback)
             else:
                 return self._download_hf_model(progress_callback)
@@ -305,18 +311,17 @@ class AutoTagService:
             return False
 
     def _download_gguf_models(
-        self,
-        progress_callback: Optional[Callable[[str, float], None]] = None
+        self, progress_callback: Optional[Callable[[str, float], None]] = None
     ) -> bool:
         """Download GGUF model and mmproj files."""
         from huggingface_hub import hf_hub_download
 
-        config = MODELS['gguf']
-        gguf_dir = self.models_dir / config['subdir']
+        config = MODELS["gguf"]
+        gguf_dir = self.models_dir / config["subdir"]
         gguf_dir.mkdir(parents=True, exist_ok=True)
 
-        model_path = gguf_dir / config['filename']
-        mmproj_path = gguf_dir / config['mmproj_filename']
+        model_path = gguf_dir / config["filename"]
+        mmproj_path = gguf_dir / config["mmproj_filename"]
 
         # Download main model
         if not model_path.exists():
@@ -325,10 +330,10 @@ class AutoTagService:
 
             self.logger.info(f"Downloading GGUF model: {config['filename']}")
             hf_hub_download(
-                repo_id=config['repo'],
-                filename=config['filename'],
+                repo_id=config["repo"],
+                filename=config["filename"],
                 local_dir=str(gguf_dir),
-                local_dir_use_symlinks=False
+                local_dir_use_symlinks=False,
             )
             self.logger.info("GGUF model downloaded")
 
@@ -342,10 +347,10 @@ class AutoTagService:
 
             self.logger.info(f"Downloading mmproj: {config['mmproj_filename']}")
             hf_hub_download(
-                repo_id=config['mmproj_repo'],
-                filename=config['mmproj_filename'],
+                repo_id=config["mmproj_repo"],
+                filename=config["mmproj_filename"],
                 local_dir=str(gguf_dir),
-                local_dir_use_symlinks=False
+                local_dir_use_symlinks=False,
             )
             self.logger.info("mmproj downloaded")
 
@@ -355,14 +360,13 @@ class AutoTagService:
         return True
 
     def _download_hf_model(
-        self,
-        progress_callback: Optional[Callable[[str, float], None]] = None
+        self, progress_callback: Optional[Callable[[str, float], None]] = None
     ) -> bool:
         """Download HuggingFace model."""
         from huggingface_hub import snapshot_download
 
-        config = MODELS['hf']
-        model_dir = self.models_dir / config['subdir']
+        config = MODELS["hf"]
+        model_dir = self.models_dir / config["subdir"]
 
         if not self._check_hf_model():
             if progress_callback:
@@ -370,9 +374,9 @@ class AutoTagService:
 
             self.logger.info(f"Downloading HF model: {config['repo']}")
             snapshot_download(
-                repo_id=config['repo'],
+                repo_id=config["repo"],
                 local_dir=str(model_dir),
-                local_dir_use_symlinks=False
+                local_dir_use_symlinks=False,
             )
             self.logger.info("HF model downloaded")
 
@@ -403,11 +407,11 @@ class AutoTagService:
             self.unload_model()
 
         status = self.get_models_status()
-        if not status[model_type]['downloaded']:
+        if not status[model_type]["downloaded"]:
             raise RuntimeError(f"Model {model_type} not downloaded")
 
         try:
-            if model_type == 'gguf':
+            if model_type == "gguf":
                 self._tagger = self._load_gguf_tagger(use_gpu)
             else:
                 self._tagger = self._load_hf_tagger()
@@ -427,10 +431,10 @@ class AutoTagService:
         from llama_cpp import Llama
         from llama_cpp.llama_chat_format import Llava15ChatHandler
 
-        config = MODELS['gguf']
-        gguf_dir = self.models_dir / config['subdir']
-        model_path = gguf_dir / config['filename']
-        mmproj_path = gguf_dir / config['mmproj_filename']
+        config = MODELS["gguf"]
+        gguf_dir = self.models_dir / config["subdir"]
+        model_path = gguf_dir / config["filename"]
+        mmproj_path = gguf_dir / config["mmproj_filename"]
 
         self.logger.info("Loading GGUF model...")
         n_gpu_layers = -1 if use_gpu else 0
@@ -447,17 +451,23 @@ class AutoTagService:
         )
 
         self.logger.info("GGUF model loaded")
-        return ('gguf', tagger)
+        return ("gguf", tagger)
 
     def _load_hf_tagger(self, quantization: str = "8bit"):
         """Load HuggingFace-based tagger."""
         import torch
-        from transformers import AutoProcessor, LlavaForConditionalGeneration, BitsAndBytesConfig
+        from transformers import (
+            AutoProcessor,
+            LlavaForConditionalGeneration,
+            BitsAndBytesConfig,
+        )
 
         # Get the actual model path (local or cache)
         model_path = self._get_hf_model_path()
         if model_path is None:
-            raise RuntimeError("HuggingFace model not found in local directory or cache")
+            raise RuntimeError(
+                "HuggingFace model not found in local directory or cache"
+            )
 
         self.logger.info(f"Loading HuggingFace model from {model_path}...")
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -476,20 +486,18 @@ class AutoTagService:
                 str(model_path),
                 torch_dtype=torch.float16,
                 quantization_config=qnt_config,
-                **model_kwargs
+                **model_kwargs,
             )
         else:
             model = LlavaForConditionalGeneration.from_pretrained(
-                str(model_path),
-                torch_dtype=torch.bfloat16,
-                **model_kwargs
+                str(model_path), torch_dtype=torch.bfloat16, **model_kwargs
             )
 
         model.eval()
         self.logger.info("HuggingFace model loaded")
         # Track the compute dtype for pixel_values conversion
         compute_dtype = torch.float16 if quantization == "8bit" else torch.bfloat16
-        return ('hf', (model, processor, device, compute_dtype))
+        return ("hf", (model, processor, device, compute_dtype))
 
     def unload_model(self):
         """Unload the current model and free memory."""
@@ -503,6 +511,7 @@ class AutoTagService:
             # Try to clear CUDA cache if available
             try:
                 import torch
+
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             except ImportError:
@@ -518,11 +527,7 @@ class AutoTagService:
         """Get the type of currently loaded model."""
         return self._current_model_type
 
-    def generate_tags(
-        self,
-        image_path: str,
-        prompt: Optional[str] = None
-    ) -> List[str]:
+    def generate_tags(self, image_path: str, prompt: Optional[str] = None) -> List[str]:
         """Generate tags for an image.
 
         Args:
@@ -546,17 +551,19 @@ class AutoTagService:
 
         # Load image
         image = Image.open(image_path)
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
+        if image.mode != "RGB":
+            image = image.convert("RGB")
 
         # Generate based on model type
         model_type, tagger_obj = self._tagger
 
-        if model_type == 'gguf':
+        if model_type == "gguf":
             raw_tags = self._generate_gguf(tagger_obj, image, use_prompt)
         else:
             model, processor, device, compute_dtype = tagger_obj
-            raw_tags = self._generate_hf(model, processor, device, compute_dtype, image, use_prompt)
+            raw_tags = self._generate_hf(
+                model, processor, device, compute_dtype, image, use_prompt
+            )
 
         # Parse tags from response
         tags = self._parse_tags(raw_tags)
@@ -572,9 +579,9 @@ class AutoTagService:
 
         # Encode to base64
         buffer = io.BytesIO()
-        image.save(buffer, format='PNG')
+        image.save(buffer, format="PNG")
         buffer.seek(0)
-        img_base64 = base64.b64encode(buffer.read()).decode('utf-8')
+        img_base64 = base64.b64encode(buffer.read()).decode("utf-8")
         data_uri = f"data:image/png;base64,{img_base64}"
 
         # Create message
@@ -584,9 +591,9 @@ class AutoTagService:
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": data_uri}}
-                ]
-            }
+                    {"type": "image_url", "image_url": {"url": data_uri}},
+                ],
+            },
         ]
 
         # Generate
@@ -608,7 +615,7 @@ class AutoTagService:
         device: str,
         compute_dtype,
         image: Image.Image,
-        prompt: str
+        prompt: str,
     ) -> str:
         """Generate tags using HuggingFace model."""
         import torch
@@ -624,14 +631,14 @@ class AutoTagService:
             convo, tokenize=False, add_generation_prompt=True
         )
 
-        inputs = processor(
-            text=[convo_string], images=[image], return_tensors="pt"
-        ).to(device)
+        inputs = processor(text=[convo_string], images=[image], return_tensors="pt").to(
+            device
+        )
 
         # Convert pixel_values to the model's compute dtype
         # (float16 for 8-bit quantized, bfloat16 for non-quantized)
-        if 'pixel_values' in inputs and inputs['pixel_values'] is not None:
-            inputs['pixel_values'] = inputs['pixel_values'].to(compute_dtype)
+        if "pixel_values" in inputs and inputs["pixel_values"] is not None:
+            inputs["pixel_values"] = inputs["pixel_values"].to(compute_dtype)
 
         with torch.inference_mode(), torch.cuda.amp.autocast(enabled=True):
             generate_ids = model.generate(
@@ -643,8 +650,10 @@ class AutoTagService:
                 use_cache=True,
             )[0]
 
-        generate_ids = generate_ids[inputs['input_ids'].shape[1]:]
-        return processor.tokenizer.decode(generate_ids, skip_special_tokens=True).strip()
+        generate_ids = generate_ids[inputs["input_ids"].shape[1] :]
+        return processor.tokenizer.decode(
+            generate_ids, skip_special_tokens=True
+        ).strip()
 
     def _parse_tags(self, raw_output: str) -> List[str]:
         """Parse raw model output into a list of clean tags.
@@ -657,22 +666,22 @@ class AutoTagService:
         """
         # Patterns to exclude
         exclude_prefixes = (
-            'copyright:',
-            'meta:',
-            'photo_',
-            'photo:',
+            "copyright:",
+            "meta:",
+            "photo_",
+            "photo:",
         )
 
         # Split by common delimiters
         tags = []
 
         # Handle comma-separated tags
-        for part in raw_output.split(','):
+        for part in raw_output.split(","):
             tag = part.strip().lower()
             # Remove any quotes or extra characters
-            tag = tag.strip('"\'')
+            tag = tag.strip("\"'")
             # Replace spaces with underscores (Danbooru style)
-            tag = tag.replace(' ', '_')
+            tag = tag.replace(" ", "_")
             # Remove empty tags
             if tag and len(tag) > 1:
                 # Filter out unwanted tag patterns

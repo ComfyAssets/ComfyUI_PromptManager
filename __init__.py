@@ -1,6 +1,6 @@
 """
-ComfyUI_PromptManager: A comprehensive ComfyUI custom node that extends text encoding 
-with persistent prompt storage, advanced search capabilities, and an automatic image 
+ComfyUI_PromptManager: A comprehensive ComfyUI custom node that extends text encoding
+with persistent prompt storage, advanced search capabilities, and an automatic image
 gallery system.
 
 This module provides two main node types:
@@ -13,7 +13,7 @@ generated images to their source prompts.
 
 Features:
 - SQLite-based persistent prompt storage with deduplication
-- Advanced search and categorization system  
+- Advanced search and categorization system
 - Real-time image gallery with metadata extraction
 - Web-based admin dashboard for prompt management
 - Comprehensive logging and diagnostics
@@ -105,6 +105,7 @@ try:
 except Exception as e:
     try:
         from .utils.logging_config import get_logger
+
         _init_logger = get_logger("prompt_manager.init")
         _init_logger.error(f"Failed to start image monitoring: {e}")
     except Exception:

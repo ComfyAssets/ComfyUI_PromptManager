@@ -40,20 +40,20 @@ except ImportError:
 
 def _get_project_root():
     """Get the project root directory (3 levels up from py/api/__init__.py)."""
-    return os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    )
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 # ── Gzip compression middleware ────────────────────────────────────────
 _GZIP_MIN_SIZE = 1024  # Only compress bodies larger than 1 KB
-_GZIP_TYPES = frozenset((
-    'application/json',
-    'text/html',
-    'text/css',
-    'application/javascript',
-    'text/plain',
-))
+_GZIP_TYPES = frozenset(
+    (
+        "application/json",
+        "text/html",
+        "text/css",
+        "application/javascript",
+        "text/plain",
+    )
+)
 _gzip_registered = False
 
 
@@ -62,24 +62,24 @@ async def _gzip_middleware(request, handler):
     """Compress PromptManager responses when the client accepts gzip."""
     response = await handler(request)
 
-    if not request.path.startswith('/prompt_manager/'):
+    if not request.path.startswith("/prompt_manager/"):
         return response
 
     # Only handle regular Response objects (not StreamResponse/WebSocket)
     if not isinstance(response, web.Response):
         return response
 
-    if 'gzip' not in request.headers.get('Accept-Encoding', ''):
+    if "gzip" not in request.headers.get("Accept-Encoding", ""):
         return response
 
-    if 'Content-Encoding' in response.headers:
+    if "Content-Encoding" in response.headers:
         return response
 
     body = response.body
     if body is None or len(body) < _GZIP_MIN_SIZE:
         return response
 
-    content_type = response.content_type or ''
+    content_type = response.content_type or ""
     if not any(ct in content_type for ct in _GZIP_TYPES):
         return response
 
@@ -88,8 +88,8 @@ async def _gzip_middleware(request, handler):
         return response
 
     response.body = compressed
-    response.headers['Content-Encoding'] = 'gzip'
-    response.headers['Vary'] = 'Accept-Encoding'
+    response.headers["Content-Encoding"] = "gzip"
+    response.headers["Vary"] = "Accept-Encoding"
     return response
 
 
@@ -117,7 +117,7 @@ class PromptManagerAPI(
 
     def __init__(self):
         """Initialize the PromptManager API with database connection and cleanup."""
-        self.logger = get_logger('prompt_manager.api')
+        self.logger = get_logger("prompt_manager.api")
         self.logger.info("Initializing PromptManager API")
 
         self.db = PromptDatabase()
@@ -131,7 +131,9 @@ class PromptManagerAPI(
         try:
             removed = self.db.cleanup_duplicates()
             if removed > 0:
-                self.logger.info(f"Startup cleanup: removed {removed} duplicate prompts")
+                self.logger.info(
+                    f"Startup cleanup: removed {removed} duplicate prompts"
+                )
         except Exception as e:
             self.logger.error(f"Startup cleanup failed: {e}")
 
@@ -207,7 +209,9 @@ class PromptManagerAPI(
         async def serve_gallery_ui(request):
             try:
                 html_path = os.path.join(
-                    _get_project_root(), "web", "metadata.html",
+                    _get_project_root(),
+                    "web",
+                    "metadata.html",
                 )
 
                 if html_path not in self._html_cache:
@@ -222,7 +226,9 @@ class PromptManagerAPI(
                         )
 
                 return web.Response(
-                    text=self._html_cache[html_path], content_type="text/html", charset="utf-8"
+                    text=self._html_cache[html_path],
+                    content_type="text/html",
+                    charset="utf-8",
                 )
 
             except Exception as e:
@@ -236,7 +242,9 @@ class PromptManagerAPI(
         async def serve_admin_ui(request):
             try:
                 html_path = os.path.join(
-                    _get_project_root(), "web", "admin.html",
+                    _get_project_root(),
+                    "web",
+                    "admin.html",
                 )
 
                 if html_path not in self._html_cache:
@@ -251,7 +259,9 @@ class PromptManagerAPI(
                         )
 
                 return web.Response(
-                    text=self._html_cache[html_path], content_type="text/html", charset="utf-8"
+                    text=self._html_cache[html_path],
+                    content_type="text/html",
+                    charset="utf-8",
                 )
 
             except Exception as e:
@@ -265,7 +275,9 @@ class PromptManagerAPI(
         async def serve_gallery_admin_ui(request):
             try:
                 html_path = os.path.join(
-                    _get_project_root(), "web", "gallery.html",
+                    _get_project_root(),
+                    "web",
+                    "gallery.html",
                 )
 
                 if html_path not in self._html_cache:
@@ -280,7 +292,9 @@ class PromptManagerAPI(
                         )
 
                 return web.Response(
-                    text=self._html_cache[html_path], content_type="text/html", charset="utf-8"
+                    text=self._html_cache[html_path],
+                    content_type="text/html",
+                    charset="utf-8",
                 )
 
             except Exception as e:
@@ -362,6 +376,7 @@ class PromptManagerAPI(
         if not _gzip_registered:
             try:
                 from ..config import server_instance
+
                 server_instance.app.middlewares.append(_gzip_middleware)
                 _gzip_registered = True
                 self.logger.info("Gzip compression middleware registered")
@@ -380,30 +395,36 @@ class PromptManagerAPI(
         output_path = Path(output_dir) if output_dir else None
 
         for prompt in prompts:
-            for image in prompt.get('images', []):
-                image_path_str = image.get('image_path', '')
+            for image in prompt.get("images", []):
+                image_path_str = image.get("image_path", "")
                 if not image_path_str:
                     continue
 
                 img_path = Path(image_path_str)
 
                 # Set fallback url via image ID
-                if image.get('id'):
-                    image['url'] = f"/prompt_manager/images/{image['id']}/file"
+                if image.get("id"):
+                    image["url"] = f"/prompt_manager/images/{image['id']}/file"
 
                 # Try to compute relative path and thumbnail URL
                 if output_path:
                     try:
                         rel_path = img_path.resolve().relative_to(output_path.resolve())
-                        image['relative_path'] = str(rel_path)
-                        image['url'] = f"/prompt_manager/images/serve/{url_quote(rel_path.as_posix(), safe='/')}"
+                        image["relative_path"] = str(rel_path)
+                        image["url"] = (
+                            f"/prompt_manager/images/serve/{url_quote(rel_path.as_posix(), safe='/')}"
+                        )
 
                         # Check for thumbnail
-                        rel_no_ext = rel_path.with_suffix('')
-                        thumb_rel = f"thumbnails/{rel_no_ext.as_posix()}_thumb{rel_path.suffix}"
+                        rel_no_ext = rel_path.with_suffix("")
+                        thumb_rel = (
+                            f"thumbnails/{rel_no_ext.as_posix()}_thumb{rel_path.suffix}"
+                        )
                         thumb_abs = output_path / thumb_rel
                         if thumb_abs.exists():
-                            image['thumbnail_url'] = f"/prompt_manager/images/serve/{url_quote(thumb_rel, safe='/')}"
+                            image["thumbnail_url"] = (
+                                f"/prompt_manager/images/serve/{url_quote(thumb_rel, safe='/')}"
+                            )
                     except (ValueError, RuntimeError):
                         pass
 
@@ -415,7 +436,7 @@ class PromptManagerAPI(
             return {key: self._clean_nan_recursive(value) for key, value in obj.items()}
         elif isinstance(obj, list):
             return [self._clean_nan_recursive(item) for item in obj]
-        elif isinstance(obj, float) and str(obj) == 'nan':
+        elif isinstance(obj, float) and str(obj) == "nan":
             return None
         else:
             return obj
@@ -442,11 +463,13 @@ class PromptManagerAPI(
 
         for i in range(max_depth):
             # Check if current directory contains ComfyUI markers
-            comfyui_markers = ['main.py', 'nodes.py', 'server.py']
+            comfyui_markers = ["main.py", "nodes.py", "server.py"]
             if any((current_dir / marker).exists() for marker in comfyui_markers):
                 output_dir = current_dir / "output"
                 if output_dir.exists() and output_dir.is_dir():
-                    self.logger.debug(f"Found ComfyUI output directory via upward search: {output_dir}")
+                    self.logger.debug(
+                        f"Found ComfyUI output directory via upward search: {output_dir}"
+                    )
                     self._cached_output_dir = str(output_dir)
                     return self._cached_output_dir
 
@@ -500,7 +523,7 @@ class PromptManagerAPI(
         try:
             with Image.open(image_path) as img:
                 metadata = {}
-                if hasattr(img, 'text'):
+                if hasattr(img, "text"):
                     for key, value in img.text.items():
                         metadata[key] = value
                 return metadata
@@ -511,11 +534,11 @@ class PromptManagerAPI(
     def _parse_comfyui_prompt(self, metadata):
         """Parse ComfyUI and A1111 prompt data from metadata."""
         result = {
-            'prompt': None,
-            'workflow': None,
-            'parameters': {},
-            'positive_prompt': None,
-            'negative_prompt': None
+            "prompt": None,
+            "workflow": None,
+            "parameters": {},
+            "positive_prompt": None,
+            "negative_prompt": None,
         }
 
         # Check for A1111 style parameters first (like parse-metadata.py)
@@ -523,40 +546,48 @@ class PromptManagerAPI(
             params = metadata["parameters"]
             lines = params.splitlines()
             if lines:
-                result['positive_prompt'] = lines[0].strip()
+                result["positive_prompt"] = lines[0].strip()
             for line in lines:
                 if line.lower().startswith("negative prompt:"):
-                    result['negative_prompt'] = line.split(":", 1)[1].strip()
+                    result["negative_prompt"] = line.split(":", 1)[1].strip()
                     break
             # Store raw parameters too
-            result['parameters']['parameters'] = params
+            result["parameters"]["parameters"] = params
 
         # If no A1111 format found, proceed with ComfyUI parsing
-        if result['positive_prompt'] is None:
+        if result["positive_prompt"] is None:
             # Check for direct prompt field
-            if 'prompt' in metadata:
+            if "prompt" in metadata:
                 try:
-                    prompt_data = json.loads(metadata['prompt'])
-                    result['prompt'] = prompt_data
+                    prompt_data = json.loads(metadata["prompt"])
+                    result["prompt"] = prompt_data
                 except json.JSONDecodeError:
-                    result['prompt'] = metadata['prompt']
+                    result["prompt"] = metadata["prompt"]
 
             # Check for workflow
-            if 'workflow' in metadata:
+            if "workflow" in metadata:
                 try:
-                    workflow_data = json.loads(metadata['workflow'])
-                    result['workflow'] = workflow_data
+                    workflow_data = json.loads(metadata["workflow"])
+                    result["workflow"] = workflow_data
                 except json.JSONDecodeError:
-                    result['workflow'] = metadata['workflow']
+                    result["workflow"] = metadata["workflow"]
 
             # Check for other common ComfyUI fields
-            common_fields = ['positive', 'negative', 'steps', 'cfg', 'sampler', 'scheduler', 'seed']
+            common_fields = [
+                "positive",
+                "negative",
+                "steps",
+                "cfg",
+                "sampler",
+                "scheduler",
+                "seed",
+            ]
             for field in common_fields:
                 if field in metadata:
                     try:
-                        result['parameters'][field] = json.loads(metadata[field])
+                        result["parameters"][field] = json.loads(metadata[field])
                     except json.JSONDecodeError:
-                        result['parameters'][field] = metadata[field]
+                        result["parameters"][field] = metadata[field]
 
         return result
 
@@ -567,40 +598,46 @@ class PromptManagerAPI(
             if isinstance(value, str):
                 return value
             elif isinstance(value, list):
-                return ' '.join(str(item) for item in value if item)
+                return " ".join(str(item) for item in value if item)
             elif value is not None:
                 return str(value)
             return None
 
         # First check if we already extracted a positive prompt (A1111 format)
-        if parsed_data.get('positive_prompt'):
-            return parsed_data['positive_prompt']
+        if parsed_data.get("positive_prompt"):
+            return parsed_data["positive_prompt"]
 
         # Check if prompt is already a string
-        if isinstance(parsed_data.get('prompt'), str):
-            return parsed_data['prompt']
+        if isinstance(parsed_data.get("prompt"), str):
+            return parsed_data["prompt"]
 
         # Check if prompt is a simple value that can be converted
-        if parsed_data.get('prompt') and not isinstance(parsed_data.get('prompt'), dict):
-            return safe_to_string(parsed_data['prompt'])
+        if parsed_data.get("prompt") and not isinstance(
+            parsed_data.get("prompt"), dict
+        ):
+            return safe_to_string(parsed_data["prompt"])
 
-        prompt_data = parsed_data.get('prompt')
+        prompt_data = parsed_data.get("prompt")
         if isinstance(prompt_data, dict):
             # Use the enhanced logic from parse-metadata.py
-            positive_prompt = self._extract_positive_prompt_from_comfyui_data(prompt_data)
+            positive_prompt = self._extract_positive_prompt_from_comfyui_data(
+                prompt_data
+            )
             if positive_prompt:
                 return positive_prompt
 
         # Check workflow data if available
-        workflow_data = parsed_data.get('workflow')
+        workflow_data = parsed_data.get("workflow")
         if isinstance(workflow_data, dict):
-            positive_prompt = self._extract_positive_prompt_from_comfyui_data(workflow_data)
+            positive_prompt = self._extract_positive_prompt_from_comfyui_data(
+                workflow_data
+            )
             if positive_prompt:
                 return positive_prompt
 
         # Check parameters for positive prompt
-        if parsed_data.get('parameters', {}).get('positive'):
-            return safe_to_string(parsed_data['parameters']['positive'])
+        if parsed_data.get("parameters", {}).get("positive"):
+            return safe_to_string(parsed_data["parameters"]["positive"])
 
         return None
 
@@ -652,12 +689,21 @@ class PromptManagerAPI(
         # Strategy 2: For text encoder nodes, check widgets_values
         class_type = node.get("class_type", node.get("type", ""))
         text_encoder_types = [
-            'CLIPTextEncode', 'CLIPTextEncodeSDXL', 'CLIPTextEncodeSDXLRefiner',
-            'CLIPTextEncodeFlux', 'PromptManager', 'PromptManagerText',
-            'BNK_CLIPTextEncoder', 'Text Encoder', 'CLIP Text Encode'
+            "CLIPTextEncode",
+            "CLIPTextEncodeSDXL",
+            "CLIPTextEncodeSDXLRefiner",
+            "CLIPTextEncodeFlux",
+            "PromptManager",
+            "PromptManagerText",
+            "BNK_CLIPTextEncoder",
+            "Text Encoder",
+            "CLIP Text Encode",
         ]
 
-        if any(encoder_type.lower() in class_type.lower() for encoder_type in text_encoder_types):
+        if any(
+            encoder_type.lower() in class_type.lower()
+            for encoder_type in text_encoder_types
+        ):
             widgets_values = node.get("widgets_values", [])
             if widgets_values and len(widgets_values) > 0:
                 if isinstance(widgets_values[0], str) and widgets_values[0].strip():
@@ -721,8 +767,8 @@ class PromptManagerAPI(
                 text_val = self._find_text_in_node(node)
                 if text_val:
                     # Try to determine if this is positive or negative
-                    node_title = node.get('title', '').lower()
-                    if 'neg' not in node_title and 'negative' not in node_title:
+                    node_title = node.get("title", "").lower()
+                    if "neg" not in node_title and "negative" not in node_title:
                         # Prioritize non-negative prompts
                         text_nodes.insert(0, text_val)
                     else:

@@ -153,22 +153,26 @@ class PromptRoutesMixin:
             elif limit < 1:
                 limit = 1
 
-            results = await self._run_in_executor(self.db.get_recent_prompts, limit=limit, offset=offset)
-            self._enrich_prompt_images(results['prompts'])
+            results = await self._run_in_executor(
+                self.db.get_recent_prompts, limit=limit, offset=offset
+            )
+            self._enrich_prompt_images(results["prompts"])
 
-            return web.json_response({
-                "success": True,
-                "results": results['prompts'],
-                "pagination": {
-                    "total": results['total'],
-                    "limit": results['limit'],
-                    "offset": results['offset'],
-                    "page": results['page'],
-                    "total_pages": results['total_pages'],
-                    "has_more": results['has_more'],
-                    "count": len(results['prompts'])
+            return web.json_response(
+                {
+                    "success": True,
+                    "results": results["prompts"],
+                    "pagination": {
+                        "total": results["total"],
+                        "limit": results["limit"],
+                        "offset": results["offset"],
+                        "page": results["page"],
+                        "total_pages": results["total_pages"],
+                        "has_more": results["has_more"],
+                        "count": len(results["prompts"]),
+                    },
                 }
-            })
+            )
 
         except Exception as e:
             self.logger.error(f"Recent prompts error: {e}", exc_info=True)
@@ -177,7 +181,7 @@ class PromptRoutesMixin:
                     "success": False,
                     "error": f"Failed to get recent prompts: {str(e)}",
                     "results": [],
-                    "pagination": {"total": 0, "page": 1, "total_pages": 0}
+                    "pagination": {"total": 0, "page": 1, "total_pages": 0},
                 },
                 status=500,
             )
@@ -190,7 +194,11 @@ class PromptRoutesMixin:
         except Exception as e:
             self.logger.error(f"Categories error: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to get categories: {str(e)}", "categories": []},
+                {
+                    "success": False,
+                    "error": f"Failed to get categories: {str(e)}",
+                    "categories": [],
+                },
                 status=500,
             )
 
@@ -202,7 +210,11 @@ class PromptRoutesMixin:
         except Exception as e:
             self.logger.error(f"Tags error: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to get tags: {str(e)}", "tags": []},
+                {
+                    "success": False,
+                    "error": f"Failed to get tags: {str(e)}",
+                    "tags": [],
+                },
                 status=500,
             )
 
@@ -214,25 +226,32 @@ class PromptRoutesMixin:
                 offset = int(request.query.get("offset", 0))
             except (ValueError, TypeError):
                 return web.json_response(
-                    {"success": False, "error": "Invalid limit or offset parameter"}, status=400
+                    {"success": False, "error": "Invalid limit or offset parameter"},
+                    status=400,
                 )
             search = request.query.get("search", "").strip() or None
             sort = request.query.get("sort", "alpha_asc")
 
-            result = await self._run_in_executor(self.db.get_tags_with_counts, limit, offset, search, sort)
-            untagged_count = await self._run_in_executor(self.db.get_untagged_prompts_count)
+            result = await self._run_in_executor(
+                self.db.get_tags_with_counts, limit, offset, search, sort
+            )
+            untagged_count = await self._run_in_executor(
+                self.db.get_untagged_prompts_count
+            )
 
-            return web.json_response({
-                "success": True,
-                "tags": result['tags'],
-                "untagged_count": untagged_count,
-                "pagination": {
-                    "total": result['total'],
-                    "limit": result['limit'],
-                    "offset": result['offset'],
-                    "has_more": result['has_more']
+            return web.json_response(
+                {
+                    "success": True,
+                    "tags": result["tags"],
+                    "untagged_count": untagged_count,
+                    "pagination": {
+                        "total": result["total"],
+                        "limit": result["limit"],
+                        "offset": result["offset"],
+                        "has_more": result["has_more"],
+                    },
                 }
-            })
+            )
         except Exception as e:
             self.logger.error(f"Tags stats error: {e}", exc_info=True)
             return web.json_response({"success": False, "error": str(e)}, status=500)
@@ -241,6 +260,7 @@ class PromptRoutesMixin:
         """Get prompts for a single tag."""
         try:
             from urllib.parse import unquote
+
             tag_name = unquote(request.match_info.get("tag_name", ""))
             if not tag_name:
                 return web.json_response(
@@ -252,23 +272,28 @@ class PromptRoutesMixin:
                 offset = int(request.query.get("offset", 0))
             except (ValueError, TypeError):
                 return web.json_response(
-                    {"success": False, "error": "Invalid limit or offset parameter"}, status=400
+                    {"success": False, "error": "Invalid limit or offset parameter"},
+                    status=400,
                 )
 
-            result = await self._run_in_executor(self.db.get_prompts_by_tags, [tag_name], 'and', limit, offset)
-            self._enrich_prompt_images(result['prompts'])
+            result = await self._run_in_executor(
+                self.db.get_prompts_by_tags, [tag_name], "and", limit, offset
+            )
+            self._enrich_prompt_images(result["prompts"])
 
-            return web.json_response({
-                "success": True,
-                "tag": tag_name,
-                "prompts": result['prompts'],
-                "pagination": {
-                    "total": result['total'],
-                    "limit": result['limit'],
-                    "offset": result['offset'],
-                    "has_more": result['has_more']
+            return web.json_response(
+                {
+                    "success": True,
+                    "tag": tag_name,
+                    "prompts": result["prompts"],
+                    "pagination": {
+                        "total": result["total"],
+                        "limit": result["limit"],
+                        "offset": result["offset"],
+                        "has_more": result["has_more"],
+                    },
                 }
-            })
+            )
         except Exception as e:
             self.logger.error(f"Tag prompts error: {e}", exc_info=True)
             return web.json_response({"success": False, "error": str(e)}, status=500)
@@ -284,22 +309,30 @@ class PromptRoutesMixin:
                     offset = int(request.query.get("offset", 0))
                 except (ValueError, TypeError):
                     return web.json_response(
-                        {"success": False, "error": "Invalid limit or offset parameter"}, status=400
+                        {
+                            "success": False,
+                            "error": "Invalid limit or offset parameter",
+                        },
+                        status=400,
                     )
-                result = await self._run_in_executor(self.db.get_untagged_prompts, limit, offset)
-                self._enrich_prompt_images(result['prompts'])
-                return web.json_response({
-                    "success": True,
-                    "tags": [],
-                    "mode": "untagged",
-                    "prompts": result['prompts'],
-                    "pagination": {
-                        "total": result['total'],
-                        "limit": result['limit'],
-                        "offset": result['offset'],
-                        "has_more": result['has_more']
+                result = await self._run_in_executor(
+                    self.db.get_untagged_prompts, limit, offset
+                )
+                self._enrich_prompt_images(result["prompts"])
+                return web.json_response(
+                    {
+                        "success": True,
+                        "tags": [],
+                        "mode": "untagged",
+                        "prompts": result["prompts"],
+                        "pagination": {
+                            "total": result["total"],
+                            "limit": result["limit"],
+                            "offset": result["offset"],
+                            "has_more": result["has_more"],
+                        },
                     }
-                })
+                )
 
             tags_str = request.query.get("tags", "").strip()
             if not tags_str:
@@ -317,24 +350,29 @@ class PromptRoutesMixin:
                 offset = int(request.query.get("offset", 0))
             except (ValueError, TypeError):
                 return web.json_response(
-                    {"success": False, "error": "Invalid limit or offset parameter"}, status=400
+                    {"success": False, "error": "Invalid limit or offset parameter"},
+                    status=400,
                 )
 
-            result = await self._run_in_executor(self.db.get_prompts_by_tags, tags_list, mode, limit, offset)
-            self._enrich_prompt_images(result['prompts'])
+            result = await self._run_in_executor(
+                self.db.get_prompts_by_tags, tags_list, mode, limit, offset
+            )
+            self._enrich_prompt_images(result["prompts"])
 
-            return web.json_response({
-                "success": True,
-                "tags": tags_list,
-                "mode": mode,
-                "prompts": result['prompts'],
-                "pagination": {
-                    "total": result['total'],
-                    "limit": result['limit'],
-                    "offset": result['offset'],
-                    "has_more": result['has_more']
+            return web.json_response(
+                {
+                    "success": True,
+                    "tags": tags_list,
+                    "mode": mode,
+                    "prompts": result["prompts"],
+                    "pagination": {
+                        "total": result["total"],
+                        "limit": result["limit"],
+                        "offset": result["offset"],
+                        "has_more": result["has_more"],
+                    },
                 }
-            })
+            )
         except Exception as e:
             self.logger.error(f"Tags filter error: {e}", exc_info=True)
             return web.json_response({"success": False, "error": str(e)}, status=500)
@@ -343,6 +381,7 @@ class PromptRoutesMixin:
         """Rename a tag across all prompts."""
         try:
             from urllib.parse import unquote
+
             tag_name = unquote(request.match_info.get("tag_name", ""))
             if not tag_name:
                 return web.json_response(
@@ -361,16 +400,20 @@ class PromptRoutesMixin:
                     {"success": False, "error": "New tag name required"}, status=400
                 )
 
-            result = await self._run_in_executor(self.db.rename_tag_all_prompts, tag_name, new_name)
+            result = await self._run_in_executor(
+                self.db.rename_tag_all_prompts, tag_name, new_name
+            )
             resp = {
                 "success": True,
                 "old_name": tag_name,
                 "new_name": new_name,
-                "affected_count": result['affected_count']
+                "affected_count": result["affected_count"],
             }
-            if result.get('skipped_count', 0) > 0:
-                resp['skipped_count'] = result['skipped_count']
-                resp['warning'] = f"{result['skipped_count']} prompt(s) had corrupted tag data and were skipped"
+            if result.get("skipped_count", 0) > 0:
+                resp["skipped_count"] = result["skipped_count"]
+                resp["warning"] = (
+                    f"{result['skipped_count']} prompt(s) had corrupted tag data and were skipped"
+                )
             return web.json_response(resp)
         except Exception as e:
             self.logger.error(f"Rename tag error: {e}", exc_info=True)
@@ -380,21 +423,26 @@ class PromptRoutesMixin:
         """Delete a tag from all prompts."""
         try:
             from urllib.parse import unquote
+
             tag_name = unquote(request.match_info.get("tag_name", ""))
             if not tag_name:
                 return web.json_response(
                     {"success": False, "error": "Tag name required"}, status=400
                 )
 
-            result = await self._run_in_executor(self.db.delete_tag_all_prompts, tag_name)
+            result = await self._run_in_executor(
+                self.db.delete_tag_all_prompts, tag_name
+            )
             resp = {
                 "success": True,
                 "tag_name": tag_name,
-                "affected_count": result['affected_count']
+                "affected_count": result["affected_count"],
             }
-            if result.get('skipped_count', 0) > 0:
-                resp['skipped_count'] = result['skipped_count']
-                resp['warning'] = f"{result['skipped_count']} prompt(s) had corrupted tag data and were skipped"
+            if result.get("skipped_count", 0) > 0:
+                resp["skipped_count"] = result["skipped_count"]
+                resp["warning"] = (
+                    f"{result['skipped_count']} prompt(s) had corrupted tag data and were skipped"
+                )
             return web.json_response(resp)
         except Exception as e:
             self.logger.error(f"Delete tag error: {e}", exc_info=True)
@@ -421,16 +469,20 @@ class PromptRoutesMixin:
                     {"success": False, "error": "Target tag required"}, status=400
                 )
 
-            result = await self._run_in_executor(self.db.merge_tags, source_tags, target_tag)
+            result = await self._run_in_executor(
+                self.db.merge_tags, source_tags, target_tag
+            )
             resp = {
                 "success": True,
                 "target_tag": target_tag,
-                "affected_count": result['affected_count'],
-                "tags_merged": result['tags_merged']
+                "affected_count": result["affected_count"],
+                "tags_merged": result["tags_merged"],
             }
-            if result.get('skipped_count', 0) > 0:
-                resp['skipped_count'] = result['skipped_count']
-                resp['warning'] = f"{result['skipped_count']} prompt(s) had corrupted tag data and were skipped"
+            if result.get("skipped_count", 0) > 0:
+                resp["skipped_count"] = result["skipped_count"]
+                resp["warning"] = (
+                    f"{result['skipped_count']} prompt(s) had corrupted tag data and were skipped"
+                )
             return web.json_response(resp)
         except Exception as e:
             self.logger.error(f"Merge tags error: {e}", exc_info=True)
@@ -440,9 +492,13 @@ class PromptRoutesMixin:
         """Save a new prompt with metadata and duplicate detection."""
         try:
             from utils.validators import (
-                validate_prompt_text, validate_rating, validate_tags,
-                validate_category, sanitize_input,
+                validate_prompt_text,
+                validate_rating,
+                validate_tags,
+                validate_category,
+                sanitize_input,
             )
+
             data = await request.json()
 
             text = data.get("text", "").strip()
@@ -469,25 +525,30 @@ class PromptRoutesMixin:
             text = sanitize_input(text)
 
             from utils.hashing import generate_prompt_hash
+
             prompt_hash = generate_prompt_hash(text)
 
-            existing = await self._run_in_executor(self.db.get_prompt_by_hash, prompt_hash)
+            existing = await self._run_in_executor(
+                self.db.get_prompt_by_hash, prompt_hash
+            )
             if existing:
                 if any([category, tags, rating, notes]):
                     await self._run_in_executor(
                         self.db.update_prompt_metadata,
-                        prompt_id=existing['id'],
+                        prompt_id=existing["id"],
                         category=category,
                         tags=tags,
                         rating=rating,
-                        notes=notes
+                        notes=notes,
                     )
-                return web.json_response({
-                    "success": True,
-                    "prompt_id": existing['id'],
-                    "message": "Prompt already exists, metadata updated",
-                    "is_duplicate": True
-                })
+                return web.json_response(
+                    {
+                        "success": True,
+                        "prompt_id": existing["id"],
+                        "message": "Prompt already exists, metadata updated",
+                        "is_duplicate": True,
+                    }
+                )
 
             prompt_id = await self._run_in_executor(
                 self.db.save_prompt,
@@ -499,11 +560,13 @@ class PromptRoutesMixin:
                 prompt_hash=prompt_hash,
             )
 
-            return web.json_response({
-                "success": True,
-                "prompt_id": prompt_id,
-                "message": "Prompt saved successfully",
-            })
+            return web.json_response(
+                {
+                    "success": True,
+                    "prompt_id": prompt_id,
+                    "message": "Prompt saved successfully",
+                }
+            )
 
         except Exception as e:
             self.logger.error(f"Save error: {e}", exc_info=True)
@@ -524,7 +587,10 @@ class PromptRoutesMixin:
                 )
             else:
                 return web.json_response(
-                    {"success": False, "error": "Prompt not found or could not be deleted"},
+                    {
+                        "success": False,
+                        "error": "Prompt not found or could not be deleted",
+                    },
                     status=404,
                 )
 
@@ -562,7 +628,9 @@ class PromptRoutesMixin:
 
             new_text = sanitize_input(new_text)
 
-            updated = await self._run_in_executor(self.db.update_prompt_text, prompt_id, new_text)
+            updated = await self._run_in_executor(
+                self.db.update_prompt_text, prompt_id, new_text
+            )
             if updated:
                 return web.json_response(
                     {"success": True, "message": "Prompt updated successfully"}
@@ -599,7 +667,9 @@ class PromptRoutesMixin:
                     {"success": False, "error": str(ve)}, status=400
                 )
 
-            updated = await self._run_in_executor(self.db.update_prompt_rating, prompt_id, rating)
+            updated = await self._run_in_executor(
+                self.db.update_prompt_rating, prompt_id, rating
+            )
             if updated:
                 return web.json_response(
                     {"success": True, "message": "Rating updated successfully"}
@@ -644,7 +714,9 @@ class PromptRoutesMixin:
 
             if new_tag not in current_tags:
                 current_tags.append(new_tag)
-                await self._run_in_executor(self.db.set_prompt_tags, prompt_id, current_tags)
+                await self._run_in_executor(
+                    self.db.set_prompt_tags, prompt_id, current_tags
+                )
 
             return web.json_response(
                 {"success": True, "message": "Tag added successfully"}
@@ -674,7 +746,8 @@ class PromptRoutesMixin:
 
             if not new_tags or not isinstance(new_tags, list):
                 return web.json_response(
-                    {"success": False, "error": "Tags must be a non-empty list"}, status=400
+                    {"success": False, "error": "Tags must be a non-empty list"},
+                    status=400,
                 )
 
             prompt = await self._run_in_executor(self.db.get_prompt_by_id, prompt_id)
@@ -695,7 +768,9 @@ class PromptRoutesMixin:
                     tags_added += 1
 
             if tags_added > 0:
-                await self._run_in_executor(self.db.set_prompt_tags, prompt_id, current_tags)
+                await self._run_in_executor(
+                    self.db.set_prompt_tags, prompt_id, current_tags
+                )
 
             message = f"{tags_added} tag(s) added successfully"
             if tags_added == 0:
@@ -734,7 +809,9 @@ class PromptRoutesMixin:
 
             if tag_to_remove in current_tags:
                 current_tags.remove(tag_to_remove)
-                await self._run_in_executor(self.db.set_prompt_tags, prompt_id, current_tags)
+                await self._run_in_executor(
+                    self.db.set_prompt_tags, prompt_id, current_tags
+                )
 
             return web.json_response(
                 {"success": True, "message": "Tag removed successfully"}
@@ -762,13 +839,17 @@ class PromptRoutesMixin:
                     {"success": False, "error": "No prompt IDs provided"}, status=400
                 )
 
-            deleted_count = await self._run_in_executor(self.db.bulk_delete_prompts, prompt_ids)
+            deleted_count = await self._run_in_executor(
+                self.db.bulk_delete_prompts, prompt_ids
+            )
 
-            return web.json_response({
-                "success": True,
-                "message": f"Deleted {deleted_count} prompts",
-                "deleted_count": deleted_count,
-            })
+            return web.json_response(
+                {
+                    "success": True,
+                    "message": f"Deleted {deleted_count} prompts",
+                    "deleted_count": deleted_count,
+                }
+            )
 
         except Exception as e:
             self.logger.error(f"Bulk delete error: {e}")
@@ -790,13 +871,17 @@ class PromptRoutesMixin:
                     status=400,
                 )
 
-            updated_count = await self._run_in_executor(self.db.bulk_add_tags, prompt_ids, new_tags)
+            updated_count = await self._run_in_executor(
+                self.db.bulk_add_tags, prompt_ids, new_tags
+            )
 
-            return web.json_response({
-                "success": True,
-                "message": f"Added tags to {updated_count} prompts",
-                "updated_count": updated_count,
-            })
+            return web.json_response(
+                {
+                    "success": True,
+                    "message": f"Added tags to {updated_count} prompts",
+                    "updated_count": updated_count,
+                }
+            )
 
         except Exception as e:
             self.logger.error(f"Bulk add tags error: {e}")
@@ -816,13 +901,17 @@ class PromptRoutesMixin:
                     {"success": False, "error": "No prompt IDs provided"}, status=400
                 )
 
-            updated_count = await self._run_in_executor(self.db.bulk_set_category, prompt_ids, category)
+            updated_count = await self._run_in_executor(
+                self.db.bulk_set_category, prompt_ids, category
+            )
 
-            return web.json_response({
-                "success": True,
-                "message": f"Set category for {updated_count} prompts",
-                "updated_count": updated_count,
-            })
+            return web.json_response(
+                {
+                    "success": True,
+                    "message": f"Set category for {updated_count} prompts",
+                    "updated_count": updated_count,
+                }
+            )
 
         except Exception as e:
             self.logger.error(f"Bulk set category error: {e}")
