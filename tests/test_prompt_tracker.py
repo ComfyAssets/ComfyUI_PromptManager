@@ -47,15 +47,11 @@ class TestPromptTrackerBasic(unittest.TestCase):
         self.tracker = _make_tracker()
 
     def test_set_current_prompt_returns_execution_id(self):
-        exec_id = self.tracker.set_current_prompt(
-            "test prompt", {"prompt_id": 42}
-        )
+        exec_id = self.tracker.set_current_prompt("test prompt", {"prompt_id": 42})
         self.assertTrue(exec_id.startswith("exec_"))
 
     def test_set_current_prompt_stores_in_active(self):
-        exec_id = self.tracker.set_current_prompt(
-            "test", {"prompt_id": 1}
-        )
+        exec_id = self.tracker.set_current_prompt("test", {"prompt_id": 1})
         self.assertIn(exec_id, self.tracker.active_prompts)
 
     def test_get_current_prompt_returns_set_prompt(self):

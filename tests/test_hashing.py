@@ -12,14 +12,23 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.hashing import generate_prompt_hash, generate_content_hash, is_duplicate_prompt
+from utils.hashing import (
+    generate_prompt_hash,
+    generate_content_hash,
+    is_duplicate_prompt,
+)
 
 
 class TestGenerateContentHash(unittest.TestCase):
     """Test generate_content_hash function."""
 
     def test_basic_content(self):
-        content = {"text": "A prompt", "category": "nature", "tags": ["sky"], "workflow_name": "wf1"}
+        content = {
+            "text": "A prompt",
+            "category": "nature",
+            "tags": ["sky"],
+            "workflow_name": "wf1",
+        }
         h = generate_content_hash(content)
         self.assertEqual(len(h), 64)  # SHA256 hex digest
 

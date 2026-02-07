@@ -83,10 +83,12 @@ class TestExtractMetadata(MetadataTestCase):
         self.assertIn("prompt", result)
 
     def test_extracts_text_encoder_nodes(self):
-        workflow = {"nodes": [
-            {"type": "CLIPTextEncode", "inputs": {"text": "positive prompt"}},
-            {"type": "KSampler", "inputs": {}},
-        ]}
+        workflow = {
+            "nodes": [
+                {"type": "CLIPTextEncode", "inputs": {"text": "positive prompt"}},
+                {"type": "KSampler", "inputs": {}},
+            ]
+        }
         path = self._png({"workflow": json.dumps(workflow)})
         result = self.extractor.extract_metadata(path)
         self.assertIn("text_encoder_nodes", result)
@@ -126,10 +128,12 @@ class TestExtractMetadata(MetadataTestCase):
 
     def test_invalid_prompt_json_handled(self):
         workflow = {"nodes": [{"type": "CLIPTextEncode", "inputs": {}}]}
-        path = self._png({
-            "workflow": json.dumps(workflow),
-            "prompt": "broken json {{",
-        })
+        path = self._png(
+            {
+                "workflow": json.dumps(workflow),
+                "prompt": "broken json {{",
+            }
+        )
         result = self.extractor.extract_metadata(path)
         # Workflow should still be extracted even if prompt fails
         self.assertIn("workflow", result)
@@ -168,31 +172,39 @@ class TestFindTextEncoderNodes(MetadataTestCase):
     """Test find_text_encoder_nodes method."""
 
     def test_finds_clip_text_encode(self):
-        workflow = {"nodes": [
-            {"type": "CLIPTextEncode", "inputs": {"text": "prompt"}},
-        ]}
+        workflow = {
+            "nodes": [
+                {"type": "CLIPTextEncode", "inputs": {"text": "prompt"}},
+            ]
+        }
         nodes = self.extractor.find_text_encoder_nodes(workflow)
         self.assertEqual(len(nodes), 1)
 
     def test_finds_sdxl_encoder(self):
-        workflow = {"nodes": [
-            {"type": "CLIPTextEncodeSDXL", "inputs": {}},
-        ]}
+        workflow = {
+            "nodes": [
+                {"type": "CLIPTextEncodeSDXL", "inputs": {}},
+            ]
+        }
         nodes = self.extractor.find_text_encoder_nodes(workflow)
         self.assertEqual(len(nodes), 1)
 
     def test_finds_prompt_manager_node(self):
-        workflow = {"nodes": [
-            {"type": "PromptManager", "inputs": {"text": "test"}},
-        ]}
+        workflow = {
+            "nodes": [
+                {"type": "PromptManager", "inputs": {"text": "test"}},
+            ]
+        }
         nodes = self.extractor.find_text_encoder_nodes(workflow)
         self.assertEqual(len(nodes), 1)
 
     def test_ignores_non_encoder_nodes(self):
-        workflow = {"nodes": [
-            {"type": "KSampler", "inputs": {}},
-            {"type": "CheckpointLoader", "inputs": {}},
-        ]}
+        workflow = {
+            "nodes": [
+                {"type": "KSampler", "inputs": {}},
+                {"type": "CheckpointLoader", "inputs": {}},
+            ]
+        }
         nodes = self.extractor.find_text_encoder_nodes(workflow)
         self.assertEqual(len(nodes), 0)
 
@@ -206,9 +218,13 @@ class TestFindTextEncoderNodes(MetadataTestCase):
         self.assertEqual(nodes[0]["node_id"], "1")
 
     def test_handles_nested_workflow(self):
-        workflow = {"workflow": {"nodes": [
-            {"type": "CLIPTextEncode", "inputs": {}},
-        ]}}
+        workflow = {
+            "workflow": {
+                "nodes": [
+                    {"type": "CLIPTextEncode", "inputs": {}},
+                ]
+            }
+        }
         nodes = self.extractor.find_text_encoder_nodes(workflow)
         self.assertEqual(len(nodes), 1)
 
@@ -233,20 +249,26 @@ class TestIsTextEncoderNode(MetadataTestCase):
         self.assertTrue(self.extractor.is_text_encoder_node({"type": "CLIPTextEncode"}))
 
     def test_class_type_field(self):
-        self.assertTrue(self.extractor.is_text_encoder_node({"class_type": "CLIPTextEncode"}))
+        self.assertTrue(
+            self.extractor.is_text_encoder_node({"class_type": "CLIPTextEncode"})
+        )
 
     def test_case_insensitive(self):
         self.assertTrue(self.extractor.is_text_encoder_node({"type": "cliptextencode"}))
 
     def test_title_with_text_keyword(self):
-        self.assertTrue(self.extractor.is_text_encoder_node(
-            {"type": "Unknown", "title": "My Text Encoder"}
-        ))
+        self.assertTrue(
+            self.extractor.is_text_encoder_node(
+                {"type": "Unknown", "title": "My Text Encoder"}
+            )
+        )
 
     def test_title_with_prompt_keyword(self):
-        self.assertTrue(self.extractor.is_text_encoder_node(
-            {"type": "Unknown", "title": "Prompt Input"}
-        ))
+        self.assertTrue(
+            self.extractor.is_text_encoder_node(
+                {"type": "Unknown", "title": "Prompt Input"}
+            )
+        )
 
     def test_non_encoder_node(self):
         self.assertFalse(self.extractor.is_text_encoder_node({"type": "KSampler"}))
@@ -264,23 +286,29 @@ class TestExtractPromptTextFromWorkflow(MetadataTestCase):
     """Test extract_prompt_text_from_workflow method."""
 
     def test_extracts_text_input(self):
-        workflow = {"nodes": [
-            {"type": "CLIPTextEncode", "inputs": {"text": "beautiful sunset"}},
-        ]}
+        workflow = {
+            "nodes": [
+                {"type": "CLIPTextEncode", "inputs": {"text": "beautiful sunset"}},
+            ]
+        }
         text = self.extractor.extract_prompt_text_from_workflow(workflow)
         self.assertEqual(text, "beautiful sunset")
 
     def test_extracts_prompt_input(self):
-        workflow = {"nodes": [
-            {"type": "CLIPTextEncode", "inputs": {"prompt": "a cat"}},
-        ]}
+        workflow = {
+            "nodes": [
+                {"type": "CLIPTextEncode", "inputs": {"prompt": "a cat"}},
+            ]
+        }
         text = self.extractor.extract_prompt_text_from_workflow(workflow)
         self.assertEqual(text, "a cat")
 
     def test_returns_none_when_no_text(self):
-        workflow = {"nodes": [
-            {"type": "KSampler", "inputs": {"steps": 20}},
-        ]}
+        workflow = {
+            "nodes": [
+                {"type": "KSampler", "inputs": {"steps": 20}},
+            ]
+        }
         text = self.extractor.extract_prompt_text_from_workflow(workflow)
         self.assertIsNone(text)
 
@@ -289,17 +317,21 @@ class TestExtractPromptTextFromWorkflow(MetadataTestCase):
         self.assertIsNone(text)
 
     def test_handles_list_input_value(self):
-        workflow = {"nodes": [
-            {"type": "CLIPTextEncode", "inputs": {"text": ["linked_value", 0]}},
-        ]}
+        workflow = {
+            "nodes": [
+                {"type": "CLIPTextEncode", "inputs": {"text": ["linked_value", 0]}},
+            ]
+        }
         text = self.extractor.extract_prompt_text_from_workflow(workflow)
         self.assertEqual(text, "linked_value")
 
     def test_skips_empty_text_fields(self):
-        workflow = {"nodes": [
-            {"type": "CLIPTextEncode", "inputs": {"text": ""}},
-            {"type": "PromptManager", "inputs": {"text": "actual prompt"}},
-        ]}
+        workflow = {
+            "nodes": [
+                {"type": "CLIPTextEncode", "inputs": {"text": ""}},
+                {"type": "PromptManager", "inputs": {"text": "actual prompt"}},
+            ]
+        }
         text = self.extractor.extract_prompt_text_from_workflow(workflow)
         self.assertEqual(text, "actual prompt")
 

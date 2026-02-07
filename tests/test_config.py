@@ -44,12 +44,17 @@ class TestGalleryConfig(unittest.TestCase):
     def test_default_values(self):
         config = GalleryConfig.get_config()
         self.assertTrue(config["monitoring"]["enabled"])
-        self.assertEqual(config["monitoring"]["extensions"], [".png", ".jpg", ".jpeg", ".webp", ".gif"])
+        self.assertEqual(
+            config["monitoring"]["extensions"],
+            [".png", ".jpg", ".jpeg", ".webp", ".gif"],
+        )
         self.assertEqual(config["tracking"]["prompt_timeout"], 600)
         self.assertEqual(config["web_interface"]["images_per_page"], 20)
 
     def test_update_monitoring(self):
-        GalleryConfig.update_config({"monitoring": {"enabled": False, "processing_delay": 5.0}})
+        GalleryConfig.update_config(
+            {"monitoring": {"enabled": False, "processing_delay": 5.0}}
+        )
         self.assertFalse(GalleryConfig.MONITORING_ENABLED)
         self.assertEqual(GalleryConfig.PROCESSING_DELAY, 5.0)
 
@@ -58,12 +63,16 @@ class TestGalleryConfig(unittest.TestCase):
         self.assertEqual(GalleryConfig.PROMPT_TIMEOUT, 300)
 
     def test_update_database(self):
-        GalleryConfig.update_config({"database": {"auto_cleanup": False, "max_image_age_days": 30}})
+        GalleryConfig.update_config(
+            {"database": {"auto_cleanup": False, "max_image_age_days": 30}}
+        )
         self.assertFalse(GalleryConfig.AUTO_CLEANUP_MISSING_FILES)
         self.assertEqual(GalleryConfig.MAX_IMAGE_AGE_DAYS, 30)
 
     def test_update_web_interface(self):
-        GalleryConfig.update_config({"web_interface": {"images_per_page": 50, "thumbnail_size": 512}})
+        GalleryConfig.update_config(
+            {"web_interface": {"images_per_page": 50, "thumbnail_size": 512}}
+        )
         self.assertEqual(GalleryConfig.IMAGES_PER_PAGE, 50)
         self.assertEqual(GalleryConfig.THUMBNAIL_SIZE, 512)
 
@@ -128,15 +137,17 @@ class TestPromptManagerConfig(unittest.TestCase):
         self.assertEqual(PromptManagerConfig.MAX_SEARCH_RESULTS, 50)
 
     def test_update_propagates_to_gallery(self):
-        PromptManagerConfig.update_config({
-            "gallery": {"monitoring": {"enabled": False}}
-        })
+        PromptManagerConfig.update_config(
+            {"gallery": {"monitoring": {"enabled": False}}}
+        )
         self.assertFalse(GalleryConfig.MONITORING_ENABLED)
         # Restore
         GalleryConfig.MONITORING_ENABLED = True
 
     def test_save_and_load_file(self):
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json", dir=tempfile.gettempdir())
+        tmp = tempfile.NamedTemporaryFile(
+            delete=False, suffix=".json", dir=tempfile.gettempdir()
+        )
         tmp.close()
         try:
             # Modify a value
@@ -179,10 +190,13 @@ class TestPromptManagerConfig(unittest.TestCase):
             self.assertIn("database", data)
         finally:
             import shutil
+
             shutil.rmtree(tmp_dir)
 
     def test_saved_file_is_valid_json(self):
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json", dir=tempfile.gettempdir())
+        tmp = tempfile.NamedTemporaryFile(
+            delete=False, suffix=".json", dir=tempfile.gettempdir()
+        )
         tmp.close()
         try:
             PromptManagerConfig.save_to_file(tmp.name)
