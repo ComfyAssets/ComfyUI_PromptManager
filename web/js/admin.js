@@ -2541,7 +2541,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 if (!this.currentMetadata) return;
 
                 const prompt = type === 'positive' ? this.currentMetadata.positivePrompt : this.currentMetadata.negativePrompt;
-                const safePrompt = this.escapeHtml(prompt);
                 const safeType = this.escapeHtml(type.charAt(0).toUpperCase() + type.slice(1));
                 const newWindow = window.open('', '_blank');
                 const doc = newWindow.document;
