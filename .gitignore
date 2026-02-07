@@ -1,3 +1,19 @@
+# Tailwind standalone CLI (downloaded by `make css-setup`)
+tailwindcss
+
+# AI tooling / local config
+.claude/
+.playwright-mcp/
+.serena/
+AGENTS.md
+CLAUDE.md
+
+# Local files
+docs/
+logs/
+standalone_tagger.py
+prompts.db
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -16,6 +32,8 @@ eggs/
 .eggs/
 lib/
 lib64/
+!web/lib/
+!web/lib/**
 parts/
 sdist/
 var/

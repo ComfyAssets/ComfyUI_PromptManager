@@ -4,6 +4,7 @@ Database schema and models for KikoTextEncode prompt storage.
 
 import sqlite3
 import os
+import threading
 from typing import Optional
 
 # Import logging system
@@ -29,6 +30,8 @@ class PromptModel:
         self.logger = get_logger('prompt_manager.database.models')
         self.logger.debug(f"Initializing database model with path: {db_path}")
         self.db_path = db_path
+        self._conn: Optional[sqlite3.Connection] = None
+        self._conn_lock = threading.Lock()
         self._ensure_database_exists()
     
     def _ensure_database_exists(self) -> None:
@@ -43,6 +46,8 @@ class PromptModel:
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
+                conn.execute("PRAGMA journal_mode = WAL")
+                conn.execute("PRAGMA busy_timeout = 5000")
                 conn.execute("PRAGMA foreign_keys = ON")
                 self._create_tables(conn)
                 self._create_indexes(conn)
@@ -96,14 +101,34 @@ class PromptModel:
             )
         """)
 
+        # Create normalized tag tables (junction table pattern)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS prompt_tags (
+                prompt_id INTEGER NOT NULL,
+                tag_id INTEGER NOT NULL,
+                PRIMARY KEY (prompt_id, tag_id),
+                FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE,
+                FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+            )
+        """)
+
         # Add unique constraint to existing databases (migration)
         self._migrate_add_unique_constraint(conn)
-        
+
         # Check if we need to migrate from old schema with workflow_name
         self._migrate_workflow_name_removal(conn)
-        
+
         # Fix foreign key data type mismatch
         self._migrate_foreign_key_types(conn)
+
+        # Migrate JSON tags to normalized junction tables
+        self._migrate_json_tags_to_junction(conn)
     
     def _create_indexes(self, conn: sqlite3.Connection) -> None:
         """
@@ -127,6 +152,8 @@ class PromptModel:
             "CREATE INDEX IF NOT EXISTS idx_prompt_images ON generated_images(prompt_id)",
             "CREATE INDEX IF NOT EXISTS idx_image_path ON generated_images(image_path)",
             "CREATE INDEX IF NOT EXISTS idx_generation_time ON generated_images(generation_time)",
+            "CREATE INDEX IF NOT EXISTS idx_prompt_tags_tag ON prompt_tags(tag_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)",
         ]
         
         for index_sql in indexes:
@@ -134,15 +161,26 @@ class PromptModel:
     
     def get_connection(self) -> sqlite3.Connection:
         """
-        Get a database connection with proper configuration.
-        
+        Get the persistent database connection.
+
+        Returns a thread-safe, reusable connection protected by a lock.
+        The connection is created on first call and reused thereafter.
+        Callers use it as a context manager; the lock is held for the
+        duration of the ``with`` block.
+
         Returns:
             sqlite3.Connection: Configured database connection
         """
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row  # Enable dict-like access to rows
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+        with self._conn_lock:
+            if self._conn is None:
+                self._conn = sqlite3.connect(
+                    self.db_path, check_same_thread=False
+                )
+                self._conn.row_factory = sqlite3.Row
+                self._conn.execute("PRAGMA journal_mode = WAL")
+                self._conn.execute("PRAGMA foreign_keys = ON")
+                self._conn.execute("PRAGMA busy_timeout = 5000")
+        return self._conn
     
     def _migrate_workflow_name_removal(self, conn: sqlite3.Connection) -> None:
         """
@@ -342,6 +380,52 @@ class PromptModel:
         except Exception as e:
             self.logger.error(f"UNIQUE constraint migration error: {e}")
             # Continue with existing schema if migration fails
+
+    def _migrate_json_tags_to_junction(self, conn: sqlite3.Connection) -> None:
+        """
+        Populate tags and prompt_tags tables from legacy JSON tags column.
+
+        Runs once: skips if the tags table already has data. Uses json_each()
+        to extract tag names from the JSON arrays stored in prompts.tags.
+        """
+        try:
+            cursor = conn.execute("SELECT COUNT(*) FROM tags")
+            if cursor.fetchone()[0] > 0:
+                return  # Already migrated
+
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM prompts "
+                "WHERE tags IS NOT NULL AND tags != '' AND tags != '[]'"
+            )
+            if cursor.fetchone()[0] == 0:
+                return  # No tags to migrate
+
+            self.logger.info("Migrating JSON tags to normalized junction tables")
+
+            # Insert all unique tag names
+            conn.execute(
+                "INSERT OR IGNORE INTO tags (name) "
+                "SELECT DISTINCT je.value FROM prompts, json_each(prompts.tags) AS je "
+                "WHERE prompts.tags IS NOT NULL AND prompts.tags != '' AND prompts.tags != '[]'"
+            )
+
+            # Populate junction table
+            conn.execute(
+                "INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) "
+                "SELECT p.id, t.id "
+                "FROM prompts p, json_each(p.tags) AS je "
+                "JOIN tags t ON t.name = je.value "
+                "WHERE p.tags IS NOT NULL AND p.tags != '' AND p.tags != '[]'"
+            )
+
+            tag_count = conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
+            link_count = conn.execute("SELECT COUNT(*) FROM prompt_tags").fetchone()[0]
+            self.logger.info(
+                f"Tag migration complete: {tag_count} unique tags, {link_count} prompt-tag links"
+            )
+
+        except Exception as e:
+            self.logger.error(f"Tag junction migration error: {e}")
 
     def migrate_database(self) -> None:
         """

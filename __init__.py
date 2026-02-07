@@ -79,7 +79,7 @@ except Exception as e:
 
         logger = get_logger("prompt_manager.init")
         logger.error(f"Failed to register API routes: {e}")
-    except:
+    except Exception:
         pass
 
 # Start image monitoring globally at module import time
@@ -107,7 +107,7 @@ except Exception as e:
         from .utils.logging_config import get_logger
         _init_logger = get_logger("prompt_manager.init")
         _init_logger.error(f"Failed to start image monitoring: {e}")
-    except:
+    except Exception:
         print(f"[ComfyUI-PromptManager] Warning: Failed to start image monitoring: {e}")
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

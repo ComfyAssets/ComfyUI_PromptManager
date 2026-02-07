@@ -75,8 +75,15 @@ class PromptTracker:
         self._local = threading.local()
         self.active_prompts = {}  # Global tracking for multiple threads
         self.lock = threading.Lock()
-        self.cleanup_interval = 300  # 5 minutes
-        self.prompt_timeout = 600    # 10 minutes (increased for longer generations)
+
+        # Read from GalleryConfig if available, otherwise use defaults
+        try:
+            from ..py.config import GalleryConfig
+            self.cleanup_interval = GalleryConfig.CLEANUP_INTERVAL
+            self.prompt_timeout = GalleryConfig.PROMPT_TIMEOUT
+        except Exception:
+            self.cleanup_interval = 300   # 5 minutes
+            self.prompt_timeout = 600     # 10 minutes
         
         # Start cleanup thread
         self.cleanup_thread = threading.Thread(target=self._cleanup_expired_prompts, daemon=True)

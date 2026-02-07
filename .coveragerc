@@ -1,0 +1,62 @@
+# Coverage configuration for pytest-cov
+[run]
+source = .
+omit = 
+    */tests/*
+    */venv/*
+    */env/*
+    */__pycache__/*
+    */migrations/*
+    */conftest.py
+    */setup.py
+    */manage.py
+    */.tox/*
+    */node_modules/*
+    */static/*
+    */media/*
+    
+branch = true
+parallel = true
+
+[report]
+# Regexes for lines to exclude from consideration
+exclude_lines =
+    # Have to re-enable the standard pragma
+    pragma: no cover
+
+    # Don't complain about missing debug-only code:
+    def __repr__
+    if self\.debug
+
+    # Don't complain if tests don't hit defensive assertion code:
+    raise AssertionError
+    raise NotImplementedError
+
+    # Don't complain if non-runnable code isn't run:
+    if 0:
+    if __name__ == .__main__.:
+
+    # Don't complain about abstract methods, they aren't run:
+    @(abc\.)?abstractmethod
+
+    # Don't complain about type checking imports
+    if TYPE_CHECKING:
+
+    # Don't complain about logger calls
+    \.logger\.(debug|info|warning|error|critical)
+
+ignore_errors = true
+show_missing = true
+skip_covered = false
+precision = 2
+
+[html]
+directory = htmlcov
+title = ComfyUI PromptManager Test Coverage Report
+
+[xml]
+output = coverage.xml
+
+[json]
+output = coverage.json
+pretty_print = true

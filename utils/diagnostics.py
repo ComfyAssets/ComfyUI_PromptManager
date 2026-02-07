@@ -246,7 +246,7 @@ class GalleryDiagnostics:
                     f.write("test")
                 os.remove(test_file)
                 can_write = True
-            except:
+            except (IOError, OSError):
                 can_write = False
             
             self.logger.info(f"   [EDIT]  Can write to directory: {can_write}")

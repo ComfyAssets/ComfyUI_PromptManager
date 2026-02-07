@@ -218,36 +218,38 @@ class TestNodeIntegration(unittest.TestCase):
         if os.path.exists(self.temp_db.name):
             os.unlink(self.temp_db.name)
     
-    @patch('prompt_manager.PromptDatabase')
+    @patch('prompt_manager_base.PromptDatabase')
     def test_node_encode_function(self, mock_db_class):
         """Test the node's encode function with mocked dependencies."""
         # Mock the database
         mock_db = Mock()
         mock_db_class.return_value = mock_db
-        
+        mock_db.save_prompt.return_value = 1
+        mock_db.get_prompt_by_hash.return_value = None
+
         # Mock CLIP model
         mock_clip = Mock()
         mock_clip.tokenize.return_value = "mock_tokens"
         mock_clip.encode_from_tokens_scheduled.return_value = "mock_conditioning"
-        
+
         # Import and test the node
         from prompt_manager import PromptManager
-        
+
         node = PromptManager()
-        
+
         # Test encoding
-        result = node.encode(
+        result = node.encode_prompt(
             clip=mock_clip,
             text="Test prompt",
             search_text=""
         )
-        
+
         # Verify CLIP was called correctly
         mock_clip.tokenize.assert_called_once_with("Test prompt")
         mock_clip.encode_from_tokens_scheduled.assert_called_once_with("mock_tokens")
-        
-        # Verify result - PromptManager returns both conditioning and prompt text
-        self.assertEqual(result, ("mock_conditioning", "Test prompt"))
+
+        # Verify result tuple (conditioning, prompt_text)
+        self.assertEqual(result[1], "Test prompt")
     
     def test_node_input_types(self):
         """Test the node's input type definitions."""

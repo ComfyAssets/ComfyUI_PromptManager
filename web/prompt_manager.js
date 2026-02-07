@@ -10,6 +10,16 @@ import { api } from "../../scripts/api.js";
 let pmButtonGroup = null;
 
 /**
+ * Escape HTML special characters to prevent XSS in innerHTML contexts.
+ */
+function escapeHtml(text) {
+  if (text == null) return '';
+  const div = document.createElement('div');
+  div.textContent = String(text);
+  return div.innerHTML;
+}
+
+/**
  * Create a DOM element with optional attributes and children
  * @param {string} tag - HTML tag name
  * @param {Object} attrs - Attributes and properties
@@ -607,7 +617,7 @@ app.registerExtension({
           }
         } catch (error) {
           console.error("[PromptManager] Search error:", error);
-          this.resultsSection.innerHTML = `<div style="color: #f88; text-align: center;">❌ Search error: ${error.message}</div>`;
+          this.resultsSection.innerHTML = `<div style="color: #f88; text-align: center;">❌ Search error: ${escapeHtml(error.message)}</div>`;
           this.showNotification(`Search failed: ${error.message}`, "error");
         }
       };
@@ -634,7 +644,7 @@ app.registerExtension({
           }
         } catch (error) {
           console.error("[PromptManager] Recent prompts error:", error);
-          this.resultsSection.innerHTML = `<div style="color: #f88; text-align: center;">❌ Error loading recent prompts: ${error.message}</div>`;
+          this.resultsSection.innerHTML = `<div style="color: #f88; text-align: center;">❌ Error loading recent prompts: ${escapeHtml(error.message)}</div>`;
           this.showNotification(
             `Failed to load recent prompts: ${error.message}`,
             "error",
@@ -806,18 +816,19 @@ app.registerExtension({
               ? result.text.substring(0, 80) + "..."
               : result.text;
 
+          // All user-controlled values are escaped to prevent XSS
           resultItem.innerHTML = `
                         <div style="color: #e8e8e8; font-weight: bold; margin-bottom: 4px; line-height: 1.3;">
-                            ${promptPreview}
+                            ${escapeHtml(promptPreview)}
                         </div>
                         <div style="color: #aaa; font-size: 10px; line-height: 1.4;">
                             <div style="margin-bottom: 2px;">
-                                <span style="color: #4facfe;">📁 ${category}</span> • 
-                                <span style="color: #ffd700;">${rating}</span> • 
-                                <span style="color: #8cc8ff;">📅 ${created}</span>
+                                <span style="color: #4facfe;">📁 ${escapeHtml(category)}</span> •
+                                <span style="color: #ffd700;">${escapeHtml(rating)}</span> •
+                                <span style="color: #8cc8ff;">📅 ${escapeHtml(created)}</span>
                             </div>
                             <div style="color: #9c9c9c;">
-                                🏷️ ${tags}
+                                🏷️ ${escapeHtml(tags)}
                             </div>
                         </div>
                     `;
