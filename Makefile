@@ -1,4 +1,4 @@
-TAILWIND_VERSION := 3.4.17
+TAILWIND_VERSION := 4.1.18
 TAILWIND_CLI := ./tailwindcss
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)

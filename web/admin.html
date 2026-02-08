@@ -1,165 +1,29 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PromptManager - Admin Dashboard</title>
+    <script src="/prompt_manager/js/theme-bridge.js"></script>
+    <link rel="stylesheet" href="css/comfyui-theme.css">
     <link rel="stylesheet" href="lib/tailwind/styles.css">
     <link rel="stylesheet" href="lib/viewerjs/viewer.min.css">
     <script src="lib/viewerjs/viewer.min.js"></script>
-    <style>
-        .custom-scrollbar::-webkit-scrollbar {
-            width: 8px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-            background: #374151;
-            border-radius: 4px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-            background: #6b7280;
-            border-radius: 4px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-            background: #9ca3af;
-        }
-        
-        .viewer-dark-theme .viewer-backdrop {
-            background-color: rgba(0, 0, 0, 0.9) !important;
-        }
-        
-        .viewer-dark-theme .viewer-toolbar {
-            background-color: rgba(31, 41, 55, 0.95) !important;
-        }
-        
-        .viewer-dark-theme .viewer-navbar {
-            background-color: rgba(31, 41, 55, 0.95) !important;
-        }
-        
-        .viewer-dark-theme .viewer-title {
-            color: #f3f4f6 !important;
-        }
-        
-        .metadata-sidebar {
-            position: fixed !important;
-            top: 0 !important;
-            right: 0 !important;
-            width: 384px !important;
-            height: 100vh !important;
-            background: rgb(17, 24, 39) !important;
-            border-left: 1px solid rgb(55, 65, 81) !important;
-            display: flex !important;
-            flex-direction: column !important;
-            z-index: 10000 !important;
-        }
-
-        /* Film Strip Styles */
-        .prompt-film-strip {
-            --film-strip-thumbnail-size: 112px;
-            --film-strip-gap: 8px;
-            display: flex;
-            flex-wrap: nowrap;
-            gap: var(--film-strip-gap);
-            padding: 8px 0;
-            overflow-x: auto;
-            scrollbar-width: thin;
-            scrollbar-color: #4b5563 transparent;
-        }
-
-        .prompt-film-strip::-webkit-scrollbar {
-            height: 4px;
-        }
-
-        .prompt-film-strip::-webkit-scrollbar-track {
-            background: transparent;
-        }
-
-        .prompt-film-strip::-webkit-scrollbar-thumb {
-            background: #4b5563;
-            border-radius: 2px;
-        }
-
-        .film-strip-thumbnail {
-            flex-shrink: 0;
-            width: var(--film-strip-thumbnail-size);
-            height: var(--film-strip-thumbnail-size);
-            border-radius: 6px;
-            overflow: hidden;
-            cursor: pointer;
-            border: 2px solid transparent;
-            transition: all 0.15s ease;
-            background: #1f2937;
-        }
-
-        .film-strip-thumbnail:hover {
-            border-color: #3b82f6;
-            transform: scale(1.05);
-        }
-
-        .film-strip-thumbnail img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }
-
-        .film-strip-thumbnail--more {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: linear-gradient(135deg, #374151 0%, #1f2937 100%);
-            color: #9ca3af;
-            font-size: 12px;
-            font-weight: 600;
-        }
-
-        .film-strip-thumbnail--more:hover {
-            background: linear-gradient(135deg, #4b5563 0%, #374151 100%);
-            color: #e5e7eb;
-        }
-
-        .film-strip-empty {
-            color: #6b7280;
-            font-size: 12px;
-            font-style: italic;
-            padding: 8px 0;
-        }
-
-        /* Film strip size variants */
-        .film-strip-size-small {
-            --film-strip-thumbnail-size: 72px;
-            --film-strip-gap: 6px;
-        }
-
-        .film-strip-size-medium {
-            --film-strip-thumbnail-size: 112px;
-            --film-strip-gap: 8px;
-        }
-
-        .film-strip-size-large {
-            --film-strip-thumbnail-size: 144px;
-            --film-strip-gap: 10px;
-        }
-    </style>
 </head>
-<body class="bg-gray-925 text-gray-100 min-h-screen">
+<body class="bg-pm-primary text-pm min-h-screen text-[13px]">
     <div class="min-h-screen flex flex-col">
         <!-- Header -->
-        <header class="bg-gradient-to-r from-gray-850 to-gray-800 border-b border-gray-700 px-6 py-4">
+        <header class="bg-pm-surface border-b border-pm px-4 py-2" style="min-height: 2.5rem;">
             <div class="max-w-7xl mx-auto">
                 <div class="flex items-center justify-between">
-                    <div class="flex items-center space-x-3">
-                        <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
-                            <span class="text-xl">🔍</span>
-                        </div>
-                        <div>
-                            <h1 class="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-                                PromptManager Admin Dashboard
-                            </h1>
-                            <p class="text-gray-400 text-sm">Manage and organize your AI prompts with powerful search and editing tools</p>
-                        </div>
+                    <div class="flex items-center gap-2">
+                        <h1 class="text-sm font-semibold text-pm">
+                            PromptManager Admin
+                        </h1>
                     </div>
-                    <div class="hidden sm:flex items-center space-x-2">
-                        <div class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                        <span class="text-green-400 text-sm font-medium">Online</span>
+                    <div class="hidden sm:flex items-center gap-1.5">
+                        <div class="w-2 h-2 bg-pm-success rounded-full animate-pulse"></div>
+                        <span class="text-pm-success text-xs">Online</span>
                     </div>
                 </div>
             </div>
@@ -169,51 +33,39 @@
         <div id="dashboardView">
 
         <!-- Stats Grid -->
-        <div class="px-6 py-6">
+        <div class="px-4 py-3">
             <div class="max-w-7xl mx-auto">
-                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                    <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl p-6 border border-gray-700">
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div class="bg-pm-surface rounded-pm-lg p-3 border border-pm shadow-pm-sm">
                         <div class="flex items-center justify-between">
                             <div>
-                                <p class="text-gray-400 text-sm font-medium">Total Prompts</p>
-                                <p class="text-3xl font-bold text-blue-400" id="totalPrompts">-</p>
-                            </div>
-                            <div class="w-12 h-12 bg-blue-500/20 rounded-lg flex items-center justify-center">
-                                <span class="text-2xl">📝</span>
+                                <p class="text-pm-secondary text-xs font-medium uppercase tracking-wide">Total Prompts</p>
+                                <p class="text-xl font-bold text-pm-accent" id="totalPrompts">-</p>
                             </div>
                         </div>
                     </div>
-                    <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl p-6 border border-gray-700">
+                    <div class="bg-pm-surface rounded-pm-lg p-3 border border-pm shadow-pm-sm">
                         <div class="flex items-center justify-between">
                             <div>
-                                <p class="text-gray-400 text-sm font-medium">Categories</p>
-                                <p class="text-3xl font-bold text-purple-400" id="totalCategories">-</p>
-                            </div>
-                            <div class="w-12 h-12 bg-purple-500/20 rounded-lg flex items-center justify-center">
-                                <span class="text-2xl">📁</span>
+                                <p class="text-pm-secondary text-xs font-medium uppercase tracking-wide">Categories</p>
+                                <p class="text-xl font-bold text-pm" id="totalCategories">-</p>
                             </div>
                         </div>
                     </div>
-                    <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl p-6 border border-gray-700 cursor-pointer hover:border-green-500/50 transition-colors"
+                    <div class="bg-pm-surface rounded-pm-lg p-3 border border-pm shadow-pm-sm cursor-pointer hover:border-pm-accent transition-colors"
                          onclick="window.location.hash = '#/tags'" title="Click to manage tags">
                         <div class="flex items-center justify-between">
                             <div>
-                                <p class="text-gray-400 text-sm font-medium">Unique Tags</p>
-                                <p class="text-3xl font-bold text-green-400" id="totalTags">-</p>
-                            </div>
-                            <div class="w-12 h-12 bg-green-500/20 rounded-lg flex items-center justify-center">
-                                <span class="text-2xl">🏷️</span>
+                                <p class="text-pm-secondary text-xs font-medium uppercase tracking-wide">Unique Tags</p>
+                                <p class="text-xl font-bold text-pm-success" id="totalTags">-</p>
                             </div>
                         </div>
                     </div>
-                    <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl p-6 border border-gray-700">
+                    <div class="bg-pm-surface rounded-pm-lg p-3 border border-pm shadow-pm-sm">
                         <div class="flex items-center justify-between">
                             <div>
-                                <p class="text-gray-400 text-sm font-medium">Avg Rating</p>
-                                <p class="text-3xl font-bold text-yellow-400" id="avgRating">-</p>
-                            </div>
-                            <div class="w-12 h-12 bg-yellow-500/20 rounded-lg flex items-center justify-center">
-                                <span class="text-2xl">⭐</span>
+                                <p class="text-pm-secondary text-xs font-medium uppercase tracking-wide">Avg Rating</p>
+                                <p class="text-xl font-bold text-pm-warning" id="avgRating">-</p>
                             </div>
                         </div>
                     </div>
@@ -222,32 +74,32 @@
         </div>
 
         <!-- Search Controls (Sticky) -->
-        <div class="sticky top-0 z-50 bg-gray-925 bg-opacity-95 backdrop-blur-sm border-b border-gray-700/50">
-            <div class="px-6 py-4">
+        <div class="sticky top-0 z-50 bg-pm-primary/95 backdrop-blur-sm border-b border-pm-subtle">
+            <div class="px-4 py-3">
                 <div class="max-w-7xl mx-auto">
-                    <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl p-6 border border-gray-700">
-                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
+                    <div class="bg-pm-surface rounded-pm-lg p-4 border border-pm">
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3 mb-3">
                         <div class="lg:col-span-2">
-                            <label class="block text-sm font-medium text-gray-400 mb-2">Search Text</label>
-                            <input type="text" id="searchText" placeholder="Search prompt content..." 
-                                   class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100 placeholder-gray-400">
+                            <label class="block text-xs font-medium text-pm-secondary mb-1 uppercase tracking-wide">Search Text</label>
+                            <input type="text" id="searchText" placeholder="Search prompt content..."
+                                   class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] placeholder:text-pm-muted focus:outline-none">
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-400 mb-2">Category</label>
-                            <select id="searchCategory" 
-                                    class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                            <label class="block text-xs font-medium text-pm-secondary mb-1 uppercase tracking-wide">Category</label>
+                            <select id="searchCategory"
+                                    class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none">
                                 <option value="">All Categories</option>
                             </select>
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-400 mb-2">Tags</label>
-                            <input type="text" id="searchTags" placeholder="tag1, tag2..." 
-                                   class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100 placeholder-gray-400">
+                            <label class="block text-xs font-medium text-pm-secondary mb-1 uppercase tracking-wide">Tags</label>
+                            <input type="text" id="searchTags" placeholder="tag1, tag2..."
+                                   class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] placeholder:text-pm-muted focus:outline-none">
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-400 mb-2">Sort By</label>
-                            <select id="sortBy" 
-                                    class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                            <label class="block text-xs font-medium text-pm-secondary mb-1 uppercase tracking-wide">Sort By</label>
+                            <select id="sortBy"
+                                    class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none">
                                 <option value="created_desc">Newest First</option>
                                 <option value="created_asc">Oldest First</option>
                                 <option value="rating_desc">Highest Rated</option>
@@ -257,83 +109,83 @@
                             </select>
                         </div>
                         <div class="flex items-end">
-                            <button id="searchBtn" 
-                                    class="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-medium py-3 px-6 rounded-lg transition-all duration-200 flex items-center justify-center space-x-2">
-                                <span>🔍</span>
+                            <button id="searchBtn"
+                                    class="w-full bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg font-medium py-1.5 px-3 rounded-pm-sm text-[13px] transition-colors flex items-center justify-center gap-1.5">
                                 <span>Search</span>
                             </button>
                         </div>
                     </div>
 
                     <!-- Bulk Actions -->
-                    <div class="flex flex-wrap items-center gap-3 pt-4 border-t border-gray-700">
-                        <label class="flex items-center space-x-2 text-gray-300">
-                            <input type="checkbox" id="selectAll" class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500">
-                            <span class="text-sm font-medium">Select All</span>
+                    <div class="flex flex-wrap items-center gap-2 pt-3 border-t border-pm">
+                        <label class="flex items-center gap-1.5 text-pm">
+                            <input type="checkbox" id="selectAll" class="w-3.5 h-3.5 accent-[var(--pm-accent)]">
+                            <span class="text-xs font-medium">Select All</span>
                         </label>
-                        <button id="bulkDeleteBtn" disabled 
-                                class="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors">
-                            🗑️ Delete Selected
+                        <button id="bulkDeleteBtn" disabled
+                                class="px-2.5 py-1 text-pm-error bg-transparent hover:bg-pm-error-tint disabled:opacity-25 disabled:cursor-not-allowed text-xs font-medium rounded-pm-sm transition-colors border border-transparent hover:border-pm">
+                            Delete Selected
                         </button>
-                        <button id="bulkTagBtn" disabled 
-                                class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors">
-                            🏷️ Add Tags
+                        <button id="bulkTagBtn" disabled
+                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover disabled:opacity-25 disabled:cursor-not-allowed text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Add Tags
                         </button>
                         <button id="bulkCategoryBtn" disabled
-                                class="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors">
-                            📁 Set Category
+                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover disabled:opacity-25 disabled:cursor-not-allowed text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Set Category
                         </button>
+                        <div class="w-px h-4 bg-pm-border mx-1"></div>
                         <button id="addPromptBtn"
-                                class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            ➕ Add Prompt
+                                class="px-2.5 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
+                            Add Prompt
                         </button>
                         <button id="statsBtn"
-                                class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            📊 Stats
+                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Stats
                         </button>
-                        <button id="exportBtn" 
-                                class="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            📄 Export
+                        <button id="exportBtn"
+                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Export
                         </button>
-                        <button id="settingsBtn" 
-                                class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            ⚙️ Settings
+                        <button id="settingsBtn"
+                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Settings
                         </button>
-                        <button id="diagnosticsBtn" 
-                                class="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            🔍 Diagnostics
+                        <button id="diagnosticsBtn"
+                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Diagnostics
                         </button>
-                        <button id="maintenanceBtn" 
-                                class="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            🔧 Maintenance
+                        <button id="maintenanceBtn"
+                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Maintenance
                         </button>
-                        <button id="backupBtn" 
-                                class="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            💾 Backup DB
+                        <button id="backupBtn"
+                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Backup DB
                         </button>
-                        <button id="restoreBtn" 
-                                class="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            📁 Restore DB
+                        <button id="restoreBtn"
+                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Restore DB
                         </button>
                         <button id="scanBtn"
-                                class="px-4 py-2 bg-pink-600 hover:bg-pink-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            📸 Scan Images
+                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Scan Images
                         </button>
                         <button id="autoTagBtn"
-                                class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            🏷️ Auto Tag
+                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Auto Tag
                         </button>
-                        <button id="logsBtn" 
-                                class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            📋 View Logs
+                        <button id="logsBtn"
+                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            View Logs
                         </button>
-                        <button id="metadataBtn" 
-                                class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            🔍 Metadata
+                        <button id="metadataBtn"
+                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Metadata
                         </button>
-                        <button id="galleryBtn" 
-                                class="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            🖼️ Gallery
+                        <button id="galleryBtn"
+                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Gallery
                         </button>
                     </div>
                     </div>
@@ -342,61 +194,60 @@
         </div>
 
         <!-- Results Section -->
-        <div class="flex-1 px-6 pb-6">
+        <div class="flex-1 px-4 pb-4">
             <div class="max-w-7xl mx-auto h-full">
-                <div class="bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl border border-gray-700 h-full flex flex-col">
+                <div class="bg-pm-surface rounded-pm-lg border border-pm h-full flex flex-col">
                     <!-- Results Header -->
-                    <div class="flex items-center justify-between p-6 border-b border-gray-700">
-                        <div class="flex items-center space-x-4">
-                            <h2 class="text-xl font-semibold text-gray-100" id="resultsTitle">Recent Prompts</h2>
-                            <div class="flex items-center space-x-2">
-                                <label class="text-sm text-gray-400">Show:</label>
-                                <select id="limitSelector" class="px-3 py-1 bg-gray-700 border border-gray-600 rounded text-gray-100 text-sm">
+                    <div class="flex items-center justify-between p-3 border-b border-pm">
+                        <div class="flex items-center gap-3">
+                            <h2 class="text-[13px] font-semibold text-pm" id="resultsTitle">Recent Prompts</h2>
+                            <div class="flex items-center gap-1.5">
+                                <label class="text-xs text-pm-secondary">Show:</label>
+                                <select id="limitSelector" class="px-2 py-0.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-xs">
                                     <option value="25">25</option>
                                     <option value="50" selected>50</option>
                                     <option value="100">100</option>
                                     <option value="200">200</option>
                                     <option value="500">500</option>
                                 </select>
-                                <span class="text-sm text-gray-400">per page</span>
+                                <span class="text-xs text-pm-secondary">per page</span>
                             </div>
                         </div>
-                        <span class="text-sm font-medium text-gray-400 bg-gray-700 px-3 py-1 rounded-full" id="resultsCount">Loading...</span>
+                        <span class="text-xs font-medium text-pm-secondary bg-pm-input px-2 py-0.5 rounded-full" id="resultsCount">Loading...</span>
                     </div>
 
                     <!-- Loading State -->
                     <div id="loadingState" class="flex-1 flex items-center justify-center">
                         <div class="text-center">
-                            <div class="w-12 h-12 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mx-auto mb-4"></div>
-                            <p class="text-gray-400">Loading prompts...</p>
+                            <div class="w-8 h-8 border-3 border-pm-accent/30 border-t-pm-accent rounded-full animate-spin mx-auto mb-3"></div>
+                            <p class="text-pm-secondary text-xs">Loading prompts...</p>
                         </div>
                     </div>
 
                     <!-- Results List -->
-                    <div id="resultsList" class="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-4 hidden">
-                        <!-- Prompts will be inserted here -->
+                    <div id="resultsList" class="flex-1 overflow-y-auto p-3 space-y-2 hidden">
                     </div>
 
                     <!-- Pagination Controls -->
-                    <div id="paginationControls" class="border-t border-gray-700 p-4 hidden">
+                    <div id="paginationControls" class="border-t border-pm p-3 hidden">
                         <div class="flex items-center justify-between">
-                            <div class="text-sm text-gray-400">
+                            <div class="text-xs text-pm-secondary">
                                 Showing <span id="showingStart">1</span> to <span id="showingEnd">50</span> of <span id="totalResults">0</span> prompts
                             </div>
-                            <div class="flex items-center space-x-2">
-                                <button id="firstPageBtn" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded disabled:opacity-50 disabled:cursor-not-allowed text-sm">
+                            <div class="flex items-center gap-1.5">
+                                <button id="firstPageBtn" class="px-2 py-0.5 bg-pm-input hover:bg-pm-hover text-pm rounded-pm-sm disabled:opacity-25 disabled:cursor-not-allowed text-xs">
                                     First
                                 </button>
-                                <button id="prevPageBtn" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded disabled:opacity-50 disabled:cursor-not-allowed text-sm">
+                                <button id="prevPageBtn" class="px-2 py-0.5 bg-pm-input hover:bg-pm-hover text-pm rounded-pm-sm disabled:opacity-25 disabled:cursor-not-allowed text-xs">
                                     Previous
                                 </button>
-                                <span class="text-sm text-gray-400">
+                                <span class="text-xs text-pm-secondary">
                                     Page <span id="currentPage">1</span> of <span id="totalPages">1</span>
                                 </span>
-                                <button id="nextPageBtn" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded disabled:opacity-50 disabled:cursor-not-allowed text-sm">
+                                <button id="nextPageBtn" class="px-2 py-0.5 bg-pm-input hover:bg-pm-hover text-pm rounded-pm-sm disabled:opacity-25 disabled:cursor-not-allowed text-xs">
                                     Next
                                 </button>
-                                <button id="lastPageBtn" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded disabled:opacity-50 disabled:cursor-not-allowed text-sm">
+                                <button id="lastPageBtn" class="px-2 py-0.5 bg-pm-input hover:bg-pm-hover text-pm rounded-pm-sm disabled:opacity-25 disabled:cursor-not-allowed text-xs">
                                     Last
                                 </button>
                             </div>
@@ -410,19 +261,19 @@
         <!-- Tags Page View -->
         <div id="tagsPageView" class="hidden flex-1 flex flex-col">
             <!-- Tags Header -->
-            <div class="px-6 py-4 border-b border-gray-700/50 bg-gray-850/50">
+            <div class="px-4 py-2 border-b border-pm-subtle bg-pm-surface/50">
                 <div class="max-w-7xl mx-auto flex items-center justify-between">
-                    <div class="flex items-center space-x-4">
-                        <button onclick="window.location.hash=''" class="text-gray-400 hover:text-white transition-colors text-sm flex items-center space-x-1">
+                    <div class="flex items-center gap-3">
+                        <button onclick="window.location.hash=''" class="text-pm-secondary hover:text-pm transition-colors text-xs flex items-center gap-1">
                             <span>&larr;</span><span>Dashboard</span>
                         </button>
-                        <h2 class="text-xl font-semibold text-gray-100">Tags</h2>
-                        <span id="tagsTotalBadge" class="text-sm font-medium text-gray-400 bg-gray-700 px-3 py-1 rounded-full">0 tags</span>
+                        <h2 class="text-[13px] font-semibold text-pm">Tags</h2>
+                        <span id="tagsTotalBadge" class="text-xs font-medium text-pm-secondary bg-pm-input px-2 py-0.5 rounded-full">0 tags</span>
                     </div>
-                    <div id="filterModeToggle" class="hidden items-center space-x-2">
-                        <span class="text-sm text-gray-400">Filter:</span>
-                        <button id="filterModeAnd" class="px-3 py-1 text-xs font-medium rounded bg-green-600 text-white">AND</button>
-                        <button id="filterModeOr" class="px-3 py-1 text-xs font-medium rounded bg-gray-700 text-gray-300 hover:bg-gray-600">OR</button>
+                    <div id="filterModeToggle" class="hidden items-center gap-1.5">
+                        <span class="text-xs text-pm-secondary">Filter:</span>
+                        <button id="filterModeAnd" class="px-2 py-0.5 text-xs font-medium rounded-pm-sm bg-pm-accent text-pm-accent-fg">AND</button>
+                        <button id="filterModeOr" class="px-2 py-0.5 text-xs font-medium rounded-pm-sm bg-pm-input text-pm hover:bg-pm-hover">OR</button>
                     </div>
                 </div>
             </div>
@@ -430,12 +281,12 @@
             <!-- Two-Panel Layout -->
             <div class="flex-1 flex overflow-hidden">
                 <!-- Left Panel: Tag List -->
-                <div class="w-80 flex-shrink-0 border-r border-gray-700/50 flex flex-col bg-gray-850/30">
+                <div class="w-72 flex-shrink-0 border-r border-pm-subtle flex flex-col bg-pm-surface/30">
                     <!-- Tag Search & Sort -->
-                    <div class="p-4 space-y-3 border-b border-gray-700/30">
+                    <div class="p-3 space-y-2 border-b border-pm-subtle">
                         <input type="text" id="tagSearchInput" placeholder="Search tags..."
-                               class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 text-sm focus:ring-2 focus:ring-green-500 focus:border-green-500">
-                        <select id="tagSortSelect" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 text-sm">
+                               class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none">
+                        <select id="tagSortSelect" class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px]">
                             <option value="alpha_asc">A &rarr; Z</option>
                             <option value="alpha_desc">Z &rarr; A</option>
                             <option value="count_desc">Most Used</option>
@@ -443,11 +294,11 @@
                         </select>
                     </div>
                     <!-- Tag List -->
-                    <div id="tagsListContainer" class="flex-1 overflow-y-auto custom-scrollbar">
-                        <div id="tagsList" class="p-2 space-y-1"></div>
+                    <div id="tagsListContainer" class="flex-1 overflow-y-auto">
+                        <div id="tagsList" class="p-1.5 space-y-0.5"></div>
                         <div id="tagsLoader" class="text-center">
-                            <div class="tags-loader-spinner p-4 hidden">
-                                <div class="w-6 h-6 border-2 border-green-500/30 border-t-green-500 rounded-full animate-spin mx-auto"></div>
+                            <div class="tags-loader-spinner p-3 hidden">
+                                <div class="w-5 h-5 border-2 border-pm-accent/30 border-t-pm-accent rounded-full animate-spin mx-auto"></div>
                             </div>
                         </div>
                     </div>
@@ -456,100 +307,99 @@
                 <!-- Right Panel: Prompts Display -->
                 <div class="flex-1 flex flex-col overflow-hidden">
                     <!-- Active Tags Pills -->
-                    <div id="activeTagsPills" class="px-6 py-3 border-b border-gray-700/30 hidden">
-                        <div class="flex flex-wrap gap-2 items-center">
-                            <span class="text-sm text-gray-400 mr-1">Filtering:</span>
-                            <div id="tagPillsContainer" class="flex flex-wrap gap-2"></div>
-                            <span id="tagPromptsCountBadge" class="text-xs text-gray-500 ml-auto"></span>
+                    <div id="activeTagsPills" class="px-4 py-2 border-b border-pm-subtle hidden">
+                        <div class="flex flex-wrap gap-1.5 items-center">
+                            <span class="text-xs text-pm-secondary mr-0.5">Filtering:</span>
+                            <div id="tagPillsContainer" class="flex flex-wrap gap-1.5"></div>
+                            <span id="tagPromptsCountBadge" class="text-xs text-pm-muted ml-auto"></span>
                         </div>
                     </div>
                     <!-- Prompts Grid -->
-                    <div id="tagPromptsContainer" class="flex-1 overflow-y-auto custom-scrollbar">
-                        <div id="tagPromptsGrid" class="p-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+                    <div id="tagPromptsContainer" class="flex-1 overflow-y-auto">
+                        <div id="tagPromptsGrid" class="p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"></div>
                         <div id="tagPromptsLoader" class="text-center">
-                            <div class="prompts-loader-spinner p-4 hidden">
-                                <div class="w-6 h-6 border-2 border-green-500/30 border-t-green-500 rounded-full animate-spin mx-auto"></div>
+                            <div class="prompts-loader-spinner p-3 hidden">
+                                <div class="w-5 h-5 border-2 border-pm-accent/30 border-t-pm-accent rounded-full animate-spin mx-auto"></div>
                             </div>
-                            <button id="loadMorePromptsBtn" class="hidden px-4 py-2 my-3 text-sm text-gray-400 hover:text-green-400 border border-gray-700 hover:border-green-500/50 rounded-lg transition-colors">
+                            <button id="loadMorePromptsBtn" class="hidden px-3 py-1.5 my-2 text-xs text-pm-secondary hover:text-pm-accent border border-pm hover:border-pm-accent rounded-pm-sm transition-colors">
                                 Load more prompts
                             </button>
                         </div>
                     </div>
                     <!-- Empty State -->
                     <div id="tagPromptsEmpty" class="flex-1 flex items-center justify-center">
-                        <div class="text-center text-gray-500">
-                            <span class="text-4xl block mb-3">🏷️</span>
-                            <p class="text-lg font-medium">Select a tag to view prompts</p>
-                            <p class="text-sm mt-1">Click a tag from the list or use checkboxes for multi-tag filtering</p>
+                        <div class="text-center text-pm-muted">
+                            <p class="text-sm font-medium">Select a tag to view prompts</p>
+                            <p class="text-xs mt-1">Click a tag from the list or use checkboxes for multi-tag filtering</p>
                         </div>
                     </div>
                 </div>
             </div>
         <!-- Context Menu for Tag Operations -->
-        <div id="tagContextMenu" class="hidden fixed z-50 bg-gray-800 border border-gray-600 rounded-lg shadow-xl py-1 min-w-[160px]">
+        <div id="tagContextMenu" class="hidden fixed z-50 bg-pm-surface border border-pm rounded-pm-md shadow-pm py-1 min-w-[160px]">
         </div>
         </div><!-- /tagsPageView -->
 
     </div>
 
     <!-- Settings Modal -->
-    <div id="settingsModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-lg w-full mx-4 border border-gray-700 max-h-[90vh] overflow-y-auto">
-            <h3 class="text-xl font-semibold text-gray-100 mb-6">⚙️ Settings</h3>
+    <div id="settingsModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-lg w-full mx-4 border border-pm max-h-[90vh] overflow-y-auto shadow-pm">
+            <h3 class="text-sm font-semibold text-pm mb-4">Settings</h3>
 
-            <div class="space-y-6">
+            <div class="space-y-4">
                 <!-- Gallery Settings Section -->
-                <div class="border-b border-gray-700 pb-4">
-                    <h4 class="text-sm font-semibold text-gray-300 mb-4 uppercase tracking-wide">📁 Gallery Settings</h4>
+                <div class="border-b border-pm pb-3">
+                    <h4 class="text-xs font-semibold text-pm-secondary mb-3 uppercase tracking-wide">Gallery Settings</h4>
 
-                    <div class="mb-4">
-                        <label class="block text-sm font-medium text-gray-400 mb-2">Image Scan Directory</label>
+                    <div class="mb-3">
+                        <label class="block text-xs font-medium text-pm-secondary mb-1">Image Scan Directory</label>
                         <input type="text" id="galleryRootPath" placeholder="Leave empty for auto-detect"
-                               class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
-                        <p class="text-xs text-gray-500 mt-2">Custom path to scan for images. Leave empty to use ComfyUI's default output directory.</p>
+                               class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none">
+                        <p class="text-xs text-pm-muted mt-1">Custom path to scan for images. Leave empty to use ComfyUI's default output directory.</p>
                     </div>
 
-                    <div class="mb-4">
+                    <div class="mb-3">
                         <div class="flex items-center justify-between">
-                            <label class="block text-sm font-medium text-gray-400">Currently Monitoring</label>
-                            <button id="refreshMonitoringStatus" class="text-xs text-blue-400 hover:text-blue-300">🔄 Refresh</button>
+                            <label class="block text-xs font-medium text-pm-secondary">Currently Monitoring</label>
+                            <button id="refreshMonitoringStatus" class="text-xs text-pm-accent hover:text-pm-accent-hover">Refresh</button>
                         </div>
-                        <div id="monitoringStatus" class="mt-2 px-3 py-2 bg-gray-900 rounded-lg text-xs text-gray-400 font-mono">
+                        <div id="monitoringStatus" class="mt-1.5 px-2.5 py-1.5 bg-pm-input rounded-pm-sm text-xs text-pm-secondary font-mono">
                             Loading...
                         </div>
                     </div>
                 </div>
 
                 <!-- UI Settings Section -->
-                <div class="border-b border-gray-700 pb-4">
-                    <h4 class="text-sm font-semibold text-gray-300 mb-4 uppercase tracking-wide">🖥️ UI Settings</h4>
+                <div class="border-b border-pm pb-3">
+                    <h4 class="text-xs font-semibold text-pm-secondary mb-3 uppercase tracking-wide">UI Settings</h4>
 
-                    <div class="mb-4">
-                        <label class="block text-sm font-medium text-gray-400 mb-2">Search Results Auto-Hide (seconds)</label>
+                    <div class="mb-3">
+                        <label class="block text-xs font-medium text-pm-secondary mb-1">Search Results Auto-Hide (seconds)</label>
                         <input type="number" id="resultTimeout" min="0" max="300" value="30"
-                               class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
-                        <p class="text-xs text-gray-500 mt-2">Set to 0 to disable auto-hide. Controls how long search results stay visible in the ComfyUI node.</p>
+                               class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none">
+                        <p class="text-xs text-pm-muted mt-1">Set to 0 to disable auto-hide.</p>
                     </div>
 
                     <div>
-                        <label class="block text-sm font-medium text-gray-400 mb-2">Web UI Display Mode</label>
+                        <label class="block text-xs font-medium text-pm-secondary mb-1">Web UI Display Mode</label>
                         <select id="webuiDisplayMode"
-                                class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                                class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none">
                             <option value="popup">Popup Window (Current)</option>
                             <option value="newtab">New Tab</option>
                         </select>
-                        <p class="text-xs text-gray-500 mt-2">Choose how the Web UI opens when clicked from ComfyUI nodes.</p>
+                        <p class="text-xs text-pm-muted mt-1">Choose how the Web UI opens from ComfyUI nodes.</p>
                     </div>
                 </div>
             </div>
 
-            <div class="flex justify-end space-x-3 mt-8">
-                <button id="cancelSettings" 
-                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+            <div class="flex justify-end gap-2 mt-4">
+                <button id="cancelSettings"
+                        class="px-3 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Cancel
                 </button>
-                <button id="saveSettings" 
-                        class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors">
+                <button id="saveSettings"
+                        class="px-3 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
                     Save Settings
                 </button>
             </div>
@@ -557,23 +407,23 @@
     </div>
 
     <!-- Bulk Tag Modal -->
-    <div id="bulkTagModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700">
-            <h3 class="text-xl font-semibold text-gray-100 mb-6">🏷️ Add Tags to Selected Prompts</h3>
-            
+    <div id="bulkTagModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-md w-full mx-4 border border-pm shadow-pm">
+            <h3 class="text-sm font-semibold text-pm mb-4">Add Tags to Selected Prompts</h3>
+
             <div>
-                <label class="block text-sm font-medium text-gray-400 mb-2">Tags (comma-separated)</label>
-                <input type="text" id="bulkTagInput" placeholder="tag1, tag2, tag3..." 
-                       class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                <label class="block text-xs font-medium text-pm-secondary mb-1">Tags (comma-separated)</label>
+                <input type="text" id="bulkTagInput" placeholder="tag1, tag2, tag3..."
+                       class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] placeholder:text-pm-muted focus:outline-none">
             </div>
 
-            <div class="flex justify-end space-x-3 mt-6">
-                <button id="cancelBulkTag" 
-                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+            <div class="flex justify-end gap-2 mt-4">
+                <button id="cancelBulkTag"
+                        class="px-3 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Cancel
                 </button>
-                <button id="confirmBulkTag" 
-                        class="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition-colors">
+                <button id="confirmBulkTag"
+                        class="px-3 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
                     Add Tags
                 </button>
             </div>
@@ -581,23 +431,23 @@
     </div>
 
     <!-- Individual Tag Modal -->
-    <div id="individualTagModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700">
-            <h3 class="text-xl font-semibold text-gray-100 mb-6">🏷️ Add Tags to Prompt</h3>
-            
+    <div id="individualTagModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-md w-full mx-4 border border-pm shadow-pm">
+            <h3 class="text-sm font-semibold text-pm mb-4">Add Tags to Prompt</h3>
+
             <div>
-                <label class="block text-sm font-medium text-gray-400 mb-2">Tags (comma-separated)</label>
-                <input type="text" id="individualTagInput" placeholder="tag1, tag2, tag3..." 
-                       class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                <label class="block text-xs font-medium text-pm-secondary mb-1">Tags (comma-separated)</label>
+                <input type="text" id="individualTagInput" placeholder="tag1, tag2, tag3..."
+                       class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] placeholder:text-pm-muted focus:outline-none">
             </div>
 
-            <div class="flex justify-end space-x-3 mt-6">
-                <button id="cancelIndividualTag" 
-                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+            <div class="flex justify-end gap-2 mt-4">
+                <button id="cancelIndividualTag"
+                        class="px-3 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Cancel
                 </button>
-                <button id="confirmIndividualTag" 
-                        class="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition-colors">
+                <button id="confirmIndividualTag"
+                        class="px-3 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
                     Add Tags
                 </button>
             </div>
@@ -605,23 +455,23 @@
     </div>
 
     <!-- Bulk Category Modal -->
-    <div id="bulkCategoryModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700">
-            <h3 class="text-xl font-semibold text-gray-100 mb-6">📁 Set Category for Selected Prompts</h3>
-            
+    <div id="bulkCategoryModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-md w-full mx-4 border border-pm shadow-pm">
+            <h3 class="text-sm font-semibold text-pm mb-4">Set Category for Selected Prompts</h3>
+
             <div>
-                <label class="block text-sm font-medium text-gray-400 mb-2">Category</label>
-                <input type="text" id="bulkCategoryInput" placeholder="Enter category name..." 
-                       class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                <label class="block text-xs font-medium text-pm-secondary mb-1">Category</label>
+                <input type="text" id="bulkCategoryInput" placeholder="Enter category name..."
+                       class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] placeholder:text-pm-muted focus:outline-none">
             </div>
 
-            <div class="flex justify-end space-x-3 mt-6">
-                <button id="cancelBulkCategory" 
-                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+            <div class="flex justify-end gap-2 mt-4">
+                <button id="cancelBulkCategory"
+                        class="px-3 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Cancel
                 </button>
-                <button id="confirmBulkCategory" 
-                        class="px-6 py-2 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-lg transition-colors">
+                <button id="confirmBulkCategory"
+                        class="px-3 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
                     Set Category
                 </button>
             </div>
@@ -629,33 +479,28 @@
     </div>
 
     <!-- Database Restore Modal -->
-    <div id="restoreModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700">
-            <h3 class="text-xl font-semibold text-gray-100 mb-6">📁 Restore Database</h3>
-            
-            <div class="mb-4">
-                <div class="bg-yellow-900/20 border border-yellow-600 rounded-lg p-4 mb-4">
-                    <div class="flex items-start space-x-2">
-                        <span class="text-yellow-400 text-xl">⚠️</span>
-                        <div>
-                            <h4 class="text-yellow-400 font-medium">Warning</h4>
-                            <p class="text-gray-300 text-sm">This will replace your current database. A backup will be created automatically.</p>
-                        </div>
-                    </div>
+    <div id="restoreModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-md w-full mx-4 border border-pm shadow-pm">
+            <h3 class="text-sm font-semibold text-pm mb-4">Restore Database</h3>
+
+            <div class="mb-3">
+                <div class="bg-pm-warning-tint border border-pm-warning/40 rounded-pm-md p-3 mb-3">
+                    <h4 class="text-pm-warning font-medium text-xs">Warning</h4>
+                    <p class="text-pm text-xs mt-1">This will replace your current database. A backup will be created automatically.</p>
                 </div>
-                
-                <label class="block text-sm font-medium text-gray-400 mb-2">Select Database File (.db)</label>
-                <input type="file" id="restoreFileInput" accept=".db" 
-                       class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+
+                <label class="block text-xs font-medium text-pm-secondary mb-1">Select Database File (.db)</label>
+                <input type="file" id="restoreFileInput" accept=".db"
+                       class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] file:mr-3 file:py-1 file:px-3 file:rounded-pm-sm file:border-0 file:text-xs file:font-medium file:bg-pm-accent file:text-pm-accent-fg">
             </div>
 
-            <div class="flex justify-end space-x-3 mt-6">
-                <button id="cancelRestore" 
-                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+            <div class="flex justify-end gap-2 mt-4">
+                <button id="cancelRestore"
+                        class="px-3 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Cancel
                 </button>
-                <button id="confirmRestore" 
-                        class="px-6 py-2 bg-amber-600 hover:bg-amber-700 text-white font-medium rounded-lg transition-colors">
+                <button id="confirmRestore"
+                        class="px-3 py-1.5 bg-pm-warning hover:opacity-80 text-black text-xs font-medium rounded-pm-sm transition-colors">
                     Restore Database
                 </button>
             </div>
@@ -663,29 +508,29 @@
     </div>
 
     <!-- Diagnostics Modal -->
-    <div id="diagnosticsModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl max-w-4xl w-full max-h-[90vh] overflow-hidden mx-4 border border-gray-700">
-            <div class="p-6 border-b border-gray-700">
+    <div id="diagnosticsModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg max-w-4xl w-full max-h-[90vh] overflow-hidden mx-4 border border-pm shadow-pm">
+            <div class="p-4 border-b border-pm">
                 <div class="flex items-center justify-between">
-                    <h3 class="text-xl font-semibold text-gray-100">🔍 Gallery System Diagnostics</h3>
-                    <button onclick="window.admin.closeDiagnostics()" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
-                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <h3 class="text-sm font-semibold text-pm">Gallery System Diagnostics</h3>
+                    <button onclick="window.admin.closeDiagnostics()" class="p-1 rounded-pm-sm hover:bg-pm-hover transition-colors">
+                        <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
                     </button>
                 </div>
             </div>
-            <div class="p-6 overflow-y-auto max-h-[calc(90vh-120px)] custom-scrollbar">
-                <div class="flex items-center justify-between mb-4">
-                    <button id="runDiagnosticsBtn" class="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white font-medium rounded-lg transition-colors">
-                        🔍 Run Diagnostics
+            <div class="p-4 overflow-y-auto max-h-[calc(90vh-120px)]">
+                <div class="flex items-center justify-between mb-3">
+                    <button id="runDiagnosticsBtn" class="px-2.5 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
+                        Run Diagnostics
                     </button>
-                    <button id="testImageLinkBtn" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors">
-                        🧪 Test Image Link
+                    <button id="testImageLinkBtn" class="px-2.5 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                        Test Image Link
                     </button>
                 </div>
-                <div id="diagnosticsContent" class="space-y-4">
-                    <div class="text-center py-8 text-gray-400">
+                <div id="diagnosticsContent" class="space-y-3">
+                    <div class="text-center py-6 text-pm-secondary text-xs">
                         Click "Run Diagnostics" to check the gallery system status
                     </div>
                 </div>
@@ -694,99 +539,99 @@
     </div>
 
     <!-- Maintenance Modal -->
-    <div id="maintenanceModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl max-w-4xl w-full max-h-[90vh] overflow-hidden mx-4 border border-gray-700">
-            <div class="p-6 border-b border-gray-700">
+    <div id="maintenanceModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg max-w-4xl w-full max-h-[90vh] overflow-hidden mx-4 border border-pm shadow-pm">
+            <div class="p-4 border-b border-pm">
                 <div class="flex items-center justify-between">
-                    <h3 class="text-xl font-semibold text-gray-100">🔧 Database Maintenance</h3>
-                    <button onclick="window.admin.closeMaintenance()" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
-                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <h3 class="text-sm font-semibold text-pm">Database Maintenance</h3>
+                    <button onclick="window.admin.closeMaintenance()" class="p-1 rounded-pm-sm hover:bg-pm-hover transition-colors">
+                        <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
                     </button>
                 </div>
             </div>
-            <div class="p-6 overflow-y-auto max-h-[calc(90vh-120px)] custom-scrollbar">
+            <div class="p-4 overflow-y-auto max-h-[calc(90vh-120px)]">
                 <!-- Maintenance Options -->
-                <div class="space-y-4 mb-6">
-                    <h4 class="text-lg font-medium text-gray-100 mb-4">Select Maintenance Operations:</h4>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <label class="flex items-center space-x-3 p-4 bg-gray-700 rounded-lg hover:bg-gray-600 cursor-pointer">
-                            <input type="checkbox" id="cleanup_duplicates" class="maintenance-option w-4 h-4 text-teal-600 bg-gray-600 border-gray-500 rounded focus:ring-teal-500" checked>
+                <div class="space-y-3 mb-4">
+                    <h4 class="text-xs font-semibold text-pm-secondary uppercase tracking-wide mb-3">Select Maintenance Operations:</h4>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
+                            <input type="checkbox" id="cleanup_duplicates" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]" checked>
                             <div class="flex-1">
-                                <div class="text-white font-medium">🗑️ Remove Duplicates</div>
-                                <div class="text-sm text-gray-400">Find and remove duplicate prompts based on text content</div>
+                                <div class="text-pm text-xs font-medium">Remove Duplicates</div>
+                                <div class="text-[11px] text-pm-secondary">Find and remove duplicate prompts based on text content</div>
                             </div>
                         </label>
-                        
-                        <label class="flex items-center space-x-3 p-4 bg-gray-700 rounded-lg hover:bg-gray-600 cursor-pointer">
-                            <input type="checkbox" id="vacuum" class="maintenance-option w-4 h-4 text-teal-600 bg-gray-600 border-gray-500 rounded focus:ring-teal-500" checked>
+
+                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
+                            <input type="checkbox" id="vacuum" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]" checked>
                             <div class="flex-1">
-                                <div class="text-white font-medium">⚡ Vacuum Database</div>
-                                <div class="text-sm text-gray-400">Optimize database file size and performance</div>
+                                <div class="text-pm text-xs font-medium">Vacuum Database</div>
+                                <div class="text-[11px] text-pm-secondary">Optimize database file size and performance</div>
                             </div>
                         </label>
-                        
-                        <label class="flex items-center space-x-3 p-4 bg-gray-700 rounded-lg hover:bg-gray-600 cursor-pointer">
-                            <input type="checkbox" id="cleanup_orphaned_images" class="maintenance-option w-4 h-4 text-teal-600 bg-gray-600 border-gray-500 rounded focus:ring-teal-500" checked>
+
+                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
+                            <input type="checkbox" id="cleanup_orphaned_images" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]" checked>
                             <div class="flex-1">
-                                <div class="text-white font-medium">🖼️ Clean Orphaned Images</div>
-                                <div class="text-sm text-gray-400">Remove image records for files that no longer exist</div>
+                                <div class="text-pm text-xs font-medium">Clean Orphaned Images</div>
+                                <div class="text-[11px] text-pm-secondary">Remove image records for files that no longer exist</div>
                             </div>
                         </label>
-                        
-                        <label class="flex items-center space-x-3 p-4 bg-gray-700 rounded-lg hover:bg-gray-600 cursor-pointer">
-                            <input type="checkbox" id="check_hash_duplicates" class="maintenance-option w-4 h-4 text-teal-600 bg-gray-600 border-gray-500 rounded focus:ring-teal-500">
+
+                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
+                            <input type="checkbox" id="check_hash_duplicates" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]">
                             <div class="flex-1">
-                                <div class="text-white font-medium">🔍 Check Hash Duplicates</div>
-                                <div class="text-sm text-gray-400">Identify prompts with duplicate hash values</div>
+                                <div class="text-pm text-xs font-medium">Check Hash Duplicates</div>
+                                <div class="text-[11px] text-pm-secondary">Identify prompts with duplicate hash values</div>
                             </div>
                         </label>
-                        
-                        <label class="flex items-center space-x-3 p-4 bg-gray-700 rounded-lg hover:bg-gray-600 cursor-pointer">
-                            <input type="checkbox" id="check_consistency" class="maintenance-option w-4 h-4 text-teal-600 bg-gray-600 border-gray-500 rounded focus:ring-teal-500">
+
+                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
+                            <input type="checkbox" id="check_consistency" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]">
                             <div class="flex-1">
-                                <div class="text-white font-medium">🔧 Consistency Check</div>
-                                <div class="text-sm text-gray-400">Verify database integrity and data consistency</div>
+                                <div class="text-pm text-xs font-medium">Consistency Check</div>
+                                <div class="text-[11px] text-pm-secondary">Verify database integrity and data consistency</div>
                             </div>
                         </label>
-                        
-                        <label class="flex items-center space-x-3 p-4 bg-gray-700 rounded-lg hover:bg-gray-600 cursor-pointer">
-                            <input type="checkbox" id="statistics" class="maintenance-option w-4 h-4 text-teal-600 bg-gray-600 border-gray-500 rounded focus:ring-teal-500">
+
+                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
+                            <input type="checkbox" id="statistics" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]">
                             <div class="flex-1">
-                                <div class="text-white font-medium">📊 Database Statistics</div>
-                                <div class="text-sm text-gray-400">Generate detailed database statistics report</div>
+                                <div class="text-pm text-xs font-medium">Database Statistics</div>
+                                <div class="text-[11px] text-pm-secondary">Generate detailed database statistics report</div>
                             </div>
                         </label>
-                        
-                        <label class="flex items-center space-x-3 p-4 bg-gray-700 rounded-lg hover:bg-gray-600 cursor-pointer">
-                            <input type="checkbox" id="prune_orphaned_prompts" class="maintenance-option w-4 h-4 text-teal-600 bg-gray-600 border-gray-500 rounded focus:ring-teal-500">
+
+                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
+                            <input type="checkbox" id="prune_orphaned_prompts" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]">
                             <div class="flex-1">
-                                <div class="text-white font-medium">🚮 Prune Orphaned Prompts</div>
-                                <div class="text-sm text-gray-400">Remove prompts that have no linked images</div>
+                                <div class="text-pm text-xs font-medium">Prune Orphaned Prompts</div>
+                                <div class="text-[11px] text-pm-secondary">Remove prompts that have no linked images</div>
                             </div>
                         </label>
                     </div>
                 </div>
-                
+
                 <!-- Action Buttons -->
-                <div class="flex items-center justify-between mb-6">
-                    <div class="flex space-x-3">
-                        <button id="runMaintenanceBtn" class="px-6 py-3 bg-teal-600 hover:bg-teal-700 text-white font-medium rounded-lg transition-colors">
-                            🔧 Run Maintenance
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex gap-2">
+                        <button id="runMaintenanceBtn" class="px-3 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
+                            Run Maintenance
                         </button>
-                        <button id="selectAllMaintenanceBtn" class="px-4 py-3 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
-                            ✅ Select All
+                        <button id="selectAllMaintenanceBtn" class="px-2.5 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Select All
                         </button>
-                        <button id="clearAllMaintenanceBtn" class="px-4 py-3 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
-                            ❌ Clear All
+                        <button id="clearAllMaintenanceBtn" class="px-2.5 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Clear All
                         </button>
                     </div>
                 </div>
-                
+
                 <!-- Results -->
-                <div id="maintenanceResults" class="space-y-4">
-                    <div class="text-center py-8 text-gray-400">
+                <div id="maintenanceResults" class="space-y-3">
+                    <div class="text-center py-6 text-pm-secondary text-xs">
                         Click "Run Maintenance" to perform selected operations
                     </div>
                 </div>
@@ -795,80 +640,70 @@
     </div>
 
     <!-- Gallery Modal -->
-    <div id="galleryModal" class="fixed inset-0 bg-black bg-opacity-75 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl max-w-6xl w-full max-h-[90vh] overflow-hidden mx-4 border border-gray-700">
-            <div class="p-6 border-b border-gray-700">
+    <div id="galleryModal" class="fixed inset-0 bg-black/75 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg max-w-6xl w-full max-h-[90vh] overflow-hidden mx-4 border border-pm shadow-pm">
+            <div class="p-4 border-b border-pm">
                 <div class="flex items-center justify-between">
-                    <h3 class="text-xl font-semibold text-gray-100" id="galleryTitle">Generated Images</h3>
-                    <button onclick="window.admin.closeGallery()" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
-                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <h3 class="text-sm font-semibold text-pm" id="galleryTitle">Generated Images</h3>
+                    <button onclick="window.admin.closeGallery()" class="p-1 rounded-pm-sm hover:bg-pm-hover transition-colors">
+                        <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
                     </button>
                 </div>
             </div>
-            <div class="p-6 overflow-y-auto max-h-[calc(90vh-120px)] custom-scrollbar">
-                <div id="galleryContent" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    <!-- Gallery images will be loaded here -->
+            <div class="p-4 overflow-y-auto max-h-[calc(90vh-120px)]">
+                <div id="galleryContent" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 </div>
-                <div id="galleryEmpty" class="text-center py-12 hidden">
-                    <div class="w-16 h-16 bg-gray-700 rounded-full flex items-center justify-center mx-auto mb-4">
-                        <span class="text-2xl">🖼️</span>
-                    </div>
-                    <h4 class="text-lg font-medium text-gray-300 mb-2">No images found</h4>
-                    <p class="text-gray-500">No images have been generated with this prompt yet.</p>
+                <div id="galleryEmpty" class="text-center py-8 hidden">
+                    <h4 class="text-sm font-medium text-pm mb-1">No images found</h4>
+                    <p class="text-pm-muted text-xs">No images have been generated with this prompt yet.</p>
                 </div>
-                <div id="galleryLoading" class="text-center py-12">
-                    <div class="w-12 h-12 border-4 border-purple-500/30 border-t-purple-500 rounded-full animate-spin mx-auto mb-4"></div>
-                    <p class="text-gray-400">Loading images...</p>
+                <div id="galleryLoading" class="text-center py-8">
+                    <div class="w-8 h-8 border-3 border-pm-accent/30 border-t-pm-accent rounded-full animate-spin mx-auto mb-3"></div>
+                    <p class="text-pm-secondary text-xs">Loading images...</p>
                 </div>
             </div>
         </div>
     </div>
 
-
     <!-- Scan Modal -->
-    <div id="scanModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-lg w-full mx-4 border border-gray-700">
-            <h3 class="text-xl font-semibold text-gray-100 mb-6">📸 Scan ComfyUI Output Images</h3>
-            
-            <div class="space-y-4">
-                <div class="bg-orange-900/30 border border-orange-600 rounded-lg p-4">
-                    <div class="flex items-start space-x-3">
-                        <span class="text-orange-400 text-xl">⚠️</span>
-                        <div>
-                            <h4 class="text-orange-300 font-medium mb-2">Important Information</h4>
-                            <ul class="text-orange-200 text-sm space-y-1">
-                                <li>• This will scan all PNG files in your ComfyUI output directory</li>
-                                <li>• Depending on the size of your output folder, this could take several minutes</li>
-                                <li>• This is an experimental feature - we recommend backing up your database first</li>
-                                <li>• Only images with ComfyUI metadata will be processed</li>
-                                <li>• Duplicate prompts will be automatically detected and skipped</li>
-                            </ul>
-                        </div>
-                    </div>
+    <div id="scanModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-lg w-full mx-4 border border-pm shadow-pm">
+            <h3 class="text-sm font-semibold text-pm mb-4">Scan ComfyUI Output Images</h3>
+
+            <div class="space-y-3">
+                <div class="bg-pm-warning-tint border border-pm-warning/40 rounded-pm-md p-3">
+                    <h4 class="text-pm-warning font-medium text-xs mb-1.5">Important Information</h4>
+                    <ul class="text-pm text-xs space-y-0.5">
+                        <li>This will scan all PNG files in your ComfyUI output directory</li>
+                        <li>Depending on size, this could take several minutes</li>
+                        <li>This is experimental — we recommend backing up first</li>
+                        <li>Only images with ComfyUI metadata will be processed</li>
+                        <li>Duplicate prompts will be automatically detected and skipped</li>
+                    </ul>
                 </div>
-                
-                <div class="bg-blue-900/30 border border-blue-600 rounded-lg p-4">
+
+                <div class="bg-pm-info-tint border border-pm-info/40 rounded-pm-md p-3">
                     <div class="flex items-center justify-between">
-                        <span class="text-blue-300 font-medium">Backup Database First (Recommended)</span>
-                        <button id="quickBackupBtn" 
-                                class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            💾 Backup Now
+                        <span class="text-pm text-xs font-medium">Backup Database First (Recommended)</span>
+                        <button id="quickBackupBtn"
+                                class="px-2.5 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
+                            Backup Now
                         </button>
                     </div>
                 </div>
-                
-                <div id="scanProgress" class="hidden space-y-3">
-                    <div class="bg-gray-700 rounded-lg p-4">
-                        <div class="flex items-center justify-between mb-2">
-                            <span class="text-gray-300 text-sm font-medium">Scanning Progress</span>
-                            <span id="scanStatusText" class="text-gray-400 text-sm">Preparing...</span>
+
+                <div id="scanProgress" class="hidden space-y-2">
+                    <div class="bg-pm-input rounded-pm-md p-3">
+                        <div class="flex items-center justify-between mb-1.5">
+                            <span class="text-pm text-xs font-medium">Scanning Progress</span>
+                            <span id="scanStatusText" class="text-pm-secondary text-xs">Preparing...</span>
                         </div>
-                        <div class="w-full bg-gray-600 rounded-full h-2">
-                            <div id="scanProgressBar" class="bg-pink-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                        <div class="w-full bg-pm-primary rounded-full h-1.5">
+                            <div id="scanProgressBar" class="bg-pm-accent h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
                         </div>
-                        <div class="flex justify-between text-xs text-gray-400 mt-2">
+                        <div class="flex justify-between text-[11px] text-pm-muted mt-1">
                             <span id="scanCount">0 files processed</span>
                             <span id="scanFound">0 prompts found</span>
                         </div>
@@ -876,13 +711,13 @@
                 </div>
             </div>
 
-            <div class="flex justify-end space-x-3 mt-6">
-                <button id="cancelScan" 
-                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+            <div class="flex justify-end gap-2 mt-4">
+                <button id="cancelScan"
+                        class="px-3 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Cancel
                 </button>
-                <button id="startScan" 
-                        class="px-6 py-2 bg-pink-600 hover:bg-pink-700 text-white font-medium rounded-lg transition-colors">
+                <button id="startScan"
+                        class="px-3 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
                     Start Scan
                 </button>
             </div>
@@ -890,25 +725,25 @@
     </div>
 
     <!-- Logs Modal -->
-    <div id="logsModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl max-w-6xl w-full max-h-[90vh] overflow-hidden mx-4 border border-gray-700">
-            <div class="p-6 border-b border-gray-700">
+    <div id="logsModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg max-w-6xl w-full max-h-[90vh] overflow-hidden mx-4 border border-pm shadow-pm">
+            <div class="p-4 border-b border-pm">
                 <div class="flex items-center justify-between">
-                    <h3 class="text-xl font-semibold text-gray-100">📋 System Logs</h3>
-                    <button onclick="window.admin.closeLogs()" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
-                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <h3 class="text-sm font-semibold text-pm">System Logs</h3>
+                    <button onclick="window.admin.closeLogs()" class="p-1 rounded-pm-sm hover:bg-pm-hover transition-colors">
+                        <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
                     </button>
                 </div>
             </div>
-            
+
             <!-- Log Controls -->
-            <div class="p-6 border-b border-gray-700">
-                <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4">
+            <div class="p-4 border-b border-pm">
+                <div class="grid grid-cols-1 md:grid-cols-5 gap-3 mb-3">
                     <div>
-                        <label class="block text-sm font-medium text-gray-400 mb-2">Log Level</label>
-                        <select id="logLevel" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                        <label class="block text-xs font-medium text-pm-secondary mb-1">Log Level</label>
+                        <select id="logLevel" class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none">
                             <option value="">All Levels</option>
                             <option value="DEBUG">Debug</option>
                             <option value="INFO">Info</option>
@@ -918,8 +753,8 @@
                         </select>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-400 mb-2">Limit</label>
-                        <select id="logLimit" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                        <label class="block text-xs font-medium text-pm-secondary mb-1">Limit</label>
+                        <select id="logLimit" class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none">
                             <option value="50">Last 50</option>
                             <option value="100" selected>Last 100</option>
                             <option value="200">Last 200</option>
@@ -927,51 +762,51 @@
                         </select>
                     </div>
                     <div class="flex items-end">
-                        <button id="refreshLogsBtn" class="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors">
-                            🔄 Refresh
+                        <button id="refreshLogsBtn" class="w-full px-2.5 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
+                            Refresh
                         </button>
                     </div>
                     <div class="flex items-end">
-                        <button id="downloadLogsBtn" class="w-full px-4 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors">
-                            📥 Download
+                        <button id="downloadLogsBtn" class="w-full px-2.5 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Download
                         </button>
                     </div>
                     <div class="flex items-end">
-                        <button id="clearLogsBtn" class="w-full px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors">
-                            🗑️ Clear Logs
+                        <button id="clearLogsBtn" class="w-full px-2.5 py-1.5 text-pm-error bg-transparent hover:bg-pm-error-tint border border-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Clear Logs
                         </button>
                     </div>
                 </div>
-                
+
                 <!-- Log Stats -->
-                <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-4">
-                    <div class="bg-gray-700 rounded-lg p-3">
-                        <div class="text-xs text-gray-400">Total Logs</div>
-                        <div class="text-lg font-semibold text-blue-400" id="logStatsTotal">-</div>
+                <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-3">
+                    <div class="bg-pm-input rounded-pm-md p-2">
+                        <div class="text-[11px] text-pm-secondary">Total Logs</div>
+                        <div class="text-sm font-semibold text-pm-accent" id="logStatsTotal">-</div>
                     </div>
-                    <div class="bg-gray-700 rounded-lg p-3">
-                        <div class="text-xs text-gray-400">Errors</div>
-                        <div class="text-lg font-semibold text-red-400" id="logStatsErrors">-</div>
+                    <div class="bg-pm-input rounded-pm-md p-2">
+                        <div class="text-[11px] text-pm-secondary">Errors</div>
+                        <div class="text-sm font-semibold text-pm-error" id="logStatsErrors">-</div>
                     </div>
-                    <div class="bg-gray-700 rounded-lg p-3">
-                        <div class="text-xs text-gray-400">Warnings</div>
-                        <div class="text-lg font-semibold text-yellow-400" id="logStatsWarnings">-</div>
+                    <div class="bg-pm-input rounded-pm-md p-2">
+                        <div class="text-[11px] text-pm-secondary">Warnings</div>
+                        <div class="text-sm font-semibold text-pm-warning" id="logStatsWarnings">-</div>
                     </div>
-                    <div class="bg-gray-700 rounded-lg p-3">
-                        <div class="text-xs text-gray-400">Current Level</div>
-                        <div class="text-lg font-semibold text-green-400" id="logStatsLevel">-</div>
+                    <div class="bg-pm-input rounded-pm-md p-2">
+                        <div class="text-[11px] text-pm-secondary">Current Level</div>
+                        <div class="text-sm font-semibold text-pm-success" id="logStatsLevel">-</div>
                     </div>
-                    <div class="bg-gray-700 rounded-lg p-3">
-                        <div class="text-xs text-gray-400">Log Size</div>
-                        <div class="text-lg font-semibold text-purple-400" id="logStatsSize">-</div>
+                    <div class="bg-pm-input rounded-pm-md p-2">
+                        <div class="text-[11px] text-pm-secondary">Log Size</div>
+                        <div class="text-sm font-semibold text-pm" id="logStatsSize">-</div>
                     </div>
                 </div>
-                
+
                 <!-- Log Settings -->
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                     <div>
-                        <label class="block text-sm font-medium text-gray-400 mb-2">Set Log Level</label>
-                        <select id="setLogLevel" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-100">
+                        <label class="block text-xs font-medium text-pm-secondary mb-1">Set Log Level</label>
+                        <select id="setLogLevel" class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none">
                             <option value="DEBUG">Debug</option>
                             <option value="INFO" selected>Info</option>
                             <option value="WARNING">Warning</option>
@@ -980,284 +815,273 @@
                         </select>
                     </div>
                     <div class="flex items-center">
-                        <label class="flex items-center space-x-2 text-gray-300">
-                            <input type="checkbox" id="consoleLogging" checked class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500">
-                            <span class="text-sm">Console Logging</span>
+                        <label class="flex items-center gap-1.5 text-pm">
+                            <input type="checkbox" id="consoleLogging" checked class="w-3.5 h-3.5 accent-[var(--pm-accent)]">
+                            <span class="text-xs">Console Logging</span>
                         </label>
                     </div>
                     <div class="flex items-end">
-                        <button id="updateLogConfigBtn" class="w-full px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition-colors">
-                            💾 Update Config
+                        <button id="updateLogConfigBtn" class="w-full px-2.5 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
+                            Update Config
                         </button>
                     </div>
                 </div>
             </div>
-            
+
             <!-- Log Viewer -->
             <div class="flex-1 overflow-hidden">
-                <div class="h-96 overflow-y-auto custom-scrollbar bg-gray-900 font-mono text-sm">
-                    <div id="logsContainer" class="p-4 space-y-1">
-                        <div class="text-center py-8 text-gray-500">
+                <div class="h-96 overflow-y-auto bg-pm-primary font-mono text-xs">
+                    <div id="logsContainer" class="p-3 space-y-0.5">
+                        <div class="text-center py-6 text-pm-muted text-xs">
                             Click "Refresh" to load logs
                         </div>
                     </div>
                 </div>
             </div>
-            
+
             <!-- Log Files -->
-            <div class="p-6 border-t border-gray-700">
-                <h4 class="text-lg font-medium text-gray-100 mb-4">Log Files</h4>
-                <div id="logFilesList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                    <!-- Log files will be inserted here -->
+            <div class="p-4 border-t border-pm">
+                <h4 class="text-xs font-semibold text-pm-secondary uppercase tracking-wide mb-3">Log Files</h4>
+                <div id="logFilesList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
                 </div>
             </div>
         </div>
     </div>
 
     <!-- Add Prompt Modal -->
-    <div id="addPromptModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-2xl w-full mx-4 border border-gray-700 max-h-[90vh] overflow-y-auto custom-scrollbar">
-            <div class="flex items-center justify-between mb-6">
-                <h3 class="text-xl font-semibold text-gray-100">➕ Add New Prompt</h3>
-                <button onclick="window.admin.hideModal('addPromptModal')" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
-                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <div id="addPromptModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-2xl w-full mx-4 border border-pm max-h-[90vh] overflow-y-auto shadow-pm">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-sm font-semibold text-pm">Add New Prompt</h3>
+                <button onclick="window.admin.hideModal('addPromptModal')" class="p-1 rounded-pm-sm hover:bg-pm-hover transition-colors">
+                    <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                     </svg>
                 </button>
             </div>
 
             <!-- Prompt Text -->
-            <div class="mb-5">
-                <label class="block text-sm font-medium text-gray-400 mb-2">Prompt Text <span class="text-red-400">*</span></label>
+            <div class="mb-4">
+                <label class="block text-xs font-medium text-pm-secondary mb-1">Prompt Text <span class="text-pm-error">*</span></label>
                 <textarea id="addPromptText" rows="4"
-                    class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 text-gray-100 text-sm resize-none custom-scrollbar"
+                    class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] resize-none focus:outline-none"
                     placeholder="Enter your prompt text here..."></textarea>
             </div>
 
             <!-- Category and Rating Row -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
-                <!-- Category -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-400 mb-2">Category</label>
+                    <label class="block text-xs font-medium text-pm-secondary mb-1">Category</label>
                     <div class="relative">
                         <input type="text" id="addPromptCategory" list="addPromptCategoryList"
-                            class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 text-gray-100 text-sm"
+                            class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none"
                             placeholder="Select or type category...">
                         <datalist id="addPromptCategoryList"></datalist>
                     </div>
                 </div>
-
-                <!-- Rating -->
                 <div>
-                    <label class="block text-sm font-medium text-gray-400 mb-2">Rating</label>
-                    <div class="flex items-center space-x-1" id="addPromptRating">
-                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="1">☆</button>
-                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="2">☆</button>
-                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="3">☆</button>
-                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="4">☆</button>
-                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="5">☆</button>
-                        <button type="button" class="ml-2 text-xs text-gray-500 hover:text-gray-300" id="clearAddPromptRatingBtn">Clear</button>
+                    <label class="block text-xs font-medium text-pm-secondary mb-1">Rating</label>
+                    <div class="flex items-center gap-0.5" id="addPromptRating">
+                        <button type="button" class="rating-star text-lg text-pm-muted hover:text-pm-warning transition-colors" data-rating="1">☆</button>
+                        <button type="button" class="rating-star text-lg text-pm-muted hover:text-pm-warning transition-colors" data-rating="2">☆</button>
+                        <button type="button" class="rating-star text-lg text-pm-muted hover:text-pm-warning transition-colors" data-rating="3">☆</button>
+                        <button type="button" class="rating-star text-lg text-pm-muted hover:text-pm-warning transition-colors" data-rating="4">☆</button>
+                        <button type="button" class="rating-star text-lg text-pm-muted hover:text-pm-warning transition-colors" data-rating="5">☆</button>
+                        <button type="button" class="ml-1.5 text-[11px] text-pm-muted hover:text-pm" id="clearAddPromptRatingBtn">Clear</button>
                     </div>
                     <input type="hidden" id="addPromptRatingValue" value="">
                 </div>
             </div>
 
             <!-- Tags -->
-            <div class="mb-5">
-                <label class="block text-sm font-medium text-gray-400 mb-2">Tags</label>
+            <div class="mb-4">
+                <label class="block text-xs font-medium text-pm-secondary mb-1">Tags</label>
                 <div class="relative">
-                    <div id="addPromptTagsContainer" class="flex flex-wrap gap-2 p-3 bg-gray-700 border border-gray-600 rounded-lg min-h-[44px]">
+                    <div id="addPromptTagsContainer" class="flex flex-wrap gap-1.5 p-2 bg-pm-input border border-pm rounded-pm-sm min-h-[36px]">
                         <input type="text" id="addPromptTagInput"
-                            class="flex-1 min-w-[150px] bg-transparent border-none outline-none text-gray-100 text-sm placeholder-gray-500"
+                            class="flex-1 min-w-[150px] bg-transparent border-none outline-none text-pm text-[13px] placeholder:text-pm-muted"
                             placeholder="Type to add tags...">
                     </div>
-                    <div id="addPromptTagSuggestions" class="absolute left-0 right-0 top-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg hidden z-10 max-h-48 overflow-y-auto custom-scrollbar"></div>
+                    <div id="addPromptTagSuggestions" class="absolute left-0 right-0 top-full mt-1 bg-pm-surface border border-pm rounded-pm-md shadow-pm hidden z-10 max-h-48 overflow-y-auto"></div>
                 </div>
-                <p class="text-gray-500 text-xs mt-1">Press Enter or comma to add a tag. Click a tag to remove it.</p>
+                <p class="text-pm-muted text-[11px] mt-1">Press Enter or comma to add a tag. Click a tag to remove it.</p>
             </div>
 
             <!-- Notes -->
-            <div class="mb-5">
-                <label class="block text-sm font-medium text-gray-400 mb-2">Notes</label>
+            <div class="mb-4">
+                <label class="block text-xs font-medium text-pm-secondary mb-1">Notes</label>
                 <textarea id="addPromptNotes" rows="2"
-                    class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 text-gray-100 text-sm resize-none custom-scrollbar"
+                    class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] resize-none focus:outline-none"
                     placeholder="Optional notes about this prompt..."></textarea>
             </div>
 
             <!-- Protection Option -->
-            <div class="mb-6">
-                <label class="flex items-start p-4 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-650 border border-gray-600">
-                    <input type="checkbox" id="addPromptProtected" checked class="w-4 h-4 mt-0.5 text-green-600 bg-gray-700 border-gray-600 rounded focus:ring-green-500">
-                    <div class="ml-3">
-                        <span class="text-gray-100 font-medium">Protect from orphan cleanup</span>
-                        <p class="text-gray-400 text-sm mt-1">Keep this prompt even if it has no linked images. Uncheck if you want this prompt to be automatically removed during maintenance when it has no images.</p>
+            <div class="mb-4">
+                <label class="flex items-start p-3 bg-pm-input rounded-pm-md cursor-pointer hover:bg-pm-hover border border-pm">
+                    <input type="checkbox" id="addPromptProtected" checked class="w-3.5 h-3.5 mt-0.5 accent-[var(--pm-accent)]">
+                    <div class="ml-2.5">
+                        <span class="text-pm text-xs font-medium">Protect from orphan cleanup</span>
+                        <p class="text-pm-secondary text-[11px] mt-0.5">Keep this prompt even if it has no linked images.</p>
                     </div>
                 </label>
             </div>
 
             <!-- Action Buttons -->
-            <div class="flex justify-end space-x-3">
+            <div class="flex justify-end gap-2">
                 <button onclick="window.admin.hideModal('addPromptModal')"
-                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                        class="px-3 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Cancel
                 </button>
                 <button id="saveNewPromptBtn"
-                        class="px-6 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors">
-                    ➕ Add Prompt
+                        class="px-3 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
+                    Add Prompt
                 </button>
             </div>
         </div>
     </div>
 
     <!-- Auto Tag Modal -->
-    <div id="autoTagModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-lg w-full mx-4 border border-gray-700">
-            <div class="flex items-center justify-between mb-6">
-                <h3 class="text-xl font-semibold text-gray-100">🏷️ Auto Tag Images</h3>
-                <button onclick="hideModal('autoTagModal')" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
-                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <div id="autoTagModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-lg w-full mx-4 border border-pm shadow-pm">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-sm font-semibold text-pm">Auto Tag Images</h3>
+                <button onclick="hideModal('autoTagModal')" class="p-1 rounded-pm-sm hover:bg-pm-hover transition-colors">
+                    <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                     </svg>
                 </button>
             </div>
 
             <!-- Model Selection -->
-            <div class="mb-6">
-                <label class="block text-sm font-medium text-gray-400 mb-3">Model Selection</label>
-                <div class="space-y-3">
-                    <label class="flex items-center justify-between p-4 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-650 border border-gray-600">
+            <div class="mb-4">
+                <label class="block text-xs font-medium text-pm-secondary mb-2">Model Selection</label>
+                <div class="space-y-2">
+                    <label class="flex items-center justify-between p-3 bg-pm-input rounded-pm-md cursor-pointer hover:bg-pm-hover border border-pm">
                         <div class="flex items-center">
-                            <input type="radio" name="autoTagModel" value="gguf" checked class="w-4 h-4 text-purple-600 bg-gray-700 border-gray-600 focus:ring-purple-500">
-                            <div class="ml-3">
-                                <span class="text-gray-100 font-medium">GGUF Model</span>
-                                <span class="text-gray-400 text-sm ml-2">(Recommended, ~4.5GB)</span>
+                            <input type="radio" name="autoTagModel" value="gguf" checked class="w-3.5 h-3.5 accent-[var(--pm-accent)]">
+                            <div class="ml-2.5">
+                                <span class="text-pm text-xs font-medium">GGUF Model</span>
+                                <span class="text-pm-secondary text-[11px] ml-1.5">(Recommended, ~4.5GB)</span>
                             </div>
                         </div>
-                        <div id="ggufModelStatus" class="flex items-center space-x-2">
-                            <span class="text-gray-400 text-sm">Checking...</span>
+                        <div id="ggufModelStatus" class="flex items-center gap-1.5">
+                            <span class="text-pm-secondary text-[11px]">Checking...</span>
                         </div>
                     </label>
-                    <label class="flex items-center justify-between p-4 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-650 border border-gray-600">
+                    <label class="flex items-center justify-between p-3 bg-pm-input rounded-pm-md cursor-pointer hover:bg-pm-hover border border-pm">
                         <div class="flex items-center">
-                            <input type="radio" name="autoTagModel" value="hf" class="w-4 h-4 text-purple-600 bg-gray-700 border-gray-600 focus:ring-purple-500">
-                            <div class="ml-3">
-                                <span class="text-gray-100 font-medium">HuggingFace Model</span>
-                                <span class="text-gray-400 text-sm ml-2">(~16GB)</span>
+                            <input type="radio" name="autoTagModel" value="hf" class="w-3.5 h-3.5 accent-[var(--pm-accent)]">
+                            <div class="ml-2.5">
+                                <span class="text-pm text-xs font-medium">HuggingFace Model</span>
+                                <span class="text-pm-secondary text-[11px] ml-1.5">(~16GB)</span>
                             </div>
                         </div>
-                        <div id="hfModelStatus" class="flex items-center space-x-2">
-                            <span class="text-gray-400 text-sm">Checking...</span>
+                        <div id="hfModelStatus" class="flex items-center gap-1.5">
+                            <span class="text-pm-secondary text-[11px]">Checking...</span>
                         </div>
                     </label>
                 </div>
             </div>
 
             <!-- Prompt Template -->
-            <div class="mb-6">
-                <label class="block text-sm font-medium text-gray-400 mb-2">Tag Generation Prompt</label>
+            <div class="mb-4">
+                <label class="block text-xs font-medium text-pm-secondary mb-1">Tag Generation Prompt</label>
                 <textarea id="autoTagPrompt" rows="6"
-                    class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 text-gray-100 text-sm font-mono resize-none custom-scrollbar"
+                    class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] font-mono resize-none focus:outline-none"
                     placeholder="Enter prompt template...">Generate only comma-separated Danbooru tags (lowercase_underscores, no spaces).
 Include: subject_count (1girl/1boy/etc), gender, ethnicity (asian, caucasian, etc), age_approx (teen, young_woman), body_attributes, face_features, hairstyle, appearance, clothing, accessories, pose, expression, action, camera_angle, camera_shot, scene_composition (wide_shot, long_shot, dutch_angle), environment, background_elements, lighting, mood.
 Prioritize visual accuracy.
 No sentences, no commentary, no captions. Only tags. Keep length short but descriptive.</textarea>
             </div>
 
-            <!-- Tagged Images Handling (for Auto Tag mode) -->
-            <div class="mb-6">
-                <label class="block text-sm font-medium text-gray-400 mb-3">Already Tagged Images</label>
-                <div class="space-y-2">
-                    <label class="flex items-center p-3 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-650 border border-gray-600">
-                        <input type="radio" name="autoTagMode" value="skip" checked class="w-4 h-4 text-purple-600 bg-gray-700 border-gray-600 focus:ring-purple-500">
-                        <span class="ml-3 text-gray-100">Skip images with existing tags</span>
+            <!-- Tagged Images Handling -->
+            <div class="mb-4">
+                <label class="block text-xs font-medium text-pm-secondary mb-2">Already Tagged Images</label>
+                <div class="space-y-1.5">
+                    <label class="flex items-center p-2.5 bg-pm-input rounded-pm-md cursor-pointer hover:bg-pm-hover border border-pm">
+                        <input type="radio" name="autoTagMode" value="skip" checked class="w-3.5 h-3.5 accent-[var(--pm-accent)]">
+                        <span class="ml-2.5 text-pm text-xs">Skip images with existing tags</span>
                     </label>
-                    <label class="flex items-center p-3 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-650 border border-gray-600">
-                        <input type="radio" name="autoTagMode" value="retag" class="w-4 h-4 text-purple-600 bg-gray-700 border-gray-600 focus:ring-purple-500">
-                        <span class="ml-3 text-gray-100">Re-tag all images</span>
+                    <label class="flex items-center p-2.5 bg-pm-input rounded-pm-md cursor-pointer hover:bg-pm-hover border border-pm">
+                        <input type="radio" name="autoTagMode" value="retag" class="w-3.5 h-3.5 accent-[var(--pm-accent)]">
+                        <span class="ml-2.5 text-pm text-xs">Re-tag all images</span>
                     </label>
                 </div>
-                <p class="text-gray-500 text-xs mt-2">Note: "auto-scanned" is not counted as a real tag</p>
+                <p class="text-pm-muted text-[11px] mt-1">Note: "auto-scanned" is not counted as a real tag</p>
             </div>
 
             <!-- Action Buttons -->
-            <div class="flex justify-end space-x-3">
+            <div class="flex justify-end gap-2">
                 <button onclick="hideModal('autoTagModal')"
-                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                        class="px-3 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Cancel
                 </button>
                 <button id="startReviewBtn"
-                        class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors">
-                    👁️ Review
+                        class="px-3 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                    Review
                 </button>
                 <button id="startAutoTagBtn"
-                        class="px-6 py-2 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-lg transition-colors">
-                    🏷️ Auto Tag
+                        class="px-3 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
+                    Auto Tag
                 </button>
             </div>
         </div>
     </div>
 
     <!-- Auto Tag Review Modal -->
-    <div id="autoTagReviewModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-4xl w-full mx-4 border border-gray-700">
-            <div class="flex items-center justify-between mb-6">
-                <h3 class="text-xl font-semibold text-gray-100">
-                    👁️ Review Tags
-                    <span class="text-gray-400 text-base font-normal">(<span id="reviewCurrentIndex">1</span> of <span id="reviewTotalCount">0</span>)</span>
+    <div id="autoTagReviewModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-4xl w-full mx-4 border border-pm shadow-pm">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-sm font-semibold text-pm">
+                    Review Tags
+                    <span class="text-pm-secondary text-xs font-normal">(<span id="reviewCurrentIndex">1</span> of <span id="reviewTotalCount">0</span>)</span>
                 </h3>
-                <button onclick="window.admin.cancelReview()" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
-                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <button onclick="window.admin.cancelReview()" class="p-1 rounded-pm-sm hover:bg-pm-hover transition-colors">
+                    <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                     </svg>
                 </button>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <!-- Image Preview -->
-                <div class="bg-gray-900 rounded-lg p-4">
-                    <img id="reviewImage" src="" alt="Review image" class="w-full h-64 object-contain rounded">
-                    <p id="reviewImageName" class="text-gray-400 text-sm mt-2 text-center truncate">image_name.png</p>
+                <div class="bg-pm-primary rounded-pm-md p-3">
+                    <img id="reviewImage" src="" alt="Review image" class="w-full h-56 object-contain rounded-pm-sm">
+                    <p id="reviewImageName" class="text-pm-secondary text-xs mt-1.5 text-center truncate">image_name.png</p>
                 </div>
 
                 <!-- Generated Tags -->
                 <div>
-                    <label class="block text-sm font-medium text-gray-400 mb-3">Generated Tags (click to remove)</label>
-                    <div id="reviewTagsContainer" class="p-4 bg-gray-900 rounded-lg">
-                        <!-- Visible tags (first row) -->
-                        <div id="reviewTagsVisible" class="flex flex-wrap gap-2">
-                            <!-- First row of tags -->
+                    <label class="block text-xs font-medium text-pm-secondary mb-2">Generated Tags (click to remove)</label>
+                    <div id="reviewTagsContainer" class="p-3 bg-pm-primary rounded-pm-md">
+                        <div id="reviewTagsVisible" class="flex flex-wrap gap-1.5"></div>
+                        <div id="reviewTagsAccordion" class="hidden mt-2">
+                            <div id="reviewTagsHidden" class="flex flex-wrap gap-1.5 max-h-[180px] overflow-y-auto"></div>
                         </div>
-                        <!-- Accordion for remaining tags -->
-                        <div id="reviewTagsAccordion" class="hidden mt-3">
-                            <div id="reviewTagsHidden" class="flex flex-wrap gap-2 max-h-[180px] overflow-y-auto custom-scrollbar">
-                                <!-- Remaining tags -->
-                            </div>
-                        </div>
-                        <!-- Toggle button -->
-                        <button id="reviewTagsToggle" class="hidden mt-3 text-sm text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1">
+                        <button id="reviewTagsToggle" class="hidden mt-2 text-xs text-pm-accent hover:text-pm-accent-hover transition-colors flex items-center gap-0.5">
                             <span id="reviewTagsToggleIcon">▼</span>
                             <span id="reviewTagsToggleText">Show all tags</span>
-                            <span id="reviewTagsCount" class="text-gray-500"></span>
+                            <span id="reviewTagsCount" class="text-pm-muted"></span>
                         </button>
                     </div>
-                    <p class="text-gray-500 text-xs mt-2">Click the × on tags to remove them before applying</p>
+                    <p class="text-pm-muted text-[11px] mt-1">Click the × on tags to remove them before applying</p>
                 </div>
             </div>
 
             <!-- Action Buttons -->
-            <div class="flex justify-between mt-6">
+            <div class="flex justify-between mt-4">
                 <button id="skipReviewBtn"
-                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
-                    ⏭️ Skip
+                        class="px-3 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                    Skip
                 </button>
-                <div class="flex space-x-3">
+                <div class="flex gap-2">
                     <button onclick="window.admin.cancelReview()"
-                            class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors">
+                            class="px-3 py-1.5 text-pm-error bg-transparent hover:bg-pm-error-tint border border-pm text-xs font-medium rounded-pm-sm transition-colors">
                         Cancel All
                     </button>
                     <button id="applyReviewBtn"
-                            class="px-6 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors">
-                        ✅ Apply & Next
+                            class="px-3 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
+                        Apply & Next
                     </button>
                 </div>
             </div>
@@ -1265,47 +1089,43 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
     </div>
 
     <!-- Auto Tag Progress Modal -->
-    <div id="autoTagProgressModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700">
-            <h3 class="text-xl font-semibold text-gray-100 mb-6">🏷️ Auto Tagging Progress</h3>
+    <div id="autoTagProgressModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-md w-full mx-4 border border-pm shadow-pm">
+            <h3 class="text-sm font-semibold text-pm mb-4">Auto Tagging Progress</h3>
 
-            <!-- Current File -->
-            <div class="mb-4">
-                <p class="text-gray-400 text-sm">Processing:</p>
-                <p id="autoTagCurrentFile" class="text-gray-100 font-medium truncate">Initializing...</p>
+            <div class="mb-3">
+                <p class="text-pm-secondary text-xs">Processing:</p>
+                <p id="autoTagCurrentFile" class="text-pm text-xs font-medium truncate">Initializing...</p>
             </div>
 
-            <!-- Progress Bar -->
-            <div class="mb-6">
-                <div class="flex justify-between text-sm text-gray-400 mb-2">
+            <div class="mb-4">
+                <div class="flex justify-between text-xs text-pm-secondary mb-1">
                     <span>Progress</span>
                     <span id="autoTagProgressPercent">0%</span>
                 </div>
-                <div class="w-full bg-gray-700 rounded-full h-3">
-                    <div id="autoTagProgressBar" class="bg-purple-600 h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
+                <div class="w-full bg-pm-input rounded-full h-1.5">
+                    <div id="autoTagProgressBar" class="bg-pm-accent h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
                 </div>
             </div>
 
-            <!-- Stats -->
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="bg-gray-700 rounded-lg p-3 text-center">
-                    <div class="text-2xl font-bold text-purple-400" id="autoTagProcessed">0</div>
-                    <div class="text-xs text-gray-400">Processed</div>
+            <div class="grid grid-cols-3 gap-3 mb-4">
+                <div class="bg-pm-input rounded-pm-md p-2 text-center">
+                    <div class="text-lg font-bold text-pm-accent" id="autoTagProcessed">0</div>
+                    <div class="text-[11px] text-pm-secondary">Processed</div>
                 </div>
-                <div class="bg-gray-700 rounded-lg p-3 text-center">
-                    <div class="text-2xl font-bold text-green-400" id="autoTagApplied">0</div>
-                    <div class="text-xs text-gray-400">Tags Applied</div>
+                <div class="bg-pm-input rounded-pm-md p-2 text-center">
+                    <div class="text-lg font-bold text-pm-success" id="autoTagApplied">0</div>
+                    <div class="text-[11px] text-pm-secondary">Tags Applied</div>
                 </div>
-                <div class="bg-gray-700 rounded-lg p-3 text-center">
-                    <div class="text-2xl font-bold text-yellow-400" id="autoTagSkipped">0</div>
-                    <div class="text-xs text-gray-400">Skipped</div>
+                <div class="bg-pm-input rounded-pm-md p-2 text-center">
+                    <div class="text-lg font-bold text-pm-warning" id="autoTagSkipped">0</div>
+                    <div class="text-[11px] text-pm-secondary">Skipped</div>
                 </div>
             </div>
 
-            <!-- Cancel Button -->
             <div class="flex justify-center">
                 <button id="cancelAutoTagBtn"
-                        class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors">
+                        class="px-3 py-1.5 text-pm-error bg-transparent hover:bg-pm-error-tint border border-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Cancel
                 </button>
             </div>
@@ -1313,48 +1133,44 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
     </div>
 
     <!-- Auto Tag Loading Model Modal -->
-    <div id="autoTagLoadingModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700 text-center">
-            <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
-            <h3 class="text-xl font-semibold text-gray-100 mb-2">Loading Model</h3>
-            <p id="autoTagLoadingStatus" class="text-gray-400">Initializing...</p>
-            <p class="text-gray-500 text-sm mt-4">This may take 30-60 seconds on first load</p>
+    <div id="autoTagLoadingModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-md w-full mx-4 border border-pm shadow-pm text-center">
+            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-pm-accent mx-auto mb-3"></div>
+            <h3 class="text-sm font-semibold text-pm mb-1">Loading Model</h3>
+            <p id="autoTagLoadingStatus" class="text-pm-secondary text-xs">Initializing...</p>
+            <p class="text-pm-muted text-[11px] mt-3">This may take 30-60 seconds on first load</p>
         </div>
     </div>
 
     <!-- Re-tag Confirmation Modal -->
-    <div id="retagConfirmModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-lg w-full mx-4 border border-gray-700">
-            <h3 class="text-xl font-semibold text-gray-100 mb-4">🏷️ Image Already Tagged</h3>
+    <div id="retagConfirmModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-lg w-full mx-4 border border-pm shadow-pm">
+            <h3 class="text-sm font-semibold text-pm mb-3">Image Already Tagged</h3>
 
-            <!-- Image preview -->
-            <div class="mb-4">
-                <img id="retagPreviewImage" src="" alt="Preview" class="w-full h-48 object-contain bg-gray-900 rounded-lg">
-                <p id="retagImageName" class="text-gray-400 text-sm mt-2 text-center truncate"></p>
+            <div class="mb-3">
+                <img id="retagPreviewImage" src="" alt="Preview" class="w-full h-40 object-contain bg-pm-primary rounded-pm-md">
+                <p id="retagImageName" class="text-pm-secondary text-xs mt-1.5 text-center truncate"></p>
             </div>
 
-            <!-- Existing tags -->
-            <div class="mb-4">
-                <p class="text-gray-300 text-sm mb-2">Current tags:</p>
-                <div id="retagExistingTags" class="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
-                    <!-- Tags will be inserted here -->
+            <div class="mb-3">
+                <p class="text-pm text-xs mb-1.5">Current tags:</p>
+                <div id="retagExistingTags" class="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
                 </div>
             </div>
 
-            <p class="text-gray-400 mb-6">This image already has tags. Would you like to generate new tags?</p>
+            <p class="text-pm-secondary text-xs mb-4">This image already has tags. Would you like to generate new tags?</p>
 
-            <!-- Buttons -->
-            <div class="flex gap-3 justify-end">
+            <div class="flex gap-2 justify-end">
                 <button id="retagSkipBtn"
-                        class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                        class="px-2.5 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Skip
                 </button>
                 <button id="retagSkipAllBtn"
-                        class="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white font-medium rounded-lg transition-colors">
+                        class="px-2.5 py-1.5 bg-pm-warning hover:opacity-80 text-black text-xs font-medium rounded-pm-sm transition-colors">
                     Skip All Tagged
                 </button>
                 <button id="retagConfirmBtn"
-                        class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-lg transition-colors">
+                        class="px-2.5 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
                     Re-tag
                 </button>
             </div>
@@ -1362,69 +1178,33 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
     </div>
 
     <!-- Auto Tag Download Modal -->
-    <div id="autoTagDownloadModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700">
-            <h3 class="text-xl font-semibold text-gray-100 mb-6">📥 Downloading Model</h3>
+    <div id="autoTagDownloadModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-md w-full mx-4 border border-pm shadow-pm">
+            <h3 class="text-sm font-semibold text-pm mb-4">Downloading Model</h3>
 
-            <!-- Model Name -->
-            <div class="mb-4">
-                <p class="text-gray-400 text-sm">Downloading:</p>
-                <p id="downloadModelName" class="text-gray-100 font-medium">GGUF Model</p>
+            <div class="mb-3">
+                <p class="text-pm-secondary text-xs">Downloading:</p>
+                <p id="downloadModelName" class="text-pm text-xs font-medium">GGUF Model</p>
             </div>
 
-            <!-- Progress Bar -->
-            <div class="mb-6">
-                <div class="flex justify-between text-sm text-gray-400 mb-2">
+            <div class="mb-4">
+                <div class="flex justify-between text-xs text-pm-secondary mb-1">
                     <span id="downloadStatus">Preparing...</span>
                     <span id="downloadProgressPercent">0%</span>
                 </div>
-                <div class="w-full bg-gray-700 rounded-full h-3">
-                    <div id="downloadProgressBar" class="bg-blue-600 h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
+                <div class="w-full bg-pm-input rounded-full h-1.5">
+                    <div id="downloadProgressBar" class="bg-pm-accent h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
                 </div>
             </div>
 
-            <!-- Cancel Button -->
             <div class="flex justify-center">
                 <button id="cancelDownloadBtn"
-                        class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors">
+                        class="px-3 py-1.5 text-pm-error bg-transparent hover:bg-pm-error-tint border border-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Cancel
                 </button>
             </div>
         </div>
     </div>
-
-    <style>
-        /* Tag chip styles for Auto Tag feature */
-        .tag-chip {
-            display: inline-flex;
-            align-items: center;
-            padding: 0.25rem 0.5rem;
-            background-color: #374151;
-            border: 1px solid #4B5563;
-            border-radius: 0.375rem;
-            font-size: 0.875rem;
-            color: #D1D5DB;
-            transition: all 0.2s;
-        }
-        .tag-chip:hover {
-            background-color: #4B5563;
-        }
-        .tag-chip .tag-remove {
-            margin-left: 0.375rem;
-            padding: 0.125rem;
-            border-radius: 0.25rem;
-            cursor: pointer;
-            color: #9CA3AF;
-            transition: all 0.2s;
-        }
-        .tag-chip .tag-remove:hover {
-            color: #EF4444;
-            background-color: rgba(239, 68, 68, 0.2);
-        }
-        .hover\:bg-gray-650:hover {
-            background-color: #525252;
-        }
-    </style>
 
     <script src="/prompt_manager/js/admin.js"></script>
     <script src="/prompt_manager/js/tags-page.js"></script>

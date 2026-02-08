@@ -1,3 +1,61 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+/*
+ * Content sources — tell Tailwind v4 where to scan for class usage.
+ * Replaces the v3 `content` array in tailwind.config.js.
+ */
+@source "../../**/*.html";
+@source "../../js/**/*.js";
+
+/* ── Custom Utilities — map to --pm-* design tokens ───────── */
+
+/* Backgrounds */
+@utility bg-pm-primary    { background-color: var(--pm-bg-primary); }
+@utility bg-pm-surface    { background-color: var(--pm-bg-surface); }
+@utility bg-pm-input      { background-color: var(--pm-bg-input); }
+@utility bg-pm-hover      { background-color: var(--pm-bg-hover); }
+@utility bg-pm-elevated   { background-color: var(--pm-bg-elevated); }
+@utility bg-pm-accent     { background-color: var(--pm-accent); }
+@utility bg-pm-accent-hover { background-color: var(--pm-accent-hover); }
+@utility bg-pm-accent-tint { background-color: var(--pm-accent-tint); }
+@utility bg-pm-error      { background-color: var(--pm-error); }
+@utility bg-pm-error-tint { background-color: var(--pm-error-tint); }
+@utility bg-pm-success    { background-color: var(--pm-success); }
+@utility bg-pm-success-tint { background-color: var(--pm-success-tint); }
+@utility bg-pm-warning    { background-color: var(--pm-warning); }
+@utility bg-pm-warning-tint { background-color: var(--pm-warning-tint); }
+@utility bg-pm-info       { background-color: var(--pm-info); }
+@utility bg-pm-info-tint  { background-color: var(--pm-info-tint); }
+
+/* Text */
+@utility text-pm          { color: var(--pm-text); }
+@utility text-pm-secondary { color: var(--pm-text-secondary); }
+@utility text-pm-input    { color: var(--pm-text-input); }
+@utility text-pm-muted    { color: var(--pm-text-muted); }
+@utility text-pm-accent   { color: var(--pm-accent); }
+@utility text-pm-accent-fg { color: var(--pm-accent-fg); }
+@utility text-pm-error    { color: var(--pm-error); }
+@utility text-pm-success  { color: var(--pm-success); }
+@utility text-pm-warning  { color: var(--pm-warning); }
+
+/* Borders */
+@utility border-pm        { border-color: var(--pm-border); }
+@utility border-pm-subtle { border-color: var(--pm-border-subtle); }
+@utility border-pm-accent { border-color: var(--pm-accent); }
+
+/* Shadows */
+@utility shadow-pm        { box-shadow: var(--pm-shadow); }
+@utility shadow-pm-sm     { box-shadow: var(--pm-shadow-sm); }
+
+/* Border radius */
+@utility rounded-pm-sm    { border-radius: var(--pm-radius-sm); }
+@utility rounded-pm-md    { border-radius: var(--pm-radius-md); }
+@utility rounded-pm-lg    { border-radius: var(--pm-radius-lg); }
+
+/* Ring / outline accent */
+@utility ring-pm-accent   { --tw-ring-color: var(--pm-accent); }
+
+/* Placeholder */
+@utility placeholder-pm {
+  &::placeholder { color: var(--pm-text-muted); }
+}
