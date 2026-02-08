@@ -221,7 +221,7 @@
                             <!-- Fallback for failed thumbnails -->
                             <div class="hidden absolute inset-0 bg-pm-surface text-pm-secondary flex items-center justify-center">
                                 <div class="text-center">
-                                    <div class="text-2xl mb-1">${isVideo ? '🎬' : '🖼️'}</div>
+                                    <div class="text-lg mb-1">${isVideo ? '🎬' : '🖼️'}</div>
                                     <div class="text-xs">Failed to load</div>
                                 </div>
                             </div>
@@ -388,7 +388,7 @@
                             <svg class="w-5 h-5 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                             </svg>
-                            <h1 class="text-lg font-medium text-pm">Generation data</h1>
+                            <h1 class="text-sm font-semibold text-pm">Generation data</h1>
                         </div>
                         <button class="text-xs text-pm-accent hover:text-pm-accent transition-colors metadata-copy-all">
                             📋 COPY ALL
@@ -396,7 +396,7 @@
                     </div>
 
                     <!-- Scrollable Content -->
-                    <div id="metadata-content" class="flex-1 overflow-y-auto p-4 space-y-6">
+                    <div id="metadata-content" class="flex-1 overflow-y-auto p-4 space-y-3">
                         <!-- Loading state -->
                         <div class="text-center text-pm-muted py-8">
                             <div class="w-8 h-8 border-2 border-pm-accent/30 border-t-pm-accent rounded-full animate-spin mx-auto mb-2"></div>
@@ -526,7 +526,7 @@
                                 <svg class="w-5 h-5 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                                 </svg>
-                                <h1 class="text-lg font-medium text-pm">Generation data</h1>
+                                <h1 class="text-sm font-semibold text-pm">Generation data</h1>
                             </div>
                             <button class="text-xs text-pm-accent hover:text-pm-accent transition-colors metadata-copy-all">
                                 📋 COPY ALL
@@ -534,7 +534,7 @@
                         </div>
 
                         <!-- Scrollable Content -->
-                        <div id="metadata-content" class="flex-1 overflow-y-auto p-4 space-y-6">
+                        <div id="metadata-content" class="flex-1 overflow-y-auto p-4 space-y-3">
                             <!-- Loading state -->
                             <div class="text-center text-pm-muted py-8">
                                 <div class="w-8 h-8 border-2 border-pm-accent/30 border-t-pm-accent rounded-full animate-spin mx-auto mb-2"></div>
@@ -628,7 +628,7 @@
                                 <svg class="w-5 h-5 text-pm-error" fill="currentColor" viewBox="0 0 24 24">
                                     <path d="M8 5v14l11-7z"/>
                                 </svg>
-                                <h1 class="text-lg font-medium text-pm">Video Info</h1>
+                                <h1 class="text-sm font-semibold text-pm">Video Info</h1>
                             </div>
                             <button class="text-xs text-pm-accent hover:text-pm-accent transition-colors" onclick="navigator.clipboard.writeText('${videoUrl}').then(() => this.textContent = '✓ Copied!'); setTimeout(() => this.textContent = '📋 COPY URL', 1000)">
                                 📋 COPY URL
@@ -636,7 +636,7 @@
                         </div>
                         
                         <!-- Video info content -->
-                        <div id="video-info-content" class="flex-1 overflow-y-auto p-4 space-y-6">
+                        <div id="video-info-content" class="flex-1 overflow-y-auto p-4 space-y-3">
                             <!-- Video details will be loaded here -->
                         </div>
                     </div>
@@ -1295,7 +1295,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
             showNotification(message, type = 'info') {
                 const notification = document.createElement('div');
-                notification.className = `fixed top-4 right-4 px-6 py-4 rounded-pm-md shadow-pm z-[20000] transition-all duration-300 transform translate-x-full`;
+                notification.className = `fixed top-4 right-4 px-4 py-2 rounded-pm-md shadow-pm text-sm z-[20000] transition-all duration-300 transform translate-x-full`;
 
                 const colors = {
                     success: "bg-pm-success text-pm",
@@ -2138,7 +2138,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 scanStatus.classList.add('hidden');
                 
                 if (duplicates.length === 0) {
-                    list.innerHTML = '<div class="text-center py-8 text-pm-secondary">No duplicate images found! 🎉</div>';
+                    list.innerHTML = '<div class="text-center py-4 text-pm-secondary">No duplicate images found! 🎉</div>';
                     content.classList.remove('hidden');
                     return;
                 }
@@ -2396,15 +2396,15 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
                 modal.innerHTML = `
                     <div class="bg-pm-surface rounded-pm-md max-w-2xl w-full mx-4 border border-pm">
-                        <div class="p-6">
-                            <h3 class="text-xl font-semibold text-pm mb-4 flex items-center">
+                        <div class="p-4">
+                            <h3 class="text-sm font-semibold text-pm mb-3 flex items-center">
                                 <span class="mr-2">🚀</span>
                                 Generate Thumbnails?
                             </h3>
                             <p class="text-pm-secondary mb-4">
                                 Found ${missingCount} images without thumbnails (${imageCount} total images). Would you like to generate thumbnails for faster loading?
                             </p>
-                            <p class="text-sm text-pm-muted mb-6">
+                            <p class="text-sm text-pm-muted mb-3">
                                 💡 Thumbnails speed up gallery loading significantly. You can change this setting in Gallery Settings.
                             </p>
                             <div class="flex space-x-3">
@@ -2443,8 +2443,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 // Transform the modal to show progress
                 const modalContent = modal.querySelector('.bg-pm-surface');
                 modalContent.innerHTML = `
-                    <div class="p-6">
-                        <h3 class="text-xl font-semibold text-pm mb-4 flex items-center">
+                    <div class="p-4">
+                        <h3 class="text-sm font-semibold text-pm mb-3 flex items-center">
                             <span class="mr-2">🚀</span>
                             Generating Thumbnails
                         </h3>
@@ -2453,7 +2453,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         </p>
 
                         <!-- Progress Section -->
-                        <div class="mb-6">
+                        <div class="mb-3">
                             <div class="flex items-center justify-between text-sm text-pm-secondary mb-2">
                                 <span id="modalProgressText">Initializing...</span>
                                 <span id="modalProgressPercent">0%</span>
@@ -3451,7 +3451,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 };
 
                 const notification = document.createElement('div');
-                notification.className = `fixed bottom-4 right-4 ${colors[type]} text-pm px-6 py-3 rounded-pm-md shadow-pm z-50 animate-fade-in`;
+                notification.className = `fixed bottom-4 right-4 ${colors[type]} text-pm px-4 py-2 rounded-pm-md shadow-pm text-sm z-50 animate-fade-in`;
                 notification.textContent = message;
                 document.body.appendChild(notification);
 

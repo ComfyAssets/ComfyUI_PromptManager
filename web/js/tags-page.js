@@ -134,7 +134,7 @@ class TagsPageManager {
             if (container) {
                 container.replaceChildren();
                 const errDiv = document.createElement('div');
-                errDiv.className = 'text-center py-8 text-pm-error text-sm';
+                errDiv.className = 'text-center py-4 text-pm-error text-sm';
                 errDiv.textContent = 'Failed to load tags. Try refreshing.';
                 container.appendChild(errDiv);
             }
@@ -594,7 +594,7 @@ class TagsPageManager {
         if (grid) {
             grid.replaceChildren();
             const spinner = document.createElement('div');
-            spinner.className = 'col-span-full text-center py-8';
+            spinner.className = 'col-span-full text-center py-4';
             const spinEl = document.createElement('div');
             spinEl.className = 'w-8 h-8 border-2 border-pm-success/30 border-t-pm-success rounded-full animate-spin mx-auto';
             spinner.appendChild(spinEl);
@@ -638,7 +638,7 @@ class TagsPageManager {
             if (grid) {
                 grid.replaceChildren();
                 const errDiv = document.createElement('div');
-                errDiv.className = 'col-span-full text-center py-8 text-pm-error';
+                errDiv.className = 'col-span-full text-center py-4 text-pm-error';
                 errDiv.textContent = 'Failed to load prompts';
                 grid.appendChild(errDiv);
             }
@@ -752,9 +752,9 @@ class TagsPageManager {
         if (this.prompts.length === 0) {
             grid.replaceChildren();
             const emptyDiv = document.createElement('div');
-            emptyDiv.className = 'col-span-full text-center py-12 text-pm-muted';
+            emptyDiv.className = 'col-span-full text-center py-6 text-pm-muted';
             const icon = document.createElement('span');
-            icon.className = 'text-3xl block mb-2';
+            icon.className = 'text-lg block mb-2';
             icon.textContent = '\uD83D\uDCED';
             emptyDiv.appendChild(icon);
             const msg = document.createElement('span');

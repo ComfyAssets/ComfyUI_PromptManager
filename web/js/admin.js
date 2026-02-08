@@ -420,11 +420,11 @@
 
                 if (this.prompts.length === 0) {
                     container.innerHTML = `
-                        <div class="text-center py-12">
+                        <div class="text-center py-6">
                             <div class="w-16 h-16 bg-pm-surface rounded-full flex items-center justify-center mx-auto mb-4">
-                                <span class="text-2xl">📭</span>
+                                <span class="text-lg">📭</span>
                             </div>
-                            <h3 class="text-lg font-medium text-pm-secondary mb-2">No prompts found</h3>
+                            <h3 class="text-sm font-semibold text-pm-secondary mb-2">No prompts found</h3>
                             <p class="text-pm-muted">Try adjusting your search criteria or create some prompts in ComfyUI</p>
                         </div>
                     `;
@@ -491,7 +491,7 @@
 
                 return `
                     <div class="bg-pm-surface rounded-pm-md border border-pm hover:border-pm transition-all duration-200" data-id="${prompt.id}">
-                        <div class="p-6">
+                        <div class="p-4">
                             <div class="flex items-start space-x-4">
                                 <input type="checkbox" class="prompt-checkbox w-5 h-5 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent mt-1" data-id="${prompt.id}">
 
@@ -633,7 +633,7 @@
                 const isViewerOpen = viewerContainer && viewerContainer.style.display !== 'none';
                 const zIndex = isViewerOpen ? 'z-[50000]' : 'z-50';
                 
-                notification.className = `fixed top-4 right-4 px-6 py-4 rounded-pm-sm shadow-pm ${zIndex} transition-all duration-300 transform translate-x-full`;
+                notification.className = `fixed top-4 right-4 px-4 py-2 rounded-pm-sm shadow-pm text-sm ${zIndex} transition-all duration-300 transform translate-x-full`;
 
                 const colors = {
                     success: "bg-pm-success text-pm",
@@ -1245,7 +1245,7 @@
                 runButton.disabled = true;
                 runButton.innerHTML = '🔄 Running...';
                 resultsContainer.innerHTML = `
-                    <div class="text-center py-8">
+                    <div class="text-center py-4">
                         <div class="w-12 h-12 border-4 border-teal-500/30 border-t-teal-500 rounded-full animate-spin mx-auto mb-4"></div>
                         <p class="text-pm-secondary">Running maintenance operations...</p>
                         <p class="text-sm text-pm-muted mt-2">Operations: ${selectedOps.map(op => op.replace(/_/g, ' ')).join(', ')}</p>
@@ -1379,7 +1379,7 @@
             async runDiagnostics() {
                 const content = document.getElementById("diagnosticsContent");
                 content.innerHTML = `
-                    <div class="text-center py-8">
+                    <div class="text-center py-4">
                         <div class="w-12 h-12 border-4 border-orange-500/30 border-t-orange-500 rounded-full animate-spin mx-auto mb-4"></div>
                         <p class="text-pm-secondary">Running diagnostics...</p>
                     </div>
@@ -1691,12 +1691,12 @@
                 const modal = document.createElement('div');
                 modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
                 modal.innerHTML = `
-                    <div class="bg-pm-surface rounded-pm-md p-6 max-w-2xl w-full mx-4 border border-pm">
-                        <h3 class="text-xl font-semibold text-pm mb-4">📋 Copy Prompt Text</h3>
+                    <div class="bg-pm-surface rounded-pm-md p-4 max-w-2xl w-full mx-4 border border-pm">
+                        <h3 class="text-sm font-semibold text-pm mb-3">Copy Prompt Text</h3>
                         <p class="text-pm-secondary mb-4">Please manually copy the text below:</p>
                         <textarea readonly class="w-full h-32 px-4 py-3 bg-pm-surface border border-pm rounded-pm-sm text-pm resize-none" style="font-family: monospace;">${text}</textarea>
                         <div class="flex justify-end mt-4">
-                            <button class="px-6 py-2 bg-pm-accent hover:bg-pm-accent-hover text-pm font-medium rounded-pm-sm transition-colors" onclick="this.closest('[class*=fixed]').remove()">
+                            <button class="px-4 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm font-medium rounded-pm-sm transition-colors" onclick="this.closest('[class*=fixed]').remove()">
                                 Close
                             </button>
                         </div>
@@ -1956,7 +1956,7 @@
                 const container = document.getElementById("logsContainer");
                 
                 if (logs.length === 0) {
-                    container.innerHTML = '<div class="text-center py-8 text-pm-muted">No logs found</div>';
+                    container.innerHTML = '<div class="text-center py-4 text-pm-muted">No logs found</div>';
                     return;
                 }
 
@@ -2445,7 +2445,7 @@
                         <svg class="w-16 h-16 mx-auto mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                         </svg>
-                        <p class="text-lg mb-2">Error Loading Metadata</p>
+                        <p class="text-sm mb-2">Error Loading Metadata</p>
                         <p class="text-sm">Could not extract ComfyUI metadata from this image</p>
                     </div>
                 `;
@@ -2982,7 +2982,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             <svg class="w-5 h-5 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                             </svg>
-                            <h1 class="text-lg font-medium text-pm">Generation data</h1>
+                            <h1 class="text-sm font-semibold text-pm">Generation data</h1>
                         </div>
                         <button class="text-xs text-pm-accent hover:text-pm-accent transition-colors metadata-copy-all">
                             📋 COPY ALL
@@ -2990,13 +2990,13 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     </div>
 
                     <!-- Scrollable Content -->
-                    <div id="metadata-content" class="flex-1 overflow-y-auto p-4 space-y-6">
+                    <div id="metadata-content" class="flex-1 overflow-y-auto p-4 space-y-3">
                         <!-- Initial placeholder content -->
                         <div class="text-center text-pm-muted py-8">
                             <svg class="w-16 h-16 mx-auto mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                             </svg>
-                            <p class="text-lg mb-2">Loading Metadata...</p>
+                            <p class="text-sm mb-2">Loading Metadata...</p>
                             <p class="text-sm">Extracting ComfyUI workflow data</p>
                         </div>
                     </div>
@@ -3020,7 +3020,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             <svg class="w-16 h-16 mx-auto mb-4 opacity-30 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
                             </svg>
-                            <p class="text-lg mb-2">Loading Metadata...</p>
+                            <p class="text-sm mb-2">Loading Metadata...</p>
                             <p class="text-sm">Extracting ComfyUI workflow data</p>
                         </div>
                     </div>
@@ -3034,7 +3034,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     console.error('Failed to load metadata:', error);
                     metadataContent.innerHTML = `
                         <div class="text-center text-pm-error py-8">
-                            <p class="text-lg mb-2">Failed to Load Metadata</p>
+                            <p class="text-sm mb-2">Failed to Load Metadata</p>
                             <p class="text-sm">Could not extract ComfyUI workflow data</p>
                         </div>
                     `;
