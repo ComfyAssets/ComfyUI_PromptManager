@@ -946,14 +946,16 @@ class PromptDatabase:
                 # Find duplicates by text content (case-insensitive)
                 # Note: Removed ORDER BY from GROUP_CONCAT for SQLite compatibility
                 # We'll sort the IDs manually after fetching
-                cursor = conn.execute("""
+                cursor = conn.execute(
+                    """
                     SELECT LOWER(TRIM(text)) as normalized_text, COUNT(*) as count, 
                            GROUP_CONCAT(id) as ids,
                            GROUP_CONCAT(created_at) as created_dates
                     FROM prompts 
                     GROUP BY LOWER(TRIM(text))
                     HAVING COUNT(*) > 1
-                """)
+                """
+                )
 
                 duplicate_groups = cursor.fetchall()
                 self.logger.debug(
@@ -1018,14 +1020,16 @@ class PromptDatabase:
                 # Find duplicates by text content (case-insensitive)
                 # Note: Removed ORDER BY from GROUP_CONCAT for SQLite compatibility
                 # We'll sort the IDs manually after fetching
-                cursor = conn.execute("""
+                cursor = conn.execute(
+                    """
                     SELECT LOWER(TRIM(text)) as normalized_text, COUNT(*) as count, 
                            GROUP_CONCAT(id) as ids,
                            GROUP_CONCAT(created_at) as created_dates
                     FROM prompts 
                     GROUP BY LOWER(TRIM(text))
                     HAVING COUNT(*) > 1
-                """)
+                """
+                )
 
                 duplicates = cursor.fetchall()
                 self.logger.debug(
@@ -1745,7 +1749,8 @@ class PromptDatabase:
         Returns number of prompts removed.
         """
         with self.model.get_connection() as conn:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT p.id FROM prompts p
                 LEFT JOIN generated_images gi ON p.id = gi.prompt_id
                 WHERE gi.prompt_id IS NULL
@@ -1754,7 +1759,8 @@ class PromptDatabase:
                     JOIN tags t ON pt.tag_id = t.id
                     WHERE pt.prompt_id = p.id AND t.name = '__protected__'
                 )
-            """)
+            """
+            )
             orphaned = [row["id"] for row in cursor.fetchall()]
             if not orphaned:
                 return 0
@@ -1770,22 +1776,26 @@ class PromptDatabase:
         issues: List[str] = []
         with self.model.get_connection() as conn:
             # Check for orphaned prompt_tags entries
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT pt.prompt_id, pt.tag_id FROM prompt_tags pt
                 LEFT JOIN prompts p ON pt.prompt_id = p.id
                 WHERE p.id IS NULL
-            """)
+            """
+            )
             for ref in cursor.fetchall():
                 issues.append(
                     f"prompt_tags entry references non-existent prompt {ref['prompt_id']}"
                 )
 
             # Check for orphaned image entries
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT gi.id, gi.prompt_id FROM generated_images gi
                 LEFT JOIN prompts p ON gi.prompt_id = p.id
                 WHERE p.id IS NULL
-            """)
+            """
+            )
             for ref in cursor.fetchall():
                 issues.append(
                     f"Image {ref['id']} references non-existent prompt {ref['prompt_id']}"

@@ -780,7 +780,9 @@ class ImageRoutesMixin:
                         self.logger.warning(
                             f"Failed to generate thumbnail for {media_file.name}: {e}"
                         )
-                        error_msg = f"Failed to generate thumbnail for {media_file.name}"
+                        error_msg = (
+                            f"Failed to generate thumbnail for {media_file.name}"
+                        )
                         errors.append(error_msg)
 
                         if len(errors) <= 5:

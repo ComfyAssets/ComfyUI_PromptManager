@@ -68,7 +68,8 @@ class PromptModel:
             - prompts table: Stores prompt text and metadata
             - generated_images table: Links generated images to their source prompts
         """
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS prompts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 text TEXT NOT NULL,
@@ -80,10 +81,12 @@ class PromptModel:
                 notes TEXT,
                 hash TEXT UNIQUE
             )
-        """)
+        """
+        )
 
         # Create images table for gallery functionality
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS generated_images (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 prompt_id INTEGER NOT NULL,
@@ -100,16 +103,20 @@ class PromptModel:
                 FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE,
                 UNIQUE(prompt_id, filename)
             )
-        """)
+        """
+        )
 
         # Create normalized tag tables (junction table pattern)
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS tags (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE
             )
-        """)
-        conn.execute("""
+        """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS prompt_tags (
                 prompt_id INTEGER NOT NULL,
                 tag_id INTEGER NOT NULL,
@@ -117,7 +124,8 @@ class PromptModel:
                 FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE,
                 FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
             )
-        """)
+        """
+        )
 
         # Add unique constraint to existing databases (migration)
         self._migrate_add_unique_constraint(conn)
@@ -200,7 +208,8 @@ class PromptModel:
                 self.logger.info("Migrating database: removing workflow_name column")
 
                 # Create new table without workflow_name
-                conn.execute("""
+                conn.execute(
+                    """
                     CREATE TABLE prompts_new (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         text TEXT NOT NULL,
@@ -212,14 +221,17 @@ class PromptModel:
                         notes TEXT,
                         hash TEXT UNIQUE
                     )
-                """)
+                """
+                )
 
                 # Copy data from old table to new table
-                conn.execute("""
+                conn.execute(
+                    """
                     INSERT INTO prompts_new (id, text, created_at, updated_at, category, tags, rating, notes, hash)
                     SELECT id, text, created_at, updated_at, category, tags, rating, notes, hash
                     FROM prompts
-                """)
+                """
+                )
 
                 # Drop old table and rename new one
                 conn.execute("DROP TABLE prompts")
@@ -252,7 +264,8 @@ class PromptModel:
                 )
 
                 # Create new table with correct types
-                conn.execute("""
+                conn.execute(
+                    """
                     CREATE TABLE generated_images_new (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         prompt_id INTEGER NOT NULL,
@@ -268,10 +281,12 @@ class PromptModel:
                         parameters TEXT,
                         FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE
                     )
-                """)
+                """
+                )
 
                 # Copy data, converting prompt_id from TEXT to INTEGER
-                conn.execute("""
+                conn.execute(
+                    """
                     INSERT INTO generated_images_new 
                     (id, prompt_id, image_path, filename, generation_time, file_size, 
                      width, height, format, workflow_data, prompt_metadata, parameters)
@@ -280,7 +295,8 @@ class PromptModel:
                     FROM generated_images
                     WHERE prompt_id != '' AND prompt_id IS NOT NULL
                     AND CAST(prompt_id AS INTEGER) IN (SELECT id FROM prompts)
-                """)
+                """
+                )
 
                 # Drop old table and rename new one
                 conn.execute("DROP TABLE generated_images")
@@ -329,13 +345,15 @@ class PromptModel:
             )
 
             # First, remove duplicates keeping only the most recent (highest id)
-            conn.execute("""
+            conn.execute(
+                """
                 DELETE FROM generated_images
                 WHERE id NOT IN (
                     SELECT MAX(id) FROM generated_images
                     GROUP BY prompt_id, filename
                 )
-            """)
+            """
+            )
 
             duplicates_removed = conn.total_changes
             if duplicates_removed > 0:
@@ -344,7 +362,8 @@ class PromptModel:
                 )
 
             # Create new table with UNIQUE constraint
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS generated_images_new (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     prompt_id INTEGER NOT NULL,
@@ -361,17 +380,20 @@ class PromptModel:
                     FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE,
                     UNIQUE(prompt_id, filename)
                 )
-            """)
+            """
+            )
 
             # Copy data
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO generated_images_new
                 (id, prompt_id, image_path, filename, generation_time, file_size,
                  width, height, format, workflow_data, prompt_metadata, parameters)
                 SELECT id, prompt_id, image_path, filename, generation_time, file_size,
                        width, height, format, workflow_data, prompt_metadata, parameters
                 FROM generated_images
-            """)
+            """
+            )
 
             # Drop old table and rename new one
             conn.execute("DROP TABLE generated_images")
