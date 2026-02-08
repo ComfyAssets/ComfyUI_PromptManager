@@ -340,7 +340,7 @@
                         flipHorizontal: 1,
                         flipVertical: 1,
                     },
-                    className: 'viewer-dark-theme',
+                    className: '',
                     title: [1, (image, imageData) => `${imageData.alt} (${this.images.length} images) - Original Image`],
                     viewed: (event) => {
                         console.log('ViewerJS opened original image for metadata');
@@ -2468,7 +2468,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         </div>
 
                         <!-- Status Messages -->
-                        <div id="modalStatusMessages" class="text-sm text-pm-secondary mb-4 max-h-40 overflow-y-auto custom-scrollbar">
+                        <div id="modalStatusMessages" class="text-sm text-pm-secondary mb-4 max-h-40 overflow-y-auto">
                             <div class="text-pm-accent">• Starting thumbnail generation...</div>
                         </div>
 

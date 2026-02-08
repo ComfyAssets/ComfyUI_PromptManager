@@ -534,7 +534,7 @@
                                         </div>
                                         ${tags.length > 10 ? `
                                             <div class="tags-hidden hidden mt-2">
-                                                <div class="flex flex-wrap items-center gap-2 max-h-[180px] overflow-y-auto custom-scrollbar p-2 bg-pm-surface rounded-pm-sm">
+                                                <div class="flex flex-wrap items-center gap-2 max-h-[180px] overflow-y-auto p-2 bg-pm-surface rounded-pm-sm">
                                                     ${tags.slice(10).map(tag => `
                                                         <span class="inline-flex items-center space-x-1 bg-pm-accent-tint text-pm-accent px-3 py-1 rounded-full text-sm border border-pm-accent">
                                                             <span>${this.escapeHtml(tag)}</span>
@@ -1162,7 +1162,7 @@
                         zoomOnWheel: true,
                         slideOnTouch: true,
                         toggleOnDblclick: false,
-                        className: 'viewer-dark-theme',
+                        className: '',
                         shown: () => {
                             this.addMetadataSidebar();
                         },
