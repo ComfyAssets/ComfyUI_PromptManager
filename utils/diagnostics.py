@@ -137,12 +137,10 @@ class GalleryDiagnostics:
                 self.logger.info(f"   [NOTE] Prompts in database: {prompt_count}")
 
                 # Check if generated_images table exists
-                cursor = conn.execute(
-                    """
+                cursor = conn.execute("""
                     SELECT name FROM sqlite_master 
                     WHERE type='table' AND name='generated_images'
-                """
-                )
+                """)
 
                 has_images_table = cursor.fetchone() is not None
                 self.logger.info(f"   [IMG]  Images table exists: {has_images_table}")
@@ -176,12 +174,10 @@ class GalleryDiagnostics:
                 conn.row_factory = sqlite3.Row
 
                 # Check if table exists
-                cursor = conn.execute(
-                    """
+                cursor = conn.execute("""
                     SELECT name FROM sqlite_master 
                     WHERE type='table' AND name='generated_images'
-                """
-                )
+                """)
 
                 if not cursor.fetchone():
                     return {
@@ -195,15 +191,13 @@ class GalleryDiagnostics:
                 self.logger.info(f"   [STATS] Images in database: {image_count}")
 
                 # Get recent images
-                cursor = conn.execute(
-                    """
+                cursor = conn.execute("""
                     SELECT gi.*, p.text 
                     FROM generated_images gi 
                     LEFT JOIN prompts p ON gi.prompt_id = p.id 
                     ORDER BY gi.generation_time DESC 
                     LIMIT 5
-                """
-                )
+                """)
                 recent_images = [dict(row) for row in cursor.fetchall()]
 
                 self.logger.info(f"   [TIME] Recent images: {len(recent_images)}")
