@@ -304,28 +304,22 @@ class ImageMonitor:
             self.logger.warning("Image monitoring already running")
             return
 
-        # Check if monitoring is enabled in config
+        # Check config for monitoring settings
         try:
             from ..py.config import GalleryConfig
 
             if not GalleryConfig.MONITORING_ENABLED:
                 self.logger.info("Image monitoring disabled in config")
                 return
+
+            # Use configured directories if set
+            if not output_directories and GalleryConfig.MONITORING_DIRECTORIES:
+                output_directories = GalleryConfig.MONITORING_DIRECTORIES
+                self.logger.info(
+                    f"Using configured monitoring directories: {output_directories}"
+                )
         except Exception:
             pass
-
-        # Check config first, then auto-detect if not configured
-        if not output_directories:
-            try:
-                from py.config import GalleryConfig
-
-                if GalleryConfig.MONITORING_DIRECTORIES:
-                    output_directories = GalleryConfig.MONITORING_DIRECTORIES
-                    self.logger.info(
-                        f"Using configured monitoring directories: {output_directories}"
-                    )
-            except ImportError:
-                pass
 
         # Auto-detect ComfyUI output directory if still none
         if not output_directories:
