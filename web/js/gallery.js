@@ -399,7 +399,7 @@
                     <div id="metadata-content" class="flex-1 overflow-y-auto p-4 space-y-3">
                         <!-- Loading state -->
                         <div class="text-center text-pm-muted py-8">
-                            <div class="w-8 h-8 border-2 border-pm-accent/30 border-t-pm-accent rounded-full animate-spin mx-auto mb-2"></div>
+                            <div class="w-8 h-8 border-2 border-pm-accent-muted border-t-pm-accent rounded-full animate-spin mx-auto mb-2"></div>
                             <p class="text-sm">Loading metadata...</p>
                         </div>
                     </div>
@@ -537,7 +537,7 @@
                         <div id="metadata-content" class="flex-1 overflow-y-auto p-4 space-y-3">
                             <!-- Loading state -->
                             <div class="text-center text-pm-muted py-8">
-                                <div class="w-8 h-8 border-2 border-pm-accent/30 border-t-pm-accent rounded-full animate-spin mx-auto mb-2"></div>
+                                <div class="w-8 h-8 border-2 border-pm-accent-muted border-t-pm-accent rounded-full animate-spin mx-auto mb-2"></div>
                                 <p class="text-sm">Loading metadata...</p>
                             </div>
                         </div>
@@ -1096,7 +1096,7 @@
                         const metadataContainer = modal.querySelector('#metadata-content');
                         metadataContainer.innerHTML = `
                             <div class="text-center text-pm-muted py-8">
-                                <div class="w-8 h-8 border-2 border-pm-accent/30 border-t-pm-accent rounded-full animate-spin mx-auto mb-2"></div>
+                                <div class="w-8 h-8 border-2 border-pm-accent-muted border-t-pm-accent rounded-full animate-spin mx-auto mb-2"></div>
                                 <p class="text-sm">Loading metadata from original image...</p>
                             </div>
                         `;

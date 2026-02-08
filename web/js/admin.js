@@ -1435,7 +1435,7 @@
                 // Detailed results
                 for (const [category, result] of Object.entries(diagnostics)) {
                     const bgColor = result.status === 'ok' ? 'bg-pm-success-tint border-pm-success' :
-                                   (result.status === 'warning' ? 'bg-pm-warning/20 border-pm-warning' : 'bg-pm-error-tint border-pm-error');
+                                   (result.status === 'warning' ? 'bg-pm-warning-tint border-pm-warning' : 'bg-pm-error-tint border-pm-error');
 
                     html += `<div class="${bgColor} border rounded-pm-sm p-4">`;
                     html += `<h4 class="text-pm font-medium mb-2 capitalize">${this.escapeHtml(category)}</h4>`;

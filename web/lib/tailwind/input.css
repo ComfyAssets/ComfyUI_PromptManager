@@ -38,10 +38,21 @@
 @utility text-pm-success  { color: var(--pm-success); }
 @utility text-pm-warning  { color: var(--pm-warning); }
 
+/* Translucent backgrounds — color-mix() for opacity on token colors */
+@utility bg-pm-surface-glass { background-color: color-mix(in srgb, var(--pm-bg-surface) 50%, transparent); }
+@utility bg-pm-hover-glass   { background-color: color-mix(in srgb, var(--pm-bg-hover) 50%, transparent); }
+@utility bg-pm-success-strong { background-color: color-mix(in srgb, var(--pm-success) 80%, transparent); }
+@utility bg-pm-success-muted { background-color: color-mix(in srgb, var(--pm-success) 40%, transparent); }
+
 /* Borders */
 @utility border-pm        { border-color: var(--pm-border); }
 @utility border-pm-subtle { border-color: var(--pm-border-subtle); }
 @utility border-pm-accent { border-color: var(--pm-accent); }
+@utility border-pm-faint  { border-color: color-mix(in srgb, var(--pm-border) 50%, transparent); }
+@utility border-pm-accent-muted  { border-color: color-mix(in srgb, var(--pm-accent) 30%, transparent); }
+@utility border-pm-warning-muted { border-color: color-mix(in srgb, var(--pm-warning) 40%, transparent); }
+@utility border-pm-info-muted    { border-color: color-mix(in srgb, var(--pm-info) 40%, transparent); }
+@utility border-pm-success-muted { border-color: color-mix(in srgb, var(--pm-success) 30%, transparent); }
 
 /* Shadows */
 @utility shadow-pm        { box-shadow: var(--pm-shadow); }

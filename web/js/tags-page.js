@@ -211,7 +211,7 @@ class TagsPageManager {
         const isSelected = this.selectedTags.includes('__untagged__');
         const div = document.createElement('div');
         div.className = `flex items-center px-3 py-2 rounded-pm-md cursor-pointer border transition-all duration-200 relative overflow-hidden ${
-            isSelected ? 'bg-pm-warning/20 border-pm-warning/50' : 'border-transparent hover:bg-pm-hover/50'
+            isSelected ? 'bg-pm-warning-tint border-pm-warning-muted' : 'border-transparent hover:bg-pm-hover-glass'
         }`;
 
         div.addEventListener('click', () => this.selectTag('__untagged__'));
@@ -239,14 +239,14 @@ class TagsPageManager {
         const isSelected = this.selectedTags.includes(tag.name);
         const div = document.createElement('div');
         div.className = `flex items-center px-3 py-2 rounded-pm-md cursor-pointer border transition-all duration-200 relative overflow-hidden group ${
-            isSelected ? 'bg-pm-success/20 border-pm-success/50' : 'border-transparent hover:bg-pm-hover/50'
+            isSelected ? 'bg-pm-success-tint border-pm-success-muted' : 'border-transparent hover:bg-pm-hover-glass'
         }`;
         div.dataset.tagName = tag.name;
 
         // Usage bar (background)
         const barWidth = (tag.count / this.maxTagCount) * 100;
         const bar = document.createElement('div');
-        bar.className = 'absolute inset-y-0 left-0 bg-pm-success/8 pointer-events-none transition-all duration-300';
+        bar.className = 'absolute inset-y-0 left-0 bg-pm-success-tint pointer-events-none transition-all duration-300';
         bar.style.width = barWidth + '%';
         div.appendChild(bar);
 
@@ -548,8 +548,8 @@ class TagsPageManager {
                 const isUntaggedPill = tag === '__untagged__';
                 pill.className = `inline-flex items-center px-3 py-1 rounded-full text-sm ${
                     isUntaggedPill
-                        ? 'bg-pm-warning/20 text-pm-warning border border-pm-warning/30'
-                        : 'bg-pm-success/20 text-pm-success border border-pm-success/30'
+                        ? 'bg-pm-warning-tint text-pm-warning border border-pm-warning-muted'
+                        : 'bg-pm-success-tint text-pm-success border border-pm-success-muted'
                 }`;
 
                 const text = document.createTextNode(isUntaggedPill ? '[untagged]' : tag);
@@ -596,7 +596,7 @@ class TagsPageManager {
             const spinner = document.createElement('div');
             spinner.className = 'col-span-full text-center py-4';
             const spinEl = document.createElement('div');
-            spinEl.className = 'w-8 h-8 border-2 border-pm-success/30 border-t-pm-success rounded-full animate-spin mx-auto';
+            spinEl.className = 'w-8 h-8 border-2 border-pm-success-muted border-t-pm-success rounded-full animate-spin mx-auto';
             spinner.appendChild(spinEl);
             grid.appendChild(spinner);
         }
@@ -787,7 +787,7 @@ class TagsPageManager {
 
     createPromptCard(prompt) {
         const card = document.createElement('div');
-        card.className = 'tag-prompt-card bg-pm-surface/50 rounded-pm-md p-4 border border-pm/50 hover:border-pm-hover transition-colors cursor-pointer';
+        card.className = 'tag-prompt-card bg-pm-surface-glass rounded-pm-md p-4 border border-pm-faint hover:border-pm-hover transition-colors cursor-pointer';
 
         // Click card → navigate to dashboard with search
         card.addEventListener('click', () => {
@@ -814,7 +814,7 @@ class TagsPageManager {
                 imgEl.src = this.getThumbnailUrl(img);
                 imgEl.alt = '';
                 imgEl.loading = 'lazy';
-                imgEl.className = 'w-20 h-20 object-cover rounded-pm-md bg-pm-surface cursor-zoom-in hover:ring-2 hover:ring-pm-success/50 transition-all';
+                imgEl.className = 'w-20 h-20 object-cover rounded-pm-md bg-pm-surface cursor-zoom-in hover:ring-2 hover:ring-pm-accent transition-all';
                 imgEl.onerror = function() {
                     this.onerror = null;
                     this.src = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80"><rect fill="#374151" width="80" height="80"/><text x="40" y="44" text-anchor="middle" fill="#6B7280" font-size="20">?</text></svg>');
@@ -857,7 +857,7 @@ class TagsPageManager {
 
         if (prompt.category) {
             const catSpan = document.createElement('span');
-            catSpan.className = 'px-2 py-0.5 bg-pm-accent/20 text-pm-accent rounded';
+            catSpan.className = 'px-2 py-0.5 bg-pm-accent-tint text-pm-accent rounded';
             catSpan.textContent = prompt.category;
             metaLeft.appendChild(catSpan);
         }
@@ -900,8 +900,8 @@ class TagsPageManager {
                 const isActive = this.selectedTags.includes(tagName);
                 tagSpan.className = `px-2 py-0.5 rounded text-xs cursor-pointer transition-colors ${
                     isActive
-                        ? 'bg-pm-success text-pm hover:bg-pm-success/80'
-                        : 'bg-pm-surface text-pm-secondary hover:bg-pm-success/40 hover:text-pm-success'
+                        ? 'bg-pm-success text-pm hover:bg-pm-success-strong'
+                        : 'bg-pm-surface text-pm-secondary hover:bg-pm-success-muted hover:text-pm-success'
                 }`;
                 tagSpan.textContent = tagName;
                 tagSpan.addEventListener('click', (e) => {

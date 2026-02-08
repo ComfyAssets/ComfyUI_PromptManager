@@ -74,7 +74,7 @@
         </div>
 
         <!-- Search Controls (Sticky) -->
-        <div class="sticky top-0 z-50 bg-pm-primary/95 backdrop-blur-sm border-b border-pm-subtle">
+        <div class="sticky top-0 z-50 bg-pm-primary backdrop-blur-sm border-b border-pm-subtle">
             <div class="px-4 py-3">
                 <div class="max-w-7xl mx-auto">
                     <div class="bg-pm-surface rounded-pm-lg p-4 border border-pm">
@@ -219,7 +219,7 @@
                     <!-- Loading State -->
                     <div id="loadingState" class="flex-1 flex items-center justify-center">
                         <div class="text-center">
-                            <div class="w-8 h-8 border-3 border-pm-accent/30 border-t-pm-accent rounded-full animate-spin mx-auto mb-3"></div>
+                            <div class="w-8 h-8 border-3 border-pm-accent-muted border-t-pm-accent rounded-full animate-spin mx-auto mb-3"></div>
                             <p class="text-pm-secondary text-xs">Loading prompts...</p>
                         </div>
                     </div>
@@ -261,7 +261,7 @@
         <!-- Tags Page View -->
         <div id="tagsPageView" class="hidden flex-1 flex flex-col">
             <!-- Tags Header -->
-            <div class="px-4 py-2 border-b border-pm-subtle bg-pm-surface/50">
+            <div class="px-4 py-2 border-b border-pm-subtle bg-pm-surface-glass">
                 <div class="max-w-7xl mx-auto flex items-center justify-between">
                     <div class="flex items-center gap-3">
                         <button onclick="window.location.hash=''" class="text-pm-secondary hover:text-pm transition-colors text-xs flex items-center gap-1">
@@ -281,7 +281,7 @@
             <!-- Two-Panel Layout -->
             <div class="flex-1 flex overflow-hidden">
                 <!-- Left Panel: Tag List -->
-                <div class="w-72 flex-shrink-0 border-r border-pm-subtle flex flex-col bg-pm-surface/30">
+                <div class="w-72 flex-shrink-0 border-r border-pm-subtle flex flex-col bg-pm-surface-glass">
                     <!-- Tag Search & Sort -->
                     <div class="p-3 space-y-2 border-b border-pm-subtle">
                         <input type="text" id="tagSearchInput" placeholder="Search tags..."
@@ -298,7 +298,7 @@
                         <div id="tagsList" class="p-1.5 space-y-0.5"></div>
                         <div id="tagsLoader" class="text-center">
                             <div class="tags-loader-spinner p-3 hidden">
-                                <div class="w-5 h-5 border-2 border-pm-accent/30 border-t-pm-accent rounded-full animate-spin mx-auto"></div>
+                                <div class="w-5 h-5 border-2 border-pm-accent-muted border-t-pm-accent rounded-full animate-spin mx-auto"></div>
                             </div>
                         </div>
                     </div>
@@ -319,7 +319,7 @@
                         <div id="tagPromptsGrid" class="p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"></div>
                         <div id="tagPromptsLoader" class="text-center">
                             <div class="prompts-loader-spinner p-3 hidden">
-                                <div class="w-5 h-5 border-2 border-pm-accent/30 border-t-pm-accent rounded-full animate-spin mx-auto"></div>
+                                <div class="w-5 h-5 border-2 border-pm-accent-muted border-t-pm-accent rounded-full animate-spin mx-auto"></div>
                             </div>
                             <button id="loadMorePromptsBtn" class="hidden px-3 py-1.5 my-2 text-xs text-pm-secondary hover:text-pm-accent border border-pm hover:border-pm-accent rounded-pm-sm transition-colors">
                                 Load more prompts
@@ -484,7 +484,7 @@
             <h3 class="text-sm font-semibold text-pm mb-4">Restore Database</h3>
 
             <div class="mb-3">
-                <div class="bg-pm-warning-tint border border-pm-warning/40 rounded-pm-md p-3 mb-3">
+                <div class="bg-pm-warning-tint border border-pm-warning-muted rounded-pm-md p-3 mb-3">
                     <h4 class="text-pm-warning font-medium text-xs">Warning</h4>
                     <p class="text-pm text-xs mt-1">This will replace your current database. A backup will be created automatically.</p>
                 </div>
@@ -660,7 +660,7 @@
                     <p class="text-pm-muted text-xs">No images have been generated with this prompt yet.</p>
                 </div>
                 <div id="galleryLoading" class="text-center py-8">
-                    <div class="w-8 h-8 border-3 border-pm-accent/30 border-t-pm-accent rounded-full animate-spin mx-auto mb-3"></div>
+                    <div class="w-8 h-8 border-3 border-pm-accent-muted border-t-pm-accent rounded-full animate-spin mx-auto mb-3"></div>
                     <p class="text-pm-secondary text-xs">Loading images...</p>
                 </div>
             </div>
@@ -673,7 +673,7 @@
             <h3 class="text-sm font-semibold text-pm mb-4">Scan ComfyUI Output Images</h3>
 
             <div class="space-y-3">
-                <div class="bg-pm-warning-tint border border-pm-warning/40 rounded-pm-md p-3">
+                <div class="bg-pm-warning-tint border border-pm-warning-muted rounded-pm-md p-3">
                     <h4 class="text-pm-warning font-medium text-xs mb-1.5">Important Information</h4>
                     <ul class="text-pm text-xs space-y-0.5">
                         <li>This will scan all PNG files in your ComfyUI output directory</li>
@@ -684,7 +684,7 @@
                     </ul>
                 </div>
 
-                <div class="bg-pm-info-tint border border-pm-info/40 rounded-pm-md p-3">
+                <div class="bg-pm-info-tint border border-pm-info-muted rounded-pm-md p-3">
                     <div class="flex items-center justify-between">
                         <span class="text-pm text-xs font-medium">Backup Database First (Recommended)</span>
                         <button id="quickBackupBtn"
