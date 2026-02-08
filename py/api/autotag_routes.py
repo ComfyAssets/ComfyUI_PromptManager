@@ -142,7 +142,7 @@ class AutotagRoutesMixin:
                         None, lambda: service.load_model(model_type, use_gpu)
                     )
                 except Exception as e:
-                    self.logger.error(f"Failed to load model: {e}")
+                    self.logger.exception("Failed to load model")
                     yield f"data: {json.dumps({'type': 'error', 'message': 'Failed to load model. Check server logs for details.'})}\n\n"
                     return
 

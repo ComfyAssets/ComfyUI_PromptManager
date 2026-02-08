@@ -778,7 +778,8 @@ class ImageRoutesMixin:
 
                     except Exception as e:
                         self.logger.warning(
-                            f"Failed to generate thumbnail for {media_file.name}: {e}"
+                            f"Failed to generate thumbnail for {media_file.name}",
+                            exc_info=True,
                         )
                         error_msg = (
                             f"Failed to generate thumbnail for {media_file.name}"
