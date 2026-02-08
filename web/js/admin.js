@@ -421,11 +421,11 @@
                 if (this.prompts.length === 0) {
                     container.innerHTML = `
                         <div class="text-center py-12">
-                            <div class="w-16 h-16 bg-gray-700 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <div class="w-16 h-16 bg-pm-surface rounded-full flex items-center justify-center mx-auto mb-4">
                                 <span class="text-2xl">📭</span>
                             </div>
-                            <h3 class="text-lg font-medium text-gray-300 mb-2">No prompts found</h3>
-                            <p class="text-gray-500">Try adjusting your search criteria or create some prompts in ComfyUI</p>
+                            <h3 class="text-lg font-medium text-pm-secondary mb-2">No prompts found</h3>
+                            <p class="text-pm-muted">Try adjusting your search criteria or create some prompts in ComfyUI</p>
                         </div>
                     `;
                     return;
@@ -490,20 +490,20 @@
                 const created = new Date(prompt.created_at).toLocaleDateString();
 
                 return `
-                    <div class="bg-gray-700/50 rounded-xl border border-gray-600 hover:border-gray-500 transition-all duration-200" data-id="${prompt.id}">
+                    <div class="bg-pm-surface rounded-pm-md border border-pm hover:border-pm transition-all duration-200" data-id="${prompt.id}">
                         <div class="p-6">
                             <div class="flex items-start space-x-4">
-                                <input type="checkbox" class="prompt-checkbox w-5 h-5 text-blue-600 bg-gray-600 border-gray-500 rounded focus:ring-blue-500 mt-1" data-id="${prompt.id}">
-                                
+                                <input type="checkbox" class="prompt-checkbox w-5 h-5 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent mt-1" data-id="${prompt.id}">
+
                                 <div class="flex-1 min-w-0">
-                                    <div class="bg-gray-800 rounded-lg p-4 mb-4 relative group">
-                                        <div class="prompt-text text-gray-100 leading-relaxed whitespace-pre-wrap" data-id="${prompt.id}">${this.escapeHtml(prompt.text)}</div>
-                                        <button class="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white p-2 rounded-lg text-sm" onclick="window.admin.copyPromptToClipboard(${prompt.id})">
+                                    <div class="bg-pm-surface rounded-pm-sm p-4 mb-4 relative group">
+                                        <div class="prompt-text text-pm leading-relaxed whitespace-pre-wrap" data-id="${prompt.id}">${this.escapeHtml(prompt.text)}</div>
+                                        <button class="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-pm-surface hover:bg-pm-hover text-pm-secondary hover:text-pm p-2 rounded-pm-sm text-sm" onclick="window.admin.copyPromptToClipboard(${prompt.id})">
                                             📋 Copy
                                         </button>
                                     </div>
-                                    
-                                    <div class="flex flex-wrap items-center gap-4 text-sm text-gray-400 mb-3">
+
+                                    <div class="flex flex-wrap items-center gap-4 text-sm text-pm-secondary mb-3">
                                         <div class="flex items-center space-x-1">
                                             <span>📁</span>
                                             <span class="category-text" data-id="${prompt.id}">${this.escapeHtml(category)}</span>
@@ -522,28 +522,28 @@
                                     <div class="tags-accordion" data-prompt-id="${prompt.id}">
                                         <div class="flex flex-wrap items-center gap-2">
                                             ${tags.slice(0, 10).map(tag => `
-                                                <span class="inline-flex items-center space-x-1 bg-blue-600/20 text-blue-300 px-3 py-1 rounded-full text-sm border border-blue-600/30">
+                                                <span class="inline-flex items-center space-x-1 bg-pm-accent-tint text-pm-accent px-3 py-1 rounded-full text-sm border border-pm-accent">
                                                     <span>${this.escapeHtml(tag)}</span>
-                                                    <button class="remove-tag-btn text-blue-300 hover:text-blue-100 ml-1" data-prompt-id="${prompt.id}" data-tag="${this.escapeHtml(tag)}">&times;</button>
+                                                    <button class="remove-tag-btn text-pm-accent hover:text-pm-accent ml-1" data-prompt-id="${prompt.id}" data-tag="${this.escapeHtml(tag)}">&times;</button>
                                                 </span>
                                             `).join("")}
-                                            <button class="inline-flex items-center space-x-1 bg-gray-600 hover:bg-gray-500 text-gray-300 px-3 py-1 rounded-full text-sm transition-colors" onclick="window.admin.addTag(${prompt.id})">
+                                            <button class="inline-flex items-center space-x-1 bg-pm-input hover:bg-pm-hover text-pm-secondary px-3 py-1 rounded-full text-sm transition-colors" onclick="window.admin.addTag(${prompt.id})">
                                                 <span>+</span>
                                                 <span>Add Tags</span>
                                             </button>
                                         </div>
                                         ${tags.length > 10 ? `
                                             <div class="tags-hidden hidden mt-2">
-                                                <div class="flex flex-wrap items-center gap-2 max-h-[180px] overflow-y-auto custom-scrollbar p-2 bg-gray-800/50 rounded-lg">
+                                                <div class="flex flex-wrap items-center gap-2 max-h-[180px] overflow-y-auto custom-scrollbar p-2 bg-pm-surface rounded-pm-sm">
                                                     ${tags.slice(10).map(tag => `
-                                                        <span class="inline-flex items-center space-x-1 bg-blue-600/20 text-blue-300 px-3 py-1 rounded-full text-sm border border-blue-600/30">
+                                                        <span class="inline-flex items-center space-x-1 bg-pm-accent-tint text-pm-accent px-3 py-1 rounded-full text-sm border border-pm-accent">
                                                             <span>${this.escapeHtml(tag)}</span>
-                                                            <button class="remove-tag-btn text-blue-300 hover:text-blue-100 ml-1" data-prompt-id="${prompt.id}" data-tag="${this.escapeHtml(tag)}">&times;</button>
+                                                            <button class="remove-tag-btn text-pm-accent hover:text-pm-accent ml-1" data-prompt-id="${prompt.id}" data-tag="${this.escapeHtml(tag)}">&times;</button>
                                                         </span>
                                                     `).join("")}
                                                 </div>
                                             </div>
-                                            <button class="tags-toggle-btn mt-2 text-sm text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1" onclick="window.admin.toggleMainTags(${prompt.id})">
+                                            <button class="tags-toggle-btn mt-2 text-sm text-pm-accent hover:text-pm-accent transition-colors flex items-center gap-1" onclick="window.admin.toggleMainTags(${prompt.id})">
                                                 <span class="toggle-icon">▼</span>
                                                 <span class="toggle-text">Show ${tags.length - 10} more tags</span>
                                             </button>
@@ -551,19 +551,19 @@
                                     </div>
 
                                     <!-- Film Strip -->
-                                    <div class="film-strip-container mt-3 pt-3 border-t border-gray-600/50" id="filmStrip-${prompt.id}">
+                                    <div class="film-strip-container mt-3 pt-3 border-t border-pm-subtle" id="filmStrip-${prompt.id}">
                                         <div class="film-strip-empty">Loading images...</div>
                                     </div>
                                 </div>
 
                                 <div class="flex flex-col space-y-2">
-                                    <button class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-lg transition-colors" onclick="window.admin.viewGallery(${prompt.id})">
+                                    <button class="px-4 py-2 bg-pm-accent hover:bg-pm-accent-hover text-pm text-sm font-medium rounded-pm-sm transition-colors" onclick="window.admin.viewGallery(${prompt.id})">
                                         🖼️ Gallery
                                     </button>
-                                    <button class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors" onclick="window.admin.editPrompt(${prompt.id})">
+                                    <button class="px-4 py-2 bg-pm-accent hover:bg-pm-accent-hover text-pm text-sm font-medium rounded-pm-sm transition-colors" onclick="window.admin.editPrompt(${prompt.id})">
                                         ✏️ Edit
                                     </button>
-                                    <button class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors" onclick="window.admin.deletePrompt(${prompt.id})">
+                                    <button class="px-4 py-2 bg-pm-error hover:bg-pm-error text-pm text-sm font-medium rounded-pm-sm transition-colors" onclick="window.admin.deletePrompt(${prompt.id})">
                                         🗑️ Delete
                                     </button>
                                 </div>
@@ -578,7 +578,7 @@
                     const starNum = i + 1;
                     const isActive = starNum <= rating;
                     const starIcon = isActive ? '⭐' : '☆'; // filled star vs outline star
-                    const color = isActive ? '#fbbf24' : '#9ca3af'; // yellow-400 : gray-400
+                    const color = isActive ? 'var(--pm-warning)' : 'var(--pm-text-secondary)'; // yellow-400 : gray-400
                     return `<button class="star-btn" data-star="${starNum}" data-prompt-id="${promptId}" style="font-size: 1.125rem; color: ${color}; background: none; border: none; cursor: pointer; transition: all 0.2s; width: 1.125rem; height: 1.125rem; display: inline-flex; align-items: center; justify-content: center; padding: 0; line-height: 1;" onclick="window.admin.setRating(${promptId}, ${starNum})">${starIcon}</button>`;
                 }).join("");
             }
@@ -596,23 +596,23 @@
                         starButtons.forEach((btn, i) => {
                             if (i < starNum) {
                                 btn.textContent = '⭐';
-                                btn.style.color = '#fcd34d'; // bright yellow on hover
+                                btn.style.color = 'var(--pm-warning)'; // bright yellow on hover
                             } else {
                                 btn.textContent = '☆';
-                                btn.style.color = '#9ca3af'; // gray
+                                btn.style.color = 'var(--pm-text-secondary)'; // gray
                             }
                         });
                     });
-                    
+
                     starBtn.addEventListener('mouseleave', () => {
                         // Reset to current rating
                         starButtons.forEach((btn, i) => {
                             if (i < currentRating) {
                                 btn.textContent = '⭐';
-                                btn.style.color = '#fbbf24'; // yellow
+                                btn.style.color = 'var(--pm-warning)'; // yellow
                             } else {
                                 btn.textContent = '☆';
-                                btn.style.color = '#9ca3af'; // gray
+                                btn.style.color = 'var(--pm-text-secondary)'; // gray
                             }
                         });
                     });
@@ -633,13 +633,13 @@
                 const isViewerOpen = viewerContainer && viewerContainer.style.display !== 'none';
                 const zIndex = isViewerOpen ? 'z-[50000]' : 'z-50';
                 
-                notification.className = `fixed top-4 right-4 px-6 py-4 rounded-lg shadow-lg ${zIndex} transition-all duration-300 transform translate-x-full`;
-                
+                notification.className = `fixed top-4 right-4 px-6 py-4 rounded-pm-sm shadow-pm ${zIndex} transition-all duration-300 transform translate-x-full`;
+
                 const colors = {
-                    success: "bg-green-600 text-white",
-                    error: "bg-red-600 text-white",
-                    warning: "bg-yellow-600 text-white",
-                    info: "bg-blue-600 text-white"
+                    success: "bg-pm-success text-pm",
+                    error: "bg-pm-error text-pm",
+                    warning: "bg-pm-warning text-pm",
+                    info: "bg-pm-accent text-pm"
                 };
                 
                 notification.className += ` ${colors[type] || colors.info}`;
@@ -868,7 +868,7 @@
                 const originalText = promptElement.textContent;
                 promptElement.contentEditable = true;
                 promptElement.focus();
-                promptElement.classList.add("bg-gray-700", "border", "border-blue-500", "rounded-lg", "p-3");
+                promptElement.classList.add("bg-pm-surface", "border", "border-pm-accent", "rounded-pm-sm", "p-3");
 
                 const saveEdit = async () => {
                     const newText = promptElement.textContent.trim();
@@ -896,7 +896,7 @@
                         }
                     }
                     promptElement.contentEditable = false;
-                    promptElement.classList.remove("bg-gray-700", "border", "border-blue-500", "rounded-lg", "p-3");
+                    promptElement.classList.remove("bg-pm-surface", "border", "border-pm-accent", "rounded-pm-sm", "p-3");
                 };
 
                 promptElement.addEventListener("blur", saveEdit, { once: true });
@@ -908,7 +908,7 @@
                     if (e.key === "Escape") {
                         promptElement.textContent = originalText;
                         promptElement.contentEditable = false;
-                        promptElement.classList.remove("bg-gray-700", "border", "border-blue-500", "rounded-lg", "p-3");
+                        promptElement.classList.remove("bg-pm-surface", "border", "border-pm-accent", "rounded-pm-sm", "p-3");
                     }
                 });
             }
@@ -1095,25 +1095,25 @@
                 empty.classList.add("hidden");
                 
                 content.innerHTML = images.map((image, index) => `
-                    <div class="group cursor-pointer bg-gray-700 rounded-xl overflow-hidden border border-gray-600 hover:border-gray-500 transition-all duration-200">
-                        <div class="aspect-square bg-gray-800 overflow-hidden relative">
+                    <div class="group cursor-pointer bg-pm-surface rounded-pm-md overflow-hidden border border-pm hover:border-pm transition-all duration-200">
+                        <div class="aspect-square bg-pm-surface overflow-hidden relative">
                             <img src="/prompt_manager/images/${image.id}/file" 
                                  alt="Generated image ${index + 1}" 
                                  class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                                  data-original="/prompt_manager/images/${image.id}/file"
                                  data-caption="Generated: ${new Date(image.generation_time).toLocaleDateString()} ${new Date(image.generation_time).toLocaleTimeString()} | ${image.width && image.height ? `${image.width}×${image.height}` : 'Unknown size'}${image.file_size ? ` | ${this.formatFileSize(image.file_size)}` : ''}"
-                                 onerror="this.parentElement.innerHTML='<div class=\\'flex items-center justify-center h-full text-gray-400\\'>⚠️ Image not found</div>'">
+                                 onerror="this.parentElement.innerHTML='<div class=\\'flex items-center justify-center h-full text-pm-secondary\\'>⚠️ Image not found</div>'">
                             <div class="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-opacity duration-300 flex items-center justify-center pointer-events-none">
-                                <svg class="w-8 h-8 text-white opacity-0 group-hover:opacity-100 transition-opacity duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg class="w-8 h-8 text-pm opacity-0 group-hover:opacity-100 transition-opacity duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                                 </svg>
                             </div>
                         </div>
                         <div class="p-3">
-                            <div class="text-xs text-gray-400 mb-1">
+                            <div class="text-xs text-pm-secondary mb-1">
                                 ${new Date(image.generation_time).toLocaleDateString()} ${new Date(image.generation_time).toLocaleTimeString()}
                             </div>
-                            <div class="text-xs text-gray-500">
+                            <div class="text-xs text-pm-muted">
                                 ${image.width && image.height ? `${image.width}×${image.height}` : 'Unknown size'}
                                 ${image.file_size ? ` • ${this.formatFileSize(image.file_size)}` : ''}
                             </div>
@@ -1247,8 +1247,8 @@
                 resultsContainer.innerHTML = `
                     <div class="text-center py-8">
                         <div class="w-12 h-12 border-4 border-teal-500/30 border-t-teal-500 rounded-full animate-spin mx-auto mb-4"></div>
-                        <p class="text-gray-400">Running maintenance operations...</p>
-                        <p class="text-sm text-gray-500 mt-2">Operations: ${selectedOps.map(op => op.replace(/_/g, ' ')).join(', ')}</p>
+                        <p class="text-pm-secondary">Running maintenance operations...</p>
+                        <p class="text-sm text-pm-muted mt-2">Operations: ${selectedOps.map(op => op.replace(/_/g, ' ')).join(', ')}</p>
                     </div>
                 `;
                 
@@ -1282,9 +1282,9 @@
                 } catch (error) {
                     console.error('Maintenance error:', error);
                     resultsContainer.innerHTML = `
-                        <div class="bg-red-900/20 border border-red-600 rounded-lg p-4">
-                            <h4 class="text-red-400 font-medium mb-2">❌ Maintenance Failed</h4>
-                            <p class="text-gray-300">${error.message}</p>
+                        <div class="bg-pm-error-tint border border-pm-error rounded-pm-sm p-4">
+                            <h4 class="text-pm-error font-medium mb-2">❌ Maintenance Failed</h4>
+                            <p class="text-pm-secondary">${error.message}</p>
                         </div>
                     `;
                     this.showNotification('❌ Maintenance failed', 'error');
@@ -1300,19 +1300,19 @@
                 let html = '<div class="space-y-4">';
                 
                 // Summary
-                html += '<div class="bg-gray-700 rounded-lg p-4">';
-                html += '<h4 class="text-white font-medium mb-3">📋 Maintenance Summary</h4>';
+                html += '<div class="bg-pm-surface rounded-pm-sm p-4">';
+                html += '<h4 class="text-pm font-medium mb-3">📋 Maintenance Summary</h4>';
                 html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-3">';
                 html += `
-                    <div class="flex justify-between items-center p-2 bg-gray-600 rounded">
-                        <span class="text-gray-300">Operations Completed</span>
-                        <span class="text-green-400 font-mono text-sm">${data.operations_completed}</span>
+                    <div class="flex justify-between items-center p-2 bg-pm-input rounded">
+                        <span class="text-pm-secondary">Operations Completed</span>
+                        <span class="text-pm-success font-mono text-sm">${data.operations_completed}</span>
                     </div>
                 `;
                 html += `
-                    <div class="flex justify-between items-center p-2 bg-gray-600 rounded">
-                        <span class="text-gray-300">Overall Success</span>
-                        <span class="${data.all_successful ? 'text-green-400' : 'text-yellow-400'} font-mono text-sm">
+                    <div class="flex justify-between items-center p-2 bg-pm-input rounded">
+                        <span class="text-pm-secondary">Overall Success</span>
+                        <span class="${data.all_successful ? 'text-pm-success' : 'text-pm-warning'} font-mono text-sm">
                             ${data.all_successful ? '✅ ALL PASSED' : '⚠️ SOME ISSUES'}
                         </span>
                     </div>
@@ -1321,50 +1321,50 @@
                 
                 // Detailed results
                 for (const [operation, result] of Object.entries(data.results)) {
-                    const bgColor = result.success ? 'bg-green-900/20 border-green-600' : 'bg-red-900/20 border-red-600';
+                    const bgColor = result.success ? 'bg-pm-success-tint border-pm-success' : 'bg-pm-error-tint border-pm-error';
                     const statusIcon = result.success ? '✅' : '❌';
                     const statusText = result.success ? 'SUCCESS' : 'FAILED';
                     
-                    html += `<div class="${bgColor} border rounded-lg p-4">`;
-                    html += `<h4 class="text-white font-medium mb-2 flex items-center space-x-2">`;
+                    html += `<div class="${bgColor} border rounded-pm-sm p-4">`;
+                    html += `<h4 class="text-pm font-medium mb-2 flex items-center space-x-2">`;
                     html += `<span>${statusIcon}</span>`;
                     html += `<span class="capitalize">${operation.replace(/_/g, ' ')}</span>`;
-                    html += `<span class="text-sm font-mono ${result.success ? 'text-green-400' : 'text-red-400'}">${statusText}</span>`;
+                    html += `<span class="text-sm font-mono ${result.success ? 'text-pm-success' : 'text-pm-error'}">${statusText}</span>`;
                     html += `</h4>`;
-                    
+
                     if (result.message) {
-                        html += `<p class="text-gray-300 mb-2">${result.message}</p>`;
+                        html += `<p class="text-pm-secondary mb-2">${result.message}</p>`;
                     }
-                    
+
                     // Show specific details
                     if (result.removed_count !== undefined) {
-                        html += `<div class="text-sm text-gray-400">Items removed: ${result.removed_count}</div>`;
+                        html += `<div class="text-sm text-pm-secondary">Items removed: ${result.removed_count}</div>`;
                     }
-                    
+
                     if (result.duplicate_hashes !== undefined) {
-                        html += `<div class="text-sm text-gray-400">Duplicate hash groups found: ${result.duplicate_hashes}</div>`;
+                        html += `<div class="text-sm text-pm-secondary">Duplicate hash groups found: ${result.duplicate_hashes}</div>`;
                     }
-                    
+
                     if (result.issues_found !== undefined) {
-                        html += `<div class="text-sm text-gray-400">Issues found: ${result.issues_found}</div>`;
+                        html += `<div class="text-sm text-pm-secondary">Issues found: ${result.issues_found}</div>`;
                         if (result.issues && result.issues.length > 0) {
-                            html += `<ul class="ml-4 list-disc text-xs text-gray-500 mt-1">`;
+                            html += `<ul class="ml-4 list-disc text-xs text-pm-muted mt-1">`;
                             result.issues.forEach(issue => {
                                 html += `<li>${issue}</li>`;
                             });
                             html += `</ul>`;
                         }
                     }
-                    
+
                     if (result.info) {
-                        html += `<div class="text-sm text-gray-400 mt-2">`;
+                        html += `<div class="text-sm text-pm-secondary mt-2">`;
                         html += `<p>Total prompts: ${result.info.total_prompts || 'N/A'}</p>`;
                         html += `<p>Database size: ${result.info.database_size_bytes ? this.formatFileSize(result.info.database_size_bytes) : 'N/A'}</p>`;
                         html += `</div>`;
                     }
-                    
+
                     if (result.error) {
-                        html += `<div class="text-sm text-red-300 mt-2 font-mono bg-red-900/20 p-2 rounded">`;
+                        html += `<div class="text-sm text-pm-error mt-2 font-mono bg-pm-error-tint p-2 rounded">`;
                         html += `Error: ${result.error}`;
                         html += `</div>`;
                     }
@@ -1381,7 +1381,7 @@
                 content.innerHTML = `
                     <div class="text-center py-8">
                         <div class="w-12 h-12 border-4 border-orange-500/30 border-t-orange-500 rounded-full animate-spin mx-auto mb-4"></div>
-                        <p class="text-gray-400">Running diagnostics...</p>
+                        <p class="text-pm-secondary">Running diagnostics...</p>
                     </div>
                 `;
 
@@ -1400,9 +1400,9 @@
                 } catch (error) {
                     console.error('Diagnostics error:', error);
                     content.innerHTML = `
-                        <div class="bg-red-900/20 border border-red-600 rounded-lg p-4">
-                            <h4 class="text-red-400 font-medium mb-2">❌ Diagnostics Failed</h4>
-                            <p class="text-gray-300">${error.message}</p>
+                        <div class="bg-pm-error-tint border border-pm-error rounded-pm-sm p-4">
+                            <h4 class="text-pm-error font-medium mb-2">❌ Diagnostics Failed</h4>
+                            <p class="text-pm-secondary">${error.message}</p>
                         </div>
                     `;
                 }
@@ -1414,17 +1414,17 @@
                 let html = '<div class="space-y-4">';
                 
                 // Summary
-                html += '<div class="bg-gray-700 rounded-lg p-4">';
-                html += '<h4 class="text-white font-medium mb-3">📋 Diagnostic Summary</h4>';
+                html += '<div class="bg-pm-surface rounded-pm-sm p-4">';
+                html += '<h4 class="text-pm font-medium mb-3">📋 Diagnostic Summary</h4>';
                 html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-3">';
-                
+
                 for (const [category, result] of Object.entries(diagnostics)) {
                     const status = result.status === 'ok' ? '✅ PASS' : (result.status === 'warning' ? '⚠️ WARNING' : '❌ FAIL');
-                    const statusColor = result.status === 'ok' ? 'text-green-400' : (result.status === 'warning' ? 'text-yellow-400' : 'text-red-400');
-                    
+                    const statusColor = result.status === 'ok' ? 'text-pm-success' : (result.status === 'warning' ? 'text-pm-warning' : 'text-pm-error');
+
                     html += `
-                        <div class="flex justify-between items-center p-2 bg-gray-600 rounded">
-                            <span class="text-gray-300 capitalize">${this.escapeHtml(category)}</span>
+                        <div class="flex justify-between items-center p-2 bg-pm-input rounded">
+                            <span class="text-pm-secondary capitalize">${this.escapeHtml(category)}</span>
                             <span class="${statusColor} font-mono text-sm">${status}</span>
                         </div>
                     `;
@@ -1434,26 +1434,26 @@
                 
                 // Detailed results
                 for (const [category, result] of Object.entries(diagnostics)) {
-                    const bgColor = result.status === 'ok' ? 'bg-green-900/20 border-green-600' : 
-                                   (result.status === 'warning' ? 'bg-yellow-900/20 border-yellow-600' : 'bg-red-900/20 border-red-600');
-                    
-                    html += `<div class="${bgColor} border rounded-lg p-4">`;
-                    html += `<h4 class="text-white font-medium mb-2 capitalize">${this.escapeHtml(category)}</h4>`;
-                    
+                    const bgColor = result.status === 'ok' ? 'bg-pm-success-tint border-pm-success' :
+                                   (result.status === 'warning' ? 'bg-pm-warning/20 border-pm-warning' : 'bg-pm-error-tint border-pm-error');
+
+                    html += `<div class="${bgColor} border rounded-pm-sm p-4">`;
+                    html += `<h4 class="text-pm font-medium mb-2 capitalize">${this.escapeHtml(category)}</h4>`;
+
                     if (result.message) {
-                        html += `<p class="text-gray-300 mb-2">${result.message}</p>`;
+                        html += `<p class="text-pm-secondary mb-2">${result.message}</p>`;
                     }
-                    
+
                     // Show specific details based on category
                     if (category === 'database' && result.status === 'ok') {
-                        html += `<div class="text-sm text-gray-400">`;
+                        html += `<div class="text-sm text-pm-secondary">`;
                         html += `<p>Prompts: ${result.prompt_count || 0}</p>`;
                         html += `<p>Images table: ${result.has_images_table ? 'Yes' : 'No'}</p>`;
                         html += `</div>`;
                     }
-                    
+
                     if (category === 'images_table' && result.status === 'ok') {
-                        html += `<div class="text-sm text-gray-400">`;
+                        html += `<div class="text-sm text-pm-secondary">`;
                         html += `<p>Images: ${result.image_count || 0}</p>`;
                         if (result.recent_images && result.recent_images.length > 0) {
                             html += `<p>Recent images:</p>`;
@@ -1465,9 +1465,9 @@
                         }
                         html += `</div>`;
                     }
-                    
+
                     if (category === 'comfyui_output' && result.output_dirs) {
-                        html += `<div class="text-sm text-gray-400">`;
+                        html += `<div class="text-sm text-pm-secondary">`;
                         html += `<p>Output directories found:</p>`;
                         html += `<ul class="ml-4 list-disc">`;
                         result.output_dirs.forEach(dir => {
@@ -1476,9 +1476,9 @@
                         html += `</ul>`;
                         html += `</div>`;
                     }
-                    
+
                     if (category === 'dependencies' && result.dependencies) {
-                        html += `<div class="text-sm text-gray-400">`;
+                        html += `<div class="text-sm text-pm-secondary">`;
                         for (const [dep, available] of Object.entries(result.dependencies)) {
                             const status = available ? '✅' : '❌';
                             html += `<p>${status} ${dep}</p>`;
@@ -1691,12 +1691,12 @@
                 const modal = document.createElement('div');
                 modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
                 modal.innerHTML = `
-                    <div class="bg-gray-800 rounded-xl p-6 max-w-2xl w-full mx-4 border border-gray-700">
-                        <h3 class="text-xl font-semibold text-gray-100 mb-4">📋 Copy Prompt Text</h3>
-                        <p class="text-gray-400 mb-4">Please manually copy the text below:</p>
-                        <textarea readonly class="w-full h-32 px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 resize-none" style="font-family: monospace;">${text}</textarea>
+                    <div class="bg-pm-surface rounded-pm-md p-6 max-w-2xl w-full mx-4 border border-pm">
+                        <h3 class="text-xl font-semibold text-pm mb-4">📋 Copy Prompt Text</h3>
+                        <p class="text-pm-secondary mb-4">Please manually copy the text below:</p>
+                        <textarea readonly class="w-full h-32 px-4 py-3 bg-pm-surface border border-pm rounded-pm-sm text-pm resize-none" style="font-family: monospace;">${text}</textarea>
                         <div class="flex justify-end mt-4">
-                            <button class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors" onclick="this.closest('[class*=fixed]').remove()">
+                            <button class="px-6 py-2 bg-pm-accent hover:bg-pm-accent-hover text-pm font-medium rounded-pm-sm transition-colors" onclick="this.closest('[class*=fixed]').remove()">
                                 Close
                             </button>
                         </div>
@@ -1903,21 +1903,21 @@
                         const container = document.getElementById("logFilesList");
                         
                         if (data.files.length === 0) {
-                            container.innerHTML = '<div class="col-span-full text-center text-gray-500">No log files found</div>';
+                            container.innerHTML = '<div class="col-span-full text-center text-pm-muted">No log files found</div>';
                             return;
                         }
                         
                         container.innerHTML = data.files.map(file => `
-                            <div class="bg-gray-700 rounded-lg p-3">
+                            <div class="bg-pm-surface rounded-pm-sm p-3">
                                 <div class="flex items-center justify-between mb-2">
-                                    <span class="text-sm font-medium text-gray-200">${file.filename}</span>
-                                    ${file.is_main ? '<span class="bg-blue-500 text-xs px-2 py-1 rounded">Active</span>' : ''}
+                                    <span class="text-sm font-medium text-pm">${file.filename}</span>
+                                    ${file.is_main ? '<span class="bg-pm-accent text-xs px-2 py-1 rounded">Active</span>' : ''}
                                 </div>
-                                <div class="text-xs text-gray-400 mb-2">
+                                <div class="text-xs text-pm-secondary mb-2">
                                     Size: ${this.formatBytes(file.size)} | Modified: ${new Date(file.modified).toLocaleString()}
                                 </div>
-                                <button onclick="window.admin.downloadLogFile('${file.filename}')" 
-                                        class="w-full px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-xs rounded transition-colors">
+                                <button onclick="window.admin.downloadLogFile('${file.filename}')"
+                                        class="w-full px-3 py-1 bg-pm-success hover:bg-pm-success text-pm text-xs rounded transition-colors">
                                     📥 Download
                                 </button>
                             </div>
@@ -1956,31 +1956,31 @@
                 const container = document.getElementById("logsContainer");
                 
                 if (logs.length === 0) {
-                    container.innerHTML = '<div class="text-center py-8 text-gray-500">No logs found</div>';
+                    container.innerHTML = '<div class="text-center py-8 text-pm-muted">No logs found</div>';
                     return;
                 }
-                
+
                 container.innerHTML = logs.map(log => {
                     const levelColors = {
-                        DEBUG: 'text-gray-400',
-                        INFO: 'text-blue-400',
-                        WARNING: 'text-yellow-400',
-                        ERROR: 'text-red-400',
-                        CRITICAL: 'text-red-600'
+                        DEBUG: 'text-pm-secondary',
+                        INFO: 'text-pm-accent',
+                        WARNING: 'text-pm-warning',
+                        ERROR: 'text-pm-error',
+                        CRITICAL: 'text-pm-error'
                     };
-                    
-                    const levelColor = levelColors[log.level] || 'text-gray-400';
+
+                    const levelColor = levelColors[log.level] || 'text-pm-secondary';
                     const timestamp = new Date(log.timestamp).toLocaleString();
-                    
+
                     return `
-                        <div class="border-l-2 border-gray-600 pl-3 py-1 hover:bg-gray-800 transition-colors">
+                        <div class="border-l-2 border-pm pl-3 py-1 hover:bg-pm-surface transition-colors">
                             <div class="flex items-start space-x-2 text-sm">
-                                <span class="text-gray-500 text-xs font-mono w-24 flex-shrink-0">${timestamp.split(' ')[1]}</span>
+                                <span class="text-pm-muted text-xs font-mono w-24 flex-shrink-0">${timestamp.split(' ')[1]}</span>
                                 <span class="${levelColor} font-semibold w-16 flex-shrink-0">${log.level}</span>
-                                <span class="text-purple-400 text-xs w-32 flex-shrink-0">${log.logger}</span>
-                                <span class="text-gray-300 flex-1">${log.message}</span>
+                                <span class="text-pm-accent text-xs w-32 flex-shrink-0">${log.logger}</span>
+                                <span class="text-pm-secondary flex-1">${log.message}</span>
                             </div>
-                            <div class="text-xs text-gray-500 ml-44">
+                            <div class="text-xs text-pm-muted ml-44">
                                 ${log.filename}:${log.lineno}
                             </div>
                         </div>
@@ -2357,76 +2357,76 @@
                 metadataContent.innerHTML = `
                     <!-- File Path -->
                     <div>
-                        <h2 class="text-sm font-medium text-gray-300 mb-2">File Path</h2>
-                        <div class="text-sm text-blue-400 hover:text-blue-300 cursor-pointer bg-gray-800 p-2 rounded break-all" onclick="window.admin.copyToClipboard('${filePath}')">
+                        <h2 class="text-sm font-medium text-pm-secondary mb-2">File Path</h2>
+                        <div class="text-sm text-pm-accent hover:text-pm-accent cursor-pointer bg-pm-surface p-2 rounded break-all" onclick="window.admin.copyToClipboard('${filePath}')">
                             ${filePath}
                         </div>
                     </div>
 
                     <!-- Resources used -->
                     <div>
-                        <h2 class="text-sm font-medium text-gray-300 mb-2">Resources used</h2>
+                        <h2 class="text-sm font-medium text-pm-secondary mb-2">Resources used</h2>
                         <div class="flex items-center justify-between">
                             <div>
-                                <div class="text-blue-400 hover:text-blue-300 cursor-pointer">${checkpoint}</div>
-                                <div class="text-xs text-gray-500">ComfyUI Generated</div>
+                                <div class="text-pm-accent hover:text-pm-accent cursor-pointer">${checkpoint}</div>
+                                <div class="text-xs text-pm-muted">ComfyUI Generated</div>
                             </div>
-                            <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">CHECKPOINT</span>
+                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">CHECKPOINT</span>
                         </div>
                     </div>
 
                     <!-- Prompt -->
                     <div>
                         <div class="flex items-center gap-2 mb-2">
-                            <h2 class="text-sm font-medium text-gray-300">Prompt</h2>
+                            <h2 class="text-sm font-medium text-pm-secondary">Prompt</h2>
                             <span class="px-2 py-1 text-xs bg-orange-600 text-orange-100 rounded">COMFYUI</span>
-                            <button class="ml-auto text-gray-400 hover:text-gray-300" onclick="window.admin.copyPrompt('positive')">
+                            <button class="ml-auto text-pm-secondary hover:text-pm-secondary" onclick="window.admin.copyPrompt('positive')">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
                                 </svg>
                             </button>
                         </div>
-                        <div class="text-sm text-gray-300 bg-gray-800 p-3 rounded max-h-32 overflow-y-auto">
+                        <div class="text-sm text-pm-secondary bg-pm-surface p-3 rounded max-h-32 overflow-y-auto">
                             ${positivePrompt.substring(0, 200)}${positivePrompt.length > 200 ? '...' : ''}
                         </div>
-                        ${positivePrompt.length > 200 ? '<button class="text-blue-400 hover:text-blue-300 text-sm mt-1" onclick="window.admin.showFullPrompt(\'positive\')">Show more</button>' : ''}
+                        ${positivePrompt.length > 200 ? '<button class="text-pm-accent hover:text-pm-accent text-sm mt-1" onclick="window.admin.showFullPrompt(\'positive\')">Show more</button>' : ''}
                     </div>
 
                     <!-- Negative prompt -->
                     <div>
                         <div class="flex items-center justify-between mb-2">
-                            <h2 class="text-sm font-medium text-gray-300">Negative prompt</h2>
-                            <button class="text-gray-400 hover:text-gray-300" onclick="window.admin.copyPrompt('negative')">
+                            <h2 class="text-sm font-medium text-pm-secondary">Negative prompt</h2>
+                            <button class="text-pm-secondary hover:text-pm-secondary" onclick="window.admin.copyPrompt('negative')">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
                                 </svg>
                             </button>
                         </div>
-                        <div class="text-sm text-gray-300 bg-gray-800 p-3 rounded max-h-32 overflow-y-auto">
+                        <div class="text-sm text-pm-secondary bg-pm-surface p-3 rounded max-h-32 overflow-y-auto">
                             ${negativePrompt.substring(0, 200)}${negativePrompt.length > 200 ? '...' : ''}
                         </div>
-                        ${negativePrompt.length > 200 ? '<button class="text-blue-400 hover:text-blue-300 text-sm mt-1" onclick="window.admin.showFullPrompt(\'negative\')">Show more</button>' : ''}
+                        ${negativePrompt.length > 200 ? '<button class="text-pm-accent hover:text-pm-accent text-sm mt-1" onclick="window.admin.showFullPrompt(\'negative\')">Show more</button>' : ''}
                     </div>
 
                     <!-- Other metadata -->
                     <div>
-                        <h2 class="text-sm font-medium text-gray-300 mb-3">Other metadata</h2>
+                        <h2 class="text-sm font-medium text-pm-secondary mb-3">Other metadata</h2>
                         <div class="flex flex-wrap gap-2">
-                            <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">CFG SCALE: ${cfgScale}</span>
-                            <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">STEPS: ${steps}</span>
-                            <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">SAMPLER: ${sampler}</span>
+                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">CFG SCALE: ${cfgScale}</span>
+                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">STEPS: ${steps}</span>
+                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SAMPLER: ${sampler}</span>
                         </div>
                         <div class="mt-2">
-                            <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">SEED: ${seed}</span>
+                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SEED: ${seed}</span>
                         </div>
                     </div>
 
                     <!-- Raw Workflow Data -->
                     <div>
-                        <h2 class="text-sm font-medium text-gray-300 mb-2">ComfyUI Workflow</h2>
+                        <h2 class="text-sm font-medium text-pm-secondary mb-2">ComfyUI Workflow</h2>
                         <div class="flex items-center gap-2">
-                            <button class="text-blue-400 hover:text-blue-300 text-sm" onclick="window.admin.showWorkflowData()">View Raw Workflow JSON</button>
-                            <button class="text-blue-400 hover:text-blue-300" onclick="window.admin.downloadWorkflowJSON()" title="Download JSON">
+                            <button class="text-pm-accent hover:text-pm-accent text-sm" onclick="window.admin.showWorkflowData()">View Raw Workflow JSON</button>
+                            <button class="text-pm-accent hover:text-pm-accent" onclick="window.admin.downloadWorkflowJSON()" title="Download JSON">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                                 </svg>
@@ -2441,7 +2441,7 @@
                 if (!metadataContent) return;
 
                 metadataContent.innerHTML = `
-                    <div class="text-center text-red-400 py-8">
+                    <div class="text-center text-pm-error py-8">
                         <svg class="w-16 h-16 mx-auto mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                         </svg>
@@ -2977,22 +2977,22 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 sidebar.className = 'metadata-sidebar';
                 sidebar.innerHTML = `
                     <!-- Header -->
-                    <div class="flex items-center justify-between p-4 border-b border-gray-700">
+                    <div class="flex items-center justify-between p-4 border-b border-pm">
                         <div class="flex items-center gap-2">
-                            <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <svg class="w-5 h-5 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                             </svg>
-                            <h1 class="text-lg font-medium text-white">Generation data</h1>
+                            <h1 class="text-lg font-medium text-pm">Generation data</h1>
                         </div>
-                        <button class="text-xs text-blue-400 hover:text-blue-300 transition-colors metadata-copy-all">
+                        <button class="text-xs text-pm-accent hover:text-pm-accent transition-colors metadata-copy-all">
                             📋 COPY ALL
                         </button>
                     </div>
-                    
+
                     <!-- Scrollable Content -->
                     <div id="metadata-content" class="flex-1 overflow-y-auto p-4 space-y-6">
                         <!-- Initial placeholder content -->
-                        <div class="text-center text-gray-500 py-8">
+                        <div class="text-center text-pm-muted py-8">
                             <svg class="w-16 h-16 mx-auto mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                             </svg>
@@ -3016,7 +3016,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 // Show loading state
                 metadataContent.innerHTML = `
                     <div class="metadata-loading">
-                        <div class="text-center text-gray-500 py-8">
+                        <div class="text-center text-pm-muted py-8">
                             <svg class="w-16 h-16 mx-auto mb-4 opacity-30 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
                             </svg>
@@ -3033,7 +3033,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 } catch (error) {
                     console.error('Failed to load metadata:', error);
                     metadataContent.innerHTML = `
-                        <div class="text-center text-red-500 py-8">
+                        <div class="text-center text-pm-error py-8">
                             <p class="text-lg mb-2">Failed to Load Metadata</p>
                             <p class="text-sm">Could not extract ComfyUI workflow data</p>
                         </div>
@@ -3048,76 +3048,76 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 metadataContent.innerHTML = `
                 <!-- File Path -->
                 <div>
-                    <h2 class="text-sm font-medium text-gray-300 mb-2">File Path</h2>
-                    <div class="text-sm text-blue-400 hover:text-blue-300 cursor-pointer bg-gray-800 p-2 rounded break-all" data-copy-path="">
+                    <h2 class="text-sm font-medium text-pm-secondary mb-2">File Path</h2>
+                    <div class="text-sm text-pm-accent hover:text-pm-accent cursor-pointer bg-pm-surface p-2 rounded break-all" data-copy-path="">
                         ${metadata.imagePath}
                     </div>
                 </div>
 
                 <!-- Resources used -->
                 <div>
-                    <h2 class="text-sm font-medium text-gray-300 mb-2">Resources used</h2>
+                    <h2 class="text-sm font-medium text-pm-secondary mb-2">Resources used</h2>
                     <div class="flex items-center justify-between">
                         <div>
-                            <div class="text-blue-400 hover:text-blue-300 cursor-pointer">${metadata.checkpoint}</div>
-                            <div class="text-xs text-gray-500">ComfyUI Generated</div>
+                            <div class="text-pm-accent hover:text-pm-accent cursor-pointer">${metadata.checkpoint}</div>
+                            <div class="text-xs text-pm-muted">ComfyUI Generated</div>
                         </div>
-                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">CHECKPOINT</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">CHECKPOINT</span>
                     </div>
                 </div>
 
                 <!-- Prompt -->
                 <div>
                     <div class="flex items-center gap-2 mb-2">
-                        <h2 class="text-sm font-medium text-gray-300">Prompt</h2>
+                        <h2 class="text-sm font-medium text-pm-secondary">Prompt</h2>
                         <span class="px-2 py-1 text-xs bg-orange-600 text-orange-100 rounded">COMFYUI</span>
-                        <button class="ml-auto text-gray-400 hover:text-gray-300" data-copy-type="positive">
+                        <button class="ml-auto text-pm-secondary hover:text-pm-secondary" data-copy-type="positive">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
                             </svg>
                         </button>
                     </div>
-                    <div class="text-sm text-gray-300 bg-gray-800 p-3 rounded max-h-32 overflow-y-auto">
+                    <div class="text-sm text-pm-secondary bg-pm-surface p-3 rounded max-h-32 overflow-y-auto">
                         ${metadata.positivePrompt.substring(0, 200)}${metadata.positivePrompt.length > 200 ? '...' : ''}
                     </div>
-                    ${metadata.positivePrompt.length > 200 ? '<button class="text-blue-400 hover:text-blue-300 text-sm mt-1" data-show-type="positive">Show more</button>' : ''}
+                    ${metadata.positivePrompt.length > 200 ? '<button class="text-pm-accent hover:text-pm-accent text-sm mt-1" data-show-type="positive">Show more</button>' : ''}
                 </div>
 
                 <!-- Negative prompt -->
                 <div>
                     <div class="flex items-center justify-between mb-2">
-                        <h2 class="text-sm font-medium text-gray-300">Negative prompt</h2>
-                        <button class="text-gray-400 hover:text-gray-300" data-copy-type="negative">
+                        <h2 class="text-sm font-medium text-pm-secondary">Negative prompt</h2>
+                        <button class="text-pm-secondary hover:text-pm-secondary" data-copy-type="negative">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
                             </svg>
                         </button>
                     </div>
-                    <div class="text-sm text-gray-300 bg-gray-800 p-3 rounded max-h-32 overflow-y-auto">
+                    <div class="text-sm text-pm-secondary bg-pm-surface p-3 rounded max-h-32 overflow-y-auto">
                         ${metadata.negativePrompt.substring(0, 200)}${metadata.negativePrompt.length > 200 ? '...' : ''}
                     </div>
-                    ${metadata.negativePrompt.length > 200 ? '<button class="text-blue-400 hover:text-blue-300 text-sm mt-1" data-show-type="negative">Show more</button>' : ''}
+                    ${metadata.negativePrompt.length > 200 ? '<button class="text-pm-accent hover:text-pm-accent text-sm mt-1" data-show-type="negative">Show more</button>' : ''}
                 </div>
 
                 <!-- Other metadata -->
                 <div>
-                    <h2 class="text-sm font-medium text-gray-300 mb-3">Other metadata</h2>
+                    <h2 class="text-sm font-medium text-pm-secondary mb-3">Other metadata</h2>
                     <div class="flex flex-wrap gap-2">
-                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">CFG SCALE: ${metadata.cfgScale}</span>
-                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">STEPS: ${metadata.steps}</span>
-                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">SAMPLER: ${metadata.sampler}</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">CFG SCALE: ${metadata.cfgScale}</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">STEPS: ${metadata.steps}</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SAMPLER: ${metadata.sampler}</span>
                     </div>
                     <div class="mt-2">
-                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">SEED: ${metadata.seed}</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SEED: ${metadata.seed}</span>
                     </div>
                 </div>
 
                 <!-- Raw Workflow Data -->
                 <div>
-                    <h2 class="text-sm font-medium text-gray-300 mb-2">ComfyUI Workflow</h2>
+                    <h2 class="text-sm font-medium text-pm-secondary mb-2">ComfyUI Workflow</h2>
                     <div class="flex items-center gap-2">
-                        <button class="text-blue-400 hover:text-blue-300 text-sm" data-action="show-workflow">View Raw Workflow JSON</button>
-                        <button class="text-blue-400 hover:text-blue-300" data-action="download-workflow" title="Download JSON">
+                        <button class="text-pm-accent hover:text-pm-accent text-sm" data-action="show-workflow">View Raw Workflow JSON</button>
+                        <button class="text-pm-accent hover:text-pm-accent" data-action="download-workflow" title="Download JSON">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                             </svg>
@@ -3341,12 +3341,12 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 stars.forEach((star, index) => {
                     if (index < rating) {
                         star.textContent = '★';
-                        star.classList.add('text-yellow-400');
-                        star.classList.remove('text-gray-500');
+                        star.classList.add('text-pm-warning');
+                        star.classList.remove('text-pm-muted');
                     } else {
                         star.textContent = '☆';
-                        star.classList.remove('text-yellow-400');
-                        star.classList.add('text-gray-500');
+                        star.classList.remove('text-pm-warning');
+                        star.classList.add('text-pm-muted');
                     }
                 });
             }
@@ -3361,7 +3361,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 // Add tag chips
                 this.addPromptTags.forEach(tag => {
                     const chip = document.createElement('span');
-                    chip.className = 'tag-chip inline-flex items-center px-2 py-1 bg-blue-600 text-white text-xs rounded cursor-pointer hover:bg-blue-700';
+                    chip.className = 'tag-chip inline-flex items-center px-2 py-1 bg-pm-accent text-pm text-xs rounded cursor-pointer hover:bg-pm-accent-hover';
                     chip.innerHTML = `${tag} <span class="ml-1">&times;</span>`;
                     chip.addEventListener('click', () => {
                         this.addPromptTags = this.addPromptTags.filter(t => t !== tag);
@@ -3389,7 +3389,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }
 
                 suggestionsContainer.innerHTML = matchingTags.map(tag => `
-                    <div class="px-3 py-2 hover:bg-gray-600 cursor-pointer text-sm text-gray-200" data-tag="${tag}">
+                    <div class="px-3 py-2 hover:bg-pm-hover cursor-pointer text-sm text-pm" data-tag="${tag}">
                         ${tag}
                     </div>
                 `).join('');
@@ -3660,8 +3660,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 const ggufStatus = document.getElementById("ggufModelStatus");
                 const hfStatus = document.getElementById("hfModelStatus");
 
-                ggufStatus.innerHTML = '<span class="text-gray-400 text-sm">Checking...</span>';
-                hfStatus.innerHTML = '<span class="text-gray-400 text-sm">Checking...</span>';
+                ggufStatus.innerHTML = '<span class="text-pm-secondary text-sm">Checking...</span>';
+                hfStatus.innerHTML = '<span class="text-pm-secondary text-sm">Checking...</span>';
 
                 try {
                     const response = await fetch('/prompt_manager/autotag/models');
@@ -3670,25 +3670,25 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     if (data.success) {
                         // Update GGUF status
                         if (data.models.gguf.downloaded) {
-                            ggufStatus.innerHTML = '<span class="text-green-400 text-sm">✓ Downloaded</span>';
+                            ggufStatus.innerHTML = '<span class="text-pm-success text-sm">✓ Downloaded</span>';
                         } else {
-                            ggufStatus.innerHTML = `<button onclick="window.admin.downloadModel('gguf')" class="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded transition-colors">Download</button>`;
+                            ggufStatus.innerHTML = `<button onclick="window.admin.downloadModel('gguf')" class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm text-xs rounded transition-colors">Download</button>`;
                         }
 
                         // Update HF status
                         if (data.models.hf.downloaded) {
-                            hfStatus.innerHTML = '<span class="text-green-400 text-sm">✓ Downloaded</span>';
+                            hfStatus.innerHTML = '<span class="text-pm-success text-sm">✓ Downloaded</span>';
                         } else {
-                            hfStatus.innerHTML = `<button onclick="window.admin.downloadModel('hf')" class="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded transition-colors">Download</button>`;
+                            hfStatus.innerHTML = `<button onclick="window.admin.downloadModel('hf')" class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm text-xs rounded transition-colors">Download</button>`;
                         }
                     } else {
-                        ggufStatus.innerHTML = '<span class="text-red-400 text-sm">Error</span>';
-                        hfStatus.innerHTML = '<span class="text-red-400 text-sm">Error</span>';
+                        ggufStatus.innerHTML = '<span class="text-pm-error text-sm">Error</span>';
+                        hfStatus.innerHTML = '<span class="text-pm-error text-sm">Error</span>';
                     }
                 } catch (error) {
                     console.error('Error checking models:', error);
-                    ggufStatus.innerHTML = '<span class="text-red-400 text-sm">Error</span>';
-                    hfStatus.innerHTML = '<span class="text-red-400 text-sm">Error</span>';
+                    ggufStatus.innerHTML = '<span class="text-pm-error text-sm">Error</span>';
+                    hfStatus.innerHTML = '<span class="text-pm-error text-sm">Error</span>';
                 }
             }
 
@@ -3910,7 +3910,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     // Display existing tags
                     const tagsContainer = document.getElementById('retagExistingTags');
                     tagsContainer.innerHTML = realTags.map(tag =>
-                        `<span class="px-2 py-1 bg-purple-600 text-white text-xs rounded">${this.escapeHtml(tag)}</span>`
+                        `<span class="px-2 py-1 bg-pm-accent text-pm text-xs rounded">${this.escapeHtml(tag)}</span>`
                     ).join('');
 
                     // Show modal
@@ -3973,7 +3973,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                 document.getElementById('reviewImage').src = imageUrl;
                 document.getElementById('reviewImageName').textContent = filename || 'Unknown';
-                document.getElementById('reviewTagsVisible').innerHTML = '<div class="text-gray-400">Generating tags...</div>';
+                document.getElementById('reviewTagsVisible').innerHTML = '<div class="text-pm-secondary">Generating tags...</div>';
                 document.getElementById('reviewTagsHidden').innerHTML = '';
                 document.getElementById('reviewTagsAccordion').classList.add('hidden');
                 document.getElementById('reviewTagsToggle').classList.add('hidden');
@@ -4002,12 +4002,12 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         this.renderReviewTags();
                     } else {
                         document.getElementById('reviewTagsVisible').innerHTML =
-                            `<div class="text-red-400">Error: ${data.error}</div>`;
+                            `<div class="text-pm-error">Error: ${data.error}</div>`;
                     }
                 } catch (error) {
                     console.error('Error generating tags:', error);
                     document.getElementById('reviewTagsVisible').innerHTML =
-                        '<div class="text-red-400">Failed to generate tags</div>';
+                        '<div class="text-pm-error">Failed to generate tags</div>';
                 }
             }
 
@@ -4021,7 +4021,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 const countSpan = document.getElementById('reviewTagsCount');
 
                 if (this.autoTagState.currentTags.length === 0) {
-                    visibleContainer.innerHTML = '<div class="text-gray-400">No tags generated</div>';
+                    visibleContainer.innerHTML = '<div class="text-pm-secondary">No tags generated</div>';
                     hiddenContainer.innerHTML = '';
                     accordion.classList.add('hidden');
                     toggleBtn.classList.add('hidden');

@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Image Gallery - Generation Data</title>
+    <script src="/prompt_manager/js/theme-bridge.js"></script>
+    <link rel="stylesheet" href="css/comfyui-theme.css">
     <link rel="stylesheet" href="lib/tailwind/styles.css">
     <style>
         /* Ensure the layout takes full height and prevents overflow */
@@ -58,10 +60,10 @@
                 // Show temporary feedback
                 const originalContent = button.innerHTML;
                 button.innerHTML = '✓ Copied!';
-                button.classList.add('text-green-400');
+                button.classList.add('text-pm-success');
                 setTimeout(() => {
                     button.innerHTML = originalContent;
-                    button.classList.remove('text-green-400');
+                    button.classList.remove('text-pm-success');
                 }, 1000);
             } catch (err) {
                 alert('Copy failed: ' + err);
@@ -385,76 +387,76 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
             dataPanel.innerHTML = `
                 <!-- File Path -->
                 <div>
-                    <h2 class="text-sm font-medium text-gray-300 mb-2">File Path</h2>
-                    <div class="text-sm text-blue-400 hover:text-blue-300 cursor-pointer bg-gray-800 p-2 rounded break-all" onclick="openInFileExplorer('${filename}')">
+                    <h2 class="text-sm font-medium text-pm-secondary mb-2">File Path</h2>
+                    <div class="text-sm text-pm-accent hover:bg-pm-hover cursor-pointer bg-pm-surface p-2 rounded-pm-sm break-all" onclick="openInFileExplorer('${filename}')">
                         ${filename}
                     </div>
                 </div>
 
                 <!-- Resources used -->
                 <div>
-                    <h2 class="text-sm font-medium text-gray-300 mb-2">Resources used</h2>
+                    <h2 class="text-sm font-medium text-pm-secondary mb-2">Resources used</h2>
                     <div class="flex items-center justify-between">
                         <div>
-                            <div class="text-blue-400 hover:text-blue-300 cursor-pointer">${checkpoint}</div>
-                            <div class="text-xs text-gray-500">ComfyUI Generated</div>
+                            <div class="text-pm-accent cursor-pointer">${checkpoint}</div>
+                            <div class="text-xs text-pm-muted">ComfyUI Generated</div>
                         </div>
-                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">CHECKPOINT</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded-pm-sm">CHECKPOINT</span>
                     </div>
                 </div>
 
                 <!-- Prompt -->
                 <div>
                     <div class="flex items-center gap-2 mb-2">
-                        <h2 class="text-sm font-medium text-gray-300">Prompt</h2>
-                        <span class="px-2 py-1 text-xs bg-orange-600 text-orange-100 rounded">COMFYUI</span>
-                        <button class="ml-auto text-gray-400 hover:text-gray-300" onclick="copyPositivePrompt(event)">
+                        <h2 class="text-sm font-medium text-pm-secondary">Prompt</h2>
+                        <span class="px-2 py-1 text-xs bg-pm-warning text-pm rounded-pm-sm">COMFYUI</span>
+                        <button class="ml-auto text-pm-secondary hover:text-pm" onclick="copyPositivePrompt(event)">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
                             </svg>
                         </button>
                     </div>
-                    <div class="text-sm text-gray-300 bg-gray-800 p-3 rounded max-h-32 overflow-y-auto">
+                    <div class="text-sm text-pm-secondary bg-pm-surface p-3 rounded-pm-sm max-h-32 overflow-y-auto">
                         ${positivePrompt.substring(0, 200)}${positivePrompt.length > 200 ? '...' : ''}
                     </div>
-                    ${positivePrompt.length > 200 ? '<button class="text-blue-400 hover:text-blue-300 text-sm mt-1" onclick="showFullPrompt(\'positive\')">Show more</button>' : ''}
+                    ${positivePrompt.length > 200 ? '<button class="text-pm-accent hover:bg-pm-hover text-sm mt-1" onclick="showFullPrompt(\'positive\')">Show more</button>' : ''}
                 </div>
 
                 <!-- Negative prompt -->
                 <div>
                     <div class="flex items-center justify-between mb-2">
-                        <h2 class="text-sm font-medium text-gray-300">Negative prompt</h2>
-                        <button class="text-gray-400 hover:text-gray-300" onclick="copyNegativePrompt(event)">
+                        <h2 class="text-sm font-medium text-pm-secondary">Negative prompt</h2>
+                        <button class="text-pm-secondary hover:text-pm" onclick="copyNegativePrompt(event)">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
                             </svg>
                         </button>
                     </div>
-                    <div class="text-sm text-gray-300 bg-gray-800 p-3 rounded max-h-32 overflow-y-auto">
+                    <div class="text-sm text-pm-secondary bg-pm-surface p-3 rounded-pm-sm max-h-32 overflow-y-auto">
                         ${negativePrompt.substring(0, 200)}${negativePrompt.length > 200 ? '...' : ''}
                     </div>
-                    ${negativePrompt.length > 200 ? '<button class="text-blue-400 hover:text-blue-300 text-sm mt-1" onclick="showFullPrompt(\'negative\')">Show more</button>' : ''}
+                    ${negativePrompt.length > 200 ? '<button class="text-pm-accent hover:bg-pm-hover text-sm mt-1" onclick="showFullPrompt(\'negative\')">Show more</button>' : ''}
                 </div>
 
                 <!-- Other metadata -->
                 <div>
-                    <h2 class="text-sm font-medium text-gray-300 mb-3">Other metadata</h2>
+                    <h2 class="text-sm font-medium text-pm-secondary mb-3">Other metadata</h2>
                     <div class="flex flex-wrap gap-2">
-                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">CFG SCALE: ${cfgScale}</span>
-                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">STEPS: ${steps}</span>
-                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">SAMPLER: ${sampler}</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded-pm-sm">CFG SCALE: ${cfgScale}</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded-pm-sm">STEPS: ${steps}</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded-pm-sm">SAMPLER: ${sampler}</span>
                     </div>
                     <div class="mt-2">
-                        <span class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">SEED: ${seed}</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded-pm-sm">SEED: ${seed}</span>
                     </div>
                 </div>
 
                 <!-- Raw Workflow Data -->
                 <div>
-                    <h2 class="text-sm font-medium text-gray-300 mb-2">ComfyUI Workflow</h2>
+                    <h2 class="text-sm font-medium text-pm-secondary mb-2">ComfyUI Workflow</h2>
                     <div class="flex items-center gap-2">
-                        <button class="text-blue-400 hover:text-blue-300 text-sm" onclick="showWorkflowData()">View Raw Workflow JSON</button>
-                        <button class="text-blue-400 hover:text-blue-300" onclick="downloadWorkflowJSON()" title="Download JSON">
+                        <button class="text-pm-accent hover:bg-pm-hover text-sm" onclick="showWorkflowData()">View Raw Workflow JSON</button>
+                        <button class="text-pm-accent hover:bg-pm-hover" onclick="downloadWorkflowJSON()" title="Download JSON">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                             </svg>
@@ -555,17 +557,17 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
             
             imageArea.addEventListener('dragover', (e) => {
                 e.preventDefault();
-                imageArea.classList.add('bg-gray-900');
+                imageArea.classList.add('bg-pm-surface');
             });
             
             imageArea.addEventListener('dragleave', (e) => {
                 e.preventDefault();
-                imageArea.classList.remove('bg-gray-900');
+                imageArea.classList.remove('bg-pm-surface');
             });
             
             imageArea.addEventListener('drop', (e) => {
                 e.preventDefault();
-                imageArea.classList.remove('bg-gray-900');
+                imageArea.classList.remove('bg-pm-surface');
                 
                 const files = e.dataTransfer.files;
                 if (files.length > 0) {
@@ -590,12 +592,12 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
         });
     </script>
 </head>
-<body class="bg-black text-gray-100 font-sans overflow-hidden">
+<body class="bg-pm-primary text-pm font-sans overflow-hidden">
     <div class="h-screen flex">
         <!-- Main Image Area -->
-        <div id="image-area" class="flex-1 flex items-center justify-center p-4 bg-black relative border-2 border-dashed border-transparent transition-colors min-w-0">
+        <div id="image-area" class="flex-1 flex items-center justify-center p-3 bg-pm-primary relative border-2 border-dashed border-transparent transition-colors min-w-0">
             <!-- Upload prompt overlay -->
-            <div class="absolute inset-0 flex flex-col items-center justify-center text-gray-500 pointer-events-none">
+            <div class="absolute inset-0 flex flex-col items-center justify-center text-pm-muted pointer-events-none">
                 <svg class="w-16 h-16 mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
                 </svg>
@@ -607,7 +609,7 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
             <input type="file" id="file-input" accept=".png" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onchange="handleImageUpload(event)">
             
             <!-- Navigation arrows -->
-            <button class="absolute left-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-gray-800 bg-opacity-50 hover:bg-opacity-75 rounded-full flex items-center justify-center text-white transition-all z-10">
+            <button class="absolute left-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-pm-surface/50 hover:bg-pm-hover rounded-full flex items-center justify-center text-pm transition-all z-10">
                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
                 </svg>
@@ -618,10 +620,10 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
                 <img id="main-image" 
                      src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='800' height='1200' viewBox='0 0 800 1200'%3E%3Crect width='800' height='1200' fill='%23374151'/%3E%3Ctext x='400' y='600' font-family='Arial' font-size='24' fill='%23D1D5DB' text-anchor='middle'%3EDrop PNG Here%3C/text%3E%3Ctext x='400' y='640' font-family='Arial' font-size='16' fill='%239CA3AF' text-anchor='middle'%3EComfyUI Workflow%3C/text%3E%3C/svg%3E" 
                      alt="Generated Image" 
-                     class="max-w-full max-h-full object-contain rounded shadow-2xl">
+                     class="max-w-full max-h-full object-contain rounded-pm-md shadow-pm">
             </div>
             
-            <button class="absolute right-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-gray-800 bg-opacity-50 hover:bg-opacity-75 rounded-full flex items-center justify-center text-white transition-all z-10">
+            <button class="absolute right-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-pm-surface/50 hover:bg-pm-hover rounded-full flex items-center justify-center text-pm transition-all z-10">
                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
                 </svg>
@@ -629,24 +631,24 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
         </div>
 
         <!-- Generation Data Panel -->
-        <div class="w-96 bg-gray-900 border-l border-gray-700 flex flex-col">
+        <div class="w-96 bg-pm-primary border-l border-pm flex flex-col">
             <!-- Header -->
-            <div class="flex items-center justify-between p-4 border-b border-gray-700">
+            <div class="flex items-center justify-between p-3 border-b border-pm">
                 <div class="flex items-center gap-2">
-                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg class="w-5 h-5 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                     </svg>
-                    <h1 class="text-lg font-medium text-white">Generation data</h1>
+                    <h1 class="text-lg font-medium text-pm">Generation data</h1>
                 </div>
-                <button class="text-xs text-blue-400 hover:text-blue-300 transition-colors" onclick="copyAllData()">
+                <button class="text-xs text-pm-accent hover:bg-pm-hover transition-colors" onclick="copyAllData()">
                     📋 COPY ALL
                 </button>
             </div>
 
             <!-- Scrollable Content -->
-            <div id="data-panel-content" class="flex-1 overflow-y-auto p-4 space-y-6">
+            <div id="data-panel-content" class="flex-1 overflow-y-auto p-3 space-y-3">
                 <!-- Initial placeholder content -->
-                <div class="text-center text-gray-500 py-8">
+                <div class="text-center text-pm-muted py-8">
                     <svg class="w-16 h-16 mx-auto mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                     </svg>
