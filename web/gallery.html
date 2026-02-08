@@ -1,183 +1,68 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PromptManager - Gallery</title>
+    <script src="/prompt_manager/js/theme-bridge.js"></script>
+    <link rel="stylesheet" href="lib/tailwind/comfyui-theme.css">
     <link rel="stylesheet" href="lib/tailwind/styles.css">
     <link rel="stylesheet" href="lib/viewerjs/viewer.min.css">
     <script src="lib/viewerjs/viewer.min.js"></script>
-    <style>
-        .custom-scrollbar::-webkit-scrollbar {
-            width: 8px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-            background: #374151;
-            border-radius: 4px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-            background: #6b7280;
-            border-radius: 4px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-            background: #9ca3af;
-        }
-        
-        .viewer-dark-theme .viewer-backdrop {
-            background-color: #000000 !important;
-            background: #000000 !important;
-        }
-        
-        /* Additional selectors to ensure black background */
-        .viewer-backdrop {
-            background-color: #000000 !important;
-            background: #000000 !important;
-        }
-        
-        .viewer-container {
-            background-color: #000000 !important;
-            background: #000000 !important;
-        }
-        
-        .viewer-canvas {
-            background-color: #000000 !important;
-            background: #000000 !important;
-        }
-        
-        .viewer-dark-theme .viewer-toolbar {
-            background-color: rgba(31, 41, 55, 0.95) !important;
-        }
-        
-        .viewer-dark-theme .viewer-navbar {
-            background-color: rgba(31, 41, 55, 0.95) !important;
-        }
-        
-        .viewer-dark-theme .viewer-title {
-            color: #f3f4f6 !important;
-        }
-
-        .image-item {
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
-        }
-        
-        .image-item:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
-        }
-
-        .metadata-sidebar {
-            position: fixed !important;
-            top: 0 !important;
-            right: 0 !important;
-            width: 384px !important;
-            height: 100vh !important;
-            background: rgb(17, 24, 39) !important;
-            border-left: 1px solid rgb(55, 65, 81) !important;
-            display: flex !important;
-            flex-direction: column !important;
-            z-index: 10000 !important;
-            transition: transform 0.3s ease-in-out !important;
-        }
-        
-        .metadata-sidebar.collapsed {
-            transform: translateX(340px) !important;
-        }
-        
-        .metadata-collapse-btn {
-            position: absolute;
-            left: -40px;
-            top: 50%;
-            transform: translateY(-50%);
-            width: 32px;
-            height: 80px;
-            background: rgb(17, 24, 39);
-            border: 1px solid rgb(55, 65, 81);
-            border-right: none;
-            border-radius: 6px 0 0 6px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            z-index: 10001;
-        }
-        
-        .metadata-collapse-btn:hover {
-            background: rgb(31, 41, 55);
-        }
-        
-        .metadata-collapse-btn svg {
-            transition: transform 0.3s ease;
-        }
-        
-        .metadata-sidebar.collapsed .metadata-collapse-btn svg {
-            transform: rotate(180deg);
-        }
-    </style>
 </head>
-<body class="bg-gray-925 text-gray-100 min-h-screen">
+<body class="bg-pm-primary text-pm min-h-screen">
     <div class="min-h-screen flex flex-col">
         <!-- Header -->
-        <header class="bg-gradient-to-r from-gray-850 to-gray-800 border-b border-gray-700 px-6 py-4">
+        <header class="bg-pm-surface border-b border-pm px-4 py-2">
             <div class="max-w-7xl mx-auto">
                 <div class="flex items-center justify-between">
-                    <div class="flex items-center space-x-3">
-                        <div class="w-10 h-10 bg-gradient-to-br from-violet-500 to-purple-600 rounded-lg flex items-center justify-center">
-                            <span class="text-xl">🖼️</span>
-                        </div>
-                        <div>
-                            <h1 class="text-2xl font-bold bg-gradient-to-r from-violet-400 to-purple-400 bg-clip-text text-transparent">
-                                PromptManager Gallery
-                            </h1>
-                            <p class="text-gray-400 text-sm">Browse all images from your ComfyUI output folder</p>
-                        </div>
-                    </div>
-                    <div class="hidden sm:flex items-center space-x-2">
-                        <div class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                        <span class="text-green-400 text-sm font-medium">Online</span>
+                    <h1 class="text-sm font-semibold text-pm">PromptManager Gallery</h1>
+                    <div class="hidden sm:flex items-center gap-2">
+                        <div class="w-2 h-2 bg-pm-success rounded-full animate-pulse"></div>
+                        <span class="text-pm-success text-xs font-medium">Online</span>
                     </div>
                 </div>
             </div>
         </header>
 
         <!-- Controls -->
-        <div class="bg-gray-850 border-b border-gray-700/50 px-6 py-4">
+        <div class="bg-pm-surface border-b border-pm-subtle px-4 py-2">
             <div class="max-w-7xl mx-auto">
-                <div class="flex flex-wrap items-center justify-between gap-4">
-                    <div class="flex items-center space-x-4">
-                        <label class="text-sm text-gray-400">Show:</label>
-                        <select id="limitSelector" class="px-3 py-1 bg-gray-700 border border-gray-600 rounded text-gray-100 text-sm">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                    <div class="flex items-center gap-2">
+                        <label class="text-xs text-pm-secondary">Show:</label>
+                        <select id="limitSelector" class="px-2 py-1 bg-pm-input border border-pm rounded-pm-sm text-pm text-xs">
                             <option value="50">50</option>
                             <option value="100" selected>100</option>
                             <option value="200">200</option>
                             <option value="500">500</option>
                         </select>
-                        <span class="text-sm text-gray-400">images</span>
+                        <span class="text-xs text-pm-secondary">images</span>
                     </div>
-                    <div class="flex items-center space-x-2">
-                        <button id="refreshBtn" 
-                                class="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            🔄 Refresh
+                    <div class="flex items-center gap-2">
+                        <button id="refreshBtn"
+                                class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
+                            Refresh
                         </button>
-                        <button id="gridViewBtn" 
-                                class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            ⊞ Grid View
+                        <button id="gridViewBtn"
+                                class="px-3 py-1 bg-pm-input hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Grid View
                         </button>
-                        <button id="listViewBtn" 
-                                class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            ☰ List View
+                        <button id="listViewBtn"
+                                class="px-3 py-1 bg-pm-input hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            List View
                         </button>
                         <button id="settingsBtn"
-                                class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            ⚙️ Settings
+                                class="px-3 py-1 bg-pm-input hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Settings
                         </button>
                         <button id="autoTagBtn"
-                                class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            🏷️ Auto Tag
+                                class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
+                            Auto Tag
                         </button>
                         <button id="addPromptBtn"
-                                class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition-colors">
-                            ➕ Add Prompt
+                                class="px-3 py-1 bg-pm-success hover:bg-pm-success text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Add Prompt
                         </button>
                     </div>
                 </div>
@@ -185,64 +70,61 @@
         </div>
 
         <!-- Stats Bar -->
-        <div class="bg-gray-800 px-6 py-3 border-b border-gray-700/50">
+        <div class="bg-pm-surface px-4 py-2 border-b border-pm-subtle">
             <div class="max-w-7xl mx-auto">
-                <div class="flex items-center justify-between text-sm">
-                    <span class="text-gray-400">
+                <div class="flex items-center justify-between text-xs">
+                    <span class="text-pm-secondary">
                         Showing <span id="showingStart">0</span> to <span id="showingEnd">0</span> of <span id="totalImages">0</span> images
                     </span>
-                    <span class="text-gray-400" id="loadingStatus">Loading...</span>
+                    <span class="text-pm-secondary" id="loadingStatus">Loading...</span>
                 </div>
             </div>
         </div>
 
         <!-- Gallery Content -->
-        <div class="flex-1 overflow-y-auto custom-scrollbar">
-            <div class="max-w-7xl mx-auto p-6">
+        <div class="flex-1 overflow-y-auto">
+            <div class="max-w-7xl mx-auto p-3">
                 <!-- Loading State -->
-                <div id="loadingState" class="flex items-center justify-center py-20">
+                <div id="loadingState" class="flex items-center justify-center py-12">
                     <div class="text-center">
-                        <div class="w-12 h-12 border-4 border-violet-500/30 border-t-violet-500 rounded-full animate-spin mx-auto mb-4"></div>
-                        <p class="text-gray-400">Loading gallery...</p>
+                        <div class="w-8 h-8 border-4 border-pm-accent-tint border-t-pm-accent rounded-full animate-spin mx-auto mb-3"></div>
+                        <p class="text-pm-secondary text-xs">Loading gallery...</p>
                     </div>
                 </div>
 
                 <!-- Error State -->
-                <div id="errorState" class="hidden flex items-center justify-center py-20">
+                <div id="errorState" class="hidden flex items-center justify-center py-12">
                     <div class="text-center">
-                        <div class="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <span class="text-3xl">❌</span>
-                        </div>
-                        <h3 class="text-xl font-semibold text-gray-100 mb-2">Error Loading Gallery</h3>
-                        <p class="text-gray-400 mb-4" id="errorMessage">Something went wrong while loading the images.</p>
-                        <button id="retryBtn" class="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white font-medium rounded-lg transition-colors">
-                            🔄 Try Again
+                        <h3 class="text-sm font-semibold text-pm-error mb-2">Error Loading Gallery</h3>
+                        <p class="text-pm-secondary text-xs mb-3" id="errorMessage">Something went wrong while loading the images.</p>
+                        <button id="retryBtn" class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
+                            Try Again
                         </button>
                     </div>
                 </div>
 
                 <!-- Gallery Grid -->
-                <div id="galleryGrid" class="hidden grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-4">
+                <div id="galleryGrid" class="hidden grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-2">
                     <!-- Images will be inserted here -->
                 </div>
 
                 <!-- Gallery List -->
-                <div id="galleryList" class="hidden space-y-3">
+                <div id="galleryList" class="hidden space-y-2">
                     <!-- Images will be inserted here -->
                 </div>
 
                 <!-- Pagination -->
-                <div id="paginationControls" class="hidden mt-8 flex items-center justify-center space-x-2">
-                    <button id="prevPageBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                        ← Previous
+                <div id="paginationControls" class="hidden mt-4 flex items-center justify-center gap-2">
+                    <button id="prevPageBtn" class="px-3 py-1 bg-pm-surface hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                        Previous
                     </button>
-                    <div class="flex items-center space-x-2">
-                        <span class="text-gray-400">Page</span>
-                        <input id="pageInput" type="number" min="1" class="w-16 px-2 py-1 bg-gray-700 text-white text-center rounded border border-gray-600 focus:border-blue-500 focus:outline-none" value="1">
-                        <span id="pageInfo" class="text-gray-400">of 1</span>
+                    <div class="flex items-center gap-2">
+                        <span class="text-pm-secondary text-xs">Page</span>
+                        <input id="pageInput" type="number" min="1" class="w-16 px-2 py-1 bg-pm-input text-pm text-xs text-center rounded-pm-sm border border-pm focus:border-pm-accent focus:outline-none" value="1">
+                        <span id="pageInfo" class="text-pm-secondary text-xs">of 1</span>
                     </div>
-                    <button id="nextPageBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                        Next →
+                    <button id="nextPageBtn" class="px-3 py-1 bg-pm-surface hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                        Next
                     </button>
                 </div>
             </div>
@@ -250,87 +132,84 @@
     </div>
 
     <!-- Settings Modal -->
-    <div id="settingsModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl max-w-2xl w-full max-h-[90vh] overflow-hidden mx-4 border border-gray-700">
-            <div class="p-6 border-b border-gray-700">
+    <div id="settingsModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-md max-w-2xl w-full max-h-[90vh] overflow-hidden mx-4 border border-pm">
+            <div class="p-3 border-b border-pm">
                 <div class="flex items-center justify-between">
-                    <h3 class="text-xl font-semibold text-gray-100">⚙️ Gallery Settings</h3>
-                    <button id="closeSettingsBtn" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
-                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <h3 class="text-sm font-semibold text-pm">Gallery Settings</h3>
+                    <button id="closeSettingsBtn" class="p-2 rounded-pm-sm hover:bg-pm-hover transition-colors">
+                        <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
                     </button>
                 </div>
             </div>
-            <div class="p-6 overflow-y-auto max-h-[calc(90vh-200px)] custom-scrollbar space-y-6">
+            <div class="p-3 overflow-y-auto max-h-[calc(90vh-200px)] space-y-4">
                 
                 <!-- Performance Settings -->
-                <div class="space-y-4">
-                    <h4 class="text-lg font-medium text-gray-100 flex items-center">
-                        <span class="mr-2">🚀</span>
-                        Performance Settings
-                    </h4>
-                    
+                <div class="space-y-3">
+                    <h4 class="text-sm font-semibold text-pm">Performance Settings</h4>
+
                     <!-- Thumbnail Generation -->
-                    <div class="bg-gray-700 rounded-lg p-4">
-                        <div class="flex items-center justify-between mb-3">
+                    <div class="bg-pm-input rounded-pm-sm p-3">
+                        <div class="flex items-center justify-between mb-2">
                             <div>
-                                <h5 class="text-white font-medium">Generate Thumbnails</h5>
-                                <p class="text-sm text-gray-400">Create optimized thumbnails for faster loading</p>
+                                <h5 class="text-pm text-xs font-medium">Generate Thumbnails</h5>
+                                <p class="text-xs text-pm-secondary">Create optimized thumbnails for faster loading</p>
                             </div>
-                            <button id="generateThumbnailsBtn" class="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white text-sm rounded transition-colors">
+                            <button id="generateThumbnailsBtn" class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs rounded-pm-sm transition-colors">
                                 Generate
                             </button>
                         </div>
-                        <div class="text-xs text-gray-500 mb-2">
+                        <div class="text-xs text-pm-muted mb-2">
                             Status: <span id="thumbnailStatus">Not generated</span>
-                            <div class="text-xs text-gray-600 mt-1">
-                                💡 Thumbnails speed up gallery loading. Original images always used for viewing and metadata.
+                            <div class="text-xs text-pm-muted mt-1">
+                                Thumbnails speed up gallery loading. Original images always used for viewing and metadata.
                             </div>
                         </div>
                         <!-- Check thumbnails at startup -->
-                        <div class="flex items-center justify-between py-2 border-t border-gray-600">
+                        <div class="flex items-center justify-between py-2 border-t border-pm">
                             <div>
-                                <label class="text-sm text-gray-300">Check thumbnails at startup</label>
-                                <p class="text-xs text-gray-500">Prompt to generate thumbnails if missing when opening gallery</p>
+                                <label class="text-xs text-pm-secondary">Check thumbnails at startup</label>
+                                <p class="text-xs text-pm-muted">Prompt to generate thumbnails if missing when opening gallery</p>
                             </div>
                             <label class="relative inline-flex items-center cursor-pointer">
                                 <input type="checkbox" id="checkThumbnailsAtStartup" class="sr-only peer" checked>
-                                <div class="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-violet-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-violet-600"></div>
+                                <div class="w-11 h-6 bg-pm-input peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-pm-accent rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-pm after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-pm-accent"></div>
                             </label>
                         </div>
                         <!-- Progress bar (hidden by default) -->
                         <div id="thumbnailProgress" class="hidden">
-                            <div class="flex items-center justify-between text-xs text-gray-400 mb-1">
+                            <div class="flex items-center justify-between text-xs text-pm-secondary mb-1">
                                 <span id="progressText">Processing...</span>
                                 <div class="flex items-center gap-2">
                                     <span id="progressPercent">0%</span>
-                                    <button id="cancelThumbnailsBtn" class="text-red-400 hover:text-red-300 text-xs px-2 py-1 bg-red-900/20 rounded hidden">
+                                    <button id="cancelThumbnailsBtn" class="text-pm-error hover:text-pm-error text-xs px-2 py-1 bg-pm-error-tint rounded-pm-sm hidden">
                                         Cancel
                                     </button>
                                 </div>
                             </div>
-                            <div class="w-full bg-gray-600 rounded-full h-2">
-                                <div id="progressBar" class="bg-violet-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                            <div class="w-full bg-pm-input rounded-full h-2">
+                                <div id="progressBar" class="bg-pm-accent h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
                             </div>
-                            <div class="flex items-center justify-between text-xs text-gray-500 mt-1">
+                            <div class="flex items-center justify-between text-xs text-pm-muted mt-1">
                                 <span id="progressDetails">Scanning images...</span>
-                                <span id="progressETA" class="text-gray-600"></span>
+                                <span id="progressETA" class="text-pm-muted"></span>
                             </div>
                         </div>
                     </div>
 
                     <!-- Image Loading -->
-                    <div class="bg-gray-700 rounded-lg p-4">
-                        <h5 class="text-white font-medium mb-3">Image Loading</h5>
-                        <div class="space-y-3">
+                    <div class="bg-pm-input rounded-pm-sm p-3">
+                        <h5 class="text-pm text-xs font-medium mb-2">Image Loading</h5>
+                        <div class="space-y-2">
                             <div class="flex items-center justify-between">
-                                <label class="text-sm text-gray-300">Lazy Loading</label>
-                                <input type="checkbox" id="lazyLoadingToggle" checked class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                                <label class="text-xs text-pm-secondary">Lazy Loading</label>
+                                <input type="checkbox" id="lazyLoadingToggle" checked class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
                             </div>
                             <div class="flex items-center justify-between">
-                                <label class="text-sm text-gray-300">Image Quality</label>
-                                <select id="imageQualitySelect" class="px-3 py-1 bg-gray-600 border border-gray-500 rounded text-gray-100 text-sm">
+                                <label class="text-xs text-pm-secondary">Image Quality</label>
+                                <select id="imageQualitySelect" class="px-2 py-1 bg-pm-input border border-pm rounded-pm-sm text-pm text-xs">
                                     <option value="high">High (Original)</option>
                                     <option value="medium" selected>Medium (Optimized)</option>
                                     <option value="low">Low (Fast)</option>
@@ -341,23 +220,20 @@
                 </div>
 
                 <!-- Display Settings -->
-                <div class="space-y-4">
-                    <h4 class="text-lg font-medium text-gray-100 flex items-center">
-                        <span class="mr-2">🖼️</span>
-                        Display Settings
-                    </h4>
-                    
-                    <div class="bg-gray-700 rounded-lg p-4 space-y-3">
+                <div class="space-y-3">
+                    <h4 class="text-sm font-semibold text-pm">Display Settings</h4>
+
+                    <div class="bg-pm-input rounded-pm-sm p-3 space-y-2">
                         <div class="flex items-center justify-between">
-                            <label class="text-sm text-gray-300">Default View Mode</label>
-                            <select id="defaultViewModeSelect" class="px-3 py-1 bg-gray-600 border border-gray-500 rounded text-gray-100 text-sm">
+                            <label class="text-xs text-pm-secondary">Default View Mode</label>
+                            <select id="defaultViewModeSelect" class="px-2 py-1 bg-pm-input border border-pm rounded-pm-sm text-pm text-xs">
                                 <option value="grid" selected>Grid View</option>
                                 <option value="list">List View</option>
                             </select>
                         </div>
                         <div class="flex items-center justify-between">
-                            <label class="text-sm text-gray-300">Items per Page</label>
-                            <select id="defaultLimitSelect" class="px-3 py-1 bg-gray-600 border border-gray-500 rounded text-gray-100 text-sm">
+                            <label class="text-xs text-pm-secondary">Items per Page</label>
+                            <select id="defaultLimitSelect" class="px-2 py-1 bg-pm-input border border-pm rounded-pm-sm text-pm text-xs">
                                 <option value="50">50</option>
                                 <option value="100" selected>100</option>
                                 <option value="200">200</option>
@@ -365,8 +241,8 @@
                             </select>
                         </div>
                         <div class="flex items-center justify-between">
-                            <label class="text-sm text-gray-300">Grid Columns (Desktop)</label>
-                            <select id="gridColumnsSelect" class="px-3 py-1 bg-gray-600 border border-gray-500 rounded text-gray-100 text-sm">
+                            <label class="text-xs text-pm-secondary">Grid Columns (Desktop)</label>
+                            <select id="gridColumnsSelect" class="px-2 py-1 bg-pm-input border border-pm rounded-pm-sm text-pm text-xs">
                                 <option value="4">4 Columns</option>
                                 <option value="6">6 Columns</option>
                                 <option value="8" selected>8 Columns</option>
@@ -374,84 +250,78 @@
                             </select>
                         </div>
                         <div class="flex items-center justify-between">
-                            <label class="text-sm text-gray-300">Show Media Info</label>
-                            <input type="checkbox" id="showImageInfoToggle" checked class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                            <label class="text-xs text-pm-secondary">Show Media Info</label>
+                            <input type="checkbox" id="showImageInfoToggle" checked class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
                         </div>
                     </div>
-                    
+
                     <!-- Video Settings -->
-                    <div class="bg-gray-700 rounded-lg p-4 space-y-3">
-                        <h5 class="text-white font-medium mb-3">Video Settings</h5>
+                    <div class="bg-pm-input rounded-pm-sm p-3 space-y-2">
+                        <h5 class="text-pm text-xs font-medium mb-2">Video Settings</h5>
                         <div class="flex items-center justify-between">
-                            <label class="text-sm text-gray-300">Autoplay Videos</label>
-                            <input type="checkbox" id="videoAutoplayToggle" class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                            <label class="text-xs text-pm-secondary">Autoplay Videos</label>
+                            <input type="checkbox" id="videoAutoplayToggle" class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
                         </div>
                         <div class="flex items-center justify-between">
-                            <label class="text-sm text-gray-300">Mute Videos by Default</label>
-                            <input type="checkbox" id="videoMuteToggle" checked class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                            <label class="text-xs text-pm-secondary">Mute Videos by Default</label>
+                            <input type="checkbox" id="videoMuteToggle" checked class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
                         </div>
                         <div class="flex items-center justify-between">
-                            <label class="text-sm text-gray-300">Loop Videos</label>
-                            <input type="checkbox" id="videoLoopToggle" checked class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                            <label class="text-xs text-pm-secondary">Loop Videos</label>
+                            <input type="checkbox" id="videoLoopToggle" checked class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
                         </div>
                     </div>
                 </div>
 
                 <!-- Metadata Settings -->
-                <div class="space-y-4">
-                    <h4 class="text-lg font-medium text-gray-100 flex items-center">
-                        <span class="mr-2">📋</span>
-                        Metadata Settings
-                    </h4>
-                    
-                    <div class="bg-gray-700 rounded-lg p-4 space-y-3">
+                <div class="space-y-3">
+                    <h4 class="text-sm font-semibold text-pm">Metadata Settings</h4>
+
+                    <div class="bg-pm-input rounded-pm-sm p-3 space-y-2">
                         <div class="flex items-center justify-between">
-                            <label class="text-sm text-gray-300">Auto-load Metadata</label>
-                            <input type="checkbox" id="autoLoadMetadataToggle" checked class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                            <label class="text-xs text-pm-secondary">Auto-load Metadata</label>
+                            <input type="checkbox" id="autoLoadMetadataToggle" checked class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
                         </div>
                         <div class="flex items-center justify-between">
-                            <label class="text-sm text-gray-300">Cache Metadata</label>
-                            <input type="checkbox" id="cacheMetadataToggle" checked class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                            <label class="text-xs text-pm-secondary">Cache Metadata</label>
+                            <input type="checkbox" id="cacheMetadataToggle" checked class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
                         </div>
                         <div class="flex items-center justify-between">
-                            <label class="text-sm text-gray-300">Show File Paths</label>
-                            <input type="checkbox" id="showFilePathsToggle" checked class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                            <label class="text-xs text-pm-secondary">Show File Paths</label>
+                            <input type="checkbox" id="showFilePathsToggle" checked class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
                         </div>
                     </div>
                 </div>
 
                 <!-- Maintenance -->
-                <div class="space-y-4">
-                    <h4 class="text-lg font-medium text-gray-100 flex items-center">
-                        <span class="mr-2">🔧</span>
-                        Maintenance
-                    </h4>
-                    
-                    <div class="bg-gray-700 rounded-lg p-4 space-y-3">
+                <div class="space-y-3">
+                    <h4 class="text-sm font-semibold text-pm">Maintenance</h4>
+
+                    <div class="bg-pm-input rounded-pm-sm p-3 space-y-2">
                         <div class="flex items-center justify-between">
                             <div>
-                                <h5 class="text-white text-sm font-medium">Clear Cache</h5>
-                                <p class="text-xs text-gray-400">Clear cached metadata and thumbnails</p>
+                                <h5 class="text-pm text-xs font-medium">Clear Cache</h5>
+                                <p class="text-xs text-pm-secondary">Clear cached metadata and thumbnails</p>
                             </div>
-                            <button id="clearCacheBtn" class="px-3 py-1 bg-red-600 hover:bg-red-700 text-white text-sm rounded transition-colors">
+                            <button id="clearCacheBtn" class="px-3 py-1 bg-pm-error hover:bg-pm-error text-pm text-xs rounded-pm-sm transition-colors">
                                 Clear
                             </button>
                         </div>
                         <div class="flex items-center justify-between">
                             <div>
-                                <h5 class="text-white text-sm font-medium">Rescan Output Folder</h5>
-                                <p class="text-xs text-gray-400">Refresh the image list from disk</p>
+                                <h5 class="text-pm text-xs font-medium">Rescan Output Folder</h5>
+                                <p class="text-xs text-pm-secondary">Refresh the image list from disk</p>
                             </div>
-                            <button id="rescanFolderBtn" class="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded transition-colors">
+                            <button id="rescanFolderBtn" class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs rounded-pm-sm transition-colors">
                                 Rescan
                             </button>
                         </div>
                         <div class="flex items-center justify-between">
                             <div>
-                                <h5 class="text-white text-sm font-medium">Find Duplicate Images</h5>
-                                <p class="text-xs text-gray-400">Scan for duplicate images based on file content</p>
+                                <h5 class="text-pm text-xs font-medium">Find Duplicate Images</h5>
+                                <p class="text-xs text-pm-secondary">Scan for duplicate images based on file content</p>
                             </div>
-                            <button id="scanDuplicatesBtn" class="px-3 py-1 bg-orange-600 hover:bg-orange-700 text-white text-sm rounded transition-colors">
+                            <button id="scanDuplicatesBtn" class="px-3 py-1 bg-pm-warning hover:bg-pm-warning text-pm text-xs rounded-pm-sm transition-colors">
                                 Scan
                             </button>
                         </div>
@@ -459,30 +329,27 @@
                 </div>
 
                 <!-- Advanced Settings -->
-                <div class="space-y-4">
-                    <h4 class="text-lg font-medium text-gray-100 flex items-center">
-                        <span class="mr-2">🔬</span>
-                        Advanced
-                    </h4>
-                    
-                    <div class="bg-gray-700 rounded-lg p-4 space-y-3">
+                <div class="space-y-3">
+                    <h4 class="text-sm font-semibold text-pm">Advanced</h4>
+
+                    <div class="bg-pm-input rounded-pm-sm p-3 space-y-2">
                         <div class="flex items-center justify-between">
-                            <label class="text-sm text-gray-300">Debug Mode</label>
-                            <input type="checkbox" id="debugModeToggle" class="w-4 h-4 text-violet-600 bg-gray-600 border-gray-500 rounded focus:ring-violet-500">
+                            <label class="text-xs text-pm-secondary">Debug Mode</label>
+                            <input type="checkbox" id="debugModeToggle" class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
                         </div>
                         <div class="flex items-center justify-between">
-                            <label class="text-sm text-gray-300">API Timeout (seconds)</label>
-                            <input type="number" id="apiTimeoutInput" value="30" min="5" max="300" class="px-3 py-1 bg-gray-600 border border-gray-500 rounded text-gray-100 text-sm w-20">
+                            <label class="text-xs text-pm-secondary">API Timeout (seconds)</label>
+                            <input type="number" id="apiTimeoutInput" value="30" min="5" max="300" class="px-2 py-1 bg-pm-input border border-pm rounded-pm-sm text-pm text-xs w-20">
                         </div>
                     </div>
                 </div>
 
             </div>
-            <div class="p-6 border-t border-gray-700 flex justify-end space-x-3">
-                <button id="resetSettingsBtn" class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+            <div class="p-3 border-t border-pm flex justify-end gap-2">
+                <button id="resetSettingsBtn" class="px-3 py-1 bg-pm-input hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Reset to Defaults
                 </button>
-                <button id="saveSettingsBtn" class="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white font-medium rounded-lg transition-colors">
+                <button id="saveSettingsBtn" class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
                     Save Settings
                 </button>
             </div>
@@ -490,22 +357,22 @@
     </div>
 
     <!-- Duplicates Modal -->
-    <div id="duplicatesModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl max-w-4xl w-full max-h-[90vh] overflow-hidden mx-4 border border-gray-700">
-            <div class="p-6 border-b border-gray-700">
+    <div id="duplicatesModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-md max-w-4xl w-full max-h-[90vh] overflow-hidden mx-4 border border-pm">
+            <div class="p-3 border-b border-pm">
                 <div class="flex items-center justify-between">
-                    <h3 class="text-xl font-semibold text-gray-100">🔍 Duplicate Images Found</h3>
-                    <button id="closeDuplicatesBtn" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
-                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <h3 class="text-sm font-semibold text-pm">Duplicate Images Found</h3>
+                    <button id="closeDuplicatesBtn" class="p-2 rounded-pm-sm hover:bg-pm-hover transition-colors">
+                        <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
                     </button>
                 </div>
             </div>
-            <div class="p-6 overflow-y-auto max-h-[calc(90vh-200px)] custom-scrollbar">
-                <div id="duplicatesScanStatus" class="text-center py-8">
-                    <div class="inline-flex items-center px-4 py-2 bg-orange-600 rounded-lg">
-                        <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <div class="p-3 overflow-y-auto max-h-[calc(90vh-200px)]">
+                <div id="duplicatesScanStatus" class="text-center py-6">
+                    <div class="inline-flex items-center px-3 py-2 bg-pm-warning rounded-pm-sm text-xs text-pm">
+                        <svg class="animate-spin -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                         </svg>
@@ -513,31 +380,31 @@
                     </div>
                 </div>
                 <div id="duplicatesContent" class="hidden">
-                    <div class="mb-6 p-4 bg-red-900/20 border border-red-500/50 rounded-lg">
+                    <div class="mb-3 p-3 bg-pm-error-tint border border-pm-accent rounded-pm-sm">
                         <div class="flex items-start">
-                            <svg class="w-5 h-5 text-red-400 mt-0.5 mr-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                            <svg class="w-4 h-4 text-pm-error mt-0.5 mr-2 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                                 <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path>
                             </svg>
                             <div>
-                                <h4 class="text-red-300 font-medium">⚠️ Warning: Removing duplicate images cannot be undone!</h4>
-                                <p class="text-red-200 text-sm mt-1">When you remove a duplicate image, the selected file will be permanently deleted from disk. Choose carefully which images to keep.</p>
+                                <h4 class="text-pm-error text-xs font-medium">Warning: Removing duplicate images cannot be undone!</h4>
+                                <p class="text-pm-secondary text-xs mt-1">When you remove a duplicate image, the selected file will be permanently deleted from disk. Choose carefully which images to keep.</p>
                             </div>
                         </div>
                     </div>
-                    <div id="duplicatesList" class="space-y-4">
+                    <div id="duplicatesList" class="space-y-3">
                         <!-- Duplicates will be populated here -->
                     </div>
                 </div>
             </div>
-            <div id="duplicatesFooter" class="hidden p-6 border-t border-gray-700 flex justify-between items-center">
-                <div class="text-sm text-gray-400">
+            <div id="duplicatesFooter" class="hidden p-3 border-t border-pm flex justify-between items-center">
+                <div class="text-xs text-pm-secondary">
                     <span id="duplicatesCount">0</span> duplicate image groups found
                 </div>
-                <div class="flex space-x-3">
-                    <button id="selectAllBtn" class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                <div class="flex gap-2">
+                    <button id="selectAllBtn" class="px-3 py-1 bg-pm-input hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                         Select All to Delete
                     </button>
-                    <button id="removeDuplicatesBtn" class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors">
+                    <button id="removeDuplicatesBtn" class="px-3 py-1 bg-pm-error hover:bg-pm-error text-pm text-xs font-medium rounded-pm-sm transition-colors">
                         Delete Selected
                     </button>
                 </div>
@@ -546,72 +413,72 @@
     </div>
 
     <!-- Auto Tag Modal -->
-    <div id="autoTagModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-lg w-full mx-4 border border-gray-700">
-            <div class="flex items-center justify-between mb-6">
-                <h3 class="text-xl font-semibold text-gray-100">🏷️ Auto Tag Images</h3>
-                <button onclick="hideModal('autoTagModal')" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
-                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <div id="autoTagModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-md p-3 max-w-lg w-full mx-4 border border-pm">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-sm font-semibold text-pm">Auto Tag Images</h3>
+                <button onclick="hideModal('autoTagModal')" class="p-2 rounded-pm-sm hover:bg-pm-hover transition-colors">
+                    <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                     </svg>
                 </button>
             </div>
 
             <!-- Model Selection -->
-            <div class="mb-6">
-                <label class="block text-sm font-medium text-gray-400 mb-3">Model Selection</label>
-                <div class="space-y-3">
-                    <label class="flex items-center justify-between p-4 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-650 border border-gray-600">
+            <div class="mb-3">
+                <label class="block text-xs font-medium text-pm-secondary mb-2">Model Selection</label>
+                <div class="space-y-2">
+                    <label class="flex items-center justify-between p-3 bg-pm-input rounded-pm-sm cursor-pointer hover:bg-pm-hover border border-pm">
                         <div class="flex items-center">
-                            <input type="radio" name="autoTagModel" value="gguf" checked class="w-4 h-4 text-purple-600 bg-gray-700 border-gray-600 focus:ring-purple-500">
+                            <input type="radio" name="autoTagModel" value="gguf" checked class="w-4 h-4 text-pm-accent bg-pm-input border-pm focus:ring-pm-accent">
                             <div class="ml-3">
-                                <span class="text-gray-100 font-medium">GGUF Model</span>
-                                <span class="text-gray-400 text-sm ml-2">(Recommended, ~4.5GB)</span>
+                                <span class="text-pm text-xs font-medium">GGUF Model</span>
+                                <span class="text-pm-secondary text-xs ml-2">(Recommended, ~4.5GB)</span>
                             </div>
                         </div>
-                        <div id="ggufModelStatus" class="flex items-center space-x-2">
-                            <span class="text-gray-400 text-sm">Checking...</span>
+                        <div id="ggufModelStatus" class="flex items-center gap-2">
+                            <span class="text-pm-secondary text-xs">Checking...</span>
                         </div>
                     </label>
-                    <label class="flex items-center justify-between p-4 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-650 border border-gray-600">
+                    <label class="flex items-center justify-between p-3 bg-pm-input rounded-pm-sm cursor-pointer hover:bg-pm-hover border border-pm">
                         <div class="flex items-center">
-                            <input type="radio" name="autoTagModel" value="hf" class="w-4 h-4 text-purple-600 bg-gray-700 border-gray-600 focus:ring-purple-500">
+                            <input type="radio" name="autoTagModel" value="hf" class="w-4 h-4 text-pm-accent bg-pm-input border-pm focus:ring-pm-accent">
                             <div class="ml-3">
-                                <span class="text-gray-100 font-medium">HuggingFace Model</span>
-                                <span class="text-gray-400 text-sm ml-2">(~16GB)</span>
+                                <span class="text-pm text-xs font-medium">HuggingFace Model</span>
+                                <span class="text-pm-secondary text-xs ml-2">(~16GB)</span>
                             </div>
                         </div>
-                        <div id="hfModelStatus" class="flex items-center space-x-2">
-                            <span class="text-gray-400 text-sm">Checking...</span>
+                        <div id="hfModelStatus" class="flex items-center gap-2">
+                            <span class="text-pm-secondary text-xs">Checking...</span>
                         </div>
                     </label>
                 </div>
             </div>
 
             <!-- Keep Model in Memory Option -->
-            <div class="mb-6">
-                <label class="flex items-center justify-between p-4 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-650 border border-gray-600">
+            <div class="mb-3">
+                <label class="flex items-center justify-between p-3 bg-pm-input rounded-pm-sm cursor-pointer hover:bg-pm-hover border border-pm">
                     <div class="flex items-center">
-                        <input type="checkbox" id="keepModelInMemory" checked class="w-4 h-4 text-purple-600 bg-gray-700 border-gray-600 rounded focus:ring-purple-500">
+                        <input type="checkbox" id="keepModelInMemory" checked class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
                         <div class="ml-3">
-                            <span class="text-gray-100 font-medium">Keep model in memory</span>
-                            <span class="text-gray-400 text-sm ml-2">(Faster processing, uses ~4-16GB VRAM)</span>
+                            <span class="text-pm text-xs font-medium">Keep model in memory</span>
+                            <span class="text-pm-secondary text-xs ml-2">(Faster processing, uses ~4-16GB VRAM)</span>
                         </div>
                     </div>
-                    <button id="unloadModelBtn" class="px-3 py-1 bg-red-600 hover:bg-red-700 text-white text-xs rounded transition-colors hidden">
+                    <button id="unloadModelBtn" class="px-3 py-1 bg-pm-error hover:bg-pm-error text-pm text-xs rounded-pm-sm transition-colors hidden">
                         Unload Model
                     </button>
                 </label>
-                <p id="modelLoadedStatus" class="text-gray-500 text-xs mt-2 hidden">
-                    <span class="text-green-400">●</span> Model currently loaded: <span id="loadedModelType">none</span>
+                <p id="modelLoadedStatus" class="text-pm-muted text-xs mt-1 hidden">
+                    <span class="text-pm-success">●</span> Model currently loaded: <span id="loadedModelType">none</span>
                 </p>
             </div>
 
             <!-- Prompt Template -->
-            <div class="mb-6">
-                <label class="block text-sm font-medium text-gray-400 mb-2">Tag Generation Prompt</label>
+            <div class="mb-3">
+                <label class="block text-xs font-medium text-pm-secondary mb-2">Tag Generation Prompt</label>
                 <textarea id="autoTagPrompt" rows="6"
-                    class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 text-gray-100 text-sm font-mono resize-none custom-scrollbar"
+                    class="w-full px-3 py-2 bg-pm-input border border-pm rounded-pm-sm focus:ring-2 focus:ring-pm-accent focus:border-pm-accent text-pm text-xs font-mono resize-none"
                     placeholder="Enter prompt template...">Generate only comma-separated Danbooru tags (lowercase_underscores, no spaces).
 Include: subject_count (1girl/1boy/etc), gender, ethnicity (asian, caucasian, etc), age_approx (teen, young_woman), body_attributes, face_features, hairstyle, appearance, clothing, accessories, pose, expression, action, camera_angle, camera_shot, scene_composition (wide_shot, long_shot, dutch_angle), environment, background_elements, lighting, mood.
 Prioritize visual accuracy.
@@ -619,69 +486,69 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
             </div>
 
             <!-- Action Buttons -->
-            <div class="flex justify-end space-x-3">
+            <div class="flex justify-end gap-2">
                 <button onclick="hideModal('autoTagModal')"
-                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                        class="px-3 py-1 bg-pm-input hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Cancel
                 </button>
                 <button id="startReviewBtn"
-                        class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors">
-                    👁️ Review
+                        class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
+                    Review
                 </button>
                 <button id="startAutoTagBtn"
-                        class="px-6 py-2 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-lg transition-colors">
-                    🏷️ Auto Tag
+                        class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
+                    Auto Tag
                 </button>
             </div>
         </div>
     </div>
 
     <!-- Auto Tag Review Modal -->
-    <div id="autoTagReviewModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-4xl w-full mx-4 border border-gray-700">
-            <div class="flex items-center justify-between mb-6">
-                <h3 class="text-xl font-semibold text-gray-100">
-                    👁️ Review Tags
-                    <span class="text-gray-400 text-base font-normal">(<span id="reviewCurrentIndex">1</span> of <span id="reviewTotalCount">0</span>)</span>
+    <div id="autoTagReviewModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-md p-3 max-w-4xl w-full mx-4 border border-pm">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-sm font-semibold text-pm">
+                    Review Tags
+                    <span class="text-pm-secondary text-xs font-normal">(<span id="reviewCurrentIndex">1</span> of <span id="reviewTotalCount">0</span>)</span>
                 </h3>
-                <button onclick="window.gallery.cancelReview()" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
-                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <button onclick="window.gallery.cancelReview()" class="p-2 rounded-pm-sm hover:bg-pm-hover transition-colors">
+                    <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                     </svg>
                 </button>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <!-- Image Preview -->
-                <div class="bg-gray-900 rounded-lg p-4">
-                    <img id="reviewImage" src="" alt="Review image" class="w-full h-64 object-contain rounded">
-                    <p id="reviewImageName" class="text-gray-400 text-sm mt-2 text-center truncate">image_name.png</p>
+                <div class="bg-pm-primary rounded-pm-sm p-3">
+                    <img id="reviewImage" src="" alt="Review image" class="w-full h-64 object-contain rounded-pm-sm">
+                    <p id="reviewImageName" class="text-pm-secondary text-xs mt-2 text-center truncate">image_name.png</p>
                 </div>
 
                 <!-- Generated Tags -->
                 <div>
-                    <label class="block text-sm font-medium text-gray-400 mb-3">Generated Tags (click to remove)</label>
-                    <div id="reviewTagsContainer" class="flex flex-wrap gap-2 p-4 bg-gray-900 rounded-lg min-h-[200px] max-h-[250px] overflow-y-auto custom-scrollbar">
+                    <label class="block text-xs font-medium text-pm-secondary mb-2">Generated Tags (click to remove)</label>
+                    <div id="reviewTagsContainer" class="flex flex-wrap gap-2 p-3 bg-pm-primary rounded-pm-sm min-h-[200px] max-h-[250px] overflow-y-auto">
                         <!-- Tag chips will be inserted here -->
                     </div>
-                    <p class="text-gray-500 text-xs mt-2">Click the × on tags to remove them before applying</p>
+                    <p class="text-pm-muted text-xs mt-1">Click the x on tags to remove them before applying</p>
                 </div>
             </div>
 
             <!-- Action Buttons -->
-            <div class="flex justify-between mt-6">
+            <div class="flex justify-between mt-3">
                 <button id="skipReviewBtn"
-                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
-                    ⏭️ Skip
+                        class="px-3 py-1 bg-pm-input hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                    Skip
                 </button>
-                <div class="flex space-x-3">
+                <div class="flex gap-2">
                     <button onclick="window.gallery.cancelReview()"
-                            class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors">
+                            class="px-3 py-1 bg-pm-error hover:bg-pm-error text-pm text-xs font-medium rounded-pm-sm transition-colors">
                         Cancel All
                     </button>
                     <button id="applyReviewBtn"
-                            class="px-6 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors">
-                        ✅ Apply & Next
+                            class="px-3 py-1 bg-pm-success hover:bg-pm-success text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                        Apply & Next
                     </button>
                 </div>
             </div>
@@ -689,47 +556,47 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
     </div>
 
     <!-- Auto Tag Progress Modal -->
-    <div id="autoTagProgressModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700">
-            <h3 class="text-xl font-semibold text-gray-100 mb-6">🏷️ Auto Tagging Progress</h3>
+    <div id="autoTagProgressModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-md p-3 max-w-md w-full mx-4 border border-pm">
+            <h3 class="text-sm font-semibold text-pm mb-3">Auto Tagging Progress</h3>
 
             <!-- Current File -->
-            <div class="mb-4">
-                <p class="text-gray-400 text-sm">Processing:</p>
-                <p id="autoTagCurrentFile" class="text-gray-100 font-medium truncate">Initializing...</p>
+            <div class="mb-3">
+                <p class="text-pm-secondary text-xs">Processing:</p>
+                <p id="autoTagCurrentFile" class="text-pm text-xs font-medium truncate">Initializing...</p>
             </div>
 
             <!-- Progress Bar -->
-            <div class="mb-6">
-                <div class="flex justify-between text-sm text-gray-400 mb-2">
+            <div class="mb-3">
+                <div class="flex justify-between text-xs text-pm-secondary mb-1">
                     <span>Progress</span>
                     <span id="autoTagProgressPercent">0%</span>
                 </div>
-                <div class="w-full bg-gray-700 rounded-full h-3">
-                    <div id="autoTagProgressBar" class="bg-purple-600 h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
+                <div class="w-full bg-pm-input rounded-full h-2">
+                    <div id="autoTagProgressBar" class="bg-pm-accent h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
                 </div>
             </div>
 
             <!-- Stats -->
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="bg-gray-700 rounded-lg p-3 text-center">
-                    <div class="text-2xl font-bold text-purple-400" id="autoTagProcessed">0</div>
-                    <div class="text-xs text-gray-400">Processed</div>
+            <div class="grid grid-cols-3 gap-2 mb-3">
+                <div class="bg-pm-input rounded-pm-sm p-2 text-center">
+                    <div class="text-sm font-semibold text-pm-accent" id="autoTagProcessed">0</div>
+                    <div class="text-xs text-pm-secondary">Processed</div>
                 </div>
-                <div class="bg-gray-700 rounded-lg p-3 text-center">
-                    <div class="text-2xl font-bold text-green-400" id="autoTagApplied">0</div>
-                    <div class="text-xs text-gray-400">Tags Applied</div>
+                <div class="bg-pm-input rounded-pm-sm p-2 text-center">
+                    <div class="text-sm font-semibold text-pm-success" id="autoTagApplied">0</div>
+                    <div class="text-xs text-pm-secondary">Tags Applied</div>
                 </div>
-                <div class="bg-gray-700 rounded-lg p-3 text-center">
-                    <div class="text-2xl font-bold text-yellow-400" id="autoTagSkipped">0</div>
-                    <div class="text-xs text-gray-400">Skipped</div>
+                <div class="bg-pm-input rounded-pm-sm p-2 text-center">
+                    <div class="text-sm font-semibold text-pm-warning" id="autoTagSkipped">0</div>
+                    <div class="text-xs text-pm-secondary">Skipped</div>
                 </div>
             </div>
 
             <!-- Cancel Button -->
             <div class="flex justify-center">
                 <button id="cancelAutoTagBtn"
-                        class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors">
+                        class="px-3 py-1 bg-pm-error hover:bg-pm-error text-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Cancel
                 </button>
             </div>
@@ -737,31 +604,31 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
     </div>
 
     <!-- Auto Tag Download Modal -->
-    <div id="autoTagDownloadModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-700">
-            <h3 class="text-xl font-semibold text-gray-100 mb-6">📥 Downloading Model</h3>
+    <div id="autoTagDownloadModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-md p-3 max-w-md w-full mx-4 border border-pm">
+            <h3 class="text-sm font-semibold text-pm mb-3">Downloading Model</h3>
 
             <!-- Model Name -->
-            <div class="mb-4">
-                <p class="text-gray-400 text-sm">Downloading:</p>
-                <p id="downloadModelName" class="text-gray-100 font-medium">GGUF Model</p>
+            <div class="mb-3">
+                <p class="text-pm-secondary text-xs">Downloading:</p>
+                <p id="downloadModelName" class="text-pm text-xs font-medium">GGUF Model</p>
             </div>
 
             <!-- Progress Bar -->
-            <div class="mb-6">
-                <div class="flex justify-between text-sm text-gray-400 mb-2">
+            <div class="mb-3">
+                <div class="flex justify-between text-xs text-pm-secondary mb-1">
                     <span id="downloadStatus">Preparing...</span>
                     <span id="downloadProgressPercent">0%</span>
                 </div>
-                <div class="w-full bg-gray-700 rounded-full h-3">
-                    <div id="downloadProgressBar" class="bg-blue-600 h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
+                <div class="w-full bg-pm-input rounded-full h-2">
+                    <div id="downloadProgressBar" class="bg-pm-accent h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
                 </div>
             </div>
 
             <!-- Cancel Button -->
             <div class="flex justify-center">
                 <button id="cancelDownloadBtn"
-                        class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors">
+                        class="px-3 py-1 bg-pm-error hover:bg-pm-error text-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Cancel
                 </button>
             </div>
@@ -769,33 +636,33 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
     </div>
 
     <!-- Add Prompt Modal -->
-    <div id="addPromptModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 max-w-2xl w-full mx-4 border border-gray-700 max-h-[90vh] overflow-y-auto custom-scrollbar">
-            <div class="flex items-center justify-between mb-6">
-                <h3 class="text-xl font-semibold text-gray-100">➕ Add New Prompt</h3>
-                <button onclick="window.gallery.hideAddPromptModal()" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
-                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <div id="addPromptModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-md p-3 max-w-2xl w-full mx-4 border border-pm max-h-[90vh] overflow-y-auto">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-sm font-semibold text-pm">Add New Prompt</h3>
+                <button onclick="window.gallery.hideAddPromptModal()" class="p-2 rounded-pm-sm hover:bg-pm-hover transition-colors">
+                    <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                     </svg>
                 </button>
             </div>
 
             <!-- Prompt Text -->
-            <div class="mb-5">
-                <label class="block text-sm font-medium text-gray-400 mb-2">Prompt Text <span class="text-red-400">*</span></label>
+            <div class="mb-3">
+                <label class="block text-xs font-medium text-pm-secondary mb-1">Prompt Text <span class="text-pm-error">*</span></label>
                 <textarea id="addPromptText" rows="4"
-                    class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 text-gray-100 text-sm resize-none custom-scrollbar"
+                    class="w-full px-3 py-2 bg-pm-input border border-pm rounded-pm-sm focus:ring-2 focus:ring-pm-accent focus:border-pm-accent text-pm text-xs resize-none"
                     placeholder="Enter your prompt text here..."></textarea>
             </div>
 
             <!-- Category and Rating Row -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
                 <!-- Category -->
                 <div>
-                    <label class="block text-sm font-medium text-gray-400 mb-2">Category</label>
+                    <label class="block text-xs font-medium text-pm-secondary mb-1">Category</label>
                     <div class="relative">
                         <input type="text" id="addPromptCategory" list="categoryList"
-                            class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 text-gray-100 text-sm"
+                            class="w-full px-3 py-2 bg-pm-input border border-pm rounded-pm-sm focus:ring-2 focus:ring-pm-accent focus:border-pm-accent text-pm text-xs"
                             placeholder="Select or type category...">
                         <datalist id="categoryList"></datalist>
                     </div>
@@ -803,98 +670,66 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
 
                 <!-- Rating -->
                 <div>
-                    <label class="block text-sm font-medium text-gray-400 mb-2">Rating</label>
-                    <div class="flex items-center space-x-1" id="addPromptRating">
-                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="1">☆</button>
-                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="2">☆</button>
-                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="3">☆</button>
-                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="4">☆</button>
-                        <button type="button" class="rating-star text-2xl text-gray-500 hover:text-yellow-400 transition-colors" data-rating="5">☆</button>
-                        <button type="button" class="ml-2 text-xs text-gray-500 hover:text-gray-300" id="clearRatingBtn">Clear</button>
+                    <label class="block text-xs font-medium text-pm-secondary mb-1">Rating</label>
+                    <div class="flex items-center gap-1" id="addPromptRating">
+                        <button type="button" class="rating-star text-lg text-pm-muted hover:text-pm-warning transition-colors" data-rating="1">☆</button>
+                        <button type="button" class="rating-star text-lg text-pm-muted hover:text-pm-warning transition-colors" data-rating="2">☆</button>
+                        <button type="button" class="rating-star text-lg text-pm-muted hover:text-pm-warning transition-colors" data-rating="3">☆</button>
+                        <button type="button" class="rating-star text-lg text-pm-muted hover:text-pm-warning transition-colors" data-rating="4">☆</button>
+                        <button type="button" class="rating-star text-lg text-pm-muted hover:text-pm-warning transition-colors" data-rating="5">☆</button>
+                        <button type="button" class="ml-2 text-xs text-pm-muted hover:text-pm-secondary" id="clearRatingBtn">Clear</button>
                     </div>
                     <input type="hidden" id="addPromptRatingValue" value="">
                 </div>
             </div>
 
             <!-- Tags -->
-            <div class="mb-5">
-                <label class="block text-sm font-medium text-gray-400 mb-2">Tags</label>
+            <div class="mb-3">
+                <label class="block text-xs font-medium text-pm-secondary mb-1">Tags</label>
                 <div class="relative">
-                    <div id="addPromptTagsContainer" class="flex flex-wrap gap-2 p-3 bg-gray-700 border border-gray-600 rounded-lg min-h-[44px]">
+                    <div id="addPromptTagsContainer" class="flex flex-wrap gap-2 p-2 bg-pm-input border border-pm rounded-pm-sm min-h-[44px]">
                         <input type="text" id="addPromptTagInput"
-                            class="flex-1 min-w-[150px] bg-transparent border-none outline-none text-gray-100 text-sm placeholder-gray-500"
+                            class="flex-1 min-w-[150px] bg-transparent border-none outline-none text-pm text-xs placeholder-pm"
                             placeholder="Type to add tags...">
                     </div>
-                    <div id="tagSuggestions" class="absolute left-0 right-0 top-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg hidden z-10 max-h-48 overflow-y-auto custom-scrollbar"></div>
+                    <div id="tagSuggestions" class="absolute left-0 right-0 top-full mt-1 bg-pm-surface border border-pm rounded-pm-sm shadow-pm hidden z-10 max-h-48 overflow-y-auto"></div>
                 </div>
-                <p class="text-gray-500 text-xs mt-1">Press Enter or comma to add a tag. Click a tag to remove it.</p>
+                <p class="text-pm-muted text-xs mt-1">Press Enter or comma to add a tag. Click a tag to remove it.</p>
             </div>
 
             <!-- Notes -->
-            <div class="mb-5">
-                <label class="block text-sm font-medium text-gray-400 mb-2">Notes</label>
+            <div class="mb-3">
+                <label class="block text-xs font-medium text-pm-secondary mb-1">Notes</label>
                 <textarea id="addPromptNotes" rows="2"
-                    class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 text-gray-100 text-sm resize-none custom-scrollbar"
+                    class="w-full px-3 py-2 bg-pm-input border border-pm rounded-pm-sm focus:ring-2 focus:ring-pm-accent focus:border-pm-accent text-pm text-xs resize-none"
                     placeholder="Optional notes about this prompt..."></textarea>
             </div>
 
             <!-- Protection Option -->
-            <div class="mb-6">
-                <label class="flex items-start p-4 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-650 border border-gray-600">
-                    <input type="checkbox" id="addPromptProtected" checked class="w-4 h-4 mt-0.5 text-green-600 bg-gray-700 border-gray-600 rounded focus:ring-green-500">
+            <div class="mb-3">
+                <label class="flex items-start p-3 bg-pm-input rounded-pm-sm cursor-pointer hover:bg-pm-hover border border-pm">
+                    <input type="checkbox" id="addPromptProtected" checked class="w-4 h-4 mt-0.5 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
                     <div class="ml-3">
-                        <span class="text-gray-100 font-medium">Protect from orphan cleanup</span>
-                        <p class="text-gray-400 text-sm mt-1">Keep this prompt even if it has no linked images. Uncheck if you want this prompt to be automatically removed during maintenance when it has no images.</p>
+                        <span class="text-pm text-xs font-medium">Protect from orphan cleanup</span>
+                        <p class="text-pm-secondary text-xs mt-1">Keep this prompt even if it has no linked images. Uncheck if you want this prompt to be automatically removed during maintenance when it has no images.</p>
                     </div>
                 </label>
             </div>
 
             <!-- Action Buttons -->
-            <div class="flex justify-end space-x-3">
+            <div class="flex justify-end gap-2">
                 <button onclick="window.gallery.hideAddPromptModal()"
-                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition-colors">
+                        class="px-3 py-1 bg-pm-input hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Cancel
                 </button>
                 <button id="saveNewPromptBtn"
-                        class="px-6 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors">
-                    ➕ Add Prompt
+                        class="px-3 py-1 bg-pm-success hover:bg-pm-success text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                    Add Prompt
                 </button>
             </div>
         </div>
     </div>
 
-    <style>
-        /* Tag chip styles for Auto Tag feature */
-        .tag-chip {
-            display: inline-flex;
-            align-items: center;
-            padding: 0.25rem 0.5rem;
-            background-color: #374151;
-            border: 1px solid #4B5563;
-            border-radius: 0.375rem;
-            font-size: 0.875rem;
-            color: #D1D5DB;
-            transition: all 0.2s;
-        }
-        .tag-chip:hover {
-            background-color: #4B5563;
-        }
-        .tag-chip .tag-remove {
-            margin-left: 0.375rem;
-            padding: 0.125rem;
-            border-radius: 0.25rem;
-            cursor: pointer;
-            color: #9CA3AF;
-            transition: all 0.2s;
-        }
-        .tag-chip .tag-remove:hover {
-            color: #EF4444;
-            background-color: rgba(239, 68, 68, 0.2);
-        }
-        .hover\:bg-gray-650:hover {
-            background-color: #525252;
-        }
-    </style>
 
     <script src="/prompt_manager/js/gallery.js"></script>
 </body>

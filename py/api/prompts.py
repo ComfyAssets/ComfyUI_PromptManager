@@ -5,6 +5,25 @@ import json
 
 from aiohttp import web
 
+try:
+    from ...utils.validators import (
+        validate_prompt_text,
+        validate_rating,
+        validate_tags,
+        validate_category,
+        sanitize_input,
+    )
+    from ...utils.hashing import generate_prompt_hash
+except ImportError:
+    from utils.validators import (
+        validate_prompt_text,
+        validate_rating,
+        validate_tags,
+        validate_category,
+        sanitize_input,
+    )
+    from utils.hashing import generate_prompt_hash
+
 
 class PromptRoutesMixin:
     """Mixin providing prompt-related API endpoints."""
@@ -491,14 +510,6 @@ class PromptRoutesMixin:
     async def save_prompt(self, request):
         """Save a new prompt with metadata and duplicate detection."""
         try:
-            from utils.validators import (
-                validate_prompt_text,
-                validate_rating,
-                validate_tags,
-                validate_category,
-                sanitize_input,
-            )
-
             data = await request.json()
 
             text = data.get("text", "").strip()
@@ -523,8 +534,6 @@ class PromptRoutesMixin:
                 )
 
             text = sanitize_input(text)
-
-            from utils.hashing import generate_prompt_hash
 
             prompt_hash = generate_prompt_hash(text)
 
@@ -608,8 +617,6 @@ class PromptRoutesMixin:
     async def update_prompt(self, request):
         """Update prompt text."""
         try:
-            from utils.validators import validate_prompt_text, sanitize_input
-
             prompt_id = int(request.match_info["prompt_id"])
             data = await request.json()
             new_text = data.get("text", "").strip()
@@ -654,8 +661,6 @@ class PromptRoutesMixin:
     async def update_prompt_rating(self, request):
         """Update prompt rating."""
         try:
-            from utils.validators import validate_rating
-
             prompt_id = int(request.match_info["prompt_id"])
             data = await request.json()
             rating = data.get("rating")

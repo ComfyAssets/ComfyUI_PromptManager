@@ -1,0 +1,212 @@
+/*
+ * ComfyUI Theme Bridge — PromptManager Design Tokens
+ *
+ * Maps --pm-* tokens to ComfyUI CSS variables with standalone dark fallbacks.
+ * ComfyUI exposes palette via --bg-color, --fg-color, --comfy-menu-bg, etc.
+ * When running outside ComfyUI these fall back to a neutral dark theme.
+ */
+
+:root {
+  /* ── Surfaces ─────────────────────────────────── */
+  --pm-bg-primary: var(--bg-color, #202020);
+  --pm-bg-surface: var(--comfy-menu-bg, #353535);
+  --pm-bg-input: var(--comfy-input-bg, #222);
+  --pm-bg-hover: color-mix(in srgb, var(--fg-color, #fff) 10%, var(--comfy-menu-bg, #353535));
+  --pm-bg-elevated: color-mix(in srgb, var(--comfy-menu-bg, #353535) 90%, var(--fg-color, #fff) 10%);
+
+  /* ── Text ──────────────────────────────────────── */
+  --pm-text: var(--fg-color, #ddd);
+  --pm-text-secondary: var(--descrip-text, #999);
+  --pm-text-input: var(--input-text, #ddd);
+  --pm-text-muted: color-mix(in srgb, var(--descrip-text, #999) 70%, transparent);
+
+  /* ── Borders ───────────────────────────────────── */
+  --pm-border: var(--border-color, #4e4e4e);
+  --pm-border-subtle: color-mix(in srgb, var(--border-color, #4e4e4e) 50%, transparent);
+
+  /* ── Accent (ComfyUI blue) ─────────────────────── */
+  --pm-accent: var(--primary-bg, #007aff);
+  --pm-accent-hover: var(--primary-hover-bg, #3485bb);
+  --pm-accent-fg: var(--primary-fg, #fff);
+  --pm-accent-tint: color-mix(in srgb, var(--primary-bg, #007aff) 15%, transparent);
+
+  /* ── Semantic Colors ───────────────────────────── */
+  --pm-error: var(--error-text, #f44);
+  --pm-error-tint: color-mix(in srgb, var(--error-text, #f44) 15%, transparent);
+  --pm-success: #22c55e;
+  --pm-success-tint: color-mix(in srgb, #22c55e 15%, transparent);
+  --pm-warning: #eab308;
+  --pm-warning-tint: color-mix(in srgb, #eab308 15%, transparent);
+  --pm-info: #3b82f6;
+  --pm-info-tint: color-mix(in srgb, #3b82f6 15%, transparent);
+
+  /* ── Elevation / Shadows ───────────────────────── */
+  --pm-shadow: 0 8px 32px rgb(0 0 0 / 0.15);
+  --pm-shadow-sm: 0 4px 4px rgb(0 0 0 / 0.25);
+
+  /* ── Border Radius (ComfyUI scale) ─────────────── */
+  --pm-radius-sm: 5px;
+  --pm-radius-md: 8px;
+  --pm-radius-lg: 12px;
+
+  /* ── Spacing base ──────────────────────────────── */
+  --pm-space: 4px;
+}
+
+/* ── Global Scrollbar (ComfyUI-native) ───────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--pm-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--pm-text-secondary); }
+
+/* Firefox */
+* { scrollbar-width: thin; scrollbar-color: var(--pm-border) transparent; }
+
+/* ── Viewer.js theme overrides (adapts to palette) ─ */
+.viewer-backdrop { background-color: rgb(0 0 0 / 0.9) !important; }
+.viewer-container { background-color: rgb(0 0 0 / 0.9) !important; }
+.viewer-canvas { background-color: rgb(0 0 0 / 0.9) !important; }
+.viewer-toolbar { background-color: color-mix(in srgb, var(--pm-bg-surface) 95%, transparent) !important; }
+.viewer-navbar { background-color: color-mix(in srgb, var(--pm-bg-surface) 95%, transparent) !important; }
+.viewer-title { color: var(--pm-text) !important; }
+
+/* ── Film Strip (admin.html) ─────────────────────── */
+.prompt-film-strip {
+  --film-strip-thumbnail-size: 112px;
+  --film-strip-gap: 8px;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: var(--film-strip-gap);
+  padding: 8px 0;
+  overflow-x: auto;
+}
+
+.film-strip-thumbnail {
+  flex-shrink: 0;
+  width: var(--film-strip-thumbnail-size);
+  height: var(--film-strip-thumbnail-size);
+  border-radius: var(--pm-radius-sm);
+  overflow: hidden;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: all 0.15s ease;
+  background: var(--pm-bg-input);
+}
+
+.film-strip-thumbnail:hover {
+  border-color: var(--pm-accent);
+  transform: scale(1.05);
+}
+
+.film-strip-thumbnail img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.film-strip-thumbnail--more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--pm-bg-surface);
+  color: var(--pm-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.film-strip-thumbnail--more:hover {
+  background: var(--pm-bg-hover);
+  color: var(--pm-text);
+}
+
+.film-strip-empty {
+  color: var(--pm-text-muted);
+  font-size: 12px;
+  font-style: italic;
+  padding: 8px 0;
+}
+
+.film-strip-size-small { --film-strip-thumbnail-size: 72px; --film-strip-gap: 6px; }
+.film-strip-size-medium { --film-strip-thumbnail-size: 112px; --film-strip-gap: 8px; }
+.film-strip-size-large { --film-strip-thumbnail-size: 144px; --film-strip-gap: 10px; }
+
+/* ── Metadata Sidebar ────────────────────────────── */
+.metadata-sidebar {
+  position: fixed !important;
+  top: 0 !important;
+  right: 0 !important;
+  width: 384px !important;
+  height: 100vh !important;
+  background: var(--pm-bg-surface) !important;
+  border-left: 1px solid var(--pm-border) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  z-index: 10000 !important;
+  transition: transform 0.3s ease-in-out !important;
+}
+
+.metadata-sidebar.collapsed {
+  transform: translateX(340px) !important;
+}
+
+.metadata-collapse-btn {
+  position: absolute;
+  left: -40px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 32px;
+  height: 80px;
+  background: var(--pm-bg-surface);
+  border: 1px solid var(--pm-border);
+  border-right: none;
+  border-radius: var(--pm-radius-sm) 0 0 var(--pm-radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  z-index: 10001;
+}
+
+.metadata-collapse-btn:hover { background: var(--pm-bg-hover); }
+.metadata-collapse-btn svg { transition: transform 0.3s ease; }
+.metadata-sidebar.collapsed .metadata-collapse-btn svg { transform: rotate(180deg); }
+
+/* ── Tag Chips ───────────────────────────────────── */
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  background: var(--pm-bg-input);
+  border: 1px solid var(--pm-border);
+  border-radius: var(--pm-radius-sm);
+  font-size: 12px;
+  color: var(--pm-text-secondary);
+  transition: all 0.2s;
+}
+
+.tag-chip:hover { background: var(--pm-bg-hover); }
+
+.tag-chip .tag-remove {
+  margin-left: 6px;
+  padding: 2px;
+  border-radius: 3px;
+  cursor: pointer;
+  color: var(--pm-text-muted);
+  transition: all 0.2s;
+}
+
+.tag-chip .tag-remove:hover {
+  color: var(--pm-error);
+  background: var(--pm-error-tint);
+}
+
+/* ── Gallery image hover ─────────────────────────── */
+.image-item {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.image-item:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--pm-shadow);
+}

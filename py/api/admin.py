@@ -1065,6 +1065,7 @@ class AdminRoutesMixin:
                                                 prompt_text.strip(),
                                                 "scanned",
                                                 ["auto-scanned"],
+                                                None,
                                                 f"Auto-scanned from {os.path.basename(png_file)}",
                                                 prompt_hash,
                                             )

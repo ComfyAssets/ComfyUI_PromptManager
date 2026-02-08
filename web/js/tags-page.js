@@ -134,7 +134,7 @@ class TagsPageManager {
             if (container) {
                 container.replaceChildren();
                 const errDiv = document.createElement('div');
-                errDiv.className = 'text-center py-8 text-red-400 text-sm';
+                errDiv.className = 'text-center py-4 text-pm-error text-sm';
                 errDiv.textContent = 'Failed to load tags. Try refreshing.';
                 container.appendChild(errDiv);
             }
@@ -210,8 +210,8 @@ class TagsPageManager {
     createUntaggedElement() {
         const isSelected = this.selectedTags.includes('__untagged__');
         const div = document.createElement('div');
-        div.className = `flex items-center px-3 py-2 rounded-lg cursor-pointer border transition-all duration-200 relative overflow-hidden ${
-            isSelected ? 'bg-yellow-600/20 border-yellow-500/50' : 'border-transparent hover:bg-gray-700/50'
+        div.className = `flex items-center px-3 py-2 rounded-pm-md cursor-pointer border transition-all duration-200 relative overflow-hidden ${
+            isSelected ? 'bg-pm-warning/20 border-pm-warning/50' : 'border-transparent hover:bg-pm-hover/50'
         }`;
 
         div.addEventListener('click', () => this.selectTag('__untagged__'));
@@ -221,11 +221,11 @@ class TagsPageManager {
         icon.textContent = '\u2205';
 
         const nameSpan = document.createElement('span');
-        nameSpan.className = 'flex-1 text-sm text-yellow-300 italic truncate';
+        nameSpan.className = 'flex-1 text-sm text-pm-warning italic truncate';
         nameSpan.textContent = '[untagged]';
 
         const countSpan = document.createElement('span');
-        countSpan.className = 'text-xs text-gray-500 ml-2 font-mono';
+        countSpan.className = 'text-xs text-pm-muted ml-2 font-mono';
         countSpan.textContent = this.untaggedCount;
 
         div.appendChild(icon);
@@ -238,15 +238,15 @@ class TagsPageManager {
     createTagElement(tag) {
         const isSelected = this.selectedTags.includes(tag.name);
         const div = document.createElement('div');
-        div.className = `flex items-center px-3 py-2 rounded-lg cursor-pointer border transition-all duration-200 relative overflow-hidden group ${
-            isSelected ? 'bg-green-600/20 border-green-500/50' : 'border-transparent hover:bg-gray-700/50'
+        div.className = `flex items-center px-3 py-2 rounded-pm-md cursor-pointer border transition-all duration-200 relative overflow-hidden group ${
+            isSelected ? 'bg-pm-success/20 border-pm-success/50' : 'border-transparent hover:bg-pm-hover/50'
         }`;
         div.dataset.tagName = tag.name;
 
         // Usage bar (background)
         const barWidth = (tag.count / this.maxTagCount) * 100;
         const bar = document.createElement('div');
-        bar.className = 'absolute inset-y-0 left-0 bg-green-500/8 pointer-events-none transition-all duration-300';
+        bar.className = 'absolute inset-y-0 left-0 bg-pm-success/8 pointer-events-none transition-all duration-300';
         bar.style.width = barWidth + '%';
         div.appendChild(bar);
 
@@ -259,7 +259,7 @@ class TagsPageManager {
 
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
-        checkbox.className = 'tag-filter-checkbox mr-3 rounded border-gray-500 bg-gray-700 text-green-500 focus:ring-green-500 cursor-pointer relative z-10';
+        checkbox.className = 'tag-filter-checkbox mr-3 rounded border-pm bg-pm-surface text-pm-success focus:ring-pm-accent cursor-pointer relative z-10';
         checkbox.checked = isSelected;
         checkbox.dataset.tag = tag.name;
         checkbox.addEventListener('click', (e) => {
@@ -268,11 +268,11 @@ class TagsPageManager {
         });
 
         const nameSpan = document.createElement('span');
-        nameSpan.className = 'flex-1 text-sm text-gray-200 truncate relative z-10';
+        nameSpan.className = 'flex-1 text-sm text-pm truncate relative z-10';
         nameSpan.textContent = tag.name;
 
         const countSpan = document.createElement('span');
-        countSpan.className = 'text-xs text-gray-500 ml-2 font-mono relative z-10';
+        countSpan.className = 'text-xs text-pm-muted ml-2 font-mono relative z-10';
         countSpan.textContent = tag.count;
 
         div.appendChild(checkbox);
@@ -297,7 +297,7 @@ class TagsPageManager {
         const fragment = document.createDocumentFragment();
         items.forEach(item => {
             const btn = document.createElement('button');
-            btn.className = 'w-full text-left px-4 py-2 text-sm text-gray-200 hover:bg-gray-700 flex items-center space-x-2';
+            btn.className = 'w-full text-left px-4 py-2 text-sm text-pm hover:bg-pm-hover flex items-center space-x-2';
             const iconSpan = document.createElement('span');
             iconSpan.textContent = item.icon;
             const labelSpan = document.createElement('span');
@@ -493,11 +493,11 @@ class TagsPageManager {
         const orBtn = document.getElementById('filterModeOr');
 
         if (mode === 'and') {
-            andBtn.className = 'px-3 py-1 text-xs font-medium rounded bg-green-600 text-white';
-            orBtn.className = 'px-3 py-1 text-xs font-medium rounded bg-gray-700 text-gray-300 hover:bg-gray-600';
+            andBtn.className = 'px-3 py-1 text-xs font-medium rounded bg-pm-success text-pm';
+            orBtn.className = 'px-3 py-1 text-xs font-medium rounded bg-pm-surface text-pm-secondary hover:bg-pm-hover';
         } else {
-            orBtn.className = 'px-3 py-1 text-xs font-medium rounded bg-green-600 text-white';
-            andBtn.className = 'px-3 py-1 text-xs font-medium rounded bg-gray-700 text-gray-300 hover:bg-gray-600';
+            orBtn.className = 'px-3 py-1 text-xs font-medium rounded bg-pm-success text-pm';
+            andBtn.className = 'px-3 py-1 text-xs font-medium rounded bg-pm-surface text-pm-secondary hover:bg-pm-hover';
         }
 
         this.updateUrlHash();
@@ -548,15 +548,15 @@ class TagsPageManager {
                 const isUntaggedPill = tag === '__untagged__';
                 pill.className = `inline-flex items-center px-3 py-1 rounded-full text-sm ${
                     isUntaggedPill
-                        ? 'bg-yellow-600/20 text-yellow-300 border border-yellow-500/30'
-                        : 'bg-green-600/20 text-green-300 border border-green-500/30'
+                        ? 'bg-pm-warning/20 text-pm-warning border border-pm-warning/30'
+                        : 'bg-pm-success/20 text-pm-success border border-pm-success/30'
                 }`;
 
                 const text = document.createTextNode(isUntaggedPill ? '[untagged]' : tag);
                 pill.appendChild(text);
 
                 const btn = document.createElement('button');
-                btn.className = isUntaggedPill ? 'ml-2 text-yellow-400 hover:text-white' : 'ml-2 text-green-400 hover:text-white';
+                btn.className = isUntaggedPill ? 'ml-2 text-pm-warning hover:text-pm' : 'ml-2 text-pm-success hover:text-pm';
                 btn.textContent = '\u00d7';
                 btn.addEventListener('click', () => this.removeTagFromFilter(tag));
                 pill.appendChild(btn);
@@ -594,9 +594,9 @@ class TagsPageManager {
         if (grid) {
             grid.replaceChildren();
             const spinner = document.createElement('div');
-            spinner.className = 'col-span-full text-center py-8';
+            spinner.className = 'col-span-full text-center py-4';
             const spinEl = document.createElement('div');
-            spinEl.className = 'w-8 h-8 border-2 border-green-500/30 border-t-green-500 rounded-full animate-spin mx-auto';
+            spinEl.className = 'w-8 h-8 border-2 border-pm-success/30 border-t-pm-success rounded-full animate-spin mx-auto';
             spinner.appendChild(spinEl);
             grid.appendChild(spinner);
         }
@@ -638,7 +638,7 @@ class TagsPageManager {
             if (grid) {
                 grid.replaceChildren();
                 const errDiv = document.createElement('div');
-                errDiv.className = 'col-span-full text-center py-8 text-red-400';
+                errDiv.className = 'col-span-full text-center py-4 text-pm-error';
                 errDiv.textContent = 'Failed to load prompts';
                 grid.appendChild(errDiv);
             }
@@ -752,9 +752,9 @@ class TagsPageManager {
         if (this.prompts.length === 0) {
             grid.replaceChildren();
             const emptyDiv = document.createElement('div');
-            emptyDiv.className = 'col-span-full text-center py-12 text-gray-500';
+            emptyDiv.className = 'col-span-full text-center py-6 text-pm-muted';
             const icon = document.createElement('span');
-            icon.className = 'text-3xl block mb-2';
+            icon.className = 'text-lg block mb-2';
             icon.textContent = '\uD83D\uDCED';
             emptyDiv.appendChild(icon);
             const msg = document.createElement('span');
@@ -787,7 +787,7 @@ class TagsPageManager {
 
     createPromptCard(prompt) {
         const card = document.createElement('div');
-        card.className = 'tag-prompt-card bg-gray-800/50 rounded-xl p-4 border border-gray-700/50 hover:border-gray-600 transition-colors cursor-pointer';
+        card.className = 'tag-prompt-card bg-pm-surface/50 rounded-pm-md p-4 border border-pm/50 hover:border-pm-hover transition-colors cursor-pointer';
 
         // Click card → navigate to dashboard with search
         card.addEventListener('click', () => {
@@ -814,7 +814,7 @@ class TagsPageManager {
                 imgEl.src = this.getThumbnailUrl(img);
                 imgEl.alt = '';
                 imgEl.loading = 'lazy';
-                imgEl.className = 'w-20 h-20 object-cover rounded-lg bg-gray-700 cursor-zoom-in hover:ring-2 hover:ring-green-500/50 transition-all';
+                imgEl.className = 'w-20 h-20 object-cover rounded-pm-md bg-pm-surface cursor-zoom-in hover:ring-2 hover:ring-pm-success/50 transition-all';
                 imgEl.onerror = function() {
                     this.onerror = null;
                     this.src = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80"><rect fill="#374151" width="80" height="80"/><text x="40" y="44" text-anchor="middle" fill="#6B7280" font-size="20">?</text></svg>');
@@ -830,7 +830,7 @@ class TagsPageManager {
             const moreCount = (prompt.image_count || 0) - prompt.images.length;
             if (moreCount > 0) {
                 const moreSpan = document.createElement('span');
-                moreSpan.className = 'w-20 h-20 rounded-lg bg-gray-700 flex items-center justify-center text-gray-400 text-sm font-medium cursor-zoom-in hover:bg-gray-600 transition-colors';
+                moreSpan.className = 'w-20 h-20 rounded-pm-md bg-pm-surface flex items-center justify-center text-pm-secondary text-sm font-medium cursor-zoom-in hover:bg-pm-hover transition-colors';
                 moreSpan.textContent = `+${moreCount}`;
                 moreSpan.addEventListener('click', (e) => {
                     e.stopPropagation();
@@ -844,20 +844,20 @@ class TagsPageManager {
 
         // Prompt text (truncated)
         const textP = document.createElement('p');
-        textP.className = 'text-sm text-gray-200 leading-relaxed line-clamp-3 mb-3';
+        textP.className = 'text-sm text-pm leading-relaxed line-clamp-3 mb-3';
         textP.textContent = prompt.text || '';
         card.appendChild(textP);
 
         // Meta row
         const metaRow = document.createElement('div');
-        metaRow.className = 'flex items-center justify-between text-xs text-gray-500 mb-2';
+        metaRow.className = 'flex items-center justify-between text-xs text-pm-muted mb-2';
 
         const metaLeft = document.createElement('div');
         metaLeft.className = 'flex items-center space-x-3';
 
         if (prompt.category) {
             const catSpan = document.createElement('span');
-            catSpan.className = 'px-2 py-0.5 bg-purple-600/20 text-purple-300 rounded';
+            catSpan.className = 'px-2 py-0.5 bg-pm-accent/20 text-pm-accent rounded';
             catSpan.textContent = prompt.category;
             metaLeft.appendChild(catSpan);
         }
@@ -874,7 +874,7 @@ class TagsPageManager {
         starsSpan.className = 'flex';
         for (let i = 1; i <= 5; i++) {
             const star = document.createElement('span');
-            star.className = i <= rating ? 'text-yellow-400' : 'text-gray-600';
+            star.className = i <= rating ? 'text-pm-warning' : 'text-pm-muted';
             star.textContent = '\u2605';
             starsSpan.appendChild(star);
         }
@@ -884,7 +884,7 @@ class TagsPageManager {
 
         if (prompt.image_count) {
             const imgCount = document.createElement('span');
-            imgCount.className = 'text-gray-500';
+            imgCount.className = 'text-pm-muted';
             imgCount.textContent = `${prompt.image_count} img${prompt.image_count !== 1 ? 's' : ''}`;
             metaRow.appendChild(imgCount);
         }
@@ -900,8 +900,8 @@ class TagsPageManager {
                 const isActive = this.selectedTags.includes(tagName);
                 tagSpan.className = `px-2 py-0.5 rounded text-xs cursor-pointer transition-colors ${
                     isActive
-                        ? 'bg-green-600 text-white hover:bg-green-500'
-                        : 'bg-gray-700 text-gray-300 hover:bg-green-600/40 hover:text-green-200'
+                        ? 'bg-pm-success text-pm hover:bg-pm-success/80'
+                        : 'bg-pm-surface text-pm-secondary hover:bg-pm-success/40 hover:text-pm-success'
                 }`;
                 tagSpan.textContent = tagName;
                 tagSpan.addEventListener('click', (e) => {

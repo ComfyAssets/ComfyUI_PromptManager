@@ -155,15 +155,15 @@
                 const listBtn = document.getElementById('listViewBtn');
                 
                 if (mode === 'grid') {
-                    gridBtn.classList.remove('bg-gray-600');
-                    gridBtn.classList.add('bg-violet-600');
-                    listBtn.classList.remove('bg-violet-600');
-                    listBtn.classList.add('bg-gray-600');
+                    gridBtn.classList.remove('bg-pm-input');
+                    gridBtn.classList.add('bg-pm-accent');
+                    listBtn.classList.remove('bg-pm-accent');
+                    listBtn.classList.add('bg-pm-input');
                 } else {
-                    listBtn.classList.remove('bg-gray-600');
-                    listBtn.classList.add('bg-violet-600');
-                    gridBtn.classList.remove('bg-violet-600');
-                    gridBtn.classList.add('bg-gray-600');
+                    listBtn.classList.remove('bg-pm-input');
+                    listBtn.classList.add('bg-pm-accent');
+                    gridBtn.classList.remove('bg-pm-accent');
+                    gridBtn.classList.add('bg-pm-input');
                 }
                 
                 this.renderGallery();
@@ -206,8 +206,8 @@
                     const mediaType = image.media_type || 'image';
                     
                     return `
-                    <div class="image-item bg-gray-800 rounded-lg overflow-hidden border border-gray-700 hover:border-gray-600 cursor-pointer group">
-                        <div class="aspect-square bg-gray-900 overflow-hidden relative">
+                    <div class="image-item bg-pm-surface rounded-pm-md overflow-hidden border border-pm hover:border-pm cursor-pointer group">
+                        <div class="aspect-square bg-pm-primary overflow-hidden relative">
                             <img src="${displayUrl}"
                                  alt="${this.escapeHtml(image.filename)}"
                                  class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
@@ -219,31 +219,31 @@
                                  data-is-video="${isVideo}"
                                  onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'">
                             <!-- Fallback for failed thumbnails -->
-                            <div class="hidden absolute inset-0 bg-gray-700 text-gray-400 flex items-center justify-center">
+                            <div class="hidden absolute inset-0 bg-pm-surface text-pm-secondary flex items-center justify-center">
                                 <div class="text-center">
-                                    <div class="text-2xl mb-1">${isVideo ? '🎬' : '🖼️'}</div>
+                                    <div class="text-lg mb-1">${isVideo ? '🎬' : '🖼️'}</div>
                                     <div class="text-xs">Failed to load</div>
                                 </div>
                             </div>
-                            <div class="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-opacity duration-300 flex items-center justify-center">
+                            <div class="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-opacity duration-300 flex items-center justify-center">
                                 ${isVideo ? `
-                                    <div class="w-12 h-12 bg-black bg-opacity-60 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                                        <svg class="w-6 h-6 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+                                    <div class="w-12 h-12 bg-black/60 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                                        <svg class="w-6 h-6 text-pm ml-1" fill="currentColor" viewBox="0 0 24 24">
                                             <path d="M8 5v14l11-7z"/>
                                         </svg>
                                     </div>
                                 ` : `
-                                    <svg class="w-8 h-8 text-white opacity-0 group-hover:opacity-100 transition-opacity duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <svg class="w-8 h-8 text-pm opacity-0 group-hover:opacity-100 transition-opacity duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                                     </svg>
                                 `}
                             </div>
-                            ${hasThumb ? '<div class="absolute top-2 right-2 w-3 h-3 bg-green-500 rounded-full" title="Thumbnail available"></div>' : ''}
-                            ${isVideo ? '<div class="absolute top-2 left-2 px-2 py-1 bg-red-600 text-white text-xs rounded" title="Video file">VIDEO</div>' : ''}
+                            ${hasThumb ? '<div class="absolute top-2 right-2 w-3 h-3 bg-pm-success rounded-full" title="Thumbnail available"></div>' : ''}
+                            ${isVideo ? '<div class="absolute top-2 left-2 px-2 py-1 bg-pm-error text-pm text-xs rounded" title="Video file">VIDEO</div>' : ''}
                         </div>
                         <div class="p-2">
-                            <div class="text-xs text-gray-400 truncate" title="${this.escapeHtml(image.filename)}">${this.escapeHtml(image.filename)}</div>
-                            <div class="text-xs text-gray-500">${this.formatFileSize(image.size)}${hasThumb ? ' • Fast' : ''}${isVideo ? ' • Video' : ''}</div>
+                            <div class="text-xs text-pm-secondary truncate" title="${this.escapeHtml(image.filename)}">${this.escapeHtml(image.filename)}</div>
+                            <div class="text-xs text-pm-muted">${this.formatFileSize(image.size)}${hasThumb ? ' • Fast' : ''}${isVideo ? ' • Video' : ''}</div>
                         </div>
                     </div>
                 `;
@@ -265,8 +265,8 @@
                     const mediaType = image.media_type || 'image';
                     
                     return `
-                    <div class="image-item bg-gray-800 rounded-lg border border-gray-700 hover:border-gray-600 cursor-pointer group flex items-center p-4">
-                        <div class="w-16 h-16 bg-gray-900 rounded-lg overflow-hidden flex-shrink-0 mr-4 relative">
+                    <div class="image-item bg-pm-surface rounded-pm-md border border-pm hover:border-pm cursor-pointer group flex items-center p-4">
+                        <div class="w-16 h-16 bg-pm-primary rounded-pm-md overflow-hidden flex-shrink-0 mr-4 relative">
                             <img src="${displayUrl}"
                                  alt="${this.escapeHtml(image.filename)}"
                                  class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
@@ -277,21 +277,21 @@
                                  data-media-type="${mediaType}"
                                  data-is-video="${isVideo}"
                                  onerror="this.style.display='none'">
-                            ${hasThumb ? '<div class="absolute top-1 right-1 w-2 h-2 bg-green-500 rounded-full" title="Thumbnail available"></div>' : ''}
-                            ${isVideo ? '<div class="absolute top-1 left-1 w-4 h-3 bg-red-600 text-white text-xs flex items-center justify-center rounded" title="Video">▶</div>' : ''}
+                            ${hasThumb ? '<div class="absolute top-1 right-1 w-2 h-2 bg-pm-success rounded-full" title="Thumbnail available"></div>' : ''}
+                            ${isVideo ? '<div class="absolute top-1 left-1 w-4 h-3 bg-pm-error text-pm text-xs flex items-center justify-center rounded" title="Video">▶</div>' : ''}
                         </div>
                         <div class="flex-1 min-w-0">
-                            <div class="text-sm font-medium text-gray-100 truncate">${this.escapeHtml(image.filename)}${isVideo ? ' 🎬' : ''}</div>
-                            <div class="text-xs text-gray-400">${this.formatFileSize(image.size)} • ${new Date(image.modified_time * 1000).toLocaleDateString()}${hasThumb ? ' • Fast' : ''}${isVideo ? ' • Video' : ''}</div>
-                            <div class="text-xs text-gray-500 truncate">${image.relative_path}</div>
+                            <div class="text-sm font-medium text-pm truncate">${this.escapeHtml(image.filename)}${isVideo ? ' 🎬' : ''}</div>
+                            <div class="text-xs text-pm-secondary">${this.formatFileSize(image.size)} • ${new Date(image.modified_time * 1000).toLocaleDateString()}${hasThumb ? ' • Fast' : ''}${isVideo ? ' • Video' : ''}</div>
+                            <div class="text-xs text-pm-muted truncate">${image.relative_path}</div>
                         </div>
                         <div class="flex-shrink-0 ml-4">
                             ${isVideo ? `
-                                <svg class="w-5 h-5 text-red-400 group-hover:text-red-300 transition-colors" fill="currentColor" viewBox="0 0 24 24">
+                                <svg class="w-5 h-5 text-pm-error group-hover:text-pm-error transition-colors" fill="currentColor" viewBox="0 0 24 24">
                                     <path d="M8 5v14l11-7z"/>
                                 </svg>
                             ` : `
-                                <svg class="w-5 h-5 text-gray-400 group-hover:text-white transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg class="w-5 h-5 text-pm-secondary group-hover:text-pm transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                                 </svg>
                             `}
@@ -340,7 +340,7 @@
                         flipHorizontal: 1,
                         flipVertical: 1,
                     },
-                    className: 'viewer-dark-theme',
+                    className: '',
                     title: [1, (image, imageData) => `${imageData.alt} (${this.images.length} images) - Original Image`],
                     viewed: (event) => {
                         console.log('ViewerJS opened original image for metadata');
@@ -377,29 +377,29 @@
                 sidebar.innerHTML = `
                     <!-- Collapse Button -->
                     <div class="metadata-collapse-btn" onclick="this.closest('.metadata-sidebar').classList.toggle('collapsed')">
-                        <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
                         </svg>
                     </div>
-                    
+
                     <!-- Header -->
-                    <div class="flex items-center justify-between p-4 border-b border-gray-700">
+                    <div class="flex items-center justify-between p-4 border-b border-pm">
                         <div class="flex items-center gap-2">
-                            <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <svg class="w-5 h-5 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                             </svg>
-                            <h1 class="text-lg font-medium text-white">Generation data</h1>
+                            <h1 class="text-sm font-semibold text-pm">Generation data</h1>
                         </div>
-                        <button class="text-xs text-blue-400 hover:text-blue-300 transition-colors metadata-copy-all">
+                        <button class="text-xs text-pm-accent hover:text-pm-accent transition-colors metadata-copy-all">
                             📋 COPY ALL
                         </button>
                     </div>
 
                     <!-- Scrollable Content -->
-                    <div id="metadata-content" class="flex-1 overflow-y-auto p-4 space-y-6">
+                    <div id="metadata-content" class="flex-1 overflow-y-auto p-4 space-y-3">
                         <!-- Loading state -->
-                        <div class="text-center text-gray-500 py-8">
-                            <div class="w-8 h-8 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mx-auto mb-2"></div>
+                        <div class="text-center text-pm-muted py-8">
+                            <div class="w-8 h-8 border-2 border-pm-accent/30 border-t-pm-accent rounded-full animate-spin mx-auto mb-2"></div>
                             <p class="text-sm">Loading metadata...</p>
                         </div>
                     </div>
@@ -495,15 +495,15 @@
                     <!-- Image area with navigation -->
                     <div class="flex-1 flex items-center justify-center relative">
                         <!-- Navigation arrows -->
-                        <button class="absolute left-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-white text-xl z-10" id="prevImageBtn">
+                        <button class="absolute left-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-pm text-xl z-10" id="prevImageBtn">
                             ‹
                         </button>
-                        <button class="absolute right-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-white text-xl z-10" id="nextImageBtn">
+                        <button class="absolute right-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-pm text-xl z-10" id="nextImageBtn">
                             ›
                         </button>
                         
                         <!-- Close button -->
-                        <button class="absolute top-4 right-4 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-white text-xl z-10" onclick="this.parentElement.parentElement.remove()">
+                        <button class="absolute top-4 right-4 w-10 h-10 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-pm text-xl z-10" onclick="this.parentElement.parentElement.remove()">
                             ×
                         </button>
                         
@@ -515,29 +515,29 @@
                     <div class="metadata-sidebar">
                         <!-- Collapse Button -->
                         <div class="metadata-collapse-btn" onclick="this.closest('.metadata-sidebar').classList.toggle('collapsed')">
-                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
                             </svg>
                         </div>
-                        
+
                         <!-- Header -->
-                        <div class="flex items-center justify-between p-4 border-b border-gray-700">
+                        <div class="flex items-center justify-between p-4 border-b border-pm">
                             <div class="flex items-center gap-2">
-                                <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg class="w-5 h-5 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                                 </svg>
-                                <h1 class="text-lg font-medium text-white">Generation data</h1>
+                                <h1 class="text-sm font-semibold text-pm">Generation data</h1>
                             </div>
-                            <button class="text-xs text-blue-400 hover:text-blue-300 transition-colors metadata-copy-all">
+                            <button class="text-xs text-pm-accent hover:text-pm-accent transition-colors metadata-copy-all">
                                 📋 COPY ALL
                             </button>
                         </div>
-                        
+
                         <!-- Scrollable Content -->
-                        <div id="metadata-content" class="flex-1 overflow-y-auto p-4 space-y-6">
+                        <div id="metadata-content" class="flex-1 overflow-y-auto p-4 space-y-3">
                             <!-- Loading state -->
-                            <div class="text-center text-gray-500 py-8">
-                                <div class="w-8 h-8 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mx-auto mb-2"></div>
+                            <div class="text-center text-pm-muted py-8">
+                                <div class="w-8 h-8 border-2 border-pm-accent/30 border-t-pm-accent rounded-full animate-spin mx-auto mb-2"></div>
                                 <p class="text-sm">Loading metadata...</p>
                             </div>
                         </div>
@@ -579,24 +579,24 @@
                     <!-- Video area with navigation -->
                     <div class="flex-1 flex items-center justify-center relative">
                         <!-- Navigation arrows -->
-                        <button class="absolute left-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-white text-xl z-10" id="prevVideoBtn">
+                        <button class="absolute left-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-pm text-xl z-10" id="prevVideoBtn">
                             ‹
                         </button>
-                        <button class="absolute right-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-white text-xl z-10" id="nextVideoBtn">
+                        <button class="absolute right-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-pm text-xl z-10" id="nextVideoBtn">
                             ›
                         </button>
                         
                         <!-- Close button -->
-                        <button class="absolute top-4 right-4 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-white text-xl z-10" onclick="this.parentElement.parentElement.remove()">
+                        <button class="absolute top-4 right-4 w-10 h-10 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-pm text-xl z-10" onclick="this.parentElement.parentElement.remove()">
                             ×
                         </button>
                         
                         <!-- Video controls -->
                         <div class="absolute bottom-4 right-4 flex space-x-2 z-10">
-                            <button id="videoMuteBtn" class="px-3 py-2 bg-black bg-opacity-50 hover:bg-opacity-70 rounded text-white text-sm">
+                            <button id="videoMuteBtn" class="px-3 py-2 bg-black/50 hover:bg-black/70 rounded text-pm text-sm">
                                 🔊
                             </button>
-                            <button id="videoLoopBtn" class="px-3 py-2 bg-black bg-opacity-50 hover:bg-opacity-70 rounded text-white text-sm">
+                            <button id="videoLoopBtn" class="px-3 py-2 bg-black/50 hover:bg-black/70 rounded text-pm text-sm">
                                 🔁
                             </button>
                         </div>
@@ -617,26 +617,26 @@
                     <div class="metadata-sidebar">
                         <!-- Collapse Button -->
                         <div class="metadata-collapse-btn" onclick="this.closest('.metadata-sidebar').classList.toggle('collapsed')">
-                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
                             </svg>
                         </div>
-                        
+
                         <!-- Header -->
-                        <div class="flex items-center justify-between p-4 border-b border-gray-700">
+                        <div class="flex items-center justify-between p-4 border-b border-pm">
                             <div class="flex items-center gap-2">
-                                <svg class="w-5 h-5 text-red-400" fill="currentColor" viewBox="0 0 24 24">
+                                <svg class="w-5 h-5 text-pm-error" fill="currentColor" viewBox="0 0 24 24">
                                     <path d="M8 5v14l11-7z"/>
                                 </svg>
-                                <h1 class="text-lg font-medium text-white">Video Info</h1>
+                                <h1 class="text-sm font-semibold text-pm">Video Info</h1>
                             </div>
-                            <button class="text-xs text-blue-400 hover:text-blue-300 transition-colors" onclick="navigator.clipboard.writeText('${videoUrl}').then(() => this.textContent = '✓ Copied!'); setTimeout(() => this.textContent = '📋 COPY URL', 1000)">
+                            <button class="text-xs text-pm-accent hover:text-pm-accent transition-colors" onclick="navigator.clipboard.writeText('${videoUrl}').then(() => this.textContent = '✓ Copied!'); setTimeout(() => this.textContent = '📋 COPY URL', 1000)">
                                 📋 COPY URL
                             </button>
                         </div>
                         
                         <!-- Video info content -->
-                        <div id="video-info-content" class="flex-1 overflow-y-auto p-4 space-y-6">
+                        <div id="video-info-content" class="flex-1 overflow-y-auto p-4 space-y-3">
                             <!-- Video details will be loaded here -->
                         </div>
                     </div>
@@ -775,48 +775,48 @@
                     container.innerHTML = `
                         <!-- File Info -->
                         <div class="space-y-2">
-                            <h2 class="text-sm font-medium text-gray-300">File Info</h2>
-                            <div class="text-xs text-gray-400 font-mono bg-gray-800 p-2 rounded break-all cursor-pointer hover:bg-gray-700" 
+                            <h2 class="text-sm font-medium text-pm-secondary">File Info</h2>
+                            <div class="text-xs text-pm-secondary font-mono bg-pm-surface p-2 rounded break-all cursor-pointer hover:bg-pm-hover"
                                  onclick="navigator.clipboard.writeText('${videoUrl}').then(() => this.textContent = 'Copied!'); setTimeout(() => this.textContent = '${fileName}', 1000)"
                                  title="Click to copy path">
                                 ${fileName}
                             </div>
-                            <div class="text-xs text-gray-500">
+                            <div class="text-xs text-pm-muted">
                                 Type: ${fileExt} Video
                             </div>
                         </div>
 
                         <!-- Video Properties -->
                         <div class="space-y-2" id="video-properties">
-                            <h2 class="text-sm font-medium text-gray-300">Video Properties</h2>
-                            <div class="text-xs text-gray-400">
+                            <h2 class="text-sm font-medium text-pm-secondary">Video Properties</h2>
+                            <div class="text-xs text-pm-secondary">
                                 Loading video information...
                             </div>
                         </div>
 
                         <!-- Video Settings -->
                         <div class="space-y-3">
-                            <h2 class="text-sm font-medium text-gray-300">Playback Settings</h2>
+                            <h2 class="text-sm font-medium text-pm-secondary">Playback Settings</h2>
                             <div class="space-y-2 text-xs">
                                 <div class="flex justify-between items-center">
-                                    <span class="text-gray-400">Autoplay:</span>
-                                    <span class="text-gray-200">${this.getSettings().videoAutoplay ? 'Enabled' : 'Disabled'}</span>
+                                    <span class="text-pm-secondary">Autoplay:</span>
+                                    <span class="text-pm">${this.getSettings().videoAutoplay ? 'Enabled' : 'Disabled'}</span>
                                 </div>
                                 <div class="flex justify-between items-center">
-                                    <span class="text-gray-400">Muted:</span>
-                                    <span class="text-gray-200">${this.getSettings().videoMute ? 'Yes' : 'No'}</span>
+                                    <span class="text-pm-secondary">Muted:</span>
+                                    <span class="text-pm">${this.getSettings().videoMute ? 'Yes' : 'No'}</span>
                                 </div>
                                 <div class="flex justify-between items-center">
-                                    <span class="text-gray-400">Loop:</span>
-                                    <span class="text-gray-200">${this.getSettings().videoLoop ? 'Enabled' : 'Disabled'}</span>
+                                    <span class="text-pm-secondary">Loop:</span>
+                                    <span class="text-pm">${this.getSettings().videoLoop ? 'Enabled' : 'Disabled'}</span>
                                 </div>
                             </div>
                         </div>
 
                         <!-- Note about metadata -->
-                        <div class="bg-blue-900/20 border border-blue-600 rounded-lg p-3">
-                            <h4 class="text-blue-400 font-medium mb-1 text-sm">ℹ️ Video Note</h4>
-                            <p class="text-gray-300 text-xs">
+                        <div class="bg-pm-accent-tint border border-pm-accent rounded-pm-md p-3">
+                            <h4 class="text-pm-accent font-medium mb-1 text-sm">ℹ️ Video Note</h4>
+                            <p class="text-pm-secondary text-xs">
                                 Videos don't contain the same metadata as PNG images. ComfyUI workflow data is only embedded in PNG outputs.
                             </p>
                         </div>
@@ -833,19 +833,19 @@
                                 const height = video.videoHeight;
                                 
                                 propertiesDiv.innerHTML = `
-                                    <h2 class="text-sm font-medium text-gray-300">Video Properties</h2>
+                                    <h2 class="text-sm font-medium text-pm-secondary">Video Properties</h2>
                                     <div class="space-y-1 text-xs">
                                         <div class="flex justify-between">
-                                            <span class="text-gray-400">Duration:</span>
-                                            <span class="text-gray-200">${this.formatDuration(duration)}</span>
+                                            <span class="text-pm-secondary">Duration:</span>
+                                            <span class="text-pm">${this.formatDuration(duration)}</span>
                                         </div>
                                         <div class="flex justify-between">
-                                            <span class="text-gray-400">Resolution:</span>
-                                            <span class="text-gray-200">${width} × ${height}</span>
+                                            <span class="text-pm-secondary">Resolution:</span>
+                                            <span class="text-pm">${width} × ${height}</span>
                                         </div>
                                         <div class="flex justify-between">
-                                            <span class="text-gray-400">Aspect Ratio:</span>
-                                            <span class="text-gray-200">${(width/height).toFixed(2)}:1</span>
+                                            <span class="text-pm-secondary">Aspect Ratio:</span>
+                                            <span class="text-pm">${(width/height).toFixed(2)}:1</span>
                                         </div>
                                     </div>
                                 `;
@@ -856,9 +856,9 @@
                 } catch (error) {
                     console.error('Error loading video info:', error);
                     container.innerHTML = `
-                        <div class="bg-red-900/20 border border-red-600 rounded-lg p-4">
-                            <h4 class="text-red-400 font-medium mb-2">❌ Video Info Error</h4>
-                            <p class="text-gray-300 text-sm">${error.message}</p>
+                        <div class="bg-pm-error-tint border border-pm-error rounded-pm-md p-4">
+                            <h4 class="text-pm-error font-medium mb-2">❌ Video Info Error</h4>
+                            <p class="text-pm-secondary text-sm">${error.message}</p>
                         </div>
                     `;
                 }
@@ -950,9 +950,9 @@
                 } catch (error) {
                     console.error('Error loading metadata:', error);
                     container.innerHTML = `
-                        <div class="bg-red-900/20 border border-red-600 rounded-lg p-4">
-                            <h4 class="text-red-400 font-medium mb-2">❌ Metadata Error</h4>
-                            <p class="text-gray-300 text-sm">${error.message}</p>
+                        <div class="bg-pm-error-tint border border-pm-error rounded-pm-md p-4">
+                            <h4 class="text-pm-error font-medium mb-2">❌ Metadata Error</h4>
+                            <p class="text-pm-secondary text-sm">${error.message}</p>
                         </div>
                     `;
                 }
@@ -961,7 +961,7 @@
             displayMetadata(metadata, container) {
                 if (!metadata) {
                     container.innerHTML = `
-                        <div class="text-center text-gray-500 py-8">
+                        <div class="text-center text-pm-muted py-8">
                             <svg class="w-16 h-16 mx-auto mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                             </svg>
@@ -974,19 +974,19 @@
                 const html = `
                     <!-- File Path -->
                     <div class="space-y-2">
-                        <h2 class="text-sm font-medium text-gray-300">File Path</h2>
-                        <div class="text-xs text-gray-400 font-mono bg-gray-800 p-2 rounded break-all cursor-pointer hover:bg-gray-700" data-copy-path title="Click to copy">
+                        <h2 class="text-sm font-medium text-pm-secondary">File Path</h2>
+                        <div class="text-xs text-pm-secondary font-mono bg-pm-surface p-2 rounded break-all cursor-pointer hover:bg-pm-hover" data-copy-path title="Click to copy">
                             ${metadata.imagePath || 'Unknown'}
                         </div>
                     </div>
 
                     <!-- Resources used -->
                     <div class="space-y-3">
-                        <h2 class="text-sm font-medium text-gray-300">Resources used</h2>
+                        <h2 class="text-sm font-medium text-pm-secondary">Resources used</h2>
                         <div class="space-y-2 text-xs">
                             <div class="flex justify-between">
-                                <span class="text-gray-400">Model:</span>
-                                <span class="text-gray-200">${metadata.checkpoint || 'Unknown'}</span>
+                                <span class="text-pm-secondary">Model:</span>
+                                <span class="text-pm">${metadata.checkpoint || 'Unknown'}</span>
                             </div>
                         </div>
                     </div>
@@ -994,15 +994,15 @@
                     <!-- Prompt Section -->
                     <div class="space-y-3">
                         <div class="flex items-center justify-between">
-                            <h2 class="text-sm font-medium text-gray-300">Prompt</h2>
-                            <button class="text-xs px-2 py-1 bg-orange-600 hover:bg-orange-700 text-white rounded transition-colors" data-copy-type="positive">
+                            <h2 class="text-sm font-medium text-pm-secondary">Prompt</h2>
+                            <button class="text-xs px-2 py-1 bg-pm-warning hover:bg-pm-warning text-pm rounded transition-colors" data-copy-type="positive">
                                 COPY PROMPT
                             </button>
                         </div>
-                        <div class="text-xs text-gray-200 bg-gray-800 p-3 rounded max-h-32 overflow-y-auto break-words leading-relaxed">
+                        <div class="text-xs text-pm bg-pm-surface p-3 rounded max-h-32 overflow-y-auto break-words leading-relaxed">
                             ${this.formatPromptText(metadata.positivePrompt)}
-                            <div class="mt-2 pt-2 border-t border-gray-700">
-                                <button class="text-blue-400 hover:text-blue-300 underline text-xs" data-show-type="positive">
+                            <div class="mt-2 pt-2 border-t border-pm">
+                                <button class="text-pm-accent hover:text-pm-accent underline text-xs" data-show-type="positive">
                                     Show more
                                 </button>
                             </div>
@@ -1011,11 +1011,11 @@
 
                     <!-- Negative Prompt -->
                     <div class="space-y-3">
-                        <h2 class="text-sm font-medium text-gray-300">Negative prompt</h2>
-                        <div class="text-xs text-gray-200 bg-gray-800 p-3 rounded max-h-32 overflow-y-auto break-words leading-relaxed">
+                        <h2 class="text-sm font-medium text-pm-secondary">Negative prompt</h2>
+                        <div class="text-xs text-pm bg-pm-surface p-3 rounded max-h-32 overflow-y-auto break-words leading-relaxed">
                             ${this.formatPromptText(metadata.negativePrompt)}
-                            <div class="mt-2 pt-2 border-t border-gray-700">
-                                <button class="text-blue-400 hover:text-blue-300 underline text-xs" data-show-type="negative">
+                            <div class="mt-2 pt-2 border-t border-pm">
+                                <button class="text-pm-accent hover:text-pm-accent underline text-xs" data-show-type="negative">
                                     Show more
                                 </button>
                             </div>
@@ -1024,23 +1024,23 @@
 
                     <!-- Other metadata -->
                     <div class="space-y-3">
-                        <h2 class="text-sm font-medium text-gray-300">Other metadata</h2>
+                        <h2 class="text-sm font-medium text-pm-secondary">Other metadata</h2>
                         <div class="space-y-2 text-xs">
                             <div class="flex justify-between">
-                                <span class="text-gray-400">CFG SCALE:</span>
-                                <span class="text-gray-200 px-2 py-1 bg-gray-700 rounded text-xs">${metadata.cfgScale || 'Unknown'}</span>
+                                <span class="text-pm-secondary">CFG SCALE:</span>
+                                <span class="text-pm px-2 py-1 bg-pm-surface rounded text-xs">${metadata.cfgScale || 'Unknown'}</span>
                             </div>
                             <div class="flex justify-between">
-                                <span class="text-gray-400">STEPS:</span>
-                                <span class="text-gray-200 px-2 py-1 bg-gray-700 rounded text-xs">${metadata.steps || 'Unknown'}</span>
+                                <span class="text-pm-secondary">STEPS:</span>
+                                <span class="text-pm px-2 py-1 bg-pm-surface rounded text-xs">${metadata.steps || 'Unknown'}</span>
                             </div>
                             <div class="flex justify-between">
-                                <span class="text-gray-400">SAMPLER:</span>
-                                <span class="text-gray-200 px-2 py-1 bg-gray-700 rounded text-xs">${metadata.sampler || 'Unknown'}</span>
+                                <span class="text-pm-secondary">SAMPLER:</span>
+                                <span class="text-pm px-2 py-1 bg-pm-surface rounded text-xs">${metadata.sampler || 'Unknown'}</span>
                             </div>
                             <div class="flex justify-between">
-                                <span class="text-gray-400">SEED:</span>
-                                <span class="text-gray-200 font-mono px-2 py-1 bg-gray-700 rounded text-xs">${metadata.seed || 'Unknown'}</span>
+                                <span class="text-pm-secondary">SEED:</span>
+                                <span class="text-pm font-mono px-2 py-1 bg-pm-surface rounded text-xs">${metadata.seed || 'Unknown'}</span>
                             </div>
                         </div>
                     </div>
@@ -1048,15 +1048,15 @@
                     <!-- ComfyUI Workflow -->
                     ${metadata.workflow ? `
                         <div class="space-y-3">
-                            <h2 class="text-sm font-medium text-gray-300">ComfyUI Workflow</h2>
+                            <h2 class="text-sm font-medium text-pm-secondary">ComfyUI Workflow</h2>
                             <div class="space-y-2">
-                                <button class="text-xs text-blue-400 hover:text-blue-300 underline flex items-center gap-1" data-action="show-workflow">
+                                <button class="text-xs text-pm-accent hover:text-pm-accent underline flex items-center gap-1" data-action="show-workflow">
                                     <span>View Raw Workflow JSON</span>
                                     <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
                                     </svg>
                                 </button>
-                                <button class="text-xs text-blue-400 hover:text-blue-300 underline flex items-center gap-1" data-action="download-workflow">
+                                <button class="text-xs text-pm-accent hover:text-pm-accent underline flex items-center gap-1" data-action="download-workflow">
                                     <span>Download Workflow</span>
                                     <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
@@ -1095,8 +1095,8 @@
                         // Update metadata using original image
                         const metadataContainer = modal.querySelector('#metadata-content');
                         metadataContainer.innerHTML = `
-                            <div class="text-center text-gray-500 py-8">
-                                <div class="w-8 h-8 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mx-auto mb-2"></div>
+                            <div class="text-center text-pm-muted py-8">
+                                <div class="w-8 h-8 border-2 border-pm-accent/30 border-t-pm-accent rounded-full animate-spin mx-auto mb-2"></div>
                                 <p class="text-sm">Loading metadata from original image...</p>
                             </div>
                         `;
@@ -1276,7 +1276,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
             formatPromptText(text) {
                 if (!text || text === 'No prompt found' || text === 'No negative prompt found') {
-                    return `<span class="text-gray-500 italic">${text || 'No prompt found'}</span>`;
+                    return `<span class="text-pm-muted italic">${text || 'No prompt found'}</span>`;
                 }
                 return this.escapeHtml(text);
             }
@@ -1295,20 +1295,20 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
             showNotification(message, type = 'info') {
                 const notification = document.createElement('div');
-                notification.className = `fixed top-4 right-4 px-6 py-4 rounded-lg shadow-lg z-[20000] transition-all duration-300 transform translate-x-full`;
-                
+                notification.className = `fixed top-4 right-4 px-4 py-2 rounded-pm-md shadow-pm text-sm z-[20000] transition-all duration-300 transform translate-x-full`;
+
                 const colors = {
-                    success: "bg-green-600 text-white",
-                    error: "bg-red-600 text-white",
-                    warning: "bg-yellow-600 text-white",
-                    info: "bg-blue-600 text-white"
+                    success: "bg-pm-success text-pm",
+                    error: "bg-pm-error text-pm",
+                    warning: "bg-pm-warning text-pm",
+                    info: "bg-pm-accent text-pm"
                 };
-                
+
                 notification.className += ` ${colors[type] || colors.info}`;
                 notification.textContent = message;
-                
+
                 document.body.appendChild(notification);
-                
+
                 setTimeout(() => notification.classList.remove("translate-x-full"), 100);
                 setTimeout(() => {
                     notification.classList.add("translate-x-full");
@@ -1814,15 +1814,15 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     progressText.textContent = 'Failed';
                     progressDetails.textContent = error.message;
                     progressBar.style.width = '0%';
-                    progressBar.classList.add('bg-red-600');
+                    progressBar.classList.add('bg-pm-error');
                     progressPercent.textContent = 'Error';
-                    
+
                     this.showNotification('Failed to generate thumbnails: ' + error.message, 'error');
-                    
+
                     // Hide progress after a delay
                     setTimeout(() => {
                         progressContainer.classList.add('hidden');
-                        progressBar.classList.remove('bg-red-600');
+                        progressBar.classList.remove('bg-pm-error');
                     }, 5000);
                 } finally {
                     btn.disabled = false;
@@ -2138,7 +2138,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 scanStatus.classList.add('hidden');
                 
                 if (duplicates.length === 0) {
-                    list.innerHTML = '<div class="text-center py-8 text-gray-400">No duplicate images found! 🎉</div>';
+                    list.innerHTML = '<div class="text-center py-4 text-pm-secondary">No duplicate images found! 🎉</div>';
                     content.classList.remove('hidden');
                     return;
                 }
@@ -2148,29 +2148,29 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 
                 duplicates.forEach((group, groupIndex) => {
                     const groupEl = document.createElement('div');
-                    groupEl.className = 'bg-gray-700 rounded-lg p-4 border border-gray-600';
+                    groupEl.className = 'bg-pm-surface rounded-pm-md p-4 border border-pm';
                     
                     groupEl.innerHTML = `
-                        <div class="mb-3 text-sm font-medium text-gray-300">
+                        <div class="mb-3 text-sm font-medium text-pm-secondary">
                             Duplicate Group ${groupIndex + 1} (${group.images.length} identical ${group.images[0].media_type}s)
                         </div>
-                        <div class="mb-3 p-3 bg-gray-800 rounded text-sm text-gray-300">
+                        <div class="mb-3 p-3 bg-pm-primary rounded text-sm text-pm-secondary">
                             <strong>Content Hash:</strong> ${group.hash.substring(0, 16)}...
                         </div>
                         <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
                             ${group.images.map((image, imageIndex) => `
-                                <div class="flex items-start p-3 bg-gray-800 rounded border border-gray-600 ${imageIndex === 0 ? 'border-green-500' : ''}">
+                                <div class="flex items-start p-3 bg-pm-primary rounded border border-pm ${imageIndex === 0 ? 'border-pm-success' : ''}">
                                     <div class="flex-shrink-0 mr-3">
                                         ${image.media_type === 'video' ? `
-                                            <div class="w-20 h-20 bg-gray-600 rounded flex items-center justify-center relative">
+                                            <div class="w-20 h-20 bg-pm-input rounded flex items-center justify-center relative">
                                                 ${image.thumbnail_url ? `
                                                     <img src="${image.thumbnail_url}" alt="Video thumbnail" class="w-full h-full object-cover rounded">
                                                 ` : `
-                                                    <svg class="w-8 h-8 text-gray-400" fill="currentColor" viewBox="0 0 20 20">
+                                                    <svg class="w-8 h-8 text-pm-secondary" fill="currentColor" viewBox="0 0 20 20">
                                                         <path d="M2 6a2 2 0 012-2h6l2 2h6a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z"/>
                                                     </svg>
                                                 `}
-                                                <div class="absolute bottom-0 right-0 bg-black bg-opacity-75 text-white text-xs px-1 rounded">VIDEO</div>
+                                                <div class="absolute bottom-0 right-0 bg-black/75 text-pm text-xs px-1 rounded">VIDEO</div>
                                             </div>
                                         ` : `
                                             <img src="${image.thumbnail_url || image.url}" alt="${this.escapeHtml(image.filename)}"
@@ -2179,31 +2179,31 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                                         `}
                                     </div>
                                     <div class="flex-1 min-w-0">
-                                        <div class="text-sm text-gray-300 mb-2">
+                                        <div class="text-sm text-pm-secondary mb-2">
                                             <div class="font-medium truncate" title="${this.escapeHtml(image.filename)}">${this.escapeHtml(image.filename)}</div>
-                                            <div class="text-xs text-gray-400 mt-1">
-                                                <span class="font-medium">Size:</span> ${this.formatFileSize(image.size)} • 
+                                            <div class="text-xs text-pm-secondary mt-1">
+                                                <span class="font-medium">Size:</span> ${this.formatFileSize(image.size)} •
                                                 <span class="font-medium">Modified:</span> ${new Date(image.modified_time * 1000).toLocaleDateString()}
                                             </div>
-                                            <div class="text-xs text-gray-500 mt-1 truncate" title="${image.relative_path}">
+                                            <div class="text-xs text-pm-muted mt-1 truncate" title="${image.relative_path}">
                                                 ${image.relative_path}
                                             </div>
                                         </div>
                                         <div class="flex items-center justify-between">
                                             <div class="flex items-center space-x-2">
-                                                <button class="image-preview text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded" 
+                                                <button class="image-preview text-xs bg-pm-accent hover:bg-pm-accent-hover text-pm px-2 py-1 rounded"
                                                         onclick="window.open('${image.url}', '_blank')">
                                                     View Full
                                                 </button>
                                             </div>
                                             <div class="flex items-center">
                                                 ${imageIndex === 0 ? `
-                                                    <span class="px-3 py-1 bg-green-600 text-white text-xs rounded">KEEP (Oldest)</span>
+                                                    <span class="px-3 py-1 bg-pm-success text-pm text-xs rounded">KEEP (Oldest)</span>
                                                 ` : `
                                                     <label class="flex items-center">
-                                                        <input type="checkbox" class="duplicate-checkbox" data-group="${groupIndex}" data-image-path="${image.path}" 
-                                                               class="w-4 h-4 text-red-600 bg-gray-600 border-gray-500 rounded focus:ring-red-500">
-                                                        <span class="ml-2 text-sm text-red-300">Delete</span>
+                                                        <input type="checkbox" class="duplicate-checkbox" data-group="${groupIndex}" data-image-path="${image.path}"
+                                                               class="w-4 h-4 text-pm-error bg-pm-input border-pm rounded focus:ring-pm-error">
+                                                        <span class="ml-2 text-sm text-pm-error">Delete</span>
                                                     </label>
                                                 `}
                                             </div>
@@ -2393,25 +2393,25 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
             showThumbnailGenerationPrompt(imageCount, missingCount = imageCount) {
                 const modal = document.createElement('div');
-                modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
+                modal.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-50';
                 modal.innerHTML = `
-                    <div class="bg-gray-800 rounded-xl max-w-2xl w-full mx-4 border border-gray-700">
-                        <div class="p-6">
-                            <h3 class="text-xl font-semibold text-gray-100 mb-4 flex items-center">
+                    <div class="bg-pm-surface rounded-pm-md max-w-2xl w-full mx-4 border border-pm">
+                        <div class="p-4">
+                            <h3 class="text-sm font-semibold text-pm mb-3 flex items-center">
                                 <span class="mr-2">🚀</span>
                                 Generate Thumbnails?
                             </h3>
-                            <p class="text-gray-300 mb-4">
+                            <p class="text-pm-secondary mb-4">
                                 Found ${missingCount} images without thumbnails (${imageCount} total images). Would you like to generate thumbnails for faster loading?
                             </p>
-                            <p class="text-sm text-gray-500 mb-6">
+                            <p class="text-sm text-pm-muted mb-3">
                                 💡 Thumbnails speed up gallery loading significantly. You can change this setting in Gallery Settings.
                             </p>
                             <div class="flex space-x-3">
-                                <button id="thumbnailPromptNo" class="flex-1 px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors">
+                                <button id="thumbnailPromptNo" class="flex-1 px-4 py-2 bg-pm-input hover:bg-pm-hover text-pm rounded-pm-md transition-colors">
                                     Not Now
                                 </button>
-                                <button id="thumbnailPromptYes" class="flex-1 px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-lg transition-colors">
+                                <button id="thumbnailPromptYes" class="flex-1 px-4 py-2 bg-pm-accent hover:bg-pm-accent-hover text-pm rounded-pm-md transition-colors">
                                     Generate
                                 </button>
                             </div>
@@ -2441,43 +2441,43 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
             async startThumbnailGenerationInModal(modal, imageCount, missingCount) {
                 // Transform the modal to show progress
-                const modalContent = modal.querySelector('.bg-gray-800');
+                const modalContent = modal.querySelector('.bg-pm-surface');
                 modalContent.innerHTML = `
-                    <div class="p-6">
-                        <h3 class="text-xl font-semibold text-gray-100 mb-4 flex items-center">
+                    <div class="p-4">
+                        <h3 class="text-sm font-semibold text-pm mb-3 flex items-center">
                             <span class="mr-2">🚀</span>
                             Generating Thumbnails
                         </h3>
-                        <p class="text-gray-300 mb-4">
+                        <p class="text-pm-secondary mb-4">
                             Processing ${missingCount} images out of ${imageCount} total...
                         </p>
-                        
+
                         <!-- Progress Section -->
-                        <div class="mb-6">
-                            <div class="flex items-center justify-between text-sm text-gray-400 mb-2">
+                        <div class="mb-3">
+                            <div class="flex items-center justify-between text-sm text-pm-secondary mb-2">
                                 <span id="modalProgressText">Initializing...</span>
                                 <span id="modalProgressPercent">0%</span>
                             </div>
-                            <div class="w-full bg-gray-600 rounded-full h-3">
-                                <div id="modalProgressBar" class="bg-violet-600 h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
+                            <div class="w-full bg-pm-input rounded-full h-3">
+                                <div id="modalProgressBar" class="bg-pm-accent h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
                             </div>
-                            <div class="flex items-center justify-between text-xs text-gray-500 mt-2">
+                            <div class="flex items-center justify-between text-xs text-pm-muted mt-2">
                                 <span id="modalProgressDetails">Starting thumbnail generation...</span>
-                                <span id="modalProgressETA" class="text-gray-600"></span>
+                                <span id="modalProgressETA" class="text-pm-muted"></span>
                             </div>
                         </div>
-                        
+
                         <!-- Status Messages -->
-                        <div id="modalStatusMessages" class="text-sm text-gray-400 mb-4 max-h-40 overflow-y-auto custom-scrollbar">
-                            <div class="text-violet-400">• Starting thumbnail generation...</div>
+                        <div id="modalStatusMessages" class="text-sm text-pm-secondary mb-4 max-h-40 overflow-y-auto">
+                            <div class="text-pm-accent">• Starting thumbnail generation...</div>
                         </div>
-                        
+
                         <!-- Buttons -->
                         <div class="flex space-x-3">
-                            <button id="modalCancelBtn" class="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors">
+                            <button id="modalCancelBtn" class="flex-1 px-4 py-2 bg-pm-error hover:bg-pm-error text-pm rounded-pm-md transition-colors">
                                 Cancel
                             </button>
-                            <button id="modalCloseBtn" class="flex-1 px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors hidden">
+                            <button id="modalCloseBtn" class="flex-1 px-4 py-2 bg-pm-input hover:bg-pm-hover text-pm rounded-pm-md transition-colors hidden">
                                 Close
                             </button>
                         </div>
@@ -2498,10 +2498,10 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 // Add status message helper
                 const addStatusMessage = (message, type = 'info') => {
                     const colors = {
-                        'info': 'text-gray-400',
-                        'success': 'text-green-400',
-                        'error': 'text-red-400',
-                        'warning': 'text-yellow-400'
+                        'info': 'text-pm-secondary',
+                        'success': 'text-pm-success',
+                        'error': 'text-pm-error',
+                        'warning': 'text-pm-warning'
                     };
                     const msgEl = document.createElement('div');
                     msgEl.className = colors[type] || colors.info;
@@ -2561,8 +2561,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 } catch (error) {
                     console.error('Thumbnail generation failed:', error);
                     addStatusMessage(`Generation failed: ${error.message}`, 'error');
-                    progressBar.classList.add('bg-red-600');
-                    progressBar.classList.remove('bg-violet-600');
+                    progressBar.classList.add('bg-pm-error');
+                    progressBar.classList.remove('bg-pm-accent');
                 } finally {
                     // Show close button and hide cancel
                     cancelBtn.classList.add('hidden');
@@ -2730,9 +2730,9 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         }
                         
                         addStatusMessage(errorMsg, 'error');
-                        progressBar.classList.add('bg-red-600');
-                        progressBar.classList.remove('bg-violet-600');
-                        
+                        progressBar.classList.add('bg-pm-error');
+                        progressBar.classList.remove('bg-pm-accent');
+
                         // Clean up
                         eventSource.close();
                         reject(new Error(errorMsg));
@@ -2754,8 +2754,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         }
                         
                         addStatusMessage('Connection to server lost', 'error');
-                        progressBar.classList.add('bg-red-600');
-                        progressBar.classList.remove('bg-violet-600');
+                        progressBar.classList.add('bg-pm-error');
+                        progressBar.classList.remove('bg-pm-accent');
 
                         // Clean up
                         eventSource.close();
@@ -2888,7 +2888,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 const container = document.getElementById('tagSuggestions');
                 container.innerHTML = suggestions
                     .map((tag, index) => `
-                        <div class="px-3 py-2 hover:bg-gray-600 cursor-pointer text-gray-200 text-sm suggestion-item"
+                        <div class="px-3 py-2 hover:bg-pm-hover cursor-pointer text-pm text-sm suggestion-item"
                              data-index="${index}"
                              onclick="window.gallery.selectSuggestion('${this.escapeHtml(tag)}')">
                             ${this.escapeHtml(tag)}
@@ -2907,11 +2907,11 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 const items = container.querySelectorAll('.suggestion-item');
                 if (items.length === 0) return;
 
-                const current = container.querySelector('.bg-gray-600');
+                const current = container.querySelector('.bg-pm-hover');
                 let nextIndex = 0;
 
                 if (current) {
-                    current.classList.remove('bg-gray-600');
+                    current.classList.remove('bg-pm-hover');
                     nextIndex = parseInt(current.dataset.index) + direction;
                     if (nextIndex < 0) nextIndex = items.length - 1;
                     if (nextIndex >= items.length) nextIndex = 0;
@@ -2919,7 +2919,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     nextIndex = items.length - 1;
                 }
 
-                items[nextIndex].classList.add('bg-gray-600');
+                items[nextIndex].classList.add('bg-pm-hover');
             }
 
             selectSuggestion(tag) {
@@ -2977,12 +2977,12 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 stars.forEach((star, index) => {
                     if (index < rating) {
                         star.textContent = '★';
-                        star.classList.remove('text-gray-500');
-                        star.classList.add('text-yellow-400');
+                        star.classList.remove('text-pm-muted');
+                        star.classList.add('text-pm-warning');
                     } else {
                         star.textContent = '☆';
-                        star.classList.remove('text-yellow-400');
-                        star.classList.add('text-gray-500');
+                        star.classList.remove('text-pm-warning');
+                        star.classList.add('text-pm-muted');
                     }
                 });
             }
@@ -3085,8 +3085,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 const loadedModelType = document.getElementById("loadedModelType");
                 const unloadModelBtn = document.getElementById("unloadModelBtn");
 
-                ggufStatus.innerHTML = '<span class="text-gray-400 text-sm">Checking...</span>';
-                hfStatus.innerHTML = '<span class="text-gray-400 text-sm">Checking...</span>';
+                ggufStatus.innerHTML = '<span class="text-pm-secondary text-sm">Checking...</span>';
+                hfStatus.innerHTML = '<span class="text-pm-secondary text-sm">Checking...</span>';
 
                 try {
                     const response = await fetch('/prompt_manager/autotag/models');
@@ -3095,16 +3095,16 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     if (data.success) {
                         // Update GGUF status
                         if (data.models.gguf.downloaded) {
-                            ggufStatus.innerHTML = '<span class="text-green-400 text-sm">✓ Downloaded</span>';
+                            ggufStatus.innerHTML = '<span class="text-pm-success text-sm">✓ Downloaded</span>';
                         } else {
-                            ggufStatus.innerHTML = `<button onclick="window.gallery.downloadModel('gguf')" class="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded transition-colors">Download</button>`;
+                            ggufStatus.innerHTML = `<button onclick="window.gallery.downloadModel('gguf')" class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm text-xs rounded transition-colors">Download</button>`;
                         }
 
                         // Update HF status
                         if (data.models.hf.downloaded) {
-                            hfStatus.innerHTML = '<span class="text-green-400 text-sm">✓ Downloaded</span>';
+                            hfStatus.innerHTML = '<span class="text-pm-success text-sm">✓ Downloaded</span>';
                         } else {
-                            hfStatus.innerHTML = `<button onclick="window.gallery.downloadModel('hf')" class="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded transition-colors">Download</button>`;
+                            hfStatus.innerHTML = `<button onclick="window.gallery.downloadModel('hf')" class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm text-xs rounded transition-colors">Download</button>`;
                         }
 
                         // Update model loaded status
@@ -3117,13 +3117,13 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             unloadModelBtn.classList.add('hidden');
                         }
                     } else {
-                        ggufStatus.innerHTML = '<span class="text-red-400 text-sm">Error</span>';
-                        hfStatus.innerHTML = '<span class="text-red-400 text-sm">Error</span>';
+                        ggufStatus.innerHTML = '<span class="text-pm-error text-sm">Error</span>';
+                        hfStatus.innerHTML = '<span class="text-pm-error text-sm">Error</span>';
                     }
                 } catch (error) {
                     console.error('Error checking models:', error);
-                    ggufStatus.innerHTML = '<span class="text-red-400 text-sm">Error</span>';
-                    hfStatus.innerHTML = '<span class="text-red-400 text-sm">Error</span>';
+                    ggufStatus.innerHTML = '<span class="text-pm-error text-sm">Error</span>';
+                    hfStatus.innerHTML = '<span class="text-pm-error text-sm">Error</span>';
                 }
             }
 
@@ -3340,7 +3340,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 document.getElementById('reviewCurrentIndex').textContent = this.autoTagState.reviewIndex + 1;
                 document.getElementById('reviewImage').src = image.thumbnail_url || image.url;
                 document.getElementById('reviewImageName').textContent = image.filename || 'Unknown';
-                document.getElementById('reviewTagsContainer').innerHTML = '<div class="text-gray-400">Generating tags...</div>';
+                document.getElementById('reviewTagsContainer').innerHTML = '<div class="text-pm-secondary">Generating tags...</div>';
 
                 try {
                     const response = await fetch('/prompt_manager/autotag/single', {
@@ -3360,19 +3360,19 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         this.renderReviewTags();
                     } else {
                         document.getElementById('reviewTagsContainer').innerHTML =
-                            `<div class="text-red-400">Error: ${data.error}</div>`;
+                            `<div class="text-pm-error">Error: ${data.error}</div>`;
                     }
                 } catch (error) {
                     console.error('Error generating tags:', error);
                     document.getElementById('reviewTagsContainer').innerHTML =
-                        '<div class="text-red-400">Failed to generate tags</div>';
+                        '<div class="text-pm-error">Failed to generate tags</div>';
                 }
             }
 
             renderReviewTags() {
                 const container = document.getElementById('reviewTagsContainer');
                 if (this.autoTagState.currentTags.length === 0) {
-                    container.innerHTML = '<div class="text-gray-400">No tags generated</div>';
+                    container.innerHTML = '<div class="text-pm-secondary">No tags generated</div>';
                     return;
                 }
 
@@ -3444,14 +3444,14 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             showNotification(message, type = 'info') {
                 // Simple notification - could be enhanced with a toast library
                 const colors = {
-                    success: 'bg-green-600',
-                    error: 'bg-red-600',
-                    warning: 'bg-yellow-600',
-                    info: 'bg-blue-600'
+                    success: 'bg-pm-success',
+                    error: 'bg-pm-error',
+                    warning: 'bg-pm-warning',
+                    info: 'bg-pm-accent'
                 };
 
                 const notification = document.createElement('div');
-                notification.className = `fixed bottom-4 right-4 ${colors[type]} text-white px-6 py-3 rounded-lg shadow-lg z-50 animate-fade-in`;
+                notification.className = `fixed bottom-4 right-4 ${colors[type]} text-pm px-4 py-2 rounded-pm-md shadow-pm text-sm z-50 animate-fade-in`;
                 notification.textContent = message;
                 document.body.appendChild(notification);
 
