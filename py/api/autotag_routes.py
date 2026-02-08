@@ -142,7 +142,8 @@ class AutotagRoutesMixin:
                         None, lambda: service.load_model(model_type, use_gpu)
                     )
                 except Exception as e:
-                    yield f"data: {json.dumps({'type': 'error', 'message': f'Failed to load model: {str(e)}'})}\n\n"
+                    self.logger.error(f"Failed to load model: {e}")
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'Failed to load model. Check server logs for details.'})}\n\n"
                     return
 
                 if custom_prompt:
