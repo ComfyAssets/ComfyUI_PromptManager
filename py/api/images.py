@@ -777,16 +777,18 @@ class ImageRoutesMixin:
                                 )
 
                     except Exception as e:
-                        error_msg = f"Failed to generate thumbnail for {media_file.name}: {str(e)}"
+                        self.logger.warning(
+                            f"Failed to generate thumbnail for {media_file.name}: {e}"
+                        )
+                        error_msg = f"Failed to generate thumbnail for {media_file.name}"
                         errors.append(error_msg)
-                        self.logger.warning(error_msg)
 
                         if len(errors) <= 5:
                             await send_progress(
                                 "status",
                                 {
                                     "phase": "processing",
-                                    "message": f"Error processing {media_file.name}: {str(e)}",
+                                    "message": f"Error processing {media_file.name}",
                                 },
                             )
 
