@@ -225,9 +225,9 @@
                                     <div class="text-xs">Failed to load</div>
                                 </div>
                             </div>
-                            <div class="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-opacity duration-300 flex items-center justify-center">
+                            <div class="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-opacity duration-300 flex items-center justify-center">
                                 ${isVideo ? `
-                                    <div class="w-12 h-12 bg-black bg-opacity-60 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                                    <div class="w-12 h-12 bg-black/60 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                                         <svg class="w-6 h-6 text-pm ml-1" fill="currentColor" viewBox="0 0 24 24">
                                             <path d="M8 5v14l11-7z"/>
                                         </svg>
@@ -495,15 +495,15 @@
                     <!-- Image area with navigation -->
                     <div class="flex-1 flex items-center justify-center relative">
                         <!-- Navigation arrows -->
-                        <button class="absolute left-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-pm text-xl z-10" id="prevImageBtn">
+                        <button class="absolute left-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-pm text-xl z-10" id="prevImageBtn">
                             ‹
                         </button>
-                        <button class="absolute right-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-pm text-xl z-10" id="nextImageBtn">
+                        <button class="absolute right-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-pm text-xl z-10" id="nextImageBtn">
                             ›
                         </button>
                         
                         <!-- Close button -->
-                        <button class="absolute top-4 right-4 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-pm text-xl z-10" onclick="this.parentElement.parentElement.remove()">
+                        <button class="absolute top-4 right-4 w-10 h-10 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-pm text-xl z-10" onclick="this.parentElement.parentElement.remove()">
                             ×
                         </button>
                         
@@ -579,24 +579,24 @@
                     <!-- Video area with navigation -->
                     <div class="flex-1 flex items-center justify-center relative">
                         <!-- Navigation arrows -->
-                        <button class="absolute left-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-pm text-xl z-10" id="prevVideoBtn">
+                        <button class="absolute left-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-pm text-xl z-10" id="prevVideoBtn">
                             ‹
                         </button>
-                        <button class="absolute right-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-pm text-xl z-10" id="nextVideoBtn">
+                        <button class="absolute right-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-pm text-xl z-10" id="nextVideoBtn">
                             ›
                         </button>
                         
                         <!-- Close button -->
-                        <button class="absolute top-4 right-4 w-10 h-10 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full flex items-center justify-center text-pm text-xl z-10" onclick="this.parentElement.parentElement.remove()">
+                        <button class="absolute top-4 right-4 w-10 h-10 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-pm text-xl z-10" onclick="this.parentElement.parentElement.remove()">
                             ×
                         </button>
                         
                         <!-- Video controls -->
                         <div class="absolute bottom-4 right-4 flex space-x-2 z-10">
-                            <button id="videoMuteBtn" class="px-3 py-2 bg-black bg-opacity-50 hover:bg-opacity-70 rounded text-pm text-sm">
+                            <button id="videoMuteBtn" class="px-3 py-2 bg-black/50 hover:bg-black/70 rounded text-pm text-sm">
                                 🔊
                             </button>
-                            <button id="videoLoopBtn" class="px-3 py-2 bg-black bg-opacity-50 hover:bg-opacity-70 rounded text-pm text-sm">
+                            <button id="videoLoopBtn" class="px-3 py-2 bg-black/50 hover:bg-black/70 rounded text-pm text-sm">
                                 🔁
                             </button>
                         </div>
@@ -2170,7 +2170,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                                                         <path d="M2 6a2 2 0 012-2h6l2 2h6a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z"/>
                                                     </svg>
                                                 `}
-                                                <div class="absolute bottom-0 right-0 bg-black bg-opacity-75 text-pm text-xs px-1 rounded">VIDEO</div>
+                                                <div class="absolute bottom-0 right-0 bg-black/75 text-pm text-xs px-1 rounded">VIDEO</div>
                                             </div>
                                         ` : `
                                             <img src="${image.thumbnail_url || image.url}" alt="${this.escapeHtml(image.filename)}"
@@ -2393,7 +2393,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
             showThumbnailGenerationPrompt(imageCount, missingCount = imageCount) {
                 const modal = document.createElement('div');
-                modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
+                modal.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-50';
                 modal.innerHTML = `
                     <div class="bg-pm-surface rounded-pm-md max-w-2xl w-full mx-4 border border-pm">
                         <div class="p-4">

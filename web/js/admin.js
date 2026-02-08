@@ -1103,7 +1103,7 @@
                                  data-original="/prompt_manager/images/${image.id}/file"
                                  data-caption="Generated: ${new Date(image.generation_time).toLocaleDateString()} ${new Date(image.generation_time).toLocaleTimeString()} | ${image.width && image.height ? `${image.width}×${image.height}` : 'Unknown size'}${image.file_size ? ` | ${this.formatFileSize(image.file_size)}` : ''}"
                                  onerror="this.parentElement.innerHTML='<div class=\\'flex items-center justify-center h-full text-pm-secondary\\'>⚠️ Image not found</div>'">
-                            <div class="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-opacity duration-300 flex items-center justify-center pointer-events-none">
+                            <div class="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-opacity duration-300 flex items-center justify-center pointer-events-none">
                                 <svg class="w-8 h-8 text-pm opacity-0 group-hover:opacity-100 transition-opacity duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                                 </svg>
@@ -1689,7 +1689,7 @@
             showCopyFallbackModal(text) {
                 // Create a temporary modal for manual copy
                 const modal = document.createElement('div');
-                modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
+                modal.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-50';
                 modal.innerHTML = `
                     <div class="bg-pm-surface rounded-pm-md p-4 max-w-2xl w-full mx-4 border border-pm">
                         <h3 class="text-sm font-semibold text-pm mb-3">Copy Prompt Text</h3>
