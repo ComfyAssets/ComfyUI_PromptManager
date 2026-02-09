@@ -448,8 +448,15 @@ class PromptManagerAPI(
     def _find_comfyui_output_dir(self):
         """Locate the ComfyUI output directory using multiple detection strategies.
 
-        Results are cached after first successful lookup since the output
-        directory does not change during runtime.
+        Checks in order:
+        1. User-configured directory (GalleryConfig.MONITORING_DIRECTORIES)
+        2. Upward filesystem search for ComfyUI markers
+        3. Common installation path patterns
+        4. Common ComfyUI installation locations
+
+        Results are cached after first successful lookup. The cache is
+        invalidated when the user changes the configured directory via
+        save_settings().
 
         Returns:
             str or None: Absolute path to ComfyUI output directory, or None
@@ -457,6 +464,25 @@ class PromptManagerAPI(
         """
         if self._cached_output_dir is not None:
             return self._cached_output_dir
+
+        # Method 0: Check user-configured directory first
+        try:
+            from ..config import GalleryConfig
+
+            if GalleryConfig.MONITORING_DIRECTORIES:
+                configured_dir = Path(GalleryConfig.MONITORING_DIRECTORIES[0]).resolve()
+                if configured_dir.exists() and configured_dir.is_dir():
+                    self.logger.info(
+                        f"Using configured monitoring directory: {configured_dir}"
+                    )
+                    self._cached_output_dir = str(configured_dir)
+                    return self._cached_output_dir
+                else:
+                    self.logger.warning(
+                        f"Configured directory does not exist: {GalleryConfig.MONITORING_DIRECTORIES[0]}"
+                    )
+        except ImportError:
+            pass
 
         current_file = Path(__file__).resolve()
         self.logger.debug(f"Starting ComfyUI output search from: {current_file}")

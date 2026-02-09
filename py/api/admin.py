@@ -448,6 +448,8 @@ class AdminRoutesMixin:
                         GalleryConfig.MONITORING_DIRECTORIES = [new_path]
                     else:
                         GalleryConfig.MONITORING_DIRECTORIES = []
+                    # Invalidate cached output dir so next lookup uses new config
+                    self._cached_output_dir = None
                     restart_required = True
 
             # Save to config file for persistence
