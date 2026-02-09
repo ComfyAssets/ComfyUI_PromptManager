@@ -482,7 +482,9 @@ class PromptManagerAPI(
                         f"Configured directory does not exist: {GalleryConfig.MONITORING_DIRECTORIES[0]}"
                     )
         except ImportError:
-            pass
+            self.logger.debug(
+                "GalleryConfig not available, skipping configured directory check"
+            )
 
         current_file = Path(__file__).resolve()
         self.logger.debug(f"Starting ComfyUI output search from: {current_file}")
