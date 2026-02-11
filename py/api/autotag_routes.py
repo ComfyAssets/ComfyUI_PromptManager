@@ -127,10 +127,19 @@ class AutotagRoutesMixin:
         # WD14 threshold params
         general_threshold = request.query.get("general_threshold")
         character_threshold = request.query.get("character_threshold")
-        if general_threshold is not None:
-            general_threshold = float(general_threshold)
-        if character_threshold is not None:
-            character_threshold = float(character_threshold)
+        try:
+            if general_threshold is not None:
+                general_threshold = float(general_threshold)
+            if character_threshold is not None:
+                character_threshold = float(character_threshold)
+        except (ValueError, TypeError):
+            return web.json_response(
+                {
+                    "success": False,
+                    "error": "general_threshold and character_threshold must be numeric",
+                },
+                status=400,
+            )
 
         async def stream_response():
             try:
@@ -327,10 +336,19 @@ class AutotagRoutesMixin:
             use_gpu = data.get("use_gpu", True)
             general_threshold = data.get("general_threshold")
             character_threshold = data.get("character_threshold")
-            if general_threshold is not None:
-                general_threshold = float(general_threshold)
-            if character_threshold is not None:
-                character_threshold = float(character_threshold)
+            try:
+                if general_threshold is not None:
+                    general_threshold = float(general_threshold)
+                if character_threshold is not None:
+                    character_threshold = float(character_threshold)
+            except (ValueError, TypeError):
+                return web.json_response(
+                    {
+                        "success": False,
+                        "error": "general_threshold and character_threshold must be numeric",
+                    },
+                    status=400,
+                )
 
             if not image_path:
                 return web.json_response(
