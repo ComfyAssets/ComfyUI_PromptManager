@@ -452,6 +452,30 @@
                             <span class="text-pm-secondary text-xs">Checking...</span>
                         </div>
                     </label>
+                    <label class="flex items-center justify-between p-3 bg-pm-input rounded-pm-sm cursor-pointer hover:bg-pm-hover border border-pm">
+                        <div class="flex items-center">
+                            <input type="radio" name="autoTagModel" value="wd14-swinv2" class="w-4 h-4 text-pm-accent bg-pm-input border-pm focus:ring-pm-accent">
+                            <div class="ml-3">
+                                <span class="text-pm text-xs font-medium">WD14 SwinV2</span>
+                                <span class="text-pm-secondary text-xs ml-2">(~400MB, fast classifier)</span>
+                            </div>
+                        </div>
+                        <div id="wd14SwinV2ModelStatus" class="flex items-center gap-2">
+                            <span class="text-pm-secondary text-xs">Checking...</span>
+                        </div>
+                    </label>
+                    <label class="flex items-center justify-between p-3 bg-pm-input rounded-pm-sm cursor-pointer hover:bg-pm-hover border border-pm">
+                        <div class="flex items-center">
+                            <input type="radio" name="autoTagModel" value="wd14-vit" class="w-4 h-4 text-pm-accent bg-pm-input border-pm focus:ring-pm-accent">
+                            <div class="ml-3">
+                                <span class="text-pm text-xs font-medium">WD14 ViT</span>
+                                <span class="text-pm-secondary text-xs ml-2">(~400MB, ViT architecture)</span>
+                            </div>
+                        </div>
+                        <div id="wd14VitModelStatus" class="flex items-center gap-2">
+                            <span class="text-pm-secondary text-xs">Checking...</span>
+                        </div>
+                    </label>
                 </div>
             </div>
 
@@ -474,8 +498,8 @@
                 </p>
             </div>
 
-            <!-- Prompt Template -->
-            <div class="mb-3">
+            <!-- Prompt Template (LLM models only) -->
+            <div id="promptSection" class="mb-3">
                 <label class="block text-xs font-medium text-pm-secondary mb-2">Tag Generation Prompt</label>
                 <textarea id="autoTagPrompt" rows="6"
                     class="w-full px-3 py-2 bg-pm-input border border-pm rounded-pm-sm focus:ring-2 focus:ring-pm-accent focus:border-pm-accent text-pm text-xs font-mono resize-none"
@@ -483,6 +507,29 @@
 Include: subject_count (1girl/1boy/etc), gender, ethnicity (asian, caucasian, etc), age_approx (teen, young_woman), body_attributes, face_features, hairstyle, appearance, clothing, accessories, pose, expression, action, camera_angle, camera_shot, scene_composition (wide_shot, long_shot, dutch_angle), environment, background_elements, lighting, mood.
 Prioritize visual accuracy.
 No sentences, no commentary, no captions. Only tags. Keep length short but descriptive.</textarea>
+            </div>
+
+            <!-- WD14 Threshold Controls -->
+            <div id="wd14ThresholdSection" class="mb-3 hidden">
+                <label class="block text-xs font-medium text-pm-secondary mb-2">Tag Confidence Thresholds</label>
+                <div class="space-y-3">
+                    <div class="p-2.5 bg-pm-input rounded-pm-sm border border-pm">
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="text-pm text-xs">General tags</span>
+                            <span id="wd14GeneralThresholdValue" class="text-pm-accent text-xs font-mono">0.35</span>
+                        </div>
+                        <input type="range" id="wd14GeneralThreshold" min="0" max="1" step="0.05" value="0.35"
+                            class="w-full h-1.5 bg-pm-primary rounded-lg appearance-none cursor-pointer accent-[var(--pm-accent)]">
+                    </div>
+                    <div class="p-2.5 bg-pm-input rounded-pm-sm border border-pm">
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="text-pm text-xs">Character tags</span>
+                            <span id="wd14CharacterThresholdValue" class="text-pm-accent text-xs font-mono">0.85</span>
+                        </div>
+                        <input type="range" id="wd14CharacterThreshold" min="0" max="1" step="0.05" value="0.85"
+                            class="w-full h-1.5 bg-pm-primary rounded-lg appearance-none cursor-pointer accent-[var(--pm-accent)]">
+                    </div>
+                </div>
             </div>
 
             <!-- Action Buttons -->

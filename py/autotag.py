@@ -50,6 +50,24 @@ MODELS = {
         "repo": "fancyfeast/llama-joycaption-beta-one-hf-llava",
         "subdir": "llama-joycaption-beta-one-hf-llava",
     },
+    "wd14-swinv2": {
+        "name": "WD14 SwinV2",
+        "description": "Fast classifier tagger, ~400MB, no prompt needed",
+        "size": "~400MB",
+        "repo": "SmilingWolf/wd-swinv2-tagger-v3",
+        "files": ["model.onnx", "selected_tags.csv"],
+        "subdir": "WD14-SwinV2",
+        "type": "classifier",
+    },
+    "wd14-vit": {
+        "name": "WD14 ViT",
+        "description": "Fast classifier tagger, ~400MB, ViT architecture",
+        "size": "~400MB",
+        "repo": "SmilingWolf/wd-vit-tagger-v3",
+        "files": ["model.onnx", "selected_tags.csv"],
+        "subdir": "WD14-ViT",
+        "type": "classifier",
+    },
 }
 
 # Default prompts
@@ -112,6 +130,10 @@ class AutoTagService:
         self._current_model_type: Optional[str] = None
         self._custom_prompt: str = DEFAULT_PROMPT
 
+        # WD14 threshold defaults
+        self._wd14_general_threshold: float = 0.35
+        self._wd14_character_threshold: float = 0.85
+
     @property
     def models_config(self) -> Dict[str, Dict[str, Any]]:
         """Get the models configuration dictionary."""
@@ -131,6 +153,22 @@ class AutoTagService:
     def custom_prompt(self, value: str):
         """Set a custom prompt for tag generation."""
         self._custom_prompt = value
+
+    @property
+    def wd14_general_threshold(self) -> float:
+        return self._wd14_general_threshold
+
+    @wd14_general_threshold.setter
+    def wd14_general_threshold(self, value: float):
+        self._wd14_general_threshold = max(0.0, min(1.0, value))
+
+    @property
+    def wd14_character_threshold(self) -> float:
+        return self._wd14_character_threshold
+
+    @wd14_character_threshold.setter
+    def wd14_character_threshold(self, value: float):
+        self._wd14_character_threshold = max(0.0, min(1.0, value))
 
     def get_models_status(self) -> Dict[str, Dict[str, Any]]:
         """Get availability status for all model types.
@@ -169,6 +207,12 @@ class AutoTagService:
                 if model_status["downloaded"]:
                     model_status["model_path"] = str(
                         self.models_dir / config["subdir"] / config["filename"]
+                    )
+            elif model_type.startswith("wd14"):
+                model_status["downloaded"] = self._check_wd14_model(model_type)
+                if model_status["downloaded"]:
+                    model_status["model_path"] = str(
+                        self.models_dir / config["subdir"] / "model.onnx"
                     )
             else:  # hf
                 model_status["downloaded"] = self._check_hf_model()
@@ -269,6 +313,140 @@ class AutoTagService:
 
         return None
 
+    def _check_wd14_model(self, model_type: str) -> bool:
+        """Check if WD14 model files exist."""
+        config = MODELS[model_type]
+        model_dir = self.models_dir / config["subdir"]
+        return all((model_dir / f).exists() for f in config["files"])
+
+    def _download_wd14_model(
+        self,
+        model_type: str,
+        progress_callback: Optional[Callable[[str, float], None]] = None,
+    ) -> bool:
+        """Download WD14 model files from HuggingFace."""
+        from huggingface_hub import hf_hub_download
+
+        config = MODELS[model_type]
+        model_dir = self.models_dir / config["subdir"]
+        model_dir.mkdir(parents=True, exist_ok=True)
+
+        files = config["files"]
+        for i, filename in enumerate(files):
+            file_path = model_dir / filename
+            if not file_path.exists():
+                progress = int((i / len(files)) * 80) + 10
+                if progress_callback:
+                    progress_callback(f"Downloading {filename}...", progress)
+
+                self.logger.info(f"Downloading WD14 file: {filename}")
+                hf_hub_download(
+                    repo_id=config["repo"],
+                    filename=filename,
+                    local_dir=str(model_dir),
+                    local_dir_use_symlinks=False,
+                )
+
+        if progress_callback:
+            progress_callback("Download complete", 100)
+        return True
+
+    def _load_wd14_tagger(self, model_type: str, use_gpu: bool = True):
+        """Load WD14 ONNX model and tag list."""
+        try:
+            import onnxruntime as ort
+        except ImportError:
+            raise RuntimeError(
+                "onnxruntime is required for WD14 models. "
+                "Install with: pip install onnxruntime (or onnxruntime-gpu for CUDA)"
+            )
+        import csv
+
+        config = MODELS[model_type]
+        model_dir = self.models_dir / config["subdir"]
+        model_path = model_dir / "model.onnx"
+        tags_path = model_dir / "selected_tags.csv"
+
+        self.logger.info(f"Loading WD14 model from {model_dir}...")
+
+        # Set up ONNX session
+        providers = []
+        if use_gpu:
+            providers.append("CUDAExecutionProvider")
+        providers.append("CPUExecutionProvider")
+
+        session = ort.InferenceSession(str(model_path), providers=providers)
+
+        # Read tag list from CSV
+        tags_list = []
+        with open(tags_path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                tags_list.append(row)
+
+        self.logger.info(
+            f"WD14 model loaded ({len(tags_list)} tags, "
+            f"provider: {session.get_providers()[0]})"
+        )
+        return ("wd14", (session, tags_list))
+
+    def _generate_wd14(
+        self,
+        session,
+        tags_list: List[Dict[str, str]],
+        image: Image.Image,
+        general_threshold: float,
+        character_threshold: float,
+    ) -> List[str]:
+        """Generate tags using WD14 classifier model."""
+        import numpy as np
+
+        # Get model input dimensions
+        input_shape = session.get_inputs()[0].shape
+        target_size = input_shape[2]  # e.g. 448
+
+        # Pad to square with white background
+        max_dim = max(image.size)
+        padded = Image.new("RGB", (max_dim, max_dim), (255, 255, 255))
+        padded.paste(
+            image, ((max_dim - image.width) // 2, (max_dim - image.height) // 2)
+        )
+
+        # Resize to model input size
+        padded = padded.resize((target_size, target_size), Image.Resampling.BILINEAR)
+
+        # Convert to numpy: RGB -> BGR, float32, add batch dim
+        img_array = np.array(padded, dtype=np.float32)
+        img_array = img_array[:, :, ::-1]  # RGB to BGR
+        img_array = np.expand_dims(img_array, axis=0)
+
+        # Run inference
+        input_name = session.get_inputs()[0].name
+        output = session.run(None, {input_name: img_array})
+        probabilities = output[0][0]  # First output, first batch
+
+        # Filter tags by category and threshold
+        result_tags = []
+        for i, tag_info in enumerate(tags_list):
+            if i >= len(probabilities):
+                break
+            prob = float(probabilities[i])
+            category = tag_info.get("category", "0")
+            tag_name = tag_info.get("name", "").strip()
+
+            if not tag_name:
+                continue
+
+            # Category 0 = general, 4 = character, 9 = rating
+            if category == "0" and prob >= general_threshold:
+                result_tags.append((tag_name, prob))
+            elif category == "4" and prob >= character_threshold:
+                result_tags.append((tag_name, prob))
+
+        # Sort by confidence descending
+        result_tags.sort(key=lambda x: x[1], reverse=True)
+        return [tag for tag, _ in result_tags]
+
     def download_model(
         self,
         model_type: str,
@@ -288,7 +466,7 @@ class AutoTagService:
         """
         if model_type not in MODELS:
             raise ValueError(
-                f"Invalid model type: {model_type}. Must be 'gguf' or 'hf'"
+                f"Invalid model type: {model_type}. Must be one of: {', '.join(MODELS.keys())}"
             )
 
         try:
@@ -302,6 +480,8 @@ class AutoTagService:
         try:
             if model_type == "gguf":
                 return self._download_gguf_models(progress_callback)
+            elif model_type.startswith("wd14"):
+                return self._download_wd14_model(model_type, progress_callback)
             else:
                 return self._download_hf_model(progress_callback)
         except Exception as e:
@@ -413,6 +593,8 @@ class AutoTagService:
         try:
             if model_type == "gguf":
                 self._tagger = self._load_gguf_tagger(use_gpu)
+            elif model_type.startswith("wd14"):
+                self._tagger = self._load_wd14_tagger(model_type, use_gpu)
             else:
                 self._tagger = self._load_hf_tagger()
 
@@ -527,12 +709,20 @@ class AutoTagService:
         """Get the type of currently loaded model."""
         return self._current_model_type
 
-    def generate_tags(self, image_path: str, prompt: Optional[str] = None) -> List[str]:
+    def generate_tags(
+        self,
+        image_path: str,
+        prompt: Optional[str] = None,
+        general_threshold: Optional[float] = None,
+        character_threshold: Optional[float] = None,
+    ) -> List[str]:
         """Generate tags for an image.
 
         Args:
             image_path: Path to the image file
-            prompt: Custom prompt for tag generation. Uses default if None.
+            prompt: Custom prompt for tag generation (LLM models only). Uses default if None.
+            general_threshold: Confidence threshold for general tags (WD14 only).
+            character_threshold: Confidence threshold for character tags (WD14 only).
 
         Returns:
             List of generated tags
@@ -559,15 +749,28 @@ class AutoTagService:
 
         if model_type == "gguf":
             raw_tags = self._generate_gguf(tagger_obj, image, use_prompt)
+            return self._parse_tags(raw_tags)
+        elif model_type == "wd14":
+            session, tags_list = tagger_obj
+            gen_thresh = (
+                general_threshold
+                if general_threshold is not None
+                else self._wd14_general_threshold
+            )
+            char_thresh = (
+                character_threshold
+                if character_threshold is not None
+                else self._wd14_character_threshold
+            )
+            return self._generate_wd14(
+                session, tags_list, image, gen_thresh, char_thresh
+            )
         else:
             model, processor, device, compute_dtype = tagger_obj
             raw_tags = self._generate_hf(
                 model, processor, device, compute_dtype, image, use_prompt
             )
-
-        # Parse tags from response
-        tags = self._parse_tags(raw_tags)
-        return tags
+            return self._parse_tags(raw_tags)
 
     def _generate_gguf(self, model, image: Image.Image, prompt: str) -> str:
         """Generate tags using GGUF model."""
@@ -670,6 +873,8 @@ class AutoTagService:
             "meta:",
             "photo_",
             "photo:",
+            "prepend:",
+            "append:",
         )
 
         # Split by common delimiters

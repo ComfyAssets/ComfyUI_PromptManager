@@ -68,6 +68,23 @@
                 document.getElementById('cancelDownloadBtn').addEventListener('click', () => this.cancelDownload());
                 document.getElementById('unloadModelBtn').addEventListener('click', () => this.unloadModel());
 
+                // WD14 model selection toggle (prompt vs thresholds)
+                document.querySelectorAll('input[name="autoTagModel"]').forEach(radio => {
+                    radio.addEventListener('change', (e) => {
+                        const isWd14 = e.target.value.startsWith('wd14');
+                        document.getElementById('promptSection').classList.toggle('hidden', isWd14);
+                        document.getElementById('wd14ThresholdSection').classList.toggle('hidden', !isWd14);
+                    });
+                });
+
+                // WD14 threshold slider value display
+                document.getElementById('wd14GeneralThreshold').addEventListener('input', (e) => {
+                    document.getElementById('wd14GeneralThresholdValue').textContent = parseFloat(e.target.value).toFixed(2);
+                });
+                document.getElementById('wd14CharacterThreshold').addEventListener('input', (e) => {
+                    document.getElementById('wd14CharacterThresholdValue').textContent = parseFloat(e.target.value).toFixed(2);
+                });
+
                 // Add Prompt modal event listeners
                 document.getElementById('saveNewPromptBtn').addEventListener('click', () => this.saveNewPrompt());
                 document.getElementById('addPromptTagInput').addEventListener('input', (e) => this.handleTagInput(e));
@@ -3078,34 +3095,46 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 await this.checkAutoTagModels();
             }
 
+            // _setModelStatus uses innerHTML with hardcoded model keys (not user input)
+            // to render download buttons or status indicators for known model types
+            _setModelStatus(el, downloaded, modelKey) {
+                if (downloaded) {
+                    el.textContent = '';
+                    const span = document.createElement('span');
+                    span.className = 'text-pm-success text-sm';
+                    span.textContent = '\u2713 Downloaded';
+                    el.appendChild(span);
+                } else {
+                    el.textContent = '';
+                    const btn = document.createElement('button');
+                    btn.className = 'px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm text-xs rounded transition-colors';
+                    btn.textContent = 'Download';
+                    btn.addEventListener('click', () => window.gallery.downloadModel(modelKey));
+                    el.appendChild(btn);
+                }
+            }
+
             async checkAutoTagModels() {
                 const ggufStatus = document.getElementById("ggufModelStatus");
                 const hfStatus = document.getElementById("hfModelStatus");
+                const wd14SwinV2Status = document.getElementById("wd14SwinV2ModelStatus");
+                const wd14VitStatus = document.getElementById("wd14VitModelStatus");
                 const modelLoadedStatus = document.getElementById("modelLoadedStatus");
                 const loadedModelType = document.getElementById("loadedModelType");
                 const unloadModelBtn = document.getElementById("unloadModelBtn");
 
-                ggufStatus.innerHTML = '<span class="text-pm-secondary text-sm">Checking...</span>';
-                hfStatus.innerHTML = '<span class="text-pm-secondary text-sm">Checking...</span>';
+                const statusEls = [ggufStatus, hfStatus, wd14SwinV2Status, wd14VitStatus];
+                statusEls.forEach(el => { el.textContent = 'Checking...'; });
 
                 try {
                     const response = await fetch('/prompt_manager/autotag/models');
                     const data = await response.json();
 
                     if (data.success) {
-                        // Update GGUF status
-                        if (data.models.gguf.downloaded) {
-                            ggufStatus.innerHTML = '<span class="text-pm-success text-sm">✓ Downloaded</span>';
-                        } else {
-                            ggufStatus.innerHTML = `<button onclick="window.gallery.downloadModel('gguf')" class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm text-xs rounded transition-colors">Download</button>`;
-                        }
-
-                        // Update HF status
-                        if (data.models.hf.downloaded) {
-                            hfStatus.innerHTML = '<span class="text-pm-success text-sm">✓ Downloaded</span>';
-                        } else {
-                            hfStatus.innerHTML = `<button onclick="window.gallery.downloadModel('hf')" class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm text-xs rounded transition-colors">Download</button>`;
-                        }
+                        this._setModelStatus(ggufStatus, data.models.gguf.downloaded, 'gguf');
+                        this._setModelStatus(hfStatus, data.models.hf.downloaded, 'hf');
+                        this._setModelStatus(wd14SwinV2Status, data.models['wd14-swinv2']?.downloaded, 'wd14-swinv2');
+                        this._setModelStatus(wd14VitStatus, data.models['wd14-vit']?.downloaded, 'wd14-vit');
 
                         // Update model loaded status
                         if (data.model_loaded && data.loaded_model_type) {
@@ -3116,19 +3145,35 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             modelLoadedStatus.classList.add('hidden');
                             unloadModelBtn.classList.add('hidden');
                         }
+
+                        // Update WD14 threshold defaults from server
+                        if (data.wd14_general_threshold !== undefined) {
+                            const genSlider = document.getElementById('wd14GeneralThreshold');
+                            genSlider.value = data.wd14_general_threshold;
+                            document.getElementById('wd14GeneralThresholdValue').textContent = parseFloat(data.wd14_general_threshold).toFixed(2);
+                        }
+                        if (data.wd14_character_threshold !== undefined) {
+                            const charSlider = document.getElementById('wd14CharacterThreshold');
+                            charSlider.value = data.wd14_character_threshold;
+                            document.getElementById('wd14CharacterThresholdValue').textContent = parseFloat(data.wd14_character_threshold).toFixed(2);
+                        }
                     } else {
-                        ggufStatus.innerHTML = '<span class="text-pm-error text-sm">Error</span>';
-                        hfStatus.innerHTML = '<span class="text-pm-error text-sm">Error</span>';
+                        statusEls.forEach(el => { el.textContent = 'Error'; });
                     }
                 } catch (error) {
                     console.error('Error checking models:', error);
-                    ggufStatus.innerHTML = '<span class="text-pm-error text-sm">Error</span>';
-                    hfStatus.innerHTML = '<span class="text-pm-error text-sm">Error</span>';
+                    statusEls.forEach(el => { el.textContent = 'Error'; });
                 }
             }
 
             async downloadModel(modelType) {
-                const modelName = modelType === 'gguf' ? 'GGUF Model' : 'HuggingFace Model';
+                const modelNames = {
+                    'gguf': 'GGUF Model',
+                    'hf': 'HuggingFace Model',
+                    'wd14-swinv2': 'WD14 SwinV2',
+                    'wd14-vit': 'WD14 ViT'
+                };
+                const modelName = modelNames[modelType] || modelType;
                 document.getElementById('downloadModelName').textContent = modelName;
                 document.getElementById('downloadStatus').textContent = 'Preparing...';
                 document.getElementById('downloadProgressPercent').textContent = '0%';
@@ -3241,8 +3286,14 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 try {
                     const formData = new URLSearchParams();
                     formData.append('model_type', modelType);
-                    formData.append('prompt', prompt);
                     formData.append('keep_in_memory', keepInMemory);
+
+                    if (modelType.startsWith('wd14')) {
+                        formData.append('general_threshold', document.getElementById('wd14GeneralThreshold').value);
+                        formData.append('character_threshold', document.getElementById('wd14CharacterThreshold').value);
+                    } else {
+                        formData.append('prompt', prompt);
+                    }
 
                     this.autoTagState.eventSource = new EventSource(`/prompt_manager/autotag/start?${formData.toString()}`);
 
@@ -3321,6 +3372,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 this.autoTagState.reviewIndex = 0;
                 this.autoTagState.modelType = modelType;
                 this.autoTagState.prompt = document.getElementById('autoTagPrompt').value;
+                this.autoTagState.generalThreshold = parseFloat(document.getElementById('wd14GeneralThreshold').value);
+                this.autoTagState.characterThreshold = parseFloat(document.getElementById('wd14CharacterThreshold').value);
 
                 document.getElementById('reviewTotalCount').textContent = this.images.length;
 
@@ -3343,14 +3396,21 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 document.getElementById('reviewTagsContainer').innerHTML = '<div class="text-pm-secondary">Generating tags...</div>';
 
                 try {
+                    const requestBody = {
+                        image_path: image.path,
+                        model_type: this.autoTagState.modelType,
+                    };
+                    if (this.autoTagState.modelType.startsWith('wd14')) {
+                        requestBody.general_threshold = this.autoTagState.generalThreshold;
+                        requestBody.character_threshold = this.autoTagState.characterThreshold;
+                    } else {
+                        requestBody.prompt = this.autoTagState.prompt;
+                    }
+
                     const response = await fetch('/prompt_manager/autotag/single', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            image_path: image.path,
-                            model_type: this.autoTagState.modelType,
-                            prompt: this.autoTagState.prompt
-                        })
+                        body: JSON.stringify(requestBody)
                     });
 
                     const data = await response.json();
