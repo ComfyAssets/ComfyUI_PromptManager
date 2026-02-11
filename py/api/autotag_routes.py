@@ -216,7 +216,9 @@ class AutotagRoutesMixin:
                         real_tags = [
                             t
                             for t in prompt_tags
-                            if t != "auto-scanned" and not t.startswith("prepend:")
+                            if t != "auto-scanned"
+                            and not t.startswith("prepend:")
+                            and not t.startswith("append:")
                         ]
                         if real_tags:
                             tagged_prompt_ids.add(prompt_id)

@@ -830,6 +830,20 @@ MIT License - see LICENSE file for details.
 
 ## Changelog
 
+### v3.1.0 (WD14 Tagger, Tailwind v4 & Major Refactors)
+
+- **🏷️ WD14 Tagger Support**: Added WD14 SwinV2 and WD14 ViT as new auto-tag model options — fast ONNX-based classifiers (~400MB) that output Danbooru tags with confidence scores, no prompt needed
+- **🎚️ Threshold Controls**: Adjustable general tag (default 0.35) and character tag (default 0.85) confidence thresholds for WD14 models via UI sliders
+- **🎨 Tailwind v4 Migration**: Complete frontend redesign with ComfyUI theme token system (`--pm-*` design tokens) that adapts to ComfyUI's color palette
+- **🏗️ API Refactor**: Split monolithic `api.py` into domain-specific route modules for better maintainability
+- **🗃️ Junction Table Tags**: Migrated tag storage from JSON column to normalized junction tables with proper foreign keys
+- **📄 Tags Page**: Dedicated tag management page with search, rename, merge, and delete operations
+- **🔍 Load More Button**: Progressive prompt loading instead of traditional pagination
+- **🔒 Security Hardening**: Resolved 15 GitHub code scanning alerts, prevented stack trace exposure in SSE errors
+- **🧪 Test Coverage**: Added comprehensive unit tests for validators, hashing, metadata, config, and prompt tracker; API integration tests; database tests with CI pipeline
+- **⚙️ CI/CD Improvements**: Added code quality scanning, security scanning, Dependabot, and pre-commit hooks with Black formatting
+- **🐛 Bug Fixes**: Fixed custom image scan directory config (#108), gallery crash on thumbnail linking, broken imports after API refactor, widget value sync issues, and prepend/append metadata tag filtering in auto-tagger
+
 ### v3.0.26 (Top Bar Button)
 
 - **🔘 Top Bar PM Button**: Added a "PM" button to the ComfyUI top bar for quick access to the admin dashboard

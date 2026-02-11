@@ -539,9 +539,9 @@
                                     <div class="tags-accordion" data-prompt-id="${prompt.id}">
                                         <div class="flex flex-wrap items-center gap-2">
                                             ${tags.slice(0, 10).map(tag => `
-                                                <span class="inline-flex items-center space-x-1 bg-pm-accent-tint text-pm-accent px-3 py-1 rounded-full text-sm border border-pm-accent">
+                                                <span class="inline-flex items-center space-x-1 bg-pm-input text-pm px-3 py-1 rounded-full text-sm border border-pm">
                                                     <span>${this.escapeHtml(tag)}</span>
-                                                    <button class="remove-tag-btn text-pm-accent hover:text-pm-accent ml-1" data-prompt-id="${prompt.id}" data-tag="${this.escapeHtml(tag)}">&times;</button>
+                                                    <button class="remove-tag-btn text-pm-secondary hover:text-pm ml-1" data-prompt-id="${prompt.id}" data-tag="${this.escapeHtml(tag)}">&times;</button>
                                                 </span>
                                             `).join("")}
                                             <button class="inline-flex items-center space-x-1 bg-pm-input hover:bg-pm-hover text-pm-secondary px-3 py-1 rounded-full text-sm transition-colors" onclick="window.admin.addTag(${prompt.id})">
@@ -553,9 +553,9 @@
                                             <div class="tags-hidden hidden mt-2">
                                                 <div class="flex flex-wrap items-center gap-2 max-h-[180px] overflow-y-auto p-2 bg-pm-surface rounded-pm-sm">
                                                     ${tags.slice(10).map(tag => `
-                                                        <span class="inline-flex items-center space-x-1 bg-pm-accent-tint text-pm-accent px-3 py-1 rounded-full text-sm border border-pm-accent">
+                                                        <span class="inline-flex items-center space-x-1 bg-pm-input text-pm px-3 py-1 rounded-full text-sm border border-pm">
                                                             <span>${this.escapeHtml(tag)}</span>
-                                                            <button class="remove-tag-btn text-pm-accent hover:text-pm-accent ml-1" data-prompt-id="${prompt.id}" data-tag="${this.escapeHtml(tag)}">&times;</button>
+                                                            <button class="remove-tag-btn text-pm-secondary hover:text-pm ml-1" data-prompt-id="${prompt.id}" data-tag="${this.escapeHtml(tag)}">&times;</button>
                                                         </span>
                                                     `).join("")}
                                                 </div>
@@ -3945,7 +3945,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             // Check if tags array has "real" tags (excluding auto-scanned and prepend:* metadata)
             getRealTags(tags) {
                 if (!tags || !Array.isArray(tags)) return [];
-                return tags.filter(tag => tag !== 'auto-scanned' && !tag.startsWith('prepend:'));
+                return tags.filter(tag => tag !== 'auto-scanned' && !tag.startsWith('prepend:') && !tag.startsWith('append:'));
             }
 
             // Show the re-tag confirmation modal

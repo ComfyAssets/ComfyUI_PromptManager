@@ -874,6 +874,7 @@ class AutoTagService:
             "photo_",
             "photo:",
             "prepend:",
+            "append:",
         )
 
         # Split by common delimiters

@@ -176,23 +176,23 @@
 .tag-chip {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
+  padding: 4px 12px;
   background: var(--pm-bg-input);
   border: 1px solid var(--pm-border);
-  border-radius: var(--pm-radius-sm);
+  border-radius: 9999px;
   font-size: 12px;
-  color: var(--pm-text-secondary);
+  color: var(--pm-text);
   transition: all 0.2s;
 }
 
-.tag-chip:hover { background: var(--pm-bg-hover); }
+.tag-chip:hover { opacity: 0.85; }
 
 .tag-chip .tag-remove {
   margin-left: 6px;
   padding: 2px;
   border-radius: 3px;
   cursor: pointer;
-  color: var(--pm-text-muted);
+  color: var(--pm-text-secondary);
   transition: all 0.2s;
 }
 
