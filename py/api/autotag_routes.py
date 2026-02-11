@@ -54,6 +54,8 @@ class AutotagRoutesMixin:
                     "default_prompt": service.default_prompt,
                     "model_loaded": service.is_model_loaded(),
                     "loaded_model_type": service.get_loaded_model_type(),
+                    "wd14_general_threshold": service.wd14_general_threshold,
+                    "wd14_character_threshold": service.wd14_character_threshold,
                 }
             )
 
@@ -121,6 +123,14 @@ class AutotagRoutesMixin:
         skip_tagged = request.query.get("skip_tagged", "true").lower() == "true"
         keep_in_memory = request.query.get("keep_in_memory", "true").lower() == "true"
         use_gpu = True
+
+        # WD14 threshold params
+        general_threshold = request.query.get("general_threshold")
+        character_threshold = request.query.get("character_threshold")
+        if general_threshold is not None:
+            general_threshold = float(general_threshold)
+        if character_threshold is not None:
+            character_threshold = float(character_threshold)
 
         async def stream_response():
             try:
@@ -203,7 +213,11 @@ class AutotagRoutesMixin:
                             prompt_tags = [
                                 t.strip() for t in prompt_tags.split(",") if t.strip()
                             ]
-                        real_tags = [t for t in prompt_tags if t != "auto-scanned"]
+                        real_tags = [
+                            t
+                            for t in prompt_tags
+                            if t != "auto-scanned" and not t.startswith("prepend:")
+                        ]
                         if real_tags:
                             tagged_prompt_ids.add(prompt_id)
                             skipped += 1
@@ -217,7 +231,12 @@ class AutotagRoutesMixin:
 
                     try:
                         tags = await loop.run_in_executor(
-                            None, lambda p=str(image_path): service.generate_tags(p)
+                            None,
+                            lambda p=str(image_path): service.generate_tags(
+                                p,
+                                general_threshold=general_threshold,
+                                character_threshold=character_threshold,
+                            ),
                         )
 
                         processed += 1
@@ -304,6 +323,12 @@ class AutotagRoutesMixin:
             model_type = data.get("model_type", "gguf")
             custom_prompt = data.get("prompt")
             use_gpu = data.get("use_gpu", True)
+            general_threshold = data.get("general_threshold")
+            character_threshold = data.get("character_threshold")
+            if general_threshold is not None:
+                general_threshold = float(general_threshold)
+            if character_threshold is not None:
+                character_threshold = float(character_threshold)
 
             if not image_path:
                 return web.json_response(
@@ -328,7 +353,12 @@ class AutotagRoutesMixin:
 
             loop = asyncio.get_event_loop()
             tags = await loop.run_in_executor(
-                None, lambda: service.generate_tags(image_path)
+                None,
+                lambda: service.generate_tags(
+                    image_path,
+                    general_threshold=general_threshold,
+                    character_threshold=character_threshold,
+                ),
             )
 
             prompt_id = None
