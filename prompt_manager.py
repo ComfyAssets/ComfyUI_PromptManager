@@ -102,6 +102,7 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
         "The final combined text string (with prepend/append applied) that was encoded.",
     )
     FUNCTION = "encode_prompt"
+    OUTPUT_NODE = True
     CATEGORY = "🫶 ComfyAssets/🧠 Prompts"
     DESCRIPTION = (
         "Encodes a text prompt using a CLIP model into an embedding that can be used to guide "

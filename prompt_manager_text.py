@@ -101,6 +101,7 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
         "The final combined text string (with prepend/append applied) ready for use in other nodes.",
     )
     FUNCTION = "process_text"
+    OUTPUT_NODE = True
     CATEGORY = "🫶 ComfyAssets/🧠 Prompts"
     DESCRIPTION = (
         "Processes and manages text prompts with database storage and search capabilities. "

@@ -108,6 +108,7 @@ class PromptSearchList(ComfyNodeABC):
     OUTPUT_IS_LIST = (True,)
     OUTPUT_TOOLTIPS = ("List of prompt texts matching the search criteria.",)
     FUNCTION = "search"
+    OUTPUT_NODE = True
     CATEGORY = "🫶 ComfyAssets/🧠 Prompts"
     DESCRIPTION = (
         "Searches the prompt database and outputs matching prompts as a list. "
