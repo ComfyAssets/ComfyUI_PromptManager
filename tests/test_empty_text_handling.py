@@ -53,12 +53,12 @@ class TestPromptManagerTextEmptyInput(unittest.TestCase):
     def test_empty_text_with_prepend_append(
         self, mock_db, mock_integ, mock_tracker, mock_monitor
     ):
-        """Empty main text with prepend/append should still work."""
+        """Empty main text with prepend/append should produce single space, not double."""
         node = self._make_node(mock_db, mock_integ, mock_tracker, mock_monitor)
         result = node.process_text(text="", prepend_text="before", append_text="after")
         self.assertIsInstance(result, tuple)
-        self.assertIn("before", result[0])
-        self.assertIn("after", result[0])
+        self.assertEqual(result[0], "before after")
+        self.assertNotIn("  ", result[0])
 
     def test_valid_text_still_works(
         self, mock_db, mock_integ, mock_tracker, mock_monitor
@@ -68,6 +68,22 @@ class TestPromptManagerTextEmptyInput(unittest.TestCase):
         result = node.process_text(text="a beautiful sunset")
         self.assertIsInstance(result, tuple)
         self.assertEqual(result[0], "a beautiful sunset")
+
+    def test_prepend_text_append_all_present(
+        self, mock_db, mock_integ, mock_tracker, mock_monitor
+    ):
+        """All three parts should combine with single spaces."""
+        node = self._make_node(mock_db, mock_integ, mock_tracker, mock_monitor)
+        result = node.process_text(
+            text="main prompt", prepend_text="before", append_text="after"
+        )
+        self.assertEqual(result[0], "before main prompt after")
+
+    def test_only_prepend(self, mock_db, mock_integ, mock_tracker, mock_monitor):
+        """Prepend with empty text should output just prepend."""
+        node = self._make_node(mock_db, mock_integ, mock_tracker, mock_monitor)
+        result = node.process_text(text="", prepend_text="before")
+        self.assertEqual(result[0], "before")
 
 
 @patch("prompt_manager_base.get_image_monitor")
@@ -112,7 +128,7 @@ class TestPromptManagerEmptyInput(unittest.TestCase):
     def test_empty_text_with_prepend_append(
         self, mock_db, mock_integ, mock_tracker, mock_monitor
     ):
-        """Empty main text with prepend/append should still work."""
+        """Empty main text with prepend/append should produce single space, not double."""
         node, clip = self._make_node_and_clip(
             mock_db, mock_integ, mock_tracker, mock_monitor
         )
@@ -120,8 +136,8 @@ class TestPromptManagerEmptyInput(unittest.TestCase):
             clip=clip, text="", prepend_text="before", append_text="after"
         )
         self.assertIsInstance(result, tuple)
-        self.assertIn("before", result[1])
-        self.assertIn("after", result[1])
+        self.assertEqual(result[1], "before after")
+        self.assertNotIn("  ", result[1])
 
     def test_valid_text_still_works(
         self, mock_db, mock_integ, mock_tracker, mock_monitor
@@ -133,6 +149,18 @@ class TestPromptManagerEmptyInput(unittest.TestCase):
         result = node.encode_prompt(clip=clip, text="a beautiful sunset")
         self.assertIsInstance(result, tuple)
         self.assertEqual(result[1], "a beautiful sunset")
+
+    def test_prepend_text_append_all_present(
+        self, mock_db, mock_integ, mock_tracker, mock_monitor
+    ):
+        """All three parts should combine with single spaces."""
+        node, clip = self._make_node_and_clip(
+            mock_db, mock_integ, mock_tracker, mock_monitor
+        )
+        result = node.encode_prompt(
+            clip=clip, text="main prompt", prepend_text="before", append_text="after"
+        )
+        self.assertEqual(result[1], "before main prompt after")
 
 
 if __name__ == "__main__":
