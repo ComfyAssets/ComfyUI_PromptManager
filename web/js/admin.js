@@ -1186,6 +1186,10 @@
                         },
                         viewed: (event) => {
                             this.loadMetadataForImage(event.detail.image);
+                        },
+                        hidden: () => {
+                            const sidebar = document.getElementById('metadata-sidebar');
+                            if (sidebar) sidebar.remove();
                         }
                     });
                 }, 100);
@@ -3647,7 +3651,15 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         flipVertical: 1
                     },
                     title: [1, (image, imageData) => image.alt || 'Image'],
+                    shown: () => {
+                        this.addMetadataSidebar();
+                    },
+                    viewed: (event) => {
+                        this.loadMetadataForImage(event.detail.image);
+                    },
                     hidden: () => {
+                        const sidebar = document.getElementById('metadata-sidebar');
+                        if (sidebar) sidebar.remove();
                         viewer.destroy();
                         container.remove();
                     },
