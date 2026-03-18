@@ -657,11 +657,24 @@ ComfyUI_PromptManager/
 
 ### Database Settings
 
-You can customize the database path by modifying the configuration:
+You can customize the database path by creating a `config.json` file in the extension root:
 
-```python
-# In py/config.py
-DATABASE_PATH = "custom_path/prompts.db"
+```json
+{
+  "database": {
+    "default_path": "/path/to/your/prompts.db"
+  }
+}
+```
+
+Relative paths are resolved against the extension directory. Absolute paths are used as-is, which is recommended for Docker deployments where the working directory may not persist:
+
+```json
+{
+  "database": {
+    "default_path": "/data/custom_nodes/ComfyUI_PromptManager/prompts.db"
+  }
+}
 ```
 
 ### Gallery & Monitoring Settings

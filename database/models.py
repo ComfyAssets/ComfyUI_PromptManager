@@ -21,12 +21,12 @@ except ImportError:
 class PromptModel:
     """Database model for prompt storage and schema management."""
 
-    def __init__(self, db_path: str = "prompts.db"):
+    def __init__(self, db_path: str):
         """
         Initialize the database model.
 
         Args:
-            db_path: Path to the SQLite database file
+            db_path: Absolute path to the SQLite database file
         """
         self.logger = get_logger("prompt_manager.database.models")
         self.logger.debug(f"Initializing database model with path: {db_path}")
