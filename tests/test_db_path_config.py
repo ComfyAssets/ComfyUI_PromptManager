@@ -10,7 +10,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -97,7 +97,7 @@ class TestPromptDatabaseUsesConfig(unittest.TestCase):
         try:
             from database.operations import PromptDatabase
 
-            db = PromptDatabase()
+            PromptDatabase()
             mock_resolve.assert_called_once_with(None)
         finally:
             os.unlink(f.name)
@@ -111,7 +111,7 @@ class TestPromptDatabaseUsesConfig(unittest.TestCase):
         try:
             from database.operations import PromptDatabase
 
-            db = PromptDatabase("/explicit/path.db")
+            PromptDatabase("/explicit/path.db")
             mock_resolve.assert_called_once_with("/explicit/path.db")
         finally:
             os.unlink(f.name)
