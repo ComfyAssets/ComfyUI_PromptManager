@@ -133,18 +133,21 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
             Tuple containing the final processed text string
         """
         # Combine prepend, main text, and append text
-        final_text = ""
+        parts = []
         if prepend_text and prepend_text.strip():
-            final_text += prepend_text.strip() + " "
-        final_text += text
+            parts.append(prepend_text.strip())
+        if text:
+            parts.append(text)
         if append_text and append_text.strip():
-            final_text += " " + append_text.strip()
+            parts.append(append_text.strip())
+        final_text = " ".join(parts)
 
         # For database storage, save the original main text with metadata about prepend/append
         storage_text = text
 
         # Save prompt to database and set execution context for gallery tracking
         prompt_id = None
+        extended_tags = []
         if storage_text and storage_text.strip():
             self.logger.debug(f"Processing prompt text: {storage_text[:100]}...")
 
