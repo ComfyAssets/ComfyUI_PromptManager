@@ -2991,7 +2991,15 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
 
             addMetadataSidebar() {
-                const viewerContainer = document.querySelector('.viewer-container');
+                // Find the active (visible) viewer container — there may be stale
+                // hidden ones from previously opened viewers still in the DOM
+                const containers = document.querySelectorAll('.viewer-container');
+                let viewerContainer = null;
+                for (const c of containers) {
+                    if (c.style.display !== 'none') {
+                        viewerContainer = c;
+                    }
+                }
                 if (!viewerContainer || document.getElementById('metadata-sidebar')) return;
 
                 const sidebar = document.createElement('div');
