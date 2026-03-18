@@ -163,5 +163,90 @@ class TestPromptManagerEmptyInput(unittest.TestCase):
         self.assertEqual(result[1], "before main prompt after")
 
 
+@patch("prompt_manager_base.get_image_monitor")
+@patch("prompt_manager_base.get_prompt_tracker")
+@patch("prompt_manager_base.get_comfyui_integration")
+@patch("prompt_manager_base.PromptDatabase")
+class TestConnectedTextInput(unittest.TestCase):
+    """Test that externally connected text is preserved in output (issue #123).
+
+    When text comes from a connected node (not the widget), the Python side
+    must include it in the final output. The JS fix ensures the connected
+    value reaches Python; these tests verify Python handles it correctly.
+    """
+
+    def _make_text_node(self, mock_db_class, mock_integ, mock_tracker, mock_monitor):
+        mock_db = Mock()
+        mock_db_class.return_value = mock_db
+        mock_db.save_prompt.return_value = 1
+        mock_db.get_prompt_by_hash.return_value = None
+        from prompt_manager_text import PromptManagerText
+
+        return PromptManagerText()
+
+    def _make_clip_node(self, mock_db_class, mock_integ, mock_tracker, mock_monitor):
+        mock_db = Mock()
+        mock_db_class.return_value = mock_db
+        mock_db.save_prompt.return_value = 1
+        mock_db.get_prompt_by_hash.return_value = None
+        mock_clip = Mock()
+        mock_clip.tokenize.return_value = "mock_tokens"
+        mock_clip.encode_from_tokens_scheduled.return_value = "mock_cond"
+        from prompt_manager import PromptManager
+
+        return PromptManager(), mock_clip
+
+    def test_text_node_connected_text_with_prepend_append(
+        self, mock_db, mock_integ, mock_tracker, mock_monitor
+    ):
+        """Simulates screenshot: connected text + prepend + append must all appear."""
+        node = self._make_text_node(mock_db, mock_integ, mock_tracker, mock_monitor)
+        result = node.process_text(
+            text="This is the prompt",
+            prepend_text="This is prepend text",
+            append_text="This is append text",
+        )
+        self.assertEqual(
+            result[0],
+            "This is prepend text This is the prompt This is append text",
+        )
+
+    def test_text_node_connected_text_only(
+        self, mock_db, mock_integ, mock_tracker, mock_monitor
+    ):
+        """Connected text without prepend/append passes through unchanged."""
+        node = self._make_text_node(mock_db, mock_integ, mock_tracker, mock_monitor)
+        result = node.process_text(text="This is the prompt")
+        self.assertEqual(result[0], "This is the prompt")
+
+    def test_clip_node_connected_text_with_prepend_append(
+        self, mock_db, mock_integ, mock_tracker, mock_monitor
+    ):
+        """Same scenario for PromptManager (CLIP variant)."""
+        node, clip = self._make_clip_node(
+            mock_db, mock_integ, mock_tracker, mock_monitor
+        )
+        result = node.encode_prompt(
+            clip=clip,
+            text="This is the prompt",
+            prepend_text="This is prepend text",
+            append_text="This is append text",
+        )
+        self.assertEqual(
+            result[1],
+            "This is prepend text This is the prompt This is append text",
+        )
+
+    def test_clip_node_connected_text_only(
+        self, mock_db, mock_integ, mock_tracker, mock_monitor
+    ):
+        """Connected text without prepend/append passes through unchanged."""
+        node, clip = self._make_clip_node(
+            mock_db, mock_integ, mock_tracker, mock_monitor
+        )
+        result = node.encode_prompt(clip=clip, text="This is the prompt")
+        self.assertEqual(result[1], "This is the prompt")
+
+
 if __name__ == "__main__":
     unittest.main()
