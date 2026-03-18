@@ -29,17 +29,54 @@ TAG_SUBQUERY = (
 )
 
 
+def _resolve_db_path(db_path: Optional[str] = None) -> str:
+    """Resolve the database path from config, falling back to defaults.
+
+    When no explicit path is given, reads PromptManagerConfig.DEFAULT_DB_PATH
+    (set via config.json). Relative paths are resolved against the extension
+    root directory so the database location is predictable regardless of the
+    process working directory (important for Docker deployments).
+
+    Args:
+        db_path: Explicit database path, or None to use config/default.
+
+    Returns:
+        Absolute path to the SQLite database file.
+    """
+    extension_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    if db_path is None:
+        try:
+            from py.config import PromptManagerConfig
+
+            db_path = PromptManagerConfig.DEFAULT_DB_PATH
+        except Exception:
+            db_path = "prompts.db"
+
+    if not os.path.isabs(db_path):
+        db_path = os.path.join(extension_root, db_path)
+
+    # Ensure parent directory exists for custom paths
+    parent = os.path.dirname(db_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    return db_path
+
+
 class PromptDatabase:
     """Database operations class for managing prompts."""
 
-    def __init__(self, db_path: str = "prompts.db"):
+    def __init__(self, db_path: Optional[str] = None):
         """
         Initialize the database operations.
 
         Args:
-            db_path: Path to the SQLite database file
+            db_path: Path to the SQLite database file. If None, resolves from
+                     config.json or defaults to prompts.db in the extension root.
         """
         self.logger = get_logger("prompt_manager.database")
+        db_path = _resolve_db_path(db_path)
         self.logger.debug(f"Initializing database operations with path: {db_path}")
         self.model = PromptModel(db_path)
         self.logger.debug("Database operations initialized successfully")
