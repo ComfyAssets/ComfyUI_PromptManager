@@ -337,6 +337,7 @@
                 this.viewer = new Viewer(container, {
                     inline: false,
                     button: true,
+                    backdrop: true,
                     navbar: true,
                     title: true,
                     // IMPORTANT: Use original images for viewing, not thumbnails
