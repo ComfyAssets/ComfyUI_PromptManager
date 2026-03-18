@@ -1165,10 +1165,11 @@
                             flipVertical: 1,
                         },
                         navbar: true,
+                        button: true,
                         title: true,
                         transition: true,
                         keyboard: true,
-                        backdrop: 'static',
+                        backdrop: true,
                         loading: true,
                         loop: true,
                         tooltip: true,
@@ -3629,6 +3630,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 // Initialize ViewerJS
                 const viewer = new Viewer(container, {
                     inline: false,
+                    button: true,
+                    backdrop: true,
                     navbar: true,
                     toolbar: {
                         zoomIn: 1,
