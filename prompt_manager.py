@@ -139,12 +139,14 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
             RuntimeError: If clip input is invalid
         """
         # Combine prepend, main text, and append text
-        final_text = ""
+        parts = []
         if prepend_text and prepend_text.strip():
-            final_text += prepend_text.strip() + " "
-        final_text += text if text else ""
+            parts.append(prepend_text.strip())
+        if text:
+            parts.append(text)
         if append_text and append_text.strip():
-            final_text += " " + append_text.strip()
+            parts.append(append_text.strip())
+        final_text = " ".join(parts)
 
         # Use the combined text for encoding
         encoding_text = final_text
