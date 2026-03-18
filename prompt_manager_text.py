@@ -145,6 +145,7 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
 
         # Save prompt to database and set execution context for gallery tracking
         prompt_id = None
+        extended_tags = []
         if storage_text and storage_text.strip():
             self.logger.debug(f"Processing prompt text: {storage_text[:100]}...")
 
