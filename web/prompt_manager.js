@@ -186,18 +186,22 @@ function syncPromptManagerWidgets() {
 
         node.widgets.forEach((widget, idx) => {
           if (widget) {
-            // CRITICAL: For multiline widgets, inputEl.value is the true source
+            // Skip widgets whose input is connected to another node —
+            // the connected value takes precedence over the DOM widget value
+            const isConnected = node.inputs?.some(
+              i => i.name === widget.name && i.link != null
+            );
+            if (isConnected) return;
+
+            // For non-connected widgets, inputEl.value is the true source
             const actualValue = widget.inputEl ? widget.inputEl.value : widget.value;
             if (actualValue !== undefined) {
-              const oldValue = node.widgets_values[idx];
               node.widgets_values[idx] = actualValue;
 
               // Also sync widget.value
               if (widget.inputEl && widget.value !== actualValue) {
                 widget.value = actualValue;
               }
-
-              // text widget value synced from DOM
             }
           }
         });
@@ -235,13 +239,18 @@ app.registerExtension({
         const nodes = graph._nodes || graph.nodes || [];
         for (const node of nodes) {
           if ((node.type === "PromptManager" || node.type === "PromptManagerText") && output[node.id]) {
-            // Find the text widget and get its current DOM value
+            const outputNode = output[node.id];
+
+            // Skip if text input is connected to another node (value is a link reference array)
+            if (outputNode.inputs && Array.isArray(outputNode.inputs.text)) {
+              continue;
+            }
+
+            // Only sync widget DOM value for non-connected (widget-based) text inputs
             const textWidget = node.widgets?.find(w => w.name === "text");
             if (textWidget && textWidget.inputEl) {
               const currentValue = textWidget.inputEl.value;
-              const outputNode = output[node.id];
 
-              // The output structure has "inputs" with widget values
               if (outputNode.inputs && outputNode.inputs.text !== currentValue) {
                 outputNode.inputs.text = currentValue;
               }
@@ -403,20 +412,22 @@ app.registerExtension({
         // Hook into serialization to preserve resize flag, sync widget values, and prevent runtime data from being saved
         const originalSerialize = this.serialize;
         this.serialize = function () {
-          // CRITICAL: Sync widget values BEFORE serialization
-          // This ensures graphToPrompt reads current values, not cached ones
-          // For multiline widgets, the value is stored in inputEl.value
+          // Sync widget values BEFORE serialization, but only for non-connected widgets
           if (this.widgets && this.widgets.length > 0) {
             if (!this.widgets_values) {
               this.widgets_values = [];
             }
             this.widgets.forEach((widget, idx) => {
               if (widget) {
-                // Get the actual value - inputEl.value for DOM widgets, otherwise widget.value
+                // Skip connected widgets — their value comes from the link
+                const isConnected = self.inputs?.some(
+                  i => i.name === widget.name && i.link != null
+                );
+                if (isConnected) return;
+
                 const actualValue = widget.inputEl ? widget.inputEl.value : widget.value;
                 if (actualValue !== undefined) {
                   this.widgets_values[idx] = actualValue;
-                  // Sync widget.value with inputEl.value
                   if (widget.inputEl && widget.value !== actualValue) {
                     widget.value = actualValue;
                   }
