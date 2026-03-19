@@ -1023,29 +1023,60 @@ class AdminRoutesMixin:
     async def scan_images(self, request):
         """Scan ComfyUI output images for prompt metadata and add them to the database."""
 
+        BATCH_SIZE = 50  # Files per executor call for metadata extraction
+
+        def _collect_media_files(output_dirs):
+            """Collect all media files from output directories (blocking I/O)."""
+            image_extensions = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
+            video_extensions = [".mp4", ".webm", ".avi", ".mov", ".mkv", ".m4v", ".wmv"]
+            media_extensions = image_extensions + video_extensions
+            all_files = []
+            seen = set()
+            for output_dir in output_dirs:
+                for ext in media_extensions:
+                    for pattern in [f"*{ext}", f"*{ext.upper()}"]:
+                        for f in output_dir.rglob(pattern):
+                            if "thumbnails" not in f.parts:
+                                norm = str(f).lower()
+                                if norm not in seen:
+                                    seen.add(norm)
+                                    all_files.append(f)
+            return all_files
+
+        def _extract_batch_metadata(file_batch):
+            """Extract metadata from a batch of files in one executor call."""
+            results = []
+            for f in file_batch:
+                try:
+                    meta = self._extract_comfyui_metadata(str(f))
+                    results.append((f, meta))
+                except Exception:
+                    results.append((f, {}))
+            return results
+
         async def stream_response():
             try:
                 self.logger.info("Starting image scan operation")
-                self.logger.info("Starting scan (timer clearing not implemented yet)")
 
-                output_dir = self._find_comfyui_output_dir()
-                if not output_dir:
-                    self.logger.error("ComfyUI output directory not found")
-                    yield f"data: {json.dumps({'type': 'error', 'message': 'ComfyUI output directory not found'})}\n\n"
+                output_dirs = self._get_all_output_dirs()
+                if not output_dirs:
+                    self.logger.error("No output directories found")
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'No output directories found. Configure scan directories in Settings.'})}\n\n"
                     return
 
-                yield f"data: {json.dumps({'type': 'progress', 'progress': 0, 'status': 'Scanning for PNG files...', 'processed': 0, 'found': 0})}\n\n"
+                dir_names = [str(d) for d in output_dirs]
+                yield f"data: {json.dumps({'type': 'progress', 'progress': 0, 'status': f'Scanning {len(output_dirs)} directory(ies) for media files...', 'processed': 0, 'found': 0})}\n\n"
 
-                png_files = await self._run_in_executor(
-                    lambda: list(Path(output_dir).rglob("*.png"))
+                media_files = await self._run_in_executor(
+                    _collect_media_files, output_dirs
                 )
-                total_files = len(png_files)
+                total_files = len(media_files)
 
                 if total_files == 0:
-                    yield f"data: {json.dumps({'type': 'complete', 'processed': 0, 'found': 0, 'added': 0})}\n\n"
+                    yield f"data: {json.dumps({'type': 'complete', 'processed': 0, 'found': 0, 'added': 0, 'linked': 0, 'directories': dir_names})}\n\n"
                     return
 
-                yield f"data: {json.dumps({'type': 'progress', 'progress': 5, 'status': f'Found {total_files} PNG files to process...', 'processed': 0, 'found': 0})}\n\n"
+                yield f"data: {json.dumps({'type': 'progress', 'progress': 5, 'status': f'Found {total_files} media files to process...', 'processed': 0, 'found': 0})}\n\n"
 
                 processed_count = 0
                 found_count = 0
@@ -1063,133 +1094,97 @@ class AdminRoutesMixin:
                     sys.path.insert(0, current_dir)
                     from utils.hashing import generate_prompt_hash
 
-                for i, png_file in enumerate(png_files):
-                    try:
-                        metadata = await self._run_in_executor(
-                            self._extract_comfyui_metadata, str(png_file)
-                        )
-                        processed_count += 1
+                # Process files in batches for performance
+                for batch_start in range(0, total_files, BATCH_SIZE):
+                    batch = media_files[batch_start : batch_start + BATCH_SIZE]
 
-                        if metadata:
-                            self.logger.debug(
-                                f"Found metadata in {os.path.basename(png_file)}: {list(metadata.keys())}"
-                            )
+                    # Extract metadata for entire batch in one executor call
+                    batch_results = await self._run_in_executor(
+                        _extract_batch_metadata, batch
+                    )
+
+                    for media_file, metadata in batch_results:
+                        try:
+                            processed_count += 1
+
+                            if not metadata:
+                                continue
 
                             parsed_data = self._parse_comfyui_prompt(metadata)
-                            self.logger.debug(
-                                f"Parsed data keys: {list(parsed_data.keys())}, has prompt: {bool(parsed_data.get('prompt'))}, has parameters: {bool(parsed_data.get('parameters'))}"
+
+                            if not (
+                                parsed_data.get("prompt")
+                                or parsed_data.get("parameters")
+                            ):
+                                continue
+
+                            found_count += 1
+                            prompt_text = self._extract_readable_prompt(parsed_data)
+
+                            if prompt_text and not isinstance(prompt_text, str):
+                                prompt_text = str(prompt_text)
+
+                            if not (prompt_text and prompt_text.strip()):
+                                continue
+
+                            prompt_hash = generate_prompt_hash(prompt_text.strip())
+                            existing = await self._run_in_executor(
+                                self.db.get_prompt_by_hash, prompt_hash
                             )
 
-                            if parsed_data.get("prompt") or parsed_data.get(
-                                "parameters"
-                            ):
-                                found_count += 1
-                                prompt_text = self._extract_readable_prompt(parsed_data)
-
-                                if prompt_text:
-                                    self.logger.debug(
-                                        f"Found prompt in {os.path.basename(png_file)} (type: {type(prompt_text)}): {str(prompt_text)[:100]}..."
+                            if existing:
+                                try:
+                                    await self._run_in_executor(
+                                        self.db.link_image_to_prompt,
+                                        existing["id"],
+                                        str(media_file),
                                     )
-                                else:
-                                    self.logger.debug(
-                                        f"No readable prompt found in {os.path.basename(png_file)}, parsed_data keys: {list(parsed_data.keys())}"
+                                    linked_count += 1
+                                except Exception as e:
+                                    self.logger.error(
+                                        f"Failed to link {media_file.name} to existing prompt: {e}"
                                     )
-
-                                if prompt_text and not isinstance(prompt_text, str):
-                                    self.logger.debug(
-                                        f"Converting prompt_text from {type(prompt_text)} to string"
-                                    )
-                                    prompt_text = str(prompt_text)
-
-                                if prompt_text and prompt_text.strip():
+                            else:
+                                prompt_id = await self._run_in_executor(
+                                    self.db.save_prompt,
+                                    prompt_text.strip(),
+                                    "scanned",
+                                    ["auto-scanned"],
+                                    None,
+                                    f"Auto-scanned from {media_file.name}",
+                                    prompt_hash,
+                                )
+                                if prompt_id:
+                                    added_count += 1
                                     try:
-                                        prompt_hash = generate_prompt_hash(
-                                            prompt_text.strip()
+                                        await self._run_in_executor(
+                                            self.db.link_image_to_prompt,
+                                            prompt_id,
+                                            str(media_file),
                                         )
-                                        self.logger.debug(
-                                            f"Generated hash for prompt: {prompt_hash[:16]}..."
-                                        )
-
-                                        existing = await self._run_in_executor(
-                                            self.db.get_prompt_by_hash, prompt_hash
-                                        )
-                                        if existing:
-                                            self.logger.debug(
-                                                f"Found existing prompt ID {existing['id']} for image {os.path.basename(png_file)}"
-                                            )
-                                            try:
-                                                await self._run_in_executor(
-                                                    self.db.link_image_to_prompt,
-                                                    existing["id"],
-                                                    str(png_file),
-                                                )
-                                                linked_count += 1
-                                                self.logger.debug(
-                                                    f"Linked image {os.path.basename(png_file)} to existing prompt {existing['id']}"
-                                                )
-                                            except Exception as e:
-                                                self.logger.error(
-                                                    f"Failed to link image {png_file} to existing prompt: {e}"
-                                                )
-                                        else:
-                                            self.logger.debug(
-                                                f"Saving new prompt from {os.path.basename(png_file)}"
-                                            )
-                                            prompt_id = await self._run_in_executor(
-                                                self.db.save_prompt,
-                                                prompt_text.strip(),
-                                                "scanned",
-                                                ["auto-scanned"],
-                                                None,
-                                                f"Auto-scanned from {os.path.basename(png_file)}",
-                                                prompt_hash,
-                                            )
-
-                                            if prompt_id:
-                                                added_count += 1
-                                                self.logger.info(
-                                                    f"Successfully saved new prompt with ID {prompt_id} from {os.path.basename(png_file)}"
-                                                )
-                                                try:
-                                                    await self._run_in_executor(
-                                                        self.db.link_image_to_prompt,
-                                                        prompt_id,
-                                                        str(png_file),
-                                                    )
-                                                    self.logger.debug(
-                                                        f"Linked image {os.path.basename(png_file)} to new prompt {prompt_id}"
-                                                    )
-                                                except Exception as e:
-                                                    self.logger.error(
-                                                        f"Failed to link image {png_file} to new prompt: {e}"
-                                                    )
-                                            else:
-                                                self.logger.error(
-                                                    f"Failed to save prompt from {os.path.basename(png_file)} - no ID returned"
-                                                )
-
                                     except Exception as e:
                                         self.logger.error(
-                                            f"Failed to save prompt from {png_file}: {e}"
+                                            f"Failed to link {media_file.name} to new prompt: {e}"
                                         )
 
-                        # Update progress every 10 files
-                        if i % 10 == 0 or i == total_files - 1:
-                            progress = int((i + 1) / total_files * 100)
-                            status = f"Processing file {i + 1}/{total_files}..."
+                        except Exception as e:
+                            self.logger.error(
+                                f"Error processing {media_file.name}: {e}"
+                            )
+                            continue
 
-                            yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'status': status, 'processed': processed_count, 'found': found_count})}\n\n"
-
-                            await asyncio.sleep(0.01)
-
-                    except Exception as e:
-                        self.logger.error(f"Error processing {png_file}: {e}")
-                        continue
+                    # Progress update after each batch
+                    progress = int(
+                        min(batch_start + len(batch), total_files) / total_files * 100
+                    )
+                    yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'status': f'Processing file {min(batch_start + len(batch), total_files)}/{total_files}...', 'processed': processed_count, 'found': found_count})}\n\n"
+                    await asyncio.sleep(0)
 
                 self.logger.info(
-                    f"Scan completed: processed={processed_count}, found={found_count}, new_prompts_added={added_count}, images_linked_to_existing={linked_count}"
+                    f"Scan completed: processed={processed_count}, found={found_count}, "
+                    f"new_prompts_added={added_count}, images_linked_to_existing={linked_count}"
                 )
-                yield f"data: {json.dumps({'type': 'complete', 'processed': processed_count, 'found': found_count, 'added': added_count, 'linked': linked_count})}\n\n"
+                yield f"data: {json.dumps({'type': 'complete', 'processed': processed_count, 'found': found_count, 'added': added_count, 'linked': linked_count, 'directories': dir_names})}\n\n"
 
             except Exception as e:
                 self.logger.exception("Scan error")
