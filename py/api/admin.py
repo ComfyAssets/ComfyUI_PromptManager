@@ -371,6 +371,9 @@ class AdminRoutesMixin:
                     "settings": {
                         "result_timeout": PromptManagerConfig.RESULT_TIMEOUT,
                         "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE,
+                        "gallery_root_paths": list(
+                            GalleryConfig.MONITORING_DIRECTORIES
+                        ),
                         "gallery_root_path": (
                             GalleryConfig.MONITORING_DIRECTORIES[0]
                             if GalleryConfig.MONITORING_DIRECTORIES
@@ -400,8 +403,69 @@ class AdminRoutesMixin:
             if "webui_display_mode" in data:
                 PromptManagerConfig.WEBUI_DISPLAY_MODE = data["webui_display_mode"]
 
-            # Handle gallery root path
-            if "gallery_root_path" in data:
+            # Blocked system directories (shared by both path handlers)
+            blocked = [
+                "/etc",
+                "/usr",
+                "/bin",
+                "/sbin",
+                "/boot",
+                "/proc",
+                "/sys",
+                "/dev",
+                "/var/log",
+                "/root",
+                "C:\\Windows",
+                "C:\\Program Files",
+            ]
+
+            # Handle gallery root paths (array — preferred)
+            if "gallery_root_paths" in data:
+                new_paths = data["gallery_root_paths"]
+                if not isinstance(new_paths, list):
+                    return web.json_response(
+                        {
+                            "success": False,
+                            "error": "gallery_root_paths must be a list",
+                        },
+                        status=400,
+                    )
+
+                validated_paths = []
+                for path_str in new_paths:
+                    path_str = path_str.strip()
+                    if not path_str:
+                        continue
+                    resolved = Path(path_str).resolve()
+                    if not resolved.is_dir():
+                        return web.json_response(
+                            {
+                                "success": False,
+                                "error": f"Path does not exist or is not a directory: {path_str}",
+                            },
+                            status=400,
+                        )
+                    for b in blocked:
+                        if str(resolved).startswith(b):
+                            return web.json_response(
+                                {
+                                    "success": False,
+                                    "error": f"Cannot use system directory: {path_str}",
+                                },
+                                status=400,
+                            )
+                    validated_paths.append(path_str)
+
+                old_paths = list(GalleryConfig.MONITORING_DIRECTORIES)
+                if validated_paths != old_paths:
+                    GalleryConfig.MONITORING_DIRECTORIES = validated_paths
+                    self._cached_output_dir = None
+                    self._gallery_cache = {}
+                    self._gallery_cache_time = 0
+                    restart_required = True
+
+            elif "gallery_root_path" in data:
+                # Backward compat: single path string
                 new_path = data["gallery_root_path"].strip()
                 old_path = (
                     GalleryConfig.MONITORING_DIRECTORIES[0]
@@ -411,9 +475,7 @@ class AdminRoutesMixin:
 
                 if new_path != old_path:
                     if new_path:
-                        from pathlib import Path as _Path
-
-                        resolved = _Path(new_path).resolve()
+                        resolved = Path(new_path).resolve()
                         if not resolved.is_dir():
                             return web.json_response(
                                 {
@@ -422,20 +484,6 @@ class AdminRoutesMixin:
                                 },
                                 status=400,
                             )
-                        blocked = [
-                            "/etc",
-                            "/usr",
-                            "/bin",
-                            "/sbin",
-                            "/boot",
-                            "/proc",
-                            "/sys",
-                            "/dev",
-                            "/var/log",
-                            "/root",
-                            "C:\\Windows",
-                            "C:\\Program Files",
-                        ]
                         for b in blocked:
                             if str(resolved).startswith(b):
                                 return web.json_response(
@@ -448,9 +496,8 @@ class AdminRoutesMixin:
                         GalleryConfig.MONITORING_DIRECTORIES = [new_path]
                     else:
                         GalleryConfig.MONITORING_DIRECTORIES = []
-                    # Invalidate caches so next lookup uses new config
                     self._cached_output_dir = None
-                    self._gallery_cache = None
+                    self._gallery_cache = {}
                     self._gallery_cache_time = 0
                     restart_required = True
 
