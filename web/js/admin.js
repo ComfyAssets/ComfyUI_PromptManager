@@ -231,7 +231,6 @@
                         if (data.success && data.settings) {
                             this.settings.resultTimeout = data.settings.result_timeout || 5;
                             this.settings.webuiDisplayMode = data.settings.webui_display_mode || 'popup';
-                            this.settings.galleryRootPath = data.settings.gallery_root_path || '';
                             this.settings.monitoredDirectories = data.settings.monitored_directories || [];
                             this.settings.galleryRootPaths = data.settings.gallery_root_paths || [];
                             // Backward compat: if server only returned old field
