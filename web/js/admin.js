@@ -8,6 +8,7 @@
                 };
                 this.categories = [];
                 this.tags = [];
+                this.subfolders = [];
                 this.imageViewMode = 'fit'; // 'fit' or 'full'
                 this.naturalImageSize = { width: 0, height: 0 };
                 
@@ -108,7 +109,7 @@
                 this.bindModalEvents();
 
                 // Auto-search on filter changes
-                ["searchCategory"].forEach((id) => {
+                ["searchCategory", "searchFolder"].forEach((id) => {
                     document.getElementById(id).addEventListener("change", () => this.search());
                 });
                 
@@ -213,6 +214,7 @@
                     await Promise.all([
                         this.loadStatistics(),
                         this.loadCategories(),
+                        this.loadSubfolders(),
                         this.loadTags(),
                         this.loadRecentPrompts(),
                         this.loadSettings(),
@@ -315,6 +317,38 @@
                 });
             }
 
+            async loadSubfolders() {
+                try {
+                    const response = await fetch("/prompt_manager/subfolders");
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success) {
+                            this.subfolders = data.subfolders;
+                            this.populateFolderDropdown();
+                        }
+                    }
+                } catch (error) {
+                    console.error("Subfolders error:", error);
+                }
+            }
+
+            populateFolderDropdown() {
+                const select = document.getElementById("searchFolder");
+                const current = select.value;
+                select.textContent = '';
+                const defaultOpt = document.createElement("option");
+                defaultOpt.value = "";
+                defaultOpt.textContent = "All Folders";
+                select.appendChild(defaultOpt);
+                this.subfolders.forEach((folder) => {
+                    const option = document.createElement("option");
+                    option.value = folder;
+                    option.textContent = folder;
+                    select.appendChild(option);
+                });
+                select.value = current;
+            }
+
             async loadRecentPrompts(page = 1) {
                 try {
                     this.pagination.currentPage = page;
@@ -382,6 +416,8 @@
                     if (searchText) params.append("text", searchText);
                     if (category) params.append("category", category);
                     if (tags) params.append("tags", tags);
+                    const folder = document.getElementById("searchFolder").value;
+                    if (folder) params.append("folder", folder);
                     params.append("limit", "100");
 
                     const response = await fetch(`/prompt_manager/search?${params}`);
