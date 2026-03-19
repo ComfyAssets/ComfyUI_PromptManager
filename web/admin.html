@@ -353,10 +353,18 @@
                     <h4 class="text-xs font-semibold text-pm-secondary mb-3 uppercase tracking-wide">Gallery Settings</h4>
 
                     <div class="mb-3">
-                        <label class="block text-xs font-medium text-pm-secondary mb-1">Image Scan Directory</label>
-                        <input type="text" id="galleryRootPath" placeholder="Leave empty for auto-detect"
-                               class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none">
-                        <p class="text-xs text-pm-muted mt-1">Custom path to scan for images. Leave empty to use ComfyUI's default output directory.</p>
+                        <label class="block text-xs font-medium text-pm-secondary mb-1">Image Scan Directories</label>
+                        <div id="scanPathsList" class="space-y-2">
+                            <!-- Populated dynamically by JS -->
+                        </div>
+                        <button id="addScanPathBtn" type="button"
+                                class="mt-2 flex items-center gap-1 text-xs text-pm-accent hover:text-pm-accent-hover">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                            </svg>
+                            Add Directory
+                        </button>
+                        <p class="text-xs text-pm-muted mt-1">Directories to scan for images. Leave empty to use ComfyUI default output directory.</p>
                     </div>
 
                     <div class="mb-3">
