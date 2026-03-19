@@ -230,23 +230,24 @@ class PromptDatabase:
                 params.append(tag)
 
         if folder:
-            # Match folder as a directory component in image_path.
-            # image_path stores absolute paths like /home/user/ComfyUI/output/2024-03-15/img.png
-            # Use both / and os.sep to handle mixed-separator paths
+            # Escape LIKE wildcards in the folder name
+            safe_folder = (
+                folder.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
             query_parts.append(
                 "AND prompts.id IN ("
                 "  SELECT DISTINCT prompt_id FROM generated_images"
-                "  WHERE image_path LIKE ?"
-                "  OR image_path LIKE ?"
-                "  OR image_path LIKE ?"
+                "  WHERE image_path LIKE ? ESCAPE '\\'"
+                "  OR image_path LIKE ? ESCAPE '\\'"
+                "  OR image_path LIKE ? ESCAPE '\\'"
                 ")"
             )
             # Pattern 1: folder between forward slashes (Unix + normalized Windows)
-            params.append(f"%/{folder}/%")
+            params.append(f"%/{safe_folder}/%")
             # Pattern 2: folder between backslashes (Windows native)
-            params.append(f"%\\{folder}\\%")
+            params.append(f"%\\\\{safe_folder}\\\\%")
             # Pattern 3: folder at start of a relative path
-            params.append(f"{folder}/%")
+            params.append(f"{safe_folder}/%")
 
         if rating_min is not None:
             query_parts.append("AND rating >= ?")

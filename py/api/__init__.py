@@ -124,7 +124,6 @@ class PromptManagerAPI(
         self._cached_output_dir = None  # Lazy-cached by _find_comfyui_output_dir()
         self._html_cache = {}  # Cached HTML file contents keyed by path
         self._gallery_cache = {}  # dict: path_str -> (files, timestamp)
-        self._gallery_cache_time = 0  # Timestamp of last cache fill
         self._gallery_cache_ttl = 30  # Cache TTL in seconds
 
         # Run cleanup on initialization to remove any existing duplicates
@@ -157,7 +156,6 @@ class PromptManagerAPI(
         Called by the image monitor when new files are detected.
         """
         self._gallery_cache = {}
-        self._gallery_cache_time = 0
 
     def add_routes(self, routes):
         """Register all API routes with the ComfyUI server.

@@ -461,7 +461,6 @@ class AdminRoutesMixin:
                     GalleryConfig.MONITORING_DIRECTORIES = validated_paths
                     self._cached_output_dir = None
                     self._gallery_cache = {}
-                    self._gallery_cache_time = 0
                     restart_required = True
 
             elif "gallery_root_path" in data:
@@ -498,7 +497,6 @@ class AdminRoutesMixin:
                         GalleryConfig.MONITORING_DIRECTORIES = []
                     self._cached_output_dir = None
                     self._gallery_cache = {}
-                    self._gallery_cache_time = 0
                     restart_required = True
 
             # Save to config file for persistence
