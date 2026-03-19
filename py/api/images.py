@@ -68,6 +68,10 @@ class ImageRoutesMixin:
         async def clear_thumbnails_route(request):
             return await self.clear_thumbnails(request)
 
+        @routes.get("/prompt_manager/gallery/subfolders")
+        async def get_gallery_subfolders_route(request):
+            return await self.get_gallery_subfolders(request)
+
     async def get_prompt_images(self, request):
         """Get all images for a specific prompt."""
         try:
@@ -145,7 +149,10 @@ class ImageRoutesMixin:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
     def _scan_gallery_files_sync(self, output_path):
-        """Scan output directory for media files (blocking I/O, run in executor)."""
+        """Scan output directory for media files (blocking I/O, run in executor).
+
+        Returns list of (path, mtime) tuples sorted by mtime descending.
+        """
         image_extensions = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
         video_extensions = [".mp4", ".webm", ".avi", ".mov", ".mkv", ".m4v", ".wmv"]
         media_extensions = image_extensions + video_extensions
@@ -159,62 +166,73 @@ class ImageRoutesMixin:
                         normalized_path = str(media_path).lower()
                         if normalized_path not in seen_paths:
                             seen_paths.add(normalized_path)
-                            all_images.append(media_path)
+                            try:
+                                mtime = media_path.stat().st_mtime
+                                all_images.append((media_path, mtime))
+                            except OSError:
+                                continue
 
-        # Sort by modification time (newest first)
-        all_images.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        all_images.sort(key=lambda x: x[1], reverse=True)
         return all_images
 
     async def _get_gallery_files(self, output_path):
-        """Get gallery files with TTL cache. Invalidated by image monitor."""
+        """Get gallery files with per-directory TTL cache."""
         now = _time.monotonic()
-        if (
-            self._gallery_cache is not None
-            and (now - self._gallery_cache_time) < self._gallery_cache_ttl
-        ):
-            return self._gallery_cache
+        key = str(output_path)
+        cached = self._gallery_cache.get(key)
+        if cached and (now - cached[1]) < self._gallery_cache_ttl:
+            return cached[0]
 
-        all_images = await self._run_in_executor(
-            self._scan_gallery_files_sync, output_path
-        )
-        self._gallery_cache = all_images
-        self._gallery_cache_time = now
-        return all_images
+        files = await self._run_in_executor(self._scan_gallery_files_sync, output_path)
+        self._gallery_cache[key] = (files, now)
+        return files
 
     async def get_output_images(self, request):
-        """Get all images from ComfyUI output folder."""
+        """Get all images from ComfyUI output folder(s)."""
         try:
             from urllib.parse import quote
 
-            # Find ComfyUI output directory
-            output_dir = self._find_comfyui_output_dir()
-            if not output_dir:
+            output_dirs = self._get_all_output_dirs()
+            if not output_dirs:
                 return web.json_response(
                     {
                         "success": False,
-                        "error": "ComfyUI output directory not found",
+                        "error": "No output directories found",
                         "images": [],
-                    }
+                    },
                 )
 
-            # Get pagination parameters
             limit = int(request.query.get("limit", 100))
             offset = int(request.query.get("offset", 0))
+            subfolder = request.query.get("subfolder", "").strip()
 
-            output_path = Path(output_dir)
-            thumbnails_dir = output_path / "thumbnails"
+            # Collect (path, mtime, root) from all directories
+            all_images = []
+            for output_path in output_dirs:
+                dir_images = await self._get_gallery_files(output_path)
+                for img_path, mtime in dir_images:
+                    all_images.append((img_path, mtime, output_path))
+
+            # Sort combined results by mtime (newest first) — no .stat() calls
+            all_images.sort(key=lambda x: x[1], reverse=True)
+
+            # Apply subfolder filter if provided
+            if subfolder:
+                filtered = []
+                for img_path, mtime, root in all_images:
+                    rel_dir = str(img_path.relative_to(root).parent)
+                    if rel_dir == subfolder or rel_dir.startswith(subfolder + os.sep):
+                        filtered.append((img_path, mtime, root))
+                all_images = filtered
+
+            total = len(all_images)
+            paginated = all_images[offset : offset + limit]
+
             video_extensions = [".mp4", ".webm", ".avi", ".mov", ".mkv", ".m4v", ".wmv"]
 
-            # Use cached file listing (Fix 2.4)
-            all_images = await self._get_gallery_files(output_path)
-
-            # Apply pagination
-            paginated_images = all_images[offset : offset + limit]
-
-            # Format media data in executor (stat calls are blocking)
             def _format_page():
                 images = []
-                for media_path in paginated_images:
+                for media_path, mtime, output_path in paginated:
                     try:
                         stat = media_path.stat()
                         rel_path = media_path.relative_to(output_path)
@@ -223,6 +241,7 @@ class ImageRoutesMixin:
                         media_type = "video" if is_video else "image"
 
                         thumbnail_url = None
+                        thumbnails_dir = output_path / "thumbnails"
                         if thumbnails_dir.exists():
                             thumbnail_ext = ".jpg" if is_video else extension
                             rel_path_no_ext = rel_path.with_suffix("")
@@ -237,6 +256,7 @@ class ImageRoutesMixin:
                                 "filename": media_path.name,
                                 "path": str(media_path),
                                 "relative_path": str(rel_path),
+                                "root_dir": str(output_path),
                                 "url": f"/prompt_manager/images/serve/{rel_path.as_posix()}",
                                 "thumbnail_url": thumbnail_url,
                                 "size": stat.st_size,
@@ -257,18 +277,15 @@ class ImageRoutesMixin:
                 {
                     "success": True,
                     "images": images,
-                    "total": len(all_images),
+                    "total": total,
                     "offset": offset,
                     "limit": limit,
-                    "has_more": offset + limit < len(all_images),
+                    "has_more": offset + limit < total,
                 }
             )
-
         except Exception as e:
-            self.logger.error(f"Get output images error: {e}")
-            return web.json_response(
-                {"success": False, "error": str(e), "images": []}, status=500
-            )
+            self.logger.error(f"Output images error: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=500)
 
     async def serve_image(self, request):
         """Serve the actual image file using streamed FileResponse."""
@@ -314,41 +331,52 @@ class ImageRoutesMixin:
         try:
             filepath = request.match_info["filepath"]
 
-            # Find ComfyUI output directory
-            output_dir = self._find_comfyui_output_dir()
-            if not output_dir:
+            # Search all configured output directories
+            output_dirs = self._get_all_output_dirs()
+            if not output_dirs:
                 return web.json_response(
                     {"success": False, "error": "ComfyUI output directory not found"},
                     status=404,
                 )
 
-            # Construct full image path
-            image_path = Path(output_dir) / filepath
+            # Try each root directory until the file is found
+            for output_path in output_dirs:
+                image_path = (output_path / filepath).resolve()
 
-            # Security check: make sure the path is within the output directory
-            try:
-                image_path = image_path.resolve()
-                output_path = Path(output_dir).resolve()
-                if not image_path.is_relative_to(output_path):
-                    return web.json_response(
-                        {"success": False, "error": "Access denied"}, status=403
-                    )
-            except Exception:
-                return web.json_response(
-                    {"success": False, "error": "Invalid file path"}, status=400
-                )
+                # Security check: must be within this output directory
+                if not image_path.is_relative_to(output_path.resolve()):
+                    continue
 
-            if not image_path.exists():
-                return web.json_response(
-                    {"success": False, "error": "Image file not found"}, status=404
-                )
+                if image_path.exists():
+                    response = web.FileResponse(image_path)
+                    response.headers["Cache-Control"] = "public, max-age=3600"
+                    return response
 
-            response = web.FileResponse(image_path)
-            response.headers["Cache-Control"] = "public, max-age=3600"
-            return response
+            return web.json_response(
+                {"success": False, "error": "Image file not found"}, status=404
+            )
 
         except Exception as e:
             self.logger.error(f"Serve output image error: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def get_gallery_subfolders(self, request):
+        """Get distinct subfolders from gallery output directories."""
+        try:
+            output_dirs = self._get_all_output_dirs()
+            subfolders = set()
+            for output_path in output_dirs:
+                files = await self._get_gallery_files(output_path)
+                for f, _mtime in files:
+                    rel_dir = str(f.relative_to(output_path).parent)
+                    if rel_dir and rel_dir != ".":
+                        subfolders.add(rel_dir)
+
+            return web.json_response(
+                {"success": True, "subfolders": sorted(subfolders)}
+            )
+        except Exception as e:
+            self.logger.error(f"Subfolders error: {e}")
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
     async def generate_thumbnails(self, request):
