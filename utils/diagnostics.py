@@ -58,14 +58,33 @@ class GalleryDiagnostics:
     - Additional data specific to the diagnostic
     """
 
-    def __init__(self, db_path: str = "prompts.db"):
+    def __init__(self, db_path: str = None):
         """Initialize the diagnostics system.
 
         Args:
-            db_path: Path to the SQLite database file to diagnose
+            db_path: Path to the SQLite database file to diagnose.
+                     If None, resolves from config.json or defaults to
+                     prompts.db in the extension root.
         """
+        if db_path is None:
+            db_path = self._resolve_db_path()
         self.db_path = db_path
         self.logger = get_logger("prompt_manager.diagnostics")
+
+    @staticmethod
+    def _resolve_db_path() -> str:
+        """Resolve database path from config, matching PromptDatabase logic."""
+        extension_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        try:
+            from py.config import PromptManagerConfig
+
+            db_path = PromptManagerConfig.DEFAULT_DB_PATH
+        except Exception:
+            db_path = "prompts.db"
+
+        if not os.path.isabs(db_path):
+            db_path = os.path.join(extension_root, db_path)
+        return db_path
 
     def run_full_diagnostic(self) -> Dict[str, Any]:
         """Run a complete diagnostic check.
@@ -268,23 +287,10 @@ class GalleryDiagnostics:
 
         output_dirs = []
 
-        # Try to detect ComfyUI output directories
-        potential_dirs = [
-            "output",
-            "../output",
-            "../../output",
-            "ComfyUI/output",
-            "../ComfyUI/output",
-            "../../ComfyUI/output",
-        ]
-
-        for dir_path in potential_dirs:
-            abs_path = os.path.abspath(dir_path)
-            if os.path.exists(abs_path):
+        def _add_dir(abs_path, source):
+            if abs_path not in output_dirs:
                 output_dirs.append(abs_path)
-                self.logger.info(f"   [DIR] Found output dir: {abs_path}")
-
-                # Count images in this directory
+                self.logger.info(f"   [DIR] {source}: {abs_path}")
                 try:
                     image_files = []
                     for ext in [".png", ".jpg", ".jpeg", ".webp"]:
@@ -293,16 +299,40 @@ class GalleryDiagnostics:
                 except Exception as e:
                     self.logger.error(f"      [FAIL] Error scanning: {e}")
 
-        # Try ComfyUI's folder_paths
+        # Check user-configured gallery directories from config.json
+        try:
+            from py.config import GalleryConfig
+
+            for cfg_dir in GalleryConfig.MONITORING_DIRECTORIES:
+                abs_path = os.path.abspath(cfg_dir)
+                if os.path.exists(abs_path):
+                    _add_dir(abs_path, "Configured directory")
+        except Exception:
+            pass
+
+        # Check ComfyUI's own output directory (respects --output-directory)
         try:
             import folder_paths
 
             comfyui_output = folder_paths.get_output_directory()
-            if comfyui_output and comfyui_output not in output_dirs:
-                output_dirs.append(comfyui_output)
-                self.logger.info(f"   [DIR] ComfyUI output dir: {comfyui_output}")
+            if comfyui_output and os.path.exists(comfyui_output):
+                _add_dir(os.path.abspath(comfyui_output), "ComfyUI output dir")
         except ImportError:
             self.logger.warning("   [WARN]  ComfyUI folder_paths not available")
+
+        # Fallback: check common relative paths
+        if not output_dirs:
+            for dir_path in [
+                "output",
+                "../output",
+                "../../output",
+                "ComfyUI/output",
+                "../ComfyUI/output",
+                "../../ComfyUI/output",
+            ]:
+                abs_path = os.path.abspath(dir_path)
+                if os.path.exists(abs_path):
+                    _add_dir(abs_path, "Found output dir")
 
         return {
             "status": "ok" if output_dirs else "warning",
