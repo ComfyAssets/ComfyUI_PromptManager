@@ -389,47 +389,52 @@ class PromptManagerAPI(
 
     # ── Shared utilities used by multiple mixins ──────────────────────
 
-    def _enrich_prompt_images(self, prompts):
-        """Add url and thumbnail_url to each image in prompt results."""
+    def _enrich_images(self, images):
+        """Add url and thumbnail_url to a flat list of image dicts."""
         from urllib.parse import quote as url_quote
 
         output_dirs = self._get_all_output_dirs()
 
+        for image in images:
+            image_path_str = image.get("image_path", "")
+            if not image_path_str:
+                continue
+
+            img_path = Path(image_path_str)
+
+            # Set fallback url via image ID
+            if image.get("id"):
+                image["url"] = f"/prompt_manager/images/{image['id']}/file"
+
+            # Try each root to compute relative path and thumbnail URL
+            for output_path in output_dirs:
+                try:
+                    rel_path = img_path.resolve().relative_to(output_path.resolve())
+                    image["relative_path"] = str(rel_path)
+                    image["url"] = (
+                        f"/prompt_manager/images/serve/{url_quote(rel_path.as_posix(), safe='/')}"
+                    )
+
+                    # Check for thumbnail
+                    rel_no_ext = rel_path.with_suffix("")
+                    thumb_rel = (
+                        f"thumbnails/{rel_no_ext.as_posix()}_thumb{rel_path.suffix}"
+                    )
+                    thumb_abs = output_path / thumb_rel
+                    if thumb_abs.exists():
+                        image["thumbnail_url"] = (
+                            f"/prompt_manager/images/serve/{url_quote(thumb_rel, safe='/')}"
+                        )
+                    break  # Found matching root, stop searching
+                except (ValueError, RuntimeError):
+                    continue  # Try next root
+
+        return images
+
+    def _enrich_prompt_images(self, prompts):
+        """Add url and thumbnail_url to each image in prompt results."""
         for prompt in prompts:
-            for image in prompt.get("images", []):
-                image_path_str = image.get("image_path", "")
-                if not image_path_str:
-                    continue
-
-                img_path = Path(image_path_str)
-
-                # Set fallback url via image ID
-                if image.get("id"):
-                    image["url"] = f"/prompt_manager/images/{image['id']}/file"
-
-                # Try each root to compute relative path and thumbnail URL
-                for output_path in output_dirs:
-                    try:
-                        rel_path = img_path.resolve().relative_to(output_path.resolve())
-                        image["relative_path"] = str(rel_path)
-                        image["url"] = (
-                            f"/prompt_manager/images/serve/{url_quote(rel_path.as_posix(), safe='/')}"
-                        )
-
-                        # Check for thumbnail
-                        rel_no_ext = rel_path.with_suffix("")
-                        thumb_rel = (
-                            f"thumbnails/{rel_no_ext.as_posix()}_thumb{rel_path.suffix}"
-                        )
-                        thumb_abs = output_path / thumb_rel
-                        if thumb_abs.exists():
-                            image["thumbnail_url"] = (
-                                f"/prompt_manager/images/serve/{url_quote(thumb_rel, safe='/')}"
-                            )
-                        break  # Found matching root, stop searching
-                    except (ValueError, RuntimeError):
-                        continue  # Try next root
-
+            self._enrich_images(prompt.get("images", []))
         return prompts
 
     def _clean_nan_recursive(self, obj):

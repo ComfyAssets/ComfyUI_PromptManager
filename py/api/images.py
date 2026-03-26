@@ -81,6 +81,9 @@ class ImageRoutesMixin:
             # Clean up any NaN values that cause JSON parsing errors (recursive)
             cleaned_images = [self._clean_nan_recursive(image) for image in images]
 
+            # Add url and thumbnail_url so the frontend can serve them
+            self._enrich_images(cleaned_images)
+
             # Additional fallback: convert to JSON string and clean NaN values manually
             try:
                 response_data = {"success": True, "images": cleaned_images}
@@ -300,11 +303,13 @@ class ImageRoutesMixin:
 
             image_path = Path(image["image_path"]).resolve()
 
-            # Validate path is within the ComfyUI output directory
-            output_dir = self._find_comfyui_output_dir()
-            if output_dir:
-                output_path = Path(output_dir).resolve()
-                if not image_path.is_relative_to(output_path):
+            # Validate path is within any configured output directory
+            output_dirs = self._get_all_output_dirs()
+            if output_dirs:
+                allowed = any(
+                    image_path.is_relative_to(d.resolve()) for d in output_dirs
+                )
+                if not allowed:
                     return web.json_response(
                         {"success": False, "error": "Access denied"}, status=403
                     )

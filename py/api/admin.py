@@ -644,10 +644,11 @@ class AdminRoutesMixin:
 
             # Check image monitor status
             try:
-                from ...utils.image_monitor import _monitor_instance
+                from ...utils import image_monitor as im_mod
 
-                if _monitor_instance is not None:
-                    monitor_status = _monitor_instance.get_status()
+                monitor = im_mod._monitor_instance
+                if monitor is not None:
+                    monitor_status = monitor.get_status()
                     results["image_monitor"] = {
                         "status": (
                             "ok" if monitor_status.get("observer_alive") else "error"
