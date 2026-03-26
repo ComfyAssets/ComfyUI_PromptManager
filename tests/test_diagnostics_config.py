@@ -7,6 +7,8 @@ Verifies that:
 - Output directory checks consult GalleryConfig before falling back to heuristics
 """
 
+import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -87,9 +89,16 @@ class TestAdminEndpointsUseConfigPath(unittest.TestCase):
         stub.logger = MagicMock()
         return stub
 
+    def _run_async(self, coro):
+        """Run a coroutine on a fresh event loop to avoid aiohttp pollution."""
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
     def test_run_diagnostics_uses_model_db_path(self):
         """run_diagnostics should check self.db.model.db_path, not 'prompts.db'."""
-        # Mock server module so admin.py can be imported
         if "server" not in sys.modules:
             sys.modules["server"] = MagicMock()
 
@@ -110,15 +119,9 @@ class TestAdminEndpointsUseConfigPath(unittest.TestCase):
                 )
 
             stub = self._make_api_stub(db_file)
-            # Bind the unbound method to our stub
-            import asyncio
-
-            result = asyncio.get_event_loop().run_until_complete(
+            result = self._run_async(
                 AdminRoutesMixin.run_diagnostics(stub, MagicMock())
             )
-
-            # The response should be successful and find our test prompt
-            import json
 
             body = json.loads(result.body)
             self.assertTrue(body["success"])
@@ -136,17 +139,13 @@ class TestAdminEndpointsUseConfigPath(unittest.TestCase):
 
         stub = self._make_api_stub("/nonexistent/custom/prompts.db")
 
-        import asyncio
-        import json
-
-        result = asyncio.get_event_loop().run_until_complete(
-            AdminRoutesMixin.run_diagnostics(stub, MagicMock())
-        )
+        result = self._run_async(AdminRoutesMixin.run_diagnostics(stub, MagicMock()))
         body = json.loads(result.body)
         self.assertTrue(body["success"])
         self.assertEqual(body["diagnostics"]["database"]["status"], "error")
         self.assertIn(
-            "/nonexistent/custom/prompts.db", body["diagnostics"]["database"]["message"]
+            "/nonexistent/custom/prompts.db",
+            body["diagnostics"]["database"]["message"],
         )
 
     def test_backup_uses_model_db_path(self):
@@ -162,14 +161,10 @@ class TestAdminEndpointsUseConfigPath(unittest.TestCase):
 
         try:
             stub = self._make_api_stub(db_file)
-
-            import asyncio
-
-            result = asyncio.get_event_loop().run_until_complete(
+            result = self._run_async(
                 AdminRoutesMixin.backup_database(stub, MagicMock())
             )
 
-            # Should return the file contents as a download
             self.assertEqual(result.content_type, "application/octet-stream")
             self.assertGreater(len(result.body), 0)
         finally:
@@ -184,12 +179,7 @@ class TestAdminEndpointsUseConfigPath(unittest.TestCase):
 
         stub = self._make_api_stub("/nonexistent/custom/prompts.db")
 
-        import asyncio
-        import json
-
-        result = asyncio.get_event_loop().run_until_complete(
-            AdminRoutesMixin.backup_database(stub, MagicMock())
-        )
+        result = self._run_async(AdminRoutesMixin.backup_database(stub, MagicMock()))
         body = json.loads(result.body)
         self.assertFalse(body["success"])
         self.assertEqual(result.status, 404)
