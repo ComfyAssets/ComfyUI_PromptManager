@@ -10,7 +10,6 @@ Verifies that:
 
 import os
 import sys
-import tempfile
 import threading
 import unittest
 from unittest.mock import MagicMock, patch
@@ -25,7 +24,7 @@ sys.modules["server"] = _mock_server
 # Mock comfyui_integration to avoid import issues
 sys.modules["utils.comfyui_integration"] = MagicMock()
 
-from utils.image_monitor import ImageMonitor, get_image_monitor, _monitor_lock
+from utils.image_monitor import get_image_monitor
 import utils.image_monitor as im_mod
 
 

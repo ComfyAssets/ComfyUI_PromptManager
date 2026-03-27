@@ -307,8 +307,8 @@ class GalleryDiagnostics:
                 abs_path = os.path.abspath(cfg_dir)
                 if os.path.exists(abs_path):
                     _add_dir(abs_path, "Configured directory")
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"   [NOTE] Could not load gallery config: {e}")
 
         # Check ComfyUI's own output directory (respects --output-directory)
         try:

@@ -568,8 +568,8 @@ class AdminRoutesMixin:
                     abs_path = os.path.abspath(cfg_dir)
                     if os.path.exists(abs_path) and abs_path not in output_dirs:
                         output_dirs.append(abs_path)
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.debug(f"Could not load gallery config: {e}")
 
             # Check ComfyUI's own output directory (respects --output-directory)
             try:
@@ -581,7 +581,9 @@ class AdminRoutesMixin:
                     if abs_path not in output_dirs:
                         output_dirs.append(abs_path)
             except ImportError:
-                pass
+                self.logger.debug(
+                    "folder_paths not available, skipping ComfyUI output dir"
+                )
 
             # Fallback: check common relative paths
             if not output_dirs:
