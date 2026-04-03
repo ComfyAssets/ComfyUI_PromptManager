@@ -57,12 +57,19 @@ def detect_lora_manager(custom_path: str = "") -> Optional[str]:
         if p.is_dir() and _looks_like_lora_manager(p):
             return str(p.resolve())
 
-    # 2. Auto-detect via custom_nodes
+    # 2. Auto-detect via custom_nodes (case-insensitive scan)
     root = find_comfyui_root()
     if root:
-        candidate = root / "custom_nodes" / _LORA_MANAGER_DIR_NAME
-        if candidate.is_dir() and _looks_like_lora_manager(candidate):
-            return str(candidate.resolve())
+        custom_nodes = root / "custom_nodes"
+        if custom_nodes.is_dir():
+            for entry in custom_nodes.iterdir():
+                if (
+                    entry.is_dir()
+                    and "lora" in entry.name.lower()
+                    and "manager" in entry.name.lower()
+                    and _looks_like_lora_manager(entry)
+                ):
+                    return str(entry.resolve())
 
     return None
 
