@@ -113,25 +113,74 @@ def _looks_like_lora_manager(path: Path) -> bool:
 def find_lora_directories(lora_manager_path: str) -> List[str]:
     """Find directories that contain LoRA models (with .metadata.json files).
 
-    Searches common locations: the LoraManager extension dir itself,
-    and the ComfyUI models/loras directory.
+    Searches: ComfyUI models/loras, extra_model_paths.yaml lora dirs,
+    and the LoraManager extension dir itself.
     """
     dirs = set()
     lm_path = Path(lora_manager_path)
 
-    # Check ComfyUI models/loras
     root = find_comfyui_root()
     if root:
+        # Default models/loras
         models_loras = root / "models" / "loras"
         if models_loras.is_dir():
             dirs.add(str(models_loras.resolve()))
 
+        # Extra model paths from ComfyUI config
+        for extra_dir in _get_extra_lora_paths(root):
+            if extra_dir.is_dir():
+                dirs.add(str(extra_dir.resolve()))
+
+    # Also try folder_paths at runtime (catches all configured paths)
+    try:
+        import folder_paths
+
+        for p in folder_paths.get_folder_paths("loras"):
+            pp = Path(p)
+            if pp.is_dir():
+                dirs.add(str(pp.resolve()))
+    except (ImportError, AttributeError):
+        pass
+
     # Check for any .metadata.json in the LoraManager dir tree
-    # (some users store loras inside the extension)
     for meta in lm_path.rglob("*.metadata.json"):
         dirs.add(str(meta.parent.resolve()))
 
     return sorted(dirs)
+
+
+def _get_extra_lora_paths(comfyui_root: Path) -> List[Path]:
+    """Parse extra_model_paths.yaml for additional LoRA directories."""
+    results = []
+    for name in ("extra_model_paths.yaml", "extra_model_paths.yml"):
+        config_file = comfyui_root / name
+        if not config_file.exists():
+            continue
+        try:
+            import yaml
+
+            config = yaml.safe_load(config_file.read_text())
+            if not isinstance(config, dict):
+                continue
+            for section in config.values():
+                if not isinstance(section, dict):
+                    continue
+                base = Path(section.get("base_path", ""))
+                loras_val = section.get("loras", "")
+                if not loras_val:
+                    continue
+                for line in str(loras_val).strip().splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    p = Path(line)
+                    if not p.is_absolute():
+                        p = base / line
+                    if p.is_dir():
+                        results.append(p)
+        except Exception as e:
+            logger.debug(f"Failed to parse {config_file}: {e}")
+    return results
 
 
 def read_lora_metadata(metadata_path: Path) -> Optional[Dict]:
