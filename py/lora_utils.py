@@ -244,7 +244,7 @@ class TriggerWordCache:
         lora_dirs = find_lora_directories(lora_manager_path)
         for lora_dir in lora_dirs:
             dir_path = Path(lora_dir)
-            for meta_file in dir_path.glob("*.metadata.json"):
+            for meta_file in dir_path.rglob("*.metadata.json"):
                 metadata = read_lora_metadata(meta_file)
                 if not metadata:
                     continue

@@ -201,7 +201,7 @@ class LoraIntegrationMixin:
             meta_files = []
             for d in lora_dirs:
                 dir_path = Path(d)
-                meta_files.extend(dir_path.glob("*.metadata.json"))
+                meta_files.extend(dir_path.rglob("*.metadata.json"))
 
             total = len(meta_files)
             imported = 0
