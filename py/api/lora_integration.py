@@ -191,8 +191,21 @@ class LoraIntegrationMixin:
             await send_progress(
                 {
                     "type": "progress",
-                    "status": "Finding LoRA directories...",
+                    "status": "Clearing previous lora-manager imports...",
                     "progress": 0,
+                }
+            )
+
+            # Clear previous imports so reimport is always clean
+            await self._run_in_executor(
+                self.db.delete_prompts_by_category, "lora-manager"
+            )
+
+            await send_progress(
+                {
+                    "type": "progress",
+                    "status": "Finding LoRA directories...",
+                    "progress": 2,
                 }
             )
 

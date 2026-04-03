@@ -444,6 +444,38 @@ class PromptDatabase:
             conn.commit()
             return cursor.rowcount > 0
 
+    def delete_prompts_by_category(self, category: str) -> int:
+        """Delete all prompts with the given category.
+
+        Returns:
+            Number of prompts deleted.
+        """
+        with self.model.get_connection() as conn:
+            # Get IDs first for cascade cleanup
+            ids = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT id FROM prompts WHERE category = ?", (category,)
+                ).fetchall()
+            ]
+            if not ids:
+                return 0
+            placeholders = ",".join("?" * len(ids))
+            conn.execute(
+                f"DELETE FROM generated_images WHERE prompt_id IN ({placeholders})",
+                ids,
+            )
+            conn.execute(
+                f"DELETE FROM prompt_tags WHERE prompt_id IN ({placeholders})",
+                ids,
+            )
+            cursor = conn.execute(
+                f"DELETE FROM prompts WHERE id IN ({placeholders})",
+                ids,
+            )
+            conn.commit()
+            return cursor.rowcount
+
     def get_all_categories(self) -> List[str]:
         """
         Get all unique categories from the database.
