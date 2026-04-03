@@ -208,6 +208,24 @@ def get_trigger_words_from_metadata(metadata: Dict) -> List[str]:
     return []
 
 
+def get_example_prompt_from_metadata(metadata: Dict) -> Optional[str]:
+    """Extract an example prompt from civitai image metadata.
+
+    Looks at civitai.images[].meta.prompt for the first available example.
+    """
+    civitai = metadata.get("civitai", {})
+    images = civitai.get("images", [])
+    for img in images:
+        if not isinstance(img, dict):
+            continue
+        meta = img.get("meta")
+        if isinstance(meta, dict):
+            prompt = meta.get("prompt", "")
+            if isinstance(prompt, str) and prompt.strip():
+                return prompt.strip()
+    return None
+
+
 def get_model_name_from_metadata(metadata: Dict) -> str:
     """Extract the model display name from metadata."""
     # Try civitai model name first, then file_name, then fallback

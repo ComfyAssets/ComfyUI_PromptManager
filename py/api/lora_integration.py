@@ -154,6 +154,7 @@ class LoraIntegrationMixin:
             from ..config import IntegrationConfig
             from ..lora_utils import (
                 find_lora_directories,
+                get_example_prompt_from_metadata,
                 get_preview_image_from_metadata,
                 get_trigger_words_from_metadata,
                 get_model_name_from_metadata,
@@ -228,8 +229,9 @@ class LoraIntegrationMixin:
                     get_preview_image_from_metadata, metadata, meta_file
                 )
 
-                # Build prompt text from trigger words or model name
-                prompt_text = ", ".join(trigger_words) if trigger_words else model_name
+                # Build prompt text: prefer example prompt, then model name
+                example_prompt = get_example_prompt_from_metadata(metadata)
+                prompt_text = example_prompt or model_name
 
                 # Build tags
                 tags = ["lora-manager", f"lora:{model_name}"]
