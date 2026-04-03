@@ -30,15 +30,38 @@ _LORA_MANAGER_DIR_NAME = "ComfyUI-Lora-Manager"
 
 
 def find_comfyui_root() -> Optional[Path]:
-    """Walk upward from this file to find the ComfyUI root (contains main.py)."""
-    current = Path(__file__).resolve().parent
-    for _ in range(10):
-        if (current / "main.py").exists() and (current / "custom_nodes").exists():
-            return current
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
+    """Walk upward from this file to find the ComfyUI root (contains main.py).
+
+    Tries both the resolved (real) path and the unresolved path to handle
+    symlinked custom_nodes installations.
+    """
+    start_paths = [Path(__file__).resolve().parent]
+
+    # If installed via symlink, the unresolved path leads through custom_nodes/
+    raw_path = Path(__file__).parent
+    if raw_path.resolve() != raw_path:
+        start_paths.append(raw_path)
+
+    # Also try via folder_paths if available (ComfyUI runtime)
+    try:
+        import folder_paths
+
+        base = Path(folder_paths.base_path)
+        if base.is_dir():
+            return base
+    except (ImportError, AttributeError):
+        pass
+
+    for start in start_paths:
+        current = start
+        for _ in range(10):
+            if (current / "main.py").exists() and (current / "custom_nodes").exists():
+                return current
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+
     return None
 
 
