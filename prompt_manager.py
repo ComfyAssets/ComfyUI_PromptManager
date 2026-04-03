@@ -148,6 +148,9 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
             parts.append(append_text.strip())
         final_text = " ".join(parts)
 
+        # Inject LoRA trigger words if integration is enabled
+        final_text = self._inject_lora_trigger_words(final_text)
+
         # Use the combined text for encoding
         encoding_text = final_text
 

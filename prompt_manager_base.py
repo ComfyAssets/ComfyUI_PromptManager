@@ -102,6 +102,45 @@ class PromptManagerBase:
             self.logger.error(f"Error saving prompt to database: {e}")
             return None
 
+    def _inject_lora_trigger_words(self, text: str) -> str:
+        """Append LoRA trigger words if integration is enabled.
+
+        Returns the text unchanged if the integration is disabled or
+        LoraManager is not installed.
+        """
+        try:
+            from .py.config import IntegrationConfig
+        except ImportError:
+            try:
+                from py.config import IntegrationConfig
+            except ImportError:
+                return text
+
+        if (
+            not IntegrationConfig.LORA_MANAGER_ENABLED
+            or not IntegrationConfig.LORA_TRIGGER_WORDS_ENABLED
+        ):
+            return text
+
+        try:
+            from .py.lora_utils import get_trigger_cache, inject_trigger_words
+        except ImportError:
+            try:
+                from py.lora_utils import get_trigger_cache, inject_trigger_words
+            except ImportError:
+                return text
+
+        cache = get_trigger_cache()
+
+        # Lazy-load cache on first use
+        if not cache.is_loaded and IntegrationConfig.LORA_MANAGER_PATH:
+            cache.load(IntegrationConfig.LORA_MANAGER_PATH)
+
+        modified, injected = inject_trigger_words(text, cache)
+        if injected:
+            self.logger.info(f"Injected trigger words: {', '.join(injected)}")
+        return modified
+
     def _generate_hash(self, text: str) -> str:
         """Generate SHA256 hash for the prompt text.
 
