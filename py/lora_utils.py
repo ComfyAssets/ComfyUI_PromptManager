@@ -296,28 +296,29 @@ def get_preview_image_from_metadata(
     return images[0] if images else None
 
 
-def _to_thumbnail_url(url: str, width: int = 512) -> str:
-    """Convert a civitai image URL to a thumbnail URL.
-
-    Replaces /original=true/ or /width=N/ with /width=512/ for much
-    smaller downloads (~50KB vs ~5MB).
-    """
-    import re as _re
-
-    url = _re.sub(r"/original=true/", f"/width={width}/", url)
-    url = _re.sub(r"/width=\d+/", f"/width={width}/", url)
-    return url
+_THUMB_MAX_SIZE = 512
 
 
 def _download_one(url: str, local_path: Path, api_key: str) -> Optional[str]:
-    """Download a single image. Returns the local path on success, None on failure."""
+    """Download a single image, resize to thumbnail, save as JPEG."""
     try:
         headers = {"User-Agent": "ComfyUI-PromptManager/1.0"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            local_path.write_bytes(resp.read())
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read()
+
+        # Resize to thumbnail to save disk space
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.open(BytesIO(raw))
+        img.thumbnail((_THUMB_MAX_SIZE, _THUMB_MAX_SIZE), Image.LANCZOS)
+        img = img.convert("RGB")
+        img.save(str(local_path), "JPEG", quality=85)
+
         return str(local_path.resolve())
     except Exception as e:
         logger.debug(f"Failed to download {url}: {e}")
@@ -363,14 +364,13 @@ def download_civitai_images(
         if not isinstance(url, str) or not url.startswith("http"):
             continue
 
-        thumb_url = _to_thumbnail_url(url)
-        url_hash = hashlib.md5(thumb_url.encode()).hexdigest()[:12]
+        url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
         local_path = lora_cache / f"{url_hash}.jpg"
 
         if local_path.exists():
             cached.append(str(local_path.resolve()))
         else:
-            tasks.append((thumb_url, local_path))
+            tasks.append((url, local_path))
 
     if not tasks:
         return cached
