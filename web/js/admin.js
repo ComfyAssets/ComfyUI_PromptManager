@@ -881,7 +881,14 @@
                 const saved = await this.saveLoraSettings();
                 if (!saved) return;
 
-                this.showNotification("Scanning LoRA metadata...", "info");
+                // Close settings and show progress modal
+                this.hideModal("settingsModal");
+                document.getElementById("loraImportStatus").textContent = "Initializing...";
+                document.getElementById("loraImportBar").style.width = "0%";
+                document.getElementById("loraImportPercent").textContent = "0%";
+                document.getElementById("loraImportProcessed").textContent = "0 processed";
+                document.getElementById("loraImportImported").textContent = "0 imported";
+                this.showModal("loraImportModal");
 
                 try {
                     const res = await fetch("/prompt_manager/lora/scan", { method: "POST" });
@@ -901,18 +908,32 @@
                             if (!line.startsWith("data: ")) continue;
                             try {
                                 const data = JSON.parse(line.slice(6));
+                                const pct = data.progress || 0;
+                                document.getElementById("loraImportBar").style.width = `${pct}%`;
+                                document.getElementById("loraImportPercent").textContent = `${pct}%`;
+
+                                if (data.status) {
+                                    document.getElementById("loraImportStatus").textContent = data.status;
+                                }
+                                if (data.processed !== undefined) {
+                                    document.getElementById("loraImportProcessed").textContent = `${data.processed} processed`;
+                                }
+                                if (data.imported !== undefined) {
+                                    document.getElementById("loraImportImported").textContent = `${data.imported} imported`;
+                                }
+
                                 if (data.type === "complete") {
-                                    this.showNotification(
-                                        `LoRA import complete: ${data.imported} imported, ${data.skipped} skipped`,
-                                        data.imported > 0 ? "success" : "info"
-                                    );
+                                    document.getElementById("loraImportStatus").textContent =
+                                        `Done — ${data.imported} imported, ${data.skipped} skipped`;
                                     this.loadStatistics();
+                                    setTimeout(() => this.hideModal("loraImportModal"), 2000);
                                 }
                             } catch (e) { /* skip malformed SSE */ }
                         }
                     }
                 } catch (e) {
-                    this.showNotification("LoRA import failed: " + e.message, "error");
+                    document.getElementById("loraImportStatus").textContent = `Error: ${e.message}`;
+                    setTimeout(() => this.hideModal("loraImportModal"), 3000);
                 }
             }
 

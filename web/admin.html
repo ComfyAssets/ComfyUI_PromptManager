@@ -471,6 +471,32 @@
         </div>
     </div>
 
+    <!-- LoRA Import Progress Modal -->
+    <div id="loraImportModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-md w-full mx-4 border border-pm shadow-pm">
+            <h3 class="text-sm font-semibold text-pm mb-4">Importing LoRA Data</h3>
+
+            <div class="mb-3">
+                <p class="text-pm-secondary text-xs">Status:</p>
+                <p id="loraImportStatus" class="text-pm text-xs font-medium truncate">Initializing...</p>
+            </div>
+
+            <div class="mb-3">
+                <div class="flex justify-between text-xs text-pm-secondary mb-1">
+                    <span>Progress</span>
+                    <span id="loraImportPercent">0%</span>
+                </div>
+                <div class="w-full bg-pm-input rounded-full h-1.5">
+                    <div id="loraImportBar" class="bg-pm-accent h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+                <div class="flex justify-between text-[11px] text-pm-muted mt-1">
+                    <span id="loraImportProcessed">0 processed</span>
+                    <span id="loraImportImported">0 imported</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Bulk Tag Modal -->
     <div id="bulkTagModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
         <div class="bg-pm-surface rounded-pm-lg p-4 max-w-md w-full mx-4 border border-pm shadow-pm">
