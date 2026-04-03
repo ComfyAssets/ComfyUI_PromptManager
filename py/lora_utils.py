@@ -76,16 +76,12 @@ def detect_lora_manager(custom_path: str = "") -> Optional[str]:
 
 def _looks_like_lora_manager(path: Path) -> bool:
     """Heuristic: does this directory look like a LoraManager install?"""
-    # Check for characteristic files
-    markers = ["__init__.py", "README.md"]
-    has_marker = any((path / m).exists() for m in markers)
-    # Check for characteristic subdirectories or module name
-    has_lora_ref = (
-        (path / "lora_manager").is_dir()
-        or (path / "py").is_dir()
-        or "lora" in path.name.lower()
-    )
-    return has_marker and has_lora_ref
+    # Must have __init__.py (ComfyUI extension) or README.md
+    has_init = (path / "__init__.py").exists()
+    if not has_init:
+        return False
+    # Check for characteristic structure: py/ dir, or any .metadata.json nearby
+    return (path / "py").is_dir() or (path / "lora_manager").is_dir()
 
 
 # ── Metadata reading ─────────────────────────────────────────────────
