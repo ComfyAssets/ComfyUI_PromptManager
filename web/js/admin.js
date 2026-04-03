@@ -755,6 +755,7 @@
                 document.getElementById("webuiDisplayMode").value = this.settings.webuiDisplayMode;
                 this.renderScanPaths();
                 this.updateMonitoringStatus();
+                this.detectLoraManager();
                 this.showModal("settingsModal");
             }
 
@@ -773,6 +774,142 @@
                     }
                 } catch (error) {
                     statusEl.textContent = 'Unable to fetch status';
+                }
+            }
+
+            // ── LoraManager integration ──────────────────────────────
+
+            async detectLoraManager() {
+                const badge = document.getElementById("loraDetectionBadge");
+                const toggle = document.getElementById("loraEnabled");
+                const settings = document.getElementById("loraSettings");
+
+                try {
+                    // First check current status
+                    const statusRes = await fetch("/prompt_manager/lora/status");
+                    if (statusRes.ok) {
+                        const status = await statusRes.json();
+                        if (status.success && status.enabled) {
+                            badge.textContent = "enabled";
+                            badge.className = "text-[10px] px-1.5 py-0.5 rounded-full bg-green-500/20 text-green-400";
+                            toggle.checked = true;
+                            toggle.disabled = false;
+                            document.getElementById("loraManagerPath").value = status.path;
+                            document.getElementById("loraTriggerWords").checked = status.trigger_words_enabled;
+                            settings.classList.remove("hidden");
+                            this._loraPath = status.path;
+                            this._bindLoraEvents();
+                            return;
+                        }
+                    }
+
+                    // Try auto-detection
+                    const detectRes = await fetch("/prompt_manager/lora/detect");
+                    if (!detectRes.ok) return;
+                    const data = await detectRes.json();
+
+                    if (data.detected) {
+                        badge.textContent = "detected";
+                        badge.className = "text-[10px] px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-400";
+                        toggle.disabled = false;
+                        document.getElementById("loraManagerPath").value = data.path;
+                        this._loraPath = data.path;
+                    } else {
+                        badge.textContent = "not installed";
+                        badge.className = "text-[10px] px-1.5 py-0.5 rounded-full bg-pm-input text-pm-muted";
+                        toggle.disabled = true;
+                    }
+
+                    this._bindLoraEvents();
+                } catch (e) {
+                    badge.textContent = "error";
+                    badge.className = "text-[10px] px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-400";
+                }
+            }
+
+            _bindLoraEvents() {
+                if (this._loraBound) return;
+                this._loraBound = true;
+
+                const toggle = document.getElementById("loraEnabled");
+                const settings = document.getElementById("loraSettings");
+
+                toggle.addEventListener("change", () => {
+                    if (toggle.checked) {
+                        settings.classList.remove("hidden");
+                    } else {
+                        settings.classList.add("hidden");
+                    }
+                });
+
+                document.getElementById("loraImportBtn").addEventListener("click", () => {
+                    this.runLoraImport();
+                });
+            }
+
+            async saveLoraSettings() {
+                const enabled = document.getElementById("loraEnabled").checked;
+                const triggerWords = document.getElementById("loraTriggerWords").checked;
+                const path = this._loraPath || "";
+
+                try {
+                    const res = await fetch("/prompt_manager/lora/enable", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            enabled,
+                            path,
+                            trigger_words_enabled: triggerWords,
+                        }),
+                    });
+                    const data = await res.json();
+                    if (!data.success) {
+                        this.showNotification(data.error || "Failed to save LoRA settings", "error");
+                        return false;
+                    }
+                    return true;
+                } catch (e) {
+                    this.showNotification("Failed to save LoRA settings", "error");
+                    return false;
+                }
+            }
+
+            async runLoraImport() {
+                const saved = await this.saveLoraSettings();
+                if (!saved) return;
+
+                this.showNotification("Scanning LoRA metadata...", "info");
+
+                try {
+                    const res = await fetch("/prompt_manager/lora/scan", { method: "POST" });
+                    const reader = res.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = "";
+
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split("\n\n");
+                        buffer = lines.pop();
+
+                        for (const line of lines) {
+                            if (!line.startsWith("data: ")) continue;
+                            try {
+                                const data = JSON.parse(line.slice(6));
+                                if (data.type === "complete") {
+                                    this.showNotification(
+                                        `LoRA import complete: ${data.imported} imported, ${data.skipped} skipped`,
+                                        data.imported > 0 ? "success" : "info"
+                                    );
+                                    this.loadStatistics();
+                                }
+                            } catch (e) { /* skip malformed SSE */ }
+                        }
+                    }
+                } catch (e) {
+                    this.showNotification("LoRA import failed: " + e.message, "error");
                 }
             }
 
@@ -798,6 +935,10 @@
 
                     if (response.ok) {
                         const data = await response.json();
+
+                        // Save LoRA integration settings (fire-and-forget)
+                        await this.saveLoraSettings();
+
                         if (data.restart_required) {
                             this.showNotification("Settings saved. Restart ComfyUI for gallery path changes to take effect.", "warning");
                         } else {

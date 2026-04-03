@@ -406,6 +406,49 @@
                         <p class="text-xs text-pm-muted mt-1">Choose how the Web UI opens from ComfyUI nodes.</p>
                     </div>
                 </div>
+
+                <!-- Integrations Section -->
+                <div class="border-b border-pm pb-3">
+                    <h4 class="text-xs font-semibold text-pm-secondary mb-3 uppercase tracking-wide">Integrations</h4>
+
+                    <div class="mb-3">
+                        <div class="flex items-center justify-between mb-2">
+                            <div class="flex items-center gap-2">
+                                <label class="block text-xs font-medium text-pm-secondary">LoraManager</label>
+                                <span id="loraDetectionBadge" class="text-[10px] px-1.5 py-0.5 rounded-full bg-pm-input text-pm-muted">checking...</span>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" id="loraEnabled" class="sr-only peer" disabled>
+                                <div class="w-8 h-4 bg-pm-input rounded-full peer peer-checked:bg-pm-accent transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4"></div>
+                            </label>
+                        </div>
+
+                        <div id="loraSettings" class="hidden space-y-2 mt-2 pl-2 border-l-2 border-pm">
+                            <div>
+                                <label class="block text-xs font-medium text-pm-secondary mb-1">Path</label>
+                                <input type="text" id="loraManagerPath" readonly
+                                       class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] text-pm-muted">
+                            </div>
+
+                            <div class="flex items-center justify-between">
+                                <label class="block text-xs font-medium text-pm-secondary">Auto-inject trigger words</label>
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" id="loraTriggerWords" class="sr-only peer">
+                                    <div class="w-8 h-4 bg-pm-input rounded-full peer peer-checked:bg-pm-accent transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4"></div>
+                                </label>
+                            </div>
+                            <p class="text-xs text-pm-muted">Automatically append trigger words when <code class="text-pm-accent">&lt;lora:name:weight&gt;</code> is detected in prompts.</p>
+
+                            <button id="loraImportBtn" type="button"
+                                    class="mt-1 flex items-center gap-1 text-xs text-pm-accent hover:text-pm-accent-hover">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
+                                </svg>
+                                Import LoRA Data
+                            </button>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div class="flex justify-end gap-2 mt-4">
