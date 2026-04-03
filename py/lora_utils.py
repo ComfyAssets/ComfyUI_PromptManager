@@ -347,7 +347,7 @@ def download_civitai_images(
             if api_key:
                 headers["Authorization"] = f"Bearer {api_key}"
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=5) as resp:
                 local_path.write_bytes(resp.read())
             downloaded.append(str(local_path.resolve()))
         except Exception as e:

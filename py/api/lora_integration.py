@@ -321,19 +321,22 @@ class LoraIntegrationMixin:
                     self.logger.warning(f"Failed to import LoRA {model_name}: {e}")
                     skipped += 1
 
-                # Progress update every 5 items or at the end
-                if (i + 1) % 5 == 0 or i == total - 1:
-                    progress = int(5 + (90 * (i + 1) / max(total, 1)))
-                    await send_progress(
-                        {
-                            "type": "progress",
-                            "status": f"Processing: {model_name}",
-                            "progress": progress,
-                            "processed": i + 1,
-                            "imported": imported,
-                            "skipped": skipped,
-                        }
-                    )
+                # Progress update for every LoRA
+                progress = int(5 + (90 * (i + 1) / max(total, 1)))
+                img_count = len(all_images)
+                status = f"{model_name}"
+                if img_count:
+                    status += f" ({img_count} images)"
+                await send_progress(
+                    {
+                        "type": "progress",
+                        "status": status,
+                        "progress": progress,
+                        "processed": i + 1,
+                        "imported": imported,
+                        "skipped": skipped,
+                    }
+                )
 
             await send_progress(
                 {
