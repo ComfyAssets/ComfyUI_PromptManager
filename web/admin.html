@@ -1239,6 +1239,52 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
         </div>
     </div>
 
+    <!-- Update Notice Modal -->
+    <div id="updateNoticeModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-lg w-full mx-4 border border-pm shadow-pm">
+            <div class="flex items-start gap-3 mb-3">
+                <div class="flex-shrink-0 w-8 h-8 rounded-full bg-pm-warning-tint flex items-center justify-center">
+                    <svg class="w-4 h-4 text-pm-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h3 class="text-sm font-semibold text-pm">Image Rescan Required</h3>
+                    <p class="text-xs text-pm-secondary mt-0.5">Multi-directory support update</p>
+                </div>
+            </div>
+
+            <div class="bg-pm-warning-tint border border-pm-warning/40 rounded-pm-md p-3 mb-3">
+                <p class="text-pm text-xs leading-relaxed">
+                    This update changes how images are stored and organized. To ensure your gallery works correctly
+                    with the new multi-directory support, you need to <strong>rescan your images</strong>.
+                </p>
+                <ul class="text-pm text-xs mt-2 space-y-1 list-disc list-inside text-pm-secondary">
+                    <li>Folder information will be added to existing image records</li>
+                    <li>Your prompts and tags will not be affected</li>
+                    <li>The scan may take a few minutes depending on your library size</li>
+                </ul>
+            </div>
+
+            <div class="flex items-center justify-between mt-4">
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" id="dismissUpdateNotice" class="rounded border-pm bg-pm-input text-pm-accent focus:ring-pm-accent w-3.5 h-3.5">
+                    <span class="text-xs text-pm-muted">Don't show this again</span>
+                </label>
+                <div class="flex gap-2">
+                    <button id="updateNoticeDismiss"
+                            class="px-3 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                        Dismiss
+                    </button>
+                    <button id="updateNoticeScan"
+                            class="px-3 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
+                        Scan Now
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Auto Tag Download Modal -->
     <div id="autoTagDownloadModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
         <div class="bg-pm-surface rounded-pm-lg p-4 max-w-md w-full mx-4 border border-pm shadow-pm">

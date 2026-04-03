@@ -29,6 +29,7 @@
                 this.bindEvents();
                 this.initRouter();
                 this.loadInitialData();
+                this.checkUpdateNotice();
             }
 
             initRouter() {
@@ -726,6 +727,27 @@
                 document.getElementById(modalId).classList.add("hidden");
                 document.getElementById(modalId).classList.remove("flex");
                 document.body.style.overflow = "";
+            }
+
+            checkUpdateNotice() {
+                const NOTICE_VERSION = "3.2.0";
+                const dismissed = localStorage.getItem("pm_update_notice_dismissed");
+                if (dismissed === NOTICE_VERSION) return;
+
+                this.showModal("updateNoticeModal");
+
+                document.getElementById("updateNoticeDismiss").addEventListener("click", () => {
+                    if (document.getElementById("dismissUpdateNotice").checked) {
+                        localStorage.setItem("pm_update_notice_dismissed", NOTICE_VERSION);
+                    }
+                    this.hideModal("updateNoticeModal");
+                });
+
+                document.getElementById("updateNoticeScan").addEventListener("click", () => {
+                    localStorage.setItem("pm_update_notice_dismissed", NOTICE_VERSION);
+                    this.hideModal("updateNoticeModal");
+                    this.showScanModal();
+                });
             }
 
             showSettingsModal() {
