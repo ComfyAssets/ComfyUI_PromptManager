@@ -123,8 +123,7 @@ class PromptManagerAPI(
         self.db = PromptDatabase()
         self._cached_output_dir = None  # Lazy-cached by _find_comfyui_output_dir()
         self._html_cache = {}  # Cached HTML file contents keyed by path
-        self._gallery_cache = None  # Cached gallery file listing (Fix 2.4)
-        self._gallery_cache_time = 0  # Timestamp of last cache fill
+        self._gallery_cache = {}  # dict: path_str -> (files, timestamp)
         self._gallery_cache_ttl = 30  # Cache TTL in seconds
 
         # Run cleanup on initialization to remove any existing duplicates
@@ -156,8 +155,7 @@ class PromptManagerAPI(
 
         Called by the image monitor when new files are detected.
         """
-        self._gallery_cache = None
-        self._gallery_cache_time = 0
+        self._gallery_cache = {}
 
     def add_routes(self, routes):
         """Register all API routes with the ComfyUI server.
@@ -391,47 +389,52 @@ class PromptManagerAPI(
 
     # ── Shared utilities used by multiple mixins ──────────────────────
 
-    def _enrich_prompt_images(self, prompts):
-        """Add url and thumbnail_url to each image in prompt results."""
+    def _enrich_images(self, images):
+        """Add url and thumbnail_url to a flat list of image dicts."""
         from urllib.parse import quote as url_quote
 
-        output_dir = self._find_comfyui_output_dir()
-        output_path = Path(output_dir) if output_dir else None
+        output_dirs = self._get_all_output_dirs()
 
+        for image in images:
+            image_path_str = image.get("image_path", "")
+            if not image_path_str:
+                continue
+
+            img_path = Path(image_path_str)
+
+            # Set fallback url via image ID
+            if image.get("id"):
+                image["url"] = f"/prompt_manager/images/{image['id']}/file"
+
+            # Try each root to compute relative path and thumbnail URL
+            for output_path in output_dirs:
+                try:
+                    rel_path = img_path.resolve().relative_to(output_path.resolve())
+                    image["relative_path"] = str(rel_path)
+                    image["url"] = (
+                        f"/prompt_manager/images/serve/{url_quote(rel_path.as_posix(), safe='/')}"
+                    )
+
+                    # Check for thumbnail
+                    rel_no_ext = rel_path.with_suffix("")
+                    thumb_rel = (
+                        f"thumbnails/{rel_no_ext.as_posix()}_thumb{rel_path.suffix}"
+                    )
+                    thumb_abs = output_path / thumb_rel
+                    if thumb_abs.exists():
+                        image["thumbnail_url"] = (
+                            f"/prompt_manager/images/serve/{url_quote(thumb_rel, safe='/')}"
+                        )
+                    break  # Found matching root, stop searching
+                except (ValueError, RuntimeError):
+                    continue  # Try next root
+
+        return images
+
+    def _enrich_prompt_images(self, prompts):
+        """Add url and thumbnail_url to each image in prompt results."""
         for prompt in prompts:
-            for image in prompt.get("images", []):
-                image_path_str = image.get("image_path", "")
-                if not image_path_str:
-                    continue
-
-                img_path = Path(image_path_str)
-
-                # Set fallback url via image ID
-                if image.get("id"):
-                    image["url"] = f"/prompt_manager/images/{image['id']}/file"
-
-                # Try to compute relative path and thumbnail URL
-                if output_path:
-                    try:
-                        rel_path = img_path.resolve().relative_to(output_path.resolve())
-                        image["relative_path"] = str(rel_path)
-                        image["url"] = (
-                            f"/prompt_manager/images/serve/{url_quote(rel_path.as_posix(), safe='/')}"
-                        )
-
-                        # Check for thumbnail
-                        rel_no_ext = rel_path.with_suffix("")
-                        thumb_rel = (
-                            f"thumbnails/{rel_no_ext.as_posix()}_thumb{rel_path.suffix}"
-                        )
-                        thumb_abs = output_path / thumb_rel
-                        if thumb_abs.exists():
-                            image["thumbnail_url"] = (
-                                f"/prompt_manager/images/serve/{url_quote(thumb_rel, safe='/')}"
-                            )
-                    except (ValueError, RuntimeError):
-                        pass
-
+            self._enrich_images(prompt.get("images", []))
         return prompts
 
     def _clean_nan_recursive(self, obj):
@@ -549,6 +552,29 @@ class PromptManagerAPI(
                 self.logger.warning(f"  - {path} (invalid path)")
 
         return None
+
+    def _get_all_output_dirs(self):
+        """Get all configured output directories, falling back to auto-detect.
+
+        Returns:
+            List[Path]: Valid output directory paths, possibly empty.
+        """
+        from ..config import GalleryConfig
+
+        output_dirs = []
+        if GalleryConfig.MONITORING_DIRECTORIES:
+            for d in GalleryConfig.MONITORING_DIRECTORIES:
+                p = Path(d).resolve()
+                if p.is_dir():
+                    output_dirs.append(p)
+
+        # Fallback to auto-detect if no configured dirs are valid
+        if not output_dirs:
+            fallback = self._find_comfyui_output_dir()
+            if fallback:
+                output_dirs.append(Path(fallback))
+
+        return output_dirs
 
     def _extract_comfyui_metadata(self, image_path):
         """Extract ComfyUI workflow metadata from PNG image files."""

@@ -8,6 +8,7 @@
                 };
                 this.categories = [];
                 this.tags = [];
+                this.subfolders = [];
                 this.imageViewMode = 'fit'; // 'fit' or 'full'
                 this.naturalImageSize = { width: 0, height: 0 };
                 
@@ -28,6 +29,7 @@
                 this.bindEvents();
                 this.initRouter();
                 this.loadInitialData();
+                this.checkUpdateNotice();
             }
 
             initRouter() {
@@ -108,7 +110,7 @@
                 this.bindModalEvents();
 
                 // Auto-search on filter changes
-                ["searchCategory"].forEach((id) => {
+                ["searchCategory", "searchFolder"].forEach((id) => {
                     document.getElementById(id).addEventListener("change", () => this.search());
                 });
                 
@@ -121,6 +123,7 @@
                 document.getElementById("saveSettings").addEventListener("click", () => this.saveSettings());
                 document.getElementById("cancelSettings").addEventListener("click", () => this.hideModal("settingsModal"));
                 document.getElementById("refreshMonitoringStatus").addEventListener("click", () => this.updateMonitoringStatus());
+                document.getElementById("addScanPathBtn").addEventListener("click", () => this.addScanPath());
 
                 // Bulk tag modal
                 document.getElementById("confirmBulkTag").addEventListener("click", () => this.confirmBulkTag());
@@ -212,6 +215,7 @@
                     await Promise.all([
                         this.loadStatistics(),
                         this.loadCategories(),
+                        this.loadSubfolders(),
                         this.loadTags(),
                         this.loadRecentPrompts(),
                         this.loadSettings(),
@@ -230,8 +234,12 @@
                         if (data.success && data.settings) {
                             this.settings.resultTimeout = data.settings.result_timeout || 5;
                             this.settings.webuiDisplayMode = data.settings.webui_display_mode || 'popup';
-                            this.settings.galleryRootPath = data.settings.gallery_root_path || '';
                             this.settings.monitoredDirectories = data.settings.monitored_directories || [];
+                            this.settings.galleryRootPaths = data.settings.gallery_root_paths || [];
+                            // Backward compat: if server only returned old field
+                            if (!this.settings.galleryRootPaths.length && data.settings.gallery_root_path) {
+                                this.settings.galleryRootPaths = [data.settings.gallery_root_path];
+                            }
                         }
                     }
                 } catch (error) {
@@ -310,6 +318,38 @@
                 });
             }
 
+            async loadSubfolders() {
+                try {
+                    const response = await fetch("/prompt_manager/subfolders");
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success) {
+                            this.subfolders = data.subfolders;
+                            this.populateFolderDropdown();
+                        }
+                    }
+                } catch (error) {
+                    console.error("Subfolders error:", error);
+                }
+            }
+
+            populateFolderDropdown() {
+                const select = document.getElementById("searchFolder");
+                const current = select.value;
+                select.textContent = '';
+                const defaultOpt = document.createElement("option");
+                defaultOpt.value = "";
+                defaultOpt.textContent = "All Folders";
+                select.appendChild(defaultOpt);
+                this.subfolders.forEach((folder) => {
+                    const option = document.createElement("option");
+                    option.value = folder;
+                    option.textContent = folder;
+                    select.appendChild(option);
+                });
+                select.value = current;
+            }
+
             async loadRecentPrompts(page = 1) {
                 try {
                     this.pagination.currentPage = page;
@@ -377,6 +417,8 @@
                     if (searchText) params.append("text", searchText);
                     if (category) params.append("category", category);
                     if (tags) params.append("tags", tags);
+                    const folder = document.getElementById("searchFolder").value;
+                    if (folder) params.append("folder", folder);
                     params.append("limit", "100");
 
                     const response = await fetch(`/prompt_manager/search?${params}`);
@@ -687,10 +729,31 @@
                 document.body.style.overflow = "";
             }
 
+            checkUpdateNotice() {
+                const NOTICE_VERSION = "3.2.0";
+                const dismissed = localStorage.getItem("pm_update_notice_dismissed");
+                if (dismissed === NOTICE_VERSION) return;
+
+                this.showModal("updateNoticeModal");
+
+                document.getElementById("updateNoticeDismiss").addEventListener("click", () => {
+                    if (document.getElementById("dismissUpdateNotice").checked) {
+                        localStorage.setItem("pm_update_notice_dismissed", NOTICE_VERSION);
+                    }
+                    this.hideModal("updateNoticeModal");
+                });
+
+                document.getElementById("updateNoticeScan").addEventListener("click", () => {
+                    localStorage.setItem("pm_update_notice_dismissed", NOTICE_VERSION);
+                    this.hideModal("updateNoticeModal");
+                    this.showScanModal();
+                });
+            }
+
             showSettingsModal() {
                 document.getElementById("resultTimeout").value = this.settings.resultTimeout;
                 document.getElementById("webuiDisplayMode").value = this.settings.webuiDisplayMode;
-                document.getElementById("galleryRootPath").value = this.settings.galleryRootPath || '';
+                this.renderScanPaths();
                 this.updateMonitoringStatus();
                 this.showModal("settingsModal");
             }
@@ -716,11 +779,11 @@
             async saveSettings() {
                 const timeout = parseInt(document.getElementById("resultTimeout").value);
                 const displayMode = document.getElementById("webuiDisplayMode").value;
-                const galleryPath = document.getElementById("galleryRootPath").value.trim();
+                const galleryPaths = this._collectScanPaths().filter(p => p !== '');
 
                 this.settings.resultTimeout = timeout;
                 this.settings.webuiDisplayMode = displayMode;
-                this.settings.galleryRootPath = galleryPath;
+                this.settings.galleryRootPaths = galleryPaths;
 
                 try {
                     const response = await fetch("/prompt_manager/settings", {
@@ -729,7 +792,7 @@
                         body: JSON.stringify({
                             result_timeout: timeout,
                             webui_display_mode: displayMode,
-                            gallery_root_path: galleryPath
+                            gallery_root_paths: galleryPaths
                         }),
                     });
 
@@ -747,6 +810,57 @@
                 } catch (error) {
                     this.showNotification("Failed to save settings", "error");
                 }
+            }
+
+            renderScanPaths() {
+                const container = document.getElementById("scanPathsList");
+                const paths = this.settings.galleryRootPaths || [];
+                container.textContent = '';  // Clear safely
+
+                const toRender = paths.length > 0 ? paths : [''];
+                toRender.forEach((p, i) => {
+                    const row = document.createElement('div');
+                    row.className = 'flex gap-2 items-center';
+                    row.dataset.pathIndex = i;
+
+                    const input = document.createElement('input');
+                    input.type = 'text';
+                    input.value = p;
+                    input.placeholder = 'Leave empty for auto-detect';
+                    input.className = 'flex-1 px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none scan-path-input';
+
+                    const removeBtn = document.createElement('button');
+                    removeBtn.type = 'button';
+                    removeBtn.className = 'text-pm-muted hover:text-red-400 p-1 text-lg leading-none';
+                    removeBtn.title = 'Remove';
+                    removeBtn.textContent = '\u00d7';  // multiplication sign as X
+                    removeBtn.addEventListener('click', () => this.removeScanPath(i));
+
+                    row.appendChild(input);
+                    row.appendChild(removeBtn);
+                    container.appendChild(row);
+                });
+            }
+
+            addScanPath() {
+                const paths = this._collectScanPaths();
+                paths.push('');
+                this.settings.galleryRootPaths = paths;
+                this.renderScanPaths();
+                const inputs = document.querySelectorAll('.scan-path-input');
+                if (inputs.length) inputs[inputs.length - 1].focus();
+            }
+
+            removeScanPath(index) {
+                const paths = this._collectScanPaths();
+                paths.splice(index, 1);
+                this.settings.galleryRootPaths = paths;
+                this.renderScanPaths();
+            }
+
+            _collectScanPaths() {
+                return Array.from(document.querySelectorAll('.scan-path-input'))
+                    .map(input => input.value.trim());
             }
 
             toggleSelectAll(checked) {

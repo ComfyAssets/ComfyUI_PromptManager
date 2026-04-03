@@ -113,6 +113,10 @@ class PromptRoutesMixin:
         async def bulk_set_category_route(request):
             return await self.bulk_set_category(request)
 
+        @routes.get("/prompt_manager/subfolders")
+        async def get_subfolders_route(request):
+            return await self.get_subfolders(request)
+
         # Export functionality
         @routes.get("/prompt_manager/export")
         async def export_prompts_route(request):
@@ -126,6 +130,8 @@ class PromptRoutesMixin:
             tags_str = request.query.get("tags", "").strip()
             min_rating = request.query.get("min_rating", 0)
             limit = int(request.query.get("limit", 50))
+
+            folder = request.query.get("folder", "").strip() or None
 
             tags = None
             if tags_str:
@@ -143,6 +149,7 @@ class PromptRoutesMixin:
                 tags=tags,
                 rating_min=min_rating,
                 limit=limit,
+                folder=folder,
             )
             self._enrich_prompt_images(results)
 
@@ -156,6 +163,20 @@ class PromptRoutesMixin:
                 {"success": False, "error": f"Search failed: {str(e)}", "results": []},
                 status=500,
             )
+
+    async def get_subfolders(self, request):
+        """Get distinct subfolder values derived from generated image paths."""
+        try:
+            from ..config import GalleryConfig
+
+            root_dirs = list(GalleryConfig.MONITORING_DIRECTORIES) or None
+            subfolders = await self._run_in_executor(
+                self.db.get_prompt_subfolders, root_dirs
+            )
+            return web.json_response({"success": True, "subfolders": subfolders})
+        except Exception as e:
+            self.logger.error(f"Subfolders error: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=500)
 
     async def get_recent_prompts(self, request):
         """Retrieve recently created prompts with pagination support."""

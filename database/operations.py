@@ -187,6 +187,7 @@ class PromptDatabase:
         rating_max: Optional[int] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
+        folder: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -201,6 +202,7 @@ class PromptDatabase:
             rating_max: Maximum rating filter
             date_from: Start date filter (ISO format)
             date_to: End date filter (ISO format)
+            folder: Filter by subfolder name in generated image paths
             limit: Maximum number of results
             offset: Number of results to skip
 
@@ -226,6 +228,26 @@ class PromptDatabase:
                     "  JOIN tags t ON pt.tag_id = t.id WHERE t.name = ?)"
                 )
                 params.append(tag)
+
+        if folder:
+            # Escape LIKE wildcards in the folder name
+            safe_folder = (
+                folder.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            query_parts.append(
+                "AND prompts.id IN ("
+                "  SELECT DISTINCT prompt_id FROM generated_images"
+                "  WHERE image_path LIKE ? ESCAPE '\\'"
+                "  OR image_path LIKE ? ESCAPE '\\'"
+                "  OR image_path LIKE ? ESCAPE '\\'"
+                ")"
+            )
+            # Pattern 1: folder between forward slashes (Unix + normalized Windows)
+            params.append(f"%/{safe_folder}/%")
+            # Pattern 2: folder between backslashes (Windows native)
+            params.append(f"%\\\\{safe_folder}\\\\%")
+            # Pattern 3: folder at start of a relative path
+            params.append(f"{safe_folder}/%")
 
         if rating_min is not None:
             query_parts.append("AND rating >= ?")
@@ -434,6 +456,46 @@ class PromptDatabase:
                 "SELECT DISTINCT TRIM(category) as category FROM prompts WHERE category IS NOT NULL AND TRIM(category) != '' ORDER BY category"
             )
             return [row["category"] for row in cursor.fetchall()]
+
+    def get_prompt_subfolders(self, root_dirs: Optional[List[str]] = None) -> List[str]:
+        """
+        Get distinct subfolder paths from generated_images.
+
+        Extracts the directory portion of image_path, made relative to
+        root_dirs if provided. Returns sorted unique folder names.
+        """
+        with self.model.get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT DISTINCT image_path FROM generated_images "
+                "WHERE image_path IS NOT NULL AND image_path != ''"
+            )
+
+            folders = set()
+            for row in cursor.fetchall():
+                image_path = row["image_path"]
+                parent = os.path.dirname(image_path)
+                if not parent:
+                    continue
+
+                made_relative = False
+                if root_dirs:
+                    for root in root_dirs:
+                        try:
+                            rel = os.path.relpath(parent, root)
+                            if not rel.startswith(".."):
+                                if rel != ".":
+                                    folders.add(rel)
+                                made_relative = True
+                                break
+                        except ValueError:
+                            continue
+
+                if not made_relative:
+                    basename = os.path.basename(parent)
+                    if basename:
+                        folders.add(basename)
+
+        return sorted(folders)
 
     def get_all_tags(self) -> List[str]:
         """
