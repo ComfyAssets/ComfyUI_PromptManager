@@ -197,11 +197,14 @@ def read_lora_metadata(metadata_path: Path) -> Optional[Dict]:
         return None
 
 
+def _get_civitai(metadata: Dict) -> Dict:
+    """Safely get the civitai dict, handling None values."""
+    return metadata.get("civitai") or {}
+
+
 def get_trigger_words_from_metadata(metadata: Dict) -> List[str]:
     """Extract trigger words from a parsed LoraManager metadata dict."""
-    civitai = metadata.get("civitai", {})
-    if not civitai:
-        return []
+    civitai = _get_civitai(metadata)
     words = civitai.get("trainedWords", [])
     if isinstance(words, list):
         return [w.strip() for w in words if isinstance(w, str) and w.strip()]
@@ -213,8 +216,8 @@ def get_example_prompt_from_metadata(metadata: Dict) -> Optional[str]:
 
     Looks at civitai.images[].meta.prompt for the first available example.
     """
-    civitai = metadata.get("civitai", {})
-    images = civitai.get("images", [])
+    civitai = _get_civitai(metadata)
+    images = civitai.get("images", []) or []
     for img in images:
         if not isinstance(img, dict):
             continue
@@ -226,43 +229,69 @@ def get_example_prompt_from_metadata(metadata: Dict) -> Optional[str]:
     return None
 
 
+def get_civitai_image_urls(metadata: Dict) -> List[str]:
+    """Extract all civitai example image URLs from metadata."""
+    civitai = _get_civitai(metadata)
+    urls = []
+    for img in civitai.get("images", []) or []:
+        if not isinstance(img, dict):
+            continue
+        url = img.get("url", "")
+        if isinstance(url, str) and url.strip():
+            urls.append(url.strip())
+    return urls
+
+
 def get_model_name_from_metadata(metadata: Dict) -> str:
     """Extract the model display name from metadata."""
-    # Try civitai model name first, then file_name, then fallback
     name = metadata.get("model_name", "")
     if not name:
-        civitai = metadata.get("civitai", {})
-        model = civitai.get("model", {})
+        civitai = _get_civitai(metadata)
+        model = civitai.get("model") or {}
         name = model.get("name", "")
     if not name:
         name = metadata.get("file_name", "unknown")
     return name
 
 
-def get_preview_image_from_metadata(
-    metadata: Dict, metadata_path: Path
-) -> Optional[str]:
-    """Find the preview image path for a LoRA from its metadata.
+def get_preview_images_from_metadata(metadata: Dict, metadata_path: Path) -> List[str]:
+    """Find all local preview/example image paths for a LoRA.
 
     Returns:
-        Absolute path string to the preview image, or None.
+        List of absolute path strings to image files.
     """
+    results = []
     lora_dir = metadata_path.parent
     file_name = metadata.get("file_name", "")
     if not file_name:
-        # Derive from metadata filename: "foo.metadata.json" -> "foo"
         stem = metadata_path.name.replace(".metadata.json", "")
         file_name = stem
 
     base_name = Path(file_name).stem
 
     # Check standard preview naming conventions
-    for ext in (".png", ".jpg", ".jpeg", ".preview.png", ".preview.jpg"):
+    for ext in (
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".preview.png",
+        ".preview.jpg",
+        ".preview.jpeg",
+    ):
         candidate = lora_dir / f"{base_name}{ext}"
         if candidate.exists():
-            return str(candidate.resolve())
+            results.append(str(candidate.resolve()))
 
-    return None
+    return results
+
+
+def get_preview_image_from_metadata(
+    metadata: Dict, metadata_path: Path
+) -> Optional[str]:
+    """Find the first preview image path for a LoRA (backward compat)."""
+    images = get_preview_images_from_metadata(metadata, metadata_path)
+    return images[0] if images else None
 
 
 def get_example_images_dir(lora_manager_path: str) -> Optional[str]:

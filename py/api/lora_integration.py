@@ -155,7 +155,7 @@ class LoraIntegrationMixin:
             from ..lora_utils import (
                 find_lora_directories,
                 get_example_prompt_from_metadata,
-                get_preview_image_from_metadata,
+                get_preview_images_from_metadata,
                 get_trigger_words_from_metadata,
                 get_model_name_from_metadata,
                 read_lora_metadata,
@@ -225,8 +225,8 @@ class LoraIntegrationMixin:
 
                 model_name = get_model_name_from_metadata(metadata)
                 trigger_words = get_trigger_words_from_metadata(metadata)
-                preview_path = await self._run_in_executor(
-                    get_preview_image_from_metadata, metadata, meta_file
+                preview_paths = await self._run_in_executor(
+                    get_preview_images_from_metadata, metadata, meta_file
                 )
 
                 # Build prompt text: prefer example prompt, then model name
@@ -250,12 +250,12 @@ class LoraIntegrationMixin:
                     )
 
                     if existing:
-                        # Link preview image if we have one and it's not already linked
-                        if preview_path:
+                        # Link all preview images
+                        for pp in preview_paths:
                             await self._run_in_executor(
                                 self.db.link_image_to_prompt,
                                 existing["id"],
-                                preview_path,
+                                pp,
                             )
                         skipped += 1
                     else:
@@ -269,14 +269,13 @@ class LoraIntegrationMixin:
                             prompt_hash,
                         )
 
-                        if prompt_id and preview_path:
-                            await self._run_in_executor(
-                                self.db.link_image_to_prompt,
-                                prompt_id,
-                                preview_path,
-                            )
-
                         if prompt_id:
+                            for pp in preview_paths:
+                                await self._run_in_executor(
+                                    self.db.link_image_to_prompt,
+                                    prompt_id,
+                                    pp,
+                                )
                             imported += 1
                         else:
                             skipped += 1
