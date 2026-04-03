@@ -232,7 +232,7 @@ class LoraIntegrationMixin:
                 prompt_text = ", ".join(trigger_words) if trigger_words else model_name
 
                 # Build tags
-                tags = ["lora", f"lora:{model_name}"]
+                tags = ["lora-manager", f"lora:{model_name}"]
                 tags.extend(trigger_words)
 
                 # Save to database via existing mechanism
@@ -260,7 +260,7 @@ class LoraIntegrationMixin:
                         prompt_id = await self._run_in_executor(
                             self.db.save_prompt,
                             prompt_text,
-                            "lora",  # category
+                            "lora-manager",  # category
                             tags,
                             None,  # rating
                             None,  # notes
