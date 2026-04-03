@@ -497,7 +497,7 @@ class AdminRoutesMixin:
 
             # Check database
             try:
-                db_path = "prompts.db"
+                db_path = self.db.model.db_path
                 if os.path.exists(db_path):
                     with sqlite3.connect(db_path) as conn:
                         conn.row_factory = sqlite3.Row
@@ -559,12 +559,38 @@ class AdminRoutesMixin:
 
             # Check output directories
             output_dirs = []
-            potential_dirs = ["output", "../output", "../../output"]
 
-            for dir_path in potential_dirs:
-                abs_path = os.path.abspath(dir_path)
-                if os.path.exists(abs_path):
-                    output_dirs.append(abs_path)
+            # Check user-configured gallery directories from config.json
+            try:
+                from ..config import GalleryConfig
+
+                for cfg_dir in GalleryConfig.MONITORING_DIRECTORIES:
+                    abs_path = os.path.abspath(cfg_dir)
+                    if os.path.exists(abs_path) and abs_path not in output_dirs:
+                        output_dirs.append(abs_path)
+            except Exception as e:
+                self.logger.debug(f"Could not load gallery config: {e}")
+
+            # Check ComfyUI's own output directory (respects --output-directory)
+            try:
+                import folder_paths
+
+                comfyui_output = folder_paths.get_output_directory()
+                if comfyui_output and os.path.exists(comfyui_output):
+                    abs_path = os.path.abspath(comfyui_output)
+                    if abs_path not in output_dirs:
+                        output_dirs.append(abs_path)
+            except ImportError:
+                self.logger.debug(
+                    "folder_paths not available, skipping ComfyUI output dir"
+                )
+
+            # Fallback: check common relative paths
+            if not output_dirs:
+                for dir_path in ["output", "../output", "../../output"]:
+                    abs_path = os.path.abspath(dir_path)
+                    if os.path.exists(abs_path) and abs_path not in output_dirs:
+                        output_dirs.append(abs_path)
 
             results["comfyui_output"] = {
                 "status": "ok" if output_dirs else "warning",
@@ -801,7 +827,7 @@ class AdminRoutesMixin:
     async def backup_database(self, request):
         """Backup the entire prompts.db database file."""
         try:
-            db_path = "prompts.db"
+            db_path = self.db.model.db_path
 
             if not os.path.exists(db_path):
                 return web.json_response(
@@ -894,7 +920,7 @@ class AdminRoutesMixin:
                     cursor = conn.execute("SELECT COUNT(*) as count FROM prompts")
                     prompt_count = cursor.fetchone()["count"]
 
-                db_path = "prompts.db"
+                db_path = self.db.model.db_path
                 backup_path = f"{db_path}.backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
                 if os.path.exists(db_path):

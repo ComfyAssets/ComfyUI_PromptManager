@@ -219,14 +219,10 @@ class PromptManagerBase:
         }
 
     def cleanup_gallery_system(self):
-        """Clean up gallery system resources."""
-        try:
-            if hasattr(self, "image_monitor"):
-                self.image_monitor.stop_monitoring()
-            self.logger.debug("Gallery system cleaned up")
-        except Exception as e:
-            self.logger.error(f"Error cleaning up gallery system: {e}")
+        """Clean up gallery system resources.
 
-    def __del__(self):
-        """Cleanup when object is destroyed."""
-        self.cleanup_gallery_system()
+        Note: The image monitor is a singleton shared across all node instances,
+        so we intentionally do NOT stop it here. It should run for the entire
+        ComfyUI session. Stopping it would kill monitoring for all nodes.
+        """
+        self.logger.debug("Gallery system cleaned up (monitor continues running)")
