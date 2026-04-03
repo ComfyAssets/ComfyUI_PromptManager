@@ -296,13 +296,41 @@ def get_preview_image_from_metadata(
     return images[0] if images else None
 
 
+def _to_thumbnail_url(url: str, width: int = 512) -> str:
+    """Convert a civitai image URL to a thumbnail URL.
+
+    Replaces /original=true/ or /width=N/ with /width=512/ for much
+    smaller downloads (~50KB vs ~5MB).
+    """
+    import re as _re
+
+    url = _re.sub(r"/original=true/", f"/width={width}/", url)
+    url = _re.sub(r"/width=\d+/", f"/width={width}/", url)
+    return url
+
+
+def _download_one(url: str, local_path: Path, api_key: str) -> Optional[str]:
+    """Download a single image. Returns the local path on success, None on failure."""
+    try:
+        headers = {"User-Agent": "ComfyUI-PromptManager/1.0"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            local_path.write_bytes(resp.read())
+        return str(local_path.resolve())
+    except Exception as e:
+        logger.debug(f"Failed to download {url}: {e}")
+        return None
+
+
 def download_civitai_images(
     metadata: Dict, metadata_path: Path, cache_dir: Path, api_key: str = ""
 ) -> List[str]:
     """Download civitai example images to a local cache directory.
 
-    Images are stored as ``<cache_dir>/<lora_stem>/<hash>.jpg``.
-    Already-downloaded files are skipped.
+    Uses thumbnail URLs (512px) instead of full-size originals, and
+    downloads in parallel (up to 8 concurrent) for speed.
 
     Args:
         api_key: CivitAI API key for authenticated downloads (NSFW content).
@@ -310,6 +338,8 @@ def download_civitai_images(
     Returns:
         List of absolute paths to downloaded image files.
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     civitai = _get_civitai(metadata)
     images = civitai.get("images", []) or []
     if not images:
@@ -323,7 +353,9 @@ def download_civitai_images(
     lora_cache = cache_dir / lora_stem
     lora_cache.mkdir(parents=True, exist_ok=True)
 
-    downloaded = []
+    # Build download tasks
+    cached = []
+    tasks = []  # (url, local_path)
     for img in images:
         if not isinstance(img, dict):
             continue
@@ -331,29 +363,30 @@ def download_civitai_images(
         if not isinstance(url, str) or not url.startswith("http"):
             continue
 
-        # Deterministic filename from URL
-        url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
-        ext = ".jpg"  # civitai images are typically jpeg
-        if ".png" in url.lower():
-            ext = ".png"
-        local_path = lora_cache / f"{url_hash}{ext}"
+        thumb_url = _to_thumbnail_url(url)
+        url_hash = hashlib.md5(thumb_url.encode()).hexdigest()[:12]
+        local_path = lora_cache / f"{url_hash}.jpg"
 
         if local_path.exists():
-            downloaded.append(str(local_path.resolve()))
-            continue
+            cached.append(str(local_path.resolve()))
+        else:
+            tasks.append((thumb_url, local_path))
 
-        try:
-            headers = {"User-Agent": "ComfyUI-PromptManager/1.0"}
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                local_path.write_bytes(resp.read())
-            downloaded.append(str(local_path.resolve()))
-        except Exception as e:
-            logger.debug(f"Failed to download {url}: {e}")
+    if not tasks:
+        return cached
 
-    return downloaded
+    # Download in parallel
+    downloaded = []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [
+            pool.submit(_download_one, url, path, api_key) for url, path in tasks
+        ]
+        for fut in futures:
+            result = fut.result()
+            if result:
+                downloaded.append(result)
+
+    return cached + downloaded
 
 
 def get_lora_image_cache_dir() -> Path:
