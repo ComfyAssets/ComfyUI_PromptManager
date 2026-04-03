@@ -76,6 +76,7 @@ class LoraIntegrationMixin:
                     "enabled": config["enabled"],
                     "path": config["path"],
                     "trigger_words_enabled": config["trigger_words_enabled"],
+                    "civitai_api_key": config.get("civitai_api_key", ""),
                     "detected": detected_path is not None,
                     "detected_path": detected_path or "",
                     "trigger_cache_loaded": cache.is_loaded,
@@ -94,6 +95,7 @@ class LoraIntegrationMixin:
             enabled = data.get("enabled", False)
             path = data.get("path", "")
             trigger_words = data.get("trigger_words_enabled", False)
+            civitai_key = data.get("civitai_api_key", "")
 
             from ..config import IntegrationConfig, PromptManagerConfig
             from ..lora_utils import detect_lora_manager, get_trigger_cache
@@ -115,6 +117,7 @@ class LoraIntegrationMixin:
             IntegrationConfig.LORA_MANAGER_ENABLED = enabled
             IntegrationConfig.LORA_MANAGER_PATH = path
             IntegrationConfig.LORA_TRIGGER_WORDS_ENABLED = trigger_words
+            IntegrationConfig.CIVITAI_API_KEY = civitai_key
 
             # Persist to config.json
             config_dir = os.path.dirname(
@@ -248,7 +251,11 @@ class LoraIntegrationMixin:
                     get_preview_images_from_metadata, metadata, meta_file
                 )
                 civitai_paths = await self._run_in_executor(
-                    download_civitai_images, metadata, meta_file, cache_dir
+                    download_civitai_images,
+                    metadata,
+                    meta_file,
+                    cache_dir,
+                    IntegrationConfig.CIVITAI_API_KEY,
                 )
 
                 # Merge, local first, dedup

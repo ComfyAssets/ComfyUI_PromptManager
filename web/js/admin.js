@@ -796,6 +796,7 @@
                             toggle.disabled = false;
                             document.getElementById("loraManagerPath").value = status.path;
                             document.getElementById("loraTriggerWords").checked = status.trigger_words_enabled;
+                            document.getElementById("civitaiApiKey").value = status.civitai_api_key || "";
                             settings.classList.remove("hidden");
                             this._loraPath = status.path;
                             this._bindLoraEvents();
@@ -850,6 +851,7 @@
             async saveLoraSettings() {
                 const enabled = document.getElementById("loraEnabled").checked;
                 const triggerWords = document.getElementById("loraTriggerWords").checked;
+                const civitaiKey = document.getElementById("civitaiApiKey").value.trim();
                 const path = this._loraPath || "";
 
                 try {
@@ -860,6 +862,7 @@
                             enabled,
                             path,
                             trigger_words_enabled: triggerWords,
+                            civitai_api_key: civitaiKey,
                         }),
                     });
                     const data = await res.json();

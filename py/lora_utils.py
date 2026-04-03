@@ -297,12 +297,15 @@ def get_preview_image_from_metadata(
 
 
 def download_civitai_images(
-    metadata: Dict, metadata_path: Path, cache_dir: Path
+    metadata: Dict, metadata_path: Path, cache_dir: Path, api_key: str = ""
 ) -> List[str]:
     """Download civitai example images to a local cache directory.
 
     Images are stored as ``<cache_dir>/<lora_stem>/<hash>.jpg``.
     Already-downloaded files are skipped.
+
+    Args:
+        api_key: CivitAI API key for authenticated downloads (NSFW content).
 
     Returns:
         List of absolute paths to downloaded image files.
@@ -340,9 +343,10 @@ def download_civitai_images(
             continue
 
         try:
-            req = urllib.request.Request(
-                url, headers={"User-Agent": "ComfyUI-PromptManager/1.0"}
-            )
+            headers = {"User-Agent": "ComfyUI-PromptManager/1.0"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=15) as resp:
                 local_path.write_bytes(resp.read())
             downloaded.append(str(local_path.resolve()))

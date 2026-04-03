@@ -212,6 +212,7 @@ class IntegrationConfig:
     LORA_MANAGER_ENABLED = False
     LORA_MANAGER_PATH = ""  # Auto-detected if empty
     LORA_TRIGGER_WORDS_ENABLED = False  # Auto-inject trigger words into prompts
+    CIVITAI_API_KEY = ""  # Required to download NSFW example images
 
     @classmethod
     def get_config(cls) -> Dict[str, Any]:
@@ -220,6 +221,7 @@ class IntegrationConfig:
                 "enabled": cls.LORA_MANAGER_ENABLED,
                 "path": cls.LORA_MANAGER_PATH,
                 "trigger_words_enabled": cls.LORA_TRIGGER_WORDS_ENABLED,
+                "civitai_api_key": cls.CIVITAI_API_KEY,
             },
         }
 
@@ -232,6 +234,8 @@ class IntegrationConfig:
             cls.LORA_MANAGER_PATH = lora["path"]
         if "trigger_words_enabled" in lora:
             cls.LORA_TRIGGER_WORDS_ENABLED = lora["trigger_words_enabled"]
+        if "civitai_api_key" in lora:
+            cls.CIVITAI_API_KEY = lora["civitai_api_key"]
 
 
 class PromptManagerConfig:
