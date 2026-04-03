@@ -311,12 +311,16 @@ class ImageRoutesMixin:
                 from ..config import IntegrationConfig
 
                 if IntegrationConfig.LORA_MANAGER_ENABLED:
-                    from ..lora_utils import find_lora_directories
+                    from ..lora_utils import (
+                        find_lora_directories,
+                        get_lora_image_cache_dir,
+                    )
 
                     lora_dirs = find_lora_directories(
                         IntegrationConfig.LORA_MANAGER_PATH
                     )
                     allowed_dirs.extend(Path(d) for d in lora_dirs)
+                    allowed_dirs.append(get_lora_image_cache_dir())
             except Exception:
                 pass
 

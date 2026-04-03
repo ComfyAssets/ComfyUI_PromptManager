@@ -153,8 +153,10 @@ class LoraIntegrationMixin:
         try:
             from ..config import IntegrationConfig
             from ..lora_utils import (
+                download_civitai_images,
                 find_lora_directories,
                 get_example_prompt_from_metadata,
+                get_lora_image_cache_dir,
                 get_preview_images_from_metadata,
                 get_trigger_words_from_metadata,
                 get_model_name_from_metadata,
@@ -230,6 +232,8 @@ class LoraIntegrationMixin:
                 }
             )
 
+            cache_dir = get_lora_image_cache_dir()
+
             for i, meta_file in enumerate(meta_files):
                 metadata = await self._run_in_executor(read_lora_metadata, meta_file)
                 if not metadata:
@@ -238,9 +242,22 @@ class LoraIntegrationMixin:
 
                 model_name = get_model_name_from_metadata(metadata)
                 trigger_words = get_trigger_words_from_metadata(metadata)
+
+                # Collect all images: local previews + downloaded civitai examples
                 preview_paths = await self._run_in_executor(
                     get_preview_images_from_metadata, metadata, meta_file
                 )
+                civitai_paths = await self._run_in_executor(
+                    download_civitai_images, metadata, meta_file, cache_dir
+                )
+
+                # Merge, local first, dedup
+                seen = set(preview_paths)
+                all_images = list(preview_paths)
+                for cp in civitai_paths:
+                    if cp not in seen:
+                        all_images.append(cp)
+                        seen.add(cp)
 
                 # Build prompt text: prefer example prompt, then model name
                 example_prompt = get_example_prompt_from_metadata(metadata)
@@ -263,8 +280,8 @@ class LoraIntegrationMixin:
                     )
 
                     if existing:
-                        # Link all preview images
-                        for pp in preview_paths:
+                        # Link all images
+                        for pp in all_images:
                             await self._run_in_executor(
                                 self.db.link_image_to_prompt,
                                 existing["id"],
@@ -283,7 +300,7 @@ class LoraIntegrationMixin:
                         )
 
                         if prompt_id:
-                            for pp in preview_paths:
+                            for pp in all_images:
                                 await self._run_in_executor(
                                     self.db.link_image_to_prompt,
                                     prompt_id,

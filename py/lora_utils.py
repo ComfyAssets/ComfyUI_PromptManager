@@ -7,10 +7,12 @@ All functions are safe to call when LoraManager is not installed — they
 return empty results rather than raising.
 """
 
+import hashlib
 import json
 import os
 import re
 import threading
+import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -292,6 +294,71 @@ def get_preview_image_from_metadata(
     """Find the first preview image path for a LoRA (backward compat)."""
     images = get_preview_images_from_metadata(metadata, metadata_path)
     return images[0] if images else None
+
+
+def download_civitai_images(
+    metadata: Dict, metadata_path: Path, cache_dir: Path
+) -> List[str]:
+    """Download civitai example images to a local cache directory.
+
+    Images are stored as ``<cache_dir>/<lora_stem>/<hash>.jpg``.
+    Already-downloaded files are skipped.
+
+    Returns:
+        List of absolute paths to downloaded image files.
+    """
+    civitai = _get_civitai(metadata)
+    images = civitai.get("images", []) or []
+    if not images:
+        return []
+
+    file_name = metadata.get("file_name", "")
+    if not file_name:
+        file_name = metadata_path.name.replace(".metadata.json", "")
+    lora_stem = Path(file_name).stem
+
+    lora_cache = cache_dir / lora_stem
+    lora_cache.mkdir(parents=True, exist_ok=True)
+
+    downloaded = []
+    for img in images:
+        if not isinstance(img, dict):
+            continue
+        url = img.get("url", "")
+        if not isinstance(url, str) or not url.startswith("http"):
+            continue
+
+        # Deterministic filename from URL
+        url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+        ext = ".jpg"  # civitai images are typically jpeg
+        if ".png" in url.lower():
+            ext = ".png"
+        local_path = lora_cache / f"{url_hash}{ext}"
+
+        if local_path.exists():
+            downloaded.append(str(local_path.resolve()))
+            continue
+
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "ComfyUI-PromptManager/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                local_path.write_bytes(resp.read())
+            downloaded.append(str(local_path.resolve()))
+        except Exception as e:
+            logger.debug(f"Failed to download {url}: {e}")
+
+    return downloaded
+
+
+def get_lora_image_cache_dir() -> Path:
+    """Get the directory used to cache downloaded LoRA example images."""
+    # Store in the extension's own directory
+    ext_root = Path(__file__).resolve().parent.parent
+    cache = ext_root / "data" / "lora_images"
+    cache.mkdir(parents=True, exist_ok=True)
+    return cache
 
 
 def get_example_images_dir(lora_manager_path: str) -> Optional[str]:

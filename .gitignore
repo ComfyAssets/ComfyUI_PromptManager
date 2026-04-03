@@ -9,6 +9,7 @@ AGENTS.md
 CLAUDE.md
 
 # Local files
+data/
 docs/
 logs/
 standalone_tagger.py
