@@ -406,6 +406,56 @@
                         <p class="text-xs text-pm-muted mt-1">Choose how the Web UI opens from ComfyUI nodes.</p>
                     </div>
                 </div>
+
+                <!-- Integrations Section -->
+                <div class="border-b border-pm pb-3">
+                    <h4 class="text-xs font-semibold text-pm-secondary mb-3 uppercase tracking-wide">Integrations</h4>
+
+                    <div class="mb-3">
+                        <div class="flex items-center justify-between mb-2">
+                            <div class="flex items-center gap-2">
+                                <label class="block text-xs font-medium text-pm-secondary">LoraManager</label>
+                                <span id="loraDetectionBadge" class="text-[10px] px-1.5 py-0.5 rounded-full bg-pm-input text-pm-muted">checking...</span>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" id="loraEnabled" class="sr-only peer" disabled>
+                                <div class="w-8 h-4 bg-pm-input rounded-full peer peer-checked:bg-pm-accent transition-colors pointer-events-none after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4"></div>
+                            </label>
+                        </div>
+
+                        <div id="loraSettings" class="hidden space-y-2 mt-2 pl-2 border-l-2 border-pm">
+                            <div>
+                                <label class="block text-xs font-medium text-pm-secondary mb-1">Path</label>
+                                <input type="text" id="loraManagerPath" readonly
+                                       class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] text-pm-muted">
+                            </div>
+
+                            <div class="flex items-center justify-between">
+                                <label class="block text-xs font-medium text-pm-secondary">Auto-inject trigger words</label>
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" id="loraTriggerWords" class="sr-only peer">
+                                    <div class="w-8 h-4 bg-pm-input rounded-full peer peer-checked:bg-pm-accent transition-colors pointer-events-none after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4"></div>
+                                </label>
+                            </div>
+                            <p class="text-xs text-pm-muted">Automatically append trigger words when <code class="text-pm-accent">&lt;lora:name:weight&gt;</code> is detected in prompts.</p>
+
+                            <div class="mt-2">
+                                <label class="block text-xs font-medium text-pm-secondary mb-1">CivitAI API Key</label>
+                                <input type="password" id="civitaiApiKey" placeholder="Optional — required for NSFW example images"
+                                       class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] placeholder:text-pm-muted focus:outline-none">
+                                <p class="text-xs text-pm-muted mt-1">Get your key from <a href="https://civitai.com/user/account" target="_blank" class="text-pm-accent hover:underline">civitai.com/user/account</a></p>
+                            </div>
+
+                            <button id="loraImportBtn" type="button"
+                                    class="mt-1 flex items-center gap-1 text-xs text-pm-accent hover:text-pm-accent-hover">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
+                                </svg>
+                                Import LoRA Data
+                            </button>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div class="flex justify-end gap-2 mt-4">
@@ -417,6 +467,32 @@
                         class="px-3 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
                     Save Settings
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- LoRA Import Progress Modal -->
+    <div id="loraImportModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
+        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-md w-full mx-4 border border-pm shadow-pm">
+            <h3 class="text-sm font-semibold text-pm mb-4">Importing LoRA Data</h3>
+
+            <div class="mb-3">
+                <p class="text-pm-secondary text-xs">Status:</p>
+                <p id="loraImportStatus" class="text-pm text-xs font-medium truncate">Initializing...</p>
+            </div>
+
+            <div class="mb-3">
+                <div class="flex justify-between text-xs text-pm-secondary mb-1">
+                    <span>Progress</span>
+                    <span id="loraImportPercent">0%</span>
+                </div>
+                <div class="w-full bg-pm-input rounded-full h-1.5">
+                    <div id="loraImportBar" class="bg-pm-accent h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+                <div class="flex justify-between text-[11px] text-pm-muted mt-1">
+                    <span id="loraImportProcessed">0 processed</span>
+                    <span id="loraImportImported">0 imported</span>
+                </div>
             </div>
         </div>
     </div>

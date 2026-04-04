@@ -303,11 +303,31 @@ class ImageRoutesMixin:
 
             image_path = Path(image["image_path"]).resolve()
 
-            # Validate path is within any configured output directory
-            output_dirs = self._get_all_output_dirs()
-            if output_dirs:
+            # Validate path is within any allowed directory
+            allowed_dirs = list(self._get_all_output_dirs())
+
+            # Also allow LoRA directories when integration is enabled
+            try:
+                from ..config import IntegrationConfig
+
+                if IntegrationConfig.LORA_MANAGER_ENABLED:
+                    from ..lora_utils import (
+                        find_lora_directories,
+                        get_lora_image_cache_dir,
+                    )
+
+                    lora_dirs = find_lora_directories(
+                        IntegrationConfig.LORA_MANAGER_PATH
+                    )
+                    allowed_dirs.extend(Path(d) for d in lora_dirs)
+                    allowed_dirs.append(get_lora_image_cache_dir())
+            except Exception:
+                # LoRA integration is optional — skip if unavailable
+                pass
+
+            if allowed_dirs:
                 allowed = any(
-                    image_path.is_relative_to(d.resolve()) for d in output_dirs
+                    image_path.is_relative_to(d.resolve()) for d in allowed_dirs
                 )
                 if not allowed:
                     return web.json_response(

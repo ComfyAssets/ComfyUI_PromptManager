@@ -6,13 +6,7 @@
 ![Tests](https://github.com/ComfyAssets/ComfyUI_PromptManager/workflows/Tests/badge.svg)
 ![Code Quality](https://github.com/ComfyAssets/ComfyUI_PromptManager/workflows/Code%20Quality/badge.svg)
 
-A comprehensive ComfyUI custom node that extends the standard text encoder with persistent prompt storage, advanced search capabilities, automatic image gallery system, and powerful ComfyUI workflow metadata analysis using SQLite.
-
-## 📋 A Note on v2 Development
-
-V2 development will take longer as life has taken me in other directions for the moment. I will still work on it but not as actively as before. In the meantime, I will backport some of the features users have requested from v2 over to v1. Once v2 is ready, I will update here. Thank you for your continued support!
-
----
+A comprehensive ComfyUI custom node that extends the standard text encoder with persistent prompt storage, advanced search capabilities, automatic image gallery system, folder-based organization, LoRA Manager integration, and powerful ComfyUI workflow metadata analysis using SQLite.
 
 ## Overview
 
@@ -54,6 +48,7 @@ Both nodes include the complete PromptManager feature set:
 
 - **💾 Persistent Storage**: Automatically saves all prompts to a local SQLite database
 - **🔍 Advanced Search**: Query past prompts with text search, category filtering, and metadata
+- **📁 Folder Filter**: Browse and filter prompts by output subdirectory
 - **🖼️ Automatic Image Gallery**: Automatically links generated images to their prompts
 - **🏷️ Rich Metadata**: Add categories, tags, ratings, notes, and workflow names to prompts
 - **🚫 Duplicate Prevention**: Uses SHA256 hashing to detect and prevent duplicate storage
@@ -62,7 +57,8 @@ Both nodes include the complete PromptManager feature set:
 - **🔬 Workflow Analysis**: Extract and analyze ComfyUI workflow data from PNG images
 - **📋 Metadata Viewer**: Standalone tool for analyzing ComfyUI-generated images
 - **🛠️ System Management**: Built-in diagnostics, backup/restore, and maintenance tools
-- **🏷️ AI AutoTag**: Automatically tag your image collection using JoyCaption vision models
+- **🏷️ AI AutoTag**: Automatically tag your image collection using WD14 or JoyCaption vision models
+- **🔗 LoRA Manager Integration**: Import LoRA metadata and preview images from [ComfyUI-Lora-Manager](https://github.com/willchil/ComfyUI-Lora-Manager)
 
 ![Image Gallery](images/pm-02.png)
 
@@ -372,10 +368,11 @@ Import existing ComfyUI images into your database:
 
 ### 🏷️ AI AutoTag
 
-Automatically tag your entire image collection using JoyCaption vision models:
+Automatically tag your entire image collection using AI vision models:
 
 #### **Model Options**
 
+- **WD14 SwinV2 / WD14 ViT**: Fast ONNX-based classifiers (~400MB) that output Danbooru tags with confidence scores — no prompt needed, adjustable confidence thresholds
 - **JoyCaption Beta One FP16**: Full precision model for highest quality tagging (requires more VRAM)
 - **JoyCaption Beta One GGUF (FP8)**: Quantized model for lower VRAM usage with minimal quality loss
 
@@ -416,6 +413,61 @@ Adjust the system prompt to match your tagging style:
 - Sufficient VRAM for the chosen model (FP16 requires more, GGUF is lighter)
 - Models are downloaded automatically on first use
 - Feature requests and improvements are welcome!
+
+### 📁 Folder Filter
+
+![Folder Filter](images/pm-lora-import.png)
+
+Organize and filter your prompt library by output subdirectory. The dashboard search panel includes a **Folder** dropdown that lists all subdirectories where your images are stored.
+
+- **Automatic Detection**: Folders are extracted from your image paths — no configuration needed
+- **Multi-Directory Support**: Works across all configured gallery scan directories
+- **Quick Filtering**: Select a folder from the dropdown to instantly filter prompts to that subdirectory
+
+> **Note:** If you have an existing prompt library from before the folder feature was added, you will need to **rescan your image library** (click **Scan Images** in the admin dashboard) to populate folder data for your existing prompts.
+
+### 🔗 LoRA Manager Integration
+
+![LoRA Settings](images/pm-settings-integrations.png)
+
+If you use [ComfyUI-Lora-Manager](https://github.com/willchil/ComfyUI-Lora-Manager), PromptManager can import your LoRA metadata, trigger words, and example images directly into your prompt database. This lets you search, tag, and browse your LoRA collection alongside your regular prompts.
+
+> **WIP:** LoRA Manager support is a work in progress — this was a highly requested feature. Please [open issues](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues) for any bugs or feature requests.
+
+#### **Enabling the Integration**
+
+1. Open the admin dashboard and click **Settings**
+2. Scroll to the **Integrations** section — PromptManager will auto-detect if LoRA Manager is installed
+
+![LoRA Enabled](images/pm-lora-enabled.png)
+
+3. Toggle the **LoraManager** switch to enable
+4. Optionally enable **Auto-inject trigger words** to automatically append LoRA trigger words when `<lora:name:weight>` is detected in your prompts
+5. Click **Save Settings** (requires a ComfyUI restart to take effect)
+
+#### **Importing LoRA Data**
+
+Click **Import LoRA Data** in the settings panel to start the import. A progress popup shows real-time status as each LoRA is processed:
+
+- Scans all LoRA directories (including `extra_model_paths.yaml` paths) for metadata
+- Downloads example images from CivitAI as 512px thumbnails
+- Creates a prompt entry for each LoRA with trigger words, example prompts, and preview images
+- All imported LoRAs are tagged with `lora-manager` category for easy filtering
+
+![LoRA Results](images/pm-lora-filtered.png)
+
+After import, filter by the `lora-manager` category to browse your LoRA collection.
+
+#### **CivitAI API Key (Optional)**
+
+A CivitAI API key is **required if your library contains NSFW LoRAs** — CivitAI blocks unauthenticated access to NSFW preview images. Without a key, only SFW preview images are downloaded.
+
+To add your key:
+1. Get your API key from [civitai.com/user/account](https://civitai.com/user/account)
+2. Paste it into the **CivitAI API Key** field in the Integrations settings
+3. Save and re-import to download any previously skipped images
+
+> **Note:** Re-importing is safe — PromptManager skips LoRAs that were already imported. To do a fresh import, the previous `lora-manager` data is cleared automatically before re-scanning.
 
 ### 🌐 Web Interface Features
 
@@ -600,8 +652,9 @@ CREATE TABLE generated_images (
 - **`prompt_search_list.py`** - Batch search node implementation (LIST output)
 - **`database/models.py`** - Database schema and connection management
 - **`database/operations.py`** - CRUD operations and search functionality
-- **`py/api.py`** - Web API endpoints for the interface
+- **`py/api/`** - Web API route modules (prompts, images, tags, lora integration, etc.)
 - **`py/config.py`** - Configuration management
+- **`py/lora_utils.py`** - LoRA Manager integration utilities
 - **`utils/hashing.py`** - SHA256 hashing for deduplication
 - **`utils/validators.py`** - Input validation and sanitization
 - **`utils/image_monitor.py`** - Automatic image detection system
@@ -611,7 +664,8 @@ CREATE TABLE generated_images (
 - **`utils/diagnostics.py`** - System diagnostics and health checks
 - **`web/admin.html`** - Advanced admin dashboard with metadata panel
 - **`web/index.html`** - Simple web interface
-- **`web/prompt_manager.js`** - JavaScript functionality
+- **`web/js/prompt_manager.js`** - Dashboard JavaScript
+- **`web/js/tags-page.js`** - Tag management JavaScript
 - **`web/metadata.html`** - Standalone PNG metadata viewer
 
 ### File Structure
@@ -628,8 +682,9 @@ ComfyUI_PromptManager/
 │   └── operations.py             # Database operations
 ├── py/
 │   ├── __init__.py
-│   ├── api.py                    # Web API endpoints
-│   └── config.py                 # Configuration
+│   ├── api/                      # Web API route modules
+│   ├── config.py                 # Configuration
+│   └── lora_utils.py             # LoRA Manager integration
 ├── utils/
 │   ├── __init__.py
 │   ├── hashing.py               # Hashing utilities
@@ -641,9 +696,12 @@ ComfyUI_PromptManager/
 │   └── diagnostics.py           # System diagnostics
 ├── web/
 │   ├── admin.html               # Advanced admin dashboard
+│   ├── gallery.html             # Image gallery
 │   ├── index.html               # Simple web interface
 │   ├── metadata.html            # Standalone metadata viewer
-│   └── prompt_manager.js        # JavaScript functionality
+│   └── js/
+│       ├── prompt_manager.js    # Dashboard JavaScript
+│       └── tags-page.js         # Tag management JavaScript
 ├── tests/
 │   ├── __init__.py
 │   └── test_basic.py            # Test suite
@@ -752,7 +810,7 @@ db.model.backup_database("backup_prompts.db")
 ### Running Tests
 
 ```bash
-cd KikoTextEncode
+cd ComfyUI_PromptManager
 python -m pytest tests/ -v
 ```
 
@@ -797,7 +855,7 @@ The project follows PEP 8 guidelines with:
 For debugging, you can enable verbose logging in the node:
 
 ```python
-# Add to kiko_text_encode.py
+# Add to prompt_manager.py
 import logging
 logging.basicConfig(level=logging.DEBUG)
 ```
@@ -814,15 +872,15 @@ MIT License - see LICENSE file for details.
 
 ## Roadmap
 
-### Completed in v3.0.0
+### Recently Completed
 
-- **✅ PNG Metadata Analysis**: Complete ComfyUI workflow extraction from images
-- **✅ Standalone Metadata Viewer**: Dedicated tool for analyzing any ComfyUI image
-- **✅ Advanced Admin Dashboard**: Comprehensive management interface with modern UI
-- **✅ Integrated Metadata Panel**: Real-time workflow analysis in image viewer
-- **✅ Bulk Image Scanning**: Mass import of existing ComfyUI images
-- **✅ System Management Tools**: Backup, restore, diagnostics, and maintenance
-- **✅ Enhanced Error Handling**: Robust PNG parsing with NaN value cleaning
+- **✅ LoRA Manager Integration**: Import LoRA metadata, trigger words, and preview images
+- **✅ Folder Filter**: Browse and filter prompts by output subdirectory
+- **✅ Multi-Directory Gallery**: Scan multiple output directories simultaneously
+- **✅ WD14 Tagger**: Fast ONNX-based auto-tagging with Danbooru tags
+- **✅ Tailwind v4 Migration**: ComfyUI theme token system for consistent styling
+- **✅ Tag Management Page**: Dedicated page for tag search, rename, merge, and delete
+- **✅ Junction Table Tags**: Normalized tag storage with proper foreign keys
 
 ### Planned Features
 
@@ -830,18 +888,27 @@ MIT License - see LICENSE file for details.
 - **🤝 Collaboration**: Share prompt collections with other users
 - **🧠 AI Suggestions**: Recommend similar prompts based on metadata analysis
 - **📈 Advanced Analytics**: Detailed usage statistics and trends with workflow insights
-- **🔌 Plugin System**: Support for third-party extensions and custom analyzers
-- **🎨 Enhanced Batch Processing**: Advanced bulk operations with metadata editing
 - **🔄 Workflow Templates**: Save and reuse common workflow patterns
 - **📊 Visual Analytics**: Charts and graphs for prompt effectiveness analysis
 
-### Integration Ideas
-
-- **Workflow linking**: Connect prompts to specific workflow templates
-- **Image analysis**: Analyze generated images to improve suggestions
-- **Version control**: Track prompt iterations and effectiveness
-
 ## Changelog
+
+### v3.2.1 (LoRA Manager Integration)
+
+- **🔗 LoRA Manager Integration**: Import LoRA metadata, trigger words, and CivitAI example images from [ComfyUI-Lora-Manager](https://github.com/willchil/ComfyUI-Lora-Manager) into your prompt database
+- **💉 Auto-Inject Trigger Words**: Optionally append LoRA trigger words when `<lora:name:weight>` is detected in prompts during encoding
+- **🔑 CivitAI API Key Support**: Authenticate with CivitAI to download NSFW preview images
+- **📥 Import Progress Modal**: Real-time SSE streaming progress during LoRA import with per-model status
+
+> **Note:** LoRA Manager support is a WIP — this was a highly requested feature. Please [open issues](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues) for any bugs or feature requests.
+
+### v3.2.0 (Folder Filter & QoL Improvements)
+
+- **📁 Folder Filter**: New folder dropdown in the search panel to filter prompts by output subdirectory
+- **📂 Multi-Directory Gallery Scan**: Configure multiple output directories and browse them all in one gallery
+- **🖼️ Filmstrip Prompt Display**: Show prompt text and copy button in the filmstrip image viewer
+- **🖱️ Click-to-Close Viewer**: Click outside the image viewer to close it
+- **🐛 Bug Fixes**: Fixed database path config, UnboundLocalError in text inputs, node caching skip, diagnostics singleton lifecycle
 
 ### v3.1.0 (WD14 Tagger, Tailwind v4 & Major Refactors)
 

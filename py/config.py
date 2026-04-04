@@ -201,6 +201,43 @@ class GalleryConfig:
             cls.METADATA_EXTRACTION_TIMEOUT = performance["metadata_extraction_timeout"]
 
 
+class IntegrationConfig:
+    """Configuration for third-party extension integrations.
+
+    Manages opt-in integration settings for extensions like LoraManager.
+    All integrations are disabled by default so PromptManager works standalone.
+    """
+
+    # LoraManager integration
+    LORA_MANAGER_ENABLED = False
+    LORA_MANAGER_PATH = ""  # Auto-detected if empty
+    LORA_TRIGGER_WORDS_ENABLED = False  # Auto-inject trigger words into prompts
+    CIVITAI_API_KEY = ""  # Required to download NSFW example images
+
+    @classmethod
+    def get_config(cls) -> Dict[str, Any]:
+        return {
+            "lora_manager": {
+                "enabled": cls.LORA_MANAGER_ENABLED,
+                "path": cls.LORA_MANAGER_PATH,
+                "trigger_words_enabled": cls.LORA_TRIGGER_WORDS_ENABLED,
+                "civitai_api_key": cls.CIVITAI_API_KEY,
+            },
+        }
+
+    @classmethod
+    def update_config(cls, new_config: Dict[str, Any]):
+        lora = new_config.get("lora_manager", {})
+        if "enabled" in lora:
+            cls.LORA_MANAGER_ENABLED = lora["enabled"]
+        if "path" in lora:
+            cls.LORA_MANAGER_PATH = lora["path"]
+        if "trigger_words_enabled" in lora:
+            cls.LORA_TRIGGER_WORDS_ENABLED = lora["trigger_words_enabled"]
+        if "civitai_api_key" in lora:
+            cls.CIVITAI_API_KEY = lora["civitai_api_key"]
+
+
 class PromptManagerConfig:
     """Main configuration class for PromptManager core functionality.
 
@@ -274,6 +311,7 @@ class PromptManagerConfig:
                 "auto_backup_interval": cls.AUTO_BACKUP_INTERVAL,
             },
             "gallery": GalleryConfig.get_config(),
+            "integrations": IntegrationConfig.get_config(),
         }
 
     @classmethod
@@ -388,6 +426,10 @@ class PromptManagerConfig:
         # Update gallery config
         if "gallery" in new_config:
             GalleryConfig.update_config(new_config["gallery"])
+
+        # Update integration config
+        if "integrations" in new_config:
+            IntegrationConfig.update_config(new_config["integrations"])
 
 
 # Load configuration on import

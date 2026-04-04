@@ -142,6 +142,9 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
             parts.append(append_text.strip())
         final_text = " ".join(parts)
 
+        # Inject LoRA trigger words if integration is enabled
+        final_text = self._inject_lora_trigger_words(final_text)
+
         # For database storage, save the original main text with metadata about prepend/append
         storage_text = text
 
