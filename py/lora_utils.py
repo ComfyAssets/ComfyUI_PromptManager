@@ -28,8 +28,6 @@ logger = get_logger("prompt_manager.lora_utils")
 
 # ── LoraManager detection ────────────────────────────────────────────
 
-_LORA_MANAGER_DIR_NAME = "ComfyUI-Lora-Manager"
-
 
 def find_comfyui_root() -> Optional[Path]:
     """Walk upward from this file to find the ComfyUI root (contains main.py).
@@ -52,6 +50,7 @@ def find_comfyui_root() -> Optional[Path]:
         if base.is_dir():
             return base
     except (ImportError, AttributeError):
+        # folder_paths unavailable — not running inside ComfyUI runtime
         pass
 
     for start in start_paths:
@@ -142,6 +141,7 @@ def find_lora_directories(lora_manager_path: str) -> List[str]:
             if pp.is_dir():
                 dirs.add(str(pp.resolve()))
     except (ImportError, AttributeError):
+        # folder_paths unavailable — not running inside ComfyUI runtime
         pass
 
     # Check for any .metadata.json in the LoraManager dir tree

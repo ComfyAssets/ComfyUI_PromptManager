@@ -322,6 +322,7 @@ class ImageRoutesMixin:
                     allowed_dirs.extend(Path(d) for d in lora_dirs)
                     allowed_dirs.append(get_lora_image_cache_dir())
             except Exception:
+                # LoRA integration is optional — skip if unavailable
                 pass
 
             if allowed_dirs:
