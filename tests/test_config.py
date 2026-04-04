@@ -19,7 +19,7 @@ sys.modules["server"] = _mock_server
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from py.config import GalleryConfig, PromptManagerConfig
+from py.config import GalleryConfig, IntegrationConfig, PromptManagerConfig
 
 
 class TestGalleryConfig(unittest.TestCase):
@@ -205,6 +205,90 @@ class TestPromptManagerConfig(unittest.TestCase):
             self.assertIsInstance(data, dict)
         finally:
             os.unlink(tmp.name)
+
+
+class TestIntegrationConfig(unittest.TestCase):
+    """Test IntegrationConfig for LoRA Manager settings."""
+
+    def setUp(self):
+        """Save original values to restore after each test."""
+        self._orig = IntegrationConfig.get_config()
+
+    def tearDown(self):
+        """Restore original config values."""
+        IntegrationConfig.update_config(self._orig)
+
+    def test_reset_to_disabled(self):
+        """Integrations can be fully disabled via update_config."""
+        IntegrationConfig.update_config(
+            {
+                "lora_manager": {
+                    "enabled": False,
+                    "path": "",
+                    "trigger_words_enabled": False,
+                    "civitai_api_key": "",
+                }
+            }
+        )
+        config = IntegrationConfig.get_config()
+        lora = config["lora_manager"]
+        self.assertFalse(lora["enabled"])
+        self.assertEqual(lora["path"], "")
+        self.assertFalse(lora["trigger_words_enabled"])
+        self.assertEqual(lora["civitai_api_key"], "")
+
+    def test_get_config_structure(self):
+        config = IntegrationConfig.get_config()
+        self.assertIn("lora_manager", config)
+        lora = config["lora_manager"]
+        self.assertIn("enabled", lora)
+        self.assertIn("path", lora)
+        self.assertIn("trigger_words_enabled", lora)
+        self.assertIn("civitai_api_key", lora)
+
+    def test_update_config_enables(self):
+        IntegrationConfig.update_config(
+            {
+                "lora_manager": {
+                    "enabled": True,
+                    "path": "/some/path",
+                    "trigger_words_enabled": True,
+                    "civitai_api_key": "test-key-123",
+                }
+            }
+        )
+        self.assertTrue(IntegrationConfig.LORA_MANAGER_ENABLED)
+        self.assertEqual(IntegrationConfig.LORA_MANAGER_PATH, "/some/path")
+        self.assertTrue(IntegrationConfig.LORA_TRIGGER_WORDS_ENABLED)
+        self.assertEqual(IntegrationConfig.CIVITAI_API_KEY, "test-key-123")
+
+    def test_update_partial(self):
+        """Updating one field shouldn't affect others."""
+        # Reset to known state first
+        IntegrationConfig.update_config(
+            {"lora_manager": {"enabled": False, "path": "/known"}}
+        )
+        # Now update only enabled
+        IntegrationConfig.update_config({"lora_manager": {"enabled": True}})
+        self.assertTrue(IntegrationConfig.LORA_MANAGER_ENABLED)
+        self.assertEqual(IntegrationConfig.LORA_MANAGER_PATH, "/known")
+
+    def test_update_empty_dict_noop(self):
+        """Updating with empty dict preserves current state."""
+        before = IntegrationConfig.get_config()
+        IntegrationConfig.update_config({})
+        after = IntegrationConfig.get_config()
+        self.assertEqual(before, after)
+
+    def test_roundtrip(self):
+        """get_config → update_config → get_config should be stable."""
+        IntegrationConfig.update_config(
+            {"lora_manager": {"enabled": True, "path": "/test"}}
+        )
+        config1 = IntegrationConfig.get_config()
+        IntegrationConfig.update_config(config1)
+        config2 = IntegrationConfig.get_config()
+        self.assertEqual(config1, config2)
 
 
 if __name__ == "__main__":
