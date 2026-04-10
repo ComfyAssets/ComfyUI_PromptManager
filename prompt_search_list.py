@@ -181,9 +181,11 @@ class PromptSearchList(ComfyNodeABC):
                     p for p in prompt_texts if not re.search(r"Clip_\d+", p)
                 ]
 
-            # Filter out prompts that are only LoRA tags with no actual content
-            LORA_ONLY = re.compile(r"^(\s*<lora:[^>]+>\s*)+$")
-            prompt_texts = [p for p in prompt_texts if not LORA_ONLY.match(p)]
+            # Filter out prompts that are only LoRA tags with no actual content.
+            # Uses subtraction instead of repeated groups to avoid backtracking.
+            prompt_texts = [
+                p for p in prompt_texts if re.sub(r"<lora:[^>]+>", "", p).strip()
+            ]
 
             count = len(prompt_texts)
 

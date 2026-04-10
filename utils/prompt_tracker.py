@@ -225,17 +225,23 @@ class PromptTracker:
         in the same order. This method pops the oldest queued prompt, ensuring
         each image links to the correct prompt by position.
 
+        Skips and discards expired entries to prevent stale prompts from
+        accumulating across sessions.
+
         Returns:
-            Prompt context dict, or None if queue is empty
+            Prompt context dict, or None if queue is empty or all entries expired
         """
+        now = time.time()
         with self._queue_lock:
-            if self._prompt_queue:
+            while self._prompt_queue:
                 ctx = self._prompt_queue.pop(0)
-                self.logger.debug(
-                    f"Queue pop: prompt {ctx.get('id')} "
-                    f"({len(self._prompt_queue)} remaining)"
-                )
-                return ctx
+                if now - ctx.get("timestamp", 0) < self.prompt_timeout:
+                    self.logger.debug(
+                        f"Queue pop: prompt {ctx.get('id')} "
+                        f"({len(self._prompt_queue)} remaining)"
+                    )
+                    return ctx
+                self.logger.debug(f"Queue discard expired: prompt {ctx.get('id')}")
         return None
 
     def _find_recent_prompt(self) -> Optional[Dict[str, Any]]:
@@ -365,6 +371,18 @@ class PromptTracker:
 
                 if expired_ids:
                     self.logger.debug(f"Cleaned up {len(expired_ids)} expired prompts")
+
+                # Also prune expired entries from the batch queue
+                with self._queue_lock:
+                    before = len(self._prompt_queue)
+                    self._prompt_queue = [
+                        ctx
+                        for ctx in self._prompt_queue
+                        if current_time - ctx.get("timestamp", 0) < self.prompt_timeout
+                    ]
+                    pruned = before - len(self._prompt_queue)
+                    if pruned:
+                        self.logger.debug(f"Pruned {pruned} expired queue entries")
 
                 time.sleep(self.cleanup_interval)
 

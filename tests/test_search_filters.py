@@ -15,8 +15,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # --- Helpers: replicate the filter logic from prompt_search_list.py ---
 
-LORA_ONLY = re.compile(r"^(\s*<lora:[^>]+>\s*)+$")
-
 
 def apply_filters(texts, skip_multipart=True):
     """Apply the same filtering chain as PromptSearchList.search()."""
@@ -27,8 +25,8 @@ def apply_filters(texts, skip_multipart=True):
     if skip_multipart:
         result = [p for p in result if not re.search(r"Clip_\d+", p)]
 
-    # Filter LoRA-only
-    result = [p for p in result if not LORA_ONLY.match(p)]
+    # Filter LoRA-only (subtraction approach — no backtracking risk)
+    result = [p for p in result if re.sub(r"<lora:[^>]+>", "", p).strip()]
 
     return result
 
