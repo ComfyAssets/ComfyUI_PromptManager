@@ -34,6 +34,8 @@ def _make_tracker(prompt_timeout=600, cleanup_interval=300):
     tracker._local = threading.local()
     tracker.active_prompts = {}
     tracker.lock = threading.Lock()
+    tracker._prompt_queue = []
+    tracker._queue_lock = threading.Lock()
     tracker.cleanup_interval = cleanup_interval
     tracker.prompt_timeout = prompt_timeout
     # Don't start cleanup thread in tests
@@ -254,6 +256,60 @@ class TestCleanupExpiredPrompts(unittest.TestCase):
 
         self.assertEqual(len(tracker.active_prompts), 0)
         self.assertEqual(len(expired_ids), 1)
+
+
+class TestPromptQueue(unittest.TestCase):
+    """Test the FIFO prompt queue for batch workflow image linking."""
+
+    def setUp(self):
+        self.tracker = _make_tracker()
+
+    def test_queue_empty_initially(self):
+        result = self.tracker.pop_next_prompt()
+        self.assertIsNone(result)
+
+    def test_set_prompt_pushes_to_queue(self):
+        self.tracker.set_current_prompt("p1", {"prompt_id": 10})
+        self.assertEqual(len(self.tracker._prompt_queue), 1)
+
+    def test_pop_returns_fifo_order(self):
+        self.tracker.set_current_prompt("first", {"prompt_id": 1})
+        self.tracker.set_current_prompt("second", {"prompt_id": 2})
+        self.tracker.set_current_prompt("third", {"prompt_id": 3})
+
+        p1 = self.tracker.pop_next_prompt()
+        p2 = self.tracker.pop_next_prompt()
+        p3 = self.tracker.pop_next_prompt()
+
+        self.assertEqual(p1["id"], 1)
+        self.assertEqual(p2["id"], 2)
+        self.assertEqual(p3["id"], 3)
+
+    def test_pop_returns_none_when_exhausted(self):
+        self.tracker.set_current_prompt("only", {"prompt_id": 1})
+        self.tracker.pop_next_prompt()
+        result = self.tracker.pop_next_prompt()
+        self.assertIsNone(result)
+
+    def test_queue_preserves_prompt_text(self):
+        self.tracker.set_current_prompt("hello world", {"prompt_id": 5})
+        ctx = self.tracker.pop_next_prompt()
+        self.assertEqual(ctx["text"], "hello world")
+
+    def test_batch_simulation(self):
+        """Simulate a batch workflow: encode 10 prompts, then pop 10 in order."""
+        ids = list(range(100, 110))
+        for pid in ids:
+            self.tracker.set_current_prompt(f"prompt_{pid}", {"prompt_id": pid})
+
+        popped_ids = []
+        while True:
+            ctx = self.tracker.pop_next_prompt()
+            if ctx is None:
+                break
+            popped_ids.append(ctx["id"])
+
+        self.assertEqual(popped_ids, ids)
 
 
 if __name__ == "__main__":
