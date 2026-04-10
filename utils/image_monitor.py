@@ -80,14 +80,26 @@ class ImageGenerationHandler(FileSystemEventHandler):
         directory. It filters for image files and schedules them for processing after
         a small delay to ensure the file is fully written.
 
+        The prompt context is captured immediately (before the delay) to handle
+        batch workflows where the prompt tracker advances before images are processed.
+
         Args:
             event: FileSystemEvent object containing event details
         """
         if not event.is_directory and self.is_image_file(event.src_path):
             self.logger.info(f"New image detected: {event.src_path}")
-            # Small delay to ensure file is fully written
+            # Snapshot prompt context NOW before the delay — in batch workflows
+            # the tracker advances to the next prompt before images are processed.
+            prompt_snapshot = self.prompt_tracker.get_current_prompt()
+            if prompt_snapshot:
+                self.logger.debug(
+                    f"Snapshot prompt {prompt_snapshot.get('id', '?')} for {os.path.basename(event.src_path)}"
+                )
             threading.Timer(
-                self.processing_delay, self.process_new_image, args=[event.src_path]
+                self.processing_delay,
+                self.process_new_image,
+                args=[event.src_path],
+                kwargs={"prompt_snapshot": prompt_snapshot},
             ).start()
 
     def is_image_file(self, filepath: str) -> bool:
@@ -105,18 +117,19 @@ class ImageGenerationHandler(FileSystemEventHandler):
             return False
         return filepath.lower().endswith(self.supported_extensions)
 
-    def process_new_image(self, image_path: str):
+    def process_new_image(self, image_path: str, prompt_snapshot=None):
         """Process a newly created image file for gallery integration.
 
         This method handles the complete processing pipeline for a new image:
         1. Verifies the file still exists
-        2. Gets the current prompt context from the tracker
-        3. Extracts ComfyUI metadata from the image
-        4. Links the image to the appropriate prompt in the database
-        5. Handles fallback scenarios when no active prompt is available
+        2. Extracts ComfyUI metadata from the image
+        3. Tries to identify the correct prompt via metadata-based lookup
+        4. Falls back to the prompt snapshot captured at event time
+        5. Links the image to the appropriate prompt in the database
 
         Args:
             image_path: Full path to the newly created image file
+            prompt_snapshot: Prompt context captured at file-creation time (optional)
         """
         try:
             self.logger.info(f"Processing image: {image_path}")
@@ -125,35 +138,61 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 self.logger.warning(f"Image file no longer exists: {image_path}")
                 return
 
-            # Get current prompt context first
-            current_prompt = self.prompt_tracker.get_current_prompt()
-            self.logger.info(
-                f"Current prompt context: {current_prompt['id'] if current_prompt else 'None'}"
-            )
-
-            if not current_prompt:
-                self.logger.debug(f"No active prompt context for image: {image_path}")
-                # Fallback: try to link to the most recent prompt in database
-                current_prompt = self._get_fallback_prompt()
-                if current_prompt:
-                    self.logger.debug(f"Using fallback prompt: {current_prompt['id']}")
-                else:
-                    self.logger.warning(f"No fallback prompt available, skipping image")
-                    return
-            else:
-                # Extend the timeout for this prompt since we're still getting images
-                if "execution_id" in current_prompt:
-                    self.prompt_tracker.extend_prompt_timeout(
-                        current_prompt["execution_id"], 300
-                    )  # Add 5 more minutes
-
-            # Extract ComfyUI metadata
+            # Extract ComfyUI metadata first — needed both for linking and prompt lookup
+            metadata = None
             try:
                 metadata = self.metadata_extractor.extract_metadata(image_path)
                 self.logger.debug(f"Extracted metadata: {bool(metadata)}")
             except Exception as meta_error:
                 self.logger.warning(f"Metadata extraction failed: {meta_error}")
-                metadata = None
+
+            # Strategy 1: Pop from batch queue (most reliable for batch workflows).
+            # Prompts are queued during CLIP encoding in order; images save in
+            # the same order, so FIFO pop gives the correct prompt per image.
+            current_prompt = self.prompt_tracker.pop_next_prompt()
+            if current_prompt:
+                self.logger.info(
+                    f"Queue match: prompt {current_prompt['id']} for "
+                    f"{os.path.basename(image_path)}"
+                )
+
+            # Strategy 2: Find prompt from image metadata
+            if not current_prompt:
+                current_prompt = self._find_prompt_from_metadata(metadata)
+                if current_prompt:
+                    self.logger.info(f"Metadata match: prompt {current_prompt['id']}")
+
+            # Strategy 3: Use snapshot captured at file-creation time
+            if not current_prompt and prompt_snapshot:
+                current_prompt = prompt_snapshot
+                self.logger.info(
+                    f"Snapshot match: prompt {current_prompt.get('id', 'unknown')}"
+                )
+
+            # Strategy 4: Check live prompt tracker
+            if not current_prompt:
+                current_prompt = self.prompt_tracker.get_current_prompt()
+                if current_prompt:
+                    self.logger.info(
+                        f"Live tracker match: prompt {current_prompt['id']}"
+                    )
+
+            # Strategy 5: Fallback to most recent prompt in DB
+            if not current_prompt:
+                current_prompt = self._get_fallback_prompt()
+                if current_prompt:
+                    self.logger.debug(f"Fallback match: prompt {current_prompt['id']}")
+                else:
+                    self.logger.warning(
+                        f"No prompt context available, skipping image: {image_path}"
+                    )
+                    return
+
+            # Extend timeout if we have an active execution
+            if current_prompt.get("execution_id"):
+                self.prompt_tracker.extend_prompt_timeout(
+                    current_prompt["execution_id"], 300
+                )
 
             if metadata:
                 self.logger.debug(
@@ -164,7 +203,6 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 self.logger.debug(
                     f"Linking image with basic info to prompt {current_prompt['id']}"
                 )
-                # Link with basic file info even without metadata
                 basic_metadata = self.get_basic_file_info(image_path)
                 self.link_image_to_prompt(
                     image_path, current_prompt, {"file_info": basic_metadata}
@@ -175,6 +213,87 @@ class ImageGenerationHandler(FileSystemEventHandler):
             import traceback
 
             self.logger.error(traceback.format_exc())
+
+    def _find_prompt_from_metadata(self, metadata):
+        """Extract prompt text from image metadata and look up the matching DB prompt.
+
+        Parses the ComfyUI workflow/prompt data embedded in the image to find
+        PromptManager node inputs, then matches against the database by hash.
+
+        Args:
+            metadata: Extracted metadata dict from the image, or None
+
+        Returns:
+            Prompt context dict with 'id' and 'text', or None if not found
+        """
+        if not metadata:
+            return None
+
+        prompt_text = None
+
+        # Try to find PromptManager node in the prompt execution data
+        prompt_data = metadata.get("prompt")
+        if isinstance(prompt_data, dict):
+            for node_id, node_info in prompt_data.items():
+                if not isinstance(node_info, dict):
+                    continue
+                class_type = node_info.get("class_type", "")
+                if class_type in ("PromptManager", "PromptManagerText"):
+                    inputs = node_info.get("inputs", {})
+                    text = inputs.get("text", "")
+                    if text and isinstance(text, str) and text.strip():
+                        prompt_text = text.strip()
+                        break
+
+        # Fallback: check text_encoder_nodes from workflow, but only if
+        # the text input is NOT connected (connected inputs override widget values,
+        # so the widget value would be stale in batch workflows).
+        if not prompt_text:
+            text_nodes = metadata.get("text_encoder_nodes", [])
+            for node in text_nodes:
+                node_type = node.get("type") or node.get("class_type") or ""
+                if "PromptManager" in node_type:
+                    # Check if text input is connected — if so, widget value is stale
+                    text_connected = False
+                    for inp in node.get("inputs", []):
+                        if isinstance(inp, dict) and inp.get("name") == "text":
+                            if inp.get("link") is not None:
+                                text_connected = True
+                            break
+                    if text_connected:
+                        self.logger.debug(
+                            "PromptManager text input is connected — "
+                            "skipping stale widget value, deferring to snapshot"
+                        )
+                        continue
+                    widgets = node.get("widgets_values", [])
+                    if widgets and isinstance(widgets[0], str) and widgets[0].strip():
+                        prompt_text = widgets[0].strip()
+                        break
+
+        if not prompt_text:
+            return None
+
+        # Look up by hash in database
+        try:
+            import hashlib
+
+            normalized = prompt_text.strip().lower()
+            prompt_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+            existing = self.db_manager.get_prompt_by_hash(prompt_hash)
+            if existing:
+                self.logger.debug(
+                    f"Found DB prompt {existing['id']} from metadata text"
+                )
+                return {
+                    "id": existing["id"],
+                    "text": existing["text"],
+                    "from_metadata": True,
+                }
+        except Exception as e:
+            self.logger.warning(f"Metadata-based prompt lookup failed: {e}")
+
+        return None
 
     def get_basic_file_info(self, image_path: str) -> Dict[str, Any]:
         """Get basic file information when metadata extraction fails.
