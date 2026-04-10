@@ -76,6 +76,10 @@ class PromptTracker:
         self._local = threading.local()
         self.active_prompts = {}  # Global tracking for multiple threads
         self.lock = threading.Lock()
+        # FIFO queue for batch workflows: prompt_ids are pushed during encoding
+        # and popped during image linking, preserving correct ordering.
+        self._prompt_queue = []
+        self._queue_lock = threading.Lock()
 
         # Read from GalleryConfig if available, otherwise use defaults
         try:
@@ -159,6 +163,13 @@ class PromptTracker:
         with self.lock:
             self.active_prompts[execution_id] = execution_context
 
+        # Push to batch queue for ordered image linking
+        with self._queue_lock:
+            self._prompt_queue.append(execution_context)
+            self.logger.debug(
+                f"Queue size: {len(self._prompt_queue)} after push for prompt {prompt_id}"
+            )
+
         self.logger.debug(
             f"Set current prompt: {execution_id} -> {prompt_text[:50]}... (thread: {threading.current_thread().ident})"
         )
@@ -205,6 +216,26 @@ class PromptTracker:
         self.logger.debug(
             f"No prompt context found (thread: {threading.current_thread().ident})"
         )
+        return None
+
+    def pop_next_prompt(self) -> Optional[Dict[str, Any]]:
+        """Pop the next prompt from the batch queue (FIFO).
+
+        In batch workflows, prompts are encoded in order and images are saved
+        in the same order. This method pops the oldest queued prompt, ensuring
+        each image links to the correct prompt by position.
+
+        Returns:
+            Prompt context dict, or None if queue is empty
+        """
+        with self._queue_lock:
+            if self._prompt_queue:
+                ctx = self._prompt_queue.pop(0)
+                self.logger.debug(
+                    f"Queue pop: prompt {ctx.get('id')} "
+                    f"({len(self._prompt_queue)} remaining)"
+                )
+                return ctx
         return None
 
     def _find_recent_prompt(self) -> Optional[Dict[str, Any]]:
