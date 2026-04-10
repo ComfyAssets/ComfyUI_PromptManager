@@ -5,6 +5,7 @@ This node enables batch processing workflows by outputting prompt texts with
 OUTPUT_IS_LIST=True, allowing direct connection to nodes that accept list inputs.
 """
 
+import re
 from typing import Any, Dict, List, Tuple
 
 try:
@@ -79,7 +80,7 @@ class PromptSearchList(ComfyNodeABC):
                     IO.STRING,
                     {
                         "default": "",
-                        "tooltip": "Comma-separated list of tags to filter by",
+                        "tooltip": "Comma-separated list of tags to filter by (partial match)",
                     },
                 ),
                 "min_rating": (
@@ -100,20 +101,33 @@ class PromptSearchList(ComfyNodeABC):
                         "tooltip": "Maximum number of results to return",
                     },
                 ),
+                "skip_multipart": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Skip prompts containing Clip_1/Clip_2/etc. multi-part markers",
+                    },
+                ),
             },
         }
 
-    RETURN_TYPES = (IO.STRING,)
-    RETURN_NAMES = ("prompts",)
-    OUTPUT_IS_LIST = (True,)
-    OUTPUT_TOOLTIPS = ("List of prompt texts matching the search criteria.",)
+    RETURN_TYPES = (IO.STRING, IO.STRING, IO.INT)
+    RETURN_NAMES = ("prompts", "preview", "count")
+    OUTPUT_IS_LIST = (True, False, False)
+    OUTPUT_TOOLTIPS = (
+        "List of prompt texts matching the search criteria.",
+        "Preview of all found prompts (for display).",
+        "Number of prompts found.",
+    )
     FUNCTION = "search"
     OUTPUT_NODE = True
     CATEGORY = "🫶 ComfyAssets/🧠 Prompts"
     DESCRIPTION = (
         "Searches the prompt database and outputs matching prompts as a list. "
         "Use this node to retrieve stored prompts for batch processing workflows. "
-        "Connect to nodes that accept list inputs like String OutputList or batch processors."
+        "'prompts' output sends each prompt individually to downstream nodes (batch). "
+        "'preview' output shows all found prompts as one text block. "
+        "'count' output shows how many prompts were found."
     )
 
     def search(
@@ -123,7 +137,8 @@ class PromptSearchList(ComfyNodeABC):
         tags: str = "",
         min_rating: int = 0,
         limit: int = 50,
-    ) -> Tuple[List[str]]:
+        skip_multipart: bool = True,
+    ):
         """
         Search for prompts matching the given criteria.
 
@@ -135,7 +150,7 @@ class PromptSearchList(ComfyNodeABC):
             limit: Maximum number of results to return
 
         Returns:
-            Tuple containing a list of prompt text strings
+            Dict with 'ui' display info and 'result' tuple
         """
         try:
             # Parse tags from comma-separated string
@@ -143,38 +158,69 @@ class PromptSearchList(ComfyNodeABC):
             if tags and tags.strip():
                 tags_list = [tag.strip() for tag in tags.split(",") if tag.strip()]
 
-            # Perform search
+            # Perform search with partial tag matching for discovery
             results = self.db.search_prompts(
                 text=text.strip() if text and text.strip() else None,
                 category=category.strip() if category and category.strip() else None,
                 tags=tags_list,
+                tag_partial=True,
                 rating_min=min_rating if min_rating > 0 else None,
                 limit=limit,
             )
 
-            # Extract just the prompt text from results
-            prompt_texts = [r["text"] for r in results if r.get("text")]
+            # Extract prompt text, collapsing newlines to spaces so downstream
+            # nodes that split on \n (e.g. StringOutputList) treat each DB
+            # entry as a single prompt.
+            prompt_texts = [
+                " ".join(r["text"].split()) for r in results if r.get("text")
+            ]
 
-            self.logger.debug(
-                f"Search returned {len(prompt_texts)} prompts "
-                f"(text='{text[:20]}...' if text else '', category='{category}', "
-                f"tags={tags_list}, min_rating={min_rating}, limit={limit})"
-            )
+            # Filter out multi-part prompts (Clip_1/Clip_2 markers)
+            if skip_multipart:
+                prompt_texts = [
+                    p for p in prompt_texts if not re.search(r"Clip_\d+", p)
+                ]
 
-            # Return empty list if no results (not an error)
+            # Filter out prompts that are only LoRA tags with no actual content.
+            # Uses subtraction instead of repeated groups to avoid backtracking.
+            prompt_texts = [
+                p for p in prompt_texts if re.sub(r"<lora:[^>]+>", "", p).strip()
+            ]
+
+            count = len(prompt_texts)
+
+            # Build a preview: numbered list of truncated prompts
+            preview_lines = []
+            for i, p in enumerate(prompt_texts, 1):
+                truncated = p[:120] + "..." if len(p) > 120 else p
+                preview_lines.append(f"[{i}] {truncated}")
+            preview = "\n".join(preview_lines) if preview_lines else "No results found"
+
+            # Must return at least one element — ComfyUI's slice_dict
+            # indexes into OUTPUT_IS_LIST outputs and crashes on empty lists.
             if not prompt_texts:
                 self.logger.info("Search returned no results")
-                return ([],)
+                return {
+                    "ui": {"text": ["No results found"]},
+                    "result": ([""], preview, count),
+                }
 
-            return (prompt_texts,)
+            return {
+                "ui": {"text": [f"Found {count} prompts"]},
+                "result": (prompt_texts, preview, count),
+            }
 
         except Exception as e:
             self.logger.error(f"Search error: {e}", exc_info=True)
-            # Return empty list on error to avoid breaking workflows
-            return ([],)
+            return {
+                "ui": {"text": [f"Search error: {e}"]},
+                "result": ([""], f"Error: {e}", 0),
+            }
 
     @classmethod
-    def IS_CHANGED(cls, text="", category="", tags="", min_rating=0, limit=50):
+    def IS_CHANGED(
+        cls, text="", category="", tags="", min_rating=0, limit=50, skip_multipart=True
+    ):
         """
         Always re-execute to get fresh results from the database.
 

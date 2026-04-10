@@ -190,6 +190,7 @@ class PromptDatabase:
         folder: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
+        tag_partial: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Search prompts with various filters.
@@ -205,6 +206,7 @@ class PromptDatabase:
             folder: Filter by subfolder name in generated image paths
             limit: Maximum number of results
             offset: Number of results to skip
+            tag_partial: Use LIKE matching for tags instead of exact match
 
         Returns:
             List of dictionaries containing prompt data
@@ -222,12 +224,20 @@ class PromptDatabase:
 
         if tags:
             for tag in tags:
-                query_parts.append(
-                    "AND prompts.id IN ("
-                    "  SELECT pt.prompt_id FROM prompt_tags pt"
-                    "  JOIN tags t ON pt.tag_id = t.id WHERE t.name = ?)"
-                )
-                params.append(tag)
+                if tag_partial:
+                    query_parts.append(
+                        "AND prompts.id IN ("
+                        "  SELECT pt.prompt_id FROM prompt_tags pt"
+                        "  JOIN tags t ON pt.tag_id = t.id WHERE t.name LIKE ?)"
+                    )
+                    params.append(f"%{tag}%")
+                else:
+                    query_parts.append(
+                        "AND prompts.id IN ("
+                        "  SELECT pt.prompt_id FROM prompt_tags pt"
+                        "  JOIN tags t ON pt.tag_id = t.id WHERE t.name = ?)"
+                    )
+                    params.append(tag)
 
         if folder:
             # Escape LIKE wildcards in the folder name
