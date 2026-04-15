@@ -6,10 +6,14 @@
                 this.total = 0;
                 this.viewMode = 'grid'; // 'grid' or 'list'
                 this.viewer = null;
-                
+                this.currentSubfolder = '';
+                this.expandedFolders = new Set();
+                this.thumbSize = 'md'; // sm, md, lg
+
                 this.initializeEventListeners();
+                this.loadFolderTree();
                 this.loadImages();
-                
+
                 // Check thumbnails at startup if enabled
                 this.checkThumbnailsAtStartup();
             }
@@ -104,14 +108,183 @@
                         }
                     });
                 });
+
+                // Thumbnail size buttons
+                ['Sm', 'Md', 'Lg'].forEach(size => {
+                    const btn = document.getElementById('thumb' + size + 'Btn');
+                    if (btn) btn.addEventListener('click', () => this.setThumbSize(size.toLowerCase()));
+                });
+
+                // Folder tree events
+                document.getElementById('clearFolderFilterBtn').addEventListener('click', () => {
+                    this.currentSubfolder = '';
+                    this.currentPage = 1;
+                    this.renderFolderTree();
+                    this.loadImages();
+                });
+
+                // Resize handle for folder panel
+                const resizeHandle = document.getElementById('folderResizeHandle');
+                if (resizeHandle) {
+                    let isResizing = false;
+                    resizeHandle.addEventListener('mousedown', (e) => {
+                        isResizing = true;
+                        document.body.style.cursor = 'col-resize';
+                        document.body.style.userSelect = 'none';
+                        e.preventDefault();
+                    });
+                    document.addEventListener('mousemove', (e) => {
+                        if (!isResizing) return;
+                        const panel = document.getElementById('folderTreePanel');
+                        const newWidth = Math.max(160, Math.min(500, e.clientX - panel.getBoundingClientRect().left));
+                        panel.style.width = newWidth + 'px';
+                    });
+                    document.addEventListener('mouseup', () => {
+                        if (isResizing) {
+                            isResizing = false;
+                            document.body.style.cursor = '';
+                            document.body.style.userSelect = '';
+                        }
+                    });
+                }
+            }
+
+            async loadFolderTree() {
+                try {
+                    const response = await fetch('/prompt_manager/gallery/subfolders?include_ancestors=true');
+                    if (!response.ok) return;
+                    const data = await response.json();
+                    if (data.success && data.subfolders.length > 0) {
+                        this.folderList = data.subfolders;
+                        document.getElementById('folderTreePanel').classList.remove('hidden');
+                        const rh = document.getElementById('folderResizeHandle');
+                        if (rh) rh.classList.remove('hidden');
+                        this.renderFolderTree();
+                    }
+                } catch (error) {
+                    console.error('Folder tree error:', error);
+                }
+            }
+
+            renderFolderTree() {
+                const container = document.getElementById('folderTree');
+                container.innerHTML = '';
+
+                // Build tree structure from flat sorted paths
+                const tree = {};
+                for (const path of this.folderList) {
+                    const parts = path.replace(/\\/g, '/').split('/');
+                    let node = tree;
+                    for (const part of parts) {
+                        if (!node[part]) node[part] = {};
+                        node = node[part];
+                    }
+                }
+
+                const renderNode = (obj, parentPath, depth) => {
+                    const entries = Object.keys(obj).sort();
+                    for (const name of entries) {
+                        const fullPath = parentPath ? parentPath + '/' + name : name;
+                        const hasChildren = Object.keys(obj[name]).length > 0;
+                        const isExpanded = this.expandedFolders.has(fullPath);
+                        const isActive = this.currentSubfolder === fullPath;
+
+                        const row = document.createElement('div');
+                        row.className = 'flex items-center px-2 py-1 cursor-pointer hover:bg-pm-hover transition-colors'
+                            + (isActive ? ' bg-pm-accent/10 text-pm-accent font-medium' : ' text-pm');
+                        row.style.paddingLeft = (8 + depth * 16) + 'px';
+
+                        // Toggle arrow
+                        const arrow = document.createElement('span');
+                        arrow.className = 'inline-block w-4 text-center text-pm-secondary mr-1 select-none';
+                        if (hasChildren) {
+                            arrow.textContent = isExpanded ? '\u25BE' : '\u25B8';
+                            arrow.addEventListener('click', (e) => {
+                                e.stopPropagation();
+                                if (this.expandedFolders.has(fullPath)) {
+                                    this.expandedFolders.delete(fullPath);
+                                } else {
+                                    this.expandedFolders.add(fullPath);
+                                }
+                                this.renderFolderTree();
+                            });
+                        } else {
+                            arrow.textContent = '';
+                        }
+                        row.appendChild(arrow);
+
+                        const label = document.createElement('span');
+                        label.textContent = name;
+                        label.className = 'truncate';
+                        row.appendChild(label);
+
+                        // Click to filter
+                        row.addEventListener('click', () => {
+                            this.currentSubfolder = fullPath;
+                            this.currentPage = 1;
+                            this.renderFolderTree();
+                            this.loadImages();
+                        });
+
+                        container.appendChild(row);
+
+                        if (hasChildren && isExpanded) {
+                            renderNode(obj[name], fullPath, depth + 1);
+                        }
+                    }
+                };
+
+                // "All" option at top
+                const allRow = document.createElement('div');
+                allRow.className = 'flex items-center px-2 py-1 cursor-pointer hover:bg-pm-hover transition-colors'
+                    + (!this.currentSubfolder ? ' bg-pm-accent/10 text-pm-accent font-medium' : ' text-pm');
+                allRow.style.paddingLeft = '8px';
+                allRow.innerHTML = '<span class="inline-block w-4 mr-1"></span><span>All Images</span>';
+                allRow.addEventListener('click', () => {
+                    this.currentSubfolder = '';
+                    this.currentPage = 1;
+                    this.renderFolderTree();
+                    this.loadImages();
+                });
+                container.appendChild(allRow);
+
+                renderNode(tree, '', 0);
+            }
+
+            setThumbSize(size) {
+                this.thumbSize = size;
+                const grid = document.getElementById('galleryGrid');
+                const sizes = {
+                    sm: { cols: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '4px' },
+                    md: { cols: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '8px' },
+                    lg: { cols: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '12px' },
+                };
+                const s = sizes[size] || sizes.md;
+                grid.style.gridTemplateColumns = s.cols;
+                grid.style.gap = s.gap;
+                // Update button states
+                ['Sm', 'Md', 'Lg'].forEach(s => {
+                    const btn = document.getElementById('thumb' + s + 'Btn');
+                    if (btn) {
+                        if (s.toLowerCase() === size) {
+                            btn.className = btn.className.replace('bg-pm-input', 'bg-pm-accent').replace('text-pm ', 'text-pm-accent-fg ');
+                        } else {
+                            btn.className = btn.className.replace('bg-pm-accent', 'bg-pm-input').replace('text-pm-accent-fg', 'text-pm');
+                        }
+                    }
+                });
             }
 
             async loadImages() {
                 this.showLoading();
-                
+
                 try {
                     const offset = (this.currentPage - 1) * this.limit;
-                    const response = await fetch(`/prompt_manager/images/output?limit=${this.limit}&offset=${offset}`);
+                    let url = `/prompt_manager/images/output?limit=${this.limit}&offset=${offset}`;
+                    if (this.currentSubfolder) {
+                        url += `&subfolder=${encodeURIComponent(this.currentSubfolder)}`;
+                    }
+                    const response = await fetch(url);
                     
                     if (!response.ok) {
                         throw new Error(`HTTP ${response.status}: ${response.statusText}`);

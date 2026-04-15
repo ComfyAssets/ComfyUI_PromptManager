@@ -38,6 +38,11 @@
                             <option value="500">500</option>
                         </select>
                         <span class="text-xs text-pm-secondary">images</span>
+                        <span class="text-pm-secondary mx-1">|</span>
+                        <label class="text-xs text-pm-secondary">Size:</label>
+                        <button id="thumbSmBtn" class="px-2 py-1 bg-pm-input hover:bg-pm-hover text-pm text-xs rounded-pm-sm transition-colors" title="Small thumbnails">S</button>
+                        <button id="thumbMdBtn" class="px-2 py-1 bg-pm-accent text-pm-accent-fg text-xs rounded-pm-sm transition-colors" title="Medium thumbnails">M</button>
+                        <button id="thumbLgBtn" class="px-2 py-1 bg-pm-input hover:bg-pm-hover text-pm text-xs rounded-pm-sm transition-colors" title="Large thumbnails">L</button>
                     </div>
                     <div class="flex items-center gap-2">
                         <button id="refreshBtn"
@@ -82,31 +87,46 @@
         </div>
 
         <!-- Gallery Content -->
-        <div class="flex-1 overflow-y-auto">
-            <div class="max-w-7xl mx-auto p-3">
-                <!-- Loading State -->
-                <div id="loadingState" class="flex items-center justify-center py-12">
-                    <div class="text-center">
-                        <div class="w-8 h-8 border-4 border-pm-accent-tint border-t-pm-accent rounded-full animate-spin mx-auto mb-3"></div>
-                        <p class="text-pm-secondary text-xs">Loading gallery...</p>
+        <div class="flex-1 overflow-hidden">
+            <div class="max-w-full mx-auto p-3 flex gap-0" style="height: calc(100vh - 140px);">
+                <!-- Folder Tree Panel — sticky, scrolls independently -->
+                <div id="folderTreePanel" class="hidden flex-shrink-0 bg-pm-surface border border-pm rounded-pm-sm overflow-y-auto" style="width: 240px; min-width: 160px;">
+                    <div class="px-3 py-2 border-b border-pm-subtle flex items-center justify-between sticky top-0 bg-pm-surface z-10">
+                        <span class="text-sm font-semibold text-pm">Folders</span>
+                        <button id="clearFolderFilterBtn" class="text-sm text-pm-secondary hover:text-pm transition-colors" title="Clear filter">&times;</button>
+                    </div>
+                    <div id="folderTree" class="py-1 text-sm">
+                        <!-- Tree nodes inserted by JS -->
                     </div>
                 </div>
+                <!-- Resize Handle -->
+                <div id="folderResizeHandle" class="hidden w-1 cursor-col-resize bg-transparent hover:bg-pm-accent/30 flex-shrink-0"></div>
 
-                <!-- Error State -->
-                <div id="errorState" class="hidden flex items-center justify-center py-12">
-                    <div class="text-center">
-                        <h3 class="text-sm font-semibold text-pm-error mb-2">Error Loading Gallery</h3>
-                        <p class="text-pm-secondary text-xs mb-3" id="errorMessage">Something went wrong while loading the images.</p>
-                        <button id="retryBtn" class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
-                            Try Again
-                        </button>
+                <!-- Main Gallery Area — scrolls independently -->
+                <div class="flex-1 min-w-0 overflow-y-auto pl-3">
+                    <!-- Loading State -->
+                    <div id="loadingState" class="flex items-center justify-center py-12">
+                        <div class="text-center">
+                            <div class="w-8 h-8 border-4 border-pm-accent-tint border-t-pm-accent rounded-full animate-spin mx-auto mb-3"></div>
+                            <p class="text-pm-secondary text-xs">Loading gallery...</p>
+                        </div>
                     </div>
-                </div>
 
-                <!-- Gallery Grid -->
-                <div id="galleryGrid" class="hidden grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-2">
-                    <!-- Images will be inserted here -->
-                </div>
+                    <!-- Error State -->
+                    <div id="errorState" class="hidden flex items-center justify-center py-12">
+                        <div class="text-center">
+                            <h3 class="text-sm font-semibold text-pm-error mb-2">Error Loading Gallery</h3>
+                            <p class="text-pm-secondary text-xs mb-3" id="errorMessage">Something went wrong while loading the images.</p>
+                            <button id="retryBtn" class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
+                                Try Again
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Gallery Grid -->
+                    <div id="galleryGrid" class="hidden grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-2">
+                        <!-- Images will be inserted here -->
+                    </div>
 
                 <!-- Gallery List -->
                 <div id="galleryList" class="hidden space-y-2">
@@ -127,6 +147,7 @@
                         Next
                     </button>
                 </div>
+                </div> <!-- /Main Gallery Area -->
             </div>
         </div>
     </div>

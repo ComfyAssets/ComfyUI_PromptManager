@@ -320,7 +320,7 @@
 
             async loadSubfolders() {
                 try {
-                    const response = await fetch("/prompt_manager/subfolders");
+                    const response = await fetch("/prompt_manager/subfolders?include_ancestors=true");
                     if (response.ok) {
                         const data = await response.json();
                         if (data.success) {
@@ -344,7 +344,10 @@
                 this.subfolders.forEach((folder) => {
                     const option = document.createElement("option");
                     option.value = folder;
-                    option.textContent = folder;
+                    const depth = folder.split("/").length - 1;
+                    const indent = "\u00A0\u00A0".repeat(depth);
+                    const label = folder.split("/").pop();
+                    option.textContent = indent + label;
                     select.appendChild(option);
                 });
                 select.value = current;

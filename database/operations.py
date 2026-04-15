@@ -499,12 +499,22 @@ class PromptDatabase:
             )
             return [row["category"] for row in cursor.fetchall()]
 
-    def get_prompt_subfolders(self, root_dirs: Optional[List[str]] = None) -> List[str]:
+    def get_prompt_subfolders(
+        self,
+        root_dirs: Optional[List[str]] = None,
+        include_ancestors: bool = False,
+    ) -> List[str]:
         """
         Get distinct subfolder paths from generated_images.
 
         Extracts the directory portion of image_path, made relative to
         root_dirs if provided. Returns sorted unique folder names.
+
+        Args:
+            root_dirs: Gallery root directories for computing relative paths
+            include_ancestors: If True, also include all ancestor path segments
+                so that hierarchical tree navigation works. For example, a path
+                ``2026/08-Aug/2026-08-06`` also adds ``2026`` and ``2026/08-Aug``.
         """
         with self.model.get_connection() as conn:
             cursor = conn.execute(
@@ -533,9 +543,18 @@ class PromptDatabase:
                             continue
 
                 if not made_relative:
-                    basename = os.path.basename(parent)
-                    if basename:
-                        folders.add(basename)
+                    # Preserve full relative-style path instead of collapsing
+                    # to just the basename, which loses hierarchy and creates
+                    # ambiguity (e.g. foo/bar and baz/bar both become "bar").
+                    folders.add(parent)
+
+        if include_ancestors:
+            ancestors = set()
+            for folder in folders:
+                parts = folder.replace("\\", "/").split("/")
+                for i in range(1, len(parts)):
+                    ancestors.add("/".join(parts[:i]))
+            folders.update(ancestors)
 
         return sorted(folders)
 

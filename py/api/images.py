@@ -209,12 +209,12 @@ class ImageRoutesMixin:
             offset = int(request.query.get("offset", 0))
             subfolder = request.query.get("subfolder", "").strip()
 
-            # Collect (path, mtime, root) from all directories
+            # Collect (path, mtime, root, root_index) from all directories
             all_images = []
-            for output_path in output_dirs:
+            for root_idx, output_path in enumerate(output_dirs):
                 dir_images = await self._get_gallery_files(output_path)
                 for img_path, mtime in dir_images:
-                    all_images.append((img_path, mtime, output_path))
+                    all_images.append((img_path, mtime, output_path, root_idx))
 
             # Sort combined results by mtime (newest first) — no .stat() calls
             all_images.sort(key=lambda x: x[1], reverse=True)
@@ -222,10 +222,10 @@ class ImageRoutesMixin:
             # Apply subfolder filter if provided
             if subfolder:
                 filtered = []
-                for img_path, mtime, root in all_images:
+                for img_path, mtime, root, ridx in all_images:
                     rel_dir = str(img_path.relative_to(root).parent)
                     if rel_dir == subfolder or rel_dir.startswith(subfolder + os.sep):
-                        filtered.append((img_path, mtime, root))
+                        filtered.append((img_path, mtime, root, ridx))
                 all_images = filtered
 
             total = len(all_images)
@@ -235,7 +235,7 @@ class ImageRoutesMixin:
 
             def _format_page():
                 images = []
-                for media_path, mtime, output_path in paginated:
+                for media_path, mtime, output_path, root_index in paginated:
                     try:
                         stat = media_path.stat()
                         rel_path = media_path.relative_to(output_path)
@@ -260,6 +260,7 @@ class ImageRoutesMixin:
                                 "path": str(media_path),
                                 "relative_path": str(rel_path),
                                 "root_dir": str(output_path),
+                                "root_index": root_index,
                                 "url": f"/prompt_manager/images/serve/{rel_path.as_posix()}",
                                 "thumbnail_url": thumbnail_url,
                                 "size": stat.st_size,
@@ -364,6 +365,17 @@ class ImageRoutesMixin:
                     status=404,
                 )
 
+            # If a root index is provided, use only that root to avoid
+            # path collisions when multiple roots share the same relative path.
+            root_idx = request.query.get("root")
+            if root_idx is not None:
+                try:
+                    idx = int(root_idx)
+                    if 0 <= idx < len(output_dirs):
+                        output_dirs = [output_dirs[idx]]
+                except (ValueError, IndexError):
+                    pass
+
             # Try each root directory until the file is found
             for output_path in output_dirs:
                 image_path = (output_path / filepath).resolve()
@@ -396,6 +408,17 @@ class ImageRoutesMixin:
                     rel_dir = str(f.relative_to(output_path).parent)
                     if rel_dir and rel_dir != ".":
                         subfolders.add(rel_dir)
+
+            include_ancestors = (
+                request.query.get("include_ancestors", "").lower() == "true"
+            )
+            if include_ancestors:
+                ancestors = set()
+                for folder in subfolders:
+                    parts = folder.replace("\\", "/").split("/")
+                    for i in range(1, len(parts)):
+                        ancestors.add("/".join(parts[:i]))
+                subfolders.update(ancestors)
 
             return web.json_response(
                 {"success": True, "subfolders": sorted(subfolders)}
