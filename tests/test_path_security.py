@@ -36,9 +36,7 @@ class TestPathSecurity(unittest.TestCase):
         self.assertTrue(self._is_safe_path(self.output_dir, "legit.png"))
 
     def test_dot_dot_traversal_blocked(self):
-        self.assertFalse(
-            self._is_safe_path(self.output_dir, "../secret/password.txt")
-        )
+        self.assertFalse(self._is_safe_path(self.output_dir, "../secret/password.txt"))
 
     def test_encoded_dot_dot_blocked(self):
         # Even if someone encodes ../ as %2e%2e%2f, Path resolution catches it
