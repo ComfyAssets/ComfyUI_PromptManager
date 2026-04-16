@@ -425,6 +425,11 @@
 
                 document.body.appendChild(sidebar);
 
+                // Apply default collapsed state from settings
+                if (this.getSettings().sidebarCollapsedByDefault) {
+                    sidebar.classList.add('collapsed');
+                }
+
                 // Load metadata for the current image (ALWAYS use original for metadata)
                 const originalImageUrl = originalImage.dataset.original || originalImage.src;
                 console.log('Loading metadata from original image:', originalImageUrl);
@@ -509,9 +514,10 @@
                 // Create a modal that matches the screenshot design
                 const modal = document.createElement('div');
                 modal.className = 'fixed inset-0 bg-black z-50 flex';
+                modal.id = 'image-viewer-modal';
                 modal.innerHTML = `
                     <!-- Image area with navigation -->
-                    <div class="flex-1 flex items-center justify-center relative">
+                    <div class="flex-1 flex items-center justify-center relative image-viewer-area">
                         <!-- Navigation arrows -->
                         <button class="absolute left-4 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-pm text-xl z-10" id="prevImageBtn">
                             ‹
@@ -579,6 +585,12 @@
                 document.addEventListener('keydown', escapeHandler);
                 
                 document.body.appendChild(modal);
+                
+                // Apply default collapsed state from settings
+                const sidebarInModal = modal.querySelector('.metadata-sidebar');
+                if (sidebarInModal && this.getSettings().sidebarCollapsedByDefault) {
+                    sidebarInModal.classList.add('collapsed');
+                }
                 
                 // Add navigation functionality
                 this.setupImageNavigation(modal, imageUrl);
@@ -677,6 +689,12 @@
                 document.addEventListener('keydown', escapeHandler);
                 
                 document.body.appendChild(modal);
+                
+                // Apply default collapsed state from settings
+                const sidebarInVideoModal = modal.querySelector('.metadata-sidebar');
+                if (sidebarInVideoModal && this.getSettings().sidebarCollapsedByDefault) {
+                    sidebarInVideoModal.classList.add('collapsed');
+                }
                 
                 // Set up video controls
                 this.setupVideoControls(modal, settings);
@@ -1658,6 +1676,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 document.getElementById('autoLoadMetadataToggle').checked = settings.autoLoadMetadata;
                 document.getElementById('cacheMetadataToggle').checked = settings.cacheMetadata;
                 document.getElementById('showFilePathsToggle').checked = settings.showFilePaths;
+                document.getElementById('sidebarCollapsedByDefaultToggle').checked = settings.sidebarCollapsedByDefault;
                 document.getElementById('showImageInfoToggle').checked = settings.showImageInfo;
                 document.getElementById('debugModeToggle').checked = settings.debugMode;
                 document.getElementById('checkThumbnailsAtStartup').checked = settings.checkThumbnailsAtStartup;
@@ -1691,6 +1710,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     autoLoadMetadata: true,
                     cacheMetadata: true,
                     showFilePaths: true,
+                    sidebarCollapsedByDefault: false,
                     debugMode: false,
                     apiTimeout: 30,
                     thumbnailsGenerated: false,
@@ -1724,6 +1744,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     autoLoadMetadata: document.getElementById('autoLoadMetadataToggle').checked,
                     cacheMetadata: document.getElementById('cacheMetadataToggle').checked,
                     showFilePaths: document.getElementById('showFilePathsToggle').checked,
+                    sidebarCollapsedByDefault: document.getElementById('sidebarCollapsedByDefaultToggle').checked,
                     debugMode: document.getElementById('debugModeToggle').checked,
                     apiTimeout: parseInt(document.getElementById('apiTimeoutInput').value),
                     thumbnailsGenerated: this.getSettings().thumbnailsGenerated, // Preserve this

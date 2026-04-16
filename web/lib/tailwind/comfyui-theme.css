@@ -143,10 +143,36 @@
   flex-direction: column !important;
   z-index: 10000 !important;
   transition: transform 0.3s ease-in-out !important;
+  /* Ensure sidebar doesn't exceed viewport width on mobile */
+  max-width: 100vw !important;
+  transform: translateX(0) !important;
 }
 
 .metadata-sidebar.collapsed {
-  transform: translateX(340px) !important;
+  transform: translateX(100%) !important;
+}
+
+/* Mobile responsive adjustments - adjust all related elements */
+@media (max-width: 1024px) {
+  .metadata-sidebar {
+    width: min(70vw, 320px) !important;
+  }
+  
+  .metadata-sidebar.collapsed {
+    transform: translateX(100%) !important;
+  }
+}
+
+@media (max-width: 768px) {
+  .metadata-sidebar {
+    width: min(75vw, 300px) !important;
+    background: var(--pm-bg-surface) !important;
+    box-shadow: -2px 0 8px rgba(0, 0, 0, 0.3) !important;
+  }
+  
+  .metadata-sidebar.collapsed {
+    transform: translateX(100%) !important;
+  }
 }
 
 .metadata-collapse-btn {
@@ -160,7 +186,7 @@
   border: 1px solid var(--pm-border);
   border-right: none;
   border-radius: var(--pm-radius-sm) 0 0 var(--pm-radius-sm);
-  display: flex;
+  display: flex !important;
   align-items: center;
   justify-content: center;
   cursor: pointer;
@@ -169,8 +195,22 @@
 }
 
 .metadata-collapse-btn:hover { background: var(--pm-bg-hover); }
-.metadata-collapse-btn svg { transition: transform 0.3s ease; }
-.metadata-sidebar.collapsed .metadata-collapse-btn svg { transform: rotate(180deg); }
+.metadata-collapse-btn svg { 
+  transition: transform 0.3s ease; 
+  transform: rotate(180deg); /* Point right when sidebar is open */
+}
+.metadata-sidebar.collapsed .metadata-collapse-btn svg { 
+  transform: rotate(0deg); /* Point left when sidebar is collapsed */
+}
+
+/* Mobile: adjust button on smaller screens but keep visible */
+@media (max-width: 480px) {
+  .metadata-collapse-btn {
+    width: 24px;
+    height: 60px;
+    left: -28px;
+  }
+}
 
 /* ── Tag Chips ───────────────────────────────────── */
 .tag-chip {
