@@ -1107,10 +1107,10 @@ class PromptDatabase:
                 # Note: Removed ORDER BY from GROUP_CONCAT for SQLite compatibility
                 # We'll sort the IDs manually after fetching
                 cursor = conn.execute("""
-                    SELECT LOWER(TRIM(text)) as normalized_text, COUNT(*) as count, 
+                    SELECT LOWER(TRIM(text)) as normalized_text, COUNT(*) as count,
                            GROUP_CONCAT(id) as ids,
                            GROUP_CONCAT(created_at) as created_dates
-                    FROM prompts 
+                    FROM prompts
                     GROUP BY LOWER(TRIM(text))
                     HAVING COUNT(*) > 1
                 """)
@@ -1179,10 +1179,10 @@ class PromptDatabase:
                 # Note: Removed ORDER BY from GROUP_CONCAT for SQLite compatibility
                 # We'll sort the IDs manually after fetching
                 cursor = conn.execute("""
-                    SELECT LOWER(TRIM(text)) as normalized_text, COUNT(*) as count, 
+                    SELECT LOWER(TRIM(text)) as normalized_text, COUNT(*) as count,
                            GROUP_CONCAT(id) as ids,
                            GROUP_CONCAT(created_at) as created_dates
-                    FROM prompts 
+                    FROM prompts
                     GROUP BY LOWER(TRIM(text))
                     HAVING COUNT(*) > 1
                 """)
