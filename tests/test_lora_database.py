@@ -194,6 +194,37 @@ class TestGetPromptSubfolders(LoraDBTestCase):
         self.assertIsInstance(folders, list)
         self.assertGreater(len(folders), 0)
 
+    def test_include_ancestors_adds_intermediate_paths(self):
+        pid = self._save("prompt")
+        self._link_image(pid, "/output/2026/08-Aug/2026-08-06/img.png")
+
+        folders = self.db.get_prompt_subfolders(
+            root_dirs=["/output"], include_ancestors=True
+        )
+        self.assertIn("2026", folders)
+        self.assertIn("2026/08-Aug", folders)
+        self.assertIn("2026/08-Aug/2026-08-06", folders)
+
+    def test_include_ancestors_false_no_intermediates(self):
+        pid = self._save("prompt")
+        self._link_image(pid, "/output/2026/08-Aug/2026-08-06/img.png")
+
+        folders = self.db.get_prompt_subfolders(
+            root_dirs=["/output"], include_ancestors=False
+        )
+        self.assertIn("2026/08-Aug/2026-08-06", folders)
+        self.assertNotIn("2026", folders)
+        self.assertNotIn("2026/08-Aug", folders)
+
+    def test_include_ancestors_sorted(self):
+        pid = self._save("prompt")
+        self._link_image(pid, "/output/a/b/c/img.png")
+
+        folders = self.db.get_prompt_subfolders(
+            root_dirs=["/output"], include_ancestors=True
+        )
+        self.assertEqual(folders, sorted(folders))
+
 
 # ── LoRA prompt workflow ──────────────────────────────────────────────
 

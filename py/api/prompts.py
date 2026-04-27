@@ -170,8 +170,11 @@ class PromptRoutesMixin:
             from ..config import GalleryConfig
 
             root_dirs = list(GalleryConfig.MONITORING_DIRECTORIES) or None
+            include_ancestors = (
+                request.query.get("include_ancestors", "").lower() == "true"
+            )
             subfolders = await self._run_in_executor(
-                self.db.get_prompt_subfolders, root_dirs
+                self.db.get_prompt_subfolders, root_dirs, include_ancestors
             )
             return web.json_response({"success": True, "subfolders": subfolders})
         except Exception as e:
