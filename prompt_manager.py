@@ -78,7 +78,7 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
                     IO.STRING,
                     {
                         "default": "",
-                        "tooltip": "Search for past prompts containing this text",
+                        "tooltip": 'Search past prompts by text; add tag:name (or tag:"two words") to filter by tag',
                     },
                 ),
                 "prepend_text": (

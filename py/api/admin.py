@@ -13,6 +13,11 @@ from pathlib import Path
 
 from aiohttp import web
 
+try:
+    from ...utils.validators import validate_result_timeout
+except ImportError:
+    from utils.validators import validate_result_timeout
+
 
 class AdminRoutesMixin:
     """Mixin providing admin, diagnostics, and maintenance API endpoints."""
@@ -399,7 +404,14 @@ class AdminRoutesMixin:
 
             # Update in-memory config
             if "result_timeout" in data:
-                PromptManagerConfig.RESULT_TIMEOUT = data["result_timeout"]
+                try:
+                    PromptManagerConfig.RESULT_TIMEOUT = validate_result_timeout(
+                        data["result_timeout"]
+                    )
+                except ValueError as ve:
+                    return web.json_response(
+                        {"success": False, "error": str(ve)}, status=400
+                    )
             if "webui_display_mode" in data:
                 PromptManagerConfig.WEBUI_DISPLAY_MODE = data["webui_display_mode"]
 

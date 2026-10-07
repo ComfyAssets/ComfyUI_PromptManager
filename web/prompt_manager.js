@@ -20,6 +20,24 @@ function escapeHtml(text) {
 }
 
 /**
+ * Split node search input into free text and tag filters (#150).
+ * `tag:portrait tag:"film grain" sunset` -> { text: "sunset", tags: ["portrait", "film grain"] }
+ * @param {string} input - Raw search_text widget value
+ * @returns {{text: string, tags: string[]}}
+ */
+function parseSearchQuery(input) {
+  const tags = [];
+  const text = (input || "")
+    .replace(/\btag:(?:"([^"]+)"|(\S+))/gi, (_, quoted, bare) => {
+      tags.push((quoted || bare).trim());
+      return " ";
+    })
+    .replace(/\s+/g, " ")
+    .trim();
+  return { text, tags: tags.filter(Boolean) };
+}
+
+/**
  * Create a DOM element with optional attributes and children
  * @param {string} tag - HTML tag name
  * @param {Object} attrs - Attributes and properties
@@ -601,20 +619,22 @@ app.registerExtension({
           this.resultsSection.innerHTML =
             '<div style="color: #999; text-align: center;">🔍 Searching database...</div>';
 
-          // Get search criteria from node widgets (only search_text available now)
-          const searchText =
-            this.widgets?.find((w) => w.name === "search_text")?.value || "";
+          // search_text supports free text plus tag:name filters
+          const { text, tags } = parseSearchQuery(
+            this.widgets?.find((w) => w.name === "search_text")?.value || "",
+          );
 
           // Validate search criteria
-          if (!searchText.trim()) {
+          if (!text && tags.length === 0) {
             this.resultsSection.innerHTML =
-              '<div style="color: #f9a825; text-align: center;">⚠️ Please enter search text</div>';
+              '<div style="color: #f9a825; text-align: center;">⚠️ Enter search text or tag:name</div>';
             return;
           }
 
           // Call the backend search function
           const response = await this.callNodeMethod("search_prompts", {
-            search_text: searchText,
+            search_text: text,
+            tags,
           });
 
           this.displayResults(response.results || []);
@@ -670,7 +690,7 @@ app.registerExtension({
           if (response.ok) {
             const data = await response.json();
             if (data.success && data.settings) {
-              this.properties.resultTimeout = data.settings.result_timeout || 3;
+              this.properties.resultTimeout = data.settings.result_timeout ?? 3;
               this.properties.showTestButton =
                 data.settings.show_test_button || false;
               this.properties.webuiDisplayMode =
@@ -948,10 +968,11 @@ app.registerExtension({
             options = { method: "GET" };
 
           if (method === "search_prompts") {
-            // Build query string for search (simplified - only text search)
             const queryParams = new URLSearchParams();
             if (params.search_text)
               queryParams.append("text", params.search_text);
+            if (params.tags?.length)
+              queryParams.append("tags", params.tags.join(","));
             queryParams.append("limit", "50");
 
             url = `/prompt_manager/search?${queryParams.toString()}`;

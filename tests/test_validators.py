@@ -19,6 +19,7 @@ from utils.validators import (
     validate_workflow_name,
     sanitize_input,
     parse_tags_string,
+    validate_result_timeout,
 )
 
 
@@ -285,6 +286,47 @@ class TestValidateTagsEdgeCases(unittest.TestCase):
     def test_whitespace_only_tag_rejected(self):
         with self.assertRaises(ValueError):
             validate_tags(["   "])
+
+
+class TestValidateResultTimeout(unittest.TestCase):
+    """Test validate_result_timeout function (#149)."""
+
+    def test_zero_disables_auto_hide(self):
+        self.assertEqual(validate_result_timeout(0), 0)
+
+    def test_typical_value(self):
+        self.assertEqual(validate_result_timeout(30), 30)
+
+    def test_max_boundary(self):
+        self.assertEqual(validate_result_timeout(300), 300)
+
+    def test_returns_int(self):
+        self.assertIsInstance(validate_result_timeout(5), int)
+
+    def test_none_rejected(self):
+        with self.assertRaises(ValueError):
+            validate_result_timeout(None)
+
+    def test_garbage_string_rejected(self):
+        with self.assertRaises(ValueError):
+            validate_result_timeout("soon")
+
+    def test_numeric_string_coerced(self):
+        self.assertEqual(validate_result_timeout(" 10 "), 10)
+
+    def test_fractional_values_rejected(self):
+        for value in (1.5, "1.5"):
+            with self.assertRaises(ValueError):
+                validate_result_timeout(value)
+
+    def test_out_of_range_rejected_not_clamped(self):
+        for value in (-5, 301, 9999):
+            with self.assertRaises(ValueError):
+                validate_result_timeout(value)
+
+    def test_bool_rejected(self):
+        with self.assertRaises(ValueError):
+            validate_result_timeout(True)
 
 
 if __name__ == "__main__":

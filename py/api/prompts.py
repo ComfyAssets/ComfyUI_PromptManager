@@ -437,7 +437,7 @@ class PromptRoutesMixin:
                 return web.json_response(
                     {"success": False, "error": "Invalid JSON body"}, status=400
                 )
-            new_name = body.get("new_name", "").strip()
+            new_name = (body.get("new_name") or "").strip()
             if not new_name:
                 return web.json_response(
                     {"success": False, "error": "New tag name required"}, status=400
@@ -501,7 +501,7 @@ class PromptRoutesMixin:
                     {"success": False, "error": "Invalid JSON body"}, status=400
                 )
             source_tags = body.get("source_tags", [])
-            target_tag = body.get("target_tag", "").strip()
+            target_tag = (body.get("target_tag") or "").strip()
 
             if not source_tags:
                 return web.json_response(
@@ -536,16 +536,16 @@ class PromptRoutesMixin:
         try:
             data = await request.json()
 
-            text = data.get("text", "").strip()
+            text = (data.get("text") or "").strip()
             if not text:
                 return web.json_response(
                     {"success": False, "error": "Text is required"}, status=400
                 )
 
-            category = data.get("category", "").strip() or None
+            category = (data.get("category") or "").strip() or None
             tags = data.get("tags", [])
             rating = data.get("rating") or None
-            notes = data.get("notes", "").strip() or None
+            notes = (data.get("notes") or "").strip() or None
 
             try:
                 validate_prompt_text(text)
@@ -643,7 +643,7 @@ class PromptRoutesMixin:
         try:
             prompt_id = int(request.match_info["prompt_id"])
             data = await request.json()
-            new_text = data.get("text", "").strip()
+            new_text = (data.get("text") or "").strip()
 
             if not new_text:
                 return web.json_response(
@@ -724,7 +724,7 @@ class PromptRoutesMixin:
         try:
             prompt_id = int(request.match_info["prompt_id"])
             data = await request.json()
-            new_tag = data.get("tag", "").strip()
+            new_tag = (data.get("tag") or "").strip()
 
             if not new_tag:
                 return web.json_response(
@@ -824,7 +824,7 @@ class PromptRoutesMixin:
         try:
             prompt_id = int(request.match_info["prompt_id"])
             data = await request.json()
-            tag_to_remove = data.get("tag", "").strip()
+            tag_to_remove = (data.get("tag") or "").strip()
 
             prompt = await self._run_in_executor(self.db.get_prompt_by_id, prompt_id)
             if not prompt:
@@ -923,7 +923,7 @@ class PromptRoutesMixin:
         try:
             data = await request.json()
             prompt_ids = data.get("prompt_ids", [])
-            category = data.get("category", "").strip()
+            category = (data.get("category") or "").strip()
 
             if not prompt_ids:
                 return web.json_response(

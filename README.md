@@ -58,7 +58,7 @@ Both nodes include the complete PromptManager feature set:
 - **📋 Metadata Viewer**: Standalone tool for analyzing ComfyUI-generated images
 - **🛠️ System Management**: Built-in diagnostics, backup/restore, and maintenance tools
 - **🏷️ AI AutoTag**: Automatically tag your image collection using WD14 or JoyCaption vision models
-- **🔗 LoRA Manager Integration**: Import LoRA metadata and preview images from [ComfyUI-Lora-Manager](https://github.com/willchil/ComfyUI-Lora-Manager)
+- **🔗 LoRA Manager Integration**: Import LoRA metadata and preview images from [ComfyUI-Lora-Manager](https://github.com/willmiao/ComfyUI-Lora-Manager)
 
 ![Image Gallery](images/pm-02.png)
 
@@ -430,7 +430,7 @@ Organize and filter your prompt library by output subdirectory. The dashboard se
 
 ![LoRA Settings](images/pm-settings-integrations.png)
 
-If you use [ComfyUI-Lora-Manager](https://github.com/willchil/ComfyUI-Lora-Manager), PromptManager can import your LoRA metadata, trigger words, and example images directly into your prompt database. This lets you search, tag, and browse your LoRA collection alongside your regular prompts.
+If you use [ComfyUI-Lora-Manager](https://github.com/willmiao/ComfyUI-Lora-Manager), PromptManager can import your LoRA metadata, trigger words, and example images directly into your prompt database. This lets you search, tag, and browse your LoRA collection alongside your regular prompts.
 
 > **WIP:** LoRA Manager support is a work in progress — this was a highly requested feature. Please [open issues](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues) for any bugs or feature requests.
 
@@ -895,7 +895,7 @@ MIT License - see LICENSE file for details.
 
 ### v3.2.1 (LoRA Manager Integration)
 
-- **🔗 LoRA Manager Integration**: Import LoRA metadata, trigger words, and CivitAI example images from [ComfyUI-Lora-Manager](https://github.com/willchil/ComfyUI-Lora-Manager) into your prompt database
+- **🔗 LoRA Manager Integration**: Import LoRA metadata, trigger words, and CivitAI example images from [ComfyUI-Lora-Manager](https://github.com/willmiao/ComfyUI-Lora-Manager) into your prompt database
 - **💉 Auto-Inject Trigger Words**: Optionally append LoRA trigger words when `<lora:name:weight>` is detected in prompts during encoding
 - **🔑 CivitAI API Key Support**: Authenticate with CivitAI to download NSFW preview images
 - **📥 Import Progress Modal**: Real-time SSE streaming progress during LoRA import with per-model status

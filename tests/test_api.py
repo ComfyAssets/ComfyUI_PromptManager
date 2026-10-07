@@ -171,6 +171,23 @@ class TestSaveAndDelete(APITestCase):
         data = await resp.json()
         self.assertFalse(data["success"])
 
+    async def test_save_with_null_optional_fields(self):
+        """Regression for #143: UI sends null for empty optional fields."""
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/save",
+            json={"text": "Null notes prompt", "category": None, "notes": None},
+        )
+        self.assertEqual(resp.status, 200)
+        data = await resp.json()
+        self.assertTrue(data["success"])
+
+    async def test_save_with_null_text(self):
+        resp = await self.client.request(
+            "POST", "/prompt_manager/save", json={"text": None}
+        )
+        self.assertEqual(resp.status, 400)
+
     async def test_delete_prompt(self):
         pid = self._save_prompt("To delete")
         resp = await self.client.request("DELETE", f"/prompt_manager/delete/{pid}")
