@@ -24,6 +24,9 @@ try:
     from .utils.comfyui_integration import get_comfyui_integration
     from .utils.image_monitor import get_image_monitor
     from .utils.prompt_tracker import get_prompt_tracker
+    from .utils.hashing import generate_prompt_hash
+    from .utils.prompt_graph import resolve_text, run_prompt_nodes
+    from .utils.usage_tracking import PENDING_FIRST_USE
 except ImportError:
     import sys
 
@@ -32,6 +35,9 @@ except ImportError:
     from utils.comfyui_integration import get_comfyui_integration
     from utils.image_monitor import get_image_monitor
     from utils.prompt_tracker import get_prompt_tracker
+    from utils.hashing import generate_prompt_hash
+    from utils.prompt_graph import resolve_text, run_prompt_nodes
+    from utils.usage_tracking import PENDING_FIRST_USE
 
 
 class PromptManagerBase:
@@ -56,14 +62,23 @@ class PromptManagerBase:
         self.logger.debug(f"{self.__class__.__name__} node initialization completed")
 
     def _save_prompt_to_database(
-        self, text: str, category: Optional[str] = None, tags: Optional[list] = None
+        self,
+        text: str,
+        category: Optional[str] = None,
+        tags: Optional[list] = None,
+        count_run: bool = False,
     ) -> Optional[int]:
         """Save the prompt to the SQLite database.
+
+        Runs are normally counted by the queue hook (utils/usage_tracking.py), so a
+        save only counts one when asked to (batch items whose text the hook could not
+        see) or when the hook queued this prompt before it existed.
 
         Args:
             text: The prompt text
             category: Optional category
             tags: List of tags
+            count_run: Count this execution as a run of the prompt
 
         Returns:
             The prompt ID if saved successfully, None otherwise
@@ -82,6 +97,8 @@ class PromptManagerBase:
                         prompt_id=existing["id"], category=category, tags=tags
                     )
                     self.logger.debug("Updated metadata for existing prompt")
+                if count_run:
+                    self._record_use(existing["id"])
                 return existing["id"]
 
             self.logger.debug(
@@ -93,6 +110,10 @@ class PromptManagerBase:
 
             if prompt_id:
                 self.logger.debug(f"Successfully saved new prompt with ID: {prompt_id}")
+                pending = getattr(self, "pending_first_use", PENDING_FIRST_USE)
+                runs = pending.consume(prompt_hash) + (1 if count_run else 0)
+                if runs:
+                    self._record_use(prompt_id, times=runs)
             else:
                 self.logger.warning("Failed to save prompt - no ID returned")
 
@@ -101,6 +122,68 @@ class PromptManagerBase:
         except Exception as e:
             self.logger.error(f"Error saving prompt to database: {e}")
             return None
+
+    def _prompt_role(
+        self, prompt_graph: Any, unique_id: Any, text: str
+    ) -> Dict[str, bool]:
+        """How this node's execution relates to the run, from the queued graph.
+
+        Returns flags:
+            is_run_prompt: feeds a sampler's positive input (images belong to it)
+            seen_at_queue: the queue hook resolved exactly this text, so it already
+                counted the run and the image's metadata can identify the prompt
+            known: the graph and node id were available
+        """
+        if not isinstance(prompt_graph, dict) or unique_id is None:
+            return {"is_run_prompt": True, "seen_at_queue": False, "known": False}
+        node_id = str(unique_id)
+        resolved = resolve_text(prompt_graph, node_id)
+        return {
+            "is_run_prompt": node_id in run_prompt_nodes(prompt_graph),
+            "seen_at_queue": resolved is not None
+            and generate_prompt_hash(resolved) == generate_prompt_hash(text),
+            "known": True,
+        }
+
+    def _track_prompt_execution(
+        self,
+        text: str,
+        encoding_text: str,
+        category: Optional[str],
+        tags: Optional[list],
+        additional_data: Dict[str, Any],
+        prompt_graph: Any = None,
+        unique_id: Any = None,
+    ) -> Optional[int]:
+        """Save the prompt and, for the run's positive prompt, register it for linking.
+
+        Negative-prompt nodes are saved but never become the prompt their images are
+        linked to. Text the queue hook could resolve is counted there and linked from
+        the image's own metadata; anything else (PromptSearchList batches, unknown
+        text nodes, or a resolution that doesn't match) is counted here and pushed
+        onto the FIFO queue. Without graph context the pre-3.2.4 behaviour is kept.
+        """
+        role = self._prompt_role(prompt_graph, unique_id, text)
+        batch_item = (
+            role["known"] and role["is_run_prompt"] and not role["seen_at_queue"]
+        )
+        prompt_id = self._save_prompt_to_database(
+            text=text, category=category, tags=tags, count_run=batch_item
+        )
+        if prompt_id and role["is_run_prompt"]:
+            self.prompt_tracker.set_current_prompt(
+                prompt_text=encoding_text,
+                additional_data={**additional_data, "prompt_id": prompt_id},
+                push_to_queue=batch_item or not role["known"],
+            )
+        return prompt_id
+
+    def _record_use(self, prompt_id: int, times: int = 1) -> None:
+        """Count runs; a tracking failure must never block generation."""
+        try:
+            self.db.record_prompt_use(prompt_id, times=times)
+        except Exception as e:
+            self.logger.warning(f"Could not record use of prompt {prompt_id}: {e}")
 
     def _inject_lora_trigger_words(self, text: str) -> str:
         """Append LoRA trigger words if integration is enabled.

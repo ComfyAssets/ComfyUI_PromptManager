@@ -8,7 +8,7 @@ import datetime
 import os
 from typing import Optional, List, Dict, Any, Union
 
-from .models import PromptModel
+from .models import PromptModel, utc_now_iso
 
 # Import logging system
 try:
@@ -27,6 +27,25 @@ TAG_SUBQUERY = (
     "FROM prompt_tags pt JOIN tags t ON pt.tag_id = t.id "
     "WHERE pt.prompt_id = prompts.id) AS _tag_list"
 )
+
+# Server-side sort orders, keyed by the value the UI sends. Only these strings ever
+# reach ORDER BY; unknown keys fall back to DEFAULT_SORT.
+SORT_ORDERS = {
+    "last_used_desc": "last_used_at DESC, id DESC",
+    "created_desc": "created_at DESC, id DESC",
+    "created_asc": "created_at ASC, id ASC",
+    "run_count_desc": "run_count DESC, last_used_at DESC, id DESC",
+    "rating_desc": "rating IS NULL, rating DESC, id DESC",
+    "rating_asc": "rating IS NULL, rating ASC, id DESC",
+    "text_asc": "text COLLATE NOCASE ASC, id ASC",
+    "text_desc": "text COLLATE NOCASE DESC, id DESC",
+}
+DEFAULT_SORT = "created_desc"
+
+
+def order_by_clause(sort: Optional[str]) -> str:
+    """Return a whitelisted ORDER BY expression for a UI sort key."""
+    return SORT_ORDERS.get(sort or DEFAULT_SORT, SORT_ORDERS[DEFAULT_SORT])
 
 
 def _resolve_db_path(db_path: Optional[str] = None) -> str:
@@ -122,8 +141,9 @@ class PromptDatabase:
             cursor = conn.execute(
                 """
                 INSERT INTO prompts (
-                    text, category, tags, rating, notes, hash, created_at, updated_at
-                ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)
+                    text, category, tags, rating, notes, hash, created_at, updated_at,
+                    last_used_at
+                ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     text.strip(),
@@ -133,6 +153,7 @@ class PromptDatabase:
                     prompt_hash,
                     datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    utc_now_iso(),
                 ),
             )
             prompt_id = cursor.lastrowid
@@ -141,6 +162,26 @@ class PromptDatabase:
             conn.commit()
             self.logger.debug(f"Successfully saved prompt with ID: {prompt_id}")
             return prompt_id
+
+    def record_prompt_use(self, prompt_id: int, times: int = 1) -> bool:
+        """
+        Count runs of a prompt and mark it as most recently used.
+
+        Args:
+            prompt_id: The prompt ID
+            times: Number of runs to add (queued runs counted on first save)
+
+        Returns:
+            True if the prompt exists and was updated
+        """
+        with self.model.get_connection() as conn:
+            cursor = conn.execute(
+                "UPDATE prompts SET run_count = run_count + ?, last_used_at = ?"
+                " WHERE id = ?",
+                (max(1, int(times)), utc_now_iso(), prompt_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
 
     def get_prompt_by_id(self, prompt_id: int) -> Optional[Dict[str, Any]]:
         """
@@ -191,6 +232,7 @@ class PromptDatabase:
         limit: int = 100,
         offset: int = 0,
         tag_partial: bool = False,
+        sort: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Search prompts with various filters.
@@ -207,6 +249,7 @@ class PromptDatabase:
             limit: Maximum number of results
             offset: Number of results to skip
             tag_partial: Use LIKE matching for tags instead of exact match
+            sort: Sort key from SORT_ORDERS (default: newest first)
 
         Returns:
             List of dictionaries containing prompt data
@@ -275,7 +318,7 @@ class PromptDatabase:
             query_parts.append("AND created_at <= ?")
             params.append(date_to)
 
-        query_parts.append("ORDER BY created_at DESC LIMIT ? OFFSET ?")
+        query_parts.append(f"ORDER BY {order_by_clause(sort)} LIMIT ? OFFSET ?")
         params.extend([limit, offset])
 
         query = " ".join(query_parts)
@@ -291,13 +334,16 @@ class PromptDatabase:
 
             return prompts
 
-    def get_recent_prompts(self, limit: int = 10, offset: int = 0) -> Dict[str, Any]:
+    def get_recent_prompts(
+        self, limit: int = 10, offset: int = 0, sort: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Get the most recent prompts with pagination support.
 
         Args:
             limit: Maximum number of prompts to return
             offset: Number of prompts to skip (for pagination)
+            sort: Sort key from SORT_ORDERS (default: newest first)
 
         Returns:
             Dictionary containing prompt data and pagination info
@@ -310,7 +356,8 @@ class PromptDatabase:
 
             # Get paginated results
             cursor = conn.execute(
-                f"SELECT prompts.*, {TAG_SUBQUERY} FROM prompts ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                f"SELECT prompts.*, {TAG_SUBQUERY} FROM prompts"
+                f" ORDER BY {order_by_clause(sort)} LIMIT ? OFFSET ?",
                 (limit, offset),
             )
             rows = cursor.fetchall()

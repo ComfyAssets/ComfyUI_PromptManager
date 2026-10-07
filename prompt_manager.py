@@ -4,7 +4,7 @@ with persistent prompt storage and search capabilities.
 """
 
 import time
-from typing import Any, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 try:
     from comfy.comfy_types import IO, ComfyNodeABC, InputTypeDict
@@ -94,6 +94,12 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
                     },
                 ),
             },
+            "hidden": {
+                # The queued graph and this node's id: used to tell the positive
+                # prompt of a run from negative-prompt PromptManager nodes
+                "prompt": "PROMPT",
+                "unique_id": "UNIQUE_ID",
+            },
         }
 
     RETURN_TYPES = (IO.CONDITIONING, IO.STRING)
@@ -119,6 +125,8 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
         search_text: str = "",
         prepend_text: str = "",
         append_text: str = "",
+        prompt: Optional[Dict[str, Any]] = None,
+        unique_id: Optional[str] = None,
     ) -> Tuple[Any]:
         """
         Encode the text prompt and save it to the database.
@@ -181,30 +189,24 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
                 extended_tags.append(f"append:{append_text.strip()[:50]}")
 
             try:
-                prompt_id = self._save_prompt_to_database(
+                prompt_id = self._track_prompt_execution(
                     text=storage_text.strip(),
+                    encoding_text=encoding_text.strip(),
                     category=category.strip() if category else None,
                     tags=extended_tags if extended_tags else None,
+                    additional_data={
+                        "category": category.strip() if category else None,
+                        "tags": extended_tags,
+                        "prepend_text": (
+                            prepend_text.strip() if prepend_text else None
+                        ),
+                        "append_text": append_text.strip() if append_text else None,
+                        "final_text": encoding_text.strip(),
+                    },
+                    prompt_graph=prompt,
+                    unique_id=unique_id,
                 )
-
-                # Set current prompt for image tracking
-                if prompt_id:
-                    execution_id = self.prompt_tracker.set_current_prompt(
-                        prompt_text=encoding_text.strip(),
-                        additional_data={
-                            "category": category.strip() if category else None,
-                            "tags": extended_tags,
-                            "prompt_id": prompt_id,
-                            "prepend_text": (
-                                prepend_text.strip() if prepend_text else None
-                            ),
-                            "append_text": append_text.strip() if append_text else None,
-                            "final_text": encoding_text.strip(),
-                        },
-                    )
-                    self.logger.debug(
-                        f"Set execution context: {execution_id} for prompt ID: {prompt_id}"
-                    )
+                self.logger.debug(f"Tracked prompt ID: {prompt_id}")
 
             except Exception as e:
                 # Log error but don't fail the encoding

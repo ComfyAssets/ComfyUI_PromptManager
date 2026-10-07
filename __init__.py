@@ -111,6 +111,25 @@ except Exception as e:
     except Exception:
         print(f"[ComfyUI-PromptManager] Warning: Failed to start image monitoring: {e}")
 
+# Count prompt runs when workflows are queued (ComfyUI skips unchanged nodes, so
+# node execution alone misses re-runs). Separate from monitoring so either can fail.
+try:
+    from .py.config import server_instance
+    from .utils.usage_tracking import register_queue_hook
+
+    register_queue_hook(server_instance, lambda: _global_db)
+except Exception as e:
+    try:
+        from .utils.logging_config import get_logger
+
+        get_logger("prompt_manager.init").error(f"Failed to register usage hook: {e}")
+    except Exception:
+        import logging
+
+        logging.getLogger("prompt_manager.init").error(
+            f"Failed to register usage hook: {e}"
+        )
+
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
 # Print startup message with loaded tools

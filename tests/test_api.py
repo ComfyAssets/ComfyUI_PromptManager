@@ -238,6 +238,65 @@ class TestUpdatePrompt(APITestCase):
         self.assertTrue(data["success"])
 
 
+class TestUsageSorting(APITestCase):
+    """Server-side sort for /recent and /search (3.2.4, #90.1)."""
+
+    def _use(self, prompt_id, times=1):
+        for _ in range(times):
+            self.api.db.record_prompt_use(prompt_id)
+
+    async def _ids(self, path):
+        resp = await self.client.request("GET", path)
+        self.assertEqual(resp.status, 200)
+        data = await resp.json()
+        self.assertTrue(data["success"])
+        return [p["id"] for p in data["results"]]
+
+    async def test_recent_sorted_by_last_used_bubbles_rerun_prompt(self):
+        old = self._save_prompt("Old prompt")
+        self._save_prompt("New prompt")
+        self._use(old)
+        ids = await self._ids("/prompt_manager/recent?limit=1&sort=last_used_desc")
+        self.assertEqual(ids, [old])
+
+    async def test_recent_sorted_by_run_count(self):
+        # Most-run prompt is the oldest, so newest-first would give the opposite order
+        most = self._save_prompt("Run thrice")
+        least = self._save_prompt("Run once")
+        self._use(most, times=3)
+        self._use(least)
+        ids = await self._ids("/prompt_manager/recent?sort=run_count_desc")
+        self.assertEqual(ids, [most, least])
+
+    async def test_recent_default_is_newest_first(self):
+        first = self._save_prompt("First")
+        second = self._save_prompt("Second")
+        self._use(first)
+        self.assertEqual(await self._ids("/prompt_manager/recent"), [second, first])
+
+    async def test_unknown_sort_falls_back_instead_of_erroring(self):
+        self._save_prompt("Only")
+        ids = await self._ids(
+            "/prompt_manager/recent?sort=created_at;DROP%20TABLE%20prompts"
+        )
+        self.assertEqual(len(ids), 1)
+
+    async def test_search_respects_sort(self):
+        a = self._save_prompt("castle at dawn")
+        self._save_prompt("castle at dusk")
+        self._use(a)
+        ids = await self._ids("/prompt_manager/search?text=castle&sort=last_used_desc")
+        self.assertEqual(ids[0], a)
+
+    async def test_results_include_usage_fields(self):
+        pid = self._save_prompt("Tracked")
+        self._use(pid, times=2)
+        resp = await self.client.request("GET", "/prompt_manager/recent")
+        prompt = (await resp.json())["results"][0]
+        self.assertEqual(prompt["run_count"], 2)
+        self.assertTrue(prompt["last_used_at"])
+
+
 class TestTags(APITestCase):
 
     async def test_get_all_tags(self):
