@@ -8,7 +8,7 @@ import datetime
 import os
 from typing import Optional, List, Dict, Any, Union
 
-from .models import PromptModel, SQL_NOW_ISO
+from .models import PromptModel, utc_now_iso
 
 # Import logging system
 try:
@@ -139,11 +139,11 @@ class PromptDatabase:
 
         with self.model.get_connection() as conn:
             cursor = conn.execute(
-                f"""
+                """
                 INSERT INTO prompts (
                     text, category, tags, rating, notes, hash, created_at, updated_at,
                     last_used_at
-                ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, {SQL_NOW_ISO})
+                ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     text.strip(),
@@ -153,6 +153,7 @@ class PromptDatabase:
                     prompt_hash,
                     datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    utc_now_iso(),
                 ),
             )
             prompt_id = cursor.lastrowid
@@ -174,9 +175,9 @@ class PromptDatabase:
         """
         with self.model.get_connection() as conn:
             cursor = conn.execute(
-                f"UPDATE prompts SET run_count = run_count + 1, last_used_at = {SQL_NOW_ISO}"
+                "UPDATE prompts SET run_count = run_count + 1, last_used_at = ?"
                 " WHERE id = ?",
-                (prompt_id,),
+                (utc_now_iso(), prompt_id),
             )
             conn.commit()
             return cursor.rowcount > 0

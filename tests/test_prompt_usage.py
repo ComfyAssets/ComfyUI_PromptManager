@@ -57,6 +57,26 @@ class TestRecordPromptUse(UsageTestCase):
         self.assertEqual(prompt["run_count"], 2)
         self.assertGreater(prompt["last_used_at"], "2020-01-01T00:00:00.000+00:00")
 
+    def test_rerun_right_after_another_save_still_sorts_first(self):
+        # No hand-set timestamps: creation and re-run happen within the same millisecond
+        old = self._save("old")
+        self._save("new")
+        self.db.record_prompt_use(old)
+        result = self.db.get_recent_prompts(limit=1, sort="last_used_desc")
+        self.assertEqual(self._ids(result["prompts"]), [old])
+
+    def test_microsecond_timestamps_order_correctly_against_backfilled_ones(self):
+        backfilled = self._save("backfilled")
+        self._set(backfilled, last_used_at="2026-01-01T00:00:00.000+00:00")
+        recent = self._save("recent")
+        self.db.record_prompt_use(recent)
+        self.assertRegex(
+            self.db.get_prompt_by_id(recent)["last_used_at"],
+            r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}\+00:00$",
+        )
+        result = self.db.get_recent_prompts(limit=2, sort="last_used_desc")
+        self.assertEqual(self._ids(result["prompts"]), [recent, backfilled])
+
     def test_record_use_on_missing_prompt_returns_false(self):
         self.assertFalse(self.db.record_prompt_use(999999))
 

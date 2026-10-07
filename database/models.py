@@ -2,6 +2,7 @@
 Database schema and models for KikoTextEncode prompt storage.
 """
 
+import datetime
 import sqlite3
 import os
 import threading
@@ -17,9 +18,17 @@ except ImportError:
     sys.path.insert(0, current_dir)
     from utils.logging_config import get_logger
 
-# Single UTC format for last_used_at so ORDER BY can compare it as text
+# last_used_at is UTC ISO text so ORDER BY can compare it as text. The backfill
+# writes milliseconds (SQLite's %f); live writes use microseconds so runs in the
+# same millisecond still order correctly. Both forms sort correctly together.
 ISO_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%f+00:00"
-SQL_NOW_ISO = f"strftime('{ISO_TIMESTAMP_FORMAT}', 'now')"
+
+
+def utc_now_iso() -> str:
+    """Current UTC time as ISO text with microseconds, e.g. 2026-10-07T18:39:06.758123+00:00."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(
+        timespec="microseconds"
+    )
 
 
 class PromptModel:

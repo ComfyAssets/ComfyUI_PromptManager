@@ -132,6 +132,8 @@ class PromptRoutesMixin:
             limit = int(request.query.get("limit", 50))
 
             folder = request.query.get("folder", "").strip() or None
+            # Validated against a whitelist in the database layer
+            sort = request.query.get("sort") or None
 
             tags = None
             if tags_str:
@@ -150,6 +152,7 @@ class PromptRoutesMixin:
                 rating_min=min_rating,
                 limit=limit,
                 folder=folder,
+                sort=sort,
             )
             self._enrich_prompt_images(results)
 
@@ -182,7 +185,7 @@ class PromptRoutesMixin:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
     async def get_recent_prompts(self, request):
-        """Retrieve recently created prompts with pagination support."""
+        """Retrieve prompts with pagination and an optional sort (default newest first)."""
         try:
             limit = int(request.query.get("limit", 50))
             page = int(request.query.get("page", 1))
@@ -196,8 +199,9 @@ class PromptRoutesMixin:
             elif limit < 1:
                 limit = 1
 
+            sort = request.query.get("sort") or None
             results = await self._run_in_executor(
-                self.db.get_recent_prompts, limit=limit, offset=offset
+                self.db.get_recent_prompts, limit=limit, offset=offset, sort=sort
             )
             self._enrich_prompt_images(results["prompts"])
 
