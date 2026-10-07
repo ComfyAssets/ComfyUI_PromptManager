@@ -161,6 +161,41 @@ test("workflow-only images account for the hidden control_after_generate widget"
     );
 });
 
+test("cyclic, fan-out graphs from crafted PNGs resolve quickly", () => {
+    // Every node links to itself and its neighbour through several inputs and has
+    // no scalars: without a visited set this explores ~inputs^MAX_DEPTH paths.
+    const loop = (id, next) => ({
+        class_type: "Evil",
+        inputs: {
+            text_a: [id, 0], text_b: [next, 0], text_c: [id, 0], text_d: [next, 0],
+            value_a: [id, 0], value_b: [next, 0], model: [next, 0],
+        },
+    });
+    const prompt = {
+        1: { class_type: "KSampler", inputs: { seed: ["2", 0], steps: ["3", 0], positive: ["2", 0], negative: ["3", 0], model: ["2", 0] } },
+        2: loop("2", "3"),
+        3: loop("3", "2"),
+    };
+    const started = Date.now();
+    const r = extractGenerationParams({ prompt });
+    assert.ok(Date.now() - started < 500, `took ${Date.now() - started}ms`);
+    assert.equal(r.positivePrompt, "No prompt found");
+    assert.equal(r.seed, "Unknown");
+});
+
+test("chained encoders whose prepend and append both link onward stay linear", () => {
+    const prompt = { 1: { class_type: "KSampler", inputs: { positive: ["n0", 0], negative: ["n0", 0], model: ["n0", 0] } } };
+    for (let i = 0; i < 60; i++) {
+        prompt[`n${i}`] = {
+            class_type: "PromptManager",
+            inputs: { text: `t${i}`, prepend_text: [`n${i + 1}`, 0], append_text: [`n${i + 1}`, 0] },
+        };
+    }
+    const started = Date.now();
+    extractGenerationParams({ prompt });
+    assert.ok(Date.now() - started < 500, `took ${Date.now() - started}ms`);
+});
+
 test("missing or empty metadata yields placeholders", () => {
     const r = extractGenerationParams({});
     assert.equal(r.positivePrompt, "No prompt found");

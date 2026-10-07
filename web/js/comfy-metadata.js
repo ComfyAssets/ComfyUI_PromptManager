@@ -22,7 +22,8 @@
         seed: "Unknown",
     });
 
-    const MAX_DEPTH = 25;
+    // Upper bound on nodes expanded per lookup; crafted PNGs can contain any graph
+    const MAX_VISITS = 500;
     const MODEL_NAME_KEYS = ["ckpt_name", "unet_name", "model_name", "gguf_name"];
     const TEXT_KEYS = /^(text|string|prompt|value)(_?[a-z0-9]+)?$/i;
     const SEED_CONTROL_VALUES = new Set(["fixed", "increment", "decrement", "randomize"]);
@@ -66,21 +67,27 @@
         return { graph, widgetText };
     }
 
-    /** Returns [nodeId, node] for a link, or [] when it does not resolve. */
-    function follow(ctx, link) {
-        if (!isLink(link)) return [];
+    /**
+     * Returns [nodeId, node] for a link, or [] when it does not resolve or the node
+     * was already expanded in this lookup. The shared `seen` set keeps every lookup
+     * linear in graph size, even for cyclic or heavily fanned-out graphs.
+     */
+    function enter(ctx, link, seen) {
+        if (!isLink(link) || seen.size >= MAX_VISITS) return [];
         const id = String(link[0]);
         const node = ctx.graph[id];
-        return node && node.inputs ? [id, node] : [];
+        if (!node || !node.inputs || seen.has(id)) return [];
+        seen.add(id);
+        return [id, node];
     }
 
     /** Resolve a scalar input, following a link to a primitive node if needed. */
-    function resolveScalar(ctx, value, depth = 0) {
+    function resolveScalar(ctx, value, seen = new Set()) {
         if (!isLink(value)) return value;
-        const [, node] = follow(ctx, value);
-        if (!node || depth > MAX_DEPTH) return undefined;
+        const [, node] = enter(ctx, value, seen);
+        if (!node) return undefined;
         for (const v of Object.values(node.inputs)) {
-            const resolved = resolveScalar(ctx, v, depth + 1);
+            const resolved = resolveScalar(ctx, v, seen);
             if (resolved !== undefined && typeof resolved !== "object") return resolved;
         }
         return undefined;
@@ -88,34 +95,37 @@
 
     /** Read the first of `keys` from the node a link points to, resolving further links. */
     function resolveLinkedInput(ctx, link, keys) {
-        const [, node] = follow(ctx, link);
+        const seen = new Set();
+        const [, node] = enter(ctx, link, seen);
         if (!node) return undefined;
         const key = keys.find((k) => k in node.inputs);
-        return key === undefined ? undefined : resolveScalar(ctx, node.inputs[key]);
+        return key === undefined ? undefined : resolveScalar(ctx, node.inputs[key], seen);
     }
 
     /** Resolve a string input; text-producing nodes may be chained (concat, primitives). */
-    function resolveString(ctx, value, depth = 0) {
+    function resolveString(ctx, value, seen = new Set()) {
         if (typeof value === "string") return value;
-        const [id, node] = follow(ctx, value);
-        if (!node || depth > MAX_DEPTH) return "";
-        if ("text" in node.inputs) return composeNodeText(ctx, id, node, depth + 1);
+        const [id, node] = enter(ctx, value, seen);
+        if (!node) return "";
+        if ("text" in node.inputs) return composeNodeText(ctx, id, node, seen);
         const delimiter = typeof node.inputs.delimiter === "string" ? node.inputs.delimiter : " ";
         return Object.entries(node.inputs)
             .filter(([key]) => TEXT_KEYS.test(key))
-            .map(([, v]) => resolveString(ctx, v, depth + 1))
+            .map(([, v]) => resolveString(ctx, v, seen))
             .filter((s) => s.trim())
             .join(delimiter);
     }
 
     /** Text of an encoder node, matching PromptManager's prepend + text + append join. */
-    function composeNodeText(ctx, id, node, depth) {
+    function composeNodeText(ctx, id, node, seen) {
         const { inputs } = node;
-        const raw = ctx.widgetText.has(id) ? ctx.widgetText.get(id) : resolveString(ctx, inputs.text, depth);
+        const raw = ctx.widgetText.has(id) ? ctx.widgetText.get(id) : resolveString(ctx, inputs.text, seen);
         const text = raw.trim();
         if (!text) return "";
-        const prepend = resolveString(ctx, inputs.prepend_text, depth).trim();
-        const append = resolveString(ctx, inputs.append_text, depth).trim();
+        // One shared set even across siblings: copying it per branch reintroduces
+        // exponential work on crafted chains
+        const prepend = resolveString(ctx, inputs.prepend_text, seen).trim();
+        const append = resolveString(ctx, inputs.append_text, seen).trim();
         // Older saves stored the already-combined prompt in `text`
         return [
             prepend && !text.startsWith(prepend) ? prepend : "",
@@ -127,22 +137,22 @@
     }
 
     /** Follow a conditioning link upstream to the encoder that produced it. */
-    function traceConditioning(ctx, link, role, depth = 0) {
-        const [id, node] = follow(ctx, link);
-        if (!node || depth > MAX_DEPTH) return "";
-        if ("text" in node.inputs) return composeNodeText(ctx, id, node, depth + 1);
+    function traceConditioning(ctx, link, role, seen = new Set()) {
+        const [id, node] = enter(ctx, link, seen);
+        if (!node) return "";
+        if ("text" in node.inputs) return composeNodeText(ctx, id, node, seen);
         // Pass-through nodes (ControlNet apply, conditioning combine/set area, ...)
         const { inputs } = node;
         const next = inputs[role] || inputs.conditioning || inputs.conditioning_to || inputs.conditioning_1;
-        return traceConditioning(ctx, next, role, depth + 1);
+        return traceConditioning(ctx, next, role, seen);
     }
 
     /** Follow the sampler's model link upstream (through LoRA loaders etc.) to a loader. */
-    function traceModelName(ctx, link, depth = 0) {
-        const [, node] = follow(ctx, link);
-        if (!node || depth > MAX_DEPTH) return undefined;
+    function traceModelName(ctx, link, seen = new Set()) {
+        const [, node] = enter(ctx, link, seen);
+        if (!node) return undefined;
         const key = MODEL_NAME_KEYS.find((k) => typeof node.inputs[k] === "string");
-        return key ? node.inputs[key] : traceModelName(ctx, node.inputs.model, depth + 1);
+        return key ? node.inputs[key] : traceModelName(ctx, node.inputs.model, seen);
     }
 
     function findAnyModelName(nodes) {
@@ -158,7 +168,7 @@
         const ctx = createContext(graph, workflow);
         const nodes = Object.values(graph);
         const custom = nodes.find(isCustomSampler);
-        const [, guider] = custom ? follow(ctx, custom.inputs.guider) : [];
+        const [, guider] = custom ? enter(ctx, custom.inputs.guider, new Set()) : [];
         const sampler = isSampler(guider) ? guider : nodes.find(isSampler);
         if (!sampler) return { checkpoint: findAnyModelName(nodes) };
 
