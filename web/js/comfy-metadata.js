@@ -50,18 +50,36 @@
     const widgetsOf = (n) => (Array.isArray(n.widgets_values) ? n.widgets_values : []);
 
     /**
-     * Tracing context: the API graph plus the text widget of each PromptManager
-     * node in the UI workflow, keyed by node id.
+     * Tracing context: the API graph plus recovered text for PromptManager nodes
+     * whose saved `text` was corrupted.
      *
-     * Images saved before 3.2.3 had every PromptManager node's `text` overwritten
-     * with the last-run node's combined prompt; the workflow keeps the real value.
+     * Before 3.2.3 a SaveImage patch overwrote every PromptManager node's `text`
+     * with the last-run node's prompt. The signature is two or more PromptManager
+     * nodes with identical API text whose workflow widgets differ; only those get
+     * their workflow widget text back. Otherwise the API graph is what actually ran
+     * (expanded dynamic prompts, linked text) and always wins.
      */
     function createContext(graph, workflow) {
-        const widgetText = new Map();
+        const widgets = new Map();
         for (const n of workflowNodes(workflow)) {
             const text = widgetsOf(n)[0];
             if (/promptmanager/i.test(n.type || "") && typeof text === "string") {
-                widgetText.set(String(n.id), text);
+                widgets.set(String(n.id), text);
+            }
+        }
+
+        const byApiText = new Map();
+        for (const id of widgets.keys()) {
+            const apiText = graph[id] && graph[id].inputs && graph[id].inputs.text;
+            if (typeof apiText !== "string") continue;
+            byApiText.set(apiText, [...(byApiText.get(apiText) || []), id]);
+        }
+
+        const widgetText = new Map();
+        for (const ids of byApiText.values()) {
+            const distinctWidgets = new Set(ids.map((id) => widgets.get(id)));
+            if (ids.length > 1 && distinctWidgets.size > 1) {
+                ids.forEach((id) => widgetText.set(id, widgets.get(id)));
             }
         }
         return { graph, widgetText };
@@ -177,7 +195,17 @@
         const custom = nodes.find(isCustomSampler);
         const [, guider] = custom ? enter(ctx, custom.inputs.guider, new Set()) : [];
         const sampler = isSampler(guider) ? guider : nodes.find(isSampler);
-        if (!sampler) return { checkpoint: findAnyModelName(nodes) };
+        if (!sampler) {
+            const loose = nodes.find((n) => n && n.inputs && /ksampler/i.test(n.class_type || ""));
+            const inputs = (loose && loose.inputs) || {};
+            return {
+                checkpoint: findAnyModelName(nodes),
+                seed: resolveScalar(ctx, inputs.seed ?? inputs.noise_seed, "seed"),
+                steps: resolveScalar(ctx, inputs.steps, "steps"),
+                cfgScale: resolveScalar(ctx, inputs.cfg, "cfg"),
+                sampler: resolveScalar(ctx, inputs.sampler_name, "sampler_name"),
+            };
+        }
 
         const { inputs } = sampler;
         const fromCustom = (link, keys) => (custom ? resolveLinkedInput(ctx, link, keys) : undefined);
@@ -196,25 +224,93 @@
         };
     }
 
-    /** Best effort for images that only carry the UI workflow (no API graph). */
-    function fromWorkflow(workflow) {
-        const nodes = workflowNodes(workflow);
-        const result = {};
+    // Widget order for core nodes, used when a workflow carries no widget names
+    const PROMPT_MANAGER_WIDGETS = ["text", "category", "tags", "search_text", "prepend_text", "append_text"];
+    const WIDGET_POSITIONS = {
+        KSampler: ["seed", "steps", "cfg", "sampler_name", "scheduler", "denoise"],
+        KSamplerAdvanced: [
+            "add_noise", "noise_seed", "steps", "cfg", "sampler_name", "scheduler",
+            "start_at_step", "end_at_step", "return_with_leftover_noise",
+        ],
+        CLIPTextEncode: ["text"],
+        PromptManager: PROMPT_MANAGER_WIDGETS,
+        PromptManagerText: PROMPT_MANAGER_WIDGETS,
+        CheckpointLoader: ["config_name", "ckpt_name"],
+        UNETLoader: ["unet_name", "weight_dtype"],
+    };
+    const PASS_THROUGH_TYPES = new Set(["Reroute", "GetNode", "SetNode"]);
+    const MODE_MUTED = 2;
+    const MODE_BYPASSED = 4;
 
-        const loader = nodes.find((n) => /checkpointloader/i.test(n.type || ""));
-        if (loader && typeof widgetsOf(loader)[0] === "string") result.checkpoint = widgetsOf(loader)[0];
+    function widgetNames(n) {
+        const fromInputs = (n.inputs || []).filter((i) => i && i.widget && i.widget.name).map((i) => i.widget.name);
+        if (fromInputs.length) return fromInputs;
+        if (WIDGET_POSITIONS[n.type]) return WIDGET_POSITIONS[n.type];
+        if (/checkpointloader/i.test(n.type || "")) return ["ckpt_name"];
+        if (/unet/i.test(n.type || "")) return ["unet_name"];
+        return [];
+    }
 
-        const sampler = nodes.find((n) => n.type === "KSampler");
-        if (sampler) {
-            const w = widgetsOf(sampler);
-            // The seed widget is followed by a hidden control_after_generate value
-            const shift = SEED_CONTROL_VALUES.has(w[1]) ? 1 : 0;
-            result.seed = w[0];
-            result.steps = w[1 + shift];
-            result.cfgScale = w[2 + shift];
-            result.sampler = w[3 + shift];
+    /** Map a workflow node's widget values to input names, skipping control_after_generate. */
+    function namedWidgets(n) {
+        const named = n.widgets_values_named;
+        if (named && typeof named === "object" && !Array.isArray(named)) return { ...named };
+        const values = widgetsOf(n);
+        const out = {};
+        let v = 0;
+        for (const name of widgetNames(n)) {
+            if (v >= values.length) break;
+            out[name] = values[v++];
+            if (/seed$/.test(name) && SEED_CONTROL_VALUES.has(values[v])) v++;
         }
-        return result;
+        return out;
+    }
+
+    /**
+     * Convert a UI workflow ({nodes, links}) into the API graph shape so images
+     * without a `prompt` chunk are traced the same way. Set/Get pairs, Reroutes and
+     * bypassed nodes are resolved to their real source; muted nodes are dropped.
+     */
+    function workflowToGraph(workflow) {
+        const nodes = workflowNodes(workflow).filter((n) => n && n.id !== undefined && n.id !== null);
+        const byId = new Map(nodes.map((n) => [String(n.id), n]));
+        const links = new Map();
+        for (const l of Array.isArray(workflow && workflow.links) ? workflow.links : []) {
+            if (Array.isArray(l)) links.set(l[0], { from: l[1], slot: l[2], type: l[5] });
+            else if (l && typeof l === "object") links.set(l.id, { from: l.origin_id, slot: l.origin_slot, type: l.type });
+        }
+        const setters = new Map();
+        for (const n of nodes) {
+            if (n.type === "SetNode") setters.set(widgetsOf(n)[0], n.inputs && n.inputs[0] && n.inputs[0].link);
+        }
+
+        const source = (linkId, hops = 0) => {
+            const link = links.get(linkId);
+            const node = link && byId.get(String(link.from));
+            if (!node || node.mode === MODE_MUTED || hops > MAX_VISITS) return undefined;
+            const next = (id) => source(id, hops + 1);
+            if (node.type === "Reroute") return next(node.inputs && node.inputs[0] && node.inputs[0].link);
+            if (node.type === "GetNode") return next(setters.get(widgetsOf(node)[0]));
+            if (node.mode === MODE_BYPASSED) {
+                const same = (node.inputs || []).find(
+                    (i) => i && i.link !== null && i.link !== undefined && (!link.type || link.type === "*" || i.type === link.type),
+                );
+                return same ? next(same.link) : undefined;
+            }
+            return [String(node.id), link.slot];
+        };
+
+        const graph = {};
+        for (const n of nodes) {
+            if (n.mode === MODE_MUTED || n.mode === MODE_BYPASSED || PASS_THROUGH_TYPES.has(n.type)) continue;
+            const inputs = namedWidgets(n);
+            for (const i of n.inputs || []) {
+                const src = i && i.link !== null && i.link !== undefined ? source(i.link) : undefined;
+                if (src) inputs[i.name] = src;
+            }
+            graph[String(n.id)] = { class_type: n.type, inputs };
+        }
+        return graph;
     }
 
     const hasValue = (v) => v !== undefined && v !== null && v !== "";
@@ -227,7 +323,7 @@
         const data = comfyData || {};
         const primary =
             data.prompt && typeof data.prompt === "object" ? fromPromptGraph(data.prompt, data.workflow) : {};
-        const fallback = fromWorkflow(data.workflow);
+        const fallback = data.workflow ? fromPromptGraph(workflowToGraph(data.workflow), null) : {};
         const merged = {};
         for (const key of Object.keys(PLACEHOLDERS)) {
             const value = hasValue(primary[key]) ? primary[key] : fallback[key];
