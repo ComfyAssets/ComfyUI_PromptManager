@@ -194,7 +194,11 @@ class TestUsageMigration(unittest.TestCase):
 
 
 class TestNodeRecordsUse(UsageTestCase):
-    """Every node execution counts, including re-runs of an existing prompt."""
+    """Node saves count a run only when asked; re-runs are counted by the queue hook.
+
+    ComfyUI skips unchanged nodes, so counting at execution misses re-runs; see
+    tests/test_usage_tracking.py for the hook that counts them.
+    """
 
     def _node(self):
         node = PromptManagerBase.__new__(PromptManagerBase)
@@ -202,13 +206,19 @@ class TestNodeRecordsUse(UsageTestCase):
         node.logger = __import__("logging").getLogger("test.prompt_usage")
         return node
 
-    def test_new_and_repeated_runs_are_counted(self):
+    def test_save_without_count_run_leaves_counting_to_the_queue_hook(self):
         node = self._node()
         first = node._save_prompt_to_database("a lighthouse at dusk")
         second = node._save_prompt_to_database("a lighthouse at dusk")
 
         self.assertEqual(first, second)
-        self.assertEqual(self.db.get_prompt_by_id(first)["run_count"], 2)
+        self.assertEqual(self.db.get_prompt_by_id(first)["run_count"], 0)
+
+    def test_count_run_counts_new_and_existing_prompts(self):
+        node = self._node()
+        pid = node._save_prompt_to_database("batch item", count_run=True)
+        node._save_prompt_to_database("batch item", count_run=True)
+        self.assertEqual(self.db.get_prompt_by_id(pid)["run_count"], 2)
 
 
 if __name__ == "__main__":

@@ -99,7 +99,10 @@ class PromptTracker:
         self.logger.debug("PromptTracker initialization completed")
 
     def set_current_prompt(
-        self, prompt_text: str, additional_data: Optional[Dict[str, Any]] = None
+        self,
+        prompt_text: str,
+        additional_data: Optional[Dict[str, Any]] = None,
+        push_to_queue: bool = True,
     ) -> str:
         """
         Set the current prompt for this thread for image tracking.
@@ -113,6 +116,9 @@ class PromptTracker:
         Args:
             prompt_text: The prompt text being executed
             additional_data: Additional prompt metadata, should include prompt_id from PromptManager
+            push_to_queue: Also push onto the FIFO batch queue. Only batch items whose
+                text comes from another node need it; typed prompts are linked from
+                the image's own metadata instead.
 
         Returns:
             Unique execution ID for this prompt execution
@@ -164,11 +170,12 @@ class PromptTracker:
             self.active_prompts[execution_id] = execution_context
 
         # Push to batch queue for ordered image linking
-        with self._queue_lock:
-            self._prompt_queue.append(execution_context)
-            self.logger.debug(
-                f"Queue size: {len(self._prompt_queue)} after push for prompt {prompt_id}"
-            )
+        if push_to_queue:
+            with self._queue_lock:
+                self._prompt_queue.append(execution_context)
+                self.logger.debug(
+                    f"Queue size: {len(self._prompt_queue)} after push for prompt {prompt_id}"
+                )
 
         self.logger.debug(
             f"Set current prompt: {execution_id} -> {prompt_text[:50]}... (thread: {threading.current_thread().ident})"
