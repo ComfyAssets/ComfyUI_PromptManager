@@ -978,7 +978,7 @@ app.registerExtension({
             url = `/prompt_manager/search?${queryParams.toString()}`;
           } else if (method === "get_recent_prompts") {
             const limit = params.limit || 20;
-            url = `/prompt_manager/recent?limit=${limit}`;
+            url = `/prompt_manager/recent?limit=${limit}&sort=last_used_desc`;
           } else {
             throw new Error(`Unknown method: ${method}`);
           }

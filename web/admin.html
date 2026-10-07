@@ -107,12 +107,8 @@
                             <label class="block text-xs font-medium text-pm-secondary mb-1 uppercase tracking-wide">Sort By</label>
                             <select id="sortBy"
                                     class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none">
-                                <option value="created_desc">Newest First</option>
-                                <option value="created_asc">Oldest First</option>
-                                <option value="rating_desc">Highest Rated</option>
-                                <option value="rating_asc">Lowest Rated</option>
-                                <option value="text_asc">A-Z</option>
-                                <option value="text_desc">Z-A</option>
+                                <!-- Filled from PromptListSort.SORT_OPTIONS in admin.js -->
+                                <option value="last_used_desc">Recently Used</option>
                             </select>
                         </div>
                         <div class="flex items-end">
@@ -1391,6 +1387,7 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
     </div>
 
     <script src="/prompt_manager/js/comfy-metadata.js"></script>
+    <script src="/prompt_manager/js/prompt-list-sort.js"></script>
     <script src="/prompt_manager/js/admin.js"></script>
     <script src="/prompt_manager/js/tags-page.js"></script>
 </body>

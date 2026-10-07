@@ -1,6 +1,7 @@
         class PromptAdmin {
             constructor() {
                 this.prompts = [];
+                this.listMode = "recent"; // "recent" or "search"; a sort change reloads it
                 this.selectedPrompts = new Set();
                 this.settings = {
                     resultTimeout: 5,
@@ -114,8 +115,13 @@
                     document.getElementById(id).addEventListener("change", () => this.search());
                 });
                 
-                // Sort dropdown change
-                document.getElementById("sortBy").addEventListener("change", () => this.renderPrompts());
+                // Sort dropdown: options come from PromptListSort; sorting runs on the server
+                const sortSelect = document.getElementById("sortBy");
+                sortSelect.innerHTML = PromptListSort.SORT_OPTIONS
+                    .map((o) => `<option value="${o.value}">${this.escapeHtml(o.label)}</option>`)
+                    .join("");
+                sortSelect.value = PromptListSort.DEFAULT_SORT;
+                sortSelect.addEventListener("change", () => this.reloadPrompts());
             }
 
             bindModalEvents() {
@@ -355,9 +361,13 @@
 
             async loadRecentPrompts(page = 1) {
                 try {
+                    this.listMode = "recent";
                     this.pagination.currentPage = page;
-                    const offset = (page - 1) * this.pagination.limit;
-                    const response = await fetch(`/prompt_manager/recent?limit=${this.pagination.limit}&offset=${offset}&page=${page}`);
+                    const response = await fetch(PromptListSort.buildRecentUrl({
+                        page,
+                        limit: this.pagination.limit,
+                        sort: this.currentSort(),
+                    }));
                     if (response.ok) {
                         const data = await response.json();
                         if (data.success) {
@@ -424,7 +434,8 @@
                     if (folder) params.append("folder", folder);
                     params.append("limit", "100");
 
-                    const response = await fetch(`/prompt_manager/search?${params}`);
+                    this.listMode = "search";
+                    const response = await fetch(`/prompt_manager/search?${PromptListSort.withSort(params, this.currentSort())}`);
                     if (response.ok) {
                         const data = await response.json();
                         if (data.success) {
@@ -442,36 +453,13 @@
                 }
             }
 
-            sortPrompts(prompts) {
-                const sortBy = document.getElementById("sortBy")?.value || "created_desc";
-                const [field, direction] = sortBy.split("_");
-                
-                return [...prompts].sort((a, b) => {
-                    let aVal, bVal;
-                    
-                    switch (field) {
-                        case "rating":
-                            aVal = a.rating || 0;
-                            bVal = b.rating || 0;
-                            break;
-                        case "created":
-                            aVal = new Date(a.created_at);
-                            bVal = new Date(b.created_at);
-                            break;
-                        case "text":
-                            aVal = a.text.toLowerCase();
-                            bVal = b.text.toLowerCase();
-                            break;
-                        default:
-                            return 0;
-                    }
-                    
-                    if (direction === "asc") {
-                        return aVal > bVal ? 1 : aVal < bVal ? -1 : 0;
-                    } else {
-                        return aVal < bVal ? 1 : aVal > bVal ? -1 : 0;
-                    }
-                });
+            currentSort() {
+                return PromptListSort.normalizeSort(document.getElementById("sortBy")?.value);
+            }
+
+            /** Re-fetch the list currently shown, e.g. after the sort changes. */
+            reloadPrompts() {
+                return this.listMode === "search" ? this.search() : this.loadRecentPrompts(1);
             }
 
             renderPrompts() {
@@ -493,14 +481,13 @@
                     return;
                 }
 
-                // Sort prompts before rendering
-                const sortedPrompts = this.sortPrompts(this.prompts);
-                container.innerHTML = sortedPrompts.map((prompt) => this.renderPromptItem(prompt)).join("");
+                // Already in the selected order: the server sorts across all pages
+                container.innerHTML = this.prompts.map((prompt) => this.renderPromptItem(prompt)).join("");
                 this.selectedPrompts.clear();
                 this.updateBulkActionButtons();
 
                 // Add hover behavior to all star ratings
-                sortedPrompts.forEach(prompt => {
+                this.prompts.forEach(prompt => {
                     this.addStarHoverBehavior(prompt.id);
                 });
 
@@ -514,7 +501,7 @@
                 });
 
                 // Load film strips for each prompt (async, non-blocking)
-                this.loadAllFilmStrips(sortedPrompts);
+                this.loadAllFilmStrips(this.prompts);
             }
 
             async loadAllFilmStrips(prompts) {
@@ -550,6 +537,10 @@
                 const category = prompt.category || "No category";
                 const rating = prompt.rating || 0;
                 const created = new Date(prompt.created_at).toLocaleDateString();
+                const runLabel = PromptListSort.formatRunCount(prompt.run_count);
+                const lastUsedTitle = prompt.last_used_at
+                    ? `Last used ${new Date(prompt.last_used_at).toLocaleString()}`
+                    : "";
 
                 return `
                     <div class="bg-pm-surface rounded-pm-md border border-pm hover:border-pm transition-all duration-200" data-id="${prompt.id}">
@@ -574,6 +565,10 @@
                                             <span>📅</span>
                                             <span>${created}</span>
                                         </div>
+                                        ${runLabel ? `<div class="flex items-center space-x-1" title="${this.escapeHtml(lastUsedTitle)}">
+                                            <span>🔁</span>
+                                            <span>${this.escapeHtml(runLabel)}</span>
+                                        </div>` : ""}
                                         <div class="flex items-center space-x-1">
                                             <div class="rating flex space-x-1" data-id="${prompt.id}" data-rating="${rating}">
                                                 ${this.renderStars(rating, prompt.id)}
