@@ -17,6 +17,10 @@ except ImportError:
     sys.path.insert(0, current_dir)
     from utils.logging_config import get_logger
 
+# Single UTC format for last_used_at so ORDER BY can compare it as text
+ISO_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%f+00:00"
+SQL_NOW_ISO = f"strftime('{ISO_TIMESTAMP_FORMAT}', 'now')"
+
 
 class PromptModel:
     """Database model for prompt storage and schema management."""
@@ -78,7 +82,9 @@ class PromptModel:
                 tags TEXT,
                 rating INTEGER CHECK(rating >= 1 AND rating <= 5),
                 notes TEXT,
-                hash TEXT UNIQUE
+                hash TEXT UNIQUE,
+                last_used_at TIMESTAMP,
+                run_count INTEGER NOT NULL DEFAULT 0
             )
         """)
 
@@ -131,6 +137,9 @@ class PromptModel:
         # Migrate JSON tags to normalized junction tables
         self._migrate_json_tags_to_junction(conn)
 
+        # Usage tracking columns (last, after any migration that rebuilds prompts)
+        self._migrate_add_usage_columns(conn)
+
     def _create_indexes(self, conn: sqlite3.Connection) -> None:
         """
         Create indexes for better query performance.
@@ -150,6 +159,8 @@ class PromptModel:
             "CREATE INDEX IF NOT EXISTS idx_prompts_created_at ON prompts(created_at)",
             "CREATE INDEX IF NOT EXISTS idx_prompts_hash ON prompts(hash)",
             "CREATE INDEX IF NOT EXISTS idx_prompts_rating ON prompts(rating)",
+            "CREATE INDEX IF NOT EXISTS idx_prompts_last_used ON prompts(last_used_at)",
+            "CREATE INDEX IF NOT EXISTS idx_prompts_run_count ON prompts(run_count)",
             "CREATE INDEX IF NOT EXISTS idx_prompt_images ON generated_images(prompt_id)",
             "CREATE INDEX IF NOT EXISTS idx_image_path ON generated_images(image_path)",
             "CREATE INDEX IF NOT EXISTS idx_generation_time ON generated_images(generation_time)",
@@ -439,6 +450,50 @@ class PromptModel:
 
         except Exception as e:
             self.logger.error(f"Tag junction migration error: {e}")
+
+    def _migrate_add_usage_columns(self, conn: sqlite3.Connection) -> None:
+        """
+        Add last_used_at and run_count (3.2.4) and fill in any prompt without usage data.
+
+        The backfill runs on every start but only touches rows whose last_used_at
+        is NULL, so it is a no-op once healed. That also repairs rows written by an
+        older version after a downgrade, or left unfilled by an interrupted upgrade.
+
+        The estimate comes from linked images: run_count is the image count (at
+        least 1) and last_used_at the newest image time, falling back to created_at.
+        Timestamps are compared with julianday() because prompts use ISO 'T'
+        timestamps while generated_images uses SQLite's CURRENT_TIMESTAMP format.
+        """
+        try:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(prompts)")}
+            if "last_used_at" not in columns:
+                self.logger.info("Adding prompt usage column last_used_at")
+                conn.execute("ALTER TABLE prompts ADD COLUMN last_used_at TIMESTAMP")
+            if "run_count" not in columns:
+                self.logger.info("Adding prompt usage column run_count")
+                conn.execute(
+                    "ALTER TABLE prompts ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0"
+                )
+
+            cursor = conn.execute(f"""
+                UPDATE prompts SET
+                    run_count = MAX(run_count, 1, (
+                        SELECT COUNT(*) FROM generated_images gi
+                        WHERE gi.prompt_id = prompts.id
+                    )),
+                    last_used_at = strftime('{ISO_TIMESTAMP_FORMAT}', MAX(
+                        COALESCE(julianday(created_at), julianday('now')),
+                        COALESCE((
+                            SELECT MAX(julianday(gi.generation_time))
+                            FROM generated_images gi WHERE gi.prompt_id = prompts.id
+                        ), 0)
+                    ))
+                WHERE last_used_at IS NULL
+            """)
+            if cursor.rowcount:
+                self.logger.info(f"Estimated usage for {cursor.rowcount} prompts")
+        except Exception as e:
+            self.logger.error(f"Usage tracking migration error: {e}")
 
     def migrate_database(self) -> None:
         """

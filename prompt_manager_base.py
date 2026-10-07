@@ -82,6 +82,7 @@ class PromptManagerBase:
                         prompt_id=existing["id"], category=category, tags=tags
                     )
                     self.logger.debug("Updated metadata for existing prompt")
+                self._record_use(existing["id"])
                 return existing["id"]
 
             self.logger.debug(
@@ -93,6 +94,7 @@ class PromptManagerBase:
 
             if prompt_id:
                 self.logger.debug(f"Successfully saved new prompt with ID: {prompt_id}")
+                self._record_use(prompt_id)
             else:
                 self.logger.warning("Failed to save prompt - no ID returned")
 
@@ -101,6 +103,13 @@ class PromptManagerBase:
         except Exception as e:
             self.logger.error(f"Error saving prompt to database: {e}")
             return None
+
+    def _record_use(self, prompt_id: int) -> None:
+        """Count this execution; a tracking failure must never block generation."""
+        try:
+            self.db.record_prompt_use(prompt_id)
+        except Exception as e:
+            self.logger.warning(f"Could not record use of prompt {prompt_id}: {e}")
 
     def _inject_lora_trigger_words(self, text: str) -> str:
         """Append LoRA trigger words if integration is enabled.
