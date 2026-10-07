@@ -81,13 +81,20 @@
         return [id, node];
     }
 
-    /** Resolve a scalar input, following a link to a primitive node if needed. */
-    function resolveScalar(ctx, value, seen = new Set()) {
+    /**
+     * Resolve a scalar input, following a link to a primitive node if needed.
+     * Multi-output settings nodes (e.g. SamplerCombo) expose several values, so an
+     * input with the same `name` as the requested field wins over the first scalar.
+     */
+    function resolveScalar(ctx, value, name, seen = new Set()) {
         if (!isLink(value)) return value;
         const [, node] = enter(ctx, value, seen);
         if (!node) return undefined;
+        if (name && Object.prototype.hasOwnProperty.call(node.inputs, name)) {
+            return resolveScalar(ctx, node.inputs[name], name, seen);
+        }
         for (const v of Object.values(node.inputs)) {
-            const resolved = resolveScalar(ctx, v, seen);
+            const resolved = resolveScalar(ctx, v, name, seen);
             if (resolved !== undefined && typeof resolved !== "object") return resolved;
         }
         return undefined;
@@ -99,7 +106,7 @@
         const [, node] = enter(ctx, link, seen);
         if (!node) return undefined;
         const key = keys.find((k) => k in node.inputs);
-        return key === undefined ? undefined : resolveScalar(ctx, node.inputs[key], seen);
+        return key === undefined ? undefined : resolveScalar(ctx, node.inputs[key], key, seen);
     }
 
     /** Resolve a string input; text-producing nodes may be chained (concat, primitives). */
@@ -179,12 +186,12 @@
             negativePrompt: traceConditioning(ctx, inputs.negative, "negative"),
             checkpoint: traceModelName(ctx, inputs.model) || findAnyModelName(nodes),
             seed:
-                resolveScalar(ctx, inputs.seed ?? inputs.noise_seed) ??
+                resolveScalar(ctx, inputs.seed ?? inputs.noise_seed, "seed" in inputs ? "seed" : "noise_seed") ??
                 fromCustom(custom && custom.inputs.noise, ["noise_seed", "seed"]),
-            steps: resolveScalar(ctx, inputs.steps) ?? fromCustom(custom && custom.inputs.sigmas, ["steps"]),
-            cfgScale: resolveScalar(ctx, inputs.cfg),
+            steps: resolveScalar(ctx, inputs.steps, "steps") ?? fromCustom(custom && custom.inputs.sigmas, ["steps"]),
+            cfgScale: resolveScalar(ctx, inputs.cfg, "cfg"),
             sampler:
-                resolveScalar(ctx, inputs.sampler_name) ??
+                resolveScalar(ctx, inputs.sampler_name, "sampler_name") ??
                 fromCustom(custom && custom.inputs.sampler, ["sampler_name"]),
         };
     }

@@ -147,6 +147,25 @@ test("custom sampler graphs (Flux: SamplerCustomAdvanced + CFGGuider) resolve ev
     );
 });
 
+test("multi-output settings nodes (SamplerCombo) map each field to its own value", () => {
+    const prompt = {
+        5: {
+            class_type: "KSampler",
+            inputs: {
+                seed: ["162", 0], steps: ["165", 2], cfg: ["165", 3], sampler_name: ["165", 0],
+                positive: ["6", 0], negative: ["7", 0], model: ["4", 0],
+            },
+        },
+        4: { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "m.safetensors" } },
+        6: { class_type: "CLIPTextEncode", inputs: { text: "a cat" } },
+        7: { class_type: "CLIPTextEncode", inputs: { text: "blurry" } },
+        162: { class_type: "SeedHistory", inputs: { seed: 1495646836, seed_history_ui: "" } },
+        165: { class_type: "SamplerCombo", inputs: { sampler_name: "euler_ancestral", scheduler: "normal", steps: 50, cfg: 7 } },
+    };
+    const r = extractGenerationParams({ prompt });
+    assert.deepEqual([r.seed, r.steps, r.cfgScale, r.sampler], [1495646836, 50, 7, "euler_ancestral"]);
+});
+
 test("workflow-only images account for the hidden control_after_generate widget", () => {
     const workflow = {
         nodes: [
