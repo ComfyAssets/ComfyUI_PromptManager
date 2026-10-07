@@ -44,7 +44,7 @@ class PendingFirstUse:
     ):
         self._ttl = ttl_seconds
         self._max = max_entries
-        self._entries: "OrderedDict[str, Tuple[int, float]]" = OrderedDict()
+        self._entries: OrderedDict[str, Tuple[int, float]] = OrderedDict()
         self._lock = threading.Lock()
 
     def add(self, prompt_hash: str) -> None:
