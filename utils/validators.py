@@ -94,6 +94,42 @@ def validate_rating(rating: Optional[int]) -> bool:
     return True
 
 
+MAX_RESULT_TIMEOUT = 300  # Matches max="300" on the admin settings input
+
+
+def validate_result_timeout(timeout) -> int:
+    """
+    Validate and normalize the search-results auto-hide timeout.
+
+    A value of 0 means "never auto-hide" and must be preserved (see #149).
+
+    Args:
+        timeout: Raw value from the settings request body
+
+    Returns:
+        The timeout in whole seconds, safe to store in RESULT_TIMEOUT
+
+    Raises:
+        ValueError: If the value cannot be used as a timeout
+    """
+    # bool is an int subclass; True must not become a 1-second timeout
+    if isinstance(timeout, bool):
+        raise ValueError("Auto-hide timeout must be a whole number of seconds")
+
+    if isinstance(timeout, str) and timeout.strip().isdigit():
+        timeout = int(timeout.strip())
+
+    if not isinstance(timeout, int):
+        raise ValueError("Auto-hide timeout must be a whole number of seconds")
+
+    if timeout < 0 or timeout > MAX_RESULT_TIMEOUT:
+        raise ValueError(
+            f"Auto-hide timeout must be between 0 and {MAX_RESULT_TIMEOUT} seconds"
+        )
+
+    return timeout
+
+
 def validate_tags(tags: Union[str, List[str], None]) -> bool:
     """
     Validate tags input.

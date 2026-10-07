@@ -1,12 +1,14 @@
 """ComfyUI integration utilities for PromptManager.
 
-This module provides deep integration with ComfyUI's metadata system to ensure that
-PromptManager-generated prompts appear correctly in standard ComfyUI image metadata.
-It patches core ComfyUI components to bridge the gap between PromptManager's custom
-nodes and ComfyUI's standard metadata extraction.
+This module tracks the prompts PromptManager nodes encode during execution so
+other components (e.g. image/prompt linking) can look them up.
+
+ComfyUI already writes every node's own inputs into saved image metadata, so
+SaveImage is deliberately NOT patched. An earlier patch wrote the last-run prompt
+into every PromptManager node, saving negative prompts as copies of the
+positive (#75).
 
 Key features:
-- Automatic patching of ComfyUI's SaveImage node
 - Thread-safe prompt registration and retrieval
 - Cross-thread prompt context sharing
 - Standard metadata format compatibility
@@ -14,26 +16,18 @@ Key features:
 
 The integration works by:
 1. PromptManager nodes register their prompts during execution
-2. SaveImage node is patched to include registered prompts in metadata
-3. Standard tools can then extract prompts from the generated images
+2. Callers retrieve the current prompt text by node id or recency
 
 Typical usage:
     from utils.comfyui_integration import get_comfyui_integration
 
     integration = get_comfyui_integration()
     integration.register_prompt(node_id, prompt_text, metadata)
-    # Generated images will now include this prompt in their metadata
-
-This integration is essential for:
-- Third-party tool compatibility
-- Standard metadata parsers
-- Workflow sharing and reproduction
-- Integration with existing ComfyUI ecosystems
+    text = integration.get_current_prompt_text(node_id)
 """
 
 import threading
 import time
-import json
 from typing import Dict, Any, Optional
 
 try:
@@ -60,7 +54,6 @@ class ComfyUIMetadataIntegration:
 
     Key responsibilities:
     - Register prompts from PromptManager nodes during execution
-    - Patch SaveImage to include PromptManager prompts in metadata
     - Manage prompt lifecycle and cleanup
     """
 
@@ -82,8 +75,8 @@ class ComfyUIMetadataIntegration:
     def __init__(self):
         """Initialize the ComfyUI integration system.
 
-        Sets up prompt tracking data structures and attempts to patch the
-        SaveImage node. Uses _initialized flag to prevent duplicate initialization.
+        Sets up prompt tracking data structures. Uses _initialized flag to
+        prevent duplicate initialization.
         """
         if hasattr(self, "_initialized"):
             return
@@ -91,11 +84,7 @@ class ComfyUIMetadataIntegration:
         self.logger = get_logger("prompt_manager.comfyui_integration")
         self._current_prompts = {}
         self._thread_local = threading.local()
-        self._saveimage_patched = False
         self._initialized = True
-
-        # Try to patch SaveImage node on initialization
-        self._patch_saveimage_node()
 
     def register_prompt(self, node_id: str, prompt_text: str, metadata: Dict[str, Any]):
         """
@@ -185,92 +174,6 @@ class ComfyUIMetadataIntegration:
                     return latest["text"]
 
         return None
-
-    def _patch_saveimage_node(self):
-        """
-        Patch ComfyUI's SaveImage node to include PromptManager prompts in metadata.
-
-        This method modifies ComfyUI's SaveImage.save_images method to automatically
-        include PromptManager prompts in the image metadata. The patching:
-
-        1. Wraps the original save_images method
-        2. Retrieves current PromptManager prompt text
-        3. Updates the text input in PromptManager nodes to reflect actual prompt
-        4. Calls the original method with the updated data
-
-        NOTE: We intentionally do NOT change class_type to CLIPTextEncode anymore.
-        That approach was corrupting saved workflows - when users saved and reloaded
-        workflows, ComfyUI would instantiate CLIPTextEncode instead of PromptManager,
-        causing errors with prepend_text/append_text inputs.
-        """
-        try:
-            import nodes
-
-            if not hasattr(nodes, "SaveImage"):
-                self.logger.warning("SaveImage node not found in ComfyUI nodes")
-                return
-
-            # Store original save_images method
-            original_save_images = nodes.SaveImage.save_images
-            integration = self  # Capture self reference
-
-            def patched_save_images(
-                self_node,
-                images,
-                filename_prefix="ComfyUI",
-                prompt=None,
-                extra_pnginfo=None,
-            ):
-                """Patched save_images method that includes PromptManager prompts."""
-
-                # Get current prompt text from PromptManager
-                current_prompt_text = integration.get_current_prompt_text()
-
-                if current_prompt_text:
-                    integration.logger.debug(
-                        f"Including PromptManager prompt in SaveImage metadata: {current_prompt_text[:50]}..."
-                    )
-
-                    # If no prompt provided, create one with our text
-                    if prompt is None:
-                        prompt = {}
-
-                    # Ensure prompt has the standard structure ComfyUI expects
-                    if not isinstance(prompt, dict):
-                        prompt = {}
-
-                    # Find PromptManager nodes and ensure prompt text is captured
-                    # NOTE: We do NOT change class_type anymore - that was corrupting saved workflows
-                    # when users reload them. PromptManager stays as PromptManager.
-                    for node_id, node_data in prompt.items():
-                        if isinstance(node_data, dict):
-                            class_type = node_data.get("class_type", "")
-                            if "promptmanager" in class_type.lower():
-                                # Ensure the text input reflects the actual prompt used
-                                if "inputs" not in node_data:
-                                    node_data["inputs"] = {}
-                                node_data["inputs"]["text"] = current_prompt_text
-                                integration.logger.debug(
-                                    f"Updated PromptManager node {node_id} with prompt text"
-                                )
-
-                # Call original method with potentially modified prompt
-                return original_save_images(
-                    self_node, images, filename_prefix, prompt, extra_pnginfo
-                )
-
-            # Apply the patch
-            nodes.SaveImage.save_images = patched_save_images
-            self._saveimage_patched = True
-            self.logger.info(
-                "Successfully patched SaveImage node for PromptManager integration"
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to patch SaveImage node: {e}")
-            self.logger.warning(
-                "PromptManager prompts may not appear in standard ComfyUI metadata"
-            )
 
     def cleanup_old_prompts(self, max_age_seconds: int = 600):
         """

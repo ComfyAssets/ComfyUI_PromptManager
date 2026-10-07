@@ -39,3 +39,12 @@ jobs:
 
       - name: Run tests
         run: python -m unittest discover tests/ -v
+
+  js-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Pure-JS frontend modules, tested with the runner's preinstalled Node
+      - name: Run JS tests
+        run: node --test tests/js/*.test.js
