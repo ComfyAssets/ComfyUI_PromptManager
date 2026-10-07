@@ -106,16 +106,73 @@ def run_prompt_nodes(graph: Any) -> List[str]:
     ]
 
 
-def literal_text(graph: Any, node_id: str) -> Optional[str]:
-    """A node's `text` input when typed in (not linked), stripped; else None."""
-    node = graph.get(str(node_id)) if isinstance(graph, dict) else None
-    text = _inputs(node).get("text")
-    if isinstance(text, str) and text.strip():
-        return text.strip()
+def _join_text_inputs(
+    inputs: Dict[str, Any], keys: List[str], resolve
+) -> Optional[str]:
+    """WAS-style join: resolve each key, optionally strip, skip empty, join by delimiter."""
+    delimiter = inputs.get("delimiter", " ")
+    if not isinstance(delimiter, str):
+        return None
+    clean = str(inputs.get("clean_whitespace", "true")).lower() == "true"
+    parts = []
+    for key in keys:
+        value = resolve(inputs.get(key, ""))
+        if value is None:
+            return None
+        value = value.strip() if clean else value
+        if value:
+            parts.append(value)
+    return delimiter.join(parts)
+
+
+def _resolve_string_node(
+    class_type: str, inputs: Dict[str, Any], resolve
+) -> Optional[str]:
+    """Output of a known pure string node, or None when the type isn't known."""
+    if class_type in ("PrimitiveString", "PrimitiveStringMultiline"):
+        return resolve(inputs.get("value"))
+    if class_type in ("ShowText|pysssss", "Text Multiline", "String Literal"):
+        return resolve(inputs.get("text", inputs.get("string")))
+    if class_type == "StringConcatenate":
+        a, b = resolve(inputs.get("string_a", "")), resolve(inputs.get("string_b", ""))
+        delimiter = inputs.get("delimiter", "")
+        if a is None or b is None or not isinstance(delimiter, str):
+            return None
+        return f"{a}{delimiter}{b}"
+    if class_type == "Text Concatenate":
+        keys = sorted(k for k in inputs if re.fullmatch(r"text_[a-z]", k))
+        return _join_text_inputs(inputs, keys, resolve)
     return None
 
 
-def is_text_linked(graph: Any, node_id: str) -> bool:
-    """True when the node's `text` comes from another node (e.g. PromptSearchList)."""
-    node = graph.get(str(node_id)) if isinstance(graph, dict) else None
-    return _is_link(_inputs(node).get("text"))
+def resolve_text(graph: Any, node_id: str) -> Optional[str]:
+    """A prompt node's `text` as it will be at run time, if knowable from the graph.
+
+    Typed text, or text produced by known pure string nodes (core primitives and
+    StringConcatenate, WAS Text Concatenate/Multiline, pysssss ShowText). Anything
+    else, including PromptSearchList batches, returns None rather than a guess.
+    Callers compare the result with the text the node actually received.
+    """
+    if not isinstance(graph, dict):
+        return None
+    seen = set()
+
+    def resolve(value: Any) -> Optional[str]:
+        if isinstance(value, str):
+            return value
+        if not _is_link(value) or len(seen) >= MAX_VISITS:
+            return None
+        source_id = str(value[0])
+        if source_id in seen:
+            return None
+        seen.add(source_id)
+        source = graph.get(source_id)
+        if not isinstance(source, dict):
+            return None
+        return _resolve_string_node(
+            str(source.get("class_type", "")), _inputs(source), resolve
+        )
+
+    seen.add(str(node_id))
+    text = resolve(_inputs(graph.get(str(node_id))).get("text"))
+    return text.strip() if isinstance(text, str) and text.strip() else None

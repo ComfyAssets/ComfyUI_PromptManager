@@ -4,7 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest import mock
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -86,6 +86,16 @@ class TestMetadataLinking(LinkingTestCase):
         self.assertEqual(
             self.tracker.pop_next_prompt()["id"], stale, "queue left intact"
         )
+
+    def test_text_from_a_known_string_node_links_from_metadata(self):
+        positive = self._save("a cat")
+        linked_graph = graph()
+        linked_graph["134"]["inputs"]["text"] = ["8", 0]
+        linked_graph["8"] = {
+            "class_type": "PrimitiveString",
+            "inputs": {"value": "a cat"},
+        }
+        self.assertEqual(self._process({"prompt": linked_graph}), positive)
 
     def test_batch_items_with_linked_text_use_the_queue(self):
         first, second = self._save("item one"), self._save("item two")

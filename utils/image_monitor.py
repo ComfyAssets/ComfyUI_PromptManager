@@ -34,7 +34,7 @@ from watchdog.events import FileSystemEventHandler
 
 from .metadata_extractor import ComfyUIMetadataExtractor
 from .logging_config import get_logger
-from .prompt_graph import literal_text, run_prompt_nodes
+from .prompt_graph import resolve_text, run_prompt_nodes
 
 
 class ImageGenerationHandler(FileSystemEventHandler):
@@ -241,12 +241,12 @@ class ImageGenerationHandler(FileSystemEventHandler):
         prompt_data = metadata.get("prompt")
         if isinstance(prompt_data, dict):
             for node_id in run_prompt_nodes(prompt_data):
-                prompt_text = literal_text(prompt_data, node_id)
+                prompt_text = resolve_text(prompt_data, node_id)
                 if prompt_text:
                     break
             if not prompt_text:
-                # Positive text came from another node (batch item): leave it to the
-                # queue rather than guess from workflow widgets, which don't know roles
+                # Positive text can't be known from the graph (batch item or unknown
+                # node): leave it to the queue rather than guess from workflow widgets
                 return None
 
         # Fallback (no executed graph): check text_encoder_nodes from workflow, but only if

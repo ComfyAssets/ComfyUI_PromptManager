@@ -124,7 +124,11 @@ except Exception as e:
 
         get_logger("prompt_manager.init").error(f"Failed to register usage hook: {e}")
     except Exception:
-        print(f"[ComfyUI-PromptManager] Warning: Failed to register usage hook: {e}")
+        import logging
+
+        logging.getLogger("prompt_manager.init").error(
+            f"Failed to register usage hook: {e}"
+        )
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 

@@ -2,8 +2,9 @@
 
 import os
 import sys
+import threading
 import unittest
-from unittest import mock
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -68,7 +69,7 @@ class TestQueueHookRegistration(unittest.TestCase):
         server = mock.Mock()
         db = mock.Mock()
         db.get_prompt_by_hash.return_value = None
-        with mock.patch.object(usage_tracking, "_registered", False):
+        with mock.patch.object(usage_tracking, "_hook_registered", threading.Event()):
             self.assertTrue(usage_tracking.register_queue_hook(server, lambda: db))
             self.assertFalse(usage_tracking.register_queue_hook(server, lambda: db))
 

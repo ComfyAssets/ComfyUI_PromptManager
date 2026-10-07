@@ -7,9 +7,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.prompt_graph import (
-    is_text_linked,
-    literal_text,
     positive_prompt_nodes,
+    resolve_text,
     run_prompt_nodes,
 )
 
@@ -169,22 +168,76 @@ class TestRunPromptNodes(unittest.TestCase):
         self.assertEqual(run_prompt_nodes(None), [])
 
 
-class TestNodeText(unittest.TestCase):
-    def test_literal_and_linked_text(self):
-        graph = {
-            "1": pm("  a cat  "),
-            "2": pm(["7", 0]),
-            "7": {"class_type": "PromptSearchList", "inputs": {}},
-        }
-        self.assertEqual(literal_text(graph, "1"), "a cat")
-        self.assertIsNone(literal_text(graph, "2"))
-        self.assertFalse(is_text_linked(graph, "1"))
-        self.assertTrue(is_text_linked(graph, "2"))
+class TestResolveText(unittest.TestCase):
+    """Text known at queue time: typed, or from known pure string nodes."""
 
-    def test_missing_nodes(self):
-        self.assertIsNone(literal_text({}, "1"))
-        self.assertFalse(is_text_linked({}, "1"))
-        self.assertIsNone(literal_text({"1": pm("   ")}, "1"))
+    def _linked(self, source):
+        return {"1": pm(["2", 0]), "2": source}
+
+    def test_typed_text(self):
+        self.assertEqual(resolve_text({"1": pm("  a cat ")}, "1"), "a cat")
+
+    def test_core_primitive_string(self):
+        for cls in ("PrimitiveString", "PrimitiveStringMultiline"):
+            graph = self._linked({"class_type": cls, "inputs": {"value": "a cat"}})
+            self.assertEqual(resolve_text(graph, "1"), "a cat", cls)
+
+    def test_core_string_concatenate(self):
+        graph = self._linked(
+            {
+                "class_type": "StringConcatenate",
+                "inputs": {
+                    "string_a": "a cat",
+                    "string_b": "at dusk",
+                    "delimiter": ", ",
+                },
+            }
+        )
+        self.assertEqual(resolve_text(graph, "1"), "a cat, at dusk")
+
+    def test_was_text_concatenate_skips_empty_and_cleans_whitespace(self):
+        graph = self._linked(
+            {
+                "class_type": "Text Concatenate",
+                "inputs": {
+                    "delimiter": " ",
+                    "clean_whitespace": "true",
+                    "text_a": " a cat ",
+                    "text_b": "",
+                    "text_c": ["3", 0],
+                },
+            }
+        )
+        graph["3"] = {"class_type": "PrimitiveString", "inputs": {"value": "at dusk"}}
+        self.assertEqual(resolve_text(graph, "1"), "a cat at dusk")
+
+    def test_pass_through_nodes(self):
+        for cls in ("ShowText|pysssss", "Text Multiline"):
+            graph = self._linked({"class_type": cls, "inputs": {"text": "a cat"}})
+            self.assertEqual(resolve_text(graph, "1"), "a cat", cls)
+
+    def test_unknown_and_batch_sources_are_never_guessed(self):
+        for source in (
+            {"class_type": "PromptSearchList", "inputs": {"search_text": "cat"}},
+            {
+                "class_type": "SomeTextReplace",
+                "inputs": {"text": "a cat", "find": "cat", "replace": "dog"},
+            },
+        ):
+            self.assertIsNone(
+                resolve_text(self._linked(source), "1"), source["class_type"]
+            )
+
+    def test_cycles_and_missing_links(self):
+        graph = {
+            "1": pm(["2", 0]),
+            "2": {
+                "class_type": "StringConcatenate",
+                "inputs": {"string_a": ["2", 0], "string_b": "x", "delimiter": ""},
+            },
+        }
+        self.assertIsNone(resolve_text(graph, "1"))
+        self.assertIsNone(resolve_text({"1": pm(["9", 0])}, "1"))
 
 
 if __name__ == "__main__":

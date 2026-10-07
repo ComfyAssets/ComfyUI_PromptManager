@@ -8,7 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest import mock
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -99,6 +99,20 @@ class TestQueueHook(DbTestCase):
         self._queue(graph)
         self.assertEqual(self._runs(positive), 1)
 
+    def test_text_from_a_known_string_node_is_counted_at_queue_time(self):
+        positive = self._save("a cat")
+        graph = workflow()
+        graph["134"]["inputs"]["text"] = ["8", 0]
+        graph["8"] = {"class_type": "PrimitiveString", "inputs": {"value": "a cat"}}
+        self._queue(graph)
+        self._queue(graph)  # cached re-run: the node won't execute
+        self.assertEqual(self._runs(positive), 2)
+
+    def test_new_prompt_queued_twice_before_first_run_counts_twice(self):
+        self._queue(workflow(positive_text="queued twice"))
+        self._queue(workflow(positive_text="queued twice"))
+        self.assertEqual(self.pending.consume(generate_prompt_hash("queued twice")), 2)
+
     def test_linked_text_is_left_to_node_execution(self):
         positive = self._save("from a batch")
         graph = workflow()
@@ -124,6 +138,14 @@ class TestPendingFirstUse(unittest.TestCase):
             pending.add("h")
         with mock.patch("utils.usage_tracking.time.monotonic", return_value=111.0):
             self.assertFalse(pending.consume("h"))
+
+    def test_consume_returns_how_many_runs_were_pending(self):
+        pending = PendingFirstUse()
+        pending.add("h")
+        pending.add("h")
+        pending.add("h")
+        self.assertEqual(pending.consume("h"), 3)
+        self.assertEqual(pending.consume("h"), 0)
 
     def test_size_is_capped(self):
         pending = PendingFirstUse(max_entries=3)
@@ -185,6 +207,39 @@ class TestNodeRoles(DbTestCase):
             "never seen before",
         )
         self.assertEqual(self._runs(prompt_id), 1)
+
+    def test_new_prompt_queued_twice_counts_both_runs_on_first_save(self):
+        graph = workflow(positive_text="double queued")
+        self._queue(graph)
+        self._queue(graph)
+        prompt_id = self._run(self._node(), graph, "134", "double queued")
+        self.assertEqual(self._runs(prompt_id), 2)
+
+    def test_text_resolved_at_queue_time_is_not_counted_again_or_queued(self):
+        graph = workflow()
+        graph["134"]["inputs"]["text"] = ["8", 0]
+        graph["8"] = {"class_type": "PrimitiveString", "inputs": {"value": "a cat"}}
+        positive = self._save("a cat")
+        self._queue(graph)
+        node = self._node()
+        self._run(node, graph, "134", "a cat")
+        self.assertEqual(self._runs(positive), 1)
+        self.assertEqual(
+            node.prompt_tracker.calls, [{"text": "a cat", "push_to_queue": False}]
+        )
+
+    def test_resolution_mismatch_falls_back_to_counting_and_queueing(self):
+        # Hook guessed "a cat" but the node received different text: trust the node
+        graph = workflow()
+        graph["134"]["inputs"]["text"] = ["8", 0]
+        graph["8"] = {"class_type": "PrimitiveString", "inputs": {"value": "a cat"}}
+        node = self._node()
+        prompt_id = self._run(node, graph, "134", "actually a dog")
+        self.assertEqual(self._runs(prompt_id), 1)
+        self.assertEqual(
+            node.prompt_tracker.calls,
+            [{"text": "actually a dog", "push_to_queue": True}],
+        )
 
     def test_existing_prompt_is_not_counted_twice_by_hook_and_node(self):
         positive = self._save("a cat")

@@ -163,21 +163,22 @@ class PromptDatabase:
             self.logger.debug(f"Successfully saved prompt with ID: {prompt_id}")
             return prompt_id
 
-    def record_prompt_use(self, prompt_id: int) -> bool:
+    def record_prompt_use(self, prompt_id: int, times: int = 1) -> bool:
         """
-        Count one run of a prompt and mark it as most recently used.
+        Count runs of a prompt and mark it as most recently used.
 
         Args:
             prompt_id: The prompt ID
+            times: Number of runs to add (queued runs counted on first save)
 
         Returns:
             True if the prompt exists and was updated
         """
         with self.model.get_connection() as conn:
             cursor = conn.execute(
-                "UPDATE prompts SET run_count = run_count + 1, last_used_at = ?"
+                "UPDATE prompts SET run_count = run_count + ?, last_used_at = ?"
                 " WHERE id = ?",
-                (utc_now_iso(), prompt_id),
+                (max(1, int(times)), utc_now_iso(), prompt_id),
             )
             conn.commit()
             return cursor.rowcount > 0

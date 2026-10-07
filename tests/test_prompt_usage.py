@@ -77,6 +77,11 @@ class TestRecordPromptUse(UsageTestCase):
         result = self.db.get_recent_prompts(limit=2, sort="last_used_desc")
         self.assertEqual(self._ids(result["prompts"]), [recent, backfilled])
 
+    def test_record_use_can_add_several_runs_at_once(self):
+        pid = self._save("several")
+        self.db.record_prompt_use(pid, times=3)
+        self.assertEqual(self.db.get_prompt_by_id(pid)["run_count"], 3)
+
     def test_record_use_on_missing_prompt_returns_false(self):
         self.assertFalse(self.db.record_prompt_use(999999))
 
