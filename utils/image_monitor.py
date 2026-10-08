@@ -24,17 +24,22 @@ The system automatically:
 """
 
 import os
+import queue
 import time
 import threading
-import json
-from pathlib import Path
-from typing import Optional, Dict, Any, Callable, Tuple
+from typing import Optional, Dict, Any, Tuple
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from .metadata_extractor import ComfyUIMetadataExtractor
 from .logging_config import get_logger
 from .prompt_graph import resolve_text, run_prompt_nodes
+
+# Upper bound on images waiting to be processed (a burst beyond this is skipped)
+MAX_PENDING_IMAGES = 1000
+# A file counts as fully written once its size is unchanged across two reads
+SETTLE_INTERVAL_SECONDS = 0.1
+SETTLE_ATTEMPTS = 20
 
 
 class ImageGenerationHandler(FileSystemEventHandler):
@@ -74,6 +79,18 @@ class ImageGenerationHandler(FileSystemEventHandler):
             self.processing_delay = 2.0
             self.supported_extensions = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 
+        # Settle check: the file size must be unchanged across two reads
+        self.settle_interval = SETTLE_INTERVAL_SECONDS
+        self.settle_attempts = SETTLE_ATTEMPTS
+
+        # Images scheduled but not yet processed: path -> (prompt snapshot, due time).
+        # One daemon worker processes them in order, so batch images pop the
+        # prompt queue in creation order.
+        self._pending: Dict[str, Tuple[Any, float]] = {}
+        self._pending_lock = threading.Lock()
+        self._work: "queue.Queue[str]" = queue.Queue()
+        self._worker: Optional[threading.Thread] = None
+
     def on_created(self, event):
         """Handle filesystem creation events.
 
@@ -87,21 +104,101 @@ class ImageGenerationHandler(FileSystemEventHandler):
         Args:
             event: FileSystemEvent object containing event details
         """
-        if not event.is_directory and self.is_image_file(event.src_path):
-            self.logger.info(f"New image detected: {event.src_path}")
-            # Snapshot prompt context NOW before the delay — in batch workflows
-            # the tracker advances to the next prompt before images are processed.
-            prompt_snapshot = self.prompt_tracker.get_current_prompt()
-            if prompt_snapshot:
-                self.logger.debug(
-                    f"Snapshot prompt {prompt_snapshot.get('id', '?')} for {os.path.basename(event.src_path)}"
+        if event.is_directory or not self.is_image_file(event.src_path):
+            return
+        self.logger.info(f"New image detected: {event.src_path}")
+        # Snapshot prompt context NOW before the delay — in batch workflows
+        # the tracker advances to the next prompt before images are processed.
+        prompt_snapshot = self.prompt_tracker.get_current_prompt()
+        if prompt_snapshot:
+            self.logger.debug(
+                f"Snapshot prompt {prompt_snapshot.get('id', '?')} for "
+                f"{os.path.basename(event.src_path)}"
+            )
+        self.schedule(event.src_path, prompt_snapshot)
+
+    def schedule(self, image_path: str, prompt_snapshot=None) -> bool:
+        """Queue an image for processing on the worker thread, once per path.
+
+        Images are processed in the order they were scheduled (batch images must
+        pop the prompt queue in creation order), each after ``processing_delay``
+        and once its size has stopped changing.
+
+        Returns:
+            False when the path is already pending or the pending set is full
+        """
+        with self._pending_lock:
+            if image_path in self._pending:
+                self.logger.debug(f"Already pending, not rescheduled: {image_path}")
+                return False
+            if len(self._pending) >= MAX_PENDING_IMAGES:
+                self.logger.warning(
+                    f"Too many images pending ({len(self._pending)}), "
+                    f"skipping: {image_path}"
                 )
-            threading.Timer(
-                self.processing_delay,
-                self.process_new_image,
-                args=[event.src_path],
-                kwargs={"prompt_snapshot": prompt_snapshot},
-            ).start()
+                return False
+            due = time.monotonic() + self.processing_delay
+            self._pending[image_path] = (prompt_snapshot, due)
+            self._ensure_worker()
+        self._work.put(image_path)
+        return True
+
+    def pending_count(self) -> int:
+        """Number of images scheduled but not yet processed."""
+        with self._pending_lock:
+            return len(self._pending)
+
+    def _ensure_worker(self) -> None:
+        """Start the single daemon worker thread if it isn't running."""
+        if self._worker is None or not self._worker.is_alive():
+            self._worker = threading.Thread(
+                target=self._run_worker,
+                name="PromptManagerImageWorker",
+                daemon=True,
+            )
+            self._worker.start()
+
+    def _run_worker(self) -> None:
+        while True:
+            image_path = self._work.get()
+            try:
+                self._process_pending(image_path)
+            except Exception as e:
+                self.logger.error(f"Image worker failed on {image_path}: {e}")
+            finally:
+                self._work.task_done()
+
+    def _process_pending(self, image_path: str) -> None:
+        """Process one scheduled image; the pending entry is always cleared."""
+        try:
+            with self._pending_lock:
+                prompt_snapshot, due = self._pending.get(image_path, (None, 0.0))
+            remaining = due - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)
+            if not self.wait_until_settled(image_path):
+                self.logger.warning(
+                    f"Image never settled or vanished, skipping: {image_path}"
+                )
+                return
+            self.process_new_image(image_path, prompt_snapshot=prompt_snapshot)
+        finally:
+            with self._pending_lock:
+                self._pending.pop(image_path, None)
+
+    def wait_until_settled(self, image_path: str) -> bool:
+        """True once the file's size is non-zero and unchanged across two reads."""
+        previous = None
+        for _ in range(self.settle_attempts):
+            try:
+                size = os.path.getsize(image_path)
+            except OSError:
+                return False
+            if previous is not None and size == previous and size > 0:
+                return True
+            previous = size
+            time.sleep(self.settle_interval)
+        return False
 
     def is_image_file(self, filepath: str) -> bool:
         """Check if file is a supported image format and not a thumbnail.
@@ -450,65 +547,91 @@ class ImageMonitor:
             return
 
         # Check config for monitoring settings
-        try:
-            from ..py.config import GalleryConfig
-
-            if not GalleryConfig.MONITORING_ENABLED:
+        config = self._gallery_config()
+        if config is not None:
+            if not config.MONITORING_ENABLED:
                 self.logger.info("Image monitoring disabled in config")
                 return
-
             # Use configured directories if set
-            if not output_directories and GalleryConfig.MONITORING_DIRECTORIES:
-                output_directories = GalleryConfig.MONITORING_DIRECTORIES
+            if not output_directories and config.MONITORING_DIRECTORIES:
+                output_directories = config.MONITORING_DIRECTORIES
                 self.logger.info(
                     f"Using configured monitoring directories: {output_directories}"
                 )
-        except Exception:
-            pass
 
         # Auto-detect ComfyUI output directory if still none
         if not output_directories:
             output_directories = self.detect_comfyui_output_dirs()
 
-        if not output_directories:
-            self.logger.warning("No output directories found to monitor")
-            return
-
-        # Create event handler
-        self.handler = ImageGenerationHandler(self.db_manager, self.prompt_tracker)
-
-        # Start observer
-        self.observer = Observer()
-
-        for output_dir in output_directories:
-            if os.path.exists(output_dir):
-                self.observer.schedule(self.handler, output_dir, recursive=True)
-                self.monitored_directories.append(output_dir)
-                self.logger.info(f"Monitoring directory (recursive): {output_dir}")
+        valid_directories = []
+        for output_dir in output_directories or []:
+            if os.path.isdir(output_dir):
+                valid_directories.append(output_dir)
             else:
                 self.logger.warning(f"Directory does not exist: {output_dir}")
-
-        if self.monitored_directories:
-            self.observer.start()
-            self.logger.info(
-                f"Image monitoring started for {len(self.monitored_directories)} directories"
-            )
-        else:
+        if not valid_directories:
             self.logger.warning("No valid directories to monitor")
+            return
+
+        # Only a started observer becomes self.observer, so a failed start never
+        # leaves the monitor stuck "already running" with nothing to stop.
+        handler = ImageGenerationHandler(self.db_manager, self.prompt_tracker)
+        observer = Observer()
+        scheduled = []
+        for output_dir in valid_directories:
+            try:
+                observer.schedule(handler, output_dir, recursive=True)
+                scheduled.append(output_dir)
+                self.logger.info(f"Monitoring directory (recursive): {output_dir}")
+            except Exception as e:
+                self.logger.warning(f"Cannot watch {output_dir}: {e}")
+        if not scheduled:
+            self.logger.warning("No directory could be watched")
+            return
+        try:
+            observer.start()
+        except Exception as e:
+            self.logger.error(f"Image monitoring could not start: {e}")
+            return
+
+        self.handler = handler
+        self.observer = observer
+        self.monitored_directories = scheduled
+        self.logger.info(f"Image monitoring started for {len(scheduled)} directories")
+
+    @staticmethod
+    def _gallery_config():
+        """GalleryConfig when the package's config is importable, else None."""
+        try:
+            from ..py.config import GalleryConfig
+
+            return GalleryConfig
+        except Exception:
+            return None
+
+    @property
+    def is_monitoring(self) -> bool:
+        """Whether a filesystem observer is running."""
+        return self.observer is not None
 
     def stop_monitoring(self):
         """Stop the image monitoring system.
 
         Cleanly shuts down the filesystem watcher and clears all monitoring state.
         This method should be called before program exit to ensure proper cleanup.
+        Safe to call when monitoring never started.
         """
-        if self.observer:
-            self.observer.stop()
-            self.observer.join()
-            self.observer = None
-            self.handler = None
-            self.monitored_directories = []
-            self.logger.debug("Image monitoring stopped")
+        observer, self.observer = self.observer, None
+        self.handler = None
+        self.monitored_directories = []
+        if observer is None:
+            return
+        try:
+            observer.stop()
+            observer.join()
+        except Exception as e:
+            self.logger.warning(f"Error while stopping image monitoring: {e}")
+        self.logger.debug("Image monitoring stopped")
 
     def detect_comfyui_output_dirs(self) -> list:
         """Auto-detect ComfyUI output directories.
