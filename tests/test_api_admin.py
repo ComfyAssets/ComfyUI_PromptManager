@@ -221,5 +221,132 @@ class TestSaveSettingsGalleryRoots(AdminAPITestCase):
         self.assertEqual(resp.status, 400)
 
 
+class FakeMonitor:
+    def __init__(self, dirs):
+        self.monitored_directories = list(dirs)
+
+    def get_status(self):
+        return {
+            "running": True,
+            "monitored_directories": self.monitored_directories,
+            "handler_active": True,
+            "observer_alive": True,
+        }
+
+
+class TestNoAbsolutePathsInResponses(AdminAPITestCase):
+    """No admin response may reveal the server's absolute filesystem layout."""
+
+    def _install_monitor(self, dirs):
+        import utils.image_monitor as im_mod
+
+        orig = im_mod._monitor_instance
+        im_mod._monitor_instance = FakeMonitor(dirs)
+        self.addCleanup(setattr, im_mod, "_monitor_instance", orig)
+
+    async def _body(self, method, path, **kwargs):
+        resp = await self.client.request(method, path, **kwargs)
+        return resp, await resp.text()
+
+    async def test_settings_show_roots_relative_to_comfyui(self):
+        renders = self.output_dir / "renders"
+        renders.mkdir()
+        GalleryConfig.MONITORING_DIRECTORIES = [str(renders)]
+        self._install_monitor([str(renders)])
+
+        resp, body = await self._body("GET", "/prompt_manager/settings")
+
+        self.assertEqual(resp.status, 200)
+        self.assertNotIn(self.tmpdir, body)
+        data = json.loads(body)
+        self.assertEqual(data["settings"]["gallery_root_paths"], ["output/renders"])
+        self.assertEqual(data["settings"]["gallery_root_path"], "output/renders")
+        self.assertEqual(data["settings"]["monitored_directories"], ["output/renders"])
+
+    async def test_settings_relative_root_round_trips(self):
+        """What GET returns can be POSTed back unchanged from any CWD."""
+        renders = self.output_dir / "renders"
+        renders.mkdir()
+
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/settings",
+            json={"gallery_root_paths": ["output/renders"]},
+        )
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(
+            [os.path.normcase(p) for p in GalleryConfig.MONITORING_DIRECTORIES],
+            [os.path.normcase(os.path.realpath(renders))],
+        )
+
+    async def test_diagnostics_paths_are_relative(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        self._install_monitor([str(self.output_dir)])
+
+        resp, body = await self._body("GET", "/prompt_manager/diagnostics")
+
+        self.assertEqual(resp.status, 200)
+        self.assertNotIn(self.tmpdir, body)
+        data = json.loads(body)
+        self.assertEqual(
+            data["diagnostics"]["comfyui_output"]["output_dirs"], ["output"]
+        )
+        self.assertEqual(
+            data["diagnostics"]["image_monitor"]["monitored_directories"], ["output"]
+        )
+
+    async def test_diagnostics_missing_db_message_has_no_path(self):
+        self.api.db.model.db_path = os.path.join(self.tmpdir, "missing", "prompts.db")
+
+        resp, body = await self._body("GET", "/prompt_manager/diagnostics")
+
+        self.assertNotIn(self.tmpdir, body)
+        data = json.loads(body)
+        self.assertEqual(data["diagnostics"]["database"]["status"], "error")
+        self.assertIn("prompts.db", data["diagnostics"]["database"]["message"])
+
+    async def test_scan_duplicates_paths_are_relative_to_output(self):
+        (self.output_dir / "a.png").write_bytes(b"same-bytes")
+        (self.output_dir / "sub").mkdir()
+        (self.output_dir / "sub" / "b.png").write_bytes(b"same-bytes")
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+
+        resp, body = await self._body("GET", "/prompt_manager/scan_duplicates")
+
+        self.assertEqual(resp.status, 200)
+        self.assertNotIn(self.tmpdir, body)
+        data = json.loads(body)
+        self.assertEqual(len(data["duplicates"]), 1)
+        paths = sorted(img["path"] for img in data["duplicates"][0]["images"])
+        self.assertEqual(paths, ["a.png", os.path.join("sub", "b.png")])
+
+    async def test_delete_duplicates_accepts_relative_paths(self):
+        target = self.output_dir / "sub" / "b.png"
+        target.parent.mkdir()
+        target.write_bytes(b"bytes")
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+
+        resp, body = await self._body(
+            "POST",
+            "/prompt_manager/delete_duplicate_images",
+            json={"image_paths": [os.path.join("sub", "b.png")]},
+        )
+
+        self.assertEqual(resp.status, 200)
+        data = json.loads(body)
+        self.assertEqual(data["deleted_count"], 1)
+        self.assertFalse(target.exists())
+
+    async def test_scan_images_stream_has_no_absolute_paths(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+
+        resp, body = await self._body("POST", "/prompt_manager/scan")
+
+        self.assertEqual(resp.status, 200)
+        self.assertNotIn(self.tmpdir, body)
+        self.assertIn('"directories": ["output"]', body)
+
+
 if __name__ == "__main__":
     unittest.main()

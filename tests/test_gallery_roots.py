@@ -181,14 +181,22 @@ class TestValidateGalleryRootAccepts(GalleryRootTestCase):
         self.assertTrue(ok_a, reason_a)
         self.assertTrue(ok_b, reason_b)
 
-    def test_relative_path_is_resolved_before_checking(self):
+    def test_relative_path_resolves_against_comfyui_base_not_cwd(self):
         sub = self.output_dir / "rel"
         sub.mkdir()
         orig_cwd = os.getcwd()
-        os.chdir(str(self.output_dir))
+        os.chdir(self.tmpdir)
         self.addCleanup(os.chdir, orig_cwd)
-        ok, reason = GalleryConfig.validate_gallery_root("rel")
+
+        ok, reason = GalleryConfig.validate_gallery_root("output/rel")
         self.assertTrue(ok, reason)
+        self.assertEqual(
+            GalleryConfig.resolve_gallery_root("output/rel"),
+            os.path.normcase(os.path.realpath(sub)),
+        )
+        # A path that only exists relative to the CWD is not accepted.
+        (Path(self.tmpdir) / "rel").mkdir()
+        self.assertFalse(GalleryConfig.validate_gallery_root("rel")[0])
 
     def test_accepts_without_folder_paths_when_env_lists_dir(self):
         sys.modules.pop("folder_paths", None)

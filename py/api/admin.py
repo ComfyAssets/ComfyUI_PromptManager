@@ -24,6 +24,20 @@ except ImportError:
     from database.operations import PromptDatabase
 
 
+def _image_monitor_module():
+    """The utils.image_monitor module under either package identity."""
+    try:
+        from ...utils import image_monitor
+    except ImportError:
+        from utils import image_monitor
+    return image_monitor
+
+
+def _current_image_monitor():
+    """The running ImageMonitor singleton, or None when not started."""
+    return getattr(_image_monitor_module(), "_monitor_instance", None)
+
+
 class AdminRoutesMixin:
     """Mixin providing admin, diagnostics, and maintenance API endpoints."""
 
@@ -90,12 +104,9 @@ class AdminRoutesMixin:
             )
 
         except Exception as e:
-            self.logger.error(f"Scan duplicates error: {e}")
+            self.logger.error(f"Scan duplicates error: {e}", exc_info=True)
             return web.json_response(
-                {
-                    "success": False,
-                    "error": f"Failed to scan duplicate images: {str(e)}",
-                },
+                {"success": False, "error": "Failed to scan duplicate images"},
                 status=500,
             )
 
@@ -113,9 +124,9 @@ class AdminRoutesMixin:
             )
 
         except Exception as e:
-            self.logger.error(f"Cleanup error: {e}")
+            self.logger.error(f"Cleanup error: {e}", exc_info=True)
             return web.json_response(
-                {"success": False, "error": f"Failed to cleanup duplicates: {str(e)}"},
+                {"success": False, "error": "Failed to cleanup duplicates"},
                 status=500,
             )
 
@@ -189,7 +200,7 @@ class AdminRoutesMixin:
                     image_info = {
                         "id": str(hash(str(media_path))),
                         "filename": media_path.name,
-                        "path": str(media_path),
+                        "path": str(rel_path),
                         "relative_path": str(rel_path),
                         "url": f"/prompt_manager/images/serve/{rel_path.as_posix()}",
                         "thumbnail_url": thumbnail_url,
@@ -266,6 +277,8 @@ class AdminRoutesMixin:
 
                     output_path = Path(output_dir)
                     file_path = Path(image_path)
+                    if not file_path.is_absolute():
+                        file_path = output_path / file_path
 
                     # Security check - ensure file is within output directory
                     try:
@@ -307,7 +320,7 @@ class AdminRoutesMixin:
 
                 except Exception as e:
                     self.logger.error(f"Error deleting file {image_path}: {e}")
-                    failed_files.append(f"{image_path} ({str(e)})")
+                    failed_files.append(f"{image_path} ({self._public_error(e)})")
                     failed_count += 1
 
             response_data = {
@@ -324,12 +337,9 @@ class AdminRoutesMixin:
             return web.json_response(response_data)
 
         except Exception as e:
-            self.logger.error(f"Delete duplicate images error: {e}")
+            self.logger.error(f"Delete duplicate images error: {e}", exc_info=True)
             return web.json_response(
-                {
-                    "success": False,
-                    "error": f"Failed to delete duplicate images: {str(e)}",
-                },
+                {"success": False, "error": "Failed to delete duplicate images"},
                 status=500,
             )
 
@@ -341,9 +351,9 @@ class AdminRoutesMixin:
             return web.json_response({"success": True, "stats": stats})
 
         except Exception as e:
-            self.logger.error(f"Stats error: {e}")
+            self.logger.error(f"Stats error: {e}", exc_info=True)
             return web.json_response(
-                {"success": False, "error": f"Failed to get statistics: {str(e)}"},
+                {"success": False, "error": "Failed to get statistics"},
                 status=500,
             )
 
@@ -375,27 +385,27 @@ class AdminRoutesMixin:
                 if GalleryConfig.MONITORING_DIRECTORIES:
                     monitored_dirs = GalleryConfig.MONITORING_DIRECTORIES
 
+            root_paths = [
+                self._public_path(d) for d in GalleryConfig.MONITORING_DIRECTORIES
+            ]
             return web.json_response(
                 {
                     "success": True,
                     "settings": {
                         "result_timeout": PromptManagerConfig.RESULT_TIMEOUT,
                         "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE,
-                        "gallery_root_paths": list(
-                            GalleryConfig.MONITORING_DIRECTORIES
-                        ),
-                        "gallery_root_path": (
-                            GalleryConfig.MONITORING_DIRECTORIES[0]
-                            if GalleryConfig.MONITORING_DIRECTORIES
-                            else ""
-                        ),
-                        "monitored_directories": monitored_dirs,
+                        "gallery_root_paths": root_paths,
+                        "gallery_root_path": root_paths[0] if root_paths else "",
+                        "monitored_directories": [
+                            self._public_path(d) for d in monitored_dirs
+                        ],
                     },
                 }
             )
         except Exception as e:
+            self.logger.error(f"Get settings error: {e}", exc_info=True)
             return web.json_response(
-                {"success": False, "error": f"Failed to get settings: {str(e)}"},
+                {"success": False, "error": "Failed to get settings"},
                 status=500,
             )
 
@@ -477,7 +487,7 @@ class AdminRoutesMixin:
                     None,
                     f"Invalid gallery root '{os.path.basename(entry)}': {reason}",
                 )
-            roots.append(entry)
+            roots.append(GalleryConfig.resolve_gallery_root(entry))
         return roots, None
 
     def _apply_gallery_roots(self, roots):
@@ -548,12 +558,14 @@ class AdminRoutesMixin:
                 else:
                     results["database"] = {
                         "status": "error",
-                        "message": f"Database file not found: {db_path}",
+                        "message": (
+                            f"Database file not found: {os.path.basename(db_path)}"
+                        ),
                     }
             except Exception as e:
                 results["database"] = {
                     "status": "error",
-                    "message": f"Database error: {str(e)}",
+                    "message": f"Database error: {self._public_error(e)}",
                 }
 
             # Check dependencies
@@ -616,16 +628,18 @@ class AdminRoutesMixin:
 
             results["comfyui_output"] = {
                 "status": "ok" if output_dirs else "warning",
-                "output_dirs": output_dirs,
+                "output_dirs": [self._public_path(d) for d in output_dirs],
             }
 
             # Check image monitor status
             try:
-                from ...utils import image_monitor as im_mod
-
-                monitor = im_mod._monitor_instance
+                monitor = _current_image_monitor()
                 if monitor is not None:
-                    monitor_status = monitor.get_status()
+                    monitor_status = dict(monitor.get_status())
+                    monitor_status["monitored_directories"] = [
+                        self._public_path(d)
+                        for d in monitor_status.get("monitored_directories", [])
+                    ]
                     results["image_monitor"] = {
                         "status": (
                             "ok" if monitor_status.get("observer_alive") else "error"
@@ -640,14 +654,16 @@ class AdminRoutesMixin:
             except Exception as e:
                 results["image_monitor"] = {
                     "status": "error",
-                    "message": f"Failed to get monitor status: {str(e)}",
+                    "message": f"Failed to get monitor status: {self._public_error(e)}",
                 }
 
             return web.json_response({"success": True, "diagnostics": results})
 
         except Exception as e:
             self.logger.error(f"Diagnostics error: {e}", exc_info=True)
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": "Diagnostics failed"}, status=500
+            )
 
     async def test_image_link(self, request):
         """Test creating an image link."""
@@ -695,14 +711,18 @@ class AdminRoutesMixin:
                         "success": False,
                         "result": {
                             "status": "error",
-                            "message": f"Failed to create test link: {str(e)}",
+                            "message": (
+                                f"Failed to create test link: {self._public_error(e)}"
+                            ),
                         },
                     }
                 )
 
         except Exception as e:
             self.logger.error(f"Test link error: {e}", exc_info=True)
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": "Test link failed"}, status=500
+            )
 
     async def run_maintenance(self, request):
         """Perform comprehensive database maintenance and optimization."""
@@ -731,7 +751,7 @@ class AdminRoutesMixin:
                     except Exception as e:
                         results["cleanup_duplicates"] = {
                             "success": False,
-                            "error": str(e),
+                            "error": self._public_error(e),
                             "message": "Failed to cleanup duplicates",
                         }
 
@@ -745,7 +765,7 @@ class AdminRoutesMixin:
                     except Exception as e:
                         results["vacuum"] = {
                             "success": False,
-                            "error": str(e),
+                            "error": self._public_error(e),
                             "message": "Failed to vacuum database",
                         }
 
@@ -760,7 +780,7 @@ class AdminRoutesMixin:
                     except Exception as e:
                         results["cleanup_orphaned_images"] = {
                             "success": False,
-                            "error": str(e),
+                            "error": self._public_error(e),
                             "message": "Failed to cleanup orphaned images",
                         }
 
@@ -775,7 +795,7 @@ class AdminRoutesMixin:
                     except Exception as e:
                         results["check_hash_duplicates"] = {
                             "success": False,
-                            "error": str(e),
+                            "error": self._public_error(e),
                             "message": "Failed to check hash duplicates",
                         }
 
@@ -790,7 +810,7 @@ class AdminRoutesMixin:
                     except Exception as e:
                         results["statistics"] = {
                             "success": False,
-                            "error": str(e),
+                            "error": self._public_error(e),
                             "message": "Failed to get database statistics",
                         }
 
@@ -805,7 +825,7 @@ class AdminRoutesMixin:
                     except Exception as e:
                         results["prune_orphaned_prompts"] = {
                             "success": False,
-                            "error": str(e),
+                            "error": self._public_error(e),
                             "message": "Failed to prune orphaned prompts",
                         }
 
@@ -821,7 +841,7 @@ class AdminRoutesMixin:
                     except Exception as e:
                         results["check_consistency"] = {
                             "success": False,
-                            "error": str(e),
+                            "error": self._public_error(e),
                             "message": "Failed to check database consistency",
                         }
 
@@ -844,7 +864,7 @@ class AdminRoutesMixin:
         except Exception as e:
             self.logger.error(f"Maintenance error: {e}", exc_info=True)
             return web.json_response(
-                {"success": False, "error": f"Maintenance failed: {str(e)}"}, status=500
+                {"success": False, "error": "Maintenance failed"}, status=500
             )
 
     async def backup_database(self, request):
@@ -1020,7 +1040,7 @@ class AdminRoutesMixin:
                     yield f"data: {json.dumps({'type': 'error', 'message': 'No output directories found. Configure scan directories in Settings.'})}\n\n"
                     return
 
-                dir_names = [str(d) for d in output_dirs]
+                dir_names = [self._public_path(d) for d in output_dirs]
                 yield f"data: {json.dumps({'type': 'progress', 'progress': 0, 'status': f'Scanning {len(output_dirs)} directory(ies) for media files...', 'processed': 0, 'found': 0})}\n\n"
 
                 media_files = await self._run_in_executor(

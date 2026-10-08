@@ -44,6 +44,37 @@ def _get_project_root():
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+def _public_path(path) -> str:
+    """Render a server path for an API response without revealing the layout.
+
+    Returns the path relative to the ComfyUI base directory (or to the parent
+    of an opted-in extra gallery root), as a POSIX-style string, or just the
+    basename when the path is not under any of those anchors.
+    """
+    if not path:
+        return ""
+    from ..config import GalleryConfig
+
+    try:
+        canonical = Path(os.path.normcase(os.path.realpath(str(path))))
+    except (OSError, ValueError):
+        return os.path.basename(str(path))
+    for anchor in GalleryConfig.path_anchors():
+        if canonical.is_relative_to(Path(anchor)):
+            return canonical.relative_to(Path(anchor)).as_posix() or "."
+    return canonical.name
+
+
+def _public_error(exc: BaseException) -> str:
+    """Error text safe for API responses: OSError paths reduced to basenames."""
+    if isinstance(exc, OSError):
+        parts = [exc.strerror or type(exc).__name__]
+        if exc.filename:
+            parts.append(os.path.basename(str(exc.filename)))
+        return ": ".join(parts)
+    return str(exc) or type(exc).__name__
+
+
 # ── Gzip compression middleware ────────────────────────────────────────
 _GZIP_MIN_SIZE = 1024  # Only compress bodies larger than 1 KB
 _GZIP_TYPES = frozenset(
@@ -139,6 +170,9 @@ class PromptManagerAPI(
             self.logger.error(f"Startup cleanup failed: {e}")
 
         self.logger.info("PromptManager API initialization completed")
+
+    _public_path = staticmethod(_public_path)
+    _public_error = staticmethod(_public_error)
 
     async def _run_in_executor(self, func, *args, **kwargs):
         """Run a blocking function in the default thread pool executor.

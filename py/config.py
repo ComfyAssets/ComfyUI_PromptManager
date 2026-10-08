@@ -73,11 +73,39 @@ def _is_filesystem_root(path: str) -> bool:
     return os.path.dirname(path) == path
 
 
-def _comfyui_directories() -> List[str]:
-    """Directories reported by ComfyUI's folder_paths module, if importable."""
+def _import_folder_paths():
+    """ComfyUI's folder_paths module, or None outside ComfyUI."""
     try:
         import folder_paths
     except ImportError:
+        return None
+    return folder_paths
+
+
+def _comfyui_base_directory() -> Optional[str]:
+    """ComfyUI's base directory: folder_paths.base_path, else the output dir's parent."""
+    folder_paths = _import_folder_paths()
+    if folder_paths is None:
+        return None
+    base = getattr(folder_paths, "base_path", None)
+    if isinstance(base, str) and base:
+        return base
+    getter = getattr(folder_paths, "get_output_directory", None)
+    if getter is None:
+        return None
+    try:
+        output_dir = getter()
+    except Exception:
+        return None
+    if isinstance(output_dir, str) and output_dir:
+        return os.path.dirname(os.path.realpath(output_dir))
+    return None
+
+
+def _comfyui_directories() -> List[str]:
+    """Directories reported by ComfyUI's folder_paths module, if importable."""
+    folder_paths = _import_folder_paths()
+    if folder_paths is None:
         return []
 
     found = []
@@ -273,6 +301,48 @@ class GalleryConfig:
         return parents
 
     @classmethod
+    def path_anchors(cls) -> List[str]:
+        """Canonical directories that relative gallery paths are resolved against.
+
+        The ComfyUI base directory comes first, followed by the parent of each
+        directory listed in PROMPT_MANAGER_EXTRA_GALLERY_ROOTS, so an extra
+        root is addressed by its own name (``gallery/sub``) rather than by an
+        absolute path. The same anchors drive the public (relative) form of
+        paths in API responses.
+        """
+        anchors = []
+        base = _comfyui_base_directory()
+        candidates = [base] if base else []
+        candidates.extend(os.path.dirname(root) for root in _extra_gallery_roots())
+        for candidate in candidates:
+            try:
+                canonical = _canonical_path(candidate)
+            except (OSError, ValueError):
+                continue
+            if canonical not in anchors:
+                anchors.append(canonical)
+        return anchors
+
+    @classmethod
+    def resolve_gallery_root(cls, path: str) -> str:
+        """Canonical absolute path for a gallery root given in any accepted form.
+
+        Absolute paths are canonicalised as-is. Relative paths are tried
+        against each :meth:`path_anchors` entry and the first existing match
+        wins; otherwise the first anchor (or the current directory when there
+        is none) is used, so the caller's existence check reports it.
+        """
+        path = path.strip()
+        if os.path.isabs(path):
+            return _canonical_path(path)
+        anchors = cls.path_anchors()
+        for anchor in anchors:
+            candidate = os.path.join(anchor, path)
+            if os.path.exists(candidate):
+                return _canonical_path(candidate)
+        return _canonical_path(os.path.join(anchors[0], path) if anchors else path)
+
+    @classmethod
     def validate_gallery_root(cls, path: Any) -> Tuple[bool, str]:
         """Check whether ``path`` may be used as a gallery root.
 
@@ -284,7 +354,7 @@ class GalleryConfig:
             return False, "Gallery root must be a non-empty path"
 
         try:
-            canonical = _canonical_path(path.strip())
+            canonical = cls.resolve_gallery_root(path)
         except (OSError, ValueError):
             return False, "Gallery root could not be resolved"
 

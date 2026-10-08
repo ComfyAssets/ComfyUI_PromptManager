@@ -131,14 +131,18 @@ class LoggingRoutesMixin:
         except Exception as e:
             self.logger.error(f"Get logs error: {e}")
             return web.json_response(
-                {"success": False, "error": str(e), "logs": []}, status=500
+                {"success": False, "error": self._public_error(e), "logs": []},
+                status=500,
             )
 
     async def get_log_files(self, request):
         """Get information about available log files."""
         try:
             logger_manager = self._get_logger_manager()
-            log_files = logger_manager.get_log_files()
+            log_files = [
+                {**entry, "path": self._public_path(entry.get("path"))}
+                for entry in logger_manager.get_log_files()
+            ]
 
             return web.json_response(
                 {"success": True, "files": log_files, "count": len(log_files)}
@@ -147,7 +151,8 @@ class LoggingRoutesMixin:
         except Exception as e:
             self.logger.error(f"Get log files error: {e}")
             return web.json_response(
-                {"success": False, "error": str(e), "files": []}, status=500
+                {"success": False, "error": self._public_error(e), "files": []},
+                status=500,
             )
 
     async def download_log_file(self, request):
@@ -182,7 +187,9 @@ class LoggingRoutesMixin:
 
         except Exception as e:
             self.logger.error(f"Download log file error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": self._public_error(e)}, status=500
+            )
 
     async def truncate_logs(self, request):
         """Truncate all log files."""
@@ -200,7 +207,9 @@ class LoggingRoutesMixin:
 
         except Exception as e:
             self.logger.error(f"Truncate logs error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": self._public_error(e)}, status=500
+            )
 
     async def get_log_config(self, request):
         """Get current logging configuration."""
@@ -212,7 +221,9 @@ class LoggingRoutesMixin:
 
         except Exception as e:
             self.logger.error(f"Get log config error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": self._public_error(e)}, status=500
+            )
 
     async def update_log_config(self, request):
         """Update logging configuration (whitelisted keys only)."""
@@ -251,10 +262,13 @@ class LoggingRoutesMixin:
         """Get logging statistics."""
         try:
             logger_manager = self._get_logger_manager()
-            stats = logger_manager.get_log_stats()
+            stats = dict(logger_manager.get_log_stats())
+            stats["log_directory"] = self._public_path(stats.get("log_directory"))
 
             return web.json_response({"success": True, "stats": stats})
 
         except Exception as e:
             self.logger.error(f"Get log stats error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": self._public_error(e)}, status=500
+            )

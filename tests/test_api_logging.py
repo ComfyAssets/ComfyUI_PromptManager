@@ -1,5 +1,6 @@
 """Route tests for the logging API (py/api/logging_routes.py)."""
 
+import json
 import os
 import shutil
 import sys
@@ -190,6 +191,43 @@ class TestUpdateLogConfigWhitelist(LoggingAPITestCase):
         )
         self.assertEqual(resp.status, 400)
         self.assertEqual(self.manager.update_calls, [])
+
+
+class TestNoAbsolutePathsInLogResponses(LoggingAPITestCase):
+
+    async def test_log_files_have_no_absolute_path(self):
+        (self.log_dir / "prompt_manager.log").write_text("hello")
+
+        resp = await self.client.request("GET", "/prompt_manager/logs/files")
+
+        body = await resp.text()
+        self.assertEqual(resp.status, 200)
+        self.assertNotIn(self.tmpdir, body)
+        data = json.loads(body)
+        self.assertEqual(data["files"][0]["filename"], "prompt_manager.log")
+
+    async def test_log_stats_directory_is_not_absolute(self):
+        resp = await self.client.request("GET", "/prompt_manager/logs/stats")
+
+        body = await resp.text()
+        self.assertEqual(resp.status, 200)
+        self.assertNotIn(self.tmpdir, body)
+        self.assertEqual(json.loads(body)["stats"]["log_directory"], "logs")
+
+    async def test_error_from_manager_does_not_leak_path(self):
+        def boom():
+            raise FileNotFoundError(
+                2, "No such file", os.path.join(self.tmpdir, "x.log")
+            )
+
+        self.manager.get_log_stats = boom
+
+        resp = await self.client.request("GET", "/prompt_manager/logs/stats")
+
+        body = await resp.text()
+        self.assertEqual(resp.status, 500)
+        self.assertNotIn(self.tmpdir, body)
+        self.assertIn("x.log", json.loads(body)["error"])
 
 
 if __name__ == "__main__":
