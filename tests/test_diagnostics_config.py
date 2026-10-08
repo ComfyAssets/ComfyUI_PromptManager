@@ -185,7 +185,7 @@ class TestAdminEndpointsUseConfigPath(unittest.TestCase):
             self.assertGreater(len(result.body), 0)
             self.assertTrue(result.body.startswith(b"SQLite format 3\x00"))
         finally:
-            real_db.close()
+            real_db.close_all()
             for suffix in ("", "-wal", "-shm"):
                 if os.path.exists(db_file + suffix):
                     os.unlink(db_file + suffix)

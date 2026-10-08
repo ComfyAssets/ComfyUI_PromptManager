@@ -25,20 +25,23 @@ def same_path(a, b):
 
 class DiagnosticsTestCase(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tmp.cleanup)
         self.db_path = os.path.join(self.tmp.name, "prompts.db")
         self.diag = GalleryDiagnostics(self.db_path)
 
     def _populate(self):
         db = PromptDatabase(self.db_path)
-        prompt_id = db.save_prompt(
-            text="a cat", prompt_hash=generate_prompt_hash("a cat")
-        )
-        image = os.path.join(self.tmp.name, "cat.png")
-        with open(image, "wb") as f:
-            f.write(b"x")
-        db.link_image_to_prompt(prompt_id=prompt_id, image_path=image, metadata={})
+        try:
+            prompt_id = db.save_prompt(
+                text="a cat", prompt_hash=generate_prompt_hash("a cat")
+            )
+            image = os.path.join(self.tmp.name, "cat.png")
+            with open(image, "wb") as f:
+                f.write(b"x")
+            db.link_image_to_prompt(prompt_id=prompt_id, image_path=image, metadata={})
+        finally:
+            db.close_all()  # Windows cannot delete the temp dir while it is open
         return prompt_id
 
     def _chdir(self, path):

@@ -372,6 +372,7 @@ class CoreRoutesTestCase(AioHTTPTestCase):
         return app
 
     async def tearDownAsync(self):
+        self.api.db.close_all()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _fake_root(self):
@@ -557,6 +558,7 @@ class TestInstanceHelpers(FolderPathsFixture):
         super().setUp()
         self.api = PromptManagerAPI()
         self.api.db = PromptDatabase(os.path.join(self.tmpdir, "prompts.db"))
+        self.addCleanup(self.api.db.close_all)  # runs before the rmtree cleanup
         orig_dirs = list(GalleryConfig.MONITORING_DIRECTORIES)
         self.addCleanup(setattr, GalleryConfig, "MONITORING_DIRECTORIES", orig_dirs)
 

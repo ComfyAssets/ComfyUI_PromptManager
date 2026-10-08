@@ -38,6 +38,9 @@ class APITestCase(AioHTTPTestCase):
         return app
 
     async def tearDownAsync(self):
+        # Close every thread's connection first: Windows refuses to delete
+        # an open database file, and executor threads hold connections too.
+        self.api.db.close_all()
         for path in (
             self._temp_db.name,
             self._temp_db.name + "-wal",

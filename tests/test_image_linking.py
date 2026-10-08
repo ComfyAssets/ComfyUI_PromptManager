@@ -51,6 +51,7 @@ class LinkingTestCase(unittest.TestCase):
         )
 
     def tearDown(self):
+        self.db.close_all()  # Windows cannot unlink an open database file
         for path in (
             self.image,
             self.db_path,

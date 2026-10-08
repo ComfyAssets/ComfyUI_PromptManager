@@ -182,6 +182,7 @@ class NodeTestCase(unittest.TestCase):
         self.node.comfyui_integration = mock.Mock()
 
     def tearDown(self):
+        self.db.close_all()  # Windows cannot unlink an open database file
         for suffix in ("", "-wal", "-shm"):
             if os.path.exists(self.db_path + suffix):
                 os.unlink(self.db_path + suffix)
