@@ -12,7 +12,7 @@ from pathlib import Path
 from aiohttp import web
 from PIL import Image, UnidentifiedImageError
 
-from .prompts import bad_request, parse_page_params
+from .prompts import bad_request, parse_page_params, publish_image_paths
 from .prompts import safe_error_message as _safe_error
 
 # Only these file types are ever served by the image routes, regardless of
@@ -32,6 +32,16 @@ IMAGE_EXTENSIONS = frozenset(
         ".mov",
     }
 )
+
+
+def _public_path(path):
+    """Response-safe form of *path* (relative to the ComfyUI tree).
+
+    Imported lazily: the package defines it after importing this module.
+    """
+    from . import _public_path as public_path
+
+    return public_path(path)
 
 
 def _canonical(path):
@@ -225,8 +235,14 @@ def _iter_media_files(output_path, max_files):
             yield root_path / name
 
 
-def _output_image_entry(media_path, output_path, root_index):
-    """Build one gallery entry for *media_path* (blocking stat)."""
+def _output_image_entry(media_path, output_path, root_index, public_root=None):
+    """Build one gallery entry for *media_path* (blocking stat).
+
+    ``path`` is relative to its root (what delete/autotag resolve against) and
+    ``root_dir`` is the root's public form; neither reveals the server layout.
+    """
+    if public_root is None:
+        public_root = _public_path(output_path)
     stat = media_path.stat()
     rel_path = media_path.relative_to(output_path)
     extension = media_path.suffix.lower()
@@ -245,9 +261,9 @@ def _output_image_entry(media_path, output_path, root_index):
     return {
         "id": hashlib.sha1(str(media_path).encode("utf-8")).hexdigest()[:16],
         "filename": media_path.name,
-        "path": str(media_path),
+        "path": rel_path.as_posix(),
         "relative_path": str(rel_path),
-        "root_dir": str(output_path),
+        "root_dir": public_root,
         "root_index": root_index,
         "url": f"/prompt_manager/images/serve/{rel_path.as_posix()}",
         "thumbnail_url": thumbnail_url,
@@ -325,6 +341,11 @@ class ImageRoutesMixin:
         async def get_gallery_subfolders_route(request):
             return await self.get_gallery_subfolders(request)
 
+    def _present_images(self, images):
+        """Image dicts ready for a response: urls added, server paths hidden."""
+        self._enrich_images(images)
+        return publish_image_paths(images, _public_path)
+
     async def get_prompt_images(self, request):
         """Get all images for a specific prompt."""
         try:
@@ -335,7 +356,7 @@ class ImageRoutesMixin:
             cleaned_images = [self._clean_nan_recursive(image) for image in images]
 
             # Add url and thumbnail_url so the frontend can serve them
-            self._enrich_images(cleaned_images)
+            cleaned_images = self._present_images(cleaned_images)
 
             # Additional fallback: convert to JSON string and clean NaN values manually
             try:
@@ -361,7 +382,9 @@ class ImageRoutesMixin:
 
         except Exception as e:
             self.logger.error(f"Get prompt images error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": _safe_error(e)}, status=500
+            )
 
     async def get_recent_images(self, request):
         """Get recently generated images (bounded window, newest first)."""
@@ -371,8 +394,8 @@ class ImageRoutesMixin:
             except ValueError:
                 return bad_request("limit and offset must be integers")
 
-            images = await self._run_in_executor(
-                self.db.get_recent_images, limit, offset
+            images = self._present_images(
+                await self._run_in_executor(self.db.get_recent_images, limit, offset)
             )
 
             return web.json_response(
@@ -404,8 +427,10 @@ class ImageRoutesMixin:
             except ValueError:
                 return bad_request("limit and offset must be integers")
 
-            images = await self._run_in_executor(
-                self.db.get_all_images, limit=limit, offset=offset
+            images = self._present_images(
+                await self._run_in_executor(
+                    self.db.get_all_images, limit=limit, offset=offset
+                )
             )
 
             return web.json_response(
@@ -441,8 +466,10 @@ class ImageRoutesMixin:
             except ValueError:
                 return bad_request("limit and offset must be integers")
 
-            images = await self._run_in_executor(
-                self.db.search_images_by_prompt, query, limit, offset
+            images = self._present_images(
+                await self._run_in_executor(
+                    self.db.search_images_by_prompt, query, limit, offset
+                )
             )
 
             return web.json_response(
@@ -668,7 +695,9 @@ class ImageRoutesMixin:
             )
         except Exception as e:
             self.logger.error(f"Subfolders error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": _safe_error(e)}, status=500
+            )
 
     # Fixed quality presets: clients choose a name, never a raw pixel size.
     THUMBNAIL_SIZES = {"low": (150, 150), "medium": (300, 300), "high": (600, 600)}
@@ -722,7 +751,7 @@ class ImageRoutesMixin:
             )
         payload = _thumbnail_complete_payload(len(targets), stats, start)
         payload["success"] = True
-        payload["thumbnails_path"] = str(thumbnails_dir)
+        payload["thumbnails_path"] = _public_path(thumbnails_dir)
         self.logger.info(payload["message"])
         return payload
 
@@ -1109,7 +1138,9 @@ class ImageRoutesMixin:
 
         except Exception as e:
             self.logger.error(f"Clear thumbnails error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": _safe_error(e)}, status=500
+            )
 
     async def link_image_to_prompt(self, request):
         """Link a generated image (inside an allowed directory) to a prompt."""
@@ -1175,17 +1206,15 @@ class ImageRoutesMixin:
                     self.db.get_image_prompt_info, image_path
                 )
                 if prompt_data:
-                    prompt_data["image_path"] = image_path
-                if prompt_data:
+                    prompt_data["image_path"] = _public_path(image_path)
                     return web.json_response({"success": True, "prompt": prompt_data})
-                else:
-                    return web.json_response(
-                        {
-                            "success": False,
-                            "error": "No prompt found for this image",
-                            "image_path": image_path,
-                        }
-                    )
+                return web.json_response(
+                    {
+                        "success": False,
+                        "error": "No prompt found for this image",
+                        "image_path": _public_path(image_path),
+                    }
+                )
 
             except Exception as db_error:
                 self.logger.error(f"Database error in get_image_prompt: {db_error}")
@@ -1195,7 +1224,9 @@ class ImageRoutesMixin:
 
         except Exception as e:
             self.logger.error(f"Get image prompt error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": _safe_error(e)}, status=500
+            )
 
     async def delete_image(self, request):
         """Delete an image record."""
@@ -1218,7 +1249,9 @@ class ImageRoutesMixin:
             )
         except Exception as e:
             self.logger.error(f"Delete image error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": _safe_error(e)}, status=500
+            )
 
     async def _collect_output_images(self, output_dirs, subfolder):
         """Merge cached per-root listings, newest first, optionally filtered."""
@@ -1237,9 +1270,16 @@ class ImageRoutesMixin:
 
     def _format_output_page(self, page):
         entries = []
+        public_roots = {}
         for media_path, _mtime, output_path, root_index in page:
+            if output_path not in public_roots:
+                public_roots[output_path] = _public_path(output_path)
             try:
-                entries.append(_output_image_entry(media_path, output_path, root_index))
+                entries.append(
+                    _output_image_entry(
+                        media_path, output_path, root_index, public_roots[output_path]
+                    )
+                )
             except Exception as e:
                 self.logger.error(f"Error processing media {media_path.name}: {e}")
         return entries

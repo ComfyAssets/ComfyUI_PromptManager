@@ -42,6 +42,25 @@ def safe_error_message(exc):
     return str(exc) or exc.__class__.__name__
 
 
+def publish_image_paths(images, public_path):
+    """Image dicts for a response: ``image_path`` in its public (ComfyUI
+    relative) form and the absolute ``file_path`` duplicate removed.
+
+    ``url``/``thumbnail_url`` added by enrichment are left untouched, so the
+    frontend keeps working without ever seeing the server's directory layout.
+    """
+    published = []
+    for image in images:
+        if not isinstance(image, dict):
+            published.append(image)
+            continue
+        image = {k: v for k, v in image.items() if k != "file_path"}
+        if "image_path" in image:
+            image["image_path"] = public_path(image["image_path"])
+        published.append(image)
+    return published
+
+
 try:
     from ...utils.validators import (
         validate_prompt_text,
@@ -159,6 +178,15 @@ class PromptRoutesMixin:
         async def export_prompts_route(request):
             return await self.export_prompts(request)
 
+    def _present_prompts(self, prompts):
+        """Prompts ready for a response: image urls added, server paths hidden."""
+        self._enrich_prompt_images(prompts)
+        for prompt in prompts:
+            prompt["images"] = publish_image_paths(
+                prompt.get("images", []), self._public_path
+            )
+        return prompts
+
     async def search_prompts(self, request):
         """Search for prompts using multiple filter criteria."""
         try:
@@ -195,7 +223,7 @@ class PromptRoutesMixin:
                 folder=folder,
                 sort=sort,
             )
-            self._enrich_prompt_images(results)
+            self._present_prompts(results)
 
             return web.json_response(
                 {
@@ -213,7 +241,11 @@ class PromptRoutesMixin:
         except Exception as e:
             self.logger.error(f"Search error: {e}", exc_info=True)
             return web.json_response(
-                {"success": False, "error": f"Search failed: {str(e)}", "results": []},
+                {
+                    "success": False,
+                    "error": f"Search failed: {safe_error_message(e)}",
+                    "results": [],
+                },
                 status=500,
             )
 
@@ -232,7 +264,9 @@ class PromptRoutesMixin:
             return web.json_response({"success": True, "subfolders": subfolders})
         except Exception as e:
             self.logger.error(f"Subfolders error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": safe_error_message(e)}, status=500
+            )
 
     async def get_recent_prompts(self, request):
         """Retrieve prompts with pagination and an optional sort (default newest
@@ -252,7 +286,7 @@ class PromptRoutesMixin:
             results = await self._run_in_executor(
                 self.db.get_recent_prompts, limit=limit, offset=offset, sort=sort
             )
-            self._enrich_prompt_images(results["prompts"])
+            self._present_prompts(results["prompts"])
 
             return web.json_response(
                 {
@@ -275,7 +309,7 @@ class PromptRoutesMixin:
             return web.json_response(
                 {
                     "success": False,
-                    "error": f"Failed to get recent prompts: {str(e)}",
+                    "error": f"Failed to get recent prompts: {safe_error_message(e)}",
                     "results": [],
                     "pagination": {"total": 0, "page": 1, "total_pages": 0},
                 },
@@ -292,7 +326,7 @@ class PromptRoutesMixin:
             return web.json_response(
                 {
                     "success": False,
-                    "error": f"Failed to get categories: {str(e)}",
+                    "error": f"Failed to get categories: {safe_error_message(e)}",
                     "categories": [],
                 },
                 status=500,
@@ -308,7 +342,7 @@ class PromptRoutesMixin:
             return web.json_response(
                 {
                     "success": False,
-                    "error": f"Failed to get tags: {str(e)}",
+                    "error": f"Failed to get tags: {safe_error_message(e)}",
                     "tags": [],
                 },
                 status=500,
@@ -346,7 +380,9 @@ class PromptRoutesMixin:
             )
         except Exception as e:
             self.logger.error(f"Tags stats error: {e}", exc_info=True)
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": safe_error_message(e)}, status=500
+            )
 
     async def get_tag_prompts(self, request):
         """Get prompts for a single tag."""
@@ -367,7 +403,7 @@ class PromptRoutesMixin:
             result = await self._run_in_executor(
                 self.db.get_prompts_by_tags, [tag_name], "and", limit, offset
             )
-            self._enrich_prompt_images(result["prompts"])
+            self._present_prompts(result["prompts"])
 
             return web.json_response(
                 {
@@ -384,7 +420,9 @@ class PromptRoutesMixin:
             )
         except Exception as e:
             self.logger.error(f"Tag prompts error: {e}", exc_info=True)
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": safe_error_message(e)}, status=500
+            )
 
     async def get_tags_filter(self, request):
         """Get prompts matching multiple tags with AND/OR mode, or untagged prompts."""
@@ -399,7 +437,7 @@ class PromptRoutesMixin:
                 result = await self._run_in_executor(
                     self.db.get_untagged_prompts, limit, offset
                 )
-                self._enrich_prompt_images(result["prompts"])
+                self._present_prompts(result["prompts"])
                 return web.json_response(
                     {
                         "success": True,
@@ -434,7 +472,7 @@ class PromptRoutesMixin:
             result = await self._run_in_executor(
                 self.db.get_prompts_by_tags, tags_list, mode, limit, offset
             )
-            self._enrich_prompt_images(result["prompts"])
+            self._present_prompts(result["prompts"])
 
             return web.json_response(
                 {
@@ -452,7 +490,9 @@ class PromptRoutesMixin:
             )
         except Exception as e:
             self.logger.error(f"Tags filter error: {e}", exc_info=True)
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": safe_error_message(e)}, status=500
+            )
 
     async def rename_tag_endpoint(self, request):
         """Rename a tag across all prompts."""
@@ -495,7 +535,9 @@ class PromptRoutesMixin:
             return web.json_response(resp)
         except Exception as e:
             self.logger.error(f"Rename tag error: {e}", exc_info=True)
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": safe_error_message(e)}, status=500
+            )
 
     async def delete_tag_endpoint(self, request):
         """Delete a tag from all prompts."""
@@ -525,7 +567,9 @@ class PromptRoutesMixin:
             return web.json_response(resp)
         except Exception as e:
             self.logger.error(f"Delete tag error: {e}", exc_info=True)
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": safe_error_message(e)}, status=500
+            )
 
     async def merge_tags_endpoint(self, request):
         """Merge source tags into a target tag."""
@@ -566,7 +610,9 @@ class PromptRoutesMixin:
             return web.json_response(resp)
         except Exception as e:
             self.logger.error(f"Merge tags error: {e}", exc_info=True)
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": safe_error_message(e)}, status=500
+            )
 
     async def save_prompt(self, request):
         """Save a new prompt with metadata and duplicate detection."""
@@ -641,7 +687,10 @@ class PromptRoutesMixin:
         except Exception as e:
             self.logger.error(f"Save error: {e}", exc_info=True)
             return web.json_response(
-                {"success": False, "error": f"Failed to save prompt: {str(e)}"},
+                {
+                    "success": False,
+                    "error": f"Failed to save prompt: {safe_error_message(e)}",
+                },
                 status=500,
             )
 
@@ -671,7 +720,10 @@ class PromptRoutesMixin:
         except Exception as e:
             self.logger.error(f"Delete error: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to delete prompt: {str(e)}"},
+                {
+                    "success": False,
+                    "error": f"Failed to delete prompt: {safe_error_message(e)}",
+                },
                 status=500,
             )
 
@@ -715,7 +767,10 @@ class PromptRoutesMixin:
         except Exception as e:
             self.logger.error(f"Update prompt error: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to update prompt: {str(e)}"},
+                {
+                    "success": False,
+                    "error": f"Failed to update prompt: {safe_error_message(e)}",
+                },
                 status=500,
             )
 
@@ -752,7 +807,10 @@ class PromptRoutesMixin:
         except Exception as e:
             self.logger.error(f"Update rating error: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to update rating: {str(e)}"},
+                {
+                    "success": False,
+                    "error": f"Failed to update rating: {safe_error_message(e)}",
+                },
                 status=500,
             )
 
@@ -795,7 +853,11 @@ class PromptRoutesMixin:
         except Exception as e:
             self.logger.error(f"Add tag error: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to add tag: {str(e)}"}, status=500
+                {
+                    "success": False,
+                    "error": f"Failed to add tag: {safe_error_message(e)}",
+                },
+                status=500,
             )
 
     async def add_tags_to_prompt(self, request):
@@ -853,7 +915,11 @@ class PromptRoutesMixin:
         except Exception as e:
             self.logger.error(f"Add tags error: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to add tags: {str(e)}"}, status=500
+                {
+                    "success": False,
+                    "error": f"Failed to add tags: {safe_error_message(e)}",
+                },
+                status=500,
             )
 
     async def remove_prompt_tag(self, request):
@@ -890,7 +956,10 @@ class PromptRoutesMixin:
         except Exception as e:
             self.logger.error(f"Remove tag error: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to remove tag: {str(e)}"},
+                {
+                    "success": False,
+                    "error": f"Failed to remove tag: {safe_error_message(e)}",
+                },
                 status=500,
             )
 
@@ -920,7 +989,10 @@ class PromptRoutesMixin:
         except Exception as e:
             self.logger.error(f"Bulk delete error: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to delete prompts: {str(e)}"},
+                {
+                    "success": False,
+                    "error": f"Failed to delete prompts: {safe_error_message(e)}",
+                },
                 status=500,
             )
 
@@ -952,7 +1024,11 @@ class PromptRoutesMixin:
         except Exception as e:
             self.logger.error(f"Bulk add tags error: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to add tags: {str(e)}"}, status=500
+                {
+                    "success": False,
+                    "error": f"Failed to add tags: {safe_error_message(e)}",
+                },
+                status=500,
             )
 
     async def bulk_set_category(self, request):
@@ -982,7 +1058,10 @@ class PromptRoutesMixin:
         except Exception as e:
             self.logger.error(f"Bulk set category error: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to set category: {str(e)}"},
+                {
+                    "success": False,
+                    "error": f"Failed to set category: {safe_error_message(e)}",
+                },
                 status=500,
             )
 
@@ -1013,6 +1092,9 @@ class PromptRoutesMixin:
         except Exception as e:
             self.logger.error(f"Export error: {e}")
             return web.json_response(
-                {"success": False, "error": f"Failed to export prompts: {str(e)}"},
+                {
+                    "success": False,
+                    "error": f"Failed to export prompts: {safe_error_message(e)}",
+                },
                 status=500,
             )

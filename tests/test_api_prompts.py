@@ -2,6 +2,7 @@
 Route tests for the prompt API (py/api/prompts.py).
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -376,6 +377,58 @@ class TestTagRoutePagingBounds(RouteCoverageCase):
             status, data = await self._json("GET", self._with(route, "limit=1.5"))
             self.assertEqual(status, 400, route)
             self.assertFalse(data["success"], route)
+
+
+class TestPublicPathsInPromptResponses(RouteCoverageCase):
+    """Preview images on prompt listings never expose the server's directories."""
+
+    SECRET_DIR = os.path.join(os.sep, "srv", "secret")
+
+    async def setUpAsync(self):
+        await super().setUpAsync()
+        self.pid = self._save_prompt("has preview", tags=["sky"])
+        image_path = os.path.join(self.SECRET_DIR, "gen.png")
+        self.assertGreater(self.api.db.link_image_to_prompt(self.pid, image_path), 0)
+
+    async def _body(self, method, path, **kwargs):
+        resp = await self.client.request(method, path, **kwargs)
+        text = await resp.text()
+        self.assertNotIn(self.SECRET_DIR, text, path)
+        return resp.status, json.loads(text)
+
+    async def test_listing_routes_publish_preview_image_paths(self):
+        routes = {
+            "/prompt_manager/recent": "results",
+            "/prompt_manager/search?q=preview": "results",
+            "/prompt_manager/tags/sky/prompts": "prompts",
+            "/prompt_manager/tags/filter?tags=sky": "prompts",
+        }
+        for route, key in routes.items():
+            status, data = await self._body("GET", route)
+
+            self.assertEqual(status, 200, route)
+            image = data[key][0]["images"][0]
+            # No ComfyUI anchor is configured here, so only the name survives.
+            self.assertEqual(image["image_path"], "gen.png", route)
+            self.assertNotIn("file_path", image, route)
+
+    async def test_oserror_bodies_keep_only_the_basename(self):
+        def boom(*_args, **_kwargs):
+            raise FileNotFoundError(
+                2, "No such file", os.path.join(self.SECRET_DIR, "prompts.db")
+            )
+
+        for db_method, route in (
+            ("get_tags_with_counts", "/prompt_manager/tags/stats"),
+            ("search_prompts", "/prompt_manager/search"),
+            ("get_recent_prompts", "/prompt_manager/recent"),
+            ("get_prompts_by_tags", "/prompt_manager/tags/sky/prompts"),
+        ):
+            setattr(self.api.db, db_method, boom)
+            status, data = await self._body("GET", route)
+
+            self.assertEqual(status, 500, route)
+            self.assertIn("prompts.db", data["error"], route)
 
 
 class TestTagMutationRoutes(RouteCoverageCase):

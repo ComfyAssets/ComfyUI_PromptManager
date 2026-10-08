@@ -1265,7 +1265,7 @@ class TestImagePromptLookup(ImageRouteCoverageCase):
         self.assertEqual(status, 200)
         self.assertTrue(data["success"])
         self.assertEqual(data["prompt"]["text"], "the prompt")
-        self.assertEqual(data["prompt"]["image_path"], str(self.output_dir / "gen.png"))
+        self.assertEqual(data["prompt"]["image_path"], "output/gen.png")
 
     async def test_unknown_image_reports_no_prompt(self):
         status, data = await self._json("GET", f"{self.URL}unknown.png")
@@ -1287,6 +1287,87 @@ class TestImagePromptLookup(ImageRouteCoverageCase):
         self.api._find_comfyui_output_dir = _raise
         status, _ = await self._json("GET", f"{self.URL}x.png")
         self.assertEqual(status, 500)
+
+
+class TestPublicPathsInResponses(ImageAPITestCase):
+    """Image routes describe files relative to the ComfyUI tree, never absolutely."""
+
+    async def setUpAsync(self):
+        await super().setUpAsync()
+        self.png = make_png(self.output_dir / "sub" / "gen.png")
+        self.prompt_id = self._save_prompt("public paths")
+        self.assertGreater(
+            self.api.db.link_image_to_prompt(self.prompt_id, str(self.png)), 0
+        )
+
+    async def _body(self, method, path, **kwargs):
+        resp = await self.client.request(method, path, **kwargs)
+        text = await resp.text()
+        self.assertNotIn(str(self.comfy_dir), text, path)
+        return resp.status, json.loads(text)
+
+    async def test_output_listing_paths_are_root_relative(self):
+        status, data = await self._body("GET", "/prompt_manager/images/output")
+
+        self.assertEqual(status, 200)
+        entry = data["images"][0]
+        self.assertEqual(entry["path"], "sub/gen.png")
+        self.assertEqual(entry["root_dir"], "output")
+        self.assertEqual(entry["root_index"], 0)
+
+    async def test_image_lists_publish_image_path_and_drop_file_path(self):
+        routes = (
+            f"/prompt_manager/prompts/{self.prompt_id}/images",
+            "/prompt_manager/images/recent",
+            "/prompt_manager/images/all",
+            "/prompt_manager/images/search?q=public",
+        )
+        for route in routes:
+            status, data = await self._body("GET", route)
+
+            self.assertEqual(status, 200, route)
+            image = data["images"][0]
+            self.assertEqual(image["image_path"], "output/sub/gen.png", route)
+            self.assertNotIn("file_path", image, route)
+            self.assertTrue(image["url"].endswith("sub/gen.png"), route)
+
+    async def test_image_prompt_lookup_publishes_path(self):
+        _, found = await self._body("GET", "/prompt_manager/images/prompt/sub/gen.png")
+        _, missing = await self._body("GET", "/prompt_manager/images/prompt/sub/no.png")
+
+        self.assertEqual(found["prompt"]["image_path"], "output/sub/gen.png")
+        self.assertEqual(missing["image_path"], "output/sub/no.png")
+
+    async def test_thumbnails_path_is_public(self):
+        status, data = await self._body(
+            "POST", "/prompt_manager/images/generate-thumbnails", json={}
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["thumbnails_path"], "output/thumbnails")
+
+    async def test_oserror_bodies_keep_only_the_basename(self):
+        secret = str(self.comfy_dir / "hidden.png")
+
+        def boom(*_args, **_kwargs):
+            raise FileNotFoundError(2, "No such file", secret)
+
+        self.api._get_all_output_dirs = boom
+        self.api._find_comfyui_output_dir = boom
+        self.api.db.get_prompt_images = boom
+        self.api.db.delete_image = boom
+        routes = (
+            ("GET", "/prompt_manager/gallery/subfolders"),
+            ("GET", "/prompt_manager/prompts/1/images"),
+            ("DELETE", "/prompt_manager/images/1"),
+            ("POST", "/prompt_manager/images/clear-thumbnails"),
+            ("GET", "/prompt_manager/images/prompt/x.png"),
+        )
+        for method, route in routes:
+            status, data = await self._body(method, route)
+
+            self.assertEqual(status, 500, route)
+            self.assertIn("hidden.png", data["error"], route)
 
 
 class TestDeleteAndLinkErrors(ImageRouteCoverageCase):
