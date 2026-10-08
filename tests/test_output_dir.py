@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Mock ComfyUI's server module before importing anything that touches config
 _mock_server = MagicMock()
 _mock_server.PromptServer.instance.routes = MagicMock()
-sys.modules["server"] = _mock_server
+sys.modules.setdefault("server", _mock_server)
 
 from py.api import PromptManagerAPI
 from py.config import GalleryConfig

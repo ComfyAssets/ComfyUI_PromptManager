@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 # Mock ComfyUI's server module before importing config
 _mock_server = MagicMock()
 _mock_server.PromptServer.instance.routes = MagicMock()
-sys.modules["server"] = _mock_server
+sys.modules.setdefault("server", _mock_server)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

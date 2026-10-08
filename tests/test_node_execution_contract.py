@@ -8,10 +8,11 @@ Ensures all nodes are properly configured for ComfyUI's execution engine:
 Regression tests for: https://github.com/ComfyAssets/ComfyUI_PromptManager/issues/120
 """
 
+import itertools
 import os
 import sys
-import time
 import unittest
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -128,9 +129,12 @@ class TestIsChangedPromptSearchList(unittest.TestCase):
     so the node re-runs every time (database contents may have changed)."""
 
     def test_returns_different_value_on_successive_calls(self):
-        result1 = PromptSearchList.IS_CHANGED()
-        time.sleep(0.01)
-        result2 = PromptSearchList.IS_CHANGED()
+        # Mock the clock instead of sleeping: the Windows clock ticks every
+        # 15.6 ms, so two real time.time() reads 10 ms apart can be equal.
+        ticks = itertools.count(1_700_000_000.0, 1.0)
+        with mock.patch("time.time", side_effect=lambda: next(ticks)):
+            result1 = PromptSearchList.IS_CHANGED()
+            result2 = PromptSearchList.IS_CHANGED()
         self.assertNotEqual(result1, result2)
 
     def test_returns_numeric(self):
@@ -141,7 +145,6 @@ class TestIsChangedPromptSearchList(unittest.TestCase):
 import logging  # noqa: E402
 import tempfile  # noqa: E402
 import types  # noqa: E402
-import unittest.mock as mock  # noqa: E402
 
 from database.operations import PromptDatabase  # noqa: E402
 from prompt_manager_base import PromptManagerBase  # noqa: E402

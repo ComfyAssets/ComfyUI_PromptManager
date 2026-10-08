@@ -19,13 +19,12 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Mock ComfyUI server before importing anything that touches config
+# Mock ComfyUI server before importing anything that touches config. Only the
+# first test module to run installs the stub; nothing else in sys.modules is
+# replaced, so later modules (test_comfyui_integration) see the real package.
 _mock_server = MagicMock()
 _mock_server.PromptServer.instance.routes = MagicMock()
-sys.modules["server"] = _mock_server
-
-# Mock comfyui_integration to avoid import issues
-sys.modules["utils.comfyui_integration"] = MagicMock()
+sys.modules.setdefault("server", _mock_server)
 
 from utils.image_monitor import get_image_monitor
 import utils.image_monitor as im_mod
@@ -346,6 +345,17 @@ class TestHandlerScheduling(unittest.TestCase):
         self.handler.schedule(second)
         self.assertTrue(wait_for(lambda: self.handler.pending_count() == 0))
         self.assertEqual(self.processed, [first, second])
+
+
+class TestModuleIsolation(unittest.TestCase):
+    """This module must not leave mocks behind for later test modules."""
+
+    def test_comfyui_integration_is_not_replaced_by_a_mock(self):
+        module = sys.modules.get("utils.comfyui_integration")
+        self.assertFalse(
+            isinstance(module, MagicMock),
+            "utils.comfyui_integration was replaced by a MagicMock in sys.modules",
+        )
 
 
 class TestMonitorThreadSafety(unittest.TestCase):
