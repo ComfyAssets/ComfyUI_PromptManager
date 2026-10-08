@@ -32,7 +32,7 @@ EXTRA_ROOTS_ENV = "PROMPT_MANAGER_EXTRA_GALLERY_ROOTS"
 
 
 class AdminAPITestCase(AioHTTPTestCase):
-    """Test app with PromptManager routes, temp DB, temp config and fake ComfyUI tree."""
+    """Test app with PromptManager routes, temp DB and config, fake ComfyUI tree."""
 
     async def get_application(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -1008,13 +1008,15 @@ class TestBackupRestoreContract(AdminAPITestCase):
 
     async def test_restore_valid_db_succeeds(self):
         import sqlite3
+        from contextlib import closing
 
-        PromptManagerConfig.DEFAULT_DB_PATH = self.api.db.model.db_path
         self.api.db.save_prompt(text="restored", prompt_hash="h1")
         # Rows may still sit in the WAL file: build a self-contained copy.
+        # Close both raw connections, otherwise the restore cannot replace the
+        # live file (Windows) or its WAL/shm sidecars (disk I/O error).
         snapshot = os.path.join(self.tmpdir, "snapshot.db")
-        with sqlite3.connect(self.api.db.model.db_path) as src:
-            with sqlite3.connect(snapshot) as dst:
+        with closing(sqlite3.connect(self.api.db.model.db_path)) as src:
+            with closing(sqlite3.connect(snapshot)) as dst:
                 src.backup(dst)
         with open(snapshot, "rb") as f:
             upload = f.read()
@@ -1023,7 +1025,7 @@ class TestBackupRestoreContract(AdminAPITestCase):
         self.assertEqual(resp.status, 200, data)
         self.assertTrue(data["success"])
         self.assertEqual(data["prompt_count"], 1)
-        with sqlite3.connect(self.api.db.model.db_path) as conn:
+        with closing(sqlite3.connect(self.api.db.model.db_path)) as conn:
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM prompts").fetchone()[0], 1
             )

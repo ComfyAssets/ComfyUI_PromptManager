@@ -37,10 +37,11 @@ class IsolatedLoggerTestCase(unittest.TestCase):
         self.manager._log_buffer.clear()
         # Other tests leave daemon threads (image monitor, watchdog) logging under
         # "prompt_manager.*"; only records from this test's thread may reach the buffer.
+        # The same goes for the rotating file handler: a stray line after a
+        # truncate would roll the file over again and resurrect the backups.
         this_thread = threading.get_ident()
         for handler in self.manager.logger.handlers:
-            if isinstance(handler, MemoryBufferHandler):
-                handler.addFilter(lambda record: record.thread == this_thread)
+            handler.addFilter(lambda record: record.thread == this_thread)
         self.logger = logging.getLogger("prompt_manager.coverage_test")
         self.addCleanup(self._restore_global_logging)
 

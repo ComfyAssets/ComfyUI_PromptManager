@@ -91,6 +91,16 @@ class LoggingAPITestCase(AioHTTPTestCase):
         self.log_dir = Path(self.tmpdir) / "logs"
         self.log_dir.mkdir()
         self.manager = FakeLoggerManager(self.log_dir)
+        # Public paths are rendered relative to ComfyUI's base directory. Other
+        # test modules leave their own ``folder_paths`` stub behind, so declare
+        # ours explicitly instead of depending on import order.
+        self._saved_folder_paths = sys.modules.get("folder_paths")
+        fake_folder_paths = MagicMock()
+        fake_folder_paths.base_path = self.tmpdir
+        fake_folder_paths.get_output_directory.return_value = os.path.join(
+            self.tmpdir, "output"
+        )
+        sys.modules["folder_paths"] = fake_folder_paths
 
         app = web.Application()
         routes = web.RouteTableDef()
@@ -102,6 +112,11 @@ class LoggingAPITestCase(AioHTTPTestCase):
         return app
 
     async def tearDownAsync(self):
+        if self._saved_folder_paths is None:
+            sys.modules.pop("folder_paths", None)
+        else:
+            sys.modules["folder_paths"] = self._saved_folder_paths
+        self.api.db.close()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     async def _post_config(self, payload):

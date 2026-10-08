@@ -145,10 +145,10 @@ class TestAdminEndpointsUseConfigPath(unittest.TestCase):
         body = json.loads(result.body)
         self.assertTrue(body["success"])
         self.assertEqual(body["diagnostics"]["database"]["status"], "error")
-        self.assertIn(
-            "/nonexistent/custom/prompts.db",
-            body["diagnostics"]["database"]["message"],
-        )
+        # The message names the file but never the absolute server path.
+        message = body["diagnostics"]["database"]["message"]
+        self.assertIn("prompts.db", message)
+        self.assertNotIn("/nonexistent/custom", message)
 
     def test_backup_uses_model_db_path(self):
         """backup_database should read from self.db.model.db_path."""
