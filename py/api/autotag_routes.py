@@ -91,41 +91,13 @@ class AutotagRoutesMixin:
             self.logger.error(f"Get autotag models error: {e}")
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
-    async def download_autotag_model(self, request):
-        """Download an AutoTag model with streaming progress."""
-        model_type = request.match_info.get("model_type")
+    async def _stream_sse(self, request, events):
+        """Write an async iterator of dict events as server-sent events.
 
-        async def stream_response():
-            try:
-                from ..autotag import get_autotag_service
-
-                service = get_autotag_service()
-
-                if model_type not in service.models_config:
-                    yield f"data: {json.dumps({'type': 'error', 'message': f'Invalid model type: {model_type}'})}\n\n"
-                    return
-
-                yield f"data: {json.dumps({'type': 'progress', 'progress': 0, 'status': 'Starting download...'})}\n\n"
-
-                progress_data = {"last_progress": 0}
-
-                def progress_callback(status: str, progress: float):
-                    progress_data["last_progress"] = progress
-
-                loop = asyncio.get_event_loop()
-                success = await loop.run_in_executor(
-                    None, lambda: service.download_model(model_type, progress_callback)
-                )
-
-                if success:
-                    yield f"data: {json.dumps({'type': 'complete', 'progress': 100, 'status': 'Download complete'})}\n\n"
-                else:
-                    yield f"data: {json.dumps({'type': 'error', 'message': 'Download failed'})}\n\n"
-
-            except Exception as e:
-                self.logger.exception("Download model error")
-                yield f"data: {json.dumps({'type': 'error', 'message': 'An internal error occurred. Check server logs for details.'})}\n\n"
-
+        A client disconnect raises ConnectionResetError from ``write``; the
+        event generator is then closed so its cleanup runs before re-raising
+        (aiohttp logs premature disconnects at debug level).
+        """
         response = web.StreamResponse(
             status=200,
             reason="OK",
@@ -135,14 +107,61 @@ class AutotagRoutesMixin:
                 "Connection": "keep-alive",
             },
         )
-
         await response.prepare(request)
-
-        async for chunk in stream_response():
-            await response.write(chunk.encode("utf-8"))
-
+        try:
+            async for event in events:
+                await response.write(f"data: {json.dumps(event)}\n\n".encode("utf-8"))
+        except (ConnectionResetError, asyncio.CancelledError):
+            self.logger.info("Client disconnected; stopping autotag stream")
+            await events.aclose()
+            raise
         await response.write_eof()
         return response
+
+    async def download_autotag_model(self, request):
+        """Download an AutoTag model with streaming progress (POST only)."""
+        model_type = request.match_info.get("model_type")
+
+        async def events():
+            try:
+                from ..autotag import get_autotag_service
+
+                service = get_autotag_service()
+                if model_type not in service.models_config:
+                    yield {
+                        "type": "error",
+                        "message": f"Invalid model type: {model_type}",
+                    }
+                    return
+
+                yield {
+                    "type": "progress",
+                    "progress": 0,
+                    "status": "Starting download...",
+                }
+
+                def progress_callback(status: str, progress: float):
+                    pass
+
+                success = await self._run_in_executor(
+                    service.download_model, model_type, progress_callback
+                )
+                if success:
+                    yield {
+                        "type": "complete",
+                        "progress": 100,
+                        "status": "Download complete",
+                    }
+                else:
+                    yield {"type": "error", "message": "Download failed"}
+            except Exception:
+                self.logger.exception("Download model error")
+                yield {
+                    "type": "error",
+                    "message": "An internal error occurred. Check server logs for details.",
+                }
+
+        return await self._stream_sse(request, events())
 
     async def _read_start_params(self, request) -> Optional[dict]:
         """Merge query-string and optional JSON-body parameters for autotag/start.
@@ -160,221 +179,211 @@ class AutotagRoutesMixin:
             params.update(body)
         return params
 
+    @staticmethod
+    def _real_tags(tags) -> list:
+        """Normalise a tag field to a list without bookkeeping markers."""
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.split(",") if t.strip()]
+        return [
+            t
+            for t in (tags or [])
+            if t != "auto-scanned"
+            and not t.startswith("prepend:")
+            and not t.startswith("append:")
+        ]
+
+    async def _apply_tags_to_prompt(self, prompt_id, tags) -> bool:
+        """Merge ``tags`` into the prompt; True when something new was added."""
+        existing_prompt = await self._run_in_executor(
+            self.db.get_prompt_by_id, prompt_id
+        )
+        if not existing_prompt:
+            return False
+        existing_tags = existing_prompt.get("tags", [])
+        if isinstance(existing_tags, str):
+            existing_tags = [t.strip() for t in existing_tags.split(",") if t.strip()]
+        new_tags = [t for t in tags if t not in existing_tags]
+        if not new_tags:
+            return False
+        await self._run_in_executor(
+            self.db.update_prompt_metadata, prompt_id, tags=existing_tags + new_tags
+        )
+        return True
+
+    async def _autotag_batch_events(self, service, opts: dict):
+        """Yield SSE progress dicts while tagging every image linked to a prompt."""
+        import time as _time
+
+        model_type = opts["model_type"]
+        keep_in_memory = opts["keep_in_memory"]
+        status = service.get_models_status()
+        if not status.get(model_type, {}).get("downloaded"):
+            yield {"type": "error", "message": f"Model {model_type} not downloaded"}
+            return
+
+        yield {"type": "progress", "progress": 0, "status": "Loading model..."}
+        try:
+            await self._run_in_executor(service.load_model, model_type, True)
+        except Exception:
+            self.logger.exception("Failed to load model")
+            yield {
+                "type": "error",
+                "message": "Failed to load model. Check server logs for details.",
+            }
+            return
+
+        if opts["custom_prompt"]:
+            service.custom_prompt = opts["custom_prompt"]
+
+        yield {
+            "type": "progress",
+            "progress": 5,
+            "status": "Model loaded. Fetching all images from database...",
+        }
+        images = await self._run_in_executor(self.db.get_all_images)
+        total = len(images)
+        if total == 0:
+            yield {
+                "type": "complete",
+                "processed": 0,
+                "tagged": 0,
+                "skipped": 0,
+                "status": "No images with linked prompts found",
+            }
+            service.unload_model()
+            return
+
+        yield {
+            "type": "progress",
+            "progress": 10,
+            "status": f"Found {total} images. Processing...",
+        }
+
+        counts = {"processed": 0, "tagged": 0, "skipped": 0, "errors": 0}
+        tagged_prompt_ids = set()
+        last_update = _time.monotonic()
+        finished = False
+
+        def progress_event(i, message):
+            return {
+                "type": "progress",
+                "progress": 10 + int((i + 1) / total * 85),
+                "status": message,
+                "processed": counts["processed"],
+                "tagged": counts["tagged"],
+                "skipped": counts["skipped"],
+            }
+
+        try:
+            for i, image_data in enumerate(images):
+                image_path = image_data.get("image_path")
+                prompt_id = image_data.get("prompt_id")
+                skip_reason = None
+                if not image_path or not prompt_id:
+                    skip_reason = "unlinked"
+                elif prompt_id in tagged_prompt_ids:
+                    skip_reason = "prompt already processed"
+                elif not Path(image_path).exists():
+                    skip_reason = "file missing"
+                elif opts["skip_tagged"] and self._real_tags(
+                    image_data.get("prompt_tags", [])
+                ):
+                    tagged_prompt_ids.add(prompt_id)
+                    skip_reason = "already tagged"
+
+                if skip_reason is not None:
+                    counts["skipped"] += 1
+                    now = _time.monotonic()
+                    if (now - last_update) >= 0.5 or i == total - 1:
+                        yield progress_event(
+                            i, f"Skipping {i + 1}/{total} ({skip_reason})..."
+                        )
+                        await asyncio.sleep(0.01)
+                        last_update = now
+                    continue
+
+                try:
+                    tags = await self._run_in_executor(
+                        service.generate_tags,
+                        str(image_path),
+                        general_threshold=opts["general_threshold"],
+                        character_threshold=opts["character_threshold"],
+                    )
+                    counts["processed"] += 1
+                    if tags and await self._apply_tags_to_prompt(prompt_id, tags):
+                        counts["tagged"] += 1
+                    else:
+                        counts["skipped"] += 1
+                    tagged_prompt_ids.add(prompt_id)
+                except Exception as img_err:
+                    self.logger.error(
+                        f"Error processing {os.path.basename(str(image_path))}: "
+                        f"{img_err}"
+                    )
+                    counts["errors"] += 1
+                    counts["processed"] += 1
+
+                yield progress_event(i, f"Processing {i + 1}/{total}...")
+                await asyncio.sleep(0.01)
+                last_update = _time.monotonic()
+
+            finished = True
+            if not keep_in_memory:
+                service.unload_model()
+            yield {
+                "type": "complete",
+                "progress": 100,
+                **counts,
+                "status": "Complete",
+                "model_status": (
+                    "Model kept in memory" if keep_in_memory else "Model unloaded"
+                ),
+                "model_loaded": keep_in_memory,
+            }
+        finally:
+            if not finished and not keep_in_memory:
+                service.unload_model()
+
     async def start_autotag(self, request):
         """Start batch auto-tagging with streaming progress (POST only)."""
         params = await self._read_start_params(request)
         if params is None:
-            return web.json_response(
-                {"success": False, "error": "Request body must be a JSON object"},
-                status=400,
-            )
-        model_type = params.get("model_type", "gguf")
-        custom_prompt = params.get("prompt", "")
-        skip_tagged = str(params.get("skip_tagged", "true")).lower() == "true"
-        keep_in_memory = str(params.get("keep_in_memory", "true")).lower() == "true"
-        use_gpu = True
+            return self._bad_request("Request body must be a JSON object")
 
-        # WD14 threshold params
-        general_threshold = params.get("general_threshold")
-        character_threshold = params.get("character_threshold")
+        opts = {
+            "model_type": params.get("model_type", "gguf"),
+            "custom_prompt": params.get("prompt", ""),
+            "skip_tagged": str(params.get("skip_tagged", "true")).lower() == "true",
+            "keep_in_memory": str(params.get("keep_in_memory", "true")).lower()
+            == "true",
+            "general_threshold": params.get("general_threshold"),
+            "character_threshold": params.get("character_threshold"),
+        }
         try:
-            if general_threshold is not None:
-                general_threshold = float(general_threshold)
-            if character_threshold is not None:
-                character_threshold = float(character_threshold)
+            for key in ("general_threshold", "character_threshold"):
+                if opts[key] is not None:
+                    opts[key] = float(opts[key])
         except (ValueError, TypeError):
-            return web.json_response(
-                {
-                    "success": False,
-                    "error": "general_threshold and character_threshold must be numeric",
-                },
-                status=400,
+            return self._bad_request(
+                "general_threshold and character_threshold must be numeric"
             )
 
-        async def stream_response():
+        async def events():
             try:
                 from ..autotag import get_autotag_service
-                import time as _time
 
-                service = get_autotag_service()
-
-                status = service.get_models_status()
-                if not status.get(model_type, {}).get("downloaded"):
-                    yield f"data: {json.dumps({'type': 'error', 'message': f'Model {model_type} not downloaded'})}\n\n"
-                    return
-
-                yield f"data: {json.dumps({'type': 'progress', 'progress': 0, 'status': 'Loading model...'})}\n\n"
-
-                loop = asyncio.get_event_loop()
-                try:
-                    await loop.run_in_executor(
-                        None, lambda: service.load_model(model_type, use_gpu)
-                    )
-                except Exception as e:
-                    self.logger.exception("Failed to load model")
-                    yield f"data: {json.dumps({'type': 'error', 'message': 'Failed to load model. Check server logs for details.'})}\n\n"
-                    return
-
-                if custom_prompt:
-                    service.custom_prompt = custom_prompt
-
-                yield f"data: {json.dumps({'type': 'progress', 'progress': 5, 'status': 'Model loaded. Fetching all images from database...'})}\n\n"
-
-                images = await self._run_in_executor(self.db.get_all_images)
-
-                total_files = len(images)
-                if total_files == 0:
-                    yield f"data: {json.dumps({'type': 'complete', 'processed': 0, 'tagged': 0, 'skipped': 0, 'status': 'No images with linked prompts found'})}\n\n"
-                    service.unload_model()
-                    return
-
-                yield f"data: {json.dumps({'type': 'progress', 'progress': 10, 'status': f'Found {total_files} images. Processing...'})}\n\n"
-
-                processed = 0
-                tagged = 0
-                skipped = 0
-                errors = 0
-                tagged_prompt_ids = set()
-
-                last_update_time = _time.monotonic()
-
-                for i, image_data in enumerate(images):
-                    image_path = image_data.get("image_path")
-                    prompt_id = image_data.get("prompt_id")
-
-                    if not image_path or not prompt_id:
-                        skipped += 1
-                        continue
-
-                    if prompt_id in tagged_prompt_ids:
-                        skipped += 1
-                        now = _time.monotonic()
-                        if (now - last_update_time) >= 0.5 or i == total_files - 1:
-                            progress = 10 + int((i + 1) / total_files * 85)
-                            yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'status': f'Skipping {i+1}/{total_files} (prompt already processed)...', 'processed': processed, 'tagged': tagged, 'skipped': skipped})}\n\n"
-                            await asyncio.sleep(0.01)
-                            last_update_time = now
-                        continue
-
-                    if not Path(image_path).exists():
-                        skipped += 1
-                        now = _time.monotonic()
-                        if (now - last_update_time) >= 0.5 or i == total_files - 1:
-                            progress = 10 + int((i + 1) / total_files * 85)
-                            yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'status': f'Skipping {i+1}/{total_files} (file missing)...', 'processed': processed, 'tagged': tagged, 'skipped': skipped})}\n\n"
-                            await asyncio.sleep(0.01)
-                            last_update_time = now
-                        continue
-
-                    if skip_tagged:
-                        prompt_tags = image_data.get("prompt_tags", [])
-                        if isinstance(prompt_tags, str):
-                            prompt_tags = [
-                                t.strip() for t in prompt_tags.split(",") if t.strip()
-                            ]
-                        real_tags = [
-                            t
-                            for t in prompt_tags
-                            if t != "auto-scanned"
-                            and not t.startswith("prepend:")
-                            and not t.startswith("append:")
-                        ]
-                        if real_tags:
-                            tagged_prompt_ids.add(prompt_id)
-                            skipped += 1
-                            now = _time.monotonic()
-                            if (now - last_update_time) >= 0.5 or i == total_files - 1:
-                                progress = 10 + int((i + 1) / total_files * 85)
-                                yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'status': f'Skipping {i+1}/{total_files} (already tagged)...', 'processed': processed, 'tagged': tagged, 'skipped': skipped})}\n\n"
-                                await asyncio.sleep(0.01)
-                                last_update_time = now
-                            continue
-
-                    try:
-                        tags = await loop.run_in_executor(
-                            None,
-                            lambda p=str(image_path): service.generate_tags(
-                                p,
-                                general_threshold=general_threshold,
-                                character_threshold=character_threshold,
-                            ),
-                        )
-
-                        processed += 1
-
-                        if tags:
-                            existing_prompt = await self._run_in_executor(
-                                self.db.get_prompt_by_id, prompt_id
-                            )
-                            if existing_prompt:
-                                existing_tags = existing_prompt.get("tags", [])
-                                if isinstance(existing_tags, str):
-                                    existing_tags = [
-                                        t.strip()
-                                        for t in existing_tags.split(",")
-                                        if t.strip()
-                                    ]
-
-                                new_tags = [t for t in tags if t not in existing_tags]
-                                if new_tags:
-                                    all_tags = existing_tags + new_tags
-                                    await self._run_in_executor(
-                                        self.db.update_prompt_metadata,
-                                        prompt_id,
-                                        tags=all_tags,
-                                    )
-                                    tagged += 1
-                                else:
-                                    skipped += 1
-                            else:
-                                skipped += 1
-                        else:
-                            skipped += 1
-
-                        tagged_prompt_ids.add(prompt_id)
-
-                        progress = 10 + int((i + 1) / total_files * 85)
-                        yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'status': f'Processing {i+1}/{total_files}...', 'processed': processed, 'tagged': tagged, 'skipped': skipped})}\n\n"
-                        await asyncio.sleep(0.01)
-                        last_update_time = _time.monotonic()
-
-                    except Exception as img_err:
-                        self.logger.error(f"Error processing {image_path}: {img_err}")
-                        errors += 1
-                        processed += 1
-
-                if not keep_in_memory:
-                    service.unload_model()
-                    model_status = "Model unloaded"
-                else:
-                    model_status = "Model kept in memory"
-
-                yield f"data: {json.dumps({'type': 'complete', 'progress': 100, 'processed': processed, 'tagged': tagged, 'skipped': skipped, 'errors': errors, 'status': 'Complete', 'model_status': model_status, 'model_loaded': keep_in_memory})}\n\n"
-
-            except Exception as e:
-                self.logger.error(f"AutoTag error: {e}")
-                import traceback
-
+                async for event in self._autotag_batch_events(
+                    get_autotag_service(), opts
+                ):
+                    yield event
+            except Exception:
                 self.logger.exception("AutoTag error")
-                yield f"data: {json.dumps({'type': 'error', 'message': 'An internal error occurred. Check server logs for details.'})}\n\n"
+                yield {
+                    "type": "error",
+                    "message": "An internal error occurred. Check server logs for details.",
+                }
 
-        response = web.StreamResponse(
-            status=200,
-            reason="OK",
-            headers={
-                "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            },
-        )
-
-        await response.prepare(request)
-
-        async for chunk in stream_response():
-            await response.write(chunk.encode("utf-8"))
-
-        await response.write_eof()
-        return response
+        return await self._stream_sse(request, events())
 
     def _resolve_allowed_image_path(self, raw_path: str) -> Optional[str]:
         """Return the real path when it is a file inside an output directory."""

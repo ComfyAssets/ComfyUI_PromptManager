@@ -380,5 +380,157 @@ class TestAutotagSideEffectRoutesArePostOnly(AutotagAPITestCase):
         self.assertTrue((await resp.json())["success"])
 
 
+class TestAutotagBatch(AutotagAPITestCase):
+    """Batch tagging over the DB image list with SSE progress reporting."""
+
+    def _seed(self):
+        """Three prompts: A (one image), B (two images), C (missing file)."""
+        a = self._save_prompt("prompt a")
+        b = self._save_prompt("prompt b")
+        c = self._save_prompt("prompt c")
+        self._link_image(a, self._make_image(self.output_dir, "a1.png"))
+        self._link_image(b, self._make_image(self.output_dir, "b1.png"))
+        self._link_image(b, self._make_image(self.output_dir, "b2.png"))
+        self._link_image(c, self.output_dir / "missing.png")
+        return a, b, c
+
+    async def _start(self, query="model_type=gguf", body=None):
+        if body is None:
+            resp = await self.client.request(
+                "POST", f"/prompt_manager/autotag/start?{query}"
+            )
+        else:
+            resp = await self._post_json(f"/prompt_manager/autotag/start?{query}", body)
+        return resp, self._sse_events(await resp.text())
+
+    async def test_batch_tags_each_prompt_once_and_reports_counts(self):
+        a, b, c = self._seed()
+
+        resp, events = await self._start()
+
+        self.assertEqual(resp.status, 200)
+        done = events[-1]
+        self.assertEqual(done["type"], "complete")
+        self.assertEqual(done["processed"], 2)
+        self.assertEqual(done["tagged"], 2)
+        self.assertEqual(done["skipped"], 2)
+        self.assertEqual(done["errors"], 0)
+        self.assertEqual(len(self.service.generate_calls), 2)
+        self.assertEqual(self.api.db.get_prompt_by_id(a)["tags"], ["1girl", "smile"])
+        self.assertEqual(self.api.db.get_prompt_by_id(b)["tags"], ["1girl", "smile"])
+        self.assertEqual(self.api.db.get_prompt_by_id(c)["tags"], [])
+        progress = [e for e in events if e["type"] == "progress"]
+        self.assertTrue(all(0 <= e["progress"] <= 100 for e in progress))
+        self.assertTrue(any("processed" in e for e in progress))
+
+    async def test_already_tagged_prompts_are_skipped_unless_asked(self):
+        p = self._save_prompt("tagged", tags=["cat"])
+        self._link_image(p, self._make_image(self.output_dir, "t.png"))
+
+        _, events = await self._start("model_type=gguf&skip_tagged=true")
+        self.assertEqual(events[-1]["skipped"], 1)
+        self.assertEqual(self.service.generate_calls, [])
+
+        _, events = await self._start("model_type=gguf&skip_tagged=false")
+        self.assertEqual(events[-1]["tagged"], 1)
+        self.assertEqual(
+            self.api.db.get_prompt_by_id(p)["tags"], ["cat", "1girl", "smile"]
+        )
+
+    async def test_prompt_already_holding_the_tags_counts_as_skipped(self):
+        p = self._save_prompt("same", tags=["1girl", "smile"])
+        self._link_image(p, self._make_image(self.output_dir, "s.png"))
+
+        _, events = await self._start("model_type=gguf&skip_tagged=false")
+
+        self.assertEqual(events[-1]["skipped"], 1)
+        self.assertEqual(events[-1]["tagged"], 0)
+
+    async def test_generation_errors_are_counted_and_do_not_abort(self):
+        self._seed()
+        self.service.generate_error = RuntimeError("boom")
+
+        _, events = await self._start()
+
+        self.assertEqual(events[-1]["type"], "complete")
+        # a1, b1 and b2 each fail: a failed prompt is retried on its next image
+        self.assertEqual(events[-1]["errors"], 3)
+        self.assertEqual(events[-1]["tagged"], 0)
+
+    async def test_json_body_parameters_are_accepted(self):
+        self._seed()
+
+        _, events = await self._start(
+            "", {"model_type": "wd14-vit", "general_threshold": 0.5, "prompt": "p"}
+        )
+
+        self.assertEqual(events[-1]["type"], "complete")
+        self.assertEqual(self.service.load_calls, [("wd14-vit", True)])
+        self.assertEqual(self.service.generate_calls[0][2], 0.5)
+        self.assertEqual(self.service.custom_prompt, "p")
+
+    async def test_keep_in_memory_false_unloads_after_batch(self):
+        self._seed()
+
+        _, events = await self._start("model_type=gguf&keep_in_memory=false")
+
+        self.assertEqual(events[-1]["model_loaded"], False)
+        self.assertEqual(self.service.unload_calls, 1)
+
+    async def test_model_not_downloaded_is_an_error_event(self):
+        self.service.downloaded = False
+
+        _, events = await self._start()
+
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertEqual(self.service.load_calls, [])
+
+    async def test_load_failure_is_an_error_event_without_details(self):
+        self.service.load_error = RuntimeError("/srv/models/secret.gguf is corrupt")
+
+        _, events = await self._start()
+
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertNotIn("/srv/models", events[-1]["message"])
+
+    async def test_non_numeric_threshold_is_400(self):
+        resp = await self.client.request(
+            "POST", "/prompt_manager/autotag/start?general_threshold=abc"
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_invalid_json_body_is_400(self):
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/autotag/start",
+            data="{not json",
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_client_disconnect_stops_the_batch_and_unloads(self):
+        self._seed()
+        real_write = web.StreamResponse.write
+        state = {"writes": 0}
+
+        async def flaky_write(response, data):
+            state["writes"] += 1
+            if b"Processing " in data:
+                raise ConnectionResetError("Cannot write to closing transport")
+            return await real_write(response, data)
+
+        with patch.object(web.StreamResponse, "write", flaky_write):
+            try:
+                resp = await self.client.request(
+                    "POST", "/prompt_manager/autotag/start?keep_in_memory=false"
+                )
+                await resp.read()
+            except Exception:
+                pass
+
+        self.assertEqual(len(self.service.generate_calls), 1)
+        self.assertEqual(self.service.unload_calls, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
