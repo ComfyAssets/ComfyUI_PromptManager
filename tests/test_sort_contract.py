@@ -11,7 +11,7 @@ sys.path.insert(0, ROOT)
 from database.operations import SORT_ORDERS
 
 SORT_MODULE = os.path.join(ROOT, "web", "js", "prompt-list-sort.js")
-NODE_EXTENSION = os.path.join(ROOT, "web", "prompt_manager.js")
+NODE_EXTENSION = os.path.join(ROOT, "web", "comfy", "prompt_manager.js")
 
 
 class TestSortContract(unittest.TestCase):

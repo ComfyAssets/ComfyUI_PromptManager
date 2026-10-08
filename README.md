@@ -664,7 +664,8 @@ CREATE TABLE generated_images (
 - **`utils/diagnostics.py`** - System diagnostics and health checks
 - **`web/admin.html`** - Advanced admin dashboard with metadata panel
 - **`web/index.html`** - Simple web interface
-- **`web/js/prompt_manager.js`** - Dashboard JavaScript
+- **`web/comfy/prompt_manager.js`** - ComfyUI canvas extension (the only file ComfyUI loads)
+- **`web/js/admin.js`**, **`web/js/gallery.js`** - Dashboard and gallery JavaScript
 - **`web/js/tags-page.js`** - Tag management JavaScript
 - **`web/metadata.html`** - Standalone PNG metadata viewer
 
@@ -699,8 +700,11 @@ ComfyUI_PromptManager/
 │   ├── gallery.html             # Image gallery
 │   ├── index.html               # Simple web interface
 │   ├── metadata.html            # Standalone metadata viewer
+│   ├── comfy/
+│   │   └── prompt_manager.js    # ComfyUI canvas extension (WEB_DIRECTORY)
 │   └── js/
-│       ├── prompt_manager.js    # Dashboard JavaScript
+│       ├── admin.js             # Dashboard JavaScript
+│       ├── gallery.js           # Gallery JavaScript
 │       └── tags-page.js         # Tag management JavaScript
 ├── tests/
 │   ├── __init__.py
