@@ -8,6 +8,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.prompt_graph import (
+    _upstream_links,
+    follows_input,
     has_sampler,
     positive_prompt_nodes,
     resolve_text,
@@ -183,6 +185,36 @@ class TestRunPromptNodes(unittest.TestCase):
     def test_run_prompt_nodes_falls_back_when_no_sampler(self):
         graph = {"1": {"class_type": "PromptManagerText", "inputs": {"text": "x"}}}
         self.assertEqual(run_prompt_nodes(graph), ["1"])
+
+
+class TestInputKeys(unittest.TestCase):
+    """Which input names are followed when tracing the positive prompt upstream."""
+
+    def test_negative_flavoured_keys_are_skipped(self):
+        for key in ("negative_prompt", "text_negative", "neg_text", "neg", "negative"):
+            self.assertFalse(follows_input(key), key)
+            self.assertEqual(_upstream_links({key: ["1", 0]}), [], key)
+
+    def test_positive_and_plain_text_keys_are_followed(self):
+        for key in ("text_positive", "positive", "text", "prompt", "text_g"):
+            self.assertTrue(follows_input(key), key)
+            self.assertEqual(_upstream_links({key: ["1", 0]}), [["1", 0]], key)
+
+    def test_styler_node_only_follows_its_positive_text(self):
+        graph = {
+            "1": pm("a cat"),
+            "2": pm("bad hands"),
+            "3": {
+                "class_type": "SDXLPromptStyler",
+                "inputs": {"text_positive": ["1", 0], "text_negative": ["2", 0]},
+            },
+            "4": {"class_type": "CLIPTextEncode", "inputs": {"text": ["3", 0]}},
+            "5": ksampler("4", "2"),
+            "20": LOADER,
+        }
+        self.assertEqual(positive_prompt_nodes(graph), ["1"])
+        self.assertEqual(run_prompt_nodes(graph), ["1"])
+        self.assertEqual(resolve_text(graph, "1"), "a cat")
 
 
 class TestHasSampler(unittest.TestCase):

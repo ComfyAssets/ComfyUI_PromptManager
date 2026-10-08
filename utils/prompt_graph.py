@@ -19,6 +19,17 @@ MAX_VISITS = 500
 # Inputs that carry positive conditioning or prompt text towards a sampler
 _CONDITIONING_KEY = re.compile(r"^conditioning(_\w+)?$")
 _TEXT_KEY = re.compile(r"^(text|string|prompt)(_?[a-z0-9]+)?$", re.IGNORECASE)
+# Input names that carry a negative prompt (text_negative, neg_text, negative_prompt)
+_NEGATIVE_KEY = re.compile(r"(^|_)neg(ative)?($|_)", re.IGNORECASE)
+
+
+def follows_input(key: Any) -> bool:
+    """Whether an input name carries positive conditioning or prompt text."""
+    if not isinstance(key, str) or _NEGATIVE_KEY.search(key):
+        return False
+    return key == "positive" or bool(
+        _CONDITIONING_KEY.match(key) or _TEXT_KEY.match(key)
+    )
 
 
 def _is_link(value: Any) -> bool:
@@ -65,7 +76,7 @@ def _upstream_links(inputs: Dict[str, Any]) -> List[Any]:
     for key, value in inputs.items():
         if not _is_link(value):
             continue
-        if key == "positive" or _CONDITIONING_KEY.match(key) or _TEXT_KEY.match(key):
+        if follows_input(key):
             links.append(value)
     return links
 
