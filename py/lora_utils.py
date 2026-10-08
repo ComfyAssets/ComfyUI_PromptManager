@@ -109,6 +109,103 @@ def _looks_like_lora_manager(path: Path) -> bool:
     return (path / "py").is_dir() or (path / "lora_manager").is_dir()
 
 
+def _public_path_anchors() -> List[str]:
+    """Directories the API's public (relative) paths are rendered against."""
+    try:
+        from .config import GalleryConfig
+    except ImportError:
+        try:
+            from config import GalleryConfig
+        except ImportError:
+            return []
+    try:
+        return list(GalleryConfig.path_anchors())
+    except Exception:
+        return []
+
+
+def custom_nodes_directories() -> List[Path]:
+    """ComfyUI ``custom_nodes`` directories a LoraManager install may live in.
+
+    Inside ComfyUI these come from ``folder_paths`` (``base_path`` plus any
+    registered ``custom_nodes`` folders); outside it, the parent of this
+    package, which is ``custom_nodes`` for a normal install.
+    """
+    found: List[Path] = []
+
+    def add(candidate) -> None:
+        try:
+            resolved = Path(candidate).resolve()
+        except (OSError, RuntimeError, ValueError):
+            return
+        if resolved not in found:
+            found.append(resolved)
+
+    try:
+        import folder_paths
+    except ImportError:
+        folder_paths = None
+    if folder_paths is not None:
+        base = getattr(folder_paths, "base_path", None)
+        if isinstance(base, str) and base:
+            add(Path(base) / "custom_nodes")
+        getter = getattr(folder_paths, "get_folder_paths", None)
+        if callable(getter):
+            try:
+                registered = getter("custom_nodes") or []
+            except Exception:
+                registered = []
+            for entry in registered:
+                add(entry)
+    if not found:
+        add(Path(__file__).resolve().parent.parent.parent)
+    return found
+
+
+def resolve_lora_manager_path(path) -> Optional[str]:
+    """Canonical form of ``path`` when it may be used as the LoraManager install.
+
+    Accepted: an existing directory that is a direct child of one of
+    :func:`custom_nodes_directories` and whose name contains ``lora``
+    (case-insensitive). A relative path is tried against the ComfyUI root
+    and each custom_nodes directory. Anything else, including a symlink
+    that escapes custom_nodes, yields None.
+    """
+    if not isinstance(path, str) or not path.strip():
+        return None
+    path = path.strip()
+    roots = []
+    for root in custom_nodes_directories():
+        try:
+            roots.append(Path(os.path.normcase(os.path.realpath(str(root)))))
+        except (OSError, ValueError):
+            continue
+
+    candidates = [path]
+    if not os.path.isabs(path):
+        # Public (API) paths are relative to these anchors; the ComfyUI root
+        # and the custom_nodes directories cover hand-typed relative paths.
+        bases = list(_public_path_anchors())
+        comfy_root = find_comfyui_root()
+        if comfy_root:
+            bases.append(comfy_root)
+        bases.extend(root.parent for root in roots)
+        bases.extend(roots)
+        candidates = [os.path.join(str(base), path) for base in bases]
+
+    for candidate in candidates:
+        try:
+            canonical = Path(os.path.normcase(os.path.realpath(candidate)))
+            is_dir = canonical.is_dir()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if not is_dir or "lora" not in canonical.name.lower():
+            continue
+        if canonical.parent in roots:
+            return str(canonical)
+    return None
+
+
 # ── Metadata reading ─────────────────────────────────────────────────
 
 
@@ -332,10 +429,17 @@ def is_civitai_url(url: str) -> bool:
     """True when ``url`` is an HTTPS URL on an allow-listed CivitAI host."""
     try:
         parts = urlsplit(url)
+        port = parts.port
     except ValueError:
         return False
     hostname = (parts.hostname or "").lower()
-    return parts.scheme == "https" and hostname in CIVITAI_HOSTS
+    return (
+        parts.scheme == "https"
+        and hostname in CIVITAI_HOSTS
+        and parts.username is None
+        and parts.password is None
+        and port in (None, 443)
+    )
 
 
 def _read_capped(resp, cap: int) -> Optional[bytes]:

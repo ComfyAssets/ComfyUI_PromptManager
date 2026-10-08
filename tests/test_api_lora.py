@@ -49,6 +49,14 @@ class LoraAPITestCase(AioHTTPTestCase):
         self._temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
         self._temp_db.close()
         self.tmp_root = Path(tempfile.mkdtemp())
+        self.custom_nodes = self.tmp_root / "custom_nodes"
+        self.custom_nodes.mkdir()
+        self._custom_nodes_patch = patch(
+            "py.lora_utils.custom_nodes_directories",
+            return_value=[self.custom_nodes],
+        )
+        self._custom_nodes_patch.start()
+        self._real_save = PromptManagerConfig.save_to_file
 
         self._config_patch = patch.multiple(
             IntegrationConfig,
@@ -78,7 +86,9 @@ class LoraAPITestCase(AioHTTPTestCase):
         self._save_patch.stop()
         self._detect_patch.stop()
         self._config_patch.stop()
+        self._custom_nodes_patch.stop()
         get_trigger_cache().clear()
+        self.api.db.close_all()
         for path in (
             self._temp_db.name,
             self._temp_db.name + "-wal",
@@ -172,13 +182,16 @@ def _write_metadata(directory, stem, words=None, images=None, prompt=None):
 
 class TestLoraDetectRoute(LoraAPITestCase):
 
-    async def test_detected(self):
-        self.detect_mock.return_value = str(self.tmp_root)
+    async def test_detected_path_is_public(self):
+        lm = _make_lora_manager(self.custom_nodes)
+        self.detect_mock.return_value = str(lm)
         resp = await self.client.request("GET", "/prompt_manager/lora/detect")
-        data = await resp.json()
+        body = await resp.text()
+        data = json.loads(body)
         self.assertTrue(data["success"])
         self.assertTrue(data["detected"])
-        self.assertEqual(data["path"], str(self.tmp_root))
+        self.assertEqual(data["path"], self.api._public_path(str(lm)))
+        self.assertNotIn(str(self.tmp_root), body)
 
     async def test_not_detected(self):
         resp = await self.client.request("GET", "/prompt_manager/lora/detect")
@@ -195,24 +208,38 @@ class TestLoraDetectRoute(LoraAPITestCase):
 
 class TestLoraStatusRoute(LoraAPITestCase):
 
-    async def test_status_reports_detection_and_cache(self):
-        self.detect_mock.return_value = str(self.tmp_root)
+    async def test_status_reports_detection_and_cache_with_public_paths(self):
+        lm = _make_lora_manager(self.custom_nodes)
+        self.detect_mock.return_value = str(lm)
         IntegrationConfig.LORA_MANAGER_ENABLED = True
-        IntegrationConfig.LORA_MANAGER_PATH = str(self.tmp_root)
+        IntegrationConfig.LORA_MANAGER_PATH = str(lm)
 
-        data = await (
-            await self.client.request("GET", "/prompt_manager/lora/status")
-        ).json()
+        resp = await self.client.request("GET", "/prompt_manager/lora/status")
+        body = await resp.text()
+        data = json.loads(body)
 
         self.assertTrue(data["enabled"])
         self.assertTrue(data["detected"])
-        self.assertEqual(data["detected_path"], str(self.tmp_root))
+        public = self.api._public_path(str(lm))
+        self.assertEqual(data["path"], public)
+        self.assertEqual(data["detected_path"], public)
+        self.assertFalse(os.path.isabs(public))
+        self.assertNotIn(str(self.tmp_root), body)
         self.assertFalse(data["trigger_cache_loaded"])
 
     async def test_status_error_is_500(self):
         with patch("py.lora_utils.get_trigger_cache", side_effect=RuntimeError("x")):
             resp = await self.client.request("GET", "/prompt_manager/lora/status")
         self.assertEqual(resp.status, 500)
+
+    async def test_status_error_hides_the_server_path(self):
+        err = PermissionError(13, "Permission denied", str(self.tmp_root / "c.json"))
+        with patch("py.lora_utils.get_trigger_cache", side_effect=err):
+            resp = await self.client.request("GET", "/prompt_manager/lora/status")
+        self.assertEqual(resp.status, 500)
+        body = await resp.text()
+        self.assertNotIn(str(self.tmp_root), body)
+        self.assertIn("c.json", body)
 
 
 class TestLoraEnableRoute(LoraAPITestCase):
@@ -226,7 +253,7 @@ class TestLoraEnableRoute(LoraAPITestCase):
         self.save_mock.assert_not_called()
 
     async def test_enable_persists_and_loads_trigger_cache(self):
-        lm = _make_lora_manager(self.tmp_root)
+        lm = _make_lora_manager(self.custom_nodes)
         loras = self.tmp_root / "loras"
         loras.mkdir()
         _write_metadata(loras, "neon", words=["glow"])
@@ -249,13 +276,88 @@ class TestLoraEnableRoute(LoraAPITestCase):
         body = await resp.text()
         data = json.loads(body)
         self.assertTrue(data["success"])
-        self.assertEqual(data["path"], str(lm))
+        self.assertEqual(data["path"], self.api._public_path(str(lm)))
+        self.assertNotIn(str(self.tmp_root), body)
         self.assertNotIn(SECRET_KEY, body)
         self.assertTrue(IntegrationConfig.LORA_MANAGER_ENABLED)
+        self.assertEqual(
+            IntegrationConfig.LORA_MANAGER_PATH,
+            os.path.normcase(os.path.realpath(str(lm))),
+        )
         self.assertEqual(IntegrationConfig.CIVITAI_API_KEY, SECRET_KEY)
-        self.save_mock.assert_called_once()
+        self.save_mock.assert_called_once_with()
         self.assertTrue(get_trigger_cache().is_loaded)
         self.assertEqual(get_trigger_cache().get_trigger_words("neon"), ["glow"])
+
+    async def test_enable_accepts_the_public_relative_path(self):
+        lm = _make_lora_manager(self.custom_nodes)
+        self.detect_mock.return_value = str(lm)
+        public = self.api._public_path(str(lm))
+        self.assertFalse(os.path.isabs(public))
+
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable", {"enabled": True, "path": public}
+        )
+
+        self.assertEqual(resp.status, 200)
+        self.assertTrue(IntegrationConfig.LORA_MANAGER_ENABLED)
+        self.assertEqual(
+            IntegrationConfig.LORA_MANAGER_PATH,
+            os.path.normcase(os.path.realpath(str(lm))),
+        )
+
+    async def test_enable_with_path_outside_custom_nodes_is_400(self):
+        lm = _make_lora_manager(self.tmp_root)
+        self.detect_mock.return_value = str(lm)
+
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable", {"enabled": True, "path": str(lm)}
+        )
+
+        self.assertEqual(resp.status, 400)
+        body = await resp.text()
+        self.assertFalse(json.loads(body)["success"])
+        self.assertNotIn(str(self.tmp_root), body)
+        self.assertFalse(IntegrationConfig.LORA_MANAGER_ENABLED)
+        self.save_mock.assert_not_called()
+
+    async def test_enable_with_custom_node_lacking_lora_in_its_name_is_400(self):
+        lm = _make_lora_manager(self.custom_nodes).parent / "ComfyUI-Other"
+        (lm / "py").mkdir(parents=True)
+        (lm / "__init__.py").write_text("")
+        self.detect_mock.return_value = str(lm)
+
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable", {"enabled": True, "path": str(lm)}
+        )
+
+        self.assertEqual(resp.status, 400)
+        self.assertFalse(IntegrationConfig.LORA_MANAGER_ENABLED)
+
+    async def test_enable_rejects_an_auto_detected_path_outside_custom_nodes(self):
+        self.detect_mock.return_value = str(_make_lora_manager(self.tmp_root))
+
+        resp = await self._post_json("/prompt_manager/lora/enable", {"enabled": True})
+
+        self.assertEqual(resp.status, 400)
+        self.assertFalse(IntegrationConfig.LORA_MANAGER_ENABLED)
+
+    async def test_enable_writes_the_configured_config_file(self):
+        config_file = self.tmp_root / "cfg" / "config.json"
+        self.save_mock.side_effect = self._real_save
+
+        with patch.dict(os.environ, {"PROMPT_MANAGER_CONFIG_PATH": str(config_file)}):
+            resp = await self._post_json(
+                "/prompt_manager/lora/enable",
+                {"enabled": False, "trigger_words_enabled": True},
+            )
+
+        self.assertEqual(resp.status, 200)
+        self.save_mock.assert_called_once_with()
+        self.assertTrue(config_file.is_file())
+        saved = json.loads(config_file.read_text())["integrations"]["lora_manager"]
+        self.assertFalse(saved["enabled"])
+        self.assertTrue(saved["trigger_words_enabled"])
 
     async def test_disable_clears_cache(self):
         get_trigger_cache()._cache = {"x": ["y"]}
@@ -321,8 +423,28 @@ class TestLoraScanRoute(LoraAPITestCase):
 
     def _enable(self):
         IntegrationConfig.LORA_MANAGER_ENABLED = True
-        IntegrationConfig.LORA_MANAGER_PATH = str(self.tmp_root)
+        IntegrationConfig.LORA_MANAGER_PATH = str(_make_lora_manager(self.custom_nodes))
         IntegrationConfig.CIVITAI_API_KEY = SECRET_KEY
+
+    async def test_configured_path_outside_custom_nodes_is_400(self):
+        IntegrationConfig.LORA_MANAGER_ENABLED = True
+        IntegrationConfig.LORA_MANAGER_PATH = str(_make_lora_manager(self.tmp_root))
+
+        resp = await self.client.request("POST", "/prompt_manager/lora/scan")
+
+        self.assertEqual(resp.status, 400)
+        body = await resp.text()
+        self.assertFalse(json.loads(body)["success"])
+        self.assertNotIn(str(self.tmp_root), body)
+
+    async def test_scan_error_hides_the_server_path(self):
+        self._enable()
+        err = PermissionError(13, "Permission denied", str(self.tmp_root / "x.db"))
+        with patch.object(self.api.db, "delete_prompts_by_category", side_effect=err):
+            resp = await self.client.request("POST", "/prompt_manager/lora/scan")
+        body = await resp.text()
+        self.assertNotIn(str(self.tmp_root), body)
+        self.assertIn("x.db", body)
 
     @staticmethod
     def _sse_events(text):

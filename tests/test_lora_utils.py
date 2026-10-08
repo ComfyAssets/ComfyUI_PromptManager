@@ -12,6 +12,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import types
 import unittest
 import urllib.parse
 import urllib.request
@@ -318,6 +319,140 @@ class TestCivitaiUrlPolicy(unittest.TestCase):
             "",
         ):
             self.assertFalse(is_civitai_url(url), url)
+
+    def test_userinfo_and_non_default_ports_are_refused(self):
+        for url in (
+            "https://evil.com\\@civitai.com/x",
+            "https://user@civitai.com/x",
+            "https://user:pw@civitai.com/x",
+            "https://civitai.com:8443/x",
+        ):
+            self.assertFalse(is_civitai_url(url), url)
+
+    def test_explicit_default_port_is_allowed(self):
+        self.assertTrue(is_civitai_url("https://civitai.com:443/x"))
+
+
+class TestLoraManagerPathPolicy(unittest.TestCase):
+    """Only a direct child of a ComfyUI custom_nodes dir named *lora* qualifies."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.root = _make_comfy_root(self.tmp)
+        self.custom_nodes = self.root / "custom_nodes"
+        patcher = patch.object(
+            lora_utils, "custom_nodes_directories", return_value=[self.custom_nodes]
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _canonical(path):
+        return os.path.normcase(os.path.realpath(str(path)))
+
+    def test_direct_child_named_lora_is_accepted(self):
+        lm = _make_lora_manager(self.custom_nodes)
+        self.assertEqual(
+            lora_utils.resolve_lora_manager_path(str(lm)), self._canonical(lm)
+        )
+
+    def test_name_match_is_case_insensitive(self):
+        lm = _make_lora_manager(self.custom_nodes, "comfyui-LORA-manager")
+        self.assertEqual(
+            lora_utils.resolve_lora_manager_path(str(lm)), self._canonical(lm)
+        )
+
+    def test_outside_custom_nodes_is_rejected(self):
+        lm = _make_lora_manager(self.tmp)
+        self.assertIsNone(lora_utils.resolve_lora_manager_path(str(lm)))
+
+    def test_child_without_lora_in_name_is_rejected(self):
+        other = _make_lora_manager(self.custom_nodes, "ComfyUI-Other")
+        self.assertIsNone(lora_utils.resolve_lora_manager_path(str(other)))
+
+    def test_custom_nodes_itself_is_rejected(self):
+        self.assertIsNone(lora_utils.resolve_lora_manager_path(str(self.custom_nodes)))
+
+    def test_nested_directory_is_rejected(self):
+        nested = _make_lora_manager(self.custom_nodes / "pack", "lora-sub")
+        self.assertIsNone(lora_utils.resolve_lora_manager_path(str(nested)))
+
+    def test_sibling_prefix_directory_is_rejected(self):
+        sibling = self.root / "custom_nodes2"
+        lm = _make_lora_manager(sibling)
+        self.assertIsNone(lora_utils.resolve_lora_manager_path(str(lm)))
+
+    def test_traversal_out_of_custom_nodes_is_rejected(self):
+        _make_lora_manager(self.root, "lora-escape")
+        candidate = os.path.join(str(self.custom_nodes), "..", "lora-escape")
+        self.assertIsNone(lora_utils.resolve_lora_manager_path(candidate))
+
+    def test_symlink_escaping_custom_nodes_is_rejected(self):
+        target = _make_lora_manager(self.tmp)
+        link = self.custom_nodes / "lora-link"
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks not supported on this platform")
+        self.assertIsNone(lora_utils.resolve_lora_manager_path(str(link)))
+
+    def test_relative_path_is_resolved_against_the_comfyui_root(self):
+        lm = _make_lora_manager(self.custom_nodes)
+        with patch.object(lora_utils, "find_comfyui_root", return_value=self.root):
+            resolved = lora_utils.resolve_lora_manager_path(
+                "custom_nodes/ComfyUI-Lora-Manager"
+            )
+        self.assertEqual(resolved, self._canonical(lm))
+
+    def test_missing_file_or_bad_input_is_rejected(self):
+        self.assertIsNone(
+            lora_utils.resolve_lora_manager_path(str(self.custom_nodes / "lora-none"))
+        )
+        plain = self.custom_nodes / "lora.txt"
+        plain.write_text("")
+        self.assertIsNone(lora_utils.resolve_lora_manager_path(str(plain)))
+        self.assertIsNone(lora_utils.resolve_lora_manager_path(""))
+        self.assertIsNone(lora_utils.resolve_lora_manager_path(None))
+        self.assertIsNone(lora_utils.resolve_lora_manager_path("bad\x00name"))
+
+
+class TestCustomNodesDirectories(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.root = _make_comfy_root(self.tmp)
+
+    def test_uses_folder_paths_base_path(self):
+        fake = _FakeFolderPaths(str(self.root))
+        with patch.dict(sys.modules, {"folder_paths": fake}):
+            dirs = lora_utils.custom_nodes_directories()
+        self.assertEqual(dirs, [(self.root / "custom_nodes").resolve()])
+
+    def test_includes_folder_paths_custom_nodes_entries(self):
+        extra = self.tmp / "more_nodes"
+        extra.mkdir()
+        fake = types.SimpleNamespace(
+            base_path=str(self.root),
+            get_folder_paths=lambda name: (
+                [str(extra)] if name == "custom_nodes" else []
+            ),
+        )
+        with patch.dict(sys.modules, {"folder_paths": fake}):
+            dirs = lora_utils.custom_nodes_directories()
+        self.assertEqual(
+            dirs, [(self.root / "custom_nodes").resolve(), extra.resolve()]
+        )
+
+    def test_falls_back_to_the_parent_of_this_package(self):
+        with (
+            patch.dict(sys.modules, {"folder_paths": None}),
+            patch.object(lora_utils, "find_comfyui_root", return_value=None),
+        ):
+            dirs = lora_utils.custom_nodes_directories()
+        package_dir = Path(lora_utils.__file__).resolve().parent.parent
+        self.assertEqual(dirs, [package_dir.parent])
 
 
 class TestDownloadOne(unittest.TestCase):
