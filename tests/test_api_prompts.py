@@ -187,6 +187,16 @@ class TestRecentBounds(PromptAPITestCase):
         self.assertEqual(data["pagination"]["offset"], 4)
         self.assertEqual(len(data["results"]), 1)
 
+    async def test_huge_page_number_is_clamped_not_500(self):
+        resp = await self.client.request(
+            "GET", f"/prompt_manager/recent?limit={MAX_PAGE_LIMIT}&page={10**30}"
+        )
+
+        self.assertEqual(resp.status, 200)
+        data = await resp.json()
+        self.assertEqual(data["pagination"]["offset"], MAX_PAGE_OFFSET)
+        self.assertEqual(data["results"], [])
+
 
 def _raise(*_args, **_kwargs):
     raise RuntimeError("boom")
@@ -321,6 +331,51 @@ class TestTagStatsAndFilters(RouteCoverageCase):
         self._break("get_prompts_by_tags")
         err_status, _ = await self._json("GET", "/prompt_manager/tags/filter?tags=a")
         self.assertEqual((bad_status, err_status), (400, 500))
+
+
+class TestTagRoutePagingBounds(RouteCoverageCase):
+    """Tag listings clamp limit/offset like every other list endpoint."""
+
+    ROUTES = (
+        "/prompt_manager/tags/stats",
+        "/prompt_manager/tags/sky/prompts",
+        "/prompt_manager/tags/filter?tags=sky",
+        "/prompt_manager/tags/filter?untagged=true",
+    )
+
+    @staticmethod
+    def _with(route, query):
+        return f"{route}{'&' if '?' in route else '?'}{query}"
+
+    async def test_limit_is_clamped_to_max_page_limit(self):
+        for route in self.ROUTES:
+            status, data = await self._json("GET", self._with(route, "limit=999999"))
+            self.assertEqual(status, 200, route)
+            self.assertEqual(data["pagination"]["limit"], MAX_PAGE_LIMIT, route)
+
+    async def test_zero_limit_becomes_one(self):
+        for route in self.ROUTES:
+            _, data = await self._json("GET", self._with(route, "limit=0"))
+            self.assertEqual(data["pagination"]["limit"], 1, route)
+
+    async def test_negative_offset_is_clamped_to_zero(self):
+        for route in self.ROUTES:
+            _, data = await self._json("GET", self._with(route, "offset=-7"))
+            self.assertEqual(data["pagination"]["offset"], 0, route)
+
+    async def test_huge_offset_is_clamped_not_500(self):
+        for route in self.ROUTES:
+            status, data = await self._json(
+                "GET", self._with(route, f"offset={10**30}")
+            )
+            self.assertEqual(status, 200, route)
+            self.assertEqual(data["pagination"]["offset"], MAX_PAGE_OFFSET, route)
+
+    async def test_non_integer_values_are_400(self):
+        for route in self.ROUTES:
+            status, data = await self._json("GET", self._with(route, "limit=1.5"))
+            self.assertEqual(status, 400, route)
+            self.assertFalse(data["success"], route)
 
 
 class TestTagMutationRoutes(RouteCoverageCase):

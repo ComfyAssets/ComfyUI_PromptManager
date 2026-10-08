@@ -245,7 +245,7 @@ class PromptRoutesMixin:
                 return bad_request("limit, offset and page must be integers")
 
             if page > 1 and offset == 0:
-                offset = (page - 1) * limit
+                offset = min((page - 1) * limit, MAX_PAGE_OFFSET)
 
             # Validated against a whitelist in the database layer
             sort = request.query.get("sort") or None
@@ -318,13 +318,9 @@ class PromptRoutesMixin:
         """Get tags with usage counts, search, sort, and pagination."""
         try:
             try:
-                limit = int(request.query.get("limit", 50))
-                offset = int(request.query.get("offset", 0))
-            except (ValueError, TypeError):
-                return web.json_response(
-                    {"success": False, "error": "Invalid limit or offset parameter"},
-                    status=400,
-                )
+                limit, offset = parse_page_params(request.query)
+            except ValueError:
+                return bad_request("limit and offset must be integers")
             search = request.query.get("search", "").strip() or None
             sort = request.query.get("sort", "alpha_asc")
 
@@ -364,13 +360,9 @@ class PromptRoutesMixin:
                 )
 
             try:
-                limit = int(request.query.get("limit", 20))
-                offset = int(request.query.get("offset", 0))
-            except (ValueError, TypeError):
-                return web.json_response(
-                    {"success": False, "error": "Invalid limit or offset parameter"},
-                    status=400,
-                )
+                limit, offset = parse_page_params(request.query, default_limit=20)
+            except ValueError:
+                return bad_request("limit and offset must be integers")
 
             result = await self._run_in_executor(
                 self.db.get_prompts_by_tags, [tag_name], "and", limit, offset
@@ -401,16 +393,9 @@ class PromptRoutesMixin:
 
             if untagged:
                 try:
-                    limit = int(request.query.get("limit", 20))
-                    offset = int(request.query.get("offset", 0))
-                except (ValueError, TypeError):
-                    return web.json_response(
-                        {
-                            "success": False,
-                            "error": "Invalid limit or offset parameter",
-                        },
-                        status=400,
-                    )
+                    limit, offset = parse_page_params(request.query, default_limit=20)
+                except ValueError:
+                    return bad_request("limit and offset must be integers")
                 result = await self._run_in_executor(
                     self.db.get_untagged_prompts, limit, offset
                 )
@@ -442,13 +427,9 @@ class PromptRoutesMixin:
                 mode = "and"
 
             try:
-                limit = int(request.query.get("limit", 20))
-                offset = int(request.query.get("offset", 0))
-            except (ValueError, TypeError):
-                return web.json_response(
-                    {"success": False, "error": "Invalid limit or offset parameter"},
-                    status=400,
-                )
+                limit, offset = parse_page_params(request.query, default_limit=20)
+            except ValueError:
+                return bad_request("limit and offset must be integers")
 
             result = await self._run_in_executor(
                 self.db.get_prompts_by_tags, tags_list, mode, limit, offset
