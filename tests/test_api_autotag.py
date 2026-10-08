@@ -92,7 +92,8 @@ class FakeAutotagService:
 
 
 class AutotagAPITestCase(AioHTTPTestCase):
-    """Stands up the PromptManager routes with a temp DB, temp output dir and a fake engine."""
+    """Stands up the PromptManager routes with a temp DB, temp output dir and a
+    fake engine."""
 
     async def get_application(self):
         self._temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")

@@ -139,7 +139,8 @@ class TestIdempotentMigrations(MigrationTestCase):
     def test_stale_prompts_new_from_a_failed_rebuild_does_not_block_startup(self):
         self._legacy_db(
             [
-                "INSERT INTO prompts (text, hash, workflow_name) VALUES ('a', 'h1', 'wf')",
+                "INSERT INTO prompts (text, hash, workflow_name)"
+                " VALUES ('a', 'h1', 'wf')",
                 "CREATE TABLE prompts_new (id INTEGER PRIMARY KEY, junk TEXT)",
                 "INSERT INTO prompts_new (junk) VALUES ('leftover')",
             ]
@@ -155,7 +156,8 @@ class TestIdempotentMigrations(MigrationTestCase):
         # DROP TABLE prompts with foreign keys ON cascades into generated_images
         self._legacy_db(
             [
-                "INSERT INTO prompts (text, hash, workflow_name) VALUES ('a', 'h1', 'wf')",
+                "INSERT INTO prompts (text, hash, workflow_name)"
+                " VALUES ('a', 'h1', 'wf')",
                 "INSERT INTO generated_images (prompt_id, image_path, filename)"
                 " VALUES (1, '/out/a.png', 'a.png')",
             ]
@@ -193,7 +195,8 @@ class TestIdempotentMigrations(MigrationTestCase):
                 LEGACY_IMAGES_TABLE.replace("prompt_id INTEGER", "prompt_id TEXT")
             )
             conn.execute(
-                "INSERT INTO prompts (text, hash, workflow_name) VALUES ('a', 'h1', 'wf')"
+                "INSERT INTO prompts (text, hash, workflow_name)"
+                " VALUES ('a', 'h1', 'wf')"
             )
             for prompt_id, name in (
                 ("1", "ok.png"),
@@ -234,7 +237,8 @@ class TestIdempotentMigrations(MigrationTestCase):
     def test_image_table_is_rebuilt_with_uniqueness_by_full_path(self):
         self._legacy_db(
             [
-                "INSERT INTO prompts (text, hash, workflow_name) VALUES ('a', 'h1', 'wf')",
+                "INSERT INTO prompts (text, hash, workflow_name)"
+                " VALUES ('a', 'h1', 'wf')",
                 # same basename in two folders: both must survive
                 "INSERT INTO generated_images (prompt_id, image_path, filename)"
                 " VALUES (1, '/out/2026-01-01/a.png', 'a.png')",

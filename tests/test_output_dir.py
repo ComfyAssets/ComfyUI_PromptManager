@@ -34,7 +34,8 @@ class TestFindComfyuiOutputDir(unittest.TestCase):
         GalleryConfig.MONITORING_DIRECTORIES = self._orig_dirs
 
     def test_configured_directory_takes_priority(self):
-        """When a valid directory is configured, it should be used instead of auto-detect."""
+        """When a valid directory is configured, it should be used instead of
+        auto-detect."""
         with tempfile.TemporaryDirectory() as tmpdir:
             GalleryConfig.MONITORING_DIRECTORIES = [tmpdir]
             self.api._cached_output_dir = None

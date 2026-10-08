@@ -52,7 +52,8 @@ class TestMonitorSingletonLifecycle(unittest.TestCase):
         self.assertIs(m1, m2)
 
     def test_singleton_survives_across_different_callers(self):
-        """Different db/tracker args on subsequent calls still return the same instance."""
+        """Different db/tracker args on subsequent calls still return the same
+        instance."""
         db1, tracker1 = MagicMock(), MagicMock()
         db2, tracker2 = MagicMock(), MagicMock()
 

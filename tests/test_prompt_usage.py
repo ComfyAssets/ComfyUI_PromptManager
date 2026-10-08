@@ -174,7 +174,8 @@ class TestUsageMigration(unittest.TestCase):
             # generated_images uses SQLite's space-separated CURRENT_TIMESTAMP format
             for i, ts in enumerate(("2026-03-05 08:00:00", "2026-02-01 09:00:00")):
                 conn.execute(
-                    "INSERT INTO generated_images (prompt_id, image_path, filename, generation_time)"
+                    "INSERT INTO generated_images"
+                    " (prompt_id, image_path, filename, generation_time)"
                     " VALUES (?, ?, ?, ?)",
                     (self.with_images, f"/out/{i}.png", f"{i}.png", ts),
                 )
