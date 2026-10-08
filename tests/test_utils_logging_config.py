@@ -175,6 +175,22 @@ class TestFilesAndRotation(IsolatedLoggerTestCase):
             stat.side_effect = stat_failing_for_logs
             self.assertEqual(self.manager.get_log_files(), [])
 
+    def test_truncate_does_not_roll_the_log_over_while_deleting_backups(self):
+        # With a file limit smaller than one record, any log line written
+        # while the backups are being deleted rolls the main log over and
+        # resurrects prompt_manager.log.1. The handler's own stream must also
+        # be reset, or its stale offset reports the old size, rolls over on the
+        # next record anyway and pads the file with zeros on POSIX.
+        self._rotate(max_file_size=400, backup_count=2, messages=10)
+        result = self.manager.truncate_logs()
+        self.assertEqual(result["errors"], [])
+        self.logger.info("after truncate")
+        leftovers = sorted(p.name for p in pathlib.Path(self.log_dir).iterdir())
+        self.assertEqual(leftovers, ["prompt_manager.log"])
+        main_log = pathlib.Path(self.log_dir, "prompt_manager.log").read_bytes()
+        self.assertNotIn(b"\x00", main_log)
+        self.assertIn(b"after truncate", main_log)
+
     def test_truncate_clears_main_log_backups_and_buffer(self):
         self._rotate()
         result = self.manager.truncate_logs()
