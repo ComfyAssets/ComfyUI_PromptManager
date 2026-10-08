@@ -6,15 +6,19 @@ search, statistics, image linking, and edge cases using
 an in-memory SQLite database.
 """
 
+import csv
+import json
 import os
+import sqlite3
 import sys
 import tempfile
+import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database.operations import PromptDatabase
+from database.operations import PromptDatabase, _resolve_db_path
 from utils.hashing import generate_prompt_hash
 
 
@@ -577,6 +581,527 @@ class TestPreviewImages(DatabaseTestCase):
         self.assertIn("images", prompt)
         self.assertLessEqual(len(prompt["images"]), 3)
         self.assertEqual(prompt["image_count"], 5)
+
+
+class TestExport(DatabaseTestCase):
+    def setUp(self):
+        super().setUp()
+        self.out_dir = tempfile.mkdtemp()
+        self.addCleanup(self._remove_out_dir)
+
+    def _remove_out_dir(self):
+        for name in os.listdir(self.out_dir):
+            os.unlink(os.path.join(self.out_dir, name))
+        os.rmdir(self.out_dir)
+
+    def test_json_export_writes_every_prompt_with_tags(self):
+        self._save("first", tags=["a", "b"], category="cat")
+        self._save("second")
+        path = os.path.join(self.out_dir, "prompts.json")
+
+        self.assertTrue(self.db.export_prompts(path, "json"))
+
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        self.assertEqual(sorted(p["text"] for p in data), ["first", "second"])
+        self.assertEqual(
+            next(p for p in data if p["text"] == "first")["tags"], ["a", "b"]
+        )
+
+    def test_csv_export_joins_tags(self):
+        self._save("first", tags=["a", "b"])
+        path = os.path.join(self.out_dir, "prompts.csv")
+
+        self.assertTrue(self.db.export_prompts(path, "CSV"))
+
+        with open(path, newline="", encoding="utf-8") as fh:
+            rows = list(csv.DictReader(fh))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["text"], "first")
+        self.assertEqual(rows[0]["tags"], "a, b")
+
+    def test_csv_export_of_empty_database_writes_nothing(self):
+        path = os.path.join(self.out_dir, "empty.csv")
+        self.assertTrue(self.db.export_prompts(path, "csv"))
+        self.assertFalse(os.path.exists(path))
+
+    def test_unsupported_format_returns_false(self):
+        self._save("x")
+        path = os.path.join(self.out_dir, "prompts.xml")
+        self.assertFalse(self.db.export_prompts(path, "xml"))
+        self.assertFalse(os.path.exists(path))
+
+    def test_unwritable_destination_returns_false(self):
+        self._save("x")
+        path = os.path.join(self.out_dir, "missing", "dir", "prompts.json")
+        self.assertFalse(self.db.export_prompts(path, "json"))
+
+
+class TestDuplicateMerging(DatabaseTestCase):
+    def _save_dup(self, text, created_at, **kwargs):
+        pid = self.db.save_prompt(text=text, prompt_hash=None, **kwargs)
+        with sqlite3.connect(self.temp_db.name) as conn:
+            conn.execute(
+                "UPDATE prompts SET created_at = ? WHERE id = ?", (created_at, pid)
+            )
+        return pid
+
+    def test_find_duplicates_groups_case_insensitively_oldest_first(self):
+        newer = self._save_dup("Same Text", "2026-02-01T00:00:00", tags=["t2"])
+        older = self._save_dup("same text  ", "2026-01-01T00:00:00", tags=["t1"])
+        self._save_dup("unique", "2026-01-01T00:00:00")
+
+        groups = self.db.find_duplicates()
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual([p["id"] for p in groups[0]["prompts"]], [older, newer])
+        self.assertEqual(groups[0]["text"], "same text")
+        self.assertEqual(groups[0]["prompts"][0]["tags"], ["t1"])
+
+    def test_cleanup_keeps_oldest_merges_metadata_and_moves_images(self):
+        keep = self._save_dup(
+            "dup", "2026-01-01T00:00:00", tags=["a"], notes="first", rating=2
+        )
+        drop = self._save_dup(
+            "DUP",
+            "2026-02-01T00:00:00",
+            tags=["b"],
+            category="cat",
+            notes="second",
+            rating=4,
+        )
+        self.db.link_image_to_prompt(drop, "/out/moved.png")
+        self.db.link_image_to_prompt(keep, "/out/kept.png")
+
+        removed = self.db.cleanup_duplicates()
+
+        self.assertEqual(removed, 1)
+        self.assertIsNone(self.db.get_prompt_by_id(drop))
+        merged = self.db.get_prompt_by_id(keep)
+        self.assertEqual(merged["category"], "cat")
+        self.assertEqual(merged["rating"], 4)
+        self.assertEqual(merged["notes"], "first | second")
+        self.assertEqual(sorted(merged["tags"]), ["a", "b"])
+        self.assertEqual(len(self.db.get_prompt_images(keep)), 2)
+
+    def test_cleanup_takes_notes_from_duplicate_when_primary_has_none(self):
+        keep = self._save_dup("note dup", "2026-01-01T00:00:00")
+        self._save_dup("note dup", "2026-02-01T00:00:00", notes="only here")
+        self.db.cleanup_duplicates()
+        self.assertEqual(self.db.get_prompt_by_id(keep)["notes"], "only here")
+
+    def test_duplicate_scans_return_empty_on_database_error(self):
+        with patch.object(
+            self.db.model, "get_connection", side_effect=sqlite3.OperationalError
+        ):
+            self.assertEqual(self.db.find_duplicates(), [])
+            self.assertEqual(self.db.cleanup_duplicates(), 0)
+
+    def test_hash_duplicates_are_impossible_under_unique_hash(self):
+        self._save("one")
+        self.assertEqual(self.db.check_hash_duplicates(), [])
+
+    def test_merge_helpers_survive_database_errors(self):
+        pid = self._save("helper")
+        broken = MagicMock()
+        broken.execute.side_effect = sqlite3.OperationalError("disk I/O error")
+        self.assertEqual(self.db._merge_duplicate_metadata(broken, pid, []), {})
+        self.assertEqual(self.db._transfer_images_to_primary(broken, pid, [pid]), 0)
+        self.db._update_primary_with_merged_metadata(broken, pid, {"tags": []})
+        self.assertEqual(self.db.get_prompt_by_id(pid)["text"], "helper")
+
+
+class TestImageQueries(DatabaseTestCase):
+    METADATA = {
+        "file_info": {"size": 123, "dimensions": [640, 480], "format": "PNG"},
+        "workflow": {"nodes": [1, 2]},
+        "prompt": {"3": {"inputs": {"cfg": float("nan")}}},
+        "parameters": {"steps": 20},
+    }
+
+    def test_link_stores_metadata_and_cleans_nan(self):
+        pid = self._save("with metadata")
+        image_id = self.db.link_image_to_prompt(pid, "/out/meta.png", self.METADATA)
+
+        image = self.db.get_image_by_id(image_id)
+        self.assertEqual(image["file_size"], 123)
+        self.assertEqual((image["width"], image["height"]), (640, 480))
+        self.assertEqual(image["format"], "PNG")
+        self.assertEqual(image["workflow_data"], {"nodes": [1, 2]})
+        self.assertIsNone(image["prompt_metadata"]["3"]["inputs"]["cfg"])
+        self.assertEqual(image["parameters"], {"steps": 20})
+
+    def test_link_rejects_temporary_invalid_and_unknown_prompt_ids(self):
+        self.assertEqual(self.db.link_image_to_prompt("temp_123", "/out/a.png"), 0)
+        self.assertEqual(self.db.link_image_to_prompt("not-an-id", "/out/a.png"), 0)
+        self.assertEqual(self.db.link_image_to_prompt(99999, "/out/a.png"), 0)
+        self.assertEqual(self.db.link_image_to_prompt(None, "/out/a.png"), 0)
+
+    def test_link_returns_zero_on_database_error(self):
+        pid = self._save("err")
+        with patch.object(
+            self.db.model, "get_connection", side_effect=sqlite3.OperationalError
+        ):
+            self.assertEqual(self.db.link_image_to_prompt(pid, "/out/a.png"), 0)
+
+    def test_recent_all_and_search_images_carry_prompt_text(self):
+        a = self._save("alpha prompt", tags=["x"])
+        b = self._save("beta prompt")
+        self.db.link_image_to_prompt(a, "/out/a1.png")
+        self.db.link_image_to_prompt(b, "/out/b1.png")
+        with sqlite3.connect(self.temp_db.name) as conn:
+            conn.execute(
+                "UPDATE generated_images SET generation_time = '2026-01-01 00:00:00'"
+                " WHERE filename = 'a1.png'"
+            )
+            conn.execute(
+                "UPDATE generated_images SET generation_time = '2026-02-01 00:00:00'"
+                " WHERE filename = 'b1.png'"
+            )
+
+        recent = self.db.get_recent_images(limit=10)
+        self.assertEqual(
+            [i["prompt_text"] for i in recent], ["beta prompt", "alpha prompt"]
+        )
+
+        everything = self.db.get_all_images()
+        self.assertEqual(len(everything), 2)
+        by_text = {i["prompt_text"]: i for i in everything}
+        self.assertEqual(by_text["alpha prompt"]["prompt_tags"], ["x"])
+        self.assertEqual(by_text["beta prompt"]["prompt_tags"], [])
+
+        page = self.db.get_all_images(limit=1, offset=1)
+        self.assertEqual([i["prompt_text"] for i in page], ["alpha prompt"])
+
+        found = self.db.search_images_by_prompt("alpha")
+        self.assertEqual([i["filename"] for i in found], ["a1.png"])
+
+    def test_image_search_treats_like_wildcards_literally(self):
+        literal = self._save("50% off")
+        other = self._save("50 percent off")
+        self.db.link_image_to_prompt(literal, "/out/literal.png")
+        self.db.link_image_to_prompt(other, "/out/other.png")
+        found = self.db.search_images_by_prompt("50%")
+        self.assertEqual([i["filename"] for i in found], ["literal.png"])
+
+    def test_delete_image(self):
+        pid = self._save("del")
+        image_id = self.db.link_image_to_prompt(pid, "/out/del.png")
+        self.assertTrue(self.db.delete_image(image_id))
+        self.assertFalse(self.db.delete_image(image_id))
+        self.assertIsNone(self.db.get_image_by_id(image_id))
+
+    def test_cleanup_missing_images_keeps_files_that_exist(self):
+        pid = self._save("files")
+        fd, existing = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        self.addCleanup(os.unlink, existing)
+        self.db.link_image_to_prompt(pid, existing)
+        self.db.link_image_to_prompt(
+            pid, os.path.join(tempfile.gettempdir(), "gone.png")
+        )
+
+        self.assertEqual(self.db.cleanup_missing_images(), 1)
+        images = self.db.get_prompt_images(pid)
+        self.assertEqual([i["image_path"] for i in images], [existing])
+
+    def test_image_prompt_info_by_exact_normalised_or_basename_path(self):
+        pid = self._save("lookup", tags=["t"], category="c", rating=3, notes="n")
+        stored = os.path.join("out", "sub", "look.png")
+        self.db.link_image_to_prompt(pid, stored, self.METADATA)
+
+        exact = self.db.get_image_prompt_info(stored)
+        self.assertEqual(exact["prompt_id"], pid)
+        self.assertEqual(exact["tags"], ["t"])
+        self.assertEqual(exact["workflow_data"], {"nodes": [1, 2]})
+
+        normalised = self.db.get_image_prompt_info(
+            os.path.join("out", "x", "..", "sub", "look.png")
+        )
+        self.assertEqual(normalised["prompt_id"], pid)
+        basename = self.db.get_image_prompt_info(os.path.join("elsewhere", "look.png"))
+        self.assertEqual(basename["prompt_id"], pid)
+        self.assertIsNone(self.db.get_image_prompt_info("nothing.png"))
+
+        self.assertEqual(self.db.get_prompt_id_for_image(stored), pid)
+        self.assertEqual(
+            self.db.get_prompt_id_for_image(
+                os.path.join(".", "out", "sub", "look.png")
+            ),
+            pid,
+        )
+        self.assertIsNone(self.db.get_prompt_id_for_image("nothing.png"))
+
+    def test_image_row_with_broken_json_yields_empty_dicts(self):
+        pid = self._save("broken")
+        image_id = self.db.link_image_to_prompt(pid, "/out/broken.png")
+        with sqlite3.connect(self.temp_db.name) as conn:
+            conn.execute(
+                "UPDATE generated_images SET workflow_data = '{not json', "
+                "prompt_metadata = '{\"k\": 1}', parameters = NULL WHERE id = ?",
+                (image_id,),
+            )
+        image = self.db.get_image_by_id(image_id)
+        self.assertEqual(image["workflow_data"], {})
+        self.assertEqual(image["prompt_metadata"], {"k": 1})
+        self.assertEqual(image["parameters"], {})
+        info = self.db.get_image_prompt_info("/out/broken.png")
+        self.assertIsNone(info["workflow_data"])
+        self.assertEqual(info["prompt_metadata"], {"k": 1})
+
+
+class TestMaintenanceOperations(DatabaseTestCase):
+    def test_statistics_count_everything(self):
+        a = self._save("a", category="cat", tags=["t1", "t2"], rating=4)
+        self._save("b", category=" cat ", rating=2)
+        self._save("c")
+        self.db.link_image_to_prompt(a, "/out/a.png")
+        self.db.link_image_to_prompt(a, "/out/b.png")
+
+        stats = self.db.get_statistics()
+
+        self.assertEqual(stats["total_prompts"], 3)
+        self.assertEqual(stats["total_categories"], 1)
+        self.assertEqual(stats["average_rating"], 3.0)
+        self.assertEqual(stats["total_tags"], 2)
+        self.assertEqual(stats["total_images"], 2)
+        self.assertEqual(stats["images_with_prompts"], 1)
+
+    def test_update_text_and_rating(self):
+        pid = self._save("old text", rating=1)
+        self.assertTrue(self.db.update_prompt_text(pid, "new text"))
+        self.assertTrue(self.db.update_prompt_rating(pid, 5))
+        prompt = self.db.get_prompt_by_id(pid)
+        self.assertEqual((prompt["text"], prompt["rating"]), ("new text", 5))
+        self.assertFalse(self.db.update_prompt_text(99999, "x"))
+        self.assertFalse(self.db.update_prompt_rating(99999, 3))
+
+    def test_update_metadata_validation(self):
+        pid = self._save("meta")
+        self.assertFalse(self.db.update_prompt_metadata(pid))
+        with self.assertRaises(ValueError):
+            self.db.update_prompt_metadata(pid, rating=7)
+        self.assertTrue(self.db.update_prompt_metadata(pid, tags=["only tags"]))
+        self.assertEqual(self.db.get_prompt_by_id(pid)["tags"], ["only tags"])
+
+    def test_save_prompt_validation(self):
+        with self.assertRaises(ValueError):
+            self.db.save_prompt(text="   ")
+        with self.assertRaises(ValueError):
+            self.db.save_prompt(text="rated", rating=0)
+
+    def test_bulk_operations(self):
+        a = self._save("a", tags=["keep"])
+        b = self._save("b")
+        c = self._save("c")
+        self.db.link_image_to_prompt(c, "/out/c.png")
+
+        self.assertEqual(self.db.bulk_add_tags([a, b, 99999], ["keep", "new"]), 2)
+        self.assertEqual(self.db.bulk_add_tags([a], ["keep"]), 0)
+        self.assertEqual(sorted(self.db.get_prompt_by_id(a)["tags"]), ["keep", "new"])
+
+        self.assertEqual(self.db.bulk_set_category([a, b, 99999], "bulk"), 2)
+        self.assertEqual(self.db.get_prompt_by_id(b)["category"], "bulk")
+
+        self.assertEqual(self.db.bulk_delete_prompts([b, c, 99999]), 2)
+        self.assertIsNone(self.db.get_prompt_by_id(c))
+        self.assertEqual(self.db.get_prompt_images(c), [])
+
+    def test_prune_orphaned_prompts_spares_protected_and_illustrated(self):
+        orphan = self._save("orphan")
+        protected = self._save("protected", tags=["__protected__"])
+        illustrated = self._save("illustrated")
+        self.db.link_image_to_prompt(illustrated, "/out/i.png")
+
+        self.assertEqual(self.db.prune_orphaned_prompts(), 1)
+        self.assertIsNone(self.db.get_prompt_by_id(orphan))
+        self.assertIsNotNone(self.db.get_prompt_by_id(protected))
+        self.assertIsNotNone(self.db.get_prompt_by_id(illustrated))
+        self.assertEqual(self.db.prune_orphaned_prompts(), 0)
+
+    def test_consistency_check_reports_orphaned_rows(self):
+        self.assertEqual(self.db.check_consistency(), [])
+        pid = self._save("to orphan", tags=["t"])
+        self.db.link_image_to_prompt(pid, "/out/o.png")
+        self.db.close()
+        with sqlite3.connect(self.temp_db.name) as conn:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute("DELETE FROM prompts WHERE id = ?", (pid,))
+
+        issues = self.db.check_consistency()
+
+        self.assertEqual(len(issues), 2)
+        self.assertTrue(any("prompt_tags" in i for i in issues))
+        self.assertTrue(any(i.startswith("Image ") for i in issues))
+
+    def test_subfolders_relative_to_roots_with_ancestors(self):
+        pid = self._save("folders")
+        root = os.path.join(os.sep, "gallery")
+        self.db.link_image_to_prompt(
+            pid, os.path.join(root, "2026", "08-Aug", "2026-08-06", "a.png")
+        )
+        self.db.link_image_to_prompt(pid, os.path.join(root, "b.png"))
+        self.db.link_image_to_prompt(
+            pid, os.path.join(os.sep, "elsewhere", "deep", "c.png")
+        )
+        self.db.link_image_to_prompt(pid, "loose.png")
+
+        flat = self.db.get_prompt_subfolders(root_dirs=[root])
+        self.assertIn(os.path.join("2026", "08-Aug", "2026-08-06"), flat)
+        self.assertIn(os.path.join(os.sep, "elsewhere", "deep"), flat)
+        self.assertNotIn(".", flat)
+
+        nested = self.db.get_prompt_subfolders(root_dirs=[root], include_ancestors=True)
+        self.assertIn("2026", nested)
+        self.assertIn("2026/08-Aug", nested)
+
+        without_roots = self.db.get_prompt_subfolders()
+        self.assertIn(os.path.join(root, "2026", "08-Aug", "2026-08-06"), without_roots)
+
+    def test_prompts_by_tags_and_or_modes(self):
+        both = self._save("both", tags=["x", "y"])
+        only_x = self._save("only x", tags=["x"])
+        self._save("none")
+
+        self.assertEqual(self.db.get_prompts_by_tags([])["total"], 0)
+        either = self.db.get_prompts_by_tags(["x", "y"], mode="or")
+        self.assertEqual(sorted(p["id"] for p in either["prompts"]), [both, only_x])
+        self.assertEqual(either["total"], 2)
+        all_of = self.db.get_prompts_by_tags(["x", "y"], mode="and", limit=1)
+        self.assertEqual([p["id"] for p in all_of["prompts"]], [both])
+        self.assertFalse(all_of["has_more"])
+
+    def test_tag_counts_with_search_and_sorts(self):
+        self._save("1", tags=["beta", "alpha"])
+        self._save("2", tags=["beta"])
+
+        by_count = self.db.get_tags_with_counts(sort="count_desc")
+        self.assertEqual([t["name"] for t in by_count["tags"]], ["beta", "alpha"])
+        ascending = self.db.get_tags_with_counts(sort="count_asc")
+        self.assertEqual([t["name"] for t in ascending["tags"]], ["alpha", "beta"])
+        reverse = self.db.get_tags_with_counts(sort="alpha_desc")
+        self.assertEqual([t["name"] for t in reverse["tags"]], ["beta", "alpha"])
+        searched = self.db.get_tags_with_counts(search="alp")
+        self.assertEqual(searched["total"], 1)
+        self.assertEqual(searched["tags"][0]["count"], 1)
+
+    def test_tag_management_edge_cases(self):
+        a = self._save("a", tags=["old", "target"])
+        b = self._save("b", tags=["old"])
+
+        merged = self.db.rename_tag_all_prompts("old", "target")
+        self.assertEqual(merged["affected_count"], 2)
+        self.assertEqual(self.db.get_prompt_by_id(a)["tags"], ["target"])
+        self.assertEqual(self.db.get_prompt_by_id(b)["tags"], ["target"])
+        self.assertEqual(
+            self.db.rename_tag_all_prompts("missing", "x")["affected_count"], 0
+        )
+        self.assertEqual(self.db.delete_tag_all_prompts("missing")["affected_count"], 0)
+        with self.assertRaises(ValueError):
+            self.db.rename_tag_all_prompts(" ", "x")
+        with self.assertRaises(ValueError):
+            self.db.rename_tag_all_prompts("x", "")
+        with self.assertRaises(ValueError):
+            self.db.delete_tag_all_prompts("")
+        with self.assertRaises(ValueError):
+            self.db.merge_tags([], "t")
+        with self.assertRaises(ValueError):
+            self.db.merge_tags(["a"], " ")
+
+        result = self.db.merge_tags(["missing", "target"], "final")
+        self.assertEqual(result["tags_merged"], 1)
+        self.assertEqual(result["affected_count"], 2)
+        self.assertEqual(self.db.get_all_tags(), ["final"])
+
+    def test_untagged_and_category_helpers(self):
+        self._save("tagged", tags=["t"], category="  ")
+        untagged = self._save("plain", category="shown")
+
+        self.assertEqual(self.db.get_untagged_prompts_count(), 1)
+        page = self.db.get_untagged_prompts(limit=5)
+        self.assertEqual([p["id"] for p in page["prompts"]], [untagged])
+        self.assertEqual(self.db.get_all_categories(), ["shown"])
+        self.assertEqual(self.db.delete_prompts_by_category("nothing"), 0)
+
+
+class TestRowConversion(DatabaseTestCase):
+    def test_legacy_json_tags_column_is_parsed(self):
+        convert = self.db._row_to_dict
+        self.assertEqual(convert({"tags": '["a", "b"]'})["tags"], ["a", "b"])
+        self.assertEqual(convert({"tags": '"a, b"'})["tags"], ["a", "b"])
+        self.assertEqual(convert({"tags": "5"})["tags"], [])
+        self.assertEqual(convert({"tags": "{not json"})["tags"], [])
+        self.assertEqual(convert({"tags": None})["tags"], [])
+        self.assertEqual(convert({"_tag_list": None})["tags"], [])
+
+    def test_search_date_filters(self):
+        pid = self._save("dated")
+        with sqlite3.connect(self.temp_db.name) as conn:
+            conn.execute(
+                "UPDATE prompts SET created_at = '2026-05-01T00:00:00' WHERE id = ?",
+                (pid,),
+            )
+        self.assertEqual(
+            len(self.db.search_prompts(date_from="2026-04-01", date_to="2026-06-01")), 1
+        )
+        self.assertEqual(len(self.db.search_prompts(date_from="2026-06-01")), 0)
+        self.assertEqual(len(self.db.search_prompts(date_to="2026-04-01")), 0)
+        self.assertEqual(len(self.db.search_prompts(rating_max=3)), 0)
+
+
+class TestResolveDbPathFromConfig(unittest.TestCase):
+    def test_default_path_comes_from_config_when_importable(self):
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(os.rmdir, tmpdir)
+        fake = types.ModuleType("py.config")
+        fake.PromptManagerConfig = types.SimpleNamespace(
+            DEFAULT_DB_PATH=os.path.join(tmpdir, "configured.db")
+        )
+        with patch.dict(sys.modules, {"py.config": fake}):
+            self.assertEqual(
+                _resolve_db_path(None), os.path.join(tmpdir, "configured.db")
+            )
+
+    def test_falls_back_to_prompts_db_when_config_cannot_import(self):
+        # Outside ComfyUI py.config fails to import (needs the server module)
+        with patch.dict(sys.modules, {"py.config": None}):
+            resolved = _resolve_db_path(None)
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.assertEqual(resolved, os.path.join(root, "prompts.db"))
+
+
+class TestModelHousekeeping(DatabaseTestCase):
+    def test_database_info_reports_counts_and_handles_errors(self):
+        self._save("rated", rating=4, category="c")
+        info = self.db.model.get_database_info()
+        self.assertEqual(info["total_prompts"], 1)
+        self.assertEqual(info["unique_categories"], 1)
+        self.assertEqual(info["average_rating"], 4.0)
+        self.assertGreater(info["database_size_bytes"], 0)
+        with patch.object(
+            self.db.model, "get_connection", side_effect=sqlite3.OperationalError
+        ):
+            self.assertEqual(self.db.model.get_database_info(), {})
+
+    def test_vacuum_and_noop_migrate(self):
+        self._save("x")
+        self.db.model.vacuum_database()
+        self.db.model.migrate_database()
+        with patch(
+            "database.models.sqlite3.connect", side_effect=sqlite3.OperationalError
+        ):
+            self.db.model.vacuum_database()  # logged, not raised
+        self.assertEqual(len(self.db.search_prompts()), 1)
+
+    def test_close_tolerates_a_connection_that_fails_to_close(self):
+        real = self.db.model.get_connection()
+        real.close()
+        failing = MagicMock()
+        failing.close.side_effect = sqlite3.ProgrammingError("already closed")
+        self.db.model._local.conn = failing
+        self.db.close()  # logged, not raised
+        self.assertTrue(failing.close.called)
+        self.assertIsNot(self.db.model.get_connection(), failing)
 
 
 if __name__ == "__main__":

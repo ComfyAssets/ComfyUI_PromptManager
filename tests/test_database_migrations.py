@@ -185,6 +185,43 @@ class TestIdempotentMigrations(MigrationTestCase):
         self.assertIn("workflow_name", self._columns("prompts"))
         self.assertNotIn("prompts_new", self._table_names())
 
+    def test_text_prompt_ids_in_images_become_integers(self):
+        conn = sqlite3.connect(self.path)
+        try:
+            conn.execute(LEGACY_PROMPTS_TABLE)
+            conn.execute(
+                LEGACY_IMAGES_TABLE.replace("prompt_id INTEGER", "prompt_id TEXT")
+            )
+            conn.execute(
+                "INSERT INTO prompts (text, hash, workflow_name) VALUES ('a', 'h1', 'wf')"
+            )
+            for prompt_id, name in (
+                ("1", "ok.png"),
+                ("", "blank.png"),
+                ("7", "gone.png"),
+            ):
+                conn.execute(
+                    "INSERT INTO generated_images (prompt_id, image_path, filename)"
+                    " VALUES (?, ?, ?)",
+                    (prompt_id, "/out/" + name, name),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        db = self._open()
+
+        conn = sqlite3.connect(self.path)
+        try:
+            types_ = {
+                r[1]: r[2] for r in conn.execute("PRAGMA table_info(generated_images)")
+            }
+        finally:
+            conn.close()
+        self.assertEqual(types_["prompt_id"], "INTEGER")
+        self.assertEqual([i["filename"] for i in db.get_prompt_images(1)], ["ok.png"])
+        self.assertEqual(db.get_statistics()["total_images"], 1)
+
     def test_migrated_database_opens_cleanly_a_second_time(self):
         self._legacy_db(
             ["INSERT INTO prompts (text, hash, workflow_name) VALUES ('a', 'h1', 'wf')"]
