@@ -181,24 +181,33 @@ def resolve_text(graph: Any, node_id: str) -> Optional[str]:
     """
     if not isinstance(graph, dict):
         return None
-    seen = set()
+    # Cycle detection is scoped to the current path so a node read by two
+    # branches (a diamond, or StringConcatenate(string_a=X, string_b=X))
+    # resolves in both; the visit counter bounds total work regardless.
+    path = {str(node_id)}
+    visits = [0]
 
     def resolve(value: Any) -> Optional[str]:
         if isinstance(value, str):
             return value
-        if not _is_link(value) or len(seen) >= MAX_VISITS:
+        if not _is_link(value):
+            return None
+        visits[0] += 1
+        if visits[0] > MAX_VISITS:
             return None
         source_id = str(value[0])
-        if source_id in seen:
+        if source_id in path:
             return None
-        seen.add(source_id)
         source = graph.get(source_id)
         if not isinstance(source, dict):
             return None
-        return _resolve_string_node(
-            str(source.get("class_type", "")), _inputs(source), resolve
-        )
+        path.add(source_id)
+        try:
+            return _resolve_string_node(
+                str(source.get("class_type", "")), _inputs(source), resolve
+            )
+        finally:
+            path.discard(source_id)
 
-    seen.add(str(node_id))
     text = resolve(_inputs(graph.get(str(node_id))).get("text"))
     return text.strip() if isinstance(text, str) and text.strip() else None

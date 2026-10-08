@@ -361,6 +361,64 @@ class TestResolveText(unittest.TestCase):
                 resolve_text(self._linked(source), "1"), source["class_type"]
             )
 
+    def test_same_source_used_twice_resolves_both_branches(self):
+        # StringConcatenate(string_a=X, string_b=X): X is not a cycle, it is
+        # simply shared, and must resolve in both branches.
+        graph = {
+            "1": pm(["2", 0]),
+            "2": {
+                "class_type": "StringConcatenate",
+                "inputs": {
+                    "string_a": ["3", 0],
+                    "string_b": ["3", 0],
+                    "delimiter": "+",
+                },
+            },
+            "3": {"class_type": "PrimitiveString", "inputs": {"value": "x"}},
+        }
+        self.assertEqual(resolve_text(graph, "1"), "x+x")
+
+    def test_diamond_graph_resolves(self):
+        # 1 <- 2 <- (3, 4) and both 3 and 4 read from 5
+        graph = {
+            "1": pm(["2", 0]),
+            "2": {
+                "class_type": "StringConcatenate",
+                "inputs": {
+                    "string_a": ["3", 0],
+                    "string_b": ["4", 0],
+                    "delimiter": " ",
+                },
+            },
+            "3": {"class_type": "ShowText|pysssss", "inputs": {"text": ["5", 0]}},
+            "4": {"class_type": "Text Multiline", "inputs": {"text": ["5", 0]}},
+            "5": {"class_type": "PrimitiveString", "inputs": {"value": "cat"}},
+        }
+        self.assertEqual(resolve_text(graph, "1"), "cat cat")
+
+    def test_indirect_cycle_returns_none(self):
+        graph = {
+            "1": pm(["2", 0]),
+            "2": {"class_type": "ShowText|pysssss", "inputs": {"text": ["3", 0]}},
+            "3": {"class_type": "Text Multiline", "inputs": {"text": ["2", 0]}},
+        }
+        self.assertIsNone(resolve_text(graph, "1"))
+
+    def test_visit_budget_bounds_shared_fan_out(self):
+        # A chain of concatenations that each read the previous node twice
+        # expands exponentially without memoisation; MAX_VISITS must cap it.
+        graph = {"0": {"class_type": "PrimitiveString", "inputs": {"value": "a"}}}
+        for i in range(1, 400):
+            prev = [str(i - 1), 0]
+            graph[str(i)] = {
+                "class_type": "StringConcatenate",
+                "inputs": {"string_a": prev, "string_b": prev, "delimiter": ""},
+            }
+        graph["pm"] = pm(["399", 0])
+        start = time.monotonic()
+        self.assertIsNone(resolve_text(graph, "pm"))
+        self.assertLess(time.monotonic() - start, 2.0)
+
     def test_cycles_and_missing_links(self):
         graph = {
             "1": pm(["2", 0]),
