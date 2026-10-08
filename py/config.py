@@ -68,6 +68,27 @@ def _canonical_path(path: str) -> str:
     return os.path.normcase(os.path.realpath(path))
 
 
+def write_private_json(path: str, data: Any) -> None:
+    """Write ``data`` as JSON to ``path`` readable by the current user only.
+
+    config.json can hold an API key (integrations.lora_manager), so it is
+    created with mode 0600 and, on POSIX, an existing more open file is
+    tightened too. Windows has no POSIX modes; there the chmod is a best
+    effort that only affects the read-only bit. Parent directories are
+    created as needed. Raises OSError when the file cannot be written.
+    """
+    import json
+
+    parent_dir = os.path.dirname(path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    if os.name == "posix":
+        os.chmod(path, 0o600)
+
+
 def _is_filesystem_root(path: str) -> bool:
     """True for '/' on POSIX and drive roots such as 'C:\\' on Windows."""
     return os.path.dirname(path) == path
@@ -590,20 +611,11 @@ class PromptManagerConfig:
             PromptManagerConfig.save_to_file('backup_config.json')
             PromptManagerConfig.save_to_file('/etc/comfyui/prompt_manager.json')
         """
-        import json
-
         if config_path is None:
             config_path = cls.get_config_path()
 
         try:
-            config = cls.get_config()
-            parent_dir = os.path.dirname(config_path)
-            if parent_dir:
-                os.makedirs(parent_dir, exist_ok=True)
-
-            with open(config_path, "w") as f:
-                json.dump(config, f, indent=2)
-
+            write_private_json(config_path, cls.get_config())
             config_logger.info(f"Saved configuration to {config_path}")
         except Exception as e:
             config_logger.error(f"Error saving config to {config_path}: {e}")

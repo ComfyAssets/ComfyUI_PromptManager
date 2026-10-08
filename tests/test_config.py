@@ -193,6 +193,28 @@ class TestPromptManagerConfig(unittest.TestCase):
 
             shutil.rmtree(tmp_dir)
 
+    def test_saved_file_is_private_to_the_user(self):
+        import stat
+
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            path = os.path.join(tmp_dir, "config.json")
+            PromptManagerConfig.save_to_file(path)
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+            if os.name == "posix":
+                self.assertEqual(mode, 0o600)
+            with open(path) as f:
+                self.assertIn("database", json.load(f))
+            # Overwriting an existing, more open file tightens it as well
+            os.chmod(path, 0o644)
+            PromptManagerConfig.save_to_file(path)
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+        finally:
+            import shutil
+
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
     def test_saved_file_is_valid_json(self):
         tmp = tempfile.NamedTemporaryFile(
             delete=False, suffix=".json", dir=tempfile.gettempdir()

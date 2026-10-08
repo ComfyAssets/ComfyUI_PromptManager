@@ -79,6 +79,7 @@ class AdminAPITestCase(AioHTTPTestCase):
             sys.modules.pop("folder_paths", None)
         else:
             sys.modules["folder_paths"] = self._orig_folder_paths
+        self.api.db.close_all()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     # ── helpers ────────────────────────────────────────────────────────
@@ -939,6 +940,52 @@ class TestSettingsMisc(AdminAPITestCase):
         saved = self._read_config()
         self.assertEqual(saved["web_ui"]["result_timeout"], 9)
 
+    async def test_save_merges_into_existing_config_file(self):
+        self._write_config(
+            {
+                "integrations": {"lora_manager": {"enabled": True, "path": "x"}},
+                "database": {"default_path": "custom.db"},
+                "web_ui": {"result_timeout": 1, "show_test_button": True},
+            }
+        )
+
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/settings",
+            json={"result_timeout": 7, "gallery_root_paths": [str(self.output_dir)]},
+        )
+
+        self.assertEqual(resp.status, 200)
+        saved = self._read_config()
+        self.assertEqual(saved["integrations"]["lora_manager"]["enabled"], True)
+        self.assertEqual(saved["integrations"]["lora_manager"]["path"], "x")
+        self.assertEqual(saved["database"]["default_path"], "custom.db")
+        self.assertEqual(saved["web_ui"]["result_timeout"], 7)
+        self.assertEqual(saved["web_ui"]["show_test_button"], True)
+        self.assertEqual(
+            saved["gallery"]["monitoring"]["directories"], [str(self.output_dir)]
+        )
+
+    async def test_save_replaces_a_corrupt_config_file(self):
+        with open(self.config_path, "w") as f:
+            f.write("{not json")
+        resp = await self.client.request(
+            "POST", "/prompt_manager/settings", json={"result_timeout": 4}
+        )
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(self._read_config()["web_ui"]["result_timeout"], 4)
+
+    async def test_saved_config_file_is_private_to_the_user(self):
+        import stat
+
+        resp = await self.client.request(
+            "POST", "/prompt_manager/settings", json={"result_timeout": 4}
+        )
+        self.assertEqual(resp.status, 200)
+        if os.name == "posix":
+            mode = stat.S_IMODE(os.stat(self.config_path).st_mode)
+            self.assertEqual(mode, 0o600)
+
     async def test_invalid_result_timeout_is_400(self):
         resp = await self.client.request(
             "POST", "/prompt_manager/settings", json={"result_timeout": "soon"}
@@ -1089,6 +1136,34 @@ class TestTestImageLink(AdminAPITestCase):
         self.assertEqual(resp.status, 200)
         self.assertEqual(data["result"]["status"], "ok")
         self.assertIsInstance(data["result"]["image_id"], int)
+
+    async def test_client_supplied_path_is_not_stored(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        pid = self.api.db.save_prompt(text="hello", prompt_hash="h1")
+        evil = os.path.join(self.tmpdir, "etc", "passwd")
+
+        resp = await self._post({"prompt_id": pid, "image_path": evil})
+
+        data = await resp.json()
+        self.assertEqual(resp.status, 200, data)
+        images = self.api.db.get_prompt_images(pid)
+        self.assertEqual(len(images), 1)
+        stored = Path(images[0]["image_path"])
+        self.assertNotEqual(os.path.normcase(str(stored)), os.path.normcase(evil))
+        self.assertTrue(
+            stored.resolve().is_relative_to(self.output_dir.resolve()),
+            stored,
+        )
+        self.assertIn("test", stored.name.lower())
+        self.assertNotIn(self.tmpdir, json.dumps(data))
+
+    async def test_without_output_dir_a_relative_marker_is_used(self):
+        self.api._find_comfyui_output_dir = lambda: None
+        pid = self.api.db.save_prompt(text="hello", prompt_hash="h1")
+        resp = await self._post({"prompt_id": pid, "image_path": "/x/y.png"})
+        self.assertEqual(resp.status, 200)
+        images = self.api.db.get_prompt_images(pid)
+        self.assertFalse(os.path.isabs(images[0]["image_path"]))
 
     async def test_db_failure_is_reported_in_result(self):
         self.api.db.link_image_to_prompt = _raise

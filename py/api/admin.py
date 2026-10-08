@@ -713,25 +713,39 @@ class AdminRoutesMixin:
         return True
 
     def _persist_settings(self):
-        """Write the user-editable settings to the configured config.json."""
-        from ..config import PromptManagerConfig, GalleryConfig
+        """Merge the user-editable settings into the configured config.json.
+
+        Only the keys this endpoint owns are rewritten; every other section
+        (integrations, database, performance, ...) and every other key in
+        ``web_ui``/``gallery`` is kept as it was. A config file that cannot
+        be parsed is replaced.
+        """
+        from ..config import GalleryConfig, PromptManagerConfig, write_private_json
 
         config_file = PromptManagerConfig.get_config_path()
-        config_data = {
-            "web_ui": {
-                "result_timeout": PromptManagerConfig.RESULT_TIMEOUT,
-                "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE,
-            },
-            "gallery": {
-                "monitoring": {"directories": GalleryConfig.MONITORING_DIRECTORIES}
-            },
-        }
+        existing = self._read_config_file(config_file)
+        web_ui = dict(existing.get("web_ui") or {})
+        web_ui["result_timeout"] = PromptManagerConfig.RESULT_TIMEOUT
+        web_ui["webui_display_mode"] = PromptManagerConfig.WEBUI_DISPLAY_MODE
+        gallery = dict(existing.get("gallery") or {})
+        monitoring = dict(gallery.get("monitoring") or {})
+        monitoring["directories"] = list(GalleryConfig.MONITORING_DIRECTORIES)
+        gallery["monitoring"] = monitoring
+        config_data = {**existing, "web_ui": web_ui, "gallery": gallery}
         try:
-            with open(config_file, "w") as f:
-                json.dump(config_data, f, indent=2)
+            write_private_json(config_file, config_data)
             self.logger.info(f"Settings saved to {config_file}")
         except OSError as save_err:
             self.logger.warning(f"Could not save config file: {save_err}")
+
+    def _read_config_file(self, config_file):
+        """Current contents of config.json as a dict, or {} when unusable."""
+        try:
+            with open(config_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
 
     async def run_diagnostics(self, request):
         """Run comprehensive system diagnostics and health checks."""
@@ -766,7 +780,10 @@ class AdminRoutesMixin:
                     {"success": False, "error": "prompt_id is required"}, status=400
                 )
 
-            image_path = data.get("image_path", "/test/fake/image.png")
+            # The client never chooses the stored path: a synthetic marker
+            # under the output directory stands in for a generated image.
+            output_dir = await self._run_in_executor(self._find_comfyui_output_dir)
+            image_path = self._test_link_marker_path(output_dir)
             payload = await self._link_test_image(str(prompt_id), image_path)
             return web.json_response(payload)
 
@@ -775,6 +792,16 @@ class AdminRoutesMixin:
             return web.json_response(
                 {"success": False, "error": "Test link failed"}, status=500
             )
+
+    TEST_LINK_MARKER = "prompt_manager_test_link.png"
+
+    @classmethod
+    def _test_link_marker_path(cls, output_dir):
+        """Path recorded by the test-link diagnostic: a marker under ``output_dir``
+        (relative, when no output directory is known)."""
+        if output_dir:
+            return os.path.join(str(output_dir), cls.TEST_LINK_MARKER)
+        return cls.TEST_LINK_MARKER
 
     async def _link_test_image(self, prompt_id, image_path):
         """Link a synthetic image record to ``prompt_id``; returns the envelope."""
