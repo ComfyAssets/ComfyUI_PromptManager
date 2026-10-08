@@ -557,17 +557,14 @@
                     className: '',
                     title: [1, (image, imageData) => `${imageData.alt} (${this.images.length} images) - Original Image`],
                     viewed: (event) => {
-                        console.log('ViewerJS opened original image for metadata');
                         // Add metadata sidebar when ViewerJS opens
                         // Use the original image URL from data-original attribute
                         const originalImg = event.detail.originalImage;
                         setTimeout(() => this.addMetadataSidebar(originalImg), 100);
                     },
                     show: function() {
-                        console.log('Viewer shown - displaying original image');
                     },
                     shown: function() {
-                        console.log('ViewerJS initialization complete - ready for metadata');
                     },
                     hide: function() {
                         // Remove sidebar when viewer closes
@@ -628,7 +625,6 @@
 
                 // Load metadata for the current image (ALWAYS use original for metadata)
                 const originalImageUrl = originalImage.dataset.original || originalImage.src;
-                console.log('Loading metadata from original image:', originalImageUrl);
                 this.loadImageMetadata(originalImageUrl, sidebar.querySelector('#metadata-content'));
 
                 // Listen for ViewerJS view changes to update metadata
@@ -683,7 +679,6 @@
                             const isVideo = img.dataset.isVideo === 'true';
                             const mediaType = img.dataset.mediaType || 'image';
                             
-                            console.log('Opening original media for viewing:', originalMediaUrl, 'Type:', mediaType);
                             
                             if (isVideo) {
                                 // For videos, use our custom video modal
@@ -1519,33 +1514,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 return div.textContent;
             }
 
-            showNotification(message, type = 'info') {
-                const notification = document.createElement('div');
-                notification.className = `fixed top-4 right-4 px-4 py-2 rounded-pm-md shadow-pm text-sm z-[20000] transition-all duration-300 transform translate-x-full`;
-
-                const colors = {
-                    success: "bg-pm-success text-pm",
-                    error: "bg-pm-error text-pm",
-                    warning: "bg-pm-warning text-pm",
-                    info: "bg-pm-accent text-pm"
-                };
-
-                notification.className += ` ${colors[type] || colors.info}`;
-                notification.textContent = message;
-
-                document.body.appendChild(notification);
-
-                setTimeout(() => notification.classList.remove("translate-x-full"), 100);
-                setTimeout(() => {
-                    notification.classList.add("translate-x-full");
-                    setTimeout(() => {
-                        if (notification.parentNode) {
-                            document.body.removeChild(notification);
-                        }
-                    }, 300);
-                }, 3000);
-            }
-
             formatImageCaption(image) {
                 const date = new Date(image.modified_time * 1000);
                 return `${image.filename} | ${this.formatFileSize(image.size)} | ${date.toLocaleString()}`;
@@ -1630,7 +1598,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             workflowData = JSON.parse(cleanedJson);
                             break;
                         } catch (e) {
-                            console.log('Failed to parse workflow field:', field);
+                            console.warn('Failed to parse workflow field:', field);
                         }
                     }
                 }
@@ -1646,7 +1614,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             promptData = JSON.parse(cleanedJson);
                             break;
                         } catch (e) {
-                            console.log('Failed to parse prompt field:', field);
+                            console.warn('Failed to parse prompt field:', field);
                         }
                     }
                 }
@@ -1900,13 +1868,11 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     // Show cancel button
                     cancelBtn.classList.remove('hidden');
                     
-                    console.log(`Starting thumbnail generation with quality: ${options.quality}`);
                     
                     // Set up Server-Sent Events
                     const eventSource = new EventSource(`/prompt_manager/images/generate-thumbnails/progress?quality=${options.quality}`);
                     
                     // Log connection
-                    console.log('EventSource connected for thumbnail generation progress');
                     
                     let cancelled = false;
                     let resultData = null;
@@ -1935,7 +1901,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         
                         // Log status updates
                         if (this.getSettings().debugMode) {
-                            console.log(`Thumbnail generation status: ${data.phase} - ${data.message}`);
                         }
                     });
                     
@@ -1955,7 +1920,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         
                         // Log start event
                         if (this.getSettings().debugMode) {
-                            console.log(`Thumbnail generation started: ${data.total_images} files to process`);
                         }
                     });
                     
@@ -1987,7 +1951,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         
                         // Log to console for debugging if debug mode is enabled
                         if (this.getSettings().debugMode) {
-                            console.log(`Thumbnail generation progress: ${data.processed}/${data.total_images} - ${data.current_file}`);
                         }
                     });
                     
@@ -2015,7 +1978,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         
                         // Log completion details
                         if (this.getSettings().debugMode) {
-                            console.log('Thumbnail generation completed:', resultData);
                             if (resultData.errors && resultData.errors.length > 0) {
                                 console.warn('Thumbnail generation errors:', resultData.errors);
                             }
@@ -2050,7 +2012,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         
                         // Check if connection is closing normally
                         if (eventSource.readyState === EventSource.CLOSED) {
-                            console.log('EventSource connection closed');
                         } else {
                             console.error('EventSource connection failed');
                         }
@@ -2103,7 +2064,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             
                             if (response.ok) {
                                 const data = await response.json();
-                                console.log('Server thumbnails cleared:', data);
                             }
                         } catch (e) {
                             console.warn('Could not clear server thumbnails:', e);
@@ -2646,7 +2606,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     // Get quality setting
                     const quality = this.getSettings().imageQuality || 'medium';
                     
-                    console.log(`Starting modal thumbnail generation with quality: ${quality}`);
                     
                     // Set up Server-Sent Events (same as the settings modal)
                     const eventSource = new EventSource(`/prompt_manager/images/generate-thumbnails/progress?quality=${quality}`);
@@ -2764,7 +2723,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             addStatusMessage(`Successfully generated ${resultData.count} new thumbnails, skipped ${resultData.skipped} existing`, 'success');
                         }
                         
-                        console.log('Modal thumbnail generation completed:', resultData);
                         
                         // Clean up
                         eventSource.close();
@@ -2807,7 +2765,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         
                         // Check if connection is closing normally (after complete event)
                         if (eventSource.readyState === EventSource.CLOSED && resultData) {
-                            console.log('EventSource connection closed normally after completion');
                             return;
                         }
                         

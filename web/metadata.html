@@ -162,7 +162,7 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
                         workflowData = JSON.parse(cleanedJson);
                         break;
                     } catch (e) {
-                        console.log('Failed to parse workflow field:', field, e);
+                        console.warn('Failed to parse workflow field:', field, e);
                     }
                 }
             }
@@ -178,7 +178,7 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
                         promptData = JSON.parse(cleanedJson);
                         break;
                     } catch (e) {
-                        console.log('Failed to parse prompt field:', field, e);
+                        console.warn('Failed to parse prompt field:', field, e);
                     }
                 }
             }
@@ -351,8 +351,6 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
                 // Update data panel
                 updateDataPanel(comfyData, file.name);
                 
-                console.log('Extracted metadata:', metadata);
-                console.log('ComfyUI data:', comfyData);
                 
             } catch (error) {
                 console.error('Error processing image:', error);
