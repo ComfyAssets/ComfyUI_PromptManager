@@ -26,6 +26,7 @@ class LoraDBTestCase(unittest.TestCase):
         self.db = PromptDatabase(self.temp_db.name)
 
     def tearDown(self):
+        self.db.close()
         for suffix in ("", "-wal", "-shm"):
             path = self.temp_db.name + suffix
             if os.path.exists(path):

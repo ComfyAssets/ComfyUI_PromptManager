@@ -26,13 +26,11 @@ class DatabaseTestCase(unittest.TestCase):
         self.db = PromptDatabase(self.temp_db.name)
 
     def tearDown(self):
-        if os.path.exists(self.temp_db.name):
-            os.unlink(self.temp_db.name)
-        wal = self.temp_db.name + "-wal"
-        shm = self.temp_db.name + "-shm"
-        for f in (wal, shm):
-            if os.path.exists(f):
-                os.unlink(f)
+        self.db.close()
+        for suffix in ("", "-wal", "-shm"):
+            path = self.temp_db.name + suffix
+            if os.path.exists(path):
+                os.unlink(path)
 
     def _save(
         self, text="Test prompt", category=None, tags=None, rating=None, notes=None

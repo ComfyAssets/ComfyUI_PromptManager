@@ -6,7 +6,7 @@ import datetime
 import sqlite3
 import os
 import threading
-from typing import Optional
+from typing import Set
 
 # Import logging system
 try:
@@ -44,7 +44,10 @@ class PromptModel:
         self.logger = get_logger("prompt_manager.database.models")
         self.logger.debug(f"Initializing database model with path: {db_path}")
         self.db_path = db_path
-        self._conn: Optional[sqlite3.Connection] = None
+        # One connection per thread (see get_connection); every open connection
+        # is also tracked here so restore_from_file can close them all.
+        self._local = threading.local()
+        self._connections: Set[sqlite3.Connection] = set()
         self._conn_lock = threading.Lock()
         self._ensure_database_exists()
 
@@ -182,24 +185,52 @@ class PromptModel:
 
     def get_connection(self) -> sqlite3.Connection:
         """
-        Get the persistent database connection.
+        Get the calling thread's database connection.
 
-        Returns a thread-safe, reusable connection protected by a lock.
-        The connection is created on first call and reused thereafter.
-        Callers use it as a context manager; the lock is held for the
-        duration of the ``with`` block.
+        Each thread gets its own ``sqlite3.Connection`` (kept in
+        ``threading.local``), created on first use and reused by that thread
+        thereafter. Every connection is configured with WAL journaling,
+        ``row_factory = sqlite3.Row``, ``PRAGMA foreign_keys = ON`` and
+        ``PRAGMA busy_timeout = 5000`` so concurrent writers wait instead of
+        failing. Callers use it as a context manager (``with conn:``), which
+        commits or rolls back that thread's transaction and leaves the
+        connection open. No lock is held while a connection is in use.
 
         Returns:
-            sqlite3.Connection: Configured database connection
+            sqlite3.Connection: The current thread's configured connection
         """
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            return conn
+
+        # check_same_thread=False only so restore_from_file can close other
+        # threads' connections; each connection is still used by one thread.
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 5000")
+        self._local.conn = conn
         with self._conn_lock:
-            if self._conn is None:
-                self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
-                self._conn.row_factory = sqlite3.Row
-                self._conn.execute("PRAGMA journal_mode = WAL")
-                self._conn.execute("PRAGMA foreign_keys = ON")
-                self._conn.execute("PRAGMA busy_timeout = 5000")
-        return self._conn
+            self._connections.add(conn)
+        return conn
+
+    def close(self) -> None:
+        """Close the calling thread's connection, if it has one.
+
+        Other threads keep their connections. Call this before deleting or
+        replacing the database file: Windows refuses to delete an open file.
+        """
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            return
+        self._local.conn = None
+        with self._conn_lock:
+            self._connections.discard(conn)
+        try:
+            conn.close()
+        except sqlite3.Error as e:
+            self.logger.warning(f"Error closing database connection: {e}")
 
     def _migrate_workflow_name_removal(self, conn: sqlite3.Connection) -> None:
         """

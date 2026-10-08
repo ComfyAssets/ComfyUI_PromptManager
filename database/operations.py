@@ -100,6 +100,10 @@ class PromptDatabase:
         self.model = PromptModel(db_path)
         self.logger.debug("Database operations initialized successfully")
 
+    def close(self) -> None:
+        """Close the calling thread's database connection (see PromptModel.close)."""
+        self.model.close()
+
     def save_prompt(
         self,
         text: str,

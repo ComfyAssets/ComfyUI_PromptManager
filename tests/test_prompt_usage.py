@@ -20,6 +20,8 @@ class UsageTestCase(unittest.TestCase):
         self.db = PromptDatabase(self.path)
 
     def tearDown(self):
+        if getattr(self, "db", None) is not None:
+            self.db.close()
         for suffix in ("", "-wal", "-shm"):
             if os.path.exists(self.path + suffix):
                 os.unlink(self.path + suffix)
@@ -160,6 +162,8 @@ class TestUsageMigration(unittest.TestCase):
             conn.execute("ALTER TABLE prompts DROP COLUMN run_count")
 
     def tearDown(self):
+        if getattr(self, "db", None) is not None:
+            self.db.close()
         for suffix in ("", "-wal", "-shm"):
             if os.path.exists(self.path + suffix):
                 os.unlink(self.path + suffix)
