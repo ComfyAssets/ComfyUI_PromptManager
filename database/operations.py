@@ -120,6 +120,10 @@ class PromptDatabase:
         """Close the calling thread's database connection (see PromptModel.close)."""
         self.model.close()
 
+    def close_all(self) -> None:
+        """Close every thread's connection (see PromptModel.close_all)."""
+        self.model.close_all()
+
     def save_prompt(
         self,
         text: str,

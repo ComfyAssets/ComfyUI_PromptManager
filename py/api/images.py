@@ -1,6 +1,7 @@
 """Image and gallery API routes for PromptManager."""
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -216,6 +217,8 @@ def _iter_media_files(output_path, max_files):
         for name in sorted(files):
             if Path(name).suffix.lower() not in MEDIA_EXTENSIONS:
                 continue
+            if (root_path / name).is_symlink():
+                continue  # never read through a link out of the output tree
             if produced >= max_files:
                 return
             produced += 1
@@ -240,7 +243,7 @@ def _output_image_entry(media_path, output_path, root_index):
         )
 
     return {
-        "id": str(hash(str(media_path))),
+        "id": hashlib.sha1(str(media_path).encode("utf-8")).hexdigest()[:16],
         "filename": media_path.name,
         "path": str(media_path),
         "relative_path": str(rel_path),
@@ -819,7 +822,7 @@ class ImageRoutesMixin:
         """Process *targets* one per executor job, emitting SSE after each."""
         total = len(targets)
         video_count = sum(1 for _, _, is_video in targets if is_video)
-        await self._emit_sse(
+        connected = await self._emit_sse(
             response,
             "start",
             {
@@ -833,6 +836,8 @@ class ImageRoutesMixin:
                 ),
             },
         )
+        if not connected:
+            return
         stats = _new_thumbnail_stats()
         start = _time.monotonic()
         for index, (src, dst, is_video) in enumerate(targets, start=1):
@@ -846,23 +851,28 @@ class ImageRoutesMixin:
                     "file_error",
                     {"file": result["file"], "error": result["error"]},
                 )
-            await self._emit_sse(
+            connected = await self._emit_sse(
                 response,
                 "progress",
                 _thumbnail_progress_payload(index, total, stats, result, start),
             )
+            if not connected:
+                self.logger.info("Thumbnail client disconnected; stopping early")
+                return
             await asyncio.sleep(0)  # let other requests run between files
         payload = _thumbnail_complete_payload(total, stats, start)
         await self._emit_sse(response, "complete", payload)
         self.logger.info(payload["message"])
 
-    async def _emit_sse(self, response, event, data):
-        """Write one SSE frame; a closed client is logged, not raised."""
+    async def _emit_sse(self, response, event, data) -> bool:
+        """Write one SSE frame. Returns False once the client has gone away."""
         try:
             frame = f"event: {event}\ndata: {json.dumps(data)}\n\n"
             await response.write(frame.encode("utf-8"))
+            return True
         except Exception as e:
             self.logger.warning(f"Failed to send SSE message: {e}")
+            return False
 
     def _generate_video_thumbnail(self, video_path, thumbnail_path, thumbnail_size):
         """Generate thumbnail from video file. Returns True if successful."""

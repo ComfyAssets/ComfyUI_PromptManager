@@ -292,8 +292,12 @@ class PromptModel:
             self._connections.add(conn)
         return conn
 
-    def _close_all_connections(self) -> None:
-        """Close every thread's connection; they reopen lazily on next use."""
+    def close_all(self) -> None:
+        """Close every thread's connection; they reopen lazily on next use.
+
+        Needed before deleting the database file (Windows keeps open files
+        locked) and by tests that ran queries through executor threads.
+        """
         with self._conn_lock:
             connections = list(self._connections)
             self._connections.clear()
@@ -755,15 +759,47 @@ class PromptModel:
         finally:
             conn.close()
 
+    def _replace_contents_from(self, src_path: str) -> None:
+        """Copy every page of *src_path* into the live database.
+
+        Goes through SQLite's online backup API into this thread's normal
+        connection, so SQLite takes the locks itself and the other
+        PromptModel instances that share the file (nodes, image monitor,
+        queue hook, API) simply see the new pages on their next statement.
+        Nothing is swapped underneath open handles and no -wal/-shm file has
+        to be deleted, which also keeps Windows happy. When SQLite refuses
+        (page sizes differ while the target is in WAL mode) fall back to a
+        file copy with every connection of this instance closed first.
+        """
+        source = sqlite3.connect(
+            Path(src_path).resolve().as_uri() + "?mode=ro", uri=True
+        )
+        try:
+            try:
+                source.backup(self.get_connection())
+                return
+            except sqlite3.OperationalError as e:
+                self.logger.warning(
+                    f"Online restore failed ({e}); falling back to a file copy"
+                )
+        finally:
+            source.close()
+        self.close_all()
+        shutil.copy2(src_path, self.db_path)
+        for suffix in ("-wal", "-shm"):
+            stale = self.db_path + suffix
+            if os.path.exists(stale):
+                os.remove(stale)
+
     def restore_from_file(self, src_path: str) -> str:
         """
         Replace the live database with the file at src_path.
 
         The current database is first backed up next to itself as
-        ``<db_path>.backup_<YYYYmmdd_HHMMSS>`` (WAL content included), every
-        thread's connection is closed, the file is copied over, stale -wal and
-        -shm files are removed and the schema migrations run on the restored
-        file. Connections reopen lazily on the next get_connection().
+        ``<db_path>.backup_<YYYYmmdd_HHMMSS>`` (WAL content included), the
+        pages of ``src_path`` are copied into the live database through
+        SQLite's backup API (visible to every open connection) and the schema
+        migrations run on the restored content.
 
         Callers should run verify_database_file(src_path) first.
 
@@ -786,12 +822,7 @@ class PromptModel:
                 raise RuntimeError("Could not back up the current database")
             self.logger.info(f"Current database backed up to: {backup_path}")
 
-        self._close_all_connections()
-        shutil.copy2(src_path, self.db_path)
-        for suffix in ("-wal", "-shm"):
-            stale = self.db_path + suffix
-            if os.path.exists(stale):
-                os.remove(stale)
+        self._replace_contents_from(src_path)
         with PromptModel._init_lock:
             PromptModel._initialized_paths.discard(self._schema_key())
         self._ensure_database_exists()

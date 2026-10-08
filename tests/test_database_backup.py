@@ -165,8 +165,9 @@ class TestRestoreFromFile(BackupTestCase):
         self.assertTrue(backup_path.startswith(self.path + ".backup_"))
         self.assertTrue(os.path.exists(backup_path))
         self.assertEqual(_texts(backup_path), ["old prompt"])
-        self.assertFalse(os.path.exists(self.path + "-wal"))
-        self.assertFalse(os.path.exists(self.path + "-shm"))
+        # The restore goes through SQLite's backup API into the live file, so
+        # the WAL stays valid (and shared with other instances) rather than
+        # being deleted under them; the content is what matters.
         self.assertEqual(_texts(self.path), ["restored one", "restored two"])
 
     def test_database_is_usable_from_every_thread_after_restore(self):
@@ -241,3 +242,60 @@ class TestRestoreFromFile(BackupTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConnectionsAcrossInstances(BackupTestCase):
+    """Several PromptModel instances share one file (nodes, API, monitor)."""
+
+    def test_close_all_closes_connections_opened_on_other_threads(self):
+        opened = []
+
+        def open_one():
+            opened.append(self.db.model.get_connection())
+
+        threads = [threading.Thread(target=open_one) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len(opened), 3)
+
+        self.db.close_all()
+
+        for conn in opened:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                conn.execute("SELECT 1")
+
+    def test_restore_is_seen_by_another_instance_holding_an_open_connection(self):
+        self.db.save_prompt(text="before", prompt_hash=generate_prompt_hash("before"))
+        snapshot = os.path.join(self.tmpdir, "snapshot.db")
+        other_db = PromptDatabase(snapshot)
+        for i in range(3):
+            other_db.save_prompt(
+                text=f"after {i}", prompt_hash=generate_prompt_hash(f"after {i}")
+            )
+        other_db.close_all()
+
+        # A second instance on the live file, with a connection kept open on
+        # a worker thread for the whole restore (like the image monitor).
+        bystander = PromptDatabase(self.path)
+        ready, go, seen = threading.Event(), threading.Event(), []
+
+        def hold_and_read():
+            bystander.model.get_connection().execute("SELECT COUNT(*) FROM prompts")
+            ready.set()
+            go.wait(10)
+            seen.append(len(bystander.search_prompts(limit=50)))
+
+        worker = threading.Thread(target=hold_and_read)
+        worker.start()
+        self.assertTrue(ready.wait(10))
+        try:
+            self.db.model.restore_from_file(snapshot)
+        finally:
+            go.set()
+            worker.join(10)
+        bystander.close_all()
+
+        self.assertEqual(seen, [3])
+        self.assertEqual(sorted(_texts(self.path)), ["after 0", "after 1", "after 2"])
