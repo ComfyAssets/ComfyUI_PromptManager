@@ -377,14 +377,24 @@ class ThumbnailTestCase(ImageAPITestCase):
 
 
 class TestThumbnailProgressStream(ThumbnailTestCase):
-    """GET /prompt_manager/images/generate-thumbnails/progress (SSE)."""
+    """POST /prompt_manager/images/generate-thumbnails/progress (SSE)."""
+
+    async def test_get_is_method_not_allowed(self):
+        # The stream writes thumbnails, so a plain GET (prefetch, link
+        # preview, <img src>) must not be able to trigger it.
+        make_png(self.output_dir / "a.png")
+
+        resp = await self.client.request("GET", self.PROGRESS_URL)
+
+        self.assertEqual(resp.status, 405)
+        self.assertFalse(self._thumb_path("a").exists())
 
     async def test_three_pngs_yield_three_thumbnails_and_events(self):
         for name in ("a", "b", "c"):
             make_png(self.output_dir / f"{name}.png", size=(64, 64))
         calls = self._spy_executor()
 
-        resp = await self.client.request("GET", f"{self.PROGRESS_URL}?quality=low")
+        resp = await self.client.request("POST", f"{self.PROGRESS_URL}?quality=low")
 
         self.assertEqual(resp.status, 200)
         self.assertEqual(resp.headers["Content-Type"], "text/event-stream")
@@ -407,7 +417,7 @@ class TestThumbnailProgressStream(ThumbnailTestCase):
         (self.output_dir / "bad.png").write_bytes(b"\x89PNG definitely not a png")
         make_png(self.output_dir / "good2.png")
 
-        resp = await self.client.request("GET", self.PROGRESS_URL)
+        resp = await self.client.request("POST", self.PROGRESS_URL)
 
         events = parse_sse(await resp.text())
         file_errors = [d for e, d in events if e == "file_error"]
@@ -423,24 +433,24 @@ class TestThumbnailProgressStream(ThumbnailTestCase):
     async def test_response_has_no_wildcard_cors_header(self):
         make_png(self.output_dir / "one.png")
 
-        resp = await self.client.request("GET", self.PROGRESS_URL)
+        resp = await self.client.request("POST", self.PROGRESS_URL)
         await resp.text()
 
         self.assertNotIn("Access-Control-Allow-Origin", resp.headers)
 
     async def test_existing_newer_thumbnail_is_skipped(self):
         make_png(self.output_dir / "one.png")
-        first = await self.client.request("GET", self.PROGRESS_URL)
+        first = await self.client.request("POST", self.PROGRESS_URL)
         await first.text()
 
-        second = await self.client.request("GET", self.PROGRESS_URL)
+        second = await self.client.request("POST", self.PROGRESS_URL)
 
         complete = dict(parse_sse(await second.text()))["complete"]
         self.assertEqual(complete["skipped"], 1)
         self.assertEqual(complete["count"], 0)
 
     async def test_empty_output_dir_completes_with_zero(self):
-        resp = await self.client.request("GET", self.PROGRESS_URL)
+        resp = await self.client.request("POST", self.PROGRESS_URL)
 
         events = parse_sse(await resp.text())
         self.assertEqual(events[-1][0], "complete")
@@ -449,7 +459,7 @@ class TestThumbnailProgressStream(ThumbnailTestCase):
     async def test_missing_output_dir_sends_error_event(self):
         self.api._find_comfyui_output_dir = lambda: None
 
-        resp = await self.client.request("GET", self.PROGRESS_URL)
+        resp = await self.client.request("POST", self.PROGRESS_URL)
 
         events = parse_sse(await resp.text())
         self.assertEqual(events[-1][0], "error")
@@ -457,7 +467,7 @@ class TestThumbnailProgressStream(ThumbnailTestCase):
     async def test_unknown_quality_falls_back_to_medium(self):
         make_png(self.output_dir / "one.png", size=(400, 400))
 
-        resp = await self.client.request("GET", f"{self.PROGRESS_URL}?quality=huge")
+        resp = await self.client.request("POST", f"{self.PROGRESS_URL}?quality=huge")
         await resp.text()
 
         with Image.open(self._thumb_path("one")) as thumb:
@@ -1085,7 +1095,7 @@ class TestThumbnailUnits(ImageRouteCoverageCase):
     async def test_progress_stream_reports_internal_failure(self):
         self.api._thumbnail_targets = _raise
         resp = await self.client.request(
-            "GET", "/prompt_manager/images/generate-thumbnails/progress"
+            "POST", "/prompt_manager/images/generate-thumbnails/progress"
         )
         events = parse_sse(await resp.text())
         self.assertEqual(events[-1][0], "error")

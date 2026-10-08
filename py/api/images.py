@@ -311,7 +311,9 @@ class ImageRoutesMixin:
         async def generate_thumbnails_route(request):
             return await self.generate_thumbnails(request)
 
-        @routes.get("/prompt_manager/images/generate-thumbnails/progress")
+        # POST only: the stream writes files, so it must not be reachable
+        # from a prefetch, link preview or <img src>.
+        @routes.post("/prompt_manager/images/generate-thumbnails/progress")
         async def generate_thumbnails_progress_route(request):
             return await self.generate_thumbnails_with_progress(request)
 
@@ -772,10 +774,12 @@ class ImageRoutesMixin:
             return {**result, "action": "error", "error": _safe_error(e)}
 
     async def generate_thumbnails_with_progress(self, request):
-        """Generate thumbnails with Server-Sent Events progress updates.
+        """Generate thumbnails with Server-Sent Events progress updates (POST).
 
-        Every blocking step (scan, PIL/ffmpeg) runs in the executor; the
-        event loop only writes SSE frames between files.
+        ``quality`` is read from the query string so a POST-capable SSE
+        client can keep using the same URL shape. Every blocking step (scan,
+        PIL/ffmpeg) runs in the executor; the event loop only writes SSE
+        frames between files.
         """
         thumbnail_size = self._thumbnail_size(request.query.get("quality", "medium"))
         response = web.StreamResponse(
