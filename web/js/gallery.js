@@ -10,6 +10,16 @@
                 this.expandedFolders = new Set();
                 this.thumbSize = 'md'; // sm, md, lg
 
+                // Elements rendered with data-action="..." are dispatched here instead of through
+                // inline onclick handlers, so file names and URLs never land inside JavaScript source.
+                this.actionHandlers = {
+                    "open-url": ({ url }) => window.open(url, '_blank'),
+                    "copy-url": ({ url, label }, el) => this.copyUrlWithFeedback(el, url, label),
+                    "select-suggestion": ({ tag }) => this.selectSuggestion(tag),
+                    "remove-tag": ({ index }) => this.removeTag(index),
+                    "remove-review-tag": ({ index }) => this.removeReviewTag(index),
+                };
+
                 this.initializeEventListeners();
                 this.loadFolderTree();
                 this.loadImages();
@@ -18,7 +28,20 @@
                 this.checkThumbnailsAtStartup();
             }
 
+            handleActionClick(e) {
+                const target = e.target.closest('[data-action]');
+                if (target) DataActions.dispatch(target.dataset, this.actionHandlers, target);
+            }
+
+            copyUrlWithFeedback(el, url, label) {
+                navigator.clipboard.writeText(url).then(() => {
+                    el.textContent = '✓ Copied!';
+                    setTimeout(() => { el.textContent = label; }, 1000);
+                });
+            }
+
             initializeEventListeners() {
+                document.addEventListener('click', (e) => this.handleActionClick(e));
                 document.getElementById('refreshBtn').addEventListener('click', () => this.loadImages());
                 document.getElementById('limitSelector').addEventListener('change', (e) => this.changeLimit(parseInt(e.target.value)));
                 document.getElementById('gridViewBtn').addEventListener('click', () => this.setViewMode('grid'));
@@ -398,13 +421,13 @@
                     return `
                     <div class="image-item bg-pm-surface rounded-pm-md overflow-hidden border border-pm hover:border-pm cursor-pointer group">
                         <div class="aspect-square bg-pm-primary overflow-hidden relative">
-                            <img src="${displayUrl}"
-                                 alt="${this.escapeHtml(image.filename)}"
+                            <img src="${escapeHtml(displayUrl)}"
+                                 alt="${escapeHtml(image.filename)}"
                                  class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                                  loading="lazy"
-                                 data-original="${image.url}"
-                                 data-thumbnail="${image.thumbnail_url || ''}"
-                                 data-caption="${this.escapeHtml(this.formatImageCaption(image))}"
+                                 data-original="${escapeHtml(image.url)}"
+                                 data-thumbnail="${escapeHtml(image.thumbnail_url || '')}"
+                                 data-caption="${escapeHtml(this.formatImageCaption(image))}"
                                  data-media-type="${mediaType}"
                                  data-is-video="${isVideo}"
                                  onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'">
@@ -432,7 +455,7 @@
                             ${isVideo ? '<div class="absolute top-2 left-2 px-2 py-1 bg-pm-error text-pm text-xs rounded" title="Video file">VIDEO</div>' : ''}
                         </div>
                         <div class="p-2">
-                            <div class="text-xs text-pm-secondary truncate" title="${this.escapeHtml(image.filename)}">${this.escapeHtml(image.filename)}</div>
+                            <div class="text-xs text-pm-secondary truncate" title="${escapeHtml(image.filename)}">${escapeHtml(image.filename)}</div>
                             <div class="text-xs text-pm-muted">${this.formatFileSize(image.size)}${hasThumb ? ' • Fast' : ''}${isVideo ? ' • Video' : ''}</div>
                         </div>
                     </div>
@@ -457,13 +480,13 @@
                     return `
                     <div class="image-item bg-pm-surface rounded-pm-md border border-pm hover:border-pm cursor-pointer group flex items-center p-4">
                         <div class="w-16 h-16 bg-pm-primary rounded-pm-md overflow-hidden flex-shrink-0 mr-4 relative">
-                            <img src="${displayUrl}"
-                                 alt="${this.escapeHtml(image.filename)}"
+                            <img src="${escapeHtml(displayUrl)}"
+                                 alt="${escapeHtml(image.filename)}"
                                  class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                                  loading="lazy"
-                                 data-original="${image.url}"
-                                 data-thumbnail="${image.thumbnail_url || ''}"
-                                 data-caption="${this.escapeHtml(this.formatImageCaption(image))}"
+                                 data-original="${escapeHtml(image.url)}"
+                                 data-thumbnail="${escapeHtml(image.thumbnail_url || '')}"
+                                 data-caption="${escapeHtml(this.formatImageCaption(image))}"
                                  data-media-type="${mediaType}"
                                  data-is-video="${isVideo}"
                                  onerror="this.style.display='none'">
@@ -471,9 +494,9 @@
                             ${isVideo ? '<div class="absolute top-1 left-1 w-4 h-3 bg-pm-error text-pm text-xs flex items-center justify-center rounded" title="Video">▶</div>' : ''}
                         </div>
                         <div class="flex-1 min-w-0">
-                            <div class="text-sm font-medium text-pm truncate">${this.escapeHtml(image.filename)}${isVideo ? ' 🎬' : ''}</div>
+                            <div class="text-sm font-medium text-pm truncate">${escapeHtml(image.filename)}${isVideo ? ' 🎬' : ''}</div>
                             <div class="text-xs text-pm-secondary">${this.formatFileSize(image.size)} • ${new Date(image.modified_time * 1000).toLocaleDateString()}${hasThumb ? ' • Fast' : ''}${isVideo ? ' • Video' : ''}</div>
-                            <div class="text-xs text-pm-muted truncate">${image.relative_path}</div>
+                            <div class="text-xs text-pm-muted truncate">${escapeHtml(image.relative_path)}</div>
                         </div>
                         <div class="flex-shrink-0 ml-4">
                             ${isVideo ? `
@@ -705,7 +728,7 @@
                         </button>
                         
                         <!-- Main image -->
-                        <img src="${imageUrl}" alt="${caption}" class="max-w-full max-h-full object-contain" id="modalImage">
+                        <img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(caption)}" class="max-w-full max-h-full object-contain" id="modalImage">
                     </div>
                     
                     <!-- Metadata sidebar (matching the screenshot) -->
@@ -806,7 +829,7 @@
                         
                         <!-- Main video -->
                         <video id="modalVideo" 
-                               src="${videoUrl}" 
+                               src="${escapeHtml(videoUrl)}" 
                                class="max-w-full max-h-full object-contain"
                                controls
                                ${settings.videoAutoplay ? 'autoplay' : ''}
@@ -833,7 +856,7 @@
                                 </svg>
                                 <h1 class="text-sm font-semibold text-pm">Video Info</h1>
                             </div>
-                            <button class="text-xs text-pm-accent hover:text-pm-accent transition-colors" onclick="navigator.clipboard.writeText('${videoUrl}').then(() => this.textContent = '✓ Copied!'); setTimeout(() => this.textContent = '📋 COPY URL', 1000)">
+                            <button class="text-xs text-pm-accent hover:text-pm-accent transition-colors" data-action="copy-url" data-url="${escapeHtml(videoUrl)}" data-label="📋 COPY URL">
                                 📋 COPY URL
                             </button>
                         </div>
@@ -986,9 +1009,9 @@
                         <div class="space-y-2">
                             <h2 class="text-sm font-medium text-pm-secondary">File Info</h2>
                             <div class="text-xs text-pm-secondary font-mono bg-pm-surface p-2 rounded break-all cursor-pointer hover:bg-pm-hover"
-                                 onclick="navigator.clipboard.writeText('${videoUrl}').then(() => this.textContent = 'Copied!'); setTimeout(() => this.textContent = '${fileName}', 1000)"
+                                 data-action="copy-url" data-url="${escapeHtml(videoUrl)}" data-label="${escapeHtml(fileName)}"
                                  title="Click to copy path">
-                                ${fileName}
+                                ${escapeHtml(fileName)}
                             </div>
                             <div class="text-xs text-pm-muted">
                                 Type: ${fileExt} Video
@@ -1185,7 +1208,7 @@
                     <div class="space-y-2">
                         <h2 class="text-sm font-medium text-pm-secondary">File Path</h2>
                         <div class="text-xs text-pm-secondary font-mono bg-pm-surface p-2 rounded break-all cursor-pointer hover:bg-pm-hover" data-copy-path title="Click to copy">
-                            ${metadata.imagePath || 'Unknown'}
+                            ${escapeHtml(metadata.imagePath || 'Unknown')}
                         </div>
                     </div>
 
@@ -1195,7 +1218,7 @@
                         <div class="space-y-2 text-xs">
                             <div class="flex justify-between">
                                 <span class="text-pm-secondary">Model:</span>
-                                <span class="text-pm">${metadata.checkpoint || 'Unknown'}</span>
+                                <span class="text-pm">${escapeHtml(metadata.checkpoint || 'Unknown')}</span>
                             </div>
                         </div>
                     </div>
@@ -1237,19 +1260,19 @@
                         <div class="space-y-2 text-xs">
                             <div class="flex justify-between">
                                 <span class="text-pm-secondary">CFG SCALE:</span>
-                                <span class="text-pm px-2 py-1 bg-pm-surface rounded text-xs">${metadata.cfgScale || 'Unknown'}</span>
+                                <span class="text-pm px-2 py-1 bg-pm-surface rounded text-xs">${escapeHtml(metadata.cfgScale || 'Unknown')}</span>
                             </div>
                             <div class="flex justify-between">
                                 <span class="text-pm-secondary">STEPS:</span>
-                                <span class="text-pm px-2 py-1 bg-pm-surface rounded text-xs">${metadata.steps || 'Unknown'}</span>
+                                <span class="text-pm px-2 py-1 bg-pm-surface rounded text-xs">${escapeHtml(metadata.steps || 'Unknown')}</span>
                             </div>
                             <div class="flex justify-between">
                                 <span class="text-pm-secondary">SAMPLER:</span>
-                                <span class="text-pm px-2 py-1 bg-pm-surface rounded text-xs">${metadata.sampler || 'Unknown'}</span>
+                                <span class="text-pm px-2 py-1 bg-pm-surface rounded text-xs">${escapeHtml(metadata.sampler || 'Unknown')}</span>
                             </div>
                             <div class="flex justify-between">
                                 <span class="text-pm-secondary">SEED:</span>
-                                <span class="text-pm font-mono px-2 py-1 bg-pm-surface rounded text-xs">${metadata.seed || 'Unknown'}</span>
+                                <span class="text-pm font-mono px-2 py-1 bg-pm-surface rounded text-xs">${escapeHtml(metadata.seed || 'Unknown')}</span>
                             </div>
                         </div>
                     </div>
@@ -1406,7 +1429,7 @@
             showFullPrompt(type) {
                 if (this.currentMetadata) {
                     const prompt = type === 'positive' ? this.currentMetadata.positivePrompt : this.currentMetadata.negativePrompt;
-                    const safeType = this.escapeHtml(type.charAt(0).toUpperCase() + type.slice(1));
+                    const safeType = escapeHtml(type.charAt(0).toUpperCase() + type.slice(1));
                     const newWindow = window.open('', '_blank');
                     const doc = newWindow.document;
                     doc.open();
@@ -1487,13 +1510,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 if (!text || text === 'No prompt found' || text === 'No negative prompt found') {
                     return `<span class="text-pm-muted italic">${text || 'No prompt found'}</span>`;
                 }
-                return this.escapeHtml(text);
-            }
-
-            escapeHtml(text) {
-                const div = document.createElement('div');
-                div.textContent = text;
-                return div.innerHTML;
+                return escapeHtml(text);
             }
 
             unescapeHtml(text) {
@@ -2205,7 +2222,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                                         ${image.media_type === 'video' ? `
                                             <div class="w-20 h-20 bg-pm-input rounded flex items-center justify-center relative">
                                                 ${image.thumbnail_url ? `
-                                                    <img src="${image.thumbnail_url}" alt="Video thumbnail" class="w-full h-full object-cover rounded">
+                                                    <img src="${escapeHtml(image.thumbnail_url)}" alt="Video thumbnail" class="w-full h-full object-cover rounded">
                                                 ` : `
                                                     <svg class="w-8 h-8 text-pm-secondary" fill="currentColor" viewBox="0 0 20 20">
                                                         <path d="M2 6a2 2 0 012-2h6l2 2h6a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z"/>
@@ -2214,26 +2231,26 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                                                 <div class="absolute bottom-0 right-0 bg-black/75 text-pm text-xs px-1 rounded">VIDEO</div>
                                             </div>
                                         ` : `
-                                            <img src="${image.thumbnail_url || image.url}" alt="${this.escapeHtml(image.filename)}"
+                                            <img src="${escapeHtml(image.thumbnail_url || image.url)}" alt="${escapeHtml(image.filename)}"
                                                  class="w-20 h-20 object-cover rounded cursor-pointer hover:opacity-80"
                                                  onclick="this.parentElement.parentElement.querySelector('.image-preview').click()">
                                         `}
                                     </div>
                                     <div class="flex-1 min-w-0">
                                         <div class="text-sm text-pm-secondary mb-2">
-                                            <div class="font-medium truncate" title="${this.escapeHtml(image.filename)}">${this.escapeHtml(image.filename)}</div>
+                                            <div class="font-medium truncate" title="${escapeHtml(image.filename)}">${escapeHtml(image.filename)}</div>
                                             <div class="text-xs text-pm-secondary mt-1">
                                                 <span class="font-medium">Size:</span> ${this.formatFileSize(image.size)} •
                                                 <span class="font-medium">Modified:</span> ${new Date(image.modified_time * 1000).toLocaleDateString()}
                                             </div>
-                                            <div class="text-xs text-pm-muted mt-1 truncate" title="${image.relative_path}">
-                                                ${image.relative_path}
+                                            <div class="text-xs text-pm-muted mt-1 truncate" title="${escapeHtml(image.relative_path)}">
+                                                ${escapeHtml(image.relative_path)}
                                             </div>
                                         </div>
                                         <div class="flex items-center justify-between">
                                             <div class="flex items-center space-x-2">
                                                 <button class="image-preview text-xs bg-pm-accent hover:bg-pm-accent-hover text-pm px-2 py-1 rounded"
-                                                        onclick="window.open('${image.url}', '_blank')">
+                                                        data-action="open-url" data-url="${escapeHtml(image.url)}">
                                                     View Full
                                                 </button>
                                             </div>
@@ -2242,7 +2259,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                                                     <span class="px-3 py-1 bg-pm-success text-pm text-xs rounded">KEEP (Oldest)</span>
                                                 ` : `
                                                     <label class="flex items-center">
-                                                        <input type="checkbox" class="duplicate-checkbox" data-group="${groupIndex}" data-image-path="${image.path}"
+                                                        <input type="checkbox" class="duplicate-checkbox" data-group="${groupIndex}" data-image-path="${escapeHtml(image.path)}"
                                                                class="w-4 h-4 text-pm-error bg-pm-input border-pm rounded focus:ring-pm-error">
                                                         <span class="ml-2 text-sm text-pm-error">Delete</span>
                                                     </label>
@@ -2874,7 +2891,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             populateCategoryDatalist() {
                 const datalist = document.getElementById('categoryList');
                 datalist.innerHTML = this.addPromptState.allCategories
-                    .map(cat => `<option value="${this.escapeHtml(cat)}">`)
+                    .map(cat => `<option value="${escapeHtml(cat)}">`)
                     .join('');
             }
 
@@ -2931,8 +2948,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     .map((tag, index) => `
                         <div class="px-3 py-2 hover:bg-pm-hover cursor-pointer text-pm text-sm suggestion-item"
                              data-index="${index}"
-                             onclick="window.gallery.selectSuggestion('${this.escapeHtml(tag)}')">
-                            ${this.escapeHtml(tag)}
+                             data-action="select-suggestion" data-tag="${escapeHtml(tag)}">
+                            ${escapeHtml(tag)}
                         </div>
                     `)
                     .join('');
@@ -2994,8 +3011,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     const chip = document.createElement('span');
                     chip.className = 'tag-chip';
                     chip.innerHTML = `
-                        ${this.escapeHtml(tag)}
-                        <span class="tag-remove" onclick="window.gallery.removeTag(${index})">×</span>
+                        ${escapeHtml(tag)}
+                        <span class="tag-remove" data-action="remove-tag" data-index="${index}">×</span>
                     `;
                     container.insertBefore(chip, input);
                 });
@@ -3444,7 +3461,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         this.renderReviewTags();
                     } else {
                         document.getElementById('reviewTagsContainer').innerHTML =
-                            `<div class="text-pm-error">Error: ${data.error}</div>`;
+                            `<div class="text-pm-error">Error: ${escapeHtml(data.error)}</div>`;
                     }
                 } catch (error) {
                     console.error('Error generating tags:', error);
@@ -3462,16 +3479,10 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                 container.innerHTML = this.autoTagState.currentTags.map((tag, index) => `
                     <span class="tag-chip">
-                        ${this.escapeHtml(tag)}
-                        <span class="tag-remove" onclick="window.gallery.removeReviewTag(${index})">×</span>
+                        ${escapeHtml(tag)}
+                        <span class="tag-remove" data-action="remove-review-tag" data-index="${index}">×</span>
                     </span>
                 `).join('');
-            }
-
-            escapeHtml(text) {
-                const div = document.createElement('div');
-                div.textContent = text;
-                return div.innerHTML;
             }
 
             removeReviewTag(index) {

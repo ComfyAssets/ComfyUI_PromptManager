@@ -23,6 +23,23 @@
 
                 this.tagsPage = null;
 
+                // Elements rendered with data-action="..." (prompt cards, film strips, log files,
+                // review chips) are dispatched here instead of through inline onclick handlers,
+                // so user-provided strings never land inside JavaScript source.
+                this.actionHandlers = {
+                    "copy-prompt": ({ promptId }) => this.copyPromptToClipboard(promptId),
+                    "add-tags": ({ promptId }) => this.addTag(promptId),
+                    "remove-tag": ({ promptId, tag }) => this.removeTag(promptId, tag),
+                    "toggle-tags": ({ promptId }) => this.toggleMainTags(promptId),
+                    gallery: ({ promptId }) => this.viewGallery(promptId),
+                    edit: ({ promptId }) => this.editPrompt(promptId),
+                    delete: ({ promptId }) => this.deletePrompt(promptId),
+                    "open-film": ({ promptId, index }) => this.openFilmStripViewer(promptId, index),
+                    "download-log": ({ filename }) => this.downloadLogFile(filename),
+                    "copy-text": ({ copyText }) => this.copyToClipboard(copyText),
+                    "remove-review-tag": ({ index }) => this.removeReviewTag(index),
+                };
+
                 this.init();
             }
 
@@ -110,6 +127,11 @@
                 // Modals
                 this.bindModalEvents();
 
+                // One delegated click handler for every data-action element; images declare a
+                // data-fallback-src instead of an inline onerror handler
+                document.addEventListener("click", (e) => this.handleActionClick(e));
+                document.addEventListener("error", (e) => this.applyImageFallback(e.target), true);
+
                 // Auto-search on filter changes
                 ["searchCategory", "searchFolder"].forEach((id) => {
                     document.getElementById(id).addEventListener("change", () => this.search());
@@ -118,7 +140,7 @@
                 // Sort dropdown: options come from PromptListSort; sorting runs on the server
                 const sortSelect = document.getElementById("sortBy");
                 sortSelect.innerHTML = PromptListSort.SORT_OPTIONS
-                    .map((o) => `<option value="${o.value}">${this.escapeHtml(o.label)}</option>`)
+                    .map((o) => `<option value="${o.value}">${escapeHtml(o.label)}</option>`)
                     .join("");
                 sortSelect.value = PromptListSort.DEFAULT_SORT;
                 sortSelect.addEventListener("change", () => this.reloadPrompts());
@@ -462,6 +484,19 @@
                 return this.listMode === "search" ? this.search() : this.loadRecentPrompts(1);
             }
 
+            handleActionClick(e) {
+                const target = e.target.closest("[data-action]");
+                if (target) DataActions.dispatch(target.dataset, this.actionHandlers, target);
+            }
+
+            /** Swap a thumbnail for its full-size image once, when the thumbnail fails to load. */
+            applyImageFallback(img) {
+                if (!img || img.tagName !== "IMG" || !img.dataset.fallbackSrc) return;
+                const fallback = img.dataset.fallbackSrc;
+                delete img.dataset.fallbackSrc;
+                img.src = fallback;
+            }
+
             renderPrompts() {
                 const container = document.getElementById("resultsList");
                 const count = document.getElementById("resultsCount");
@@ -489,15 +524,6 @@
                 // Add hover behavior to all star ratings
                 this.prompts.forEach(prompt => {
                     this.addStarHoverBehavior(prompt.id);
-                });
-
-                // Delegated click handler for remove-tag buttons (avoids inline onclick XSS)
-                container.querySelectorAll('.remove-tag-btn').forEach(btn => {
-                    btn.addEventListener('click', (e) => {
-                        const promptId = parseInt(e.target.dataset.promptId);
-                        const tag = e.target.dataset.tag;
-                        window.admin.removeTag(promptId, tag);
-                    });
                 });
 
                 // Load film strips for each prompt (async, non-blocking)
@@ -550,8 +576,8 @@
 
                                 <div class="flex-1 min-w-0">
                                     <div class="bg-pm-surface rounded-pm-sm p-4 mb-4 relative group">
-                                        <div class="prompt-text text-pm leading-relaxed whitespace-pre-wrap" data-id="${prompt.id}">${this.escapeHtml(prompt.text)}</div>
-                                        <button class="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-pm-surface hover:bg-pm-hover text-pm-secondary hover:text-pm p-2 rounded-pm-sm text-sm" onclick="window.admin.copyPromptToClipboard(${prompt.id})">
+                                        <div class="prompt-text text-pm leading-relaxed whitespace-pre-wrap" data-id="${prompt.id}">${escapeHtml(prompt.text)}</div>
+                                        <button class="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-pm-surface hover:bg-pm-hover text-pm-secondary hover:text-pm p-2 rounded-pm-sm text-sm" data-action="copy-prompt" data-prompt-id="${prompt.id}">
                                             📋 Copy
                                         </button>
                                     </div>
@@ -559,15 +585,15 @@
                                     <div class="flex flex-wrap items-center gap-4 text-sm text-pm-secondary mb-3">
                                         <div class="flex items-center space-x-1">
                                             <span>📁</span>
-                                            <span class="category-text" data-id="${prompt.id}">${this.escapeHtml(category)}</span>
+                                            <span class="category-text" data-id="${prompt.id}">${escapeHtml(category)}</span>
                                         </div>
                                         <div class="flex items-center space-x-1">
                                             <span>📅</span>
                                             <span>${created}</span>
                                         </div>
-                                        ${runLabel ? `<div class="flex items-center space-x-1" title="${this.escapeHtml(lastUsedTitle)}">
+                                        ${runLabel ? `<div class="flex items-center space-x-1" title="${escapeHtml(lastUsedTitle)}">
                                             <span>🔁</span>
-                                            <span>${this.escapeHtml(runLabel)}</span>
+                                            <span>${escapeHtml(runLabel)}</span>
                                         </div>` : ""}
                                         <div class="flex items-center space-x-1">
                                             <div class="rating flex space-x-1" data-id="${prompt.id}" data-rating="${rating}">
@@ -580,11 +606,11 @@
                                         <div class="flex flex-wrap items-center gap-2">
                                             ${tags.slice(0, 10).map(tag => `
                                                 <span class="inline-flex items-center space-x-1 bg-pm-input text-pm px-3 py-1 rounded-full text-sm border border-pm">
-                                                    <span>${this.escapeHtml(tag)}</span>
-                                                    <button class="remove-tag-btn text-pm-secondary hover:text-pm ml-1" data-prompt-id="${prompt.id}" data-tag="${this.escapeHtml(tag)}">&times;</button>
+                                                    <span>${escapeHtml(tag)}</span>
+                                                    <button class="remove-tag-btn text-pm-secondary hover:text-pm ml-1" data-action="remove-tag" data-prompt-id="${prompt.id}" data-tag="${escapeHtml(tag)}">&times;</button>
                                                 </span>
                                             `).join("")}
-                                            <button class="inline-flex items-center space-x-1 bg-pm-input hover:bg-pm-hover text-pm-secondary px-3 py-1 rounded-full text-sm transition-colors" onclick="window.admin.addTag(${prompt.id})">
+                                            <button class="inline-flex items-center space-x-1 bg-pm-input hover:bg-pm-hover text-pm-secondary px-3 py-1 rounded-full text-sm transition-colors" data-action="add-tags" data-prompt-id="${prompt.id}">
                                                 <span>+</span>
                                                 <span>Add Tags</span>
                                             </button>
@@ -594,13 +620,13 @@
                                                 <div class="flex flex-wrap items-center gap-2 max-h-[180px] overflow-y-auto p-2 bg-pm-surface rounded-pm-sm">
                                                     ${tags.slice(10).map(tag => `
                                                         <span class="inline-flex items-center space-x-1 bg-pm-input text-pm px-3 py-1 rounded-full text-sm border border-pm">
-                                                            <span>${this.escapeHtml(tag)}</span>
-                                                            <button class="remove-tag-btn text-pm-secondary hover:text-pm ml-1" data-prompt-id="${prompt.id}" data-tag="${this.escapeHtml(tag)}">&times;</button>
+                                                            <span>${escapeHtml(tag)}</span>
+                                                            <button class="remove-tag-btn text-pm-secondary hover:text-pm ml-1" data-action="remove-tag" data-prompt-id="${prompt.id}" data-tag="${escapeHtml(tag)}">&times;</button>
                                                         </span>
                                                     `).join("")}
                                                 </div>
                                             </div>
-                                            <button class="tags-toggle-btn mt-2 text-sm text-pm-accent hover:text-pm-accent transition-colors flex items-center gap-1" onclick="window.admin.toggleMainTags(${prompt.id})">
+                                            <button class="tags-toggle-btn mt-2 text-sm text-pm-accent hover:text-pm-accent transition-colors flex items-center gap-1" data-action="toggle-tags" data-prompt-id="${prompt.id}">
                                                 <span class="toggle-icon">▼</span>
                                                 <span class="toggle-text">Show ${tags.length - 10} more tags</span>
                                             </button>
@@ -614,13 +640,13 @@
                                 </div>
 
                                 <div class="flex flex-col space-y-2">
-                                    <button class="px-4 py-2 bg-pm-accent hover:bg-pm-accent-hover text-pm text-sm font-medium rounded-pm-sm transition-colors" onclick="window.admin.viewGallery(${prompt.id})">
+                                    <button class="px-4 py-2 bg-pm-accent hover:bg-pm-accent-hover text-pm text-sm font-medium rounded-pm-sm transition-colors" data-action="gallery" data-prompt-id="${prompt.id}">
                                         🖼️ Gallery
                                     </button>
-                                    <button class="px-4 py-2 bg-pm-accent hover:bg-pm-accent-hover text-pm text-sm font-medium rounded-pm-sm transition-colors" onclick="window.admin.editPrompt(${prompt.id})">
+                                    <button class="px-4 py-2 bg-pm-accent hover:bg-pm-accent-hover text-pm text-sm font-medium rounded-pm-sm transition-colors" data-action="edit" data-prompt-id="${prompt.id}">
                                         ✏️ Edit
                                     </button>
-                                    <button class="px-4 py-2 bg-pm-error hover:bg-pm-error text-pm text-sm font-medium rounded-pm-sm transition-colors" onclick="window.admin.deletePrompt(${prompt.id})">
+                                    <button class="px-4 py-2 bg-pm-error hover:bg-pm-error text-pm text-sm font-medium rounded-pm-sm transition-colors" data-action="delete" data-prompt-id="${prompt.id}">
                                         🗑️ Delete
                                     </button>
                                 </div>
@@ -674,12 +700,6 @@
                         });
                     });
                 });
-            }
-
-            escapeHtml(text) {
-                const div = document.createElement("div");
-                div.textContent = text;
-                return div.innerHTML;
             }
 
             showNotification(message, type = "info") {
@@ -765,7 +785,7 @@
                         const data = await response.json();
                         const dirs = data.settings?.monitored_directories || [];
                         if (dirs.length > 0) {
-                            statusEl.innerHTML = dirs.map(d => `<div class="truncate" title="${d}">✓ ${d}</div>`).join('');
+                            statusEl.innerHTML = dirs.map(d => `<div class="truncate" title="${escapeHtml(d)}">✓ ${escapeHtml(d)}</div>`).join('');
                         } else {
                             statusEl.textContent = 'No directories being monitored (auto-detect on restart)';
                         }
@@ -1723,7 +1743,7 @@
 
                     html += `
                         <div class="flex justify-between items-center p-2 bg-pm-input rounded">
-                            <span class="text-pm-secondary capitalize">${this.escapeHtml(category)}</span>
+                            <span class="text-pm-secondary capitalize">${escapeHtml(category)}</span>
                             <span class="${statusColor} font-mono text-sm">${status}</span>
                         </div>
                     `;
@@ -1737,7 +1757,7 @@
                                    (result.status === 'warning' ? 'bg-pm-warning/20 border-pm-warning' : 'bg-pm-error-tint border-pm-error');
 
                     html += `<div class="${bgColor} border rounded-pm-sm p-4">`;
-                    html += `<h4 class="text-pm font-medium mb-2 capitalize">${this.escapeHtml(category)}</h4>`;
+                    html += `<h4 class="text-pm font-medium mb-2 capitalize">${escapeHtml(category)}</h4>`;
 
                     if (result.message) {
                         html += `<p class="text-pm-secondary mb-2">${result.message}</p>`;
@@ -1780,7 +1800,7 @@
                         html += `<div class="text-sm text-pm-secondary">`;
                         for (const [dep, available] of Object.entries(result.dependencies)) {
                             const status = available ? '✅' : '❌';
-                            html += `<p>${status} ${dep}</p>`;
+                            html += `<p>${status} ${escapeHtml(dep)}</p>`;
                         }
                         html += `</div>`;
                     }
@@ -2209,13 +2229,13 @@
                         container.innerHTML = data.files.map(file => `
                             <div class="bg-pm-surface rounded-pm-sm p-3">
                                 <div class="flex items-center justify-between mb-2">
-                                    <span class="text-sm font-medium text-pm">${file.filename}</span>
+                                    <span class="text-sm font-medium text-pm">${escapeHtml(file.filename)}</span>
                                     ${file.is_main ? '<span class="bg-pm-accent text-xs px-2 py-1 rounded">Active</span>' : ''}
                                 </div>
                                 <div class="text-xs text-pm-secondary mb-2">
                                     Size: ${this.formatBytes(file.size)} | Modified: ${new Date(file.modified).toLocaleString()}
                                 </div>
-                                <button onclick="window.admin.downloadLogFile('${file.filename}')"
+                                <button data-action="download-log" data-filename="${escapeHtml(file.filename)}"
                                         class="w-full px-3 py-1 bg-pm-success hover:bg-pm-success text-pm text-xs rounded transition-colors">
                                     📥 Download
                                 </button>
@@ -2274,13 +2294,13 @@
                     return `
                         <div class="border-l-2 border-pm pl-3 py-1 hover:bg-pm-surface transition-colors">
                             <div class="flex items-start space-x-2 text-sm">
-                                <span class="text-pm-muted text-xs font-mono w-24 flex-shrink-0">${timestamp.split(' ')[1]}</span>
-                                <span class="${levelColor} font-semibold w-16 flex-shrink-0">${log.level}</span>
-                                <span class="text-pm-accent text-xs w-32 flex-shrink-0">${log.logger}</span>
-                                <span class="text-pm-secondary flex-1">${log.message}</span>
+                                <span class="text-pm-muted text-xs font-mono w-24 flex-shrink-0">${escapeHtml(timestamp.split(' ')[1])}</span>
+                                <span class="${levelColor} font-semibold w-16 flex-shrink-0">${escapeHtml(log.level)}</span>
+                                <span class="text-pm-accent text-xs w-32 flex-shrink-0">${escapeHtml(log.logger)}</span>
+                                <span class="text-pm-secondary flex-1">${escapeHtml(log.message)}</span>
                             </div>
                             <div class="text-xs text-pm-muted ml-44">
-                                ${log.filename}:${log.lineno}
+                                ${escapeHtml(log.filename)}:${escapeHtml(log.lineno)}
                             </div>
                         </div>
                     `;
@@ -2600,8 +2620,8 @@
                     <!-- File Path -->
                     <div>
                         <h2 class="text-sm font-medium text-pm-secondary mb-2">File Path</h2>
-                        <div class="text-sm text-pm-accent hover:text-pm-accent cursor-pointer bg-pm-surface p-2 rounded break-all" onclick="window.admin.copyToClipboard('${filePath}')">
-                            ${filePath}
+                        <div class="text-sm text-pm-accent hover:text-pm-accent cursor-pointer bg-pm-surface p-2 rounded break-all" data-action="copy-text" data-copy-text="${escapeHtml(filePath)}">
+                            ${escapeHtml(filePath)}
                         </div>
                     </div>
 
@@ -2610,7 +2630,7 @@
                         <h2 class="text-sm font-medium text-pm-secondary mb-2">Resources used</h2>
                         <div class="flex items-center justify-between">
                             <div>
-                                <div class="text-pm-accent hover:text-pm-accent cursor-pointer">${checkpoint}</div>
+                                <div class="text-pm-accent hover:text-pm-accent cursor-pointer">${escapeHtml(checkpoint)}</div>
                                 <div class="text-xs text-pm-muted">ComfyUI Generated</div>
                             </div>
                             <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">CHECKPOINT</span>
@@ -2629,7 +2649,7 @@
                             </button>
                         </div>
                         <div class="text-sm text-pm-secondary bg-pm-surface p-3 rounded max-h-32 overflow-y-auto">
-                            ${positivePrompt.substring(0, 200)}${positivePrompt.length > 200 ? '...' : ''}
+                            ${escapeHtml(positivePrompt.substring(0, 200))}${positivePrompt.length > 200 ? '...' : ''}
                         </div>
                         ${positivePrompt.length > 200 ? '<button class="text-pm-accent hover:text-pm-accent text-sm mt-1" onclick="window.admin.showFullPrompt(\'positive\')">Show more</button>' : ''}
                     </div>
@@ -2645,7 +2665,7 @@
                             </button>
                         </div>
                         <div class="text-sm text-pm-secondary bg-pm-surface p-3 rounded max-h-32 overflow-y-auto">
-                            ${negativePrompt.substring(0, 200)}${negativePrompt.length > 200 ? '...' : ''}
+                            ${escapeHtml(negativePrompt.substring(0, 200))}${negativePrompt.length > 200 ? '...' : ''}
                         </div>
                         ${negativePrompt.length > 200 ? '<button class="text-pm-accent hover:text-pm-accent text-sm mt-1" onclick="window.admin.showFullPrompt(\'negative\')">Show more</button>' : ''}
                     </div>
@@ -2654,12 +2674,12 @@
                     <div>
                         <h2 class="text-sm font-medium text-pm-secondary mb-3">Other metadata</h2>
                         <div class="flex flex-wrap gap-2">
-                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">CFG SCALE: ${cfgScale}</span>
-                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">STEPS: ${steps}</span>
-                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SAMPLER: ${sampler}</span>
+                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">CFG SCALE: ${escapeHtml(cfgScale)}</span>
+                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">STEPS: ${escapeHtml(steps)}</span>
+                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SAMPLER: ${escapeHtml(sampler)}</span>
                         </div>
                         <div class="mt-2">
-                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SEED: ${seed}</span>
+                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SEED: ${escapeHtml(seed)}</span>
                         </div>
                     </div>
 
@@ -2783,7 +2803,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 if (!this.currentMetadata) return;
 
                 const prompt = type === 'positive' ? this.currentMetadata.positivePrompt : this.currentMetadata.negativePrompt;
-                const safeType = this.escapeHtml(type.charAt(0).toUpperCase() + type.slice(1));
+                const safeType = escapeHtml(type.charAt(0).toUpperCase() + type.slice(1));
                 const newWindow = window.open('', '_blank');
                 const doc = newWindow.document;
                 doc.open();
@@ -3058,7 +3078,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 <div>
                     <h2 class="text-sm font-medium text-pm-secondary mb-2">File Path</h2>
                     <div class="text-sm text-pm-accent hover:text-pm-accent cursor-pointer bg-pm-surface p-2 rounded break-all" data-copy-path="">
-                        ${metadata.imagePath}
+                        ${escapeHtml(metadata.imagePath)}
                     </div>
                 </div>
 
@@ -3067,7 +3087,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     <h2 class="text-sm font-medium text-pm-secondary mb-2">Resources used</h2>
                     <div class="flex items-center justify-between">
                         <div>
-                            <div class="text-pm-accent hover:text-pm-accent cursor-pointer">${metadata.checkpoint}</div>
+                            <div class="text-pm-accent hover:text-pm-accent cursor-pointer">${escapeHtml(metadata.checkpoint)}</div>
                             <div class="text-xs text-pm-muted">ComfyUI Generated</div>
                         </div>
                         <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">CHECKPOINT</span>
@@ -3086,7 +3106,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         </button>
                     </div>
                     <div class="text-sm text-pm-secondary bg-pm-surface p-3 rounded max-h-32 overflow-y-auto">
-                        ${metadata.positivePrompt.substring(0, 200)}${metadata.positivePrompt.length > 200 ? '...' : ''}
+                        ${escapeHtml(metadata.positivePrompt.substring(0, 200))}${metadata.positivePrompt.length > 200 ? '...' : ''}
                     </div>
                     ${metadata.positivePrompt.length > 200 ? '<button class="text-pm-accent hover:text-pm-accent text-sm mt-1" data-show-type="positive">Show more</button>' : ''}
                 </div>
@@ -3102,7 +3122,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         </button>
                     </div>
                     <div class="text-sm text-pm-secondary bg-pm-surface p-3 rounded max-h-32 overflow-y-auto">
-                        ${metadata.negativePrompt.substring(0, 200)}${metadata.negativePrompt.length > 200 ? '...' : ''}
+                        ${escapeHtml(metadata.negativePrompt.substring(0, 200))}${metadata.negativePrompt.length > 200 ? '...' : ''}
                     </div>
                     ${metadata.negativePrompt.length > 200 ? '<button class="text-pm-accent hover:text-pm-accent text-sm mt-1" data-show-type="negative">Show more</button>' : ''}
                 </div>
@@ -3111,12 +3131,12 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 <div>
                     <h2 class="text-sm font-medium text-pm-secondary mb-3">Other metadata</h2>
                     <div class="flex flex-wrap gap-2">
-                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">CFG SCALE: ${metadata.cfgScale}</span>
-                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">STEPS: ${metadata.steps}</span>
-                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SAMPLER: ${metadata.sampler}</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">CFG SCALE: ${escapeHtml(metadata.cfgScale)}</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">STEPS: ${escapeHtml(metadata.steps)}</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SAMPLER: ${escapeHtml(metadata.sampler)}</span>
                     </div>
                     <div class="mt-2">
-                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SEED: ${metadata.seed}</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SEED: ${escapeHtml(metadata.seed)}</span>
                     </div>
                 </div>
 
@@ -3198,7 +3218,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             showFullPrompt(type) {
                 if (this.currentMetadata) {
                     const prompt = type === 'positive' ? this.currentMetadata.positivePrompt : this.currentMetadata.negativePrompt;
-                    const safeType = this.escapeHtml(type.charAt(0).toUpperCase() + type.slice(1));
+                    const safeType = escapeHtml(type.charAt(0).toUpperCase() + type.slice(1));
                     const newWindow = window.open('', '_blank');
                     const doc = newWindow.document;
                     doc.open();
@@ -3370,7 +3390,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 this.addPromptTags.forEach(tag => {
                     const chip = document.createElement('span');
                     chip.className = 'tag-chip inline-flex items-center px-2 py-1 bg-pm-accent text-pm text-xs rounded cursor-pointer hover:bg-pm-accent-hover';
-                    chip.innerHTML = `${tag} <span class="ml-1">&times;</span>`;
+                    chip.innerHTML = `${escapeHtml(tag)} <span class="ml-1">&times;</span>`;
                     chip.addEventListener('click', () => {
                         this.addPromptTags = this.addPromptTags.filter(t => t !== tag);
                         this.renderAddPromptTags();
@@ -3397,8 +3417,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }
 
                 suggestionsContainer.innerHTML = matchingTags.map(tag => `
-                    <div class="px-3 py-2 hover:bg-pm-hover cursor-pointer text-sm text-pm" data-tag="${tag}">
-                        ${tag}
+                    <div class="px-3 py-2 hover:bg-pm-hover cursor-pointer text-sm text-pm" data-tag="${escapeHtml(tag)}">
+                        ${escapeHtml(tag)}
                     </div>
                 `).join('');
 
@@ -3419,7 +3439,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
             populateAddPromptCategories() {
                 const datalist = document.getElementById('addPromptCategoryList');
-                datalist.innerHTML = this.categories.map(cat => `<option value="${cat}">`).join('');
+                datalist.innerHTML = this.categories.map(cat => `<option value="${escapeHtml(cat)}">`).join('');
             }
 
             async saveNewPrompt() {
@@ -3562,13 +3582,13 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                     html += `
                         <div class="film-strip-thumbnail"
+                             data-action="open-film"
                              data-index="${index}"
-                             data-prompt-id="${promptId}"
-                             onclick="window.admin.openFilmStripViewer(${promptId}, ${index})">
-                            <img src="${thumbnailUrl}"
+                             data-prompt-id="${promptId}">
+                            <img src="${escapeHtml(thumbnailUrl)}"
                                  alt="Image ${index + 1}"
                                  loading="lazy"
-                                 onerror="this.src='${imageUrl}'; this.onerror=null;">
+                                 data-fallback-src="${escapeHtml(imageUrl)}">
                         </div>
                     `;
                 });
@@ -3576,7 +3596,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 if (remaining > 0) {
                     html += `
                         <div class="film-strip-thumbnail film-strip-thumbnail--more"
-                             onclick="window.admin.viewGallery(${promptId})">
+                             data-action="gallery" data-prompt-id="${promptId}">
                             +${remaining}
                         </div>
                     `;
@@ -3961,7 +3981,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     // Display existing tags
                     const tagsContainer = document.getElementById('retagExistingTags');
                     tagsContainer.innerHTML = realTags.map(tag =>
-                        `<span class="px-2 py-1 bg-pm-accent text-pm text-xs rounded">${this.escapeHtml(tag)}</span>`
+                        `<span class="px-2 py-1 bg-pm-accent text-pm text-xs rounded">${escapeHtml(tag)}</span>`
                     ).join('');
 
                     // Show modal
@@ -4093,8 +4113,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                 const createTagChip = (tag, index) => `
                     <span class="tag-chip">
-                        ${this.escapeHtml(tag)}
-                        <span class="tag-remove" onclick="window.admin.removeReviewTag(${index})">×</span>
+                        ${escapeHtml(tag)}
+                        <span class="tag-remove" data-action="remove-review-tag" data-index="${index}">×</span>
                     </span>
                 `;
 
