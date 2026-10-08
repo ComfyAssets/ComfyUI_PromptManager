@@ -3,22 +3,33 @@
 import asyncio
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 from aiohttp import web
 
 _INTERNAL_ERROR = "An internal error occurred. Check server logs for details."
+_BUSY_ERROR = "Auto-tagging is already running"
+
+# Only these may be handed to the tagging engine or listed by the scanner.
+_MEDIA_EXTENSIONS = frozenset(
+    {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"}
+)
+# Bounds for scan_output_dir: a runaway output tree must not pin the server.
+_SCAN_MAX_FILES = 50_000
+_SCAN_MAX_DEPTH = 12
+
+# One batch run at a time; a second autotag/start gets 409 while this is held.
+_autotag_batch_lock = threading.Lock()
 
 
-def _public_error(exc: Exception) -> str:
-    """Describe an exception without leaking absolute server paths."""
-    if isinstance(exc, OSError) and exc.strerror:
-        filename = exc.filename
-        if filename:
-            return f"{exc.strerror}: {os.path.basename(str(filename))}"
-        return exc.strerror
-    return str(exc)
+def _file_exists(path) -> bool:
+    try:
+        return Path(str(path)).exists()
+    except (OSError, ValueError):
+        return False
 
 
 def path_is_within(candidate, root) -> bool:
@@ -91,7 +102,9 @@ class AutotagRoutesMixin:
 
         except Exception as e:
             self.logger.error(f"Get autotag models error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": self._public_error(e)}, status=500
+            )
 
     async def _stream_sse(self, request, events):
         """Write an async iterator of dict events as server-sent events.
@@ -250,6 +263,8 @@ class AutotagRoutesMixin:
                 "processed": 0,
                 "tagged": 0,
                 "skipped": 0,
+                "errors": 0,
+                "skipped_outside_roots": 0,
                 "status": "No images with linked prompts found",
             }
             service.unload_model()
@@ -261,7 +276,13 @@ class AutotagRoutesMixin:
             "status": f"Found {total} images. Processing...",
         }
 
-        counts = {"processed": 0, "tagged": 0, "skipped": 0, "errors": 0}
+        counts = {
+            "processed": 0,
+            "tagged": 0,
+            "skipped": 0,
+            "errors": 0,
+            "skipped_outside_roots": 0,
+        }
         tagged_prompt_ids = set()
         last_update = _time.monotonic()
         finished = False
@@ -274,6 +295,7 @@ class AutotagRoutesMixin:
                 "processed": counts["processed"],
                 "tagged": counts["tagged"],
                 "skipped": counts["skipped"],
+                "skipped_outside_roots": counts["skipped_outside_roots"],
             }
 
         try:
@@ -281,17 +303,26 @@ class AutotagRoutesMixin:
                 image_path = image_data.get("image_path")
                 prompt_id = image_data.get("prompt_id")
                 skip_reason = None
+                allowed_path = None
                 if not image_path or not prompt_id:
                     skip_reason = "unlinked"
                 elif prompt_id in tagged_prompt_ids:
                     skip_reason = "prompt already processed"
-                elif not Path(image_path).exists():
-                    skip_reason = "file missing"
-                elif opts["skip_tagged"] and self._real_tags(
-                    image_data.get("prompt_tags", [])
-                ):
-                    tagged_prompt_ids.add(prompt_id)
-                    skip_reason = "already tagged"
+                else:
+                    # Rows can point anywhere (restored DB, hand edits): only
+                    # media files inside the served output roots are tagged.
+                    allowed_path = self._resolve_allowed_image_path(str(image_path))
+                    if allowed_path is None:
+                        if _file_exists(image_path):
+                            skip_reason = "outside allowed directories"
+                            counts["skipped_outside_roots"] += 1
+                        else:
+                            skip_reason = "file missing"
+                    elif opts["skip_tagged"] and self._real_tags(
+                        image_data.get("prompt_tags", [])
+                    ):
+                        tagged_prompt_ids.add(prompt_id)
+                        skip_reason = "already tagged"
 
                 if skip_reason is not None:
                     counts["skipped"] += 1
@@ -307,7 +338,7 @@ class AutotagRoutesMixin:
                 try:
                     tags = await self._run_in_executor(
                         service.generate_tags,
-                        str(image_path),
+                        allowed_path,
                         general_threshold=opts["general_threshold"],
                         character_threshold=opts["character_threshold"],
                     )
@@ -385,10 +416,19 @@ class AutotagRoutesMixin:
                     "message": _INTERNAL_ERROR,
                 }
 
-        return await self._stream_sse(request, events())
+        if not _autotag_batch_lock.acquire(blocking=False):
+            return web.json_response(
+                {"success": False, "error": _BUSY_ERROR}, status=409
+            )
+        try:
+            return await self._stream_sse(request, events())
+        finally:
+            _autotag_batch_lock.release()
 
     def _resolve_allowed_image_path(self, raw_path: str) -> Optional[str]:
-        """Return the real path when it is a file inside an output directory."""
+        """Return the real path when it is a media file inside an output directory."""
+        if Path(str(raw_path)).suffix.lower() not in _MEDIA_EXTENSIONS:
+            return None
         for output_dir in self._get_all_output_dirs():
             if path_is_within(raw_path, output_dir):
                 real = os.path.realpath(raw_path)
@@ -522,7 +562,7 @@ class AutotagRoutesMixin:
         except Exception as e:
             self.logger.error(f"AutoTag single error: {e}")
             return web.json_response(
-                {"success": False, "error": _public_error(e)}, status=500
+                {"success": False, "error": self._public_error(e)}, status=500
             )
 
     async def apply_autotag(self, request):
@@ -568,7 +608,9 @@ class AutotagRoutesMixin:
 
         except Exception as e:
             self.logger.error(f"Apply autotag error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": self._public_error(e)}, status=500
+            )
 
     async def unload_autotag_model(self, request):
         """Manually unload the AutoTag model from memory."""
@@ -595,7 +637,37 @@ class AutotagRoutesMixin:
 
         except Exception as e:
             self.logger.error(f"Unload autotag model error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": self._public_error(e)}, status=500
+            )
+
+    @staticmethod
+    def _collect_scan_files(output_path: Path):
+        """Media files under ``output_path`` from a bounded, symlink-free walk.
+
+        Descends at most ``_SCAN_MAX_DEPTH`` levels, skips ``thumbnails``
+        trees and symlinked files, and stops after ``_SCAN_MAX_FILES`` files.
+        Returns ``(paths, truncated)``.
+        """
+        found = []
+        base_depth = len(output_path.parts)
+        for dirpath, dirnames, filenames in os.walk(output_path):
+            depth = len(Path(dirpath).parts) - base_depth
+            dirnames[:] = sorted(
+                name
+                for name in dirnames
+                if name != "thumbnails" and depth + 1 <= _SCAN_MAX_DEPTH
+            )
+            for name in sorted(filenames):
+                if Path(name).suffix.lower() not in _MEDIA_EXTENSIONS:
+                    continue
+                candidate = Path(dirpath) / name
+                if candidate.is_symlink():
+                    continue
+                if len(found) >= _SCAN_MAX_FILES:
+                    return found, True
+                found.append(candidate)
+        return found, False
 
     async def scan_output_dir(self, request):
         """Scan ComfyUI output directory for images."""
@@ -608,73 +680,50 @@ class AutotagRoutesMixin:
                 )
 
             output_path = Path(output_dir)
-            image_extensions = [
-                ".png",
-                ".jpg",
-                ".jpeg",
-                ".gif",
-                ".webp",
-                ".bmp",
-                ".tiff",
-            ]
+            files, truncated = await self._run_in_executor(
+                self._collect_scan_files, output_path
+            )
+            has_thumbnails = (output_path / "thumbnails").is_dir()
 
             images = []
-            seen_paths = set()
-
-            for ext in image_extensions:
-                for pattern in [f"*{ext.lower()}", f"*{ext.upper()}"]:
-                    for image_path in output_path.rglob(pattern):
-                        if "thumbnails" not in image_path.parts:
-                            normalized_path = str(image_path).lower()
-                            if normalized_path not in seen_paths:
-                                seen_paths.add(normalized_path)
-
-                                rel_path = image_path.relative_to(output_path)
-
-                                thumbnail_url = None
-                                thumbnails_dir = output_path / "thumbnails"
-                                if thumbnails_dir.exists():
-                                    rel_path_no_ext = rel_path.with_suffix("")
-                                    thumbnail_rel_path = (
-                                        "thumbnails/"
-                                        f"{rel_path_no_ext.as_posix()}"
-                                        f"_thumb{image_path.suffix}"
-                                    )
-                                    thumbnail_abs_path = thumbnails_dir / (
-                                        f"{rel_path_no_ext.as_posix()}"
-                                        f"_thumb{image_path.suffix}"
-                                    )
-                                    if thumbnail_abs_path.exists():
-                                        from urllib.parse import quote
-
-                                        thumbnail_url = (
-                                            "/prompt_manager/images/serve/"
-                                            f'{quote(thumbnail_rel_path, safe="/")}'
-                                        )
-
-                                from urllib.parse import quote as url_quote
-
-                                images.append(
-                                    {
-                                        "filename": image_path.name,
-                                        "path": str(image_path),
-                                        "relative_path": str(rel_path),
-                                        "url": (
-                                            "/prompt_manager/images/serve/"
-                                            + url_quote(rel_path.as_posix(), safe="/")
-                                        ),
-                                        "thumbnail_url": thumbnail_url,
-                                    }
-                                )
+            for image_path in files:
+                rel_path = image_path.relative_to(output_path)
+                thumbnail_url = None
+                if has_thumbnails:
+                    thumb_rel = (
+                        f"thumbnails/{rel_path.with_suffix('').as_posix()}"
+                        f"_thumb{image_path.suffix}"
+                    )
+                    if (output_path / thumb_rel).exists():
+                        thumbnail_url = "/prompt_manager/images/serve/" + quote(
+                            thumb_rel, safe="/"
+                        )
+                images.append(
+                    {
+                        "filename": image_path.name,
+                        "path": self._public_path(image_path),
+                        "relative_path": rel_path.as_posix(),
+                        "url": "/prompt_manager/images/serve/"
+                        + quote(rel_path.as_posix(), safe="/"),
+                        "thumbnail_url": thumbnail_url,
+                    }
+                )
 
             images.sort(key=lambda x: x["filename"])
 
             self.logger.info(f"Found {len(images)} images in output directory")
 
             return web.json_response(
-                {"success": True, "images": images, "count": len(images)}
+                {
+                    "success": True,
+                    "images": images,
+                    "count": len(images),
+                    "truncated": truncated,
+                }
             )
 
         except Exception as e:
             self.logger.error(f"Scan output dir error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": self._public_error(e)}, status=500
+            )

@@ -4,11 +4,13 @@ The ML engine is replaced by a fake service so no model is ever loaded and
 no network request is made.
 """
 
+import asyncio
 import json
 import os
 import shutil
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -121,6 +123,7 @@ class AutotagAPITestCase(AioHTTPTestCase):
 
     async def tearDownAsync(self):
         self._service_patch.stop()
+        self.api.db.close_all()
         for path in (
             self._temp_db.name,
             self._temp_db.name + "-wal",
@@ -287,6 +290,41 @@ class TestAutotagSingleContainment(AutotagAPITestCase):
         self.assertNotIn(str(self.secret_dir), data["error"])
         self.assertEqual(self.service.generate_calls, [])
 
+    async def test_non_media_extension_inside_output_dir_is_forbidden(self):
+        notes = self.output_dir / "notes.txt"
+        notes.write_text("not an image")
+
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single", {"path": str(notes)}
+        )
+
+        self.assertEqual(resp.status, 403)
+        self.assertFalse((await resp.json())["success"])
+        self.assertEqual(self.service.generate_calls, [])
+
+    async def test_non_media_extension_via_image_id_is_forbidden(self):
+        prompt_id = self._save_prompt()
+        notes = self.output_dir / "notes.txt"
+        notes.write_text("not an image")
+        image_id = self._link_image(prompt_id, notes)
+
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single", {"image_id": image_id}
+        )
+
+        self.assertEqual(resp.status, 403)
+        self.assertEqual(self.service.generate_calls, [])
+
+    async def test_uppercase_media_extension_is_accepted(self):
+        image = self._make_image(self.output_dir, "shout.JPEG")
+
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single", {"path": str(image)}
+        )
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(len(self.service.generate_calls), 1)
+
     async def test_missing_selector_is_400(self):
         resp = await self._post_json("/prompt_manager/autotag/single", {})
         self.assertEqual(resp.status, 400)
@@ -423,6 +461,86 @@ class TestAutotagBatch(AutotagAPITestCase):
         progress = [e for e in events if e["type"] == "progress"]
         self.assertTrue(all(0 <= e["progress"] <= 100 for e in progress))
         self.assertTrue(any("processed" in e for e in progress))
+
+    async def test_rows_outside_output_dirs_are_skipped_and_counted(self):
+        inside = self._save_prompt("inside")
+        outside = self._save_prompt("outside")
+        self._link_image(inside, self._make_image(self.output_dir, "in.png"))
+        secret = self._make_image(self.secret_dir, "password.png")
+        self._link_image(outside, secret)
+
+        _, events = await self._start()
+
+        done = events[-1]
+        self.assertEqual(done["type"], "complete")
+        self.assertEqual(done["processed"], 1)
+        self.assertEqual(done["tagged"], 1)
+        self.assertEqual(done["skipped"], 1)
+        self.assertEqual(done["skipped_outside_roots"], 1)
+        self.assertEqual(len(self.service.generate_calls), 1)
+        self.assertEqual(
+            os.path.realpath(self.service.generate_calls[0][0]),
+            os.path.realpath(str(self.output_dir / "in.png")),
+        )
+        self.assertEqual(self.api.db.get_prompt_by_id(outside)["tags"], [])
+        progress = [e for e in events if e["type"] == "progress" and "skipped" in e]
+        self.assertTrue(progress)
+        self.assertTrue(all("skipped_outside_roots" in e for e in progress))
+        body = json.dumps(events)
+        self.assertNotIn(str(self.secret_dir), body)
+
+    async def test_second_start_while_running_is_409(self):
+        self._seed()
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_generate(image_path, **kwargs):
+            started.set()
+            release.wait(5)
+            return ["slow"]
+
+        self.service.generate_tags = slow_generate
+        first = asyncio.ensure_future(self._start())
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, started.wait, 5)
+            self.assertTrue(started.is_set())
+
+            resp = await self.client.request(
+                "POST", "/prompt_manager/autotag/start?model_type=gguf"
+            )
+
+            self.assertEqual(resp.status, 409)
+            self.assertEqual(
+                await resp.json(),
+                {"success": False, "error": "Auto-tagging is already running"},
+            )
+        finally:
+            release.set()
+            resp1, events = await first
+        self.assertEqual(resp1.status, 200)
+        self.assertEqual(events[-1]["type"], "complete")
+
+    async def test_lock_is_released_after_a_run(self):
+        self._seed()
+
+        resp1, _ = await self._start()
+        resp2, events = await self._start()
+
+        self.assertEqual(resp1.status, 200)
+        self.assertEqual(resp2.status, 200)
+        self.assertEqual(events[-1]["type"], "complete")
+
+    async def test_lock_is_released_when_the_run_fails(self):
+        self._seed()
+        self.service.load_error = RuntimeError("no model")
+
+        _, events = await self._start()
+        self.assertEqual(events[-1]["type"], "error")
+
+        self.service.load_error = None
+        resp, events = await self._start()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(events[-1]["type"], "complete")
 
     async def test_already_tagged_prompts_are_skipped_unless_asked(self):
         p = self._save_prompt("tagged", tags=["cat"])
@@ -603,10 +721,11 @@ class TestAutotagSingleEdgeCases(AutotagAPITestCase):
         self.assertEqual((await resp.json())["error"], "model crashed")
 
     async def test_oserror_without_filename_uses_strerror(self):
-        from py.api.autotag_routes import _public_error
+        from py.api import _public_error
 
         self.assertEqual(_public_error(OSError(5, "I/O error")), "I/O error")
         self.assertEqual(_public_error(ValueError("plain")), "plain")
+        self.assertIs(self.api._public_error, _public_error)
 
     async def test_path_with_nul_byte_is_forbidden(self):
         from py.api.autotag_routes import path_is_within
@@ -759,6 +878,45 @@ class TestApplyAutotag(AutotagAPITestCase):
         self.assertEqual(resp.status, 500)
 
 
+class TestAutotagErrorBodiesHideServerPaths(AutotagAPITestCase):
+    """Every autotag handler reports exceptions through the shared public helper."""
+
+    def _locked(self):
+        return PermissionError(
+            13, "Permission denied", str(self.secret_dir / "locked.db")
+        )
+
+    async def _assert_hidden(self, resp):
+        self.assertEqual(resp.status, 500)
+        body = await resp.text()
+        self.assertFalse(json.loads(body)["success"])
+        self.assertNotIn(str(self.secret_dir), body)
+        self.assertIn("locked.db", body)
+
+    async def test_models_error(self):
+        def boom():
+            raise self._locked()
+
+        self.service.get_models_status = boom
+        resp = await self.client.request("GET", "/prompt_manager/autotag/models")
+        await self._assert_hidden(resp)
+
+    async def test_apply_error(self):
+        with patch.object(self.api.db, "get_prompt_by_id", side_effect=self._locked()):
+            resp = await self._post_json(
+                "/prompt_manager/autotag/apply", {"prompt_id": 1, "tags": ["a"]}
+            )
+        await self._assert_hidden(resp)
+
+    async def test_unload_error(self):
+        def boom():
+            raise self._locked()
+
+        self.service.is_model_loaded = boom
+        resp = await self.client.request("POST", "/prompt_manager/autotag/unload")
+        await self._assert_hidden(resp)
+
+
 class TestUnloadAutotag(AutotagAPITestCase):
 
     async def test_nothing_loaded(self):
@@ -799,10 +957,12 @@ class TestScanOutputDir(AutotagAPITestCase):
 
         resp = await self.client.request("GET", "/prompt_manager/scan_output_dir")
 
-        data = await resp.json()
+        body = await resp.text()
+        data = json.loads(body)
         self.assertTrue(data["success"])
         self.assertEqual([i["filename"] for i in data["images"]], ["a.png", "b.JPG"])
         self.assertEqual(data["count"], 2)
+        self.assertIs(data["truncated"], False)
         self.assertIsNone(data["images"][0]["thumbnail_url"])
         self.assertEqual(
             data["images"][1]["thumbnail_url"],
@@ -811,19 +971,74 @@ class TestScanOutputDir(AutotagAPITestCase):
         self.assertEqual(
             data["images"][1]["url"], "/prompt_manager/images/serve/sub/b.JPG"
         )
+        self.assertEqual(data["images"][1]["relative_path"], "sub/b.JPG")
+        self.assertEqual(
+            data["images"][1]["path"], self.api._public_path(sub / "b.JPG")
+        )
+        self.assertFalse(os.path.isabs(data["images"][1]["path"]))
+        self.assertNotIn(str(self.tmp_root), body)
+
+    async def test_symlinked_files_are_skipped(self):
+        secret = self._make_image(self.secret_dir, "password.png")
+        self._make_image(self.output_dir, "real.png")
+        link = self.output_dir / "link.png"
+        try:
+            link.symlink_to(secret)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks not supported on this platform")
+        self.api._find_comfyui_output_dir = lambda: str(self.output_dir)
+
+        data = await (
+            await self.client.request("GET", "/prompt_manager/scan_output_dir")
+        ).json()
+
+        self.assertEqual([i["filename"] for i in data["images"]], ["real.png"])
+
+    async def test_file_cap_marks_the_listing_truncated(self):
+        for name in ("a.png", "b.png", "c.png"):
+            self._make_image(self.output_dir, name)
+        self.api._find_comfyui_output_dir = lambda: str(self.output_dir)
+
+        with patch("py.api.autotag_routes._SCAN_MAX_FILES", 2):
+            data = await (
+                await self.client.request("GET", "/prompt_manager/scan_output_dir")
+            ).json()
+
+        self.assertEqual(data["count"], 2)
+        self.assertIs(data["truncated"], True)
+
+    async def test_depth_cap_stops_the_walk(self):
+        deep = self.output_dir / "d1" / "d2" / "d3"
+        deep.mkdir(parents=True)
+        self._make_image(self.output_dir / "d1", "shallow.png")
+        self._make_image(deep, "deep.png")
+        self.api._find_comfyui_output_dir = lambda: str(self.output_dir)
+
+        with patch("py.api.autotag_routes._SCAN_MAX_DEPTH", 1):
+            data = await (
+                await self.client.request("GET", "/prompt_manager/scan_output_dir")
+            ).json()
+
+        self.assertEqual([i["filename"] for i in data["images"]], ["shallow.png"])
 
     async def test_missing_output_dir_is_404(self):
         self.api._find_comfyui_output_dir = lambda: None
         resp = await self.client.request("GET", "/prompt_manager/scan_output_dir")
         self.assertEqual(resp.status, 404)
 
-    async def test_error_is_500(self):
+    async def test_error_is_500_without_the_server_path(self):
         def boom():
-            raise RuntimeError("x")
+            raise PermissionError(
+                13, "Permission denied", str(self.secret_dir / "locked.png")
+            )
 
         self.api._find_comfyui_output_dir = boom
         resp = await self.client.request("GET", "/prompt_manager/scan_output_dir")
         self.assertEqual(resp.status, 500)
+        body = await resp.text()
+        self.assertFalse(json.loads(body)["success"])
+        self.assertNotIn(str(self.secret_dir), body)
+        self.assertIn("locked.png", body)
 
 
 if __name__ == "__main__":
