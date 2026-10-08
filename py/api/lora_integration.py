@@ -76,7 +76,7 @@ class LoraIntegrationMixin:
                     "enabled": config["enabled"],
                     "path": config["path"],
                     "trigger_words_enabled": config["trigger_words_enabled"],
-                    "civitai_api_key": config.get("civitai_api_key", ""),
+                    "has_civitai_api_key": bool(config.get("civitai_api_key")),
                     "detected": detected_path is not None,
                     "detected_path": detected_path or "",
                     "trigger_cache_loaded": cache.is_loaded,

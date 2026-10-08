@@ -7,6 +7,7 @@ directory detection, TriggerWordCache, and image download logic.
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -16,12 +17,17 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from py import lora_utils
 from py.lora_utils import (
+    CIVITAI_HOSTS,
+    MAX_CIVITAI_DOWNLOAD_BYTES,
     TriggerWordCache,
+    download_civitai_images,
     get_civitai_image_urls,
     get_example_prompt_from_metadata,
     get_lora_image_cache_dir,
     get_trigger_words_from_metadata,
+    is_civitai_url,
     read_lora_metadata,
 )
 
@@ -222,6 +228,207 @@ class TestGetLoraImageCacheDir(unittest.TestCase):
     def test_directory_exists(self):
         cache_dir = get_lora_image_cache_dir()
         self.assertTrue(cache_dir.is_dir())
+
+
+# ── CivitAI download tests (no network) ───────────────────────────────
+
+
+def _png_bytes():
+    """A valid 2x2 PNG so PIL can decode the fake download."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", (2, 2), (10, 20, 30)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+class _FakeResponse:
+    """Minimal stand-in for the object returned by urllib.request.urlopen."""
+
+    def __init__(self, body, content_length=None):
+        self._body = body
+        self._pos = 0
+        self.headers = {}
+        if content_length is not None:
+            self.headers["Content-Length"] = str(content_length)
+
+    def read(self, amt=-1):
+        if amt is None or amt < 0:
+            chunk = self._body[self._pos :]
+            self._pos = len(self._body)
+            return chunk
+        chunk = self._body[self._pos : self._pos + amt]
+        self._pos += len(chunk)
+        return chunk
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeOpener:
+    """Records every request and serves a canned response."""
+
+    def __init__(self, response):
+        self.response = response
+        self.requests = []
+
+    def __call__(self, req, timeout=None):
+        self.requests.append(req)
+        return self.response
+
+
+class TestCivitaiUrlPolicy(unittest.TestCase):
+
+    def test_allow_list_contains_expected_hosts(self):
+        self.assertEqual(
+            CIVITAI_HOSTS,
+            frozenset(
+                {
+                    "civitai.com",
+                    "www.civitai.com",
+                    "api.civitai.com",
+                    "image.civitai.com",
+                }
+            ),
+        )
+        self.assertEqual(MAX_CIVITAI_DOWNLOAD_BYTES, 50 * 1024 * 1024)
+
+    def test_https_civitai_hosts_are_allowed(self):
+        for host in CIVITAI_HOSTS:
+            self.assertTrue(is_civitai_url(f"https://{host}/api/download/1"), host)
+
+    def test_other_hosts_and_schemes_are_refused(self):
+        for url in (
+            "https://evil.example/x",
+            "http://civitai.com/api/download/1",
+            "https://civitai.com.evil.example/x",
+            "https://notcivitai.com/x",
+            "ftp://civitai.com/x",
+            "not a url",
+            "",
+        ):
+            self.assertFalse(is_civitai_url(url), url)
+
+
+class TestDownloadOne(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmpdir, True)
+        self.target = self.tmpdir / "out.jpg"
+
+    def _run(self, url, opener, api_key="secret-key"):
+        with patch("urllib.request.urlopen", opener):
+            return lora_utils._download_one(url, self.target, api_key)
+
+    def test_off_host_url_is_refused_without_a_request(self):
+        opener = _FakeOpener(_FakeResponse(_png_bytes()))
+
+        result = self._run("https://evil.example/x", opener)
+
+        self.assertIsNone(result)
+        self.assertEqual(opener.requests, [])
+        self.assertFalse(self.target.exists())
+
+    def test_plain_http_civitai_is_refused(self):
+        opener = _FakeOpener(_FakeResponse(_png_bytes()))
+
+        result = self._run("http://civitai.com/api/download/1", opener)
+
+        self.assertIsNone(result)
+        self.assertEqual(opener.requests, [])
+
+    def test_civitai_download_sends_bearer_header(self):
+        opener = _FakeOpener(_FakeResponse(_png_bytes()))
+
+        result = self._run("https://civitai.com/api/download/1", opener)
+
+        self.assertEqual(os.path.realpath(result), os.path.realpath(str(self.target)))
+        self.assertEqual(len(opener.requests), 1)
+        req = opener.requests[0]
+        self.assertEqual(req.get_header("Authorization"), "Bearer secret-key")
+        self.assertTrue(self.target.exists())
+
+    def test_no_bearer_header_without_a_key(self):
+        opener = _FakeOpener(_FakeResponse(_png_bytes()))
+
+        self._run("https://image.civitai.com/a.png", opener, api_key="")
+
+        self.assertIsNone(opener.requests[0].get_header("Authorization"))
+
+    def test_oversized_content_length_is_refused(self):
+        opener = _FakeOpener(
+            _FakeResponse(_png_bytes(), content_length=MAX_CIVITAI_DOWNLOAD_BYTES + 1)
+        )
+
+        result = self._run("https://civitai.com/api/download/1", opener)
+
+        self.assertIsNone(result)
+        self.assertFalse(self.target.exists())
+
+    def test_reading_stops_past_cap_when_length_is_absent(self):
+        body = b"x" * (MAX_CIVITAI_DOWNLOAD_BYTES + 1)
+        response = _FakeResponse(body)
+        opener = _FakeOpener(response)
+
+        with patch.object(lora_utils, "MAX_CIVITAI_DOWNLOAD_BYTES", 1024):
+            result = self._run("https://civitai.com/api/download/1", opener)
+
+        self.assertIsNone(result)
+        self.assertLessEqual(response._pos, 1024 + lora_utils._DOWNLOAD_CHUNK_BYTES)
+        self.assertFalse(self.target.exists())
+
+
+class TestDownloadCivitaiImages(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmpdir, True)
+        self.meta_path = self.tmpdir / "lora.safetensors.metadata.json"
+        self.meta_path.write_text("{}")
+
+    def test_only_civitai_urls_are_fetched(self):
+        opener = _FakeOpener(_FakeResponse(_png_bytes()))
+        metadata = _make_metadata(
+            images=[
+                {"url": "https://evil.example/steal"},
+                {"url": "https://civitai.com/api/download/1"},
+                {"url": "not-a-url"},
+            ]
+        )
+
+        with patch("urllib.request.urlopen", opener):
+            paths = download_civitai_images(
+                metadata, self.meta_path, self.tmpdir / "cache", "key"
+            )
+
+        self.assertEqual(len(paths), 1)
+        self.assertEqual(
+            [r.full_url for r in opener.requests],
+            ["https://civitai.com/api/download/1"],
+        )
+
+    def test_cached_files_are_not_refetched(self):
+        opener = _FakeOpener(_FakeResponse(_png_bytes()))
+        metadata = _make_metadata(images=[{"url": "https://civitai.com/a.png"}])
+        cache = self.tmpdir / "cache"
+
+        with patch("urllib.request.urlopen", opener):
+            first = download_civitai_images(metadata, self.meta_path, cache, "")
+            second = download_civitai_images(metadata, self.meta_path, cache, "")
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(opener.requests), 1)
+
+    def test_no_images_returns_empty(self):
+        self.assertEqual(
+            download_civitai_images({}, self.meta_path, self.tmpdir / "cache"), []
+        )
 
 
 # ── TriggerWordCache tests ────────────────────────────────────────────

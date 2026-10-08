@@ -15,6 +15,7 @@ import threading
 import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 try:
     from ..utils.logging_config import get_logger
@@ -298,16 +299,67 @@ def get_preview_image_from_metadata(
 
 _THUMB_MAX_SIZE = 512
 
+# Only these hosts may ever receive the CivitAI API key, and only over HTTPS.
+CIVITAI_HOSTS = frozenset(
+    {"civitai.com", "www.civitai.com", "api.civitai.com", "image.civitai.com"}
+)
+MAX_CIVITAI_DOWNLOAD_BYTES = 50 * 1024 * 1024
+_DOWNLOAD_CHUNK_BYTES = 64 * 1024
+
+
+def is_civitai_url(url: str) -> bool:
+    """True when ``url`` is an HTTPS URL on an allow-listed CivitAI host."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    hostname = (parts.hostname or "").lower()
+    return parts.scheme == "https" and hostname in CIVITAI_HOSTS
+
+
+def _read_capped(resp, cap: int) -> Optional[bytes]:
+    """Read a response body, refusing anything larger than ``cap`` bytes."""
+    declared = resp.headers.get("Content-Length")
+    if declared is not None:
+        try:
+            if int(declared) > cap:
+                return None
+        except ValueError:
+            pass
+
+    chunks = []
+    total = 0
+    while True:
+        chunk = resp.read(_DOWNLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > cap:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 def _download_one(url: str, local_path: Path, api_key: str) -> Optional[str]:
-    """Download a single image, resize to thumbnail, save as JPEG."""
+    """Download a single CivitAI image, resize to thumbnail, save as JPEG.
+
+    Refuses any URL that is not HTTPS on an allow-listed CivitAI host so the
+    API key is never sent elsewhere, and refuses bodies larger than
+    MAX_CIVITAI_DOWNLOAD_BYTES.
+    """
+    if not is_civitai_url(url):
+        logger.warning(f"Refusing non-CivitAI download URL: {url}")
+        return None
     try:
         headers = {"User-Agent": "ComfyUI-PromptManager/1.0"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=10) as resp:
-            raw = resp.read()
+            raw = _read_capped(resp, MAX_CIVITAI_DOWNLOAD_BYTES)
+        if raw is None:
+            logger.warning(f"Refusing oversized download: {url}")
+            return None
 
         # Resize to thumbnail to save disk space
         from io import BytesIO
@@ -361,7 +413,7 @@ def download_civitai_images(
         if not isinstance(img, dict):
             continue
         url = img.get("url", "")
-        if not isinstance(url, str) or not url.startswith("http"):
+        if not isinstance(url, str) or not is_civitai_url(url):
             continue
 
         url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
