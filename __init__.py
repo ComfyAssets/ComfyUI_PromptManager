@@ -82,6 +82,10 @@ except Exception as e:
     except Exception:
         pass
 
+# Shared database, set up with the monitoring system below. Stays None when that
+# fails so the queue hook can report the database as unavailable instead of crashing.
+_global_db = None
+
 # Start image monitoring globally at module import time
 # This ensures images are linked regardless of which node is used in the workflow
 try:
@@ -111,13 +115,21 @@ except Exception as e:
     except Exception:
         print(f"[ComfyUI-PromptManager] Warning: Failed to start image monitoring: {e}")
 
-# Count prompt runs when workflows are queued (ComfyUI skips unchanged nodes, so
+
+def _db_factory():
+    """The shared database for the queue hook; called lazily per request."""
+    if _global_db is None:
+        raise RuntimeError("PromptManager database unavailable")
+    return _global_db
+
+
+# Count prompt runs when ComfyUI dequeues workflows (it skips unchanged nodes, so
 # node execution alone misses re-runs). Separate from monitoring so either can fail.
 try:
     from .py.config import server_instance
     from .utils.usage_tracking import register_queue_hook
 
-    register_queue_hook(server_instance, lambda: _global_db)
+    register_queue_hook(server_instance, _db_factory)
 except Exception as e:
     try:
         from .utils.logging_config import get_logger
