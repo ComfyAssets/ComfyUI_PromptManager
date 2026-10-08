@@ -7,7 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -19,6 +19,7 @@ from aiohttp.test_utils import AioHTTPTestCase  # noqa: E402
 
 from database.operations import PromptDatabase  # noqa: E402
 from py.api import PromptManagerAPI  # noqa: E402
+import py.api.prompts as prompts_module  # noqa: E402
 from py.api.prompts import (  # noqa: E402
     MAX_PAGE_LIMIT,
     MAX_PAGE_OFFSET,
@@ -502,6 +503,30 @@ class TestTagInputValidation(RouteCoverageCase):
 
     async def test_control_characters_are_400(self):
         await self._assert_all_400("bad\x00tag")
+
+
+class TestExportPagesThroughAllPrompts(RouteCoverageCase):
+    """GET /prompt_manager/export never truncates: it pages until exhausted."""
+
+    async def test_export_is_complete_beyond_one_page(self):
+        ids = {self._save_prompt(f"export {i}") for i in range(5)}
+        real_search = self.api.db.search_prompts
+        calls = []
+
+        def spy(*args, **kwargs):
+            calls.append((kwargs.get("limit"), kwargs.get("offset")))
+            return real_search(*args, **kwargs)
+
+        self.api.db.search_prompts = spy
+
+        with patch.object(prompts_module, "EXPORT_PAGE_SIZE", 2):
+            resp = await self.client.request("GET", "/prompt_manager/export")
+
+        self.assertEqual(resp.status, 200)
+        data = json.loads(await resp.text())
+        self.assertEqual(data["total_prompts"], 5)
+        self.assertEqual({p["id"] for p in data["prompts"]}, ids)
+        self.assertEqual(calls, [(2, 0), (2, 2), (2, 4)])
 
 
 class TestTagMutationRoutes(RouteCoverageCase):

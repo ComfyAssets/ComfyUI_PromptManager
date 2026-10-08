@@ -11,6 +11,10 @@ from aiohttp import web
 MAX_PAGE_LIMIT = 500
 MAX_PAGE_OFFSET = 10_000_000
 
+# The export walks the whole table in pages of this size instead of asking
+# for one giant result set (and silently truncating large libraries).
+EXPORT_PAGE_SIZE = 1000
+
 
 def parse_page_params(query, default_limit=50, max_limit=MAX_PAGE_LIMIT):
     """Return ``(limit, offset)`` from a query mapping, clamped to safe bounds.
@@ -1099,10 +1103,20 @@ class PromptRoutesMixin:
                 status=500,
             )
 
+    def _all_prompts_for_export(self):
+        """Every prompt, fetched in EXPORT_PAGE_SIZE pages (blocking)."""
+        prompts, offset = [], 0
+        while True:
+            page = self.db.search_prompts(limit=EXPORT_PAGE_SIZE, offset=offset)
+            prompts.extend(page)
+            if len(page) < EXPORT_PAGE_SIZE:
+                return prompts
+            offset += EXPORT_PAGE_SIZE
+
     async def export_prompts(self, request):
         """Export all prompts to JSON."""
         try:
-            prompts = await self._run_in_executor(self.db.search_prompts, limit=10000)
+            prompts = await self._run_in_executor(self._all_prompts_for_export)
 
             export_data = {
                 "export_date": datetime.datetime.now(datetime.timezone.utc).isoformat(),
