@@ -535,18 +535,18 @@ class PromptManagerAPI(
             from ..config import GalleryConfig
 
             if GalleryConfig.MONITORING_DIRECTORIES:
-                configured_dir = Path(GalleryConfig.MONITORING_DIRECTORIES[0]).resolve()
-                if configured_dir.exists() and configured_dir.is_dir():
+                configured = GalleryConfig.MONITORING_DIRECTORIES[0]
+                # Same check as the settings endpoint: a root hand-edited
+                # into config.json must not open a directory outside ComfyUI
+                ok, reason = GalleryConfig.validate_gallery_root(configured)
+                if ok:
+                    configured_dir = Path(configured).resolve()
                     self.logger.info(
                         f"Using configured monitoring directory: {configured_dir}"
                     )
                     self._cached_output_dir = str(configured_dir)
                     return self._cached_output_dir
-                else:
-                    self.logger.warning(
-                        "Configured directory does not exist: "
-                        f"{GalleryConfig.MONITORING_DIRECTORIES[0]}"
-                    )
+                self.logger.warning(f"Ignoring configured directory: {reason}")
         except ImportError:
             self.logger.debug(
                 "GalleryConfig not available, skipping configured directory check"

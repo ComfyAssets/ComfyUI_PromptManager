@@ -7,7 +7,9 @@ including filesystem roots and the home directory, is rejected so the
 image-serving routes can never be pointed at arbitrary files.
 """
 
+import json
 import os
+import shutil
 import sys
 import tempfile
 import types
@@ -21,9 +23,87 @@ sys.modules.setdefault("server", _mock_server)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from py.config import GalleryConfig  # noqa: E402
+from py.config import GalleryConfig, PromptManagerConfig  # noqa: E402
 
 EXTRA_ROOTS_ENV = "PROMPT_MANAGER_EXTRA_GALLERY_ROOTS"
+
+
+class TestUpdateConfigValidatesRoots(unittest.TestCase):
+    """Roots hand-edited into config.json go through validate_gallery_root."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, True)
+        self.comfy_dir = Path(self.tmpdir) / "ComfyUI"
+        self.output_dir = self.comfy_dir / "output"
+        self.output_dir.mkdir(parents=True)
+        self.outside = Path(self.tmpdir) / "outside"
+        self.outside.mkdir()
+        self._orig_folder_paths = sys.modules.get("folder_paths")
+        sys.modules["folder_paths"] = types.SimpleNamespace(
+            base_path=str(self.comfy_dir),
+            get_output_directory=lambda: str(self.output_dir),
+        )
+        self.addCleanup(self._restore_folder_paths)
+        self._orig_dirs = list(GalleryConfig.MONITORING_DIRECTORIES)
+        self.addCleanup(
+            setattr, GalleryConfig, "MONITORING_DIRECTORIES", self._orig_dirs
+        )
+        self._orig_extra = os.environ.pop(EXTRA_ROOTS_ENV, None)
+        self.addCleanup(self._restore_extra_env)
+
+    def _restore_folder_paths(self):
+        if self._orig_folder_paths is None:
+            sys.modules.pop("folder_paths", None)
+        else:
+            sys.modules["folder_paths"] = self._orig_folder_paths
+
+    def _restore_extra_env(self):
+        if self._orig_extra is None:
+            os.environ.pop(EXTRA_ROOTS_ENV, None)
+        else:
+            os.environ[EXTRA_ROOTS_ENV] = self._orig_extra
+
+    def test_invalid_roots_are_dropped_with_a_warning(self):
+        good = self.output_dir / "renders"
+        good.mkdir()
+        with self.assertLogs("prompt_manager.config", level="WARNING") as logs:
+            GalleryConfig.update_config(
+                {
+                    "monitoring": {
+                        "directories": [
+                            str(self.outside),
+                            str(good),
+                            os.path.abspath(os.sep),
+                            42,
+                        ]
+                    }
+                }
+            )
+        self.assertEqual(GalleryConfig.MONITORING_DIRECTORIES, [str(good)])
+        self.assertEqual(len(logs.output), 3)
+        self.assertNotIn(str(self.outside), "".join(logs.output))
+
+    def test_non_list_directories_are_ignored(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.update_config({"monitoring": {"directories": "/etc"}})
+        self.assertEqual(GalleryConfig.MONITORING_DIRECTORIES, [str(self.output_dir)])
+
+    def test_load_from_file_drops_invalid_roots(self):
+        config_path = os.path.join(self.tmpdir, "config.json")
+        with open(config_path, "w") as f:
+            json.dump(
+                {
+                    "gallery": {
+                        "monitoring": {
+                            "directories": [str(self.outside), str(self.output_dir)]
+                        }
+                    }
+                },
+                f,
+            )
+        PromptManagerConfig.load_from_file(config_path)
+        self.assertEqual(GalleryConfig.MONITORING_DIRECTORIES, [str(self.output_dir)])
 
 
 class GalleryRootTestCase(unittest.TestCase):

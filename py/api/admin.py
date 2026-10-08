@@ -31,26 +31,51 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff")
 VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".wmv")
 SCAN_BATCH_SIZE = 50  # Files per executor call during the output scan
 MAX_SAFETY_BACKUPS = 10  # '<db>.backup_*' files kept next to the live database
+MAX_SCAN_FILES = 50_000  # Upper bound on media files one scan will look at
+MAX_SCAN_DEPTH = 12  # Directory levels below an output root that are scanned
+# Files the duplicate cleaner may delete: everything the scan reports, plus
+# the common single-f TIFF spelling. Anything else inside the output
+# directory (databases, scripts, notes) is never a "duplicate image".
+DELETABLE_MEDIA_EXTENSIONS = frozenset(IMAGE_EXTENSIONS + VIDEO_EXTENSIONS + (".tif",))
 
 
 def _collect_media_files(output_dirs, extensions):
-    """All media files under ``output_dirs`` (blocking), skipping thumbnails.
+    """Media files under ``output_dirs`` (blocking), bounded and symlink-free.
 
-    Matches extensions case-insensitively and de-duplicates by
-    case-folded path so case-insensitive filesystems do not list a file twice.
+    Walks each root without following symlinks, skips ``thumbnails``
+    directories and symlinked files, never descends more than MAX_SCAN_DEPTH
+    levels and stops after MAX_SCAN_FILES files in total. Extensions match
+    case-insensitively and each path is listed once.
     """
+    wanted = {ext.lower() for ext in extensions}
     found = []
     seen = set()
     for output_dir in output_dirs:
-        for ext in extensions:
-            for pattern in (f"*{ext}", f"*{ext.upper()}"):
-                for media_path in Path(output_dir).rglob(pattern):
-                    if "thumbnails" in media_path.parts:
-                        continue
-                    key = os.path.normcase(str(media_path))
-                    if key not in seen:
-                        seen.add(key)
-                        found.append(media_path)
+        root = os.path.abspath(str(output_dir))
+        if not os.path.isdir(root):
+            continue
+        for current, dirnames, filenames in os.walk(root, followlinks=False):
+            depth = 0 if current == root else len(Path(current).relative_to(root).parts)
+            dirnames[:] = sorted(
+                d
+                for d in dirnames
+                if d != "thumbnails"
+                and depth < MAX_SCAN_DEPTH
+                and not os.path.islink(os.path.join(current, d))
+            )
+            for name in sorted(filenames):
+                if os.path.splitext(name)[1].lower() not in wanted:
+                    continue
+                full = os.path.join(current, name)
+                if os.path.islink(full) or not os.path.isfile(full):
+                    continue
+                key = os.path.normcase(full)
+                if key in seen:
+                    continue
+                seen.add(key)
+                found.append(Path(full))
+                if len(found) >= MAX_SCAN_FILES:
+                    return found
     return found
 
 
@@ -520,6 +545,11 @@ class AdminRoutesMixin:
                 f"Attempted to delete file outside output directory: {image_path}"
             )
             return "outside output directory"
+
+        if file_path.suffix.lower() not in DELETABLE_MEDIA_EXTENSIONS:
+            return "not a media file"
+        if "thumbnails" in rel_path.parts:
+            return "thumbnails are managed by the gallery"
 
         if not file_path.is_file():
             return "file not found"

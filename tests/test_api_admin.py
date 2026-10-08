@@ -561,6 +561,130 @@ class TestDeleteDuplicatesSyncBody(AdminAPITestCase):
         self.assertEqual(result["failed_count"], 1)
         self.assertEqual(result["deleted_count"], 0)
 
+    def test_refuses_non_media_files_inside_output(self):
+        for name in ("notes.txt", "prompts.db", "script.py", "noext"):
+            (self.output_dir / name).write_bytes(b"x")
+
+        result = self.api._delete_duplicate_images_sync(
+            ["notes.txt", "prompts.db", "script.py", "noext"], str(self.output_dir)
+        )
+
+        self.assertEqual(result["deleted_count"], 0)
+        self.assertEqual(result["failed_count"], 4)
+        for name in ("notes.txt", "prompts.db", "script.py", "noext"):
+            self.assertTrue((self.output_dir / name).exists(), name)
+        self.assertTrue(all("not a media file" in f for f in result["failed_files"]))
+
+    def test_refuses_files_under_thumbnails(self):
+        thumb = self.output_dir / "thumbnails" / "sub" / "x_thumb.png"
+        thumb.parent.mkdir(parents=True)
+        thumb.write_bytes(b"t")
+
+        result = self.api._delete_duplicate_images_sync(
+            [os.path.join("thumbnails", "sub", "x_thumb.png")], str(self.output_dir)
+        )
+
+        self.assertEqual(result["deleted_count"], 0)
+        self.assertTrue(thumb.exists())
+        self.assertIn("thumbnail", result["failed_files"][0])
+
+    def test_every_scanned_media_extension_is_deletable(self):
+        from py.api.admin import (
+            DELETABLE_MEDIA_EXTENSIONS,
+            IMAGE_EXTENSIONS,
+            VIDEO_EXTENSIONS,
+        )
+
+        for ext in IMAGE_EXTENSIONS + VIDEO_EXTENSIONS + (".tif",):
+            self.assertIn(ext, DELETABLE_MEDIA_EXTENSIONS)
+        for ext in (".txt", ".db", ".py", ".json", ".html", ""):
+            self.assertNotIn(ext, DELETABLE_MEDIA_EXTENSIONS)
+        (self.output_dir / "a.WEBM").write_bytes(b"v")
+        result = self.api._delete_duplicate_images_sync(
+            ["a.WEBM"], str(self.output_dir)
+        )
+        self.assertEqual(result["deleted_count"], 1)
+
+
+class TestCollectMediaFiles(AdminAPITestCase):
+    """_collect_media_files: bounded walk that never follows symlinked files."""
+
+    def _collect(self):
+        from py.api.admin import (
+            IMAGE_EXTENSIONS,
+            VIDEO_EXTENSIONS,
+            _collect_media_files,
+        )
+
+        found = _collect_media_files(
+            [self.output_dir], IMAGE_EXTENSIONS + VIDEO_EXTENSIONS
+        )
+        return sorted(p.relative_to(self.output_dir).as_posix() for p in found)
+
+    def test_matches_case_insensitively_and_skips_thumbnails(self):
+        (self.output_dir / "a.png").write_bytes(b"x")
+        (self.output_dir / "b.PNG").write_bytes(b"x")
+        (self.output_dir / "c.Mp4").write_bytes(b"x")
+        (self.output_dir / "d.txt").write_bytes(b"x")
+        (self.output_dir / "sub").mkdir()
+        (self.output_dir / "sub" / "e.jpg").write_bytes(b"x")
+        (self.output_dir / "thumbnails").mkdir()
+        (self.output_dir / "thumbnails" / "a_thumb.png").write_bytes(b"x")
+        (self.output_dir / "sub" / "thumbnails").mkdir()
+        (self.output_dir / "sub" / "thumbnails" / "e_thumb.jpg").write_bytes(b"x")
+        self.assertEqual(self._collect(), ["a.png", "b.PNG", "c.Mp4", "sub/e.jpg"])
+
+    def test_symlinked_files_and_directories_are_skipped(self):
+        secret = Path(self.tmpdir) / "secret.png"
+        secret.write_bytes(b"s")
+        secret_dir = Path(self.tmpdir) / "secret_dir"
+        secret_dir.mkdir()
+        (secret_dir / "inner.png").write_bytes(b"s")
+        (self.output_dir / "real.png").write_bytes(b"r")
+        try:
+            os.symlink(secret, self.output_dir / "link.png")
+            os.symlink(secret_dir, self.output_dir / "linkdir")
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks not available")
+        self.assertEqual(self._collect(), ["real.png"])
+
+    def test_depth_is_capped(self):
+        from py.api.admin import MAX_SCAN_DEPTH
+
+        self.assertEqual(MAX_SCAN_DEPTH, 12)
+        deep = self.output_dir
+        for level in range(1, MAX_SCAN_DEPTH + 2):
+            deep = deep / f"d{level}"
+            deep.mkdir()
+            (deep / f"f{level}.png").write_bytes(b"x")
+        found = self._collect()
+        self.assertIn(
+            "/".join(f"d{i}" for i in range(1, MAX_SCAN_DEPTH + 1))
+            + f"/f{MAX_SCAN_DEPTH}.png",
+            found,
+        )
+        self.assertFalse(
+            any(name.endswith(f"f{MAX_SCAN_DEPTH + 1}.png") for name in found)
+        )
+        self.assertEqual(len(found), MAX_SCAN_DEPTH)
+
+    def test_file_count_is_capped(self):
+        import py.api.admin as admin_module
+        from unittest.mock import patch
+
+        self.assertEqual(admin_module.MAX_SCAN_FILES, 50_000)
+        for i in range(6):
+            (self.output_dir / f"{i}.png").write_bytes(b"x")
+        with patch.object(admin_module, "MAX_SCAN_FILES", 4):
+            self.assertEqual(len(self._collect()), 4)
+
+    def test_missing_root_is_skipped(self):
+        from py.api.admin import _collect_media_files
+
+        self.assertEqual(
+            _collect_media_files([Path(self.tmpdir) / "nope"], (".png",)), []
+        )
+
 
 class TestSettingsReadMonitorThroughModule(AdminAPITestCase):
     """get_settings reaches the image monitor through utils.image_monitor."""

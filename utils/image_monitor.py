@@ -573,10 +573,19 @@ class ImageMonitor:
 
         valid_directories = []
         for output_dir in output_directories or []:
-            if os.path.isdir(output_dir):
-                valid_directories.append(output_dir)
-            else:
+            if not os.path.isdir(output_dir):
                 self.logger.warning(f"Directory does not exist: {output_dir}")
+                continue
+            # Same containment rule as the settings endpoint, so a root
+            # hand-edited into config.json is never watched (and its files
+            # never linked) when it lies outside ComfyUI's directories.
+            validate = getattr(config, "validate_gallery_root", None)
+            if callable(validate):
+                ok, reason = validate(output_dir)
+                if not ok:
+                    self.logger.warning(f"Not watching {output_dir}: {reason}")
+                    continue
+            valid_directories.append(output_dir)
         if not valid_directories:
             self.logger.warning("No valid directories to monitor")
             return

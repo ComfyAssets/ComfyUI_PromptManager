@@ -634,6 +634,16 @@ class TestInstanceHelpers(FolderPathsFixture):
         GalleryConfig.MONITORING_DIRECTORIES = []
         self.assertEqual(self.api._find_comfyui_output_dir(), first)
 
+    def test_find_output_dir_skips_configured_root_outside_comfyui(self):
+        outside = Path(self.tmpdir) / "outside"
+        outside.mkdir()
+        GalleryConfig.MONITORING_DIRECTORIES = [str(outside)]
+        self.api._cached_output_dir = None
+        result = self.api._find_comfyui_output_dir()
+        self.assertNotEqual(
+            os.path.normcase(str(result or "")), os.path.normcase(str(outside))
+        )
+
     def test_find_output_dir_skips_missing_configured(self):
         GalleryConfig.MONITORING_DIRECTORIES = [os.path.join(self.tmpdir, "nope")]
         self.api._cached_output_dir = None

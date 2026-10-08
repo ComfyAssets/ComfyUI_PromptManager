@@ -232,6 +232,38 @@ class TestStartStop(unittest.TestCase):
         observer_cls.assert_not_called()
         self.assertFalse(self.monitor.is_monitoring)
 
+    def test_directories_failing_validation_are_not_watched(self):
+        allowed = os.path.join(self.tmp.name, "allowed")
+        os.mkdir(allowed)
+        config = types.SimpleNamespace(
+            MONITORING_ENABLED=True,
+            MONITORING_DIRECTORIES=[self.tmp.name, allowed],
+            validate_gallery_root=lambda p: (p == allowed, "outside ComfyUI"),
+        )
+        fake = FakeObserver()
+        with patch.object(im_mod, "Observer", return_value=fake):
+            with patch.object(
+                im_mod.ImageMonitor, "_gallery_config", return_value=config
+            ):
+                self.monitor.start_monitoring()
+        self.assertEqual([p for _, p, _ in fake.scheduled], [allowed])
+        self.assertEqual(self.monitor.monitored_directories, [allowed])
+        self.monitor.stop_monitoring()
+
+    def test_explicit_directories_are_validated_too(self):
+        config = types.SimpleNamespace(
+            MONITORING_ENABLED=True,
+            MONITORING_DIRECTORIES=[],
+            validate_gallery_root=lambda p: (False, "outside ComfyUI"),
+        )
+        with patch.object(im_mod, "Observer") as observer_cls:
+            with patch.object(
+                im_mod.ImageMonitor, "_gallery_config", return_value=config
+            ):
+                self.monitor.start_monitoring([self.tmp.name])
+        observer_cls.assert_not_called()
+        self.assertFalse(self.monitor.is_monitoring)
+
     def test_configured_directories_are_used_when_none_are_given(self):
         config = types.SimpleNamespace(
             MONITORING_ENABLED=True, MONITORING_DIRECTORIES=[self.tmp.name]

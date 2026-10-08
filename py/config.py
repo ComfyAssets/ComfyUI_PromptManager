@@ -249,7 +249,9 @@ class GalleryConfig:
         if "enabled" in monitoring:
             cls.MONITORING_ENABLED = monitoring["enabled"]
         if "directories" in monitoring:
-            cls.MONITORING_DIRECTORIES = monitoring["directories"]
+            directories = cls._validated_directories(monitoring["directories"])
+            if directories is not None:
+                cls.MONITORING_DIRECTORIES = directories
         if "extensions" in monitoring:
             cls.SUPPORTED_EXTENSIONS = monitoring["extensions"]
         if "processing_delay" in monitoring:
@@ -282,6 +284,30 @@ class GalleryConfig:
             cls.MAX_CONCURRENT_PROCESSING = performance["max_concurrent_processing"]
         if "metadata_extraction_timeout" in performance:
             cls.METADATA_EXTRACTION_TIMEOUT = performance["metadata_extraction_timeout"]
+
+    @classmethod
+    def _validated_directories(cls, directories: Any) -> Optional[List[str]]:
+        """Gallery roots from a config payload that pass validate_gallery_root.
+
+        A hand-edited config.json is as untrusted as a settings request:
+        entries that fail validation are dropped with a warning (naming only
+        the basename), and a value that is not a list is ignored entirely
+        (``None`` is returned so the current roots stay as they are).
+        """
+        if not isinstance(directories, list):
+            config_logger.warning(
+                "Ignoring gallery monitoring directories: expected a list"
+            )
+            return None
+        kept = []
+        for entry in directories:
+            ok, reason = cls.validate_gallery_root(entry)
+            if ok:
+                kept.append(entry)
+                continue
+            label = os.path.basename(entry) if isinstance(entry, str) else entry
+            config_logger.warning(f"Ignoring gallery root {label!r}: {reason}")
+        return kept
 
     @classmethod
     def allowed_gallery_parents(cls) -> List[str]:
