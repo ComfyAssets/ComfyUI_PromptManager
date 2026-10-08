@@ -24,6 +24,7 @@ from PIL import Image  # noqa: E402
 
 from database.operations import PromptDatabase  # noqa: E402
 from py.api import PromptManagerAPI  # noqa: E402
+from py.api.prompts import MAX_PAGE_LIMIT  # noqa: E402
 from utils.hashing import generate_prompt_hash  # noqa: E402
 
 
@@ -274,6 +275,54 @@ class TestServeImageById(ImageAPITestCase):
         resp = await self.client.request("GET", "/prompt_manager/images/abc/file")
 
         self.assertEqual(resp.status, 400)
+
+
+class TestRecentImagesBounds(ImageAPITestCase):
+    """GET /prompt_manager/images/recent clamps limit/offset and rejects junk."""
+
+    async def test_limit_is_clamped_to_max_page_limit(self):
+        resp = await self.client.request(
+            "GET", "/prompt_manager/images/recent?limit=999999"
+        )
+
+        self.assertEqual(resp.status, 200)
+        data = await resp.json()
+        self.assertTrue(data["success"])
+        self.assertLessEqual(len(data["images"]), MAX_PAGE_LIMIT)
+        self.assertEqual(data["pagination"]["limit"], MAX_PAGE_LIMIT)
+
+    async def test_non_integer_limit_is_400(self):
+        resp = await self.client.request(
+            "GET", "/prompt_manager/images/recent?limit=abc"
+        )
+
+        self.assertEqual(resp.status, 400)
+        data = await resp.json()
+        self.assertFalse(data["success"])
+        self.assertIn("error", data)
+
+    async def test_negative_offset_is_clamped_to_zero(self):
+        # Negative offsets are clamped rather than rejected so that a
+        # client paging backwards past the first page still gets page one.
+        resp = await self.client.request(
+            "GET", "/prompt_manager/images/recent?offset=-5"
+        )
+
+        self.assertEqual(resp.status, 200)
+        data = await resp.json()
+        self.assertEqual(data["pagination"]["offset"], 0)
+
+    async def test_offset_skips_rows(self):
+        for name in ("a.png", "b.png", "c.png"):
+            self._link_image(make_png(self.output_dir / name), text=f"p-{name}")
+
+        page = await self.client.request(
+            "GET", "/prompt_manager/images/recent?limit=2&offset=2"
+        )
+
+        data = await page.json()
+        self.assertEqual(len(data["images"]), 1)
+        self.assertEqual(data["pagination"]["offset"], 2)
 
 
 if __name__ == "__main__":

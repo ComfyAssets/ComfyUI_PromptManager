@@ -18,7 +18,7 @@ from aiohttp.test_utils import AioHTTPTestCase  # noqa: E402
 
 from database.operations import PromptDatabase  # noqa: E402
 from py.api import PromptManagerAPI  # noqa: E402
-from py.api.prompts import safe_error_message  # noqa: E402
+from py.api.prompts import MAX_PAGE_LIMIT, safe_error_message  # noqa: E402
 from utils.hashing import generate_prompt_hash  # noqa: E402
 
 
@@ -76,6 +76,101 @@ class TestSafeErrorMessage(unittest.TestCase):
 
     def test_empty_message_falls_back_to_type_name(self):
         self.assertEqual(safe_error_message(RuntimeError()), "RuntimeError")
+
+
+class TestSearchBounds(PromptAPITestCase):
+    """GET /prompt_manager/search clamps limit/offset and rejects junk."""
+
+    async def test_limit_is_clamped_to_max_page_limit(self):
+        resp = await self.client.request("GET", "/prompt_manager/search?limit=999999")
+
+        self.assertEqual(resp.status, 200)
+        data = await resp.json()
+        self.assertTrue(data["success"])
+        self.assertLessEqual(len(data["results"]), MAX_PAGE_LIMIT)
+        self.assertEqual(data["pagination"]["limit"], MAX_PAGE_LIMIT)
+
+    async def test_zero_limit_is_raised_to_one(self):
+        self._save_prompt("only one")
+        resp = await self.client.request("GET", "/prompt_manager/search?limit=0")
+
+        data = await resp.json()
+        self.assertEqual(data["pagination"]["limit"], 1)
+        self.assertEqual(len(data["results"]), 1)
+
+    async def test_non_integer_limit_is_400(self):
+        resp = await self.client.request("GET", "/prompt_manager/search?limit=abc")
+
+        self.assertEqual(resp.status, 400)
+        data = await resp.json()
+        self.assertFalse(data["success"])
+        self.assertIn("error", data)
+
+    async def test_non_integer_offset_is_400(self):
+        resp = await self.client.request("GET", "/prompt_manager/search?offset=1.5")
+
+        self.assertEqual(resp.status, 400)
+
+    async def test_negative_offset_is_clamped_to_zero(self):
+        # Clamped, not rejected: paging backwards past page one yields page one.
+        resp = await self.client.request("GET", "/prompt_manager/search?offset=-5")
+
+        self.assertEqual(resp.status, 200)
+        data = await resp.json()
+        self.assertEqual(data["pagination"]["offset"], 0)
+
+    async def test_offset_skips_results(self):
+        for i in range(3):
+            self._save_prompt(f"searchable {i}")
+
+        resp = await self.client.request(
+            "GET", "/prompt_manager/search?text=searchable&limit=2&offset=2"
+        )
+
+        data = await resp.json()
+        self.assertEqual(len(data["results"]), 1)
+
+
+class TestRecentBounds(PromptAPITestCase):
+    """GET /prompt_manager/recent clamps limit/offset and rejects junk."""
+
+    async def test_limit_is_clamped_to_max_page_limit(self):
+        resp = await self.client.request("GET", "/prompt_manager/recent?limit=999999")
+
+        self.assertEqual(resp.status, 200)
+        data = await resp.json()
+        self.assertLessEqual(len(data["results"]), MAX_PAGE_LIMIT)
+        self.assertEqual(data["pagination"]["limit"], MAX_PAGE_LIMIT)
+
+    async def test_non_integer_limit_is_400(self):
+        resp = await self.client.request("GET", "/prompt_manager/recent?limit=abc")
+
+        self.assertEqual(resp.status, 400)
+        data = await resp.json()
+        self.assertFalse(data["success"])
+
+    async def test_non_integer_page_is_400(self):
+        resp = await self.client.request("GET", "/prompt_manager/recent?page=two")
+
+        self.assertEqual(resp.status, 400)
+
+    async def test_negative_offset_is_clamped_to_zero(self):
+        # Clamped, not rejected: paging backwards past page one yields page one.
+        resp = await self.client.request("GET", "/prompt_manager/recent?offset=-5")
+
+        self.assertEqual(resp.status, 200)
+        data = await resp.json()
+        self.assertEqual(data["pagination"]["offset"], 0)
+
+    async def test_page_param_derives_offset(self):
+        for i in range(5):
+            self._save_prompt(f"paged {i}")
+
+        resp = await self.client.request("GET", "/prompt_manager/recent?limit=2&page=3")
+
+        data = await resp.json()
+        self.assertEqual(data["pagination"]["offset"], 4)
+        self.assertEqual(len(data["results"]), 1)
 
 
 if __name__ == "__main__":

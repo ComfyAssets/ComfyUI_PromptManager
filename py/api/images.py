@@ -11,6 +11,7 @@ from pathlib import Path
 from aiohttp import web
 from PIL import Image
 
+from .prompts import bad_request, parse_page_params
 from .prompts import safe_error_message as _safe_error
 
 # Only these file types are ever served by the image routes, regardless of
@@ -170,13 +171,33 @@ class ImageRoutesMixin:
     async def get_recent_images(self, request):
         """Get recently generated images."""
         try:
-            limit = int(request.query.get("limit", 50))
-            images = await self._run_in_executor(self.db.get_recent_images, limit)
+            try:
+                limit, offset = parse_page_params(request.query)
+            except ValueError:
+                return bad_request("limit and offset must be integers")
 
-            return web.json_response({"success": True, "images": images})
+            # The DB query has no offset; fetch one bounded window and slice.
+            rows = await self._run_in_executor(
+                self.db.get_recent_images, limit + offset
+            )
+            images = rows[offset:]
+
+            return web.json_response(
+                {
+                    "success": True,
+                    "images": images,
+                    "pagination": {
+                        "limit": limit,
+                        "offset": offset,
+                        "count": len(images),
+                    },
+                }
+            )
         except Exception as e:
             self.logger.error(f"Get recent images error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": _safe_error(e)}, status=500
+            )
 
     async def get_all_images(self, request):
         """Get all generated images with linked prompts."""

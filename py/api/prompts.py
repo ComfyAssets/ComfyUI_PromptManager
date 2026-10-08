@@ -6,6 +6,24 @@ import os
 
 from aiohttp import web
 
+# Upper bound on page sizes for every list endpoint.
+MAX_PAGE_LIMIT = 500
+
+
+def parse_page_params(query, default_limit=50):
+    """Return ``(limit, offset)`` from a query mapping, clamped to safe bounds.
+
+    ``limit`` is clamped to ``[1, MAX_PAGE_LIMIT]`` and ``offset`` to ``>= 0``.
+    Non-integer values raise ``ValueError`` so the caller can answer 400.
+    """
+    limit = int(query.get("limit", default_limit))
+    offset = int(query.get("offset", 0))
+    return max(1, min(limit, MAX_PAGE_LIMIT)), max(0, offset)
+
+
+def bad_request(message):
+    return web.json_response({"success": False, "error": message}, status=400)
+
 
 def safe_error_message(exc):
     """Describe *exc* for a client without leaking absolute server paths.
@@ -145,7 +163,10 @@ class PromptRoutesMixin:
             category = request.query.get("category", "").strip()
             tags_str = request.query.get("tags", "").strip()
             min_rating = request.query.get("min_rating", 0)
-            limit = int(request.query.get("limit", 50))
+            try:
+                limit, offset = parse_page_params(request.query)
+            except ValueError:
+                return bad_request("limit and offset must be integers")
 
             folder = request.query.get("folder", "").strip() or None
             # Validated against a whitelist in the database layer
@@ -167,13 +188,23 @@ class PromptRoutesMixin:
                 tags=tags,
                 rating_min=min_rating,
                 limit=limit,
+                offset=offset,
                 folder=folder,
                 sort=sort,
             )
             self._enrich_prompt_images(results)
 
             return web.json_response(
-                {"success": True, "results": results, "count": len(results)}
+                {
+                    "success": True,
+                    "results": results,
+                    "count": len(results),
+                    "pagination": {
+                        "limit": limit,
+                        "offset": offset,
+                        "count": len(results),
+                    },
+                }
             )
 
         except Exception as e:
@@ -203,18 +234,16 @@ class PromptRoutesMixin:
     async def get_recent_prompts(self, request):
         """Retrieve prompts with pagination and an optional sort (default newest first)."""
         try:
-            limit = int(request.query.get("limit", 50))
-            page = int(request.query.get("page", 1))
-            offset = int(request.query.get("offset", 0))
+            try:
+                limit, offset = parse_page_params(request.query)
+                page = int(request.query.get("page", 1))
+            except ValueError:
+                return bad_request("limit, offset and page must be integers")
 
             if page > 1 and offset == 0:
                 offset = (page - 1) * limit
 
-            if limit > 1000:
-                limit = 1000
-            elif limit < 1:
-                limit = 1
-
+            # Validated against a whitelist in the database layer
             sort = request.query.get("sort") or None
             results = await self._run_in_executor(
                 self.db.get_recent_prompts, limit=limit, offset=offset, sort=sort
