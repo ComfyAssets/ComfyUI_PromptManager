@@ -19,6 +19,22 @@ def _public_error(exc: Exception) -> str:
     return str(exc)
 
 
+def path_is_within(candidate, root) -> bool:
+    """True when ``candidate`` is strictly inside ``root`` on the real filesystem.
+
+    Both sides go through ``os.path.realpath`` (symlinks, ``..``) and
+    ``os.path.normcase`` (Windows case/separator folding) before the
+    ``Path.is_relative_to`` check, so ``/out2`` is never treated as inside
+    ``/out`` and a symlink inside ``root`` pointing elsewhere is rejected.
+    """
+    try:
+        child = Path(os.path.normcase(os.path.realpath(str(candidate))))
+        parent = Path(os.path.normcase(os.path.realpath(str(root))))
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return child != parent and child.is_relative_to(parent)
+
+
 class AutotagRoutesMixin:
     """Mixin providing auto-tagging API endpoints."""
 
@@ -360,19 +376,26 @@ class AutotagRoutesMixin:
         await response.write_eof()
         return response
 
-    def _resolve_allowed_image_path(self, raw_path: str) -> Optional[Path]:
-        """Return the resolved path when it lies inside an output directory."""
-        try:
-            resolved = Path(raw_path).resolve()
-        except (OSError, RuntimeError):
-            return None
+    def _resolve_allowed_image_path(self, raw_path: str) -> Optional[str]:
+        """Return the real path when it is a file inside an output directory."""
         for output_dir in self._get_all_output_dirs():
-            try:
-                if resolved.is_relative_to(Path(output_dir).resolve()):
-                    return resolved
-            except (OSError, RuntimeError):
-                continue
+            if path_is_within(raw_path, output_dir):
+                real = os.path.realpath(raw_path)
+                return real if os.path.isfile(real) else None
         return None
+
+    @staticmethod
+    def _forbidden(raw_path: str):
+        return web.json_response(
+            {
+                "success": False,
+                "error": (
+                    f"{os.path.basename(str(raw_path).rstrip('/' + os.sep))} is not "
+                    "an image inside the configured output directories"
+                ),
+            },
+            status=403,
+        )
 
     async def _select_autotag_target(self, data: dict):
         """Pick the image to tag from an autotag/single body.
@@ -398,7 +421,11 @@ class AutotagRoutesMixin:
                         status=404,
                     ),
                 )
-            return record["image_path"], record.get("prompt_id"), None
+            stored_path = record["image_path"]
+            resolved = self._resolve_allowed_image_path(stored_path)
+            if resolved is None:
+                return None, None, self._forbidden(stored_path)
+            return resolved, record.get("prompt_id"), None
 
         raw_path = data.get("path") or data.get("image_path")
         if not raw_path or not isinstance(raw_path, str):
@@ -406,33 +433,20 @@ class AutotagRoutesMixin:
 
         resolved = self._resolve_allowed_image_path(raw_path)
         if resolved is None:
-            return (
-                None,
-                None,
-                web.json_response(
-                    {
-                        "success": False,
-                        "error": (
-                            f"{os.path.basename(raw_path)} is outside the "
-                            "configured output directories"
-                        ),
-                    },
-                    status=403,
-                ),
-            )
+            return None, None, self._forbidden(raw_path)
 
         prompt_id = None
         try:
             prompt_id = await self._run_in_executor(
                 self.db.get_prompt_id_for_image, raw_path
             )
-            if prompt_id is None and str(resolved) != raw_path:
+            if prompt_id is None and resolved != raw_path:
                 prompt_id = await self._run_in_executor(
-                    self.db.get_prompt_id_for_image, str(resolved)
+                    self.db.get_prompt_id_for_image, resolved
                 )
         except Exception as e:
             self.logger.warning(f"Could not find linked prompt: {e}")
-        return str(resolved), prompt_id, None
+        return resolved, prompt_id, None
 
     @staticmethod
     def _bad_request(message: str):

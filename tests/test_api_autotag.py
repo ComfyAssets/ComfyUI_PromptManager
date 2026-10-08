@@ -234,6 +234,58 @@ class TestAutotagSingleContainment(AutotagAPITestCase):
         self.assertEqual(resp.status, 403)
         self.assertEqual(self.service.generate_calls, [])
 
+    async def test_sibling_prefix_dir_is_forbidden(self):
+        sibling = self.tmp_root / (self.output_dir.name + "2")
+        sibling.mkdir()
+        image = self._make_image(sibling, "x.png")
+
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single", {"path": str(image)}
+        )
+
+        self.assertEqual(resp.status, 403)
+        self.assertEqual(self.service.generate_calls, [])
+
+    async def test_symlink_escaping_output_dir_is_forbidden(self):
+        secret = self._make_image(self.secret_dir, "password.png")
+        link = self.output_dir / "link.png"
+        try:
+            link.symlink_to(secret)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks not supported on this platform")
+
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single", {"path": str(link)}
+        )
+
+        self.assertEqual(resp.status, 403)
+        self.assertEqual(self.service.generate_calls, [])
+
+    async def test_directory_path_is_forbidden(self):
+        sub = self.output_dir / "subdir"
+        sub.mkdir()
+
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single", {"path": str(sub)}
+        )
+
+        self.assertEqual(resp.status, 403)
+        self.assertEqual(self.service.generate_calls, [])
+
+    async def test_image_id_row_pointing_outside_is_forbidden(self):
+        prompt_id = self._save_prompt()
+        secret = self._make_image(self.secret_dir, "password.png")
+        image_id = self._link_image(prompt_id, secret)
+
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single", {"image_id": image_id}
+        )
+
+        self.assertEqual(resp.status, 403)
+        data = await resp.json()
+        self.assertNotIn(str(self.secret_dir), data["error"])
+        self.assertEqual(self.service.generate_calls, [])
+
     async def test_missing_selector_is_400(self):
         resp = await self._post_json("/prompt_manager/autotag/single", {})
         self.assertEqual(resp.status, 400)
@@ -251,6 +303,42 @@ class TestAutotagSingleContainment(AutotagAPITestCase):
             "/prompt_manager/autotag/single", {"image_id": "abc"}
         )
         self.assertEqual(resp.status, 400)
+
+
+class TestPathContainmentHelper(unittest.TestCase):
+    """Pure checks on the containment predicate used by autotag/single."""
+
+    def setUp(self):
+        from py.api.autotag_routes import path_is_within
+
+        self.path_is_within = path_is_within
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.root = self.tmp / "out"
+        self.root.mkdir()
+
+    def test_child_inside_root(self):
+        self.assertTrue(self.path_is_within(self.root / "a" / "b.png", self.root))
+
+    def test_root_itself_is_not_a_child(self):
+        self.assertFalse(self.path_is_within(self.root, self.root))
+
+    def test_prefix_sibling_is_outside(self):
+        self.assertFalse(self.path_is_within(self.tmp / "out2" / "b.png", self.root))
+
+    def test_dotdot_is_outside(self):
+        self.assertFalse(
+            self.path_is_within(self.root / ".." / "secret" / "b.png", self.root)
+        )
+
+    def test_case_differences_are_folded_by_normcase(self):
+        upper = Path(str(self.root).upper()) / "B.PNG"
+        with patch("os.path.normcase", side_effect=lambda p: p.lower()):
+            self.assertTrue(self.path_is_within(upper, self.root))
+
+    def test_separator_differences_do_not_matter(self):
+        mixed = str(self.root / "a" / "b.png").replace(os.sep, "/")
+        self.assertTrue(self.path_is_within(mixed, self.root))
 
 
 class TestAutotagSideEffectRoutesArePostOnly(AutotagAPITestCase):
