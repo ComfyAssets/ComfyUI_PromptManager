@@ -464,6 +464,46 @@ class TestTagNamesAreDecodedOnce(RouteCoverageCase):
         self.assertEqual(self.api.db.get_prompt_by_id(self.pid)["tags"], [])
 
 
+class TestTagInputValidation(RouteCoverageCase):
+    """Tag mutations run validate_tags: bad input is a 400, never a traceback."""
+
+    def _requests(self, tag):
+        pid = self._save_prompt("validate me", tags=["old"])
+        return (
+            ("POST", f"/prompt_manager/prompts/{pid}/tags", {"tag": tag}),
+            ("POST", "/prompt_manager/prompts/tags", {"prompt_id": pid, "tags": [tag]}),
+            ("POST", "/prompt_manager/bulk/tags", {"prompt_ids": [pid], "tags": [tag]}),
+            (
+                "POST",
+                "/prompt_manager/tags/merge",
+                {"source_tags": ["old"], "target_tag": tag},
+            ),
+            (
+                "POST",
+                "/prompt_manager/tags/merge",
+                {"source_tags": [tag], "target_tag": "t"},
+            ),
+            ("PUT", "/prompt_manager/tags/old", {"new_name": tag}),
+        )
+
+    async def _assert_all_400(self, tag):
+        for method, route, body in self._requests(tag):
+            status, data = await self._json(method, route, json=body)
+
+            self.assertEqual(status, 400, (route, body))
+            self.assertFalse(data["success"], route)
+            self.assertIn("error", data, route)
+
+    async def test_non_string_tags_are_400(self):
+        await self._assert_all_400(123)
+
+    async def test_overlong_tags_are_400(self):
+        await self._assert_all_400("x" * 51)
+
+    async def test_control_characters_are_400(self):
+        await self._assert_all_400("bad\x00tag")
+
+
 class TestTagMutationRoutes(RouteCoverageCase):
 
     async def test_rename_rejects_bad_json_and_empty_name(self):

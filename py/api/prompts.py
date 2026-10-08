@@ -28,6 +28,15 @@ def bad_request(message):
     return web.json_response({"success": False, "error": message}, status=400)
 
 
+def tags_error(tags):
+    """A 400 response when *tags* fail ``validate_tags``, else None."""
+    try:
+        validate_tags(tags)
+    except ValueError as exc:
+        return bad_request(str(exc))
+    return None
+
+
 def safe_error_message(exc):
     """Describe *exc* for a client without leaking absolute server paths.
 
@@ -511,11 +520,15 @@ class PromptRoutesMixin:
                 return web.json_response(
                     {"success": False, "error": "Invalid JSON body"}, status=400
                 )
-            new_name = (body.get("new_name") or "").strip()
-            if not new_name:
+            raw_name = body.get("new_name")
+            if not raw_name:
                 return web.json_response(
                     {"success": False, "error": "New tag name required"}, status=400
                 )
+            error = tags_error([raw_name])
+            if error is not None:
+                return error
+            new_name = raw_name.strip()
 
             result = await self._run_in_executor(
                 self.db.rename_tag_all_prompts, tag_name, new_name
@@ -581,16 +594,22 @@ class PromptRoutesMixin:
                     {"success": False, "error": "Invalid JSON body"}, status=400
                 )
             source_tags = body.get("source_tags", [])
-            target_tag = (body.get("target_tag") or "").strip()
+            raw_target = body.get("target_tag")
 
             if not source_tags:
                 return web.json_response(
                     {"success": False, "error": "Source tags required"}, status=400
                 )
-            if not target_tag:
+            if not raw_target:
                 return web.json_response(
                     {"success": False, "error": "Target tag required"}, status=400
                 )
+            if not isinstance(source_tags, list):
+                return bad_request("Source tags must be a list")
+            error = tags_error([*source_tags, raw_target])
+            if error is not None:
+                return error
+            target_tag = raw_target.strip()
 
             result = await self._run_in_executor(
                 self.db.merge_tags, source_tags, target_tag
@@ -819,12 +838,16 @@ class PromptRoutesMixin:
         try:
             prompt_id = int(request.match_info["prompt_id"])
             data = await request.json()
-            new_tag = (data.get("tag") or "").strip()
+            raw_tag = data.get("tag")
 
-            if not new_tag:
+            if not raw_tag:
                 return web.json_response(
                     {"success": False, "error": "Tag cannot be empty"}, status=400
                 )
+            error = tags_error([raw_tag])
+            if error is not None:
+                return error
+            new_tag = raw_tag.strip()
 
             prompt = await self._run_in_executor(self.db.get_prompt_by_id, prompt_id)
             if not prompt:
@@ -877,6 +900,12 @@ class PromptRoutesMixin:
                     {"success": False, "error": "Tags must be a non-empty list"},
                     status=400,
                 )
+            # Blank entries are skipped below, so only the rest is validated.
+            error = tags_error(
+                [t for t in new_tags if not (isinstance(t, str) and not t.strip())]
+            )
+            if error is not None:
+                return error
 
             prompt = await self._run_in_executor(self.db.get_prompt_by_id, prompt_id)
             if not prompt:
@@ -1008,6 +1037,11 @@ class PromptRoutesMixin:
                     {"success": False, "error": "No prompt IDs or tags provided"},
                     status=400,
                 )
+            if not isinstance(new_tags, list):
+                return bad_request("Tags must be a list")
+            error = tags_error(new_tags)
+            if error is not None:
+                return error
 
             updated_count = await self._run_in_executor(
                 self.db.bulk_add_tags, prompt_ids, new_tags
