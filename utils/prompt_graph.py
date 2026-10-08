@@ -36,19 +36,26 @@ def _inputs(node: Any) -> Dict[str, Any]:
 
 
 def _positive_roots(graph: Dict[str, Any]) -> List[Any]:
-    """Links into samplers' positive inputs (KSampler, CFGGuider, BasicGuider, ...)."""
+    """Links into samplers' positive inputs (KSampler, CFGGuider, BasicGuider, ...).
+
+    A sampler is a node taking a model plus positive/negative conditioning, or a
+    guider taking a model plus conditioning. Nodes named like a sampler also count
+    without a model link, so a negative-only graph is never mistaken for one with
+    no sampler at all.
+    """
     roots = []
     for node in graph.values():
-        inputs = _inputs(node)
-        if not _is_link(inputs.get("model")):
+        if not isinstance(node, dict):
             continue
+        inputs = _inputs(node)
+        class_name = str(node.get("class_type", "")).lower()
+        has_model = _is_link(inputs.get("model"))
         if _is_link(inputs.get("positive")) and _is_link(inputs.get("negative")):
-            roots.append(inputs["positive"])
-        elif (
-            _is_link(inputs.get("conditioning"))
-            and "guider" in str(node.get("class_type", "")).lower()
-        ):
-            roots.append(inputs["conditioning"])
+            if has_model or "sampler" in class_name:
+                roots.append(inputs["positive"])
+        elif has_model and _is_link(inputs.get("conditioning")):
+            if "guider" in class_name:
+                roots.append(inputs["conditioning"])
     return roots
 
 
@@ -61,6 +68,11 @@ def _upstream_links(inputs: Dict[str, Any]) -> List[Any]:
         if key == "positive" or _CONDITIONING_KEY.match(key) or _TEXT_KEY.match(key):
             links.append(value)
     return links
+
+
+def has_sampler(graph: Any) -> bool:
+    """Whether the graph contains a node recognised as a sampler or guider."""
+    return isinstance(graph, dict) and bool(_positive_roots(graph))
 
 
 def positive_prompt_nodes(graph: Any) -> List[str]:
@@ -92,12 +104,14 @@ def positive_prompt_nodes(graph: Any) -> List[str]:
 def run_prompt_nodes(graph: Any) -> List[str]:
     """Prompt nodes that represent a run: the positive ones, if any can be found.
 
-    When no PromptManager node can be traced to a positive input (an unrecognised
-    custom sampler, say), every PromptManager node counts, as before 3.2.4, so an
-    exotic workflow never silently loses usage counting or image linking.
+    When the graph has no recognisable sampler (an unrecognised custom sampler,
+    say), every PromptManager node counts, as before 3.2.4, so an exotic workflow
+    never silently loses usage counting or image linking. When a sampler exists
+    and no PromptManager node feeds its positive input, nothing counts: the only
+    PromptManager nodes are negative prompts.
     """
     positive = positive_prompt_nodes(graph)
-    if positive or not isinstance(graph, dict):
+    if positive or not isinstance(graph, dict) or has_sampler(graph):
         return positive
     return [
         str(node_id)

@@ -2,11 +2,13 @@
 
 import os
 import sys
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.prompt_graph import (
+    has_sampler,
     positive_prompt_nodes,
     resolve_text,
     run_prompt_nodes,
@@ -166,6 +168,105 @@ class TestRunPromptNodes(unittest.TestCase):
 
     def test_malformed_graph(self):
         self.assertEqual(run_prompt_nodes(None), [])
+
+    def test_run_prompt_nodes_negative_only_graph_is_empty(self):
+        graph = {
+            "1": {"class_type": "PromptManager", "inputs": {"text": "bad hands"}},
+            "2": {
+                "class_type": "KSampler",
+                "inputs": {"negative": ["1", 0], "positive": ["9", 0]},
+            },
+            "9": {"class_type": "CLIPTextEncode", "inputs": {"text": "a cat"}},
+        }
+        self.assertEqual(run_prompt_nodes(graph), [])
+
+    def test_run_prompt_nodes_falls_back_when_no_sampler(self):
+        graph = {"1": {"class_type": "PromptManagerText", "inputs": {"text": "x"}}}
+        self.assertEqual(run_prompt_nodes(graph), ["1"])
+
+
+class TestHasSampler(unittest.TestCase):
+    def test_structural_sampler_and_guider_are_detected(self):
+        self.assertTrue(has_sampler({"5": ksampler("1", "2"), "20": LOADER}))
+        guider = {
+            "class_type": "BasicGuider",
+            "inputs": {"model": ["20", 0], "conditioning": ["1", 0]},
+        }
+        self.assertTrue(has_sampler({"6": guider, "20": LOADER}))
+
+    def test_sampler_without_model_link_is_detected_by_name(self):
+        sampler = {
+            "class_type": "KSamplerAdvanced",
+            "inputs": {"positive": ["1", 0], "negative": ["2", 0]},
+        }
+        self.assertTrue(has_sampler({"5": sampler}))
+
+    def test_non_samplers_and_malformed_graphs(self):
+        controlnet = {
+            "class_type": "ControlNetApplyAdvanced",
+            "inputs": {"positive": ["1", 0], "negative": ["2", 0]},
+        }
+        self.assertFalse(has_sampler({"7": controlnet}))
+        exotic = {"class_type": "ExoticSampler", "inputs": {"cond": ["1", 0]}}
+        self.assertFalse(has_sampler({"9": exotic}))
+        for bad in (None, [], "x", {"1": None}, {"1": {"inputs": None}}, {}):
+            self.assertFalse(has_sampler(bad), repr(bad))
+
+
+class TestAdversarialGraphs(unittest.TestCase):
+    """Queued and embedded graphs are untrusted: never hang, never raise."""
+
+    def _assert_fast(self, graph):
+        started = time.monotonic()
+        for fn in (positive_prompt_nodes, run_prompt_nodes, has_sampler):
+            fn(graph)
+        resolve_text(graph, "1")
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_cyclic_graph_terminates(self):
+        graph = {
+            "1": pm(["2", 0]),
+            "2": {"class_type": "StringConcatenate", "inputs": {"string_a": ["1", 0]}},
+            "3": {
+                "class_type": "ConditioningCombine",
+                "inputs": {"conditioning_1": ["3", 0], "conditioning_2": ["1", 0]},
+            },
+            "5": ksampler("3", "3"),
+            "20": LOADER,
+        }
+        self._assert_fast(graph)
+        self.assertEqual(run_prompt_nodes(graph), ["1"])
+
+    def test_ten_thousand_node_fan_out_terminates(self):
+        graph = {"20": LOADER}
+        combine_inputs = {}
+        for i in range(10_000):
+            graph[str(100 + i)] = pm(f"prompt {i}")
+            combine_inputs[f"conditioning_{i}"] = [str(100 + i), 0]
+        graph["3"] = {"class_type": "ConditioningCombine", "inputs": combine_inputs}
+        graph["5"] = ksampler("3", "3")
+        self._assert_fast(graph)
+        self.assertTrue(run_prompt_nodes(graph))
+
+    def test_non_dict_inputs_and_odd_values(self):
+        graph = {
+            "1": {"class_type": "PromptManager", "inputs": ["not", "a", "dict"]},
+            "2": {"class_type": "KSampler", "inputs": 42},
+            "3": {"class_type": None, "inputs": {"positive": "1", "negative": [1]}},
+            "4": "just a string",
+            "5": {
+                "class_type": "KSampler",
+                "inputs": {
+                    "positive": [None, 0],
+                    "negative": [{"x": 1}, 0],
+                    "model": [[], 0],
+                },
+            },
+            6: {"class_type": "PromptManager", "inputs": {"text": 7}},
+        }
+        self._assert_fast(graph)
+        for fn in (positive_prompt_nodes, run_prompt_nodes):
+            self.assertIsInstance(fn(graph), list)
 
 
 class TestResolveText(unittest.TestCase):
