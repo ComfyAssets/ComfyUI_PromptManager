@@ -14,6 +14,9 @@ omit =
     */node_modules/*
     */static/*
     */media/*
+    */htmlcov/*
+    restart_gallery.py
+    standalone_tagger.py
     
 branch = true
 parallel = true

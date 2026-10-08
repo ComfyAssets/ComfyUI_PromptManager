@@ -3,6 +3,9 @@ watchdog>=2.1.0
 Pillow>=8.0.0
 aiohttp>=3.8.0
 
+# Tests and coverage
+coverage>=7.0
+
 # Code quality
 black>=24.0.0
 flake8>=7.0.0

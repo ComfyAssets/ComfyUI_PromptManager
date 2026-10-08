@@ -9,6 +9,12 @@ AGENTS.md
 CLAUDE.md
 
 # Local files
+# Local PromptManager state (config.json holds API keys and machine paths)
+config.json
+resume.sh
+*.backup_*
+promptmanager_logs/
+custom_data/
 data/
 docs/
 logs/

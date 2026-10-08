@@ -3,7 +3,12 @@ name = "promptmanager"
 description = "A powerful ComfyUI custom node that extends the standard text encoder with persistent prompt storage, advanced search capabilities, and an automatic image gallery system using SQLite."
 version = "3.2.4"
 license = {file = "LICENSE"}
-dependencies = ["# Core dependencies for PromptManager", "# Note: Most dependencies are already included with ComfyUI", "# Already included with Python standard library:", "# - sqlite3", "# - hashlib", "# - json", "# - datetime", "# - os", "# - typing", "# - threading", "# - uuid", "# Required for gallery functionality:", "watchdog>=2.1.0              # For file system monitoring", "Pillow>=8.0.0                # For image metadata extraction (usually included with ComfyUI)", "# Optional dependencies for enhanced search functionality:", "# fuzzywuzzy[speedup]>=0.18.0  # For fuzzy string matching (optional)", "# sqlalchemy>=1.4.0            # For advanced ORM features (optional)", "# Development dependencies (optional):", "# pytest>=6.0.0                # For running tests", "# black>=22.0.0                # For code formatting", "# flake8>=4.0.0                # For linting", "# mypy>=0.910                   # For type checking"]
+requires-python = ">=3.10"
+dependencies = ["watchdog>=2.1.0", "Pillow>=8.0.0"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
 
 [project.urls]
 Repository = "https://github.com/ComfyAssets/ComfyUI_PromptManager"
@@ -17,11 +22,6 @@ Icon = "https://avatars.githubusercontent.com/u/213204677?s=200"
 [tool.black]
 line-length = 88
 target-version = ["py310"]
-
-[tool.flake8]
-max-line-length = 88
-extend-ignore = ["E203", "W503"]
-exclude = ["reference/", ".git", "__pycache__", "web/", "venv/"]
 
 [tool.bandit]
 exclude_dirs = ["tests", "reference"]
