@@ -60,8 +60,7 @@
             }
 
             handleRoute() {
-                const hash = window.location.hash;
-                if (hash === '#/tags' || hash.startsWith('#/tags/')) {
+                if (ViewRouter.resolveView(window.location.hash) === "tags") {
                     this.showTagsPage();
                 } else {
                     this.showDashboard();
@@ -3866,33 +3865,42 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
         }
 
-        // Initialize the admin interface
-        const admin = new PromptAdmin();
-        window.admin = admin;
+        /** Build the dashboard; needs the DOM, so it runs on DOMContentLoaded. */
+        function startAdmin() {
+            // Initialize the admin interface
+            const admin = new PromptAdmin();
+            window.admin = admin;
 
-        // Add event listeners for prompt selection
-        document.addEventListener("change", function (e) {
-            if (e.target.classList.contains("prompt-checkbox")) {
-                const promptId = parseInt(e.target.dataset.id);
-                if (e.target.checked) {
-                    admin.selectedPrompts.add(promptId);
-                } else {
-                    admin.selectedPrompts.delete(promptId);
+            // Add event listeners for prompt selection
+            document.addEventListener("change", function (e) {
+                if (e.target.classList.contains("prompt-checkbox")) {
+                    const promptId = parseInt(e.target.dataset.id);
+                    if (e.target.checked) {
+                        admin.selectedPrompts.add(promptId);
+                    } else {
+                        admin.selectedPrompts.delete(promptId);
+                    }
+                    admin.updateBulkActionButtons();
+
+                    const allCheckboxes = document.querySelectorAll(".prompt-checkbox");
+                    const checkedCheckboxes = document.querySelectorAll(".prompt-checkbox:checked");
+                    const selectAllCheckbox = document.getElementById("selectAll");
+                    selectAllCheckbox.checked = allCheckboxes.length === checkedCheckboxes.length;
+                    selectAllCheckbox.indeterminate = checkedCheckboxes.length > 0 && checkedCheckboxes.length < allCheckboxes.length;
                 }
-                admin.updateBulkActionButtons();
+            });
 
-                const allCheckboxes = document.querySelectorAll(".prompt-checkbox");
-                const checkedCheckboxes = document.querySelectorAll(".prompt-checkbox:checked");
-                const selectAllCheckbox = document.getElementById("selectAll");
-                selectAllCheckbox.checked = allCheckboxes.length === checkedCheckboxes.length;
-                selectAllCheckbox.indeterminate = checkedCheckboxes.length > 0 && checkedCheckboxes.length < allCheckboxes.length;
-            }
-        });
+            // Escape closes the gallery modal
+            document.addEventListener('keydown', function (e) {
+                const galleryModal = document.getElementById('galleryModal');
+                if (e.key === 'Escape' && galleryModal && !galleryModal.classList.contains('hidden')) {
+                    admin.closeGallery();
+                }
+            });
+        }
 
-        // Escape closes the gallery modal
-        document.addEventListener('keydown', function (e) {
-            const galleryModal = document.getElementById('galleryModal');
-            if (e.key === 'Escape' && galleryModal && !galleryModal.classList.contains('hidden')) {
-                admin.closeGallery();
-            }
-        });
+        if (document.readyState === "loading") {
+            document.addEventListener("DOMContentLoaded", startAdmin);
+        } else {
+            startAdmin();
+        }

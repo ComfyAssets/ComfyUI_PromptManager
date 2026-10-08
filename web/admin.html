@@ -1043,7 +1043,7 @@
         <div class="bg-pm-surface rounded-pm-lg p-4 max-w-lg w-full mx-4 border border-pm shadow-pm">
             <div class="flex items-center justify-between mb-4">
                 <h3 class="text-sm font-semibold text-pm">Auto Tag Images</h3>
-                <button onclick="hideModal('autoTagModal')" class="p-1 rounded-pm-sm hover:bg-pm-hover transition-colors">
+                <button onclick="window.admin.hideModal('autoTagModal')" class="p-1 rounded-pm-sm hover:bg-pm-hover transition-colors">
                     <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                     </svg>
@@ -1157,7 +1157,7 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
 
             <!-- Action Buttons -->
             <div class="flex justify-end gap-2">
-                <button onclick="hideModal('autoTagModal')"
+                <button onclick="window.admin.hideModal('autoTagModal')"
                         class="px-3 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Cancel
                 </button>
@@ -1399,7 +1399,8 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
 
     <script src="/prompt_manager/js/comfy-metadata.js"></script>
     <script src="/prompt_manager/js/prompt-list-sort.js"></script>
-    <script src="/prompt_manager/js/admin.js"></script>
+    <script src="/prompt_manager/js/view-router.js"></script>
     <script src="/prompt_manager/js/tags-page.js"></script>
+    <script src="/prompt_manager/js/admin.js"></script>
 </body>
 </html>
