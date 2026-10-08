@@ -8,6 +8,8 @@ from typing import Optional
 
 from aiohttp import web
 
+_INTERNAL_ERROR = "An internal error occurred. Check server logs for details."
+
 
 def _public_error(exc: Exception) -> str:
     """Describe an exception without leaking absolute server paths."""
@@ -158,7 +160,7 @@ class AutotagRoutesMixin:
                 self.logger.exception("Download model error")
                 yield {
                     "type": "error",
-                    "message": "An internal error occurred. Check server logs for details.",
+                    "message": _INTERNAL_ERROR,
                 }
 
         return await self._stream_sse(request, events())
@@ -380,7 +382,7 @@ class AutotagRoutesMixin:
                 self.logger.exception("AutoTag error")
                 yield {
                     "type": "error",
-                    "message": "An internal error occurred. Check server logs for details.",
+                    "message": _INTERNAL_ERROR,
                 }
 
         return await self._stream_sse(request, events())
