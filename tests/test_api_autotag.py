@@ -532,5 +532,298 @@ class TestAutotagBatch(AutotagAPITestCase):
         self.assertEqual(self.service.unload_calls, 1)
 
 
+class TestAutotagModelsAndDownloadErrors(AutotagAPITestCase):
+
+    async def test_models_error_is_500(self):
+        def boom():
+            raise RuntimeError("/srv/models unreadable")
+
+        self.service.get_models_status = boom
+        resp = await self.client.request("GET", "/prompt_manager/autotag/models")
+        self.assertEqual(resp.status, 500)
+        self.assertFalse((await resp.json())["success"])
+
+    async def test_download_invalid_model_type_is_error_event(self):
+        resp = await self.client.request(
+            "POST", "/prompt_manager/autotag/download/nope"
+        )
+        events = self._sse_events(await resp.text())
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertEqual(self.service.download_calls, [])
+
+    async def test_download_failure_is_error_event(self):
+        self.service.download_result = False
+        resp = await self.client.request(
+            "POST", "/prompt_manager/autotag/download/gguf"
+        )
+        events = self._sse_events(await resp.text())
+        self.assertEqual(events[-1], {"type": "error", "message": "Download failed"})
+
+    async def test_download_exception_is_generic_error_event(self):
+        def boom(model_type, progress_callback=None):
+            raise OSError("/srv/models is full")
+
+        self.service.download_model = boom
+        resp = await self.client.request(
+            "POST", "/prompt_manager/autotag/download/gguf"
+        )
+        events = self._sse_events(await resp.text())
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertNotIn("/srv/models", events[-1]["message"])
+
+
+class TestAutotagSingleEdgeCases(AutotagAPITestCase):
+
+    async def test_missing_file_error_hides_the_server_path(self):
+        import errno
+
+        image = self._make_image(self.output_dir)
+        self.service.generate_error = FileNotFoundError(
+            errno.ENOENT, "Image not found", str(image)
+        )
+
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single", {"path": str(image)}
+        )
+
+        self.assertEqual(resp.status, 500)
+        data = await resp.json()
+        self.assertFalse(data["success"])
+        self.assertNotIn(str(self.output_dir), data["error"])
+        self.assertIn("img.png", data["error"])
+
+    async def test_generic_error_is_500(self):
+        image = self._make_image(self.output_dir)
+        self.service.generate_error = RuntimeError("model crashed")
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single", {"path": str(image)}
+        )
+        self.assertEqual(resp.status, 500)
+        self.assertEqual((await resp.json())["error"], "model crashed")
+
+    async def test_oserror_without_filename_uses_strerror(self):
+        from py.api.autotag_routes import _public_error
+
+        self.assertEqual(_public_error(OSError(5, "I/O error")), "I/O error")
+        self.assertEqual(_public_error(ValueError("plain")), "plain")
+
+    async def test_path_with_nul_byte_is_forbidden(self):
+        from py.api.autotag_routes import path_is_within
+
+        self.assertFalse(path_is_within("bad\x00name.png", self.output_dir))
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single", {"path": str(self.output_dir / "a\x00b")}
+        )
+        self.assertEqual(resp.status, 403)
+
+    async def test_boolean_image_id_is_400(self):
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single", {"image_id": True}
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_numeric_string_image_id_is_accepted(self):
+        prompt_id = self._save_prompt()
+        image_id = self._link_image(prompt_id, self._make_image(self.output_dir))
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single", {"image_id": str(image_id)}
+        )
+        self.assertEqual(resp.status, 200)
+
+    async def test_non_object_body_is_400(self):
+        resp = await self._post_json("/prompt_manager/autotag/single", [1, 2])
+        self.assertEqual(resp.status, 400)
+
+    async def test_invalid_json_is_400(self):
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/autotag/single",
+            data="{nope",
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_non_numeric_threshold_is_400(self):
+        image = self._make_image(self.output_dir)
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single",
+            {"path": str(image), "general_threshold": "high"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_prompt_lookup_failure_still_returns_tags(self):
+        image = self._make_image(self.output_dir)
+        with patch.object(
+            self.api.db, "get_prompt_id_for_image", side_effect=RuntimeError("db")
+        ):
+            resp = await self._post_json(
+                "/prompt_manager/autotag/single", {"path": str(image)}
+            )
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertIsNone(data["prompt_id"])
+
+    async def test_prompt_is_found_via_the_real_path(self):
+        prompt_id = self._save_prompt()
+        image = self._make_image(self.output_dir)
+        self._link_image(prompt_id, image)
+        dotted = os.path.join(str(self.output_dir), ".", "img.png")
+
+        resp = await self._post_json("/prompt_manager/autotag/single", {"path": dotted})
+
+        self.assertEqual((await resp.json())["prompt_id"], prompt_id)
+
+    async def test_custom_prompt_and_model_switch(self):
+        image = self._make_image(self.output_dir)
+        self.service._loaded_type = "gguf"
+
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single",
+            {"path": str(image), "model_type": "wd14-vit", "prompt": "terse"},
+        )
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(self.service.load_calls, [("wd14-vit", True)])
+        self.assertEqual(self.service.custom_prompt, "terse")
+
+    async def test_image_id_without_stored_path_is_404(self):
+        prompt_id = self._save_prompt()
+        image_id = self._link_image(prompt_id, self._make_image(self.output_dir))
+        with patch.object(
+            self.api.db,
+            "get_image_by_id",
+            return_value={"id": image_id, "image_path": ""},
+        ):
+            resp = await self._post_json(
+                "/prompt_manager/autotag/single", {"image_id": image_id}
+            )
+        self.assertEqual(resp.status, 404)
+
+
+class TestApplyAutotag(AutotagAPITestCase):
+
+    async def test_missing_prompt_id_is_400(self):
+        resp = await self._post_json("/prompt_manager/autotag/apply", {"tags": ["a"]})
+        self.assertEqual(resp.status, 400)
+
+    async def test_no_tags_is_a_noop(self):
+        resp = await self._post_json("/prompt_manager/autotag/apply", {"prompt_id": 1})
+        data = await resp.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["message"], "No tags to apply")
+
+    async def test_unknown_prompt_is_404(self):
+        resp = await self._post_json(
+            "/prompt_manager/autotag/apply", {"prompt_id": 999, "tags": ["a"]}
+        )
+        self.assertEqual(resp.status, 404)
+
+    async def test_tags_are_merged_without_duplicates(self):
+        prompt_id = self._save_prompt(tags=["cat"])
+
+        resp = await self._post_json(
+            "/prompt_manager/autotag/apply",
+            {"prompt_id": prompt_id, "tags": ["cat", "dog"]},
+        )
+
+        data = await resp.json()
+        self.assertEqual(data["added_tags"], ["dog"])
+        self.assertEqual(data["total_tags"], 2)
+        self.assertEqual(
+            self.api.db.get_prompt_by_id(prompt_id)["tags"], ["cat", "dog"]
+        )
+
+    async def test_string_tags_from_db_are_split(self):
+        prompt_id = self._save_prompt()
+        with patch.object(
+            self.api.db,
+            "get_prompt_by_id",
+            return_value={"id": prompt_id, "tags": "cat, dog"},
+        ):
+            resp = await self._post_json(
+                "/prompt_manager/autotag/apply",
+                {"prompt_id": prompt_id, "tags": ["dog", "owl"]},
+            )
+        data = await resp.json()
+        self.assertEqual(data["added_tags"], ["owl"])
+        self.assertEqual(data["total_tags"], 3)
+
+    async def test_db_error_is_500(self):
+        with patch.object(
+            self.api.db, "get_prompt_by_id", side_effect=RuntimeError("db")
+        ):
+            resp = await self._post_json(
+                "/prompt_manager/autotag/apply", {"prompt_id": 1, "tags": ["a"]}
+            )
+        self.assertEqual(resp.status, 500)
+
+
+class TestUnloadAutotag(AutotagAPITestCase):
+
+    async def test_nothing_loaded(self):
+        resp = await self.client.request("POST", "/prompt_manager/autotag/unload")
+        data = await resp.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["message"], "No model was loaded")
+
+    async def test_unloads_loaded_model(self):
+        self.service._loaded_type = "gguf"
+        resp = await self.client.request("POST", "/prompt_manager/autotag/unload")
+        data = await resp.json()
+        self.assertEqual(data["message"], "GGUF model unloaded successfully")
+        self.assertFalse(data["model_loaded"])
+        self.assertEqual(self.service.unload_calls, 1)
+
+    async def test_error_is_500(self):
+        def boom():
+            raise RuntimeError("x")
+
+        self.service.is_model_loaded = boom
+        resp = await self.client.request("POST", "/prompt_manager/autotag/unload")
+        self.assertEqual(resp.status, 500)
+
+
+class TestScanOutputDir(AutotagAPITestCase):
+
+    async def test_lists_images_with_thumbnails(self):
+        sub = self.output_dir / "sub"
+        sub.mkdir()
+        self._make_image(self.output_dir, "a.png")
+        self._make_image(sub, "b.JPG")
+        thumbs = self.output_dir / "thumbnails" / "sub"
+        thumbs.mkdir(parents=True)
+        (thumbs / "b_thumb.JPG").write_bytes(b"t")
+        self._make_image(self.output_dir / "thumbnails", "ignored.png")
+        self.api._find_comfyui_output_dir = lambda: str(self.output_dir)
+
+        resp = await self.client.request("GET", "/prompt_manager/scan_output_dir")
+
+        data = await resp.json()
+        self.assertTrue(data["success"])
+        self.assertEqual([i["filename"] for i in data["images"]], ["a.png", "b.JPG"])
+        self.assertEqual(data["count"], 2)
+        self.assertIsNone(data["images"][0]["thumbnail_url"])
+        self.assertEqual(
+            data["images"][1]["thumbnail_url"],
+            "/prompt_manager/images/serve/thumbnails/sub/b_thumb.JPG",
+        )
+        self.assertEqual(
+            data["images"][1]["url"], "/prompt_manager/images/serve/sub/b.JPG"
+        )
+
+    async def test_missing_output_dir_is_404(self):
+        self.api._find_comfyui_output_dir = lambda: None
+        resp = await self.client.request("GET", "/prompt_manager/scan_output_dir")
+        self.assertEqual(resp.status, 404)
+
+    async def test_error_is_500(self):
+        def boom():
+            raise RuntimeError("x")
+
+        self.api._find_comfyui_output_dir = boom
+        resp = await self.client.request("GET", "/prompt_manager/scan_output_dir")
+        self.assertEqual(resp.status, 500)
+
+
 if __name__ == "__main__":
     unittest.main()

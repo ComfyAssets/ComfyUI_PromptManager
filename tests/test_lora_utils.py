@@ -406,11 +406,15 @@ class _FakeHTTPSHandler(urllib.request.HTTPSHandler):
         host = (urllib.parse.urlsplit(req.full_url).hostname or "").lower()
         if host in CIVITAI_HOSTS:
             headers = email.message_from_string(f"Location: {self.redirect_to}\n")
-            return urllib.response.addinfourl(BytesIO(b""), headers, req.full_url, 302)
+            resp = urllib.response.addinfourl(BytesIO(b""), headers, req.full_url, 302)
+            resp.msg = "Found"  # urllib's error processor reads response.msg
+            return resp
         headers = email.message_from_string("Content-Type: image/png\n")
-        return urllib.response.addinfourl(
+        resp = urllib.response.addinfourl(
             BytesIO(_png_bytes()), headers, req.full_url, 200
         )
+        resp.msg = "OK"
+        return resp
 
 
 class TestRedirectsAreRefused(unittest.TestCase):
@@ -584,6 +588,299 @@ class TestTriggerWordCache(unittest.TestCase):
             t.join()
 
         self.assertEqual(errors, [])
+
+
+# ── Detection, directories and metadata helpers ───────────────────────
+
+
+class _FakeFolderPaths:
+    def __init__(self, base_path, lora_dirs=None):
+        self.base_path = base_path
+        self._lora_dirs = lora_dirs or []
+
+    def get_folder_paths(self, name):
+        return list(self._lora_dirs)
+
+
+def _make_comfy_root(tmp):
+    """Create a fake ComfyUI tree: main.py + custom_nodes/ + models/loras."""
+    root = Path(tmp) / "ComfyUI"
+    (root / "custom_nodes").mkdir(parents=True)
+    (root / "models" / "loras").mkdir(parents=True)
+    (root / "main.py").write_text("")
+    return root
+
+
+def _make_lora_manager(custom_nodes, name="ComfyUI-Lora-Manager"):
+    lm = custom_nodes / name
+    (lm / "py").mkdir(parents=True)
+    (lm / "__init__.py").write_text("")
+    return lm
+
+
+class TestFindComfyuiRoot(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_folder_paths_base_path_wins(self):
+        root = _make_comfy_root(self.tmp)
+        with patch.dict(sys.modules, {"folder_paths": _FakeFolderPaths(str(root))}):
+            self.assertEqual(lora_utils.find_comfyui_root(), root)
+
+    def test_walks_up_from_module_file_without_folder_paths(self):
+        root = _make_comfy_root(self.tmp)
+        fake_file = root / "custom_nodes" / "ext" / "py" / "lora_utils.py"
+        fake_file.parent.mkdir(parents=True)
+        fake_file.write_text("")
+        with (
+            patch.dict(sys.modules, {"folder_paths": None}),
+            patch.object(lora_utils, "__file__", str(fake_file)),
+        ):
+            self.assertEqual(lora_utils.find_comfyui_root(), root.resolve())
+
+    def test_returns_none_when_no_root_found(self):
+        fake_file = self.tmp / "lonely" / "lora_utils.py"
+        fake_file.parent.mkdir()
+        fake_file.write_text("")
+        with (
+            patch.dict(sys.modules, {"folder_paths": None}),
+            patch.object(lora_utils, "__file__", str(fake_file)),
+        ):
+            self.assertIsNone(lora_utils.find_comfyui_root())
+
+
+class TestDetectLoraManager(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_custom_path_is_used_when_it_looks_right(self):
+        lm = _make_lora_manager(self.tmp)
+        with patch.object(lora_utils, "find_comfyui_root", return_value=None):
+            self.assertEqual(lora_utils.detect_lora_manager(str(lm)), str(lm.resolve()))
+
+    def test_custom_path_without_init_is_ignored(self):
+        bogus = self.tmp / "nope"
+        bogus.mkdir()
+        with patch.object(lora_utils, "find_comfyui_root", return_value=None):
+            self.assertIsNone(lora_utils.detect_lora_manager(str(bogus)))
+
+    def test_auto_detects_under_custom_nodes_case_insensitively(self):
+        root = _make_comfy_root(self.tmp)
+        (root / "custom_nodes" / "other").mkdir()
+        lm = _make_lora_manager(root / "custom_nodes", "comfyui-LORA-manager")
+        with patch.object(lora_utils, "find_comfyui_root", return_value=root):
+            self.assertEqual(lora_utils.detect_lora_manager(), str(lm.resolve()))
+
+    def test_lora_manager_dir_variant_is_accepted(self):
+        lm = self.tmp / "LoraManager"
+        (lm / "lora_manager").mkdir(parents=True)
+        (lm / "__init__.py").write_text("")
+        self.assertTrue(lora_utils._looks_like_lora_manager(lm))
+
+    def test_nothing_found(self):
+        with patch.object(lora_utils, "find_comfyui_root", return_value=None):
+            self.assertIsNone(lora_utils.detect_lora_manager())
+
+
+class TestFindLoraDirectories(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.root = _make_comfy_root(self.tmp)
+        self.lm = _make_lora_manager(self.root / "custom_nodes")
+
+    def test_collects_default_extra_runtime_and_metadata_dirs(self):
+        extra_abs = self.tmp / "extra_abs"
+        extra_abs.mkdir()
+        (self.root / "rel_loras").mkdir()
+        (self.root / "extra_model_paths.yaml").write_text(
+            "a:\n  base_path: %s\n  loras: |\n    rel_loras\n    %s\n\n"
+            "b: notadict\nc:\n  base_path: x\n"
+            % (self.root.as_posix(), extra_abs.as_posix())
+        )
+        runtime = self.tmp / "runtime"
+        runtime.mkdir()
+        nested = self.lm / "user" / "loras"
+        nested.mkdir(parents=True)
+        (nested / "x.metadata.json").write_text("{}")
+
+        with (
+            patch.object(lora_utils, "find_comfyui_root", return_value=self.root),
+            patch.dict(
+                sys.modules,
+                {"folder_paths": _FakeFolderPaths(str(self.root), [str(runtime)])},
+            ),
+        ):
+            dirs = lora_utils.find_lora_directories(str(self.lm))
+
+        expected = {
+            str((self.root / "models" / "loras").resolve()),
+            str((self.root / "rel_loras").resolve()),
+            str(extra_abs.resolve()),
+            str(runtime.resolve()),
+            str(nested.resolve()),
+        }
+        self.assertEqual(set(dirs), expected)
+        self.assertEqual(dirs, sorted(dirs))
+
+    def test_non_dict_yaml_and_parse_errors_are_ignored(self):
+        (self.root / "extra_model_paths.yml").write_text("- just\n- a list\n")
+        self.assertEqual(lora_utils._get_extra_lora_paths(self.root), [])
+        (self.root / "extra_model_paths.yml").write_text("a: [unclosed\n")
+        self.assertEqual(lora_utils._get_extra_lora_paths(self.root), [])
+
+    def test_without_root_only_metadata_dirs_are_found(self):
+        with (
+            patch.object(lora_utils, "find_comfyui_root", return_value=None),
+            patch.dict(sys.modules, {"folder_paths": None}),
+        ):
+            self.assertEqual(lora_utils.find_lora_directories(str(self.lm)), [])
+
+
+class TestModelNameAndPreviews(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_model_name_precedence(self):
+        get_name = lora_utils.get_model_name_from_metadata
+        self.assertEqual(get_name({"model_name": "top"}), "top")
+        self.assertEqual(get_name({"civitai": {"model": {"name": "civ"}}}), "civ")
+        self.assertEqual(get_name({"file_name": "f.safetensors"}), "f.safetensors")
+        self.assertEqual(get_name({}), "unknown")
+
+    def test_preview_images_found_by_stem(self):
+        meta_path = self.tmp / "mylora.safetensors.metadata.json"
+        meta_path.write_text("{}")
+        (self.tmp / "mylora.png").write_bytes(b"x")
+        (self.tmp / "mylora.preview.jpg").write_bytes(b"x")
+
+        found = lora_utils.get_preview_images_from_metadata({}, meta_path)
+
+        self.assertEqual(
+            sorted(os.path.basename(f) for f in found),
+            ["mylora.png", "mylora.preview.jpg"],
+        )
+        self.assertEqual(
+            lora_utils.get_preview_image_from_metadata({}, meta_path), found[0]
+        )
+
+    def test_preview_uses_file_name_from_metadata(self):
+        meta_path = self.tmp / "other.metadata.json"
+        (self.tmp / "named.webp").write_bytes(b"x")
+        found = lora_utils.get_preview_images_from_metadata(
+            {"file_name": "named.safetensors"}, meta_path
+        )
+        self.assertEqual([os.path.basename(f) for f in found], ["named.webp"])
+        self.assertIsNone(lora_utils.get_preview_image_from_metadata({}, meta_path))
+
+    def test_example_images_dir(self):
+        self.assertIsNone(lora_utils.get_example_images_dir(str(self.tmp)))
+        nested = self.tmp / "user" / "example_images"
+        nested.mkdir(parents=True)
+        self.assertEqual(
+            lora_utils.get_example_images_dir(str(self.tmp)), str(nested.resolve())
+        )
+        direct = self.tmp / "example_images"
+        direct.mkdir()
+        self.assertEqual(
+            lora_utils.get_example_images_dir(str(self.tmp)), str(direct.resolve())
+        )
+
+
+class TestDownloadEdgeCases(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_malformed_url_is_refused(self):
+        self.assertFalse(is_civitai_url("https://[invalid"))
+
+    def test_non_numeric_content_length_is_ignored(self):
+        resp = _FakeResponse(b"abc")
+        resp.headers["Content-Length"] = "lots"
+        self.assertEqual(lora_utils._read_capped(resp, 10), b"abc")
+
+    def test_download_uses_metadata_filename_when_file_name_missing(self):
+        opener = _FakeOpener(_FakeResponse(_png_bytes()))
+        meta_path = self.tmp / "stemmed.safetensors.metadata.json"
+        metadata = {"civitai": {"images": [{"url": "https://civitai.com/a.png"}]}}
+
+        with patch.object(lora_utils, "_open_url", opener):
+            paths = download_civitai_images(metadata, meta_path, self.tmp / "cache")
+
+        self.assertEqual(len(paths), 1)
+        self.assertIn("stemmed", paths[0])
+
+    def test_failed_downloads_are_dropped(self):
+        opener = _FakeOpener(_FakeResponse(b"not an image"))
+        metadata = {"civitai": {"images": [{"url": "https://civitai.com/a.png"}]}}
+
+        with patch.object(lora_utils, "_open_url", opener):
+            paths = download_civitai_images(
+                metadata, self.tmp / "x.metadata.json", self.tmp / "cache"
+            )
+
+        self.assertEqual(paths, [])
+
+
+class TestInjectTriggerWords(unittest.TestCase):
+
+    def setUp(self):
+        self.cache = TriggerWordCache()
+        self.cache._cache = {"style": ["neon", "glow"], "empty": []}
+        self.cache._loaded = True
+
+    def test_not_loaded_returns_unchanged(self):
+        cache = TriggerWordCache()
+        self.assertEqual(
+            lora_utils.inject_trigger_words("<lora:style:1>", cache),
+            ("<lora:style:1>", []),
+        )
+
+    def test_no_lora_tags_returns_unchanged(self):
+        self.assertEqual(
+            lora_utils.inject_trigger_words("plain prompt", self.cache),
+            ("plain prompt", []),
+        )
+
+    def test_words_are_appended_once(self):
+        text = "a <lora:Style:0.8> b <lora:style:1>"
+        self.assertEqual(
+            lora_utils.inject_trigger_words(text, self.cache),
+            (f"{text}, neon, glow", ["neon", "glow"]),
+        )
+
+    def test_words_already_present_are_not_repeated(self):
+        text = "NEON city <lora:style:1>"
+        self.assertEqual(
+            lora_utils.inject_trigger_words(text, self.cache),
+            (f"{text}, glow", ["glow"]),
+        )
+
+    def test_lora_without_words_leaves_text_alone(self):
+        text = "x <lora:empty:1> <lora:unknown:1>"
+        self.assertEqual(lora_utils.inject_trigger_words(text, self.cache), (text, []))
+
+    def test_cache_load_skips_bad_and_wordless_metadata(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "bad.metadata.json").write_text("{{{")
+        (tmp / "nowords.metadata.json").write_text("{}")
+        (tmp / "named.metadata.json").write_text(
+            json.dumps({"civitai": {"trainedWords": ["w"]}})
+        )
+        cache = TriggerWordCache()
+        with patch.object(lora_utils, "find_lora_directories", return_value=[str(tmp)]):
+            self.assertEqual(cache.load(str(tmp)), 1)
+        self.assertEqual(cache.get_trigger_words("named"), ["w"])
 
 
 if __name__ == "__main__":

@@ -34,8 +34,10 @@ from aiohttp.test_utils import AioHTTPTestCase
 
 from database.operations import PromptDatabase
 from py.api import PromptManagerAPI
-from py.config import IntegrationConfig
+from py import lora_utils
+from py.config import IntegrationConfig, PromptManagerConfig
 from py.lora_utils import get_trigger_cache
+from utils.hashing import generate_prompt_hash
 
 SECRET_KEY = "sk-civitai-super-secret-0123456789"
 
@@ -60,6 +62,8 @@ class LoraAPITestCase(AioHTTPTestCase):
             "py.lora_utils.detect_lora_manager", return_value=None
         )
         self.detect_mock = self._detect_patch.start()
+        self._save_patch = patch.object(PromptManagerConfig, "save_to_file")
+        self.save_mock = self._save_patch.start()
         get_trigger_cache().clear()
 
         app = web.Application()
@@ -71,6 +75,7 @@ class LoraAPITestCase(AioHTTPTestCase):
         return app
 
     async def tearDownAsync(self):
+        self._save_patch.stop()
         self._detect_patch.stop()
         self._config_patch.stop()
         get_trigger_cache().clear()
@@ -113,6 +118,339 @@ class TestLoraStatusNeverReturnsKey(LoraAPITestCase):
         data = await resp.json()
         self.assertIs(data["has_civitai_api_key"], False)
         self.assertNotIn("civitai_api_key", data)
+
+
+def _png_bytes():
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", (2, 2), (1, 2, 3)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+class _FakeResponse:
+    def __init__(self, body):
+        self._body = body
+        self._pos = 0
+        self.headers = {}
+
+    def read(self, amt=-1):
+        if amt is None or amt < 0:
+            amt = len(self._body)
+        chunk = self._body[self._pos : self._pos + amt]
+        self._pos += len(chunk)
+        return chunk
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _make_lora_manager(where):
+    lm = where / "ComfyUI-Lora-Manager"
+    (lm / "py").mkdir(parents=True)
+    (lm / "__init__.py").write_text("")
+    return lm
+
+
+def _write_metadata(directory, stem, words=None, images=None, prompt=None):
+    meta = {"file_name": f"{stem}.safetensors", "model_name": stem, "civitai": {}}
+    if words is not None:
+        meta["civitai"]["trainedWords"] = words
+    if images is not None:
+        meta["civitai"]["images"] = [
+            {"url": url, "meta": {"prompt": prompt} if prompt else {}} for url in images
+        ]
+    path = directory / f"{stem}.safetensors.metadata.json"
+    path.write_text(json.dumps(meta))
+    return path
+
+
+class TestLoraDetectRoute(LoraAPITestCase):
+
+    async def test_detected(self):
+        self.detect_mock.return_value = str(self.tmp_root)
+        resp = await self.client.request("GET", "/prompt_manager/lora/detect")
+        data = await resp.json()
+        self.assertTrue(data["success"])
+        self.assertTrue(data["detected"])
+        self.assertEqual(data["path"], str(self.tmp_root))
+
+    async def test_not_detected(self):
+        resp = await self.client.request("GET", "/prompt_manager/lora/detect")
+        data = await resp.json()
+        self.assertFalse(data["detected"])
+        self.assertEqual(data["path"], "")
+
+    async def test_detection_error_is_500(self):
+        self.detect_mock.side_effect = RuntimeError("disk gone")
+        resp = await self.client.request("GET", "/prompt_manager/lora/detect")
+        self.assertEqual(resp.status, 500)
+        self.assertFalse((await resp.json())["success"])
+
+
+class TestLoraStatusRoute(LoraAPITestCase):
+
+    async def test_status_reports_detection_and_cache(self):
+        self.detect_mock.return_value = str(self.tmp_root)
+        IntegrationConfig.LORA_MANAGER_ENABLED = True
+        IntegrationConfig.LORA_MANAGER_PATH = str(self.tmp_root)
+
+        data = await (
+            await self.client.request("GET", "/prompt_manager/lora/status")
+        ).json()
+
+        self.assertTrue(data["enabled"])
+        self.assertTrue(data["detected"])
+        self.assertEqual(data["detected_path"], str(self.tmp_root))
+        self.assertFalse(data["trigger_cache_loaded"])
+
+    async def test_status_error_is_500(self):
+        with patch("py.lora_utils.get_trigger_cache", side_effect=RuntimeError("x")):
+            resp = await self.client.request("GET", "/prompt_manager/lora/status")
+        self.assertEqual(resp.status, 500)
+
+
+class TestLoraEnableRoute(LoraAPITestCase):
+
+    async def test_enable_with_unknown_path_is_400(self):
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable", {"enabled": True, "path": "/nowhere"}
+        )
+        self.assertEqual(resp.status, 400)
+        self.assertFalse(IntegrationConfig.LORA_MANAGER_ENABLED)
+        self.save_mock.assert_not_called()
+
+    async def test_enable_persists_and_loads_trigger_cache(self):
+        lm = _make_lora_manager(self.tmp_root)
+        loras = self.tmp_root / "loras"
+        loras.mkdir()
+        _write_metadata(loras, "neon", words=["glow"])
+        self.detect_mock.return_value = str(lm)
+
+        with patch.object(
+            lora_utils, "find_lora_directories", return_value=[str(loras)]
+        ):
+            resp = await self._post_json(
+                "/prompt_manager/lora/enable",
+                {
+                    "enabled": True,
+                    "path": str(lm),
+                    "trigger_words_enabled": True,
+                    "civitai_api_key": SECRET_KEY,
+                },
+            )
+
+        self.assertEqual(resp.status, 200)
+        body = await resp.text()
+        data = json.loads(body)
+        self.assertTrue(data["success"])
+        self.assertEqual(data["path"], str(lm))
+        self.assertNotIn(SECRET_KEY, body)
+        self.assertTrue(IntegrationConfig.LORA_MANAGER_ENABLED)
+        self.assertEqual(IntegrationConfig.CIVITAI_API_KEY, SECRET_KEY)
+        self.save_mock.assert_called_once()
+        self.assertTrue(get_trigger_cache().is_loaded)
+        self.assertEqual(get_trigger_cache().get_trigger_words("neon"), ["glow"])
+
+    async def test_disable_clears_cache(self):
+        get_trigger_cache()._cache = {"x": ["y"]}
+        get_trigger_cache()._loaded = True
+
+        resp = await self._post_json("/prompt_manager/lora/enable", {"enabled": False})
+
+        self.assertEqual(resp.status, 200)
+        self.assertFalse(get_trigger_cache().is_loaded)
+        self.assertFalse(IntegrationConfig.LORA_MANAGER_ENABLED)
+
+    async def test_persist_failure_is_500(self):
+        self.save_mock.side_effect = OSError("read-only")
+        resp = await self._post_json("/prompt_manager/lora/enable", {"enabled": False})
+        self.assertEqual(resp.status, 500)
+
+
+class TestLoraScanRoute(LoraAPITestCase):
+
+    def _enable(self):
+        IntegrationConfig.LORA_MANAGER_ENABLED = True
+        IntegrationConfig.LORA_MANAGER_PATH = str(self.tmp_root)
+        IntegrationConfig.CIVITAI_API_KEY = SECRET_KEY
+
+    @staticmethod
+    def _sse_events(text):
+        return [
+            json.loads(line[len("data: ") :])
+            for line in text.splitlines()
+            if line.startswith("data: ")
+        ]
+
+    async def _scan(self, loras):
+        opener_calls = []
+
+        def fake_open(req, timeout=None):
+            opener_calls.append(req)
+            return _FakeResponse(_png_bytes())
+
+        cache_dir = self.tmp_root / "img_cache"
+        with (
+            patch.object(
+                lora_utils, "find_lora_directories", return_value=[str(loras)]
+            ),
+            patch.object(
+                lora_utils, "get_lora_image_cache_dir", return_value=cache_dir
+            ),
+            patch.object(lora_utils, "_open_url", fake_open),
+        ):
+            resp = await self.client.request("POST", "/prompt_manager/lora/scan")
+            text = await resp.text()
+        return resp, self._sse_events(text), opener_calls
+
+    async def test_not_enabled_is_400(self):
+        resp = await self.client.request("POST", "/prompt_manager/lora/scan")
+        self.assertEqual(resp.status, 400)
+
+    async def test_no_path_is_400(self):
+        IntegrationConfig.LORA_MANAGER_ENABLED = True
+        resp = await self.client.request("POST", "/prompt_manager/lora/scan")
+        self.assertEqual(resp.status, 400)
+
+    async def test_scan_imports_loras_with_images_and_links_existing(self):
+        self._enable()
+        loras = self.tmp_root / "loras"
+        loras.mkdir()
+        _write_metadata(
+            loras,
+            "neon",
+            words=["glow"],
+            images=["https://civitai.com/a.png", "https://evil.example/b.png"],
+            prompt="neon street",
+        )
+        (loras / "neon.png").write_bytes(_png_bytes())
+        _write_metadata(loras, "plain")
+        (loras / "broken.metadata.json").write_text("{{{")
+        existing_id = self.api.db.save_prompt(
+            text="plain",
+            category=None,
+            tags=[],
+            rating=None,
+            prompt_hash=generate_prompt_hash("plain"),
+        )
+
+        resp, events, opener_calls = await self._scan(loras)
+
+        self.assertEqual(resp.status, 200)
+        done = events[-1]
+        self.assertEqual(done["type"], "complete")
+        self.assertEqual(done["total"], 3)
+        self.assertEqual(done["imported"], 1)
+        self.assertEqual(done["skipped"], 2)
+        self.assertEqual(
+            [r.full_url for r in opener_calls], ["https://civitai.com/a.png"]
+        )
+        self.assertEqual(
+            opener_calls[0].get_header("Authorization"), f"Bearer {SECRET_KEY}"
+        )
+        imported = self.api.db.search_prompts(category="lora-manager")
+        self.assertEqual(len(imported), 1)
+        self.assertEqual(imported[0]["text"], "neon street")
+        self.assertIn("lora:neon", imported[0]["tags"])
+        self.assertIn("glow", imported[0]["tags"])
+        self.assertEqual(len(self.api.db.get_prompt_images(imported[0]["id"])), 2)
+        self.assertEqual(len(self.api.db.get_prompt_images(existing_id)), 0)
+
+    async def test_save_failure_is_counted_as_skipped(self):
+        self._enable()
+        loras = self.tmp_root / "loras"
+        loras.mkdir()
+        _write_metadata(loras, "neon", words=["glow"])
+
+        with patch.object(self.api.db, "save_prompt", side_effect=RuntimeError("db")):
+            resp, events, _ = await self._scan(loras)
+
+        self.assertEqual(events[-1]["imported"], 0)
+        self.assertEqual(events[-1]["skipped"], 1)
+
+
+class TestLoraTriggerWordRoutes(LoraAPITestCase):
+
+    async def test_trigger_words_not_enabled_is_400(self):
+        resp = await self.client.request(
+            "GET", "/prompt_manager/lora/trigger-words?name=x"
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_trigger_words_missing_name_is_400(self):
+        IntegrationConfig.LORA_MANAGER_ENABLED = True
+        resp = await self.client.request("GET", "/prompt_manager/lora/trigger-words")
+        self.assertEqual(resp.status, 400)
+
+    async def test_trigger_words_loads_cache_on_demand(self):
+        IntegrationConfig.LORA_MANAGER_ENABLED = True
+        IntegrationConfig.LORA_MANAGER_PATH = str(self.tmp_root)
+        loras = self.tmp_root / "loras"
+        loras.mkdir()
+        _write_metadata(loras, "neon", words=["glow", "bright"])
+
+        with patch.object(
+            lora_utils, "find_lora_directories", return_value=[str(loras)]
+        ):
+            resp = await self.client.request(
+                "GET", "/prompt_manager/lora/trigger-words?name=NEON"
+            )
+
+        data = await resp.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["trigger_words"], ["glow", "bright"])
+        self.assertTrue(get_trigger_cache().is_loaded)
+
+    async def test_trigger_words_error_is_500(self):
+        IntegrationConfig.LORA_MANAGER_ENABLED = True
+        with patch("py.lora_utils.get_trigger_cache", side_effect=RuntimeError("x")):
+            resp = await self.client.request(
+                "GET", "/prompt_manager/lora/trigger-words?name=x"
+            )
+        self.assertEqual(resp.status, 500)
+
+    async def test_refresh_not_enabled_is_400(self):
+        resp = await self.client.request("POST", "/prompt_manager/lora/refresh-cache")
+        self.assertEqual(resp.status, 400)
+
+    async def test_refresh_without_path_is_400(self):
+        IntegrationConfig.LORA_MANAGER_ENABLED = True
+        resp = await self.client.request("POST", "/prompt_manager/lora/refresh-cache")
+        self.assertEqual(resp.status, 400)
+
+    async def test_refresh_reloads_cache(self):
+        IntegrationConfig.LORA_MANAGER_ENABLED = True
+        IntegrationConfig.LORA_MANAGER_PATH = str(self.tmp_root)
+        loras = self.tmp_root / "loras"
+        loras.mkdir()
+        _write_metadata(loras, "neon", words=["glow"])
+
+        with patch.object(
+            lora_utils, "find_lora_directories", return_value=[str(loras)]
+        ):
+            resp = await self.client.request(
+                "POST", "/prompt_manager/lora/refresh-cache"
+            )
+
+        data = await resp.json()
+        self.assertTrue(data["success"])
+        # keyed by both the file_name stem and the metadata-file stem
+        self.assertEqual(data["loras_with_trigger_words"], 2)
+
+    async def test_refresh_error_is_500(self):
+        IntegrationConfig.LORA_MANAGER_ENABLED = True
+        IntegrationConfig.LORA_MANAGER_PATH = str(self.tmp_root)
+        with patch("py.lora_utils.get_trigger_cache", side_effect=RuntimeError("x")):
+            resp = await self.client.request(
+                "POST", "/prompt_manager/lora/refresh-cache"
+            )
+        self.assertEqual(resp.status, 500)
 
 
 if __name__ == "__main__":

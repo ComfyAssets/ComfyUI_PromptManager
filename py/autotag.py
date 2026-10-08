@@ -8,6 +8,7 @@ Refactored from standalone_tagger.py for integration with PromptManager API.
 import errno
 import gc
 import os
+import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from PIL import Image
@@ -705,14 +706,11 @@ class AutoTagService:
             self._current_model_type = None
             gc.collect()
 
-            # Try to clear CUDA cache if available
-            try:
-                import torch
-
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except ImportError:
-                pass
+            # Clear the CUDA cache only if torch is already loaded; importing
+            # it here would pull in a heavy dependency the backend never used.
+            torch = sys.modules.get("torch")
+            if torch is not None and torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             self.logger.info("Model unloaded, memory freed")
 
