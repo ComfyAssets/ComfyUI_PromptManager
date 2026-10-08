@@ -2,9 +2,21 @@
 
 import asyncio
 import json
+import os
 from pathlib import Path
+from typing import Optional
 
 from aiohttp import web
+
+
+def _public_error(exc: Exception) -> str:
+    """Describe an exception without leaking absolute server paths."""
+    if isinstance(exc, OSError) and exc.strerror:
+        filename = exc.filename
+        if filename:
+            return f"{exc.strerror}: {os.path.basename(str(filename))}"
+        return exc.strerror
+    return str(exc)
 
 
 class AutotagRoutesMixin:
@@ -15,11 +27,11 @@ class AutotagRoutesMixin:
         async def get_autotag_models_route(request):
             return await self.get_autotag_models(request)
 
-        @routes.get("/prompt_manager/autotag/download/{model_type}")
+        @routes.post("/prompt_manager/autotag/download/{model_type}")
         async def download_autotag_model_route(request):
             return await self.download_autotag_model(request)
 
-        @routes.get("/prompt_manager/autotag/start")
+        @routes.post("/prompt_manager/autotag/start")
         async def start_autotag_route(request):
             return await self.start_autotag(request)
 
@@ -116,17 +128,39 @@ class AutotagRoutesMixin:
         await response.write_eof()
         return response
 
+    async def _read_start_params(self, request) -> Optional[dict]:
+        """Merge query-string and optional JSON-body parameters for autotag/start.
+
+        Returns None when a body is present but is not a JSON object.
+        """
+        params = dict(request.query)
+        if request.can_read_body:
+            try:
+                body = await request.json()
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return None
+            if not isinstance(body, dict):
+                return None
+            params.update(body)
+        return params
+
     async def start_autotag(self, request):
-        """Start batch auto-tagging with streaming progress."""
-        model_type = request.query.get("model_type", "gguf")
-        custom_prompt = request.query.get("prompt", "")
-        skip_tagged = request.query.get("skip_tagged", "true").lower() == "true"
-        keep_in_memory = request.query.get("keep_in_memory", "true").lower() == "true"
+        """Start batch auto-tagging with streaming progress (POST only)."""
+        params = await self._read_start_params(request)
+        if params is None:
+            return web.json_response(
+                {"success": False, "error": "Request body must be a JSON object"},
+                status=400,
+            )
+        model_type = params.get("model_type", "gguf")
+        custom_prompt = params.get("prompt", "")
+        skip_tagged = str(params.get("skip_tagged", "true")).lower() == "true"
+        keep_in_memory = str(params.get("keep_in_memory", "true")).lower() == "true"
         use_gpu = True
 
         # WD14 threshold params
-        general_threshold = request.query.get("general_threshold")
-        character_threshold = request.query.get("character_threshold")
+        general_threshold = params.get("general_threshold")
+        character_threshold = params.get("character_threshold")
         try:
             if general_threshold is not None:
                 general_threshold = float(general_threshold)
@@ -326,11 +360,90 @@ class AutotagRoutesMixin:
         await response.write_eof()
         return response
 
+    def _resolve_allowed_image_path(self, raw_path: str) -> Optional[Path]:
+        """Return the resolved path when it lies inside an output directory."""
+        try:
+            resolved = Path(raw_path).resolve()
+        except (OSError, RuntimeError):
+            return None
+        for output_dir in self._get_all_output_dirs():
+            try:
+                if resolved.is_relative_to(Path(output_dir).resolve()):
+                    return resolved
+            except (OSError, RuntimeError):
+                continue
+        return None
+
+    async def _select_autotag_target(self, data: dict):
+        """Pick the image to tag from an autotag/single body.
+
+        Returns ``(image_path, prompt_id, None)`` on success or
+        ``(None, None, error_response)`` when the request must be rejected.
+        """
+        image_id = data.get("image_id")
+        if image_id is not None:
+            if isinstance(image_id, bool) or not isinstance(image_id, (int, str)):
+                return None, None, self._bad_request("image_id must be an integer")
+            try:
+                image_id = int(image_id)
+            except (TypeError, ValueError):
+                return None, None, self._bad_request("image_id must be an integer")
+            record = await self._run_in_executor(self.db.get_image_by_id, image_id)
+            if not record or not record.get("image_path"):
+                return (
+                    None,
+                    None,
+                    web.json_response(
+                        {"success": False, "error": f"Image {image_id} not found"},
+                        status=404,
+                    ),
+                )
+            return record["image_path"], record.get("prompt_id"), None
+
+        raw_path = data.get("path") or data.get("image_path")
+        if not raw_path or not isinstance(raw_path, str):
+            return None, None, self._bad_request("image_id or path is required")
+
+        resolved = self._resolve_allowed_image_path(raw_path)
+        if resolved is None:
+            return (
+                None,
+                None,
+                web.json_response(
+                    {
+                        "success": False,
+                        "error": (
+                            f"{os.path.basename(raw_path)} is outside the "
+                            "configured output directories"
+                        ),
+                    },
+                    status=403,
+                ),
+            )
+
+        prompt_id = None
+        try:
+            prompt_id = await self._run_in_executor(
+                self.db.get_prompt_id_for_image, raw_path
+            )
+            if prompt_id is None and str(resolved) != raw_path:
+                prompt_id = await self._run_in_executor(
+                    self.db.get_prompt_id_for_image, str(resolved)
+                )
+        except Exception as e:
+            self.logger.warning(f"Could not find linked prompt: {e}")
+        return str(resolved), prompt_id, None
+
+    @staticmethod
+    def _bad_request(message: str):
+        return web.json_response({"success": False, "error": message}, status=400)
+
     async def autotag_single(self, request):
-        """Generate tags for a single image."""
+        """Generate tags for a single image selected by image_id or gallery path."""
         try:
             data = await request.json()
-            image_path = data.get("image_path")
+            if not isinstance(data, dict):
+                return self._bad_request("Request body must be a JSON object")
             model_type = data.get("model_type", "gguf")
             custom_prompt = data.get("prompt")
             use_gpu = data.get("use_gpu", True)
@@ -342,18 +455,13 @@ class AutotagRoutesMixin:
                 if character_threshold is not None:
                     character_threshold = float(character_threshold)
             except (ValueError, TypeError):
-                return web.json_response(
-                    {
-                        "success": False,
-                        "error": "general_threshold and character_threshold must be numeric",
-                    },
-                    status=400,
+                return self._bad_request(
+                    "general_threshold and character_threshold must be numeric"
                 )
 
-            if not image_path:
-                return web.json_response(
-                    {"success": False, "error": "image_path is required"}, status=400
-                )
+            image_path, prompt_id, error = await self._select_autotag_target(data)
+            if error is not None:
+                return error
 
             from ..autotag import get_autotag_service
 
@@ -363,44 +471,34 @@ class AutotagRoutesMixin:
                 not service.is_model_loaded()
                 or service.get_loaded_model_type() != model_type
             ):
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(
-                    None, lambda: service.load_model(model_type, use_gpu)
-                )
+                await self._run_in_executor(service.load_model, model_type, use_gpu)
 
             if custom_prompt:
                 service.custom_prompt = custom_prompt
 
-            loop = asyncio.get_event_loop()
-            tags = await loop.run_in_executor(
-                None,
-                lambda: service.generate_tags(
-                    image_path,
-                    general_threshold=general_threshold,
-                    character_threshold=character_threshold,
-                ),
+            tags = await self._run_in_executor(
+                service.generate_tags,
+                image_path,
+                general_threshold=general_threshold,
+                character_threshold=character_threshold,
             )
-
-            prompt_id = None
-            try:
-                prompt_id = await self._run_in_executor(
-                    self.db.get_prompt_id_for_image, image_path
-                )
-            except Exception as e:
-                self.logger.warning(f"Could not find linked prompt: {e}")
 
             return web.json_response(
                 {
                     "success": True,
                     "tags": tags,
                     "prompt_id": prompt_id,
-                    "image_path": image_path,
+                    "filename": os.path.basename(image_path),
                 }
             )
 
+        except json.JSONDecodeError:
+            return self._bad_request("Request body must be valid JSON")
         except Exception as e:
             self.logger.error(f"AutoTag single error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": _public_error(e)}, status=500
+            )
 
     async def apply_autotag(self, request):
         """Apply selected tags to a prompt."""
