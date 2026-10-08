@@ -148,7 +148,8 @@ def validate_tags(tags: Union[str, List[str], None]) -> bool:
                    - Wrong input type (not string, list, or None)
                    - Individual tag is empty or only whitespace
                    - Individual tag exceeds 50 characters
-                   - Tag contains invalid characters (non-alphanumeric, spaces, hyphens, underscores)
+                   - Tag contains characters other than alphanumerics,
+                     spaces, hyphens and underscores
                    - More than 20 tags provided
     """
     if tags is None:
@@ -199,7 +200,8 @@ def validate_category(category: Optional[str]) -> bool:
         ValueError: If category is invalid:
                    - Not a string type (when not None)
                    - Exceeds 100 characters
-                   - Contains invalid characters (non-alphanumeric, spaces, hyphens, underscores)
+                   - Contains characters other than alphanumerics, spaces,
+                     hyphens and underscores
     """
     if category is None:
         return True
@@ -217,40 +219,6 @@ def validate_category(category: Optional[str]) -> bool:
     # Reject control characters and null bytes
     if re.search(r"[\x00-\x1f]", category):
         raise ValueError("Category contains invalid control characters")
-
-    return True
-
-
-def validate_workflow_name(workflow_name: Optional[str]) -> bool:
-    """
-    Validate workflow name input.
-
-    Validates optional workflow name strings with generous length limits
-    to accommodate descriptive workflow names.
-
-    Args:
-        workflow_name: The workflow name to validate (None allowed for no workflow)
-
-    Returns:
-        True if the workflow name is valid or None
-
-    Raises:
-        ValueError: If workflow name is invalid:
-                   - Not a string type (when not None)
-                   - Exceeds 200 characters
-    """
-    if workflow_name is None:
-        return True
-
-    if not isinstance(workflow_name, str):
-        raise ValueError("Workflow name must be a string")
-
-    workflow_name = workflow_name.strip()
-    if not workflow_name:
-        return True  # Empty workflow name is valid
-
-    if len(workflow_name) > 200:
-        raise ValueError("Workflow name cannot exceed 200 characters")
 
     return True
 

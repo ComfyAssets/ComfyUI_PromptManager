@@ -2,3 +2,5 @@
 max-line-length = 88
 extend-ignore = E203, W503
 exclude = reference/, .git, __pycache__, web/, venv/, htmlcov/, build/, dist/
+per-file-ignores =
+    tests/*:E402

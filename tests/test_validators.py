@@ -16,7 +16,6 @@ from utils.validators import (
     validate_rating,
     validate_tags,
     validate_category,
-    validate_workflow_name,
     sanitize_input,
     parse_tags_string,
     validate_result_timeout,
@@ -75,41 +74,6 @@ class TestValidateCategory(unittest.TestCase):
     def test_newline_rejected(self):
         with self.assertRaises(ValueError):
             validate_category("bad\ncategory")
-
-
-class TestValidateWorkflowName(unittest.TestCase):
-    """Test validate_workflow_name function."""
-
-    def test_none_is_valid(self):
-        self.assertTrue(validate_workflow_name(None))
-
-    def test_empty_string_is_valid(self):
-        self.assertTrue(validate_workflow_name(""))
-
-    def test_whitespace_only_is_valid(self):
-        self.assertTrue(validate_workflow_name("   "))
-
-    def test_normal_name(self):
-        self.assertTrue(validate_workflow_name("My Workflow"))
-
-    def test_name_with_special_chars(self):
-        self.assertTrue(validate_workflow_name("workflow-v2_final (copy)"))
-
-    def test_max_length_boundary(self):
-        self.assertTrue(validate_workflow_name("x" * 200))
-
-    def test_exceeds_max_length(self):
-        with self.assertRaises(ValueError) as ctx:
-            validate_workflow_name("x" * 201)
-        self.assertIn("200", str(ctx.exception))
-
-    def test_non_string_raises(self):
-        with self.assertRaises(ValueError):
-            validate_workflow_name(42)
-
-    def test_dict_raises(self):
-        with self.assertRaises(ValueError):
-            validate_workflow_name({"name": "workflow"})
 
 
 class TestSanitizeInput(unittest.TestCase):
