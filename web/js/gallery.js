@@ -10,6 +10,10 @@
                 this.expandedFolders = new Set();
                 this.thumbSize = 'md'; // sm, md, lg
 
+                this.api = ApiClient.createApiClient();
+                // Only the newest page request may update the grid
+                this.imagesRequest = ApiClient.latestOnly();
+
                 // Elements rendered with data-action="..." are dispatched here instead of through
                 // inline onclick handlers, so file names and URLs never land inside JavaScript source.
                 this.actionHandlers = {
@@ -141,9 +145,8 @@
                 // Folder tree events
                 document.getElementById('clearFolderFilterBtn').addEventListener('click', () => {
                     this.currentSubfolder = '';
-                    this.currentPage = 1;
                     this.renderFolderTree();
-                    this.loadImages();
+                    this.loadImages(1);
                 });
 
                 // Resize handle for folder panel
@@ -244,9 +247,8 @@
                         // Click to filter
                         row.addEventListener('click', () => {
                             this.currentSubfolder = fullPath;
-                            this.currentPage = 1;
                             this.renderFolderTree();
-                            this.loadImages();
+                            this.loadImages(1);
                         });
 
                         container.appendChild(row);
@@ -265,9 +267,8 @@
                 allRow.innerHTML = '<span class="inline-block w-4 mr-1"></span><span>All Images</span>';
                 allRow.addEventListener('click', () => {
                     this.currentSubfolder = '';
-                    this.currentPage = 1;
                     this.renderFolderTree();
-                    this.loadImages();
+                    this.loadImages(1);
                 });
                 container.appendChild(allRow);
 
@@ -298,34 +299,34 @@
                 });
             }
 
-            async loadImages() {
+            /**
+             * Load one page of images. `page` is committed to this.currentPage only after the
+             * server answered, and a newer request supersedes an older one still in flight.
+             */
+            async loadImages(page = this.currentPage) {
                 this.showLoading();
 
+                const offset = (page - 1) * this.limit;
+                let url = `/prompt_manager/images/output?limit=${this.limit}&offset=${offset}`;
+                if (this.currentSubfolder) {
+                    url += `&subfolder=${encodeURIComponent(this.currentSubfolder)}`;
+                }
+
                 try {
-                    const offset = (this.currentPage - 1) * this.limit;
-                    let url = `/prompt_manager/images/output?limit=${this.limit}&offset=${offset}`;
-                    if (this.currentSubfolder) {
-                        url += `&subfolder=${encodeURIComponent(this.currentSubfolder)}`;
-                    }
-                    const response = await fetch(url);
-                    
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                    }
-                    
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        this.images = data.images;
-                        this.total = data.total;
-                        this.updateStats();
-                        this.renderGallery();
-                        this.updatePagination();
-                        document.getElementById('loadingStatus').textContent = 'Loaded';
-                    } else {
-                        throw new Error(data.error || 'Failed to load images');
-                    }
-                    
+                    const data = await this.imagesRequest((signal) => this.api.get(url, { signal }));
+                    if (data === ApiClient.STALE) return;
+
+                    const next = ListState.nextPageState(
+                        { page: this.currentPage, limit: this.limit, total: this.total },
+                        { page, total: data.total },
+                    );
+                    this.currentPage = next.page;
+                    this.total = next.total;
+                    this.images = data.images;
+                    this.updateStats();
+                    this.renderGallery();
+                    this.updatePagination();
+                    document.getElementById('loadingStatus').textContent = 'Loaded';
                 } catch (error) {
                     console.error('Error loading images:', error);
                     this.showError(error.message);
@@ -766,14 +767,18 @@
                     }
                 });
                 
-                // Close on Escape key
+                // Close on Escape key; the listener is dropped once the modal leaves the
+                // document, whichever way it was closed
                 const escapeHandler = (e) => {
-                    if (e.key === 'Escape') {
-                        modal.remove();
-                        document.removeEventListener('keydown', escapeHandler);
-                    }
+                    if (e.key === 'Escape') modal.remove();
                 };
                 document.addEventListener('keydown', escapeHandler);
+                const closeObserver = new MutationObserver(() => {
+                    if (modal.isConnected) return;
+                    document.removeEventListener('keydown', escapeHandler);
+                    closeObserver.disconnect();
+                });
+                closeObserver.observe(document.body, { childList: true });
                 
                 document.body.appendChild(modal);
                 
@@ -870,14 +875,18 @@
                     }
                 });
                 
-                // Close on Escape key
+                // Close on Escape key; the listener is dropped once the modal leaves the
+                // document, whichever way it was closed
                 const escapeHandler = (e) => {
-                    if (e.key === 'Escape') {
-                        modal.remove();
-                        document.removeEventListener('keydown', escapeHandler);
-                    }
+                    if (e.key === 'Escape') modal.remove();
                 };
                 document.addEventListener('keydown', escapeHandler);
+                const closeObserver = new MutationObserver(() => {
+                    if (modal.isConnected) return;
+                    document.removeEventListener('keydown', escapeHandler);
+                    closeObserver.disconnect();
+                });
+                closeObserver.observe(document.body, { childList: true });
                 
                 document.body.appendChild(modal);
                 
@@ -1358,10 +1367,13 @@
                 };
                 document.addEventListener('keydown', keyHandler);
                 
-                // Clean up on modal close
-                modal.addEventListener('remove', () => {
+                // 'remove' is not a DOM event; watch for the modal leaving the document instead
+                const navObserver = new MutationObserver(() => {
+                    if (modal.isConnected) return;
                     document.removeEventListener('keydown', keyHandler);
+                    navObserver.disconnect();
                 });
+                navObserver.observe(document.body, { childList: true });
                 
                 // Initial button state
                 updateImage(this.currentImageIndex);
@@ -2306,8 +2318,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
             changeLimit(newLimit) {
                 this.limit = newLimit;
-                this.currentPage = 1;
-                this.loadImages();
+                this.loadImages(1);
             }
 
             updatePagination() {
@@ -2331,18 +2342,12 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
 
             previousPage() {
-                if (this.currentPage > 1) {
-                    this.currentPage--;
-                    this.loadImages();
-                }
+                if (this.currentPage > 1) this.loadImages(this.currentPage - 1);
             }
 
             nextPage() {
                 const totalPages = Math.ceil(this.total / this.limit);
-                if (this.currentPage < totalPages) {
-                    this.currentPage++;
-                    this.loadImages();
-                }
+                if (this.currentPage < totalPages) this.loadImages(this.currentPage + 1);
             }
 
             goToPage(page) {
@@ -2353,10 +2358,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     return;
                 }
                 
-                if (page !== this.currentPage) {
-                    this.currentPage = page;
-                    this.loadImages();
-                }
+                if (page !== this.currentPage) this.loadImages(page);
             }
 
             async checkThumbnailsAtStartup() {

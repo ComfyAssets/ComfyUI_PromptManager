@@ -21,6 +21,12 @@
 
                 this.tagsPage = null;
 
+                this.api = ApiClient.createApiClient();
+                // Search and page loads share one guard: whichever list request is newest wins
+                this.listRequest = ApiClient.latestOnly();
+                // The prompt currently edited in place, if any: { promptId, element, originalText }
+                this.activeEdit = null;
+
                 // Elements rendered with data-action="..." (prompt cards, film strips, log files,
                 // review chips) are dispatched here instead of through inline onclick handlers,
                 // so user-provided strings never land inside JavaScript source.
@@ -129,6 +135,12 @@
                 // data-fallback-src instead of an inline onerror handler
                 document.addEventListener("click", (e) => this.handleActionClick(e));
                 document.addEventListener("error", (e) => this.applyImageFallback(e.target), true);
+
+                // In-place prompt editing: one keydown/focusout pair for the whole list, so
+                // listeners are not stacked per edit and a save is sent exactly once
+                const results = document.getElementById("resultsList");
+                results.addEventListener("keydown", (e) => this.handleEditKeydown(e));
+                results.addEventListener("focusout", (e) => this.handleEditFocusOut(e));
 
                 // Auto-search on filter changes
                 ["searchCategory", "searchFolder"].forEach((id) => {
@@ -378,37 +390,41 @@
                 select.value = current;
             }
 
+            /**
+             * Load one page of recent prompts. The page is committed to this.pagination only
+             * after the server answered; a newer list request supersedes one still in flight.
+             */
             async loadRecentPrompts(page = 1) {
+                this.listMode = "recent";
+                const url = PromptListSort.buildRecentUrl({
+                    page,
+                    limit: this.pagination.limit,
+                    sort: this.currentSort(),
+                });
                 try {
-                    this.listMode = "recent";
-                    this.pagination.currentPage = page;
-                    const response = await fetch(PromptListSort.buildRecentUrl({
-                        page,
-                        limit: this.pagination.limit,
-                        sort: this.currentSort(),
-                    }));
-                    if (response.ok) {
-                        const data = await response.json();
-                        if (data.success) {
-                            this.prompts = data.results;
-                            this.pagination = {
-                                ...this.pagination,
-                                total: data.pagination.total,
-                                totalPages: data.pagination.total_pages,
-                                currentPage: data.pagination.page
-                            };
-                            this.renderPrompts();
-                            this.updatePaginationControls();
-                            // Don't update stats from local data as it's only a subset of prompts
-                        }
-                    }
+                    const data = await this.listRequest((signal) => this.api.get(url, { signal }));
+                    if (data === ApiClient.STALE) return; // a newer list request owns the loading state
+
+                    const next = ListState.nextPageState(
+                        { page: this.pagination.currentPage, limit: this.pagination.limit, total: this.pagination.total },
+                        { page: data.pagination.page, total: data.pagination.total },
+                    );
+                    this.prompts = data.results;
+                    this.pagination = { ...this.pagination, currentPage: next.page, total: next.total, totalPages: next.totalPages };
+                    this.renderPrompts();
+                    this.updatePaginationControls();
+                    document.getElementById("resultsTitle").textContent = "Recent Prompts";
                 } catch (error) {
                     console.error("Recent prompts error:", error);
-                } finally {
-                    document.getElementById("loadingState").classList.add("hidden");
-                    document.getElementById("resultsList").classList.remove("hidden");
-                    document.getElementById("paginationControls").classList.remove("hidden");
+                    this.showNotification("Failed to load prompts", "error");
                 }
+                this.showListLoaded();
+                document.getElementById("paginationControls").classList.remove("hidden");
+            }
+
+            showListLoaded() {
+                document.getElementById("loadingState").classList.add("hidden");
+                document.getElementById("resultsList").classList.remove("hidden");
             }
 
             updateLocalStats() {
@@ -454,31 +470,32 @@
                     params.append("limit", "100");
 
                     this.listMode = "search";
-                    const response = await fetch(`/prompt_manager/search?${PromptListSort.withSort(params, this.currentSort())}`);
-                    if (response.ok) {
-                        const data = await response.json();
-                        if (data.success) {
-                            this.prompts = data.results;
-                            this.renderPrompts();
-                            document.getElementById("resultsTitle").textContent = "Search Results";
-                        }
-                    }
+                    const url = `/prompt_manager/search?${PromptListSort.withSort(params, this.currentSort())}`;
+                    const data = await this.listRequest((signal) => this.api.get(url, { signal }));
+                    if (data === ApiClient.STALE) return; // a newer list request owns the loading state
+
+                    this.prompts = data.results;
+                    this.renderPrompts();
+                    document.getElementById("resultsTitle").textContent = "Search Results";
                 } catch (error) {
                     this.showNotification("Search failed", "error");
                     console.error("Search error:", error);
-                } finally {
-                    document.getElementById("loadingState").classList.add("hidden");
-                    document.getElementById("resultsList").classList.remove("hidden");
                 }
+                this.showListLoaded();
             }
 
             currentSort() {
                 return PromptListSort.normalizeSort(document.getElementById("sortBy")?.value);
             }
 
-            /** Re-fetch the list currently shown, e.g. after the sort changes. */
+            /** Re-fetch the list currently shown from its first page, e.g. after the sort changes. */
             reloadPrompts() {
                 return this.listMode === "search" ? this.search() : this.loadRecentPrompts(1);
+            }
+
+            /** Re-fetch the page currently shown, e.g. after a prompt was edited, tagged or deleted. */
+            refreshList() {
+                return this.listMode === "search" ? this.search() : this.loadRecentPrompts(this.pagination.currentPage);
             }
 
             handleActionClick(e) {
@@ -1145,7 +1162,7 @@
                         this.hideModal("individualTagModal");
                         // Refresh both stats and results
                         await this.loadStatistics();
-                        this.search();
+                        this.refreshList();
                     }
                 } catch (error) {
                     this.showNotification("Failed to add tags", "error");
@@ -1164,82 +1181,79 @@
                         this.showNotification("Tag removed", "success");
                         // Refresh both stats and results
                         await this.loadStatistics();
-                        this.search();
+                        this.refreshList();
                     }
                 } catch (error) {
                     this.showNotification("Failed to remove tag", "error");
                 }
             }
 
-            async editPrompt(promptId) {
+            editPrompt(promptId) {
                 const promptElement = document.querySelector(`[data-id="${promptId}"].prompt-text`);
                 if (!promptElement) return;
+                if (this.activeEdit) this.finishEdit(false);
 
-                const originalText = promptElement.textContent;
+                this.activeEdit = { promptId, element: promptElement, originalText: promptElement.textContent };
                 promptElement.contentEditable = true;
                 promptElement.focus();
                 promptElement.classList.add("bg-pm-surface", "border", "border-pm-accent", "rounded-pm-sm", "p-3");
+            }
 
-                const saveEdit = async () => {
-                    const newText = promptElement.textContent.trim();
-                    if (newText !== originalText && newText) {
-                        try {
-                            const response = await fetch(`/prompt_manager/prompts/${promptId}`, {
-                                method: "PUT",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({ text: newText }),
-                            });
+            handleEditKeydown(e) {
+                if (!this.activeEdit || e.target !== this.activeEdit.element) return;
+                if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    this.finishEdit(true);
+                } else if (e.key === "Escape") {
+                    this.finishEdit(false);
+                }
+            }
 
-                            if (response.ok) {
-                                this.showNotification("Prompt updated", "success");
-                                // Refresh the page to show updated content
-                                setTimeout(() => {
-                                    this.loadStatistics();
-                                    setTimeout(() => window.location.reload(), 500);
-                                }, 1000);
-                            } else {
-                                throw new Error("Update failed");
-                            }
-                        } catch (error) {
-                            this.showNotification("Failed to update prompt", "error");
-                            promptElement.textContent = originalText;
-                        }
-                    }
-                    promptElement.contentEditable = false;
-                    promptElement.classList.remove("bg-pm-surface", "border", "border-pm-accent", "rounded-pm-sm", "p-3");
-                };
+            handleEditFocusOut(e) {
+                if (this.activeEdit && e.target === this.activeEdit.element) this.finishEdit(true);
+            }
 
-                promptElement.addEventListener("blur", saveEdit, { once: true });
-                promptElement.addEventListener("keydown", (e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        saveEdit();
-                    }
-                    if (e.key === "Escape") {
-                        promptElement.textContent = originalText;
-                        promptElement.contentEditable = false;
-                        promptElement.classList.remove("bg-pm-surface", "border", "border-pm-accent", "rounded-pm-sm", "p-3");
-                    }
-                });
+            /**
+             * End the in-place edit exactly once. The edit state is cleared before the element
+             * changes, so the focusout caused by contentEditable=false cannot save a second time.
+             */
+            async finishEdit(save) {
+                const edit = this.activeEdit;
+                if (!edit) return;
+                this.activeEdit = null;
+
+                const { element, originalText, promptId } = edit;
+                const newText = element.textContent.trim();
+                element.contentEditable = false;
+                element.classList.remove("bg-pm-surface", "border", "border-pm-accent", "rounded-pm-sm", "p-3");
+
+                if (!save || !ListState.shouldSaveEdit(originalText, newText)) {
+                    element.textContent = originalText;
+                    return;
+                }
+
+                try {
+                    await this.api.put(`/prompt_manager/prompts/${promptId}`, { text: newText });
+                    this.showNotification("Prompt updated", "success");
+                    await this.loadStatistics();
+                    this.refreshList();
+                } catch (error) {
+                    console.error("Update failed:", error);
+                    this.showNotification("Failed to update prompt", "error");
+                    element.textContent = originalText;
+                }
             }
 
             async deletePrompt(promptId) {
                 if (!confirm("Are you sure you want to delete this prompt?")) return;
 
                 try {
-                    const response = await fetch(`/prompt_manager/delete/${promptId}`, {
-                        method: "DELETE",
-                    });
-
-                    if (response.ok) {
-                        this.showNotification("Prompt deleted", "success");
-                        // Refresh stats and reload page
-                        setTimeout(() => {
-                            this.loadStatistics();
-                            setTimeout(() => window.location.reload(), 500);
-                        }, 1000);
-                    }
+                    await this.api.del(`/prompt_manager/delete/${promptId}`);
+                    this.showNotification("Prompt deleted", "success");
+                    await this.loadStatistics();
+                    this.refreshList();
                 } catch (error) {
+                    console.error("Delete failed:", error);
                     this.showNotification("Failed to delete prompt", "error");
                 }
             }
@@ -1273,7 +1287,7 @@
                         this.hideModal("bulkTagModal");
                         // Refresh both stats and results
                         await this.loadStatistics();
-                        this.search();
+                        this.refreshList();
                     }
                 } catch (error) {
                     this.showNotification("Failed to add tags", "error");
@@ -1299,7 +1313,7 @@
                         this.hideModal("bulkCategoryModal");
                         // Refresh both stats and results
                         await this.loadStatistics();
-                        this.search();
+                        this.refreshList();
                     }
                 } catch (error) {
                     this.showNotification("Failed to set category", "error");
@@ -1320,11 +1334,9 @@
 
                     if (response.ok) {
                         this.showNotification(`${this.selectedPrompts.size} prompts deleted`, "success");
-                        // Refresh stats and reload page
-                        setTimeout(() => {
-                            this.loadStatistics();
-                            setTimeout(() => window.location.reload(), 500);
-                        }, 1000);
+                        this.selectedPrompts.clear();
+                        await this.loadStatistics();
+                        this.refreshList();
                     }
                 } catch (error) {
                     this.showNotification("Failed to delete prompts", "error");
@@ -1832,7 +1844,7 @@
                         if (data.success) {
                             this.showNotification('✅ Test image link created successfully!', 'success');
                             // Refresh the gallery to show the test image
-                            setTimeout(() => this.search(), 1000);
+                            setTimeout(() => this.refreshList(), 1000);
                         } else {
                             throw new Error(data.result?.message || 'Test failed');
                         }
@@ -1939,10 +1951,8 @@
                         );
                         this.hideModal('restoreModal');
                         
-                        // Refresh the interface to show new data
-                        setTimeout(() => {
-                            window.location.reload();
-                        }, 2000);
+                        // Refresh the interface to show the restored data
+                        await this.loadInitialData();
                     } else {
                         throw new Error(data.error || 'Restore failed');
                     }
@@ -2157,10 +2167,7 @@
                     // Refresh the statistics immediately
                     this.loadStatistics();
                     
-                    // Also reload the page after a short delay to ensure everything is fully updated
-                    setTimeout(() => {
-                        window.location.reload();
-                    }, 1000);
+                    this.refreshList();
                 }, 2000);
             }
 
@@ -3102,7 +3109,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         this.showNotification('Prompt added successfully!', 'success');
                         this.hideModal('addPromptModal');
                         // Refresh the prompts list
-                        this.search();
+                        this.refreshList();
                         // Reload categories and tags in case new ones were added
                         this.loadCategories();
                         this.loadTags();
@@ -3498,7 +3505,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             this.autoTagState.eventSource.close();
                             this.hideModal("autoTagProgressModal");
                             this.showNotification(`Auto tagging complete! Applied tags to ${data.tagged || 0} prompts.`, 'success');
-                            this.search(); // Refresh the prompt list
+                            this.refreshList(); // Refresh the prompt list
                         } else if (data.type === 'error') {
                             this.autoTagState.eventSource.close();
                             this.hideModal("autoTagProgressModal");
@@ -3635,7 +3642,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 if (this.autoTagState.reviewIndex >= this.autoTagState.reviewImages.length) {
                     this.hideModal("autoTagReviewModal");
                     this.showNotification('Review complete!', 'success');
-                    this.search();
+                    this.refreshList();
                     return;
                 }
 
