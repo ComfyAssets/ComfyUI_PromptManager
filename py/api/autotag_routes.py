@@ -635,15 +635,22 @@ class AutotagRoutesMixin:
                                 thumbnails_dir = output_path / "thumbnails"
                                 if thumbnails_dir.exists():
                                     rel_path_no_ext = rel_path.with_suffix("")
-                                    thumbnail_rel_path = f"thumbnails/{rel_path_no_ext.as_posix()}_thumb{image_path.suffix}"
-                                    thumbnail_abs_path = (
-                                        thumbnails_dir
-                                        / f"{rel_path_no_ext.as_posix()}_thumb{image_path.suffix}"
+                                    thumbnail_rel_path = (
+                                        "thumbnails/"
+                                        f"{rel_path_no_ext.as_posix()}"
+                                        f"_thumb{image_path.suffix}"
+                                    )
+                                    thumbnail_abs_path = thumbnails_dir / (
+                                        f"{rel_path_no_ext.as_posix()}"
+                                        f"_thumb{image_path.suffix}"
                                     )
                                     if thumbnail_abs_path.exists():
                                         from urllib.parse import quote
 
-                                        thumbnail_url = f'/prompt_manager/images/serve/{quote(thumbnail_rel_path, safe="/")}'
+                                        thumbnail_url = (
+                                            "/prompt_manager/images/serve/"
+                                            f'{quote(thumbnail_rel_path, safe="/")}'
+                                        )
 
                                 from urllib.parse import quote as url_quote
 
@@ -652,7 +659,10 @@ class AutotagRoutesMixin:
                                         "filename": image_path.name,
                                         "path": str(image_path),
                                         "relative_path": str(rel_path),
-                                        "url": f'/prompt_manager/images/serve/{url_quote(rel_path.as_posix(), safe="/")}',
+                                        "url": (
+                                            "/prompt_manager/images/serve/"
+                                            + url_quote(rel_path.as_posix(), safe="/")
+                                        ),
                                         "thumbnail_url": thumbnail_url,
                                     }
                                 )

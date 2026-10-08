@@ -5,7 +5,6 @@ import datetime
 import hashlib
 import json
 import os
-import shutil
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -320,7 +319,8 @@ class AdminRoutesMixin:
             file_hashes.setdefault(info["hash"], []).append(info)
             if index % 100 == 0:
                 self.logger.info(
-                    f"Processed {index}/{len(media_files)} files for duplicate detection"
+                    f"Processed {index}/{len(media_files)} files "
+                    "for duplicate detection"
                 )
 
         duplicates = []
@@ -410,7 +410,8 @@ class AdminRoutesMixin:
             )
 
     def _delete_duplicate_images_sync(self, image_paths, output_dir):
-        """Delete the given files (absolute or output-relative) within ``output_dir``."""
+        """Delete the given files (absolute or output-relative) within
+        ``output_dir``."""
         result = {"deleted_count": 0, "failed_count": 0, "failed_files": []}
         output_path = Path(output_dir) if output_dir else None
 
@@ -731,7 +732,9 @@ class AdminRoutesMixin:
                     "operations_completed": len(results),
                     "all_successful": all_successful,
                     "results": results,
-                    "message": f"Maintenance completed: {len(results)} operations processed",
+                    "message": (
+                        f"Maintenance completed: {len(results)} operations processed"
+                    ),
                 }
             )
 
@@ -874,7 +877,10 @@ class AdminRoutesMixin:
                 return web.json_response(
                     {
                         "success": False,
-                        "error": "No database file uploaded. Expected field name: database_file",
+                        "error": (
+                            "No database file uploaded. "
+                            "Expected field name: database_file"
+                        ),
                     },
                     status=400,
                 )
@@ -892,7 +898,10 @@ class AdminRoutesMixin:
                         return web.json_response(
                             {
                                 "success": False,
-                                "error": f"File too large. Maximum size is {max_bytes // (1024 * 1024)}MB",
+                                "error": (
+                                    "File too large. Maximum size is "
+                                    f"{max_bytes // (1024 * 1024)}MB"
+                                ),
                             },
                             status=400,
                         )
@@ -920,7 +929,10 @@ class AdminRoutesMixin:
             return web.json_response(
                 {
                     "success": True,
-                    "message": f"Database restored successfully. Found {prompt_count} prompts.",
+                    "message": (
+                        "Database restored successfully. "
+                        f"Found {prompt_count} prompts."
+                    ),
                     "prompt_count": prompt_count,
                     "backup_created": backup_path or None,
                 }
@@ -1005,7 +1017,9 @@ class AdminRoutesMixin:
             yield _sse(
                 {
                     "type": "error",
-                    "message": "An internal error occurred. Check server logs for details.",
+                    "message": (
+                        "An internal error occurred. Check server logs for details."
+                    ),
                 }
             )
 

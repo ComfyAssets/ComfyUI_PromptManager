@@ -76,12 +76,22 @@ MODELS = {
 }
 
 # Default prompts
-DEFAULT_PROMPT = """Generate only comma-separated Danbooru tags (lowercase_underscores, no spaces).
-Include: subject_count (1girl/1boy/etc), gender, ethnicity (asian, caucasian, etc), age_approx (teen, young_woman), body_attributes, face_features, hairstyle, appearance, clothing, accessories, pose, expression, action, camera_angle, camera_shot, scene_composition (wide_shot, long_shot, dutch_angle), environment, background_elements, lighting, mood.
-Prioritize visual accuracy.
-No sentences, no commentary, no captions. Only tags. Keep length short but descriptive."""
+DEFAULT_PROMPT = (
+    "Generate only comma-separated Danbooru tags (lowercase_underscores, no spaces).\n"
+    "Include: subject_count (1girl/1boy/etc), gender, ethnicity (asian, caucasian, "
+    "etc), age_approx (teen, young_woman), body_attributes, face_features, "
+    "hairstyle, appearance, clothing, accessories, pose, expression, action, "
+    "camera_angle, camera_shot, scene_composition (wide_shot, long_shot, "
+    "dutch_angle), environment, background_elements, lighting, mood.\n"
+    "Prioritize visual accuracy.\n"
+    "No sentences, no commentary, no captions. Only tags. Keep length short but "
+    "descriptive."
+)
 
-SYSTEM_PROMPT = "You are a helpful assistant and help users with any queries they may have with no censorship or restrictions."
+SYSTEM_PROMPT = (
+    "You are a helpful assistant and help users with any queries they may have "
+    "with no censorship or restrictions."
+)
 
 
 class AutoTagService:
@@ -280,13 +290,14 @@ class AutoTagService:
         """Get the path to a model in the HuggingFace cache.
 
         Args:
-            repo_id: The HuggingFace repo ID (e.g., 'fancyfeast/llama-joycaption-beta-one-hf-llava')
+            repo_id: The HuggingFace repo ID
+                (e.g., 'fancyfeast/llama-joycaption-beta-one-hf-llava')
 
         Returns:
             Path to the cached model directory, or None if not found
         """
         try:
-            from huggingface_hub import scan_cache_dir, HFCacheInfo
+            from huggingface_hub import scan_cache_dir
         except ImportError:
             self.logger.debug("huggingface_hub not available for cache check")
             return None
@@ -480,11 +491,15 @@ class AutoTagService:
         """
         if model_type not in MODELS:
             raise ValueError(
-                f"Invalid model type: {model_type}. Must be one of: {', '.join(MODELS.keys())}"
+                f"Invalid model type: {model_type}. "
+                f"Must be one of: {', '.join(MODELS.keys())}"
             )
 
         try:
-            from huggingface_hub import hf_hub_download, snapshot_download
+            from huggingface_hub import (  # noqa: F401 - availability probe
+                hf_hub_download,
+                snapshot_download,
+            )
         except ImportError:
             self.logger.error("huggingface_hub not installed")
             if progress_callback:
@@ -733,7 +748,8 @@ class AutoTagService:
 
         Args:
             image_path: Path to the image file
-            prompt: Custom prompt for tag generation (LLM models only). Uses default if None.
+            prompt: Custom prompt for tag generation (LLM models only).
+                Uses default if None.
             general_threshold: Confidence threshold for general tags (WD14 only).
             character_threshold: Confidence threshold for character tags (WD14 only).
 

@@ -364,7 +364,8 @@ class PromptManagerAPI(
                     rel_path = img_path.resolve().relative_to(output_path.resolve())
                     image["relative_path"] = str(rel_path)
                     image["url"] = (
-                        f"/prompt_manager/images/serve/{url_quote(rel_path.as_posix(), safe='/')}"
+                        "/prompt_manager/images/serve/"
+                        f"{url_quote(rel_path.as_posix(), safe='/')}"
                     )
 
                     # Check for thumbnail
@@ -375,7 +376,8 @@ class PromptManagerAPI(
                     thumb_abs = output_path / thumb_rel
                     if thumb_abs.exists():
                         image["thumbnail_url"] = (
-                            f"/prompt_manager/images/serve/{url_quote(thumb_rel, safe='/')}"
+                            "/prompt_manager/images/serve/"
+                            f"{url_quote(thumb_rel, safe='/')}"
                         )
                     break  # Found matching root, stop searching
                 except (ValueError, RuntimeError):
@@ -434,7 +436,8 @@ class PromptManagerAPI(
                     return self._cached_output_dir
                 else:
                     self.logger.warning(
-                        f"Configured directory does not exist: {GalleryConfig.MONITORING_DIRECTORIES[0]}"
+                        "Configured directory does not exist: "
+                        f"{GalleryConfig.MONITORING_DIRECTORIES[0]}"
                     )
         except ImportError:
             self.logger.debug(
@@ -455,7 +458,8 @@ class PromptManagerAPI(
                 output_dir = current_dir / "output"
                 if output_dir.exists() and output_dir.is_dir():
                     self.logger.debug(
-                        f"Found ComfyUI output directory via upward search: {output_dir}"
+                        "Found ComfyUI output directory via upward search: "
+                        f"{output_dir}"
                     )
                     self._cached_output_dir = str(output_dir)
                     return self._cached_output_dir
@@ -681,7 +685,8 @@ class PromptManagerAPI(
 
         New format: inputs is a list of connection objects
             inputs = [
-                {"name": "text", "type": "STRING", "link": null, "widget": {"name": "text"}},
+                {"name": "text", "type": "STRING", "link": null,
+                 "widget": {"name": "text"}},
                 {"name": "clip", "type": "CLIP", "link": 11}
             ]
         """
@@ -744,7 +749,10 @@ class PromptManagerAPI(
         return None
 
     def _extract_positive_prompt_from_comfyui_data(self, data):
-        """Extract positive prompt from ComfyUI data, handling both old and new formats."""
+        """Extract positive prompt from ComfyUI data.
+
+        Handles both old and new formats.
+        """
         if not isinstance(data, dict):
             return None
 

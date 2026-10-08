@@ -22,7 +22,7 @@ Example:
 extension_name = "PromptManager"
 
 # Get server instance and routes (same pattern as ComfyUI_Assets)
-from server import PromptServer
+from server import PromptServer  # noqa: E402
 
 server_instance = PromptServer.instance
 routes = server_instance.routes
@@ -30,9 +30,9 @@ routes = server_instance.routes
 # Extension info
 extension_uri = None  # Will be set in __init__.py
 
-import os
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+import os  # noqa: E402
+from pathlib import Path  # noqa: E402
+from typing import Any, Dict, List, Optional, Tuple  # noqa: E402
 
 # Import logging system
 try:
@@ -83,7 +83,8 @@ def _import_folder_paths():
 
 
 def _comfyui_base_directory() -> Optional[str]:
-    """ComfyUI's base directory: folder_paths.base_path, else the output dir's parent."""
+    """ComfyUI's base directory: folder_paths.base_path, else the output dir's
+    parent."""
     folder_paths = _import_folder_paths()
     if folder_paths is None:
         return None
@@ -187,8 +188,9 @@ class GalleryConfig:
 
         Returns:
             Dict[str, Any]: A nested dictionary containing all gallery configuration
-                sections: monitoring, tracking, database, web_interface, and performance.
-                Each section contains the relevant configuration parameters as key-value pairs.
+                sections: monitoring, tracking, database, web_interface, and
+                performance. Each section contains the relevant configuration
+                parameters as key-value pairs.
 
         Example:
             config = GalleryConfig.get_config()
@@ -591,7 +593,8 @@ class PromptManagerConfig:
         Args:
             new_config (Dict[str, Any]): Nested dictionary containing configuration
                 updates. Should follow the same structure as returned by get_config().
-                Valid top-level keys are: 'database', 'web_ui', 'performance', 'gallery'.
+                Valid top-level keys are: 'database', 'web_ui', 'performance',
+                'gallery'.
 
         Example:
             new_settings = {

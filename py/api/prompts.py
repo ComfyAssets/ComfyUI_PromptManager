@@ -235,7 +235,8 @@ class PromptRoutesMixin:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
     async def get_recent_prompts(self, request):
-        """Retrieve prompts with pagination and an optional sort (default newest first)."""
+        """Retrieve prompts with pagination and an optional sort (default newest
+        first)."""
         try:
             try:
                 limit, offset = parse_page_params(request.query)
@@ -507,7 +508,8 @@ class PromptRoutesMixin:
             if result.get("skipped_count", 0) > 0:
                 resp["skipped_count"] = result["skipped_count"]
                 resp["warning"] = (
-                    f"{result['skipped_count']} prompt(s) had corrupted tag data and were skipped"
+                    f"{result['skipped_count']} prompt(s) had corrupted tag data "
+                    "and were skipped"
                 )
             return web.json_response(resp)
         except Exception as e:
@@ -536,7 +538,8 @@ class PromptRoutesMixin:
             if result.get("skipped_count", 0) > 0:
                 resp["skipped_count"] = result["skipped_count"]
                 resp["warning"] = (
-                    f"{result['skipped_count']} prompt(s) had corrupted tag data and were skipped"
+                    f"{result['skipped_count']} prompt(s) had corrupted tag data "
+                    "and were skipped"
                 )
             return web.json_response(resp)
         except Exception as e:
@@ -576,7 +579,8 @@ class PromptRoutesMixin:
             if result.get("skipped_count", 0) > 0:
                 resp["skipped_count"] = result["skipped_count"]
                 resp["warning"] = (
-                    f"{result['skipped_count']} prompt(s) had corrupted tag data and were skipped"
+                    f"{result['skipped_count']} prompt(s) had corrupted tag data "
+                    "and were skipped"
                 )
             return web.json_response(resp)
         except Exception as e:
@@ -1018,7 +1022,10 @@ class PromptRoutesMixin:
                 text=json_data,
                 content_type="application/json",
                 headers={
-                    "Content-Disposition": f'attachment; filename="prompt_manager_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.json"'
+                    "Content-Disposition": (
+                        'attachment; filename="prompt_manager_'
+                        f'{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.json"'
+                    )
                 },
             )
 
