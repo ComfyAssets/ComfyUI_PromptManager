@@ -348,5 +348,219 @@ class TestNoAbsolutePathsInResponses(AdminAPITestCase):
         self.assertIn('"directories": ["output"]', body)
 
 
+def _write_png(path, prompt_text=None):
+    """Write a tiny PNG, optionally carrying a ComfyUI-style 'prompt' chunk."""
+    from PIL import Image, PngImagePlugin
+
+    img = Image.new("RGB", (2, 2), (255, 0, 0))
+    info = PngImagePlugin.PngInfo()
+    if prompt_text is not None:
+        graph = {
+            "1": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt_text}},
+            "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "bad"}},
+            "3": {
+                "class_type": "KSampler",
+                "inputs": {"positive": ["1", 0], "negative": ["2", 0]},
+            },
+        }
+        info.add_text("prompt", json.dumps(graph))
+    img.save(str(path), pnginfo=info)
+
+
+class TestScansRunOffTheEventLoop(AdminAPITestCase):
+    """Blocking filesystem work must go through _run_in_executor."""
+
+    def _spy_executor(self):
+        calls = []
+        original = self.api._run_in_executor
+
+        async def spy(func, *args, **kwargs):
+            calls.append(getattr(func, "__name__", repr(func)))
+            return await original(func, *args, **kwargs)
+
+        self.api._run_in_executor = spy
+        return calls
+
+    async def test_scan_duplicates_runs_in_executor(self):
+        (self.output_dir / "a.png").write_bytes(b"dup")
+        (self.output_dir / "b.png").write_bytes(b"dup")
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        calls = self._spy_executor()
+
+        resp = await self.client.request("GET", "/prompt_manager/scan_duplicates")
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual((await resp.json())["duplicates"][0]["count"], 2)
+        self.assertIn("_find_duplicate_images_sync", calls)
+
+    async def test_delete_duplicates_runs_in_executor(self):
+        (self.output_dir / "a.png").write_bytes(b"dup")
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        calls = self._spy_executor()
+
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/delete_duplicate_images",
+            json={"image_paths": ["a.png"]},
+        )
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual((await resp.json())["deleted_count"], 1)
+        self.assertIn("_delete_duplicate_images_sync", calls)
+
+    async def test_output_scan_runs_in_executor(self):
+        _write_png(self.output_dir / "gen.png", prompt_text="a red square")
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        calls = self._spy_executor()
+
+        resp = await self.client.request("POST", "/prompt_manager/scan")
+
+        body = await resp.text()
+        self.assertEqual(resp.status, 200)
+        self.assertIn('"type": "complete"', body)
+        self.assertIn('"added": 1', body)
+        for name in (
+            "_collect_output_media_sync",
+            "_extract_batch_metadata_sync",
+            "_ingest_scan_batch_sync",
+        ):
+            self.assertIn(name, calls)
+
+    async def test_output_scan_links_existing_prompt_on_second_pass(self):
+        _write_png(self.output_dir / "gen.png", prompt_text="a red square")
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+
+        first = await (await self.client.request("POST", "/prompt_manager/scan")).text()
+        second = await (
+            await self.client.request("POST", "/prompt_manager/scan")
+        ).text()
+
+        self.assertIn('"added": 1', first)
+        self.assertIn('"linked": 1', second)
+        self.assertIn('"added": 0', second)
+        prompts = self.api.db.get_recent_prompts(limit=10)["prompts"]
+        self.assertEqual([p["text"] for p in prompts], ["a red square"])
+
+    async def test_output_scan_without_directories_reports_error(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.outside_dir)]
+        sys.modules.pop("folder_paths", None)
+        self.api._find_comfyui_output_dir = lambda: None
+
+        body = await (await self.client.request("POST", "/prompt_manager/scan")).text()
+
+        self.assertIn('"type": "error"', body)
+
+
+class TestDuplicateScanSyncBody(AdminAPITestCase):
+    """Behaviour of the synchronous duplicate scan against a real tree."""
+
+    def _scan(self):
+        return self.api._find_duplicate_images_sync(str(self.output_dir))
+
+    def test_groups_identical_files_and_sorts_by_mtime(self):
+        older = self.output_dir / "older.png"
+        newer = self.output_dir / "sub" / "newer.PNG"
+        newer.parent.mkdir()
+        older.write_bytes(b"same")
+        newer.write_bytes(b"same")
+        os.utime(older, (1_000_000, 1_000_000))
+        os.utime(newer, (2_000_000, 2_000_000))
+        (self.output_dir / "unique.png").write_bytes(b"different")
+
+        groups = self._scan()
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["count"], 2)
+        self.assertEqual(
+            [img["filename"] for img in groups[0]["images"]], ["older.png", "newer.PNG"]
+        )
+        self.assertEqual(
+            groups[0]["images"][1]["path"], os.path.join("sub", "newer.PNG")
+        )
+        self.assertEqual(
+            groups[0]["images"][1]["url"], "/prompt_manager/images/serve/sub/newer.PNG"
+        )
+        self.assertNotIn(self.tmpdir, json.dumps(groups))
+
+    def test_thumbnails_dir_is_skipped_and_thumbnail_url_reported(self):
+        (self.output_dir / "a.png").write_bytes(b"same")
+        (self.output_dir / "b.png").write_bytes(b"same")
+        thumbs = self.output_dir / "thumbnails"
+        thumbs.mkdir()
+        (thumbs / "a_thumb.png").write_bytes(b"same")
+        (thumbs / "b_thumb.png").write_bytes(b"other")
+
+        groups = self._scan()
+
+        self.assertEqual(len(groups), 1)
+        by_name = {img["filename"]: img for img in groups[0]["images"]}
+        self.assertEqual(set(by_name), {"a.png", "b.png"})
+        self.assertEqual(
+            by_name["a.png"]["thumbnail_url"],
+            "/prompt_manager/images/serve/thumbnails/a_thumb.png",
+        )
+        self.assertEqual(
+            by_name["b.png"]["thumbnail_url"],
+            "/prompt_manager/images/serve/thumbnails/b_thumb.png",
+        )
+
+    def test_videos_are_flagged_and_unreadable_entries_skipped(self):
+        (self.output_dir / "clip.mp4").write_bytes(b"vid")
+        (self.output_dir / "copy.mp4").write_bytes(b"vid")
+        (self.output_dir / "not_a_file.png").mkdir()  # rglob matches, hashing fails
+
+        groups = self._scan()
+
+        self.assertEqual(len(groups), 1)
+        self.assertTrue(all(img["is_video"] for img in groups[0]["images"]))
+        self.assertTrue(
+            all(img["media_type"] == "video" for img in groups[0]["images"])
+        )
+
+    def test_missing_output_dir_gives_empty_list(self):
+        self.assertEqual(
+            self.api._find_duplicate_images_sync(os.path.join(self.tmpdir, "nope")), []
+        )
+
+
+class TestDeleteDuplicatesSyncBody(AdminAPITestCase):
+
+    def test_deletes_file_and_thumbnail_inside_output(self):
+        target = self.output_dir / "sub" / "x.png"
+        target.parent.mkdir()
+        target.write_bytes(b"x")
+        thumb = self.output_dir / "thumbnails" / "sub" / "x_thumb.png"
+        thumb.parent.mkdir(parents=True)
+        thumb.write_bytes(b"t")
+
+        result = self.api._delete_duplicate_images_sync(
+            [str(target)], str(self.output_dir)
+        )
+
+        self.assertEqual(result["deleted_count"], 1)
+        self.assertEqual(result["failed_count"], 0)
+        self.assertFalse(target.exists())
+        self.assertFalse(thumb.exists())
+
+    def test_refuses_paths_outside_output_and_reports_missing(self):
+        secret = self.outside_dir / "secret.txt"
+        secret.write_text("s")
+
+        result = self.api._delete_duplicate_images_sync(
+            [str(secret), "ghost.png"], str(self.output_dir)
+        )
+
+        self.assertEqual(result["deleted_count"], 0)
+        self.assertEqual(result["failed_count"], 2)
+        self.assertTrue(secret.exists())
+        self.assertTrue(any("outside" in f for f in result["failed_files"]))
+        self.assertTrue(any("not found" in f for f in result["failed_files"]))
+
+    def test_without_output_dir_everything_fails(self):
+        result = self.api._delete_duplicate_images_sync(["a.png"], None)
+        self.assertEqual(result["failed_count"], 1)
+        self.assertEqual(result["deleted_count"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
