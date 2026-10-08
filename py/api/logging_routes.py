@@ -4,6 +4,58 @@ import os
 
 from aiohttp import web
 
+# Keys PromptManagerLogger.update_config() understands. Anything else is
+# rejected so a client cannot inject arbitrary entries into the logging config.
+LOG_CONFIG_KEYS = frozenset(
+    {
+        "level",
+        "max_file_size",
+        "backup_count",
+        "console_logging",
+        "file_logging",
+        "buffer_size",
+    }
+)
+_LOG_INT_KEYS = frozenset({"max_file_size", "backup_count", "buffer_size"})
+_LOG_BOOL_KEYS = frozenset({"console_logging", "file_logging"})
+_LOG_LEVEL_NAMES = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+
+
+def _validate_log_config(data):
+    """Validate a log-config payload against LOG_CONFIG_KEYS.
+
+    Returns:
+        (clean, error): ``clean`` is the normalised dict to apply, ``error``
+        a message describing the first problem (``clean`` is then ``None``).
+    """
+    if not isinstance(data, dict):
+        return None, "Request body must be a JSON object"
+
+    unknown = sorted(key for key in data if key not in LOG_CONFIG_KEYS)
+    if unknown:
+        return None, (
+            f"Unknown logging config keys: {', '.join(unknown)}. "
+            f"Allowed: {', '.join(sorted(LOG_CONFIG_KEYS))}"
+        )
+
+    clean = {}
+    for key, value in data.items():
+        if key == "level":
+            if not isinstance(value, str) or value.upper() not in _LOG_LEVEL_NAMES:
+                return None, (
+                    f"Invalid log level. Must be one of: {sorted(_LOG_LEVEL_NAMES)}"
+                )
+            clean[key] = value.upper()
+        elif key in _LOG_INT_KEYS:
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                return None, f"{key} must be a non-negative integer"
+            clean[key] = value
+        elif key in _LOG_BOOL_KEYS:
+            if not isinstance(value, bool):
+                return None, f"{key} must be a boolean"
+            clean[key] = value
+    return clean, None
+
 
 class LoggingRoutesMixin:
     """Mixin providing logging-related API endpoints."""
@@ -163,24 +215,22 @@ class LoggingRoutesMixin:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
     async def update_log_config(self, request):
-        """Update logging configuration."""
+        """Update logging configuration (whitelisted keys only)."""
         try:
-            data = await request.json()
+            try:
+                data = await request.json()
+            except ValueError:
+                return web.json_response(
+                    {"success": False, "error": "Request body must be valid JSON"},
+                    status=400,
+                )
+
+            clean, error = _validate_log_config(data)
+            if error:
+                return web.json_response({"success": False, "error": error}, status=400)
+
             logger_manager = self._get_logger_manager()
-
-            if "level" in data:
-                valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-                if data["level"].upper() not in valid_levels:
-                    return web.json_response(
-                        {
-                            "success": False,
-                            "error": f"Invalid log level. Must be one of: {valid_levels}",
-                        },
-                        status=400,
-                    )
-                data["level"] = data["level"].upper()
-
-            logger_manager.update_config(data)
+            logger_manager.update_config(clean)
 
             return web.json_response(
                 {
@@ -192,7 +242,10 @@ class LoggingRoutesMixin:
 
         except Exception as e:
             self.logger.error(f"Update log config error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": "Failed to update logging configuration"},
+                status=500,
+            )
 
     async def get_log_stats(self, request):
         """Get logging statistics."""
