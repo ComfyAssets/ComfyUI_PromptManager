@@ -28,12 +28,11 @@ Or using the context manager:
 import threading
 import time
 import uuid
-import hashlib
 from typing import Optional, Dict, Any
-from datetime import datetime, timezone
 
 # Import logging system
 try:
+    from .hashing import generate_prompt_hash
     from .logging_config import get_logger
 except ImportError:
     import sys
@@ -41,6 +40,7 @@ except ImportError:
 
     current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     sys.path.insert(0, current_dir)
+    from utils.hashing import generate_prompt_hash
     from utils.logging_config import get_logger
 
 
@@ -132,13 +132,8 @@ class PromptTracker:
         if not prompt_id:
             # Fallback: try to find existing prompt using consistent hash calculation
             try:
-                # Use consistent hash calculation (same as PromptManager)
-                import hashlib
-
-                normalized_text = prompt_text.strip().lower()
-                prompt_hash = hashlib.sha256(
-                    normalized_text.encode("utf-8")
-                ).hexdigest()
+                # Same hash as the nodes, so the lookup finds their saved prompt
+                prompt_hash = generate_prompt_hash(prompt_text)
                 existing_prompt = self.db_manager.get_prompt_by_hash(prompt_hash)
 
                 if existing_prompt:

@@ -223,10 +223,11 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
         """
         ComfyUI method to determine if node needs re-execution.
 
-        Returns a hash of input values that affect the text output.
-        This enables proper branch execution - only re-execute when inputs change.
+        Returns a hash of input values that affect the text output or the
+        saved prompt's metadata. This enables proper branch execution - only
+        re-execute when inputs change.
         """
         import hashlib
 
-        combined = f"{text}|{prepend_text}|{append_text}"
+        combined = f"{text}|{prepend_text}|{append_text}|{category}|{tags}"
         return hashlib.sha256(combined.encode()).hexdigest()

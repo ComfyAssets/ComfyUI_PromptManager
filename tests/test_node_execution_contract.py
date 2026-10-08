@@ -70,6 +70,16 @@ class TestIsChangedPromptManager(unittest.TestCase):
         result = PromptManager.IS_CHANGED(clip=None, text="hello")
         self.assertIsInstance(result, str)
 
+    def test_different_tags_return_different_hash(self):
+        result1 = PromptManager.IS_CHANGED(clip=None, text="hello", tags="a, b")
+        result2 = PromptManager.IS_CHANGED(clip=None, text="hello", tags="a, c")
+        self.assertNotEqual(result1, result2)
+
+    def test_different_category_returns_different_hash(self):
+        result1 = PromptManager.IS_CHANGED(clip=None, text="hello", category="art")
+        result2 = PromptManager.IS_CHANGED(clip=None, text="hello", category="photo")
+        self.assertNotEqual(result1, result2)
+
 
 class TestIsChangedPromptManagerText(unittest.TestCase):
     """IS_CHANGED for PromptManagerText should behave identically to
@@ -98,6 +108,15 @@ class TestIsChangedPromptManagerText(unittest.TestCase):
         result1 = PromptManagerText.IS_CHANGED(text="hello", append_text="a")
         result2 = PromptManagerText.IS_CHANGED(text="hello", append_text="b")
         self.assertNotEqual(result1, result2)
+
+    def test_different_tags_or_category_return_different_hash(self):
+        base = PromptManagerText.IS_CHANGED(text="hello", category="x", tags="a")
+        self.assertNotEqual(
+            base, PromptManagerText.IS_CHANGED(text="hello", category="x", tags="b")
+        )
+        self.assertNotEqual(
+            base, PromptManagerText.IS_CHANGED(text="hello", category="y", tags="a")
+        )
 
     def test_returns_string(self):
         result = PromptManagerText.IS_CHANGED(text="hello")

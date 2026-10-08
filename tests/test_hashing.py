@@ -18,6 +18,50 @@ from utils.hashing import (
     is_duplicate_prompt,
 )
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+class TestSingleHashImplementation(unittest.TestCase):
+    """generate_prompt_hash is the only prompt hash; nothing re-implements it."""
+
+    def test_node_base_delegates_to_generate_prompt_hash(self):
+        from prompt_manager_base import PromptManagerBase
+
+        node = PromptManagerBase.__new__(PromptManagerBase)
+        self.assertEqual(node._generate_hash("  A  "), generate_prompt_hash("  A  "))
+        self.assertEqual(node._generate_hash("  A  "), generate_prompt_hash("a"))
+
+    def test_tracker_and_monitor_use_generate_prompt_hash(self):
+        for relative in (
+            os.path.join("utils", "prompt_tracker.py"),
+            os.path.join("utils", "image_monitor.py"),
+            "prompt_manager_base.py",
+        ):
+            with open(os.path.join(ROOT, relative), encoding="utf-8") as f:
+                source = f.read()
+            self.assertFalse("hashlib.sha256" in source, f"inline hash in {relative}")
+            self.assertTrue("generate_prompt_hash" in source, relative)
+
+    def test_tracker_finds_an_existing_prompt_by_the_shared_hash(self):
+        import unittest.mock as mock
+
+        from utils.prompt_tracker import PromptTracker
+
+        db = mock.Mock()
+        db.get_prompt_by_hash.return_value = {"id": 42}
+        tracker = PromptTracker(db)
+        tracker.set_current_prompt("  Hello World  ")
+        db.get_prompt_by_hash.assert_called_once_with(
+            generate_prompt_hash("  Hello World  ")
+        )
+        self.assertEqual(tracker.get_current_prompt()["id"], 42)
+
+    def test_node_base_has_no_browser_opener(self):
+        from prompt_manager_base import PromptManagerBase
+
+        self.assertFalse(hasattr(PromptManagerBase, "_open_web_interface"))
+        self.assertFalse(os.path.exists(os.path.join(ROOT, "restart_gallery.py")))
+
 
 class TestGenerateContentHash(unittest.TestCase):
     """Test generate_content_hash function."""

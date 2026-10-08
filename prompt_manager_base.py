@@ -6,9 +6,7 @@ search, gallery system management, and cleanup — extracted from the
 duplicate code in prompt_manager.py and prompt_manager_text.py.
 """
 
-import hashlib
 import os
-import webbrowser
 from typing import Any, Dict, List, Optional
 
 try:
@@ -225,16 +223,8 @@ class PromptManagerBase:
         return modified
 
     def _generate_hash(self, text: str) -> str:
-        """Generate SHA256 hash for the prompt text.
-
-        Args:
-            text: The prompt text to hash
-
-        Returns:
-            Hexadecimal string representation of the SHA256 hash
-        """
-        normalized_text = text.strip().lower()
-        return hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+        """The prompt's deduplication hash (see utils.hashing.generate_prompt_hash)."""
+        return generate_prompt_hash(text)
 
     def _parse_tags(self, tags_string: str) -> Optional[list]:
         """Parse comma-separated tags string into a list.
@@ -284,32 +274,6 @@ class PromptManagerBase:
         except Exception as e:
             self.logger.error(f"Error searching prompts: {e}")
             return []
-
-    def _open_web_interface(self):
-        """Open the web interface in the default browser."""
-        try:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            web_dir = os.path.join(current_dir, "web_interface")
-
-            if os.path.exists(web_dir):
-                index_path = os.path.join(web_dir, "index.html")
-                if os.path.exists(index_path):
-                    webbrowser.open(f"file://{index_path}")
-                    self.logger.info("Web interface opened in browser")
-                else:
-                    self.logger.warning(
-                        f"Web interface directory found but no index.html. "
-                        f"Please check {web_dir} for setup instructions"
-                    )
-            else:
-                self.logger.info(
-                    "Web interface not yet implemented. This feature will open a "
-                    "web-based prompt management interface when the web_interface "
-                    "directory is created."
-                )
-
-        except Exception as e:
-            self.logger.error(f"Error opening web interface: {e}")
 
     def search_prompts_api(self, search_text: str = "") -> List[Dict[str, Any]]:
         """API method for JavaScript UI to search prompts."""

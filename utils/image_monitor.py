@@ -31,6 +31,7 @@ from typing import Optional, Dict, Any, Tuple
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+from .hashing import generate_prompt_hash
 from .metadata_extractor import ComfyUIMetadataExtractor
 from .logging_config import get_logger
 from .prompt_graph import resolve_text, run_prompt_nodes
@@ -399,11 +400,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
 
         # Look up by hash in database
         try:
-            import hashlib
-
-            normalized = prompt_text.strip().lower()
-            prompt_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-            existing = self.db_manager.get_prompt_by_hash(prompt_hash)
+            existing = self.db_manager.get_prompt_by_hash(
+                generate_prompt_hash(prompt_text)
+            )
             if existing:
                 self.logger.debug(
                     f"Found DB prompt {existing['id']} from metadata text"
