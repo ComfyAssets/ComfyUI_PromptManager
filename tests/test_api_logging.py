@@ -116,7 +116,7 @@ class LoggingAPITestCase(AioHTTPTestCase):
             sys.modules.pop("folder_paths", None)
         else:
             sys.modules["folder_paths"] = self._saved_folder_paths
-        self.api.db.close()
+        self.api.db.close_all()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     async def _post_config(self, payload):
@@ -178,7 +178,7 @@ class TestUpdateLogConfigWhitelist(LoggingAPITestCase):
     async def test_valid_payload_is_applied(self):
         payload = {
             "level": "WARNING",
-            "max_file_size": 2048,
+            "max_file_size": 2 * 1024 * 1024,
             "backup_count": 0,
             "console_logging": False,
             "file_logging": True,
@@ -191,6 +191,31 @@ class TestUpdateLogConfigWhitelist(LoggingAPITestCase):
         self.assertTrue(data["success"])
         self.assertEqual(self.manager.update_calls, [payload])
         self.assertEqual(data["config"]["level"], "WARNING")
+
+    async def test_max_file_size_is_bounded_to_1_to_1024_mb(self):
+        mb = 1024 * 1024
+        for bad in (0, mb - 1, 1024 * mb + 1, 10**12):
+            resp = await self._post_config({"max_file_size": bad})
+            self.assertEqual(resp.status, 400, bad)
+            self.assertIn("max_file_size", (await resp.json())["error"])
+        self.assertEqual(self.manager.update_calls, [])
+        for ok in (mb, 1024 * mb):
+            resp = await self._post_config({"max_file_size": ok})
+            self.assertEqual(resp.status, 200, ok)
+        self.assertEqual(
+            self.manager.update_calls,
+            [{"max_file_size": mb}, {"max_file_size": 1024 * mb}],
+        )
+
+    async def test_backup_count_is_bounded_to_0_to_50(self):
+        for bad in (-1, 51, 10**6):
+            resp = await self._post_config({"backup_count": bad})
+            self.assertEqual(resp.status, 400, bad)
+            self.assertIn("backup_count", (await resp.json())["error"])
+        self.assertEqual(self.manager.update_calls, [])
+        for ok in (0, 50):
+            resp = await self._post_config({"backup_count": ok})
+            self.assertEqual(resp.status, 200, ok)
 
     async def test_body_must_be_an_object(self):
         resp = await self._post_config(["level", "DEBUG"])

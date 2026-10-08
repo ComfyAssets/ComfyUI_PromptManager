@@ -19,6 +19,16 @@ LOG_CONFIG_KEYS = frozenset(
 _LOG_INT_KEYS = frozenset({"max_file_size", "backup_count", "buffer_size"})
 _LOG_BOOL_KEYS = frozenset({"console_logging", "file_logging"})
 _LOG_LEVEL_NAMES = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+# Inclusive bounds for the integer keys that size the log files on disk
+_MEGABYTE = 1024 * 1024
+_LOG_INT_BOUNDS = {
+    "max_file_size": (1 * _MEGABYTE, 1024 * _MEGABYTE),
+    "backup_count": (0, 50),
+}
+_LOG_INT_BOUND_LABELS = {
+    "max_file_size": "between 1 MB and 1024 MB (in bytes)",
+    "backup_count": "between 0 and 50",
+}
 
 DEFAULT_LOG_LIMIT = 100
 MAX_LOG_LIMIT = 500
@@ -64,6 +74,9 @@ def _validate_log_config(data):
         elif key in _LOG_INT_KEYS:
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 return None, f"{key} must be a non-negative integer"
+            bounds = _LOG_INT_BOUNDS.get(key)
+            if bounds and not bounds[0] <= value <= bounds[1]:
+                return None, f"{key} must be {_LOG_INT_BOUND_LABELS[key]}"
             clean[key] = value
         elif key in _LOG_BOOL_KEYS:
             if not isinstance(value, bool):
