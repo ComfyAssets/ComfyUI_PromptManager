@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1003,6 +1004,95 @@ class TestServeErrorBranches(ImageRouteCoverageCase):
                     "GET", f"/prompt_manager/images/{image_id}/file"
                 )
                 self.assertEqual(resp.status, 403)
+
+
+class TestLoraManagerPathAllowList(ImageRouteCoverageCase):
+    """A hand-edited LoraManager path must not widen what serve_image reads."""
+
+    def _enter_lora(self, stack, lora, cache, path, resolved):
+        from py.config import IntegrationConfig
+
+        stack.enter_context(
+            patch.object(IntegrationConfig, "LORA_MANAGER_ENABLED", True)
+        )
+        stack.enter_context(patch.object(IntegrationConfig, "LORA_MANAGER_PATH", path))
+        stack.enter_context(
+            patch("py.lora_utils.find_lora_directories", return_value=[lora])
+        )
+        stack.enter_context(
+            patch("py.lora_utils.get_lora_image_cache_dir", return_value=cache)
+        )
+        return stack.enter_context(
+            patch(
+                "py.lora_utils.resolve_lora_manager_path",
+                return_value=resolved,
+                create=True,
+            )
+        )
+
+    async def test_configured_path_outside_custom_nodes_is_ignored(self):
+        with ExitStack() as stack:
+            lora = stack.enter_context(tempfile.TemporaryDirectory())
+            cache = stack.enter_context(tempfile.TemporaryDirectory())
+            image_id = self._link_image(make_png(Path(lora) / "preview.png"))
+            self._enter_lora(stack, lora, cache, lora, None)
+
+            self.assertEqual(self.api._lora_image_dirs(), [])
+            resp = await self.client.request(
+                "GET", f"/prompt_manager/images/{image_id}/file"
+            )
+            self.assertEqual(resp.status, 403)
+
+    async def test_configured_custom_nodes_child_is_served(self):
+        configured = "custom_nodes/ComfyUI-Lora-Manager"
+        with ExitStack() as stack:
+            lora = stack.enter_context(tempfile.TemporaryDirectory())
+            cache = stack.enter_context(tempfile.TemporaryDirectory())
+            image_id = self._link_image(make_png(Path(lora) / "preview.png"))
+            resolve = self._enter_lora(stack, lora, cache, configured, lora)
+
+            resp = await self.client.request(
+                "GET", f"/prompt_manager/images/{image_id}/file"
+            )
+            self.assertEqual(resp.status, 200)
+            resolve.assert_called_once_with(configured)
+
+
+class TestLinkImageRelativePaths(ImageAPITestCase):
+    """POST /images/link accepts the path forms the API hands out."""
+
+    URL = "/prompt_manager/images/link"
+
+    async def setUpAsync(self):
+        await super().setUpAsync()
+        self.png = make_png(self.output_dir / "sub" / "gen.png")
+
+    async def _link(self, image_path):
+        prompt_id = self._save_prompt(f"link {image_path}")
+        resp = await self.client.request(
+            "POST", self.URL, json={"prompt_id": prompt_id, "image_path": image_path}
+        )
+        return resp.status, await resp.json()
+
+    async def test_root_relative_and_base_relative_paths_link(self):
+        for form in ("sub/gen.png", "output/sub/gen.png"):
+            status, data = await self._link(form)
+
+            self.assertEqual(status, 200, form)
+            image = self.api.db.get_image_by_id(data["image_id"])
+            self.assertEqual(Path(image["image_path"]), self.png, form)
+
+    async def test_relative_traversal_is_forbidden(self):
+        make_png(self.comfy_dir / "secret.png")  # removed with the temp tree
+
+        status, _ = await self._link("../secret.png")
+
+        self.assertEqual(status, 403)
+
+    async def test_unknown_relative_path_is_404(self):
+        status, _ = await self._link("sub/missing.png")
+
+        self.assertEqual(status, 404)
 
 
 class TestGalleryListing(ImageRouteCoverageCase):

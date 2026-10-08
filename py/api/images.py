@@ -602,10 +602,19 @@ class ImageRoutesMixin:
                 return []
             from ..lora_utils import find_lora_directories, get_lora_image_cache_dir
 
-            dirs = [
-                Path(d)
-                for d in find_lora_directories(IntegrationConfig.LORA_MANAGER_PATH)
-            ]
+            lora_root = IntegrationConfig.LORA_MANAGER_PATH or ""
+            if lora_root.strip():
+                # A configured path comes from config.json, which can be hand
+                # edited: only a LoraManager install under custom_nodes may
+                # widen the serving allow-list. An empty path keeps the
+                # auto-detection, which itself only scans custom_nodes.
+                from ..lora_utils import resolve_lora_manager_path
+
+                lora_root = resolve_lora_manager_path(lora_root)
+                if not lora_root:
+                    return []
+
+            dirs = [Path(d) for d in find_lora_directories(lora_root)]
             dirs.append(Path(get_lora_image_cache_dir()))
             return dirs
         except Exception:
@@ -1139,6 +1148,28 @@ class ImageRoutesMixin:
                 {"success": False, "error": _safe_error(e)}, status=500
             )
 
+    @staticmethod
+    def _resolve_client_media_path(raw_path, allowed_dirs):
+        """Absolute path for a client-supplied media path, or None when it
+        does not name a file inside an allowed root.
+
+        Absolute paths are used as given (the caller still runs the access
+        check). Relative paths are the forms this API hands out: relative to
+        a gallery root (``sub/a.png``) or to a ComfyUI anchor
+        (``output/sub/a.png``), and must resolve inside an allowed root.
+        """
+        if os.path.isabs(raw_path):
+            return raw_path
+        from ..config import GalleryConfig
+
+        for base in [*allowed_dirs, *GalleryConfig.path_anchors()]:
+            candidate = Path(base) / raw_path
+            if candidate.is_file() and any(
+                _is_within(candidate, root) for root in allowed_dirs
+            ):
+                return str(candidate)
+        return None
+
     async def link_image_to_prompt(self, request):
         """Link a generated image (inside an allowed directory) to a prompt."""
         try:
@@ -1151,8 +1182,20 @@ class ImageRoutesMixin:
 
             if not prompt_id or not isinstance(image_path, str) or not image_path:
                 return bad_request("prompt_id and image_path are required")
+            if not os.path.isabs(image_path) and _has_traversal(image_path):
+                return _forbidden()
 
-            denied = _media_access_error(image_path, self._get_all_output_dirs())
+            allowed_dirs = list(self._get_all_output_dirs())
+            resolved = self._resolve_client_media_path(image_path, allowed_dirs)
+            if resolved is None:
+                if Path(image_path).suffix.lower() not in IMAGE_EXTENSIONS:
+                    return _forbidden("Only media files can be served")
+                return web.json_response(
+                    {"success": False, "error": "Image file not found"}, status=404
+                )
+            image_path = resolved
+
+            denied = _media_access_error(image_path, allowed_dirs)
             if denied is not None:
                 return denied
 
