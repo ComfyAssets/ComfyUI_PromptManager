@@ -372,6 +372,7 @@ class CoreRoutesTestCase(AioHTTPTestCase):
         return app
 
     async def tearDownAsync(self):
+        await super().tearDownAsync()  # closes the aiohttp test client
         self.api.db.close_all()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 

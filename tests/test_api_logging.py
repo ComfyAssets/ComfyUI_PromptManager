@@ -112,6 +112,7 @@ class LoggingAPITestCase(AioHTTPTestCase):
         return app
 
     async def tearDownAsync(self):
+        await super().tearDownAsync()  # closes the aiohttp test client
         if self._saved_folder_paths is None:
             sys.modules.pop("folder_paths", None)
         else:

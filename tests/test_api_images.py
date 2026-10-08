@@ -72,6 +72,7 @@ class ImageAPITestCase(AioHTTPTestCase):
         return app
 
     async def tearDownAsync(self):
+        await super().tearDownAsync()  # closes the aiohttp test client
         self._anchor_patch.stop()
         # Windows refuses to unlink a database that still has open handles.
         self.api.db.close_all()

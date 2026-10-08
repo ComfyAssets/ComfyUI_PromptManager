@@ -46,6 +46,7 @@ class BackupRestoreTestCase(AioHTTPTestCase):
         return app
 
     async def tearDownAsync(self):
+        await super().tearDownAsync()  # closes the aiohttp test client
         self.api.db.close_all()
         for name in os.listdir(self.tmpdir):
             os.unlink(os.path.join(self.tmpdir, name))

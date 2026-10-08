@@ -69,6 +69,7 @@ class AdminAPITestCase(AioHTTPTestCase):
         return app
 
     async def tearDownAsync(self):
+        await super().tearDownAsync()  # closes the aiohttp test client
         GalleryConfig.MONITORING_DIRECTORIES = self._orig_gallery_dirs
         PromptManagerConfig.update_config(self._orig_pm_config)
         for key, value in self._orig_env.items():
@@ -1701,6 +1702,90 @@ class TestWorkerThreadsSetting(AdminAPITestCase):
         body = await (await self.client.request("POST", "/prompt_manager/scan")).text()
 
         self.assertIn('"added": 1', body)
+
+
+def _write_mp4(path, comment):
+    """Tiny black video with ``comment`` in its container tags (needs ffmpeg)."""
+    import subprocess
+
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "quiet",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=16x16:d=0.2",
+            "-metadata",
+            f"comment={comment}",
+            "-y",
+            str(path),
+        ],
+        check=True,
+        timeout=60,
+    )
+
+
+class TestScanReadsVideos(AdminAPITestCase):
+    """Videos saved by ComfyUI carry the graph in their comment tag."""
+
+    def setUp(self):
+        super().setUp()
+        from utils import video_metadata
+
+        video_metadata.ffprobe_path.cache_clear()
+        self.addCleanup(video_metadata.ffprobe_path.cache_clear)
+
+    @unittest.skipUnless(
+        shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed"
+    )
+    async def test_scan_adds_prompts_found_in_videos(self):
+        graph = {"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a cat"}}}
+        _write_mp4(
+            self.output_dir / "clip.mp4", json.dumps({"prompt": json.dumps(graph)})
+        )
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+
+        with self.assertNoLogs(level="ERROR"):
+            body = await (
+                await self.client.request("POST", "/prompt_manager/scan")
+            ).text()
+
+        self.assertIn('"added": 1', body)
+        prompts = self.api.db.get_recent_prompts(limit=10)["prompts"]
+        self.assertEqual([p["text"] for p in prompts], ["a cat"])
+        images = self.api.db.get_prompt_images(prompts[0]["id"])
+        self.assertTrue(images[0]["image_path"].endswith("clip.mp4"))
+
+    async def test_scan_without_ffprobe_skips_videos_quietly(self):
+        from unittest.mock import patch
+        from utils import video_metadata
+
+        (self.output_dir / "clip.mp4").write_bytes(b"\x00\x00\x00\x18ftypisom")
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+
+        with patch.object(video_metadata.shutil, "which", return_value=None):
+            with self.assertNoLogs("prompt_manager", level="WARNING"):
+                body = await (
+                    await self.client.request("POST", "/prompt_manager/scan")
+                ).text()
+
+        self.assertIn('"processed": 1', body)
+        self.assertIn('"found": 0', body)
+
+    async def test_unreadable_image_is_a_warning_not_an_error(self):
+        (self.output_dir / "bad.png").write_bytes(b"\x89PNG not really")
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+
+        with self.assertLogs(level="WARNING") as cm:
+            body = await (
+                await self.client.request("POST", "/prompt_manager/scan")
+            ).text()
+
+        self.assertIn('"type": "complete"', body)
+        self.assertTrue(any("bad.png" in line for line in cm.output))
+        self.assertEqual([line for line in cm.output if line.startswith("ERROR")], [])
 
 
 if __name__ == "__main__":

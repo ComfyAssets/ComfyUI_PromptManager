@@ -31,6 +31,7 @@ from .lora_integration import LoraIntegrationMixin
 try:
     from ...database.operations import PromptDatabase
     from ...utils.logging_config import get_logger
+    from ...utils.video_metadata import is_video_path, read_video_metadata
 except ImportError:
     import sys
 
@@ -39,6 +40,7 @@ except ImportError:
     )
     from database.operations import PromptDatabase
     from utils.logging_config import get_logger
+    from utils.video_metadata import is_video_path, read_video_metadata
 
 
 def _get_project_root():
@@ -665,16 +667,21 @@ class PromptManagerAPI(
         return []
 
     def _extract_comfyui_metadata(self, image_path):
-        """Extract ComfyUI workflow metadata from PNG image files."""
+        """Embedded ComfyUI metadata of an image (PNG text chunks) or a video.
+
+        Videos go through ffprobe (see utils/video_metadata). Unreadable files
+        are a warning, not an error: a scan over a large output tree meets
+        truncated and foreign files, and it carries on past them.
+        """
+        if is_video_path(image_path):
+            return read_video_metadata(image_path)
         try:
             with Image.open(image_path) as img:
-                metadata = {}
-                if hasattr(img, "text"):
-                    for key, value in img.text.items():
-                        metadata[key] = value
-                return metadata
+                return dict(getattr(img, "text", None) or {})
         except Exception as e:
-            self.logger.error(f"Error reading {image_path}: {e}")
+            self.logger.warning(
+                f"Unreadable image {os.path.basename(str(image_path))}: {e}"
+            )
             return {}
 
     def _parse_comfyui_prompt(self, metadata):

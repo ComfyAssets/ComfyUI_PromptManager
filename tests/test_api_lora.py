@@ -83,6 +83,7 @@ class LoraAPITestCase(AioHTTPTestCase):
         return app
 
     async def tearDownAsync(self):
+        await super().tearDownAsync()  # closes the aiohttp test client
         self._save_patch.stop()
         self._detect_patch.stop()
         self._config_patch.stop()

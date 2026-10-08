@@ -136,13 +136,15 @@ class TestPromptManagerConfig(unittest.TestCase):
         PromptManagerConfig.update_config({"performance": {"max_search_results": 50}})
         self.assertEqual(PromptManagerConfig.MAX_SEARCH_RESULTS, 50)
 
-    def test_worker_threads_default_is_within_the_machine(self):
+    def test_worker_threads_default_is_half_the_cores_and_current_is_in_range(self):
+        # The current value may come from config.json (loaded at import), so the
+        # rule is checked on the constant and only the range on the live value.
         cores = PromptManagerConfig.max_worker_threads()
         self.assertGreaterEqual(cores, 1)
-        default = PromptManagerConfig.get_config()["performance"]["worker_threads"]
-        self.assertGreaterEqual(default, 1)
-        self.assertLessEqual(default, cores)
-        self.assertEqual(default, max(1, cores // 2))
+        self.assertEqual(PromptManagerConfig.DEFAULT_WORKER_THREADS, max(1, cores // 2))
+        current = PromptManagerConfig.get_config()["performance"]["worker_threads"]
+        self.assertGreaterEqual(current, 1)
+        self.assertLessEqual(current, cores)
 
     def test_update_worker_threads_is_clamped_to_the_machine(self):
         cores = PromptManagerConfig.max_worker_threads()

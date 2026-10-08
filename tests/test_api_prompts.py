@@ -45,6 +45,7 @@ class PromptAPITestCase(AioHTTPTestCase):
         return app
 
     async def tearDownAsync(self):
+        await super().tearDownAsync()  # closes the aiohttp test client
         # Windows refuses to unlink a database that still has open handles.
         self.api.db.close_all()
         for path in (

@@ -506,7 +506,8 @@ class PromptManagerConfig:
     AUTO_BACKUP_INTERVAL = 24  # Hours
     # Threads for the output scan and thumbnail generation; half the cores by
     # default so ComfyUI's own generation keeps CPU headroom. 1..max_worker_threads().
-    WORKER_THREADS = max(1, (os.cpu_count() or 1) // 2)
+    DEFAULT_WORKER_THREADS = max(1, (os.cpu_count() or 1) // 2)
+    WORKER_THREADS = DEFAULT_WORKER_THREADS
 
     @classmethod
     def max_worker_threads(cls) -> int:

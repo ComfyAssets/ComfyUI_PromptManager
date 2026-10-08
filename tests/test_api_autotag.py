@@ -122,6 +122,7 @@ class AutotagAPITestCase(AioHTTPTestCase):
         return app
 
     async def tearDownAsync(self):
+        await super().tearDownAsync()  # closes the aiohttp test client
         self._service_patch.stop()
         self.api.db.close_all()
         for path in (
