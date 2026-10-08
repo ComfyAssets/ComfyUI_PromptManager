@@ -3,10 +3,12 @@ Database schema and models for KikoTextEncode prompt storage.
 """
 
 import datetime
+import shutil
 import sqlite3
 import os
 import threading
-from typing import Set
+from pathlib import Path
+from typing import Set, Tuple
 
 # Import logging system
 try:
@@ -31,6 +33,10 @@ def utc_now_iso() -> str:
     )
 
 
+SQLITE_HEADER = b"SQLite format 3\x00"
+REQUIRED_PROMPT_COLUMNS = ("id", "text", "created_at")
+
+
 class PromptModel:
     """Database model for prompt storage and schema management."""
 
@@ -49,6 +55,9 @@ class PromptModel:
         self._local = threading.local()
         self._connections: Set[sqlite3.Connection] = set()
         self._conn_lock = threading.Lock()
+        # Bumped by _close_all_connections so threads holding a closed
+        # connection reopen on their next get_connection().
+        self._generation = 0
         self._ensure_database_exists()
 
     def _ensure_database_exists(self) -> None:
@@ -62,13 +71,16 @@ class PromptModel:
             Exception: If database creation fails
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            conn = sqlite3.connect(self.db_path)
+            try:
                 conn.execute("PRAGMA journal_mode = WAL")
                 conn.execute("PRAGMA busy_timeout = 5000")
                 conn.execute("PRAGMA foreign_keys = ON")
                 self._create_tables(conn)
                 self._create_indexes(conn)
                 conn.commit()
+            finally:
+                conn.close()
         except Exception as e:
             self.logger.error(f"Error creating database: {e}")
             raise
@@ -200,7 +212,7 @@ class PromptModel:
             sqlite3.Connection: The current thread's configured connection
         """
         conn = getattr(self._local, "conn", None)
-        if conn is not None:
+        if conn is not None and self._local.generation == self._generation:
             return conn
 
         # check_same_thread=False only so restore_from_file can close other
@@ -211,9 +223,23 @@ class PromptModel:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 5000")
         self._local.conn = conn
+        self._local.generation = self._generation
         with self._conn_lock:
             self._connections.add(conn)
         return conn
+
+    def _close_all_connections(self) -> None:
+        """Close every thread's connection; they reopen lazily on next use."""
+        with self._conn_lock:
+            connections = list(self._connections)
+            self._connections.clear()
+            self._generation += 1
+        self._local.conn = None
+        for conn in connections:
+            try:
+                conn.close()
+            except sqlite3.Error as e:
+                self.logger.warning(f"Error closing database connection: {e}")
 
     def close(self) -> None:
         """Close the calling thread's connection, if it has one.
@@ -599,19 +625,127 @@ class PromptModel:
 
     def backup_database(self, backup_path: str) -> bool:
         """
-        Create a backup of the database.
+        Write a consistent copy of the database to backup_path.
+
+        Uses the SQLite online backup API through this thread's connection,
+        so rows that are committed but still sit in the -wal file are
+        included and other threads may keep reading and writing meanwhile.
 
         Args:
-            backup_path: Path where the backup should be saved
+            backup_path: Path where the backup should be saved (overwritten)
 
         Returns:
             bool: True if backup was successful, False otherwise
         """
         try:
-            import shutil
-
-            shutil.copy2(self.db_path, backup_path)
+            if os.path.exists(backup_path) and os.path.samefile(
+                backup_path, self.db_path
+            ):
+                self.logger.error("Refusing to back up the database onto itself")
+                return False
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+            source = self.get_connection()
+            destination = sqlite3.connect(backup_path)
+            try:
+                source.backup(destination)
+            finally:
+                destination.close()
             return True
-        except Exception as e:
+        except (OSError, sqlite3.Error) as e:
             self.logger.error(f"Error creating database backup: {e}")
             return False
+
+    @staticmethod
+    def verify_database_file(path: str) -> Tuple[bool, str]:
+        """
+        Check that a file is a healthy prompts database before restoring it.
+
+        Opens the file read-only, runs PRAGMA integrity_check and confirms the
+        prompts table has the columns every version of this extension needs.
+
+        Args:
+            path: File to inspect
+
+        Returns:
+            (ok, reason): reason is "ok" when the file is acceptable, otherwise
+            a human-readable explanation. Never raises for bad input.
+        """
+        if not os.path.isfile(path):
+            return False, "File not found"
+        try:
+            with open(path, "rb") as fh:
+                header = fh.read(len(SQLITE_HEADER))
+        except OSError as e:
+            return False, f"Cannot read file: {e}"
+        if header != SQLITE_HEADER:
+            return False, "Not a SQLite database file"
+
+        uri = Path(os.path.abspath(path)).as_uri() + "?mode=ro"
+        try:
+            conn = sqlite3.connect(uri, uri=True)
+        except sqlite3.Error as e:
+            return False, f"Invalid SQLite database: {e}"
+        try:
+            row = conn.execute("PRAGMA integrity_check").fetchone()
+            verdict = row[0] if row else "no result"
+            if verdict != "ok":
+                return False, f"Integrity check failed: {verdict}"
+            table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='prompts'"
+            ).fetchone()
+            if not table:
+                return False, "Database does not contain a 'prompts' table"
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(prompts)")}
+            missing = [c for c in REQUIRED_PROMPT_COLUMNS if c not in columns]
+            if missing:
+                return (
+                    False,
+                    "prompts table is missing required columns: " + ", ".join(missing),
+                )
+            return True, "ok"
+        except sqlite3.Error as e:
+            return False, f"Invalid SQLite database: {e}"
+        finally:
+            conn.close()
+
+    def restore_from_file(self, src_path: str) -> str:
+        """
+        Replace the live database with the file at src_path.
+
+        The current database is first backed up next to itself as
+        ``<db_path>.backup_<YYYYmmdd_HHMMSS>`` (WAL content included), every
+        thread's connection is closed, the file is copied over, stale -wal and
+        -shm files are removed and the schema migrations run on the restored
+        file. Connections reopen lazily on the next get_connection().
+
+        Callers should run verify_database_file(src_path) first.
+
+        Args:
+            src_path: SQLite file to restore
+
+        Returns:
+            Path of the backup taken of the previous database, or "" when
+            there was no database to back up.
+
+        Raises:
+            RuntimeError: If the previous database could not be backed up
+            OSError: If the restored file could not be copied into place
+        """
+        backup_path = ""
+        if os.path.exists(self.db_path):
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = f"{self.db_path}.backup_{timestamp}"
+            if not self.backup_database(backup_path):
+                raise RuntimeError("Could not back up the current database")
+            self.logger.info(f"Current database backed up to: {backup_path}")
+
+        self._close_all_connections()
+        shutil.copy2(src_path, self.db_path)
+        for suffix in ("-wal", "-shm"):
+            stale = self.db_path + suffix
+            if os.path.exists(stale):
+                os.remove(stale)
+        self._ensure_database_exists()
+        self.logger.info(f"Database restored from {src_path}")
+        return backup_path

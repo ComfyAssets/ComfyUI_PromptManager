@@ -18,6 +18,11 @@ try:
 except ImportError:
     from utils.validators import validate_result_timeout
 
+try:
+    from ...database.operations import PromptDatabase
+except ImportError:
+    from database.operations import PromptDatabase
+
 
 class AdminRoutesMixin:
     """Mixin providing admin, diagnostics, and maintenance API endpoints."""
@@ -883,24 +888,33 @@ class AdminRoutesMixin:
             )
 
     async def backup_database(self, request):
-        """Backup the entire prompts.db database file."""
+        """Download a consistent copy of the prompts database (WAL included)."""
         try:
-            db_path = self.db.model.db_path
+            model = self.db.model
+            db_path = model.db_path
 
             if not os.path.exists(db_path):
                 return web.json_response(
                     {"success": False, "error": "Database file not found"}, status=404
                 )
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as temp_file:
-                temp_path = temp_file.name
-
-            shutil.copy2(db_path, temp_path)
-
-            with open(temp_path, "rb") as f:
-                file_data = f.read()
-
-            os.unlink(temp_path)
+            fd, temp_path = tempfile.mkstemp(suffix=".db")
+            os.close(fd)
+            try:
+                loop = asyncio.get_running_loop()
+                ok = await loop.run_in_executor(None, model.backup_database, temp_path)
+                if not ok:
+                    return web.json_response(
+                        {"success": False, "error": "Failed to create database backup"},
+                        status=500,
+                    )
+                # Read once (the file is deleted right after) rather than
+                # streaming so the temp file never outlives the request.
+                with open(temp_path, "rb") as fh:
+                    file_data = fh.read()
+            finally:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
 
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"prompts_backup_{timestamp}.db"
@@ -922,7 +936,14 @@ class AdminRoutesMixin:
             )
 
     async def restore_database(self, request):
-        """Restore the prompts.db database from uploaded file."""
+        """Restore the prompts database from an uploaded SQLite file.
+
+        The upload is streamed to a temp file (capped at restore_max_bytes),
+        verified with PromptModel.verify_database_file and only then copied
+        over the live database, which is backed up first.
+        """
+        max_bytes = getattr(self, "restore_max_bytes", 100 * 1024 * 1024)
+        temp_path = None
         try:
             reader = await request.multipart()
             field = await reader.next()
@@ -936,95 +957,52 @@ class AdminRoutesMixin:
                     status=400,
                 )
 
-            MAX_RESTORE_SIZE = 100 * 1024 * 1024  # 100MB
-            file_data = await field.read()
+            fd, temp_path = tempfile.mkstemp(suffix=".db")
+            os.close(fd)
+            size = 0
+            with open(temp_path, "wb") as out:
+                while True:
+                    chunk = await field.read_chunk()
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > max_bytes:
+                        return web.json_response(
+                            {
+                                "success": False,
+                                "error": f"File too large. Maximum size is {max_bytes // (1024 * 1024)}MB",
+                            },
+                            status=400,
+                        )
+                    out.write(chunk)
 
-            if not file_data:
+            if size == 0:
                 return web.json_response(
                     {"success": False, "error": "Uploaded file is empty"}, status=400
                 )
 
-            if len(file_data) > MAX_RESTORE_SIZE:
+            model = self.db.model
+            ok, reason = model.verify_database_file(temp_path)
+            if not ok:
                 return web.json_response(
-                    {
-                        "success": False,
-                        "error": f"File too large. Maximum size is {MAX_RESTORE_SIZE // (1024*1024)}MB",
-                    },
-                    status=400,
+                    {"success": False, "error": reason}, status=400
                 )
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as temp_file:
-                temp_path = temp_file.name
-                temp_file.write(file_data)
+            loop = asyncio.get_running_loop()
+            backup_path = await loop.run_in_executor(
+                None, model.restore_from_file, temp_path
+            )
+            self.db = PromptDatabase(model.db_path)
+            prompt_count = self.db.model.get_database_info().get("total_prompts", 0)
 
-            try:
-                with sqlite3.connect(temp_path) as conn:
-                    conn.row_factory = sqlite3.Row
-
-                    cursor = conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' AND name='prompts'"
-                    )
-                    if not cursor.fetchone():
-                        raise ValueError("Database does not contain a 'prompts' table")
-
-                    cursor = conn.execute("PRAGMA table_info(prompts)")
-                    columns = [row["name"] for row in cursor.fetchall()]
-                    required_columns = ["id", "text", "created_at"]
-
-                    for col in required_columns:
-                        if col not in columns:
-                            raise ValueError(f"Database missing required column: {col}")
-
-                    cursor = conn.execute("SELECT COUNT(*) as count FROM prompts")
-                    prompt_count = cursor.fetchone()["count"]
-
-                db_path = self.db.model.db_path
-                backup_path = f"{db_path}.backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-                if os.path.exists(db_path):
-                    shutil.copy2(db_path, backup_path)
-                    self.logger.info(f"Current database backed up to: {backup_path}")
-
-                shutil.copy2(temp_path, db_path)
-
-                # Reinitialize the database connection
-                try:
-                    from ...database.operations import PromptDatabase
-                except ImportError:
-                    import sys
-
-                    sys.path.insert(
-                        0,
-                        os.path.dirname(
-                            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                        ),
-                    )
-                    from database.operations import PromptDatabase
-                self.db = PromptDatabase()
-
-                return web.json_response(
-                    {
-                        "success": True,
-                        "message": f"Database restored successfully. Found {prompt_count} prompts.",
-                        "prompt_count": prompt_count,
-                        "backup_created": (
-                            backup_path if os.path.exists(db_path) else None
-                        ),
-                    }
-                )
-
-            except sqlite3.Error as e:
-                return web.json_response(
-                    {"success": False, "error": f"Invalid SQLite database: {str(e)}"},
-                    status=400,
-                )
-            except ValueError as e:
-                return web.json_response(
-                    {"success": False, "error": str(e)}, status=400
-                )
-            finally:
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
+            return web.json_response(
+                {
+                    "success": True,
+                    "message": f"Database restored successfully. Found {prompt_count} prompts.",
+                    "prompt_count": prompt_count,
+                    "backup_created": backup_path or None,
+                }
+            )
 
         except Exception as e:
             self.logger.error(f"Restore error: {e}", exc_info=True)
@@ -1032,6 +1010,11 @@ class AdminRoutesMixin:
                 {"success": False, "error": f"Failed to restore database: {str(e)}"},
                 status=500,
             )
+        finally:
+            if temp_path:
+                for suffix in ("", "-wal", "-shm", "-journal"):
+                    if os.path.exists(temp_path + suffix):
+                        os.unlink(temp_path + suffix)
 
     async def scan_images(self, request):
         """Scan ComfyUI output images for prompt metadata and add them to the database."""
