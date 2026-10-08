@@ -621,7 +621,7 @@
                                             <span>${escapeHtml(runLabel)}</span>
                                         </div>` : ""}
                                         <div class="flex items-center space-x-1">
-                                            <div class="rating flex space-x-1" data-id="${prompt.id}" data-rating="${rating}">
+                                            <div class="rating flex space-x-1" data-id="${escapeHtml(prompt.id)}" data-rating="${escapeHtml(rating)}">
                                                 ${this.renderStars(rating, prompt.id)}
                                             </div>
                                         </div>
@@ -1636,7 +1636,7 @@
                     resultsContainer.innerHTML = `
                         <div class="bg-pm-error-tint border border-pm-error rounded-pm-sm p-4">
                             <h4 class="text-pm-error font-medium mb-2">❌ Maintenance Failed</h4>
-                            <p class="text-pm-secondary">${error.message}</p>
+                            <p class="text-pm-secondary">${escapeHtml(error.message)}</p>
                         </div>
                     `;
                     this.showNotification('❌ Maintenance failed', 'error');
@@ -1658,7 +1658,7 @@
                 html += `
                     <div class="flex justify-between items-center p-2 bg-pm-input rounded">
                         <span class="text-pm-secondary">Operations Completed</span>
-                        <span class="text-pm-success font-mono text-sm">${data.operations_completed}</span>
+                        <span class="text-pm-success font-mono text-sm">${escapeHtml(data.operations_completed)}</span>
                     </div>
                 `;
                 html += `
@@ -1680,29 +1680,29 @@
                     html += `<div class="${bgColor} border rounded-pm-sm p-4">`;
                     html += `<h4 class="text-pm font-medium mb-2 flex items-center space-x-2">`;
                     html += `<span>${statusIcon}</span>`;
-                    html += `<span class="capitalize">${operation.replace(/_/g, ' ')}</span>`;
+                    html += `<span class="capitalize">${escapeHtml(operation.replace(/_/g, ' '))}</span>`;
                     html += `<span class="text-sm font-mono ${result.success ? 'text-pm-success' : 'text-pm-error'}">${statusText}</span>`;
                     html += `</h4>`;
 
                     if (result.message) {
-                        html += `<p class="text-pm-secondary mb-2">${result.message}</p>`;
+                        html += `<p class="text-pm-secondary mb-2">${escapeHtml(result.message)}</p>`;
                     }
 
                     // Show specific details
                     if (result.removed_count !== undefined) {
-                        html += `<div class="text-sm text-pm-secondary">Items removed: ${result.removed_count}</div>`;
+                        html += `<div class="text-sm text-pm-secondary">Items removed: ${escapeHtml(result.removed_count)}</div>`;
                     }
 
                     if (result.duplicate_hashes !== undefined) {
-                        html += `<div class="text-sm text-pm-secondary">Duplicate hash groups found: ${result.duplicate_hashes}</div>`;
+                        html += `<div class="text-sm text-pm-secondary">Duplicate hash groups found: ${escapeHtml(result.duplicate_hashes)}</div>`;
                     }
 
                     if (result.issues_found !== undefined) {
-                        html += `<div class="text-sm text-pm-secondary">Issues found: ${result.issues_found}</div>`;
+                        html += `<div class="text-sm text-pm-secondary">Issues found: ${escapeHtml(result.issues_found)}</div>`;
                         if (result.issues && result.issues.length > 0) {
                             html += `<ul class="ml-4 list-disc text-xs text-pm-muted mt-1">`;
                             result.issues.forEach(issue => {
-                                html += `<li>${issue}</li>`;
+                                html += `<li>${escapeHtml(issue)}</li>`;
                             });
                             html += `</ul>`;
                         }
@@ -1710,14 +1710,14 @@
 
                     if (result.info) {
                         html += `<div class="text-sm text-pm-secondary mt-2">`;
-                        html += `<p>Total prompts: ${result.info.total_prompts || 'N/A'}</p>`;
-                        html += `<p>Database size: ${result.info.database_size_bytes ? this.formatFileSize(result.info.database_size_bytes) : 'N/A'}</p>`;
+                        html += `<p>Total prompts: ${escapeHtml(result.info.total_prompts || 'N/A')}</p>`;
+                        html += `<p>Database size: ${escapeHtml(result.info.database_size_bytes ? this.formatFileSize(result.info.database_size_bytes) : 'N/A')}</p>`;
                         html += `</div>`;
                     }
 
                     if (result.error) {
                         html += `<div class="text-sm text-pm-error mt-2 font-mono bg-pm-error-tint p-2 rounded">`;
-                        html += `Error: ${result.error}`;
+                        html += `Error: ${escapeHtml(result.error)}`;
                         html += `</div>`;
                     }
                     
@@ -1754,7 +1754,7 @@
                     content.innerHTML = `
                         <div class="bg-pm-error-tint border border-pm-error rounded-pm-sm p-4">
                             <h4 class="text-pm-error font-medium mb-2">❌ Diagnostics Failed</h4>
-                            <p class="text-pm-secondary">${error.message}</p>
+                            <p class="text-pm-secondary">${escapeHtml(error.message)}</p>
                         </div>
                     `;
                 }
@@ -1793,25 +1793,25 @@
                     html += `<h4 class="text-pm font-medium mb-2 capitalize">${escapeHtml(category)}</h4>`;
 
                     if (result.message) {
-                        html += `<p class="text-pm-secondary mb-2">${result.message}</p>`;
+                        html += `<p class="text-pm-secondary mb-2">${escapeHtml(result.message)}</p>`;
                     }
 
                     // Show specific details based on category
                     if (category === 'database' && result.status === 'ok') {
                         html += `<div class="text-sm text-pm-secondary">`;
-                        html += `<p>Prompts: ${result.prompt_count || 0}</p>`;
+                        html += `<p>Prompts: ${escapeHtml(result.prompt_count || 0)}</p>`;
                         html += `<p>Images table: ${result.has_images_table ? 'Yes' : 'No'}</p>`;
                         html += `</div>`;
                     }
 
                     if (category === 'images_table' && result.status === 'ok') {
                         html += `<div class="text-sm text-pm-secondary">`;
-                        html += `<p>Images: ${result.image_count || 0}</p>`;
+                        html += `<p>Images: ${escapeHtml(result.image_count || 0)}</p>`;
                         if (result.recent_images && result.recent_images.length > 0) {
                             html += `<p>Recent images:</p>`;
                             html += `<ul class="ml-4 list-disc">`;
                             result.recent_images.slice(0, 3).forEach(img => {
-                                html += `<li>${img.filename} → Prompt ${img.prompt_id}</li>`;
+                                html += `<li>${escapeHtml(img.filename)} → Prompt ${escapeHtml(img.prompt_id)}</li>`;
                             });
                             html += `</ul>`;
                         }
@@ -1823,7 +1823,7 @@
                         html += `<p>Output directories found:</p>`;
                         html += `<ul class="ml-4 list-disc">`;
                         result.output_dirs.forEach(dir => {
-                            html += `<li>${dir}</li>`;
+                            html += `<li>${escapeHtml(dir)}</li>`;
                         });
                         html += `</ul>`;
                         html += `</div>`;
@@ -2044,7 +2044,7 @@
                     <div class="bg-pm-surface rounded-pm-md p-4 max-w-2xl w-full mx-4 border border-pm">
                         <h3 class="text-sm font-semibold text-pm mb-3">Copy Prompt Text</h3>
                         <p class="text-pm-secondary mb-4">Please manually copy the text below:</p>
-                        <textarea readonly class="w-full h-32 px-4 py-3 bg-pm-surface border border-pm rounded-pm-sm text-pm resize-none" style="font-family: monospace;">${text}</textarea>
+                        <textarea readonly class="w-full h-32 px-4 py-3 bg-pm-surface border border-pm rounded-pm-sm text-pm resize-none" style="font-family: monospace;"></textarea>
                         <div class="flex justify-end mt-4">
                             <button class="px-4 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm font-medium rounded-pm-sm transition-colors" onclick="this.closest('[class*=fixed]').remove()">
                                 Close
@@ -2057,6 +2057,7 @@
                 
                 // Auto-select the text in the textarea
                 const textarea = modal.querySelector('textarea');
+                textarea.value = text;
                 textarea.focus();
                 textarea.select();
                 
@@ -3696,7 +3697,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         this.renderReviewTags();
                     } else {
                         document.getElementById('reviewTagsVisible').innerHTML =
-                            `<div class="text-pm-error">Error: ${data.error}</div>`;
+                            `<div class="text-pm-error">Error: ${escapeHtml(data.error)}</div>`;
                     }
                 } catch (error) {
                     console.error('Error generating tags:', error);

@@ -429,7 +429,7 @@
                                  data-original="${escapeHtml(image.url)}"
                                  data-thumbnail="${escapeHtml(image.thumbnail_url || '')}"
                                  data-caption="${escapeHtml(this.formatImageCaption(image))}"
-                                 data-media-type="${mediaType}"
+                                 data-media-type="${escapeHtml(mediaType)}"
                                  data-is-video="${isVideo}"
                                  onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'">
                             <!-- Fallback for failed thumbnails -->
@@ -488,7 +488,7 @@
                                  data-original="${escapeHtml(image.url)}"
                                  data-thumbnail="${escapeHtml(image.thumbnail_url || '')}"
                                  data-caption="${escapeHtml(this.formatImageCaption(image))}"
-                                 data-media-type="${mediaType}"
+                                 data-media-type="${escapeHtml(mediaType)}"
                                  data-is-video="${isVideo}"
                                  onerror="this.style.display='none'">
                             ${hasThumb ? '<div class="absolute top-1 right-1 w-2 h-2 bg-pm-success rounded-full" title="Thumbnail available"></div>' : ''}
@@ -1018,7 +1018,7 @@
                                 ${escapeHtml(fileName)}
                             </div>
                             <div class="text-xs text-pm-muted">
-                                Type: ${fileExt} Video
+                                Type: ${escapeHtml(fileExt)} Video
                             </div>
                         </div>
 
@@ -1094,7 +1094,7 @@
                     container.innerHTML = `
                         <div class="bg-pm-error-tint border border-pm-error rounded-pm-md p-4">
                             <h4 class="text-pm-error font-medium mb-2">❌ Video Info Error</h4>
-                            <p class="text-pm-secondary text-sm">${error.message}</p>
+                            <p class="text-pm-secondary text-sm">${escapeHtml(error.message)}</p>
                         </div>
                     `;
                 }
@@ -1188,7 +1188,7 @@
                     container.innerHTML = `
                         <div class="bg-pm-error-tint border border-pm-error rounded-pm-md p-4">
                             <h4 class="text-pm-error font-medium mb-2">❌ Metadata Error</h4>
-                            <p class="text-pm-secondary text-sm">${error.message}</p>
+                            <p class="text-pm-secondary text-sm">${escapeHtml(error.message)}</p>
                         </div>
                     `;
                 }
@@ -2152,10 +2152,10 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     
                     groupEl.innerHTML = `
                         <div class="mb-3 text-sm font-medium text-pm-secondary">
-                            Duplicate Group ${groupIndex + 1} (${group.images.length} identical ${group.images[0].media_type}s)
+                            Duplicate Group ${groupIndex + 1} (${group.images.length} identical ${escapeHtml(group.images[0].media_type)}s)
                         </div>
                         <div class="mb-3 p-3 bg-pm-primary rounded text-sm text-pm-secondary">
-                            <strong>Content Hash:</strong> ${group.hash.substring(0, 16)}...
+                            <strong>Content Hash:</strong> ${escapeHtml(String(group.hash || '').substring(0, 16))}...
                         </div>
                         <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
                             ${group.images.map((image, imageIndex) => `
