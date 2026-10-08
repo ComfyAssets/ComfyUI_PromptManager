@@ -130,6 +130,35 @@ def validate_result_timeout(timeout) -> int:
     return timeout
 
 
+def validate_worker_threads(value, max_workers) -> int:
+    """
+    Validate the worker-thread count for the output scan and thumbnail jobs.
+
+    Args:
+        value: Raw value from the settings request body
+        max_workers: Detected core count; the largest accepted value
+
+    Returns:
+        The thread count as an int in ``[1, max_workers]``
+
+    Raises:
+        ValueError: If the value is not a whole number in that range
+    """
+    if isinstance(value, bool):
+        raise ValueError("Worker threads must be a whole number")
+
+    if isinstance(value, str) and value.strip().isdigit():
+        value = int(value.strip())
+
+    if not isinstance(value, int):
+        raise ValueError("Worker threads must be a whole number")
+
+    if value < 1 or value > max_workers:
+        raise ValueError(f"Worker threads must be between 1 and {max_workers}")
+
+    return value
+
+
 def validate_tags(tags: Union[str, List[str], None]) -> bool:
     """
     Validate tags input.

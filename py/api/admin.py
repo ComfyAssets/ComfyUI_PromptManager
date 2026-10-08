@@ -15,9 +15,11 @@ from aiohttp import web
 from .scan_job import ScanJob
 
 try:
-    from ...utils.validators import validate_result_timeout
+    from ...utils.parallel import map_parallel
+    from ...utils.validators import validate_result_timeout, validate_worker_threads
 except ImportError:
-    from utils.validators import validate_result_timeout
+    from utils.parallel import map_parallel
+    from utils.validators import validate_result_timeout, validate_worker_threads
 
 try:
     from ...database.operations import PromptDatabase
@@ -601,6 +603,8 @@ class AdminRoutesMixin:
                     "settings": {
                         "result_timeout": PromptManagerConfig.RESULT_TIMEOUT,
                         "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE,
+                        "worker_threads": PromptManagerConfig.WORKER_THREADS,
+                        "cpu_count": PromptManagerConfig.max_worker_threads(),
                         "gallery_root_paths": root_paths,
                         "gallery_root_path": root_paths[0] if root_paths else "",
                         "monitored_directories": [
@@ -645,6 +649,15 @@ class AdminRoutesMixin:
                     )
             if "webui_display_mode" in data:
                 PromptManagerConfig.WEBUI_DISPLAY_MODE = data["webui_display_mode"]
+            if "worker_threads" in data:
+                try:
+                    PromptManagerConfig.WORKER_THREADS = validate_worker_threads(
+                        data["worker_threads"], PromptManagerConfig.max_worker_threads()
+                    )
+                except ValueError as ve:
+                    return web.json_response(
+                        {"success": False, "error": str(ve)}, status=400
+                    )
 
             new_roots, error = self._parse_gallery_roots(data)
             if error:
@@ -738,7 +751,14 @@ class AdminRoutesMixin:
         monitoring = dict(gallery.get("monitoring") or {})
         monitoring["directories"] = list(GalleryConfig.MONITORING_DIRECTORIES)
         gallery["monitoring"] = monitoring
-        config_data = {**existing, "web_ui": web_ui, "gallery": gallery}
+        performance = dict(existing.get("performance") or {})
+        performance["worker_threads"] = PromptManagerConfig.WORKER_THREADS
+        config_data = {
+            **existing,
+            "web_ui": web_ui,
+            "gallery": gallery,
+            "performance": performance,
+        }
         try:
             write_private_json(config_file, config_data)
             self.logger.info(f"Settings saved to {config_file}")
@@ -1255,16 +1275,21 @@ class AdminRoutesMixin:
         return _collect_media_files(output_dirs, IMAGE_EXTENSIONS + VIDEO_EXTENSIONS)
 
     def _extract_batch_metadata_sync(self, file_batch):
-        """Extract metadata from a batch of files in one executor call."""
-        results = []
-        for media_file in file_batch:
+        """Extract metadata from a batch of files in one executor call.
+
+        Files are read on ``PromptManagerConfig.WORKER_THREADS`` threads:
+        Pillow decodes the whole image to reach trailing text chunks and
+        releases the GIL while doing so.
+        """
+        from ..config import PromptManagerConfig
+
+        def extract(media_file):
             try:
-                results.append(
-                    (media_file, self._extract_comfyui_metadata(str(media_file)))
-                )
+                return (media_file, self._extract_comfyui_metadata(str(media_file)))
             except Exception:
-                results.append((media_file, {}))
-        return results
+                return (media_file, {})
+
+        return map_parallel(extract, file_batch, PromptManagerConfig.WORKER_THREADS)
 
     def _ingest_scan_batch_sync(self, batch_results):
         """Store the prompts found in a metadata batch (blocking DB work)."""

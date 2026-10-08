@@ -6,6 +6,8 @@
                 this.settings = {
                     resultTimeout: 5,
                     webuiDisplayMode: 'popup',
+                    workerThreads: 1,
+                    cpuCount: 1,
                 };
                 this.categories = [];
                 this.tags = [];
@@ -230,6 +232,7 @@
                 document.getElementById('wd14GeneralThreshold').addEventListener('input', (e) => {
                     document.getElementById('wd14GeneralThresholdValue').textContent = parseFloat(e.target.value).toFixed(2);
                 });
+                document.getElementById("workerThreads").addEventListener("input", () => this.renderWorkerThreads());
                 document.getElementById('wd14CharacterThreshold').addEventListener('input', (e) => {
                     document.getElementById('wd14CharacterThresholdValue').textContent = parseFloat(e.target.value).toFixed(2);
                 });
@@ -280,6 +283,10 @@
                         if (data.success && data.settings) {
                             this.settings.resultTimeout = data.settings.result_timeout ?? 5;
                             this.settings.webuiDisplayMode = data.settings.webui_display_mode || 'popup';
+                            this.settings.cpuCount = Math.max(1, parseInt(data.settings.cpu_count, 10) || 1);
+                            this.settings.workerThreads = Math.min(
+                                this.settings.cpuCount, Math.max(1, parseInt(data.settings.worker_threads, 10) || 1)
+                            );
                             this.settings.monitoredDirectories = data.settings.monitored_directories || [];
                             this.settings.galleryRootPaths = data.settings.gallery_root_paths || [];
                             // Backward compat: if server only returned old field
@@ -802,9 +809,19 @@
                 });
             }
 
+            renderWorkerThreads() {
+                const threads = document.getElementById("workerThreads");
+                document.getElementById("workerThreadsValue").textContent =
+                    `${threads.value} / ${this.settings.cpuCount} cores`;
+            }
+
             showSettingsModal() {
                 document.getElementById("resultTimeout").value = this.settings.resultTimeout;
                 document.getElementById("webuiDisplayMode").value = this.settings.webuiDisplayMode;
+                const threads = document.getElementById("workerThreads");
+                threads.max = this.settings.cpuCount;
+                threads.value = this.settings.workerThreads;
+                this.renderWorkerThreads();
                 this.renderScanPaths();
                 this.updateMonitoringStatus();
                 this.detectLoraManager();
@@ -999,10 +1016,12 @@
             async saveSettings() {
                 const timeout = parseInt(document.getElementById("resultTimeout").value);
                 const displayMode = document.getElementById("webuiDisplayMode").value;
+                const workerThreads = parseInt(document.getElementById("workerThreads").value, 10) || 1;
                 const galleryPaths = this._collectScanPaths().filter(p => p !== '');
 
                 this.settings.resultTimeout = timeout;
                 this.settings.webuiDisplayMode = displayMode;
+                this.settings.workerThreads = workerThreads;
                 this.settings.galleryRootPaths = galleryPaths;
 
                 try {
@@ -1012,6 +1031,7 @@
                         body: JSON.stringify({
                             result_timeout: timeout,
                             webui_display_mode: displayMode,
+                            worker_threads: workerThreads,
                             gallery_root_paths: galleryPaths
                         }),
                     });

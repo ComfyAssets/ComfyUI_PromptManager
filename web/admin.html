@@ -411,6 +411,21 @@
                     </div>
                 </div>
 
+                <!-- Performance Section -->
+                <div class="border-b border-pm pb-3">
+                    <h4 class="text-xs font-semibold text-pm-secondary mb-3 uppercase tracking-wide">Performance</h4>
+
+                    <div>
+                        <div class="flex items-center justify-between mb-1.5">
+                            <label for="workerThreads" class="text-xs font-medium text-pm-secondary">Worker threads</label>
+                            <span id="workerThreadsValue" class="text-pm-accent text-xs font-mono">1 / 1 cores</span>
+                        </div>
+                        <input type="range" id="workerThreads" min="1" max="1" step="1" value="1"
+                            class="w-full h-1.5 bg-pm-primary rounded-lg appearance-none cursor-pointer accent-[var(--pm-accent)]">
+                        <p class="text-xs text-pm-muted mt-1">Threads used by the image rescan and thumbnail generation. More threads finish sooner; fewer leave CPU for ComfyUI while it generates.</p>
+                    </div>
+                </div>
+
                 <!-- Integrations Section -->
                 <div class="border-b border-pm pb-3">
                     <h4 class="text-xs font-semibold text-pm-secondary mb-3 uppercase tracking-wide">Integrations</h4>

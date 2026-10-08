@@ -15,6 +15,11 @@ from PIL import Image, UnidentifiedImageError
 from .prompts import bad_request, parse_page_params, publish_image_paths
 from .prompts import safe_error_message as _safe_error
 
+try:
+    from ...utils.parallel import map_parallel
+except ImportError:
+    from utils.parallel import map_parallel
+
 # Only these file types are ever served by the image routes, regardless of
 # what sits inside an allowed directory (defence in depth for the gallery).
 IMAGE_EXTENSIONS = frozenset(
@@ -89,6 +94,21 @@ MEDIA_EXTENSIONS = GALLERY_IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 # Caps on request-triggered filesystem work.
 MAX_SCAN_DEPTH = 12
 MAX_THUMBNAIL_FILES = 10_000
+
+
+def _worker_threads():
+    """Configured thread count for thumbnail work.
+
+    Imported lazily because py.config imports this package.
+    """
+    from ..config import PromptManagerConfig
+
+    return PromptManagerConfig.WORKER_THREADS
+
+
+def _thumbnail_batch_size(workers):
+    """Files per executor job: enough to keep every worker thread busy."""
+    return max(4, workers * 2)
 
 
 def _write_image_thumbnail(src, dst, thumbnail_size):
@@ -754,10 +774,8 @@ class ImageRoutesMixin:
         start = _time.monotonic()
         targets = self._thumbnail_targets(output_path, thumbnails_dir)
         stats = _new_thumbnail_stats()
-        for src, dst, is_video in targets:
-            _record_thumbnail_result(
-                stats, self._generate_one(src, dst, thumbnail_size, is_video)
-            )
+        for result in self._generate_batch(targets, thumbnail_size):
+            _record_thumbnail_result(stats, result)
         payload = _thumbnail_complete_payload(len(targets), stats, start)
         payload["success"] = True
         payload["thumbnails_path"] = _public_path(thumbnails_dir)
@@ -785,6 +803,18 @@ class ImageRoutesMixin:
         if len(targets) >= MAX_THUMBNAIL_FILES:
             self.logger.warning(f"Thumbnail scan capped at {MAX_THUMBNAIL_FILES}")
         return targets
+
+    def _generate_batch(self, targets, thumbnail_size):
+        """Create thumbnails for ``targets`` on the configured worker threads.
+
+        Blocking; returns one result dict per target, in order.
+        """
+
+        def one(target):
+            src, dst, is_video = target
+            return self._generate_one(src, dst, thumbnail_size, is_video)
+
+        return map_parallel(one, targets, _worker_threads())
 
     def _generate_one(self, src, dst, thumbnail_size, is_video):
         """Create one thumbnail (blocking). Never raises; returns a result dict."""
@@ -861,7 +891,7 @@ class ImageRoutesMixin:
         return response
 
     async def _stream_thumbnails(self, response, targets, thumbnail_size):
-        """Process *targets* one per executor job, emitting SSE after each."""
+        """Process *targets* in worker-thread batches, emitting SSE per file."""
         total = len(targets)
         video_count = sum(1 for _, _, is_video in targets if is_video)
         connected = await self._emit_sse(
@@ -882,26 +912,31 @@ class ImageRoutesMixin:
             return
         stats = _new_thumbnail_stats()
         start = _time.monotonic()
-        for index, (src, dst, is_video) in enumerate(targets, start=1):
-            result = await self._run_in_executor(
-                self._generate_one, src, dst, thumbnail_size, is_video
+        batch_size = _thumbnail_batch_size(_worker_threads())
+        index = 0
+        for batch_start in range(0, total, batch_size):
+            batch = targets[batch_start : batch_start + batch_size]
+            results = await self._run_in_executor(
+                self._generate_batch, batch, thumbnail_size
             )
-            _record_thumbnail_result(stats, result)
-            if result["action"] == "error":
-                await self._emit_sse(
+            for result in results:
+                index += 1
+                _record_thumbnail_result(stats, result)
+                if result["action"] == "error":
+                    await self._emit_sse(
+                        response,
+                        "file_error",
+                        {"file": result["file"], "error": result["error"]},
+                    )
+                connected = await self._emit_sse(
                     response,
-                    "file_error",
-                    {"file": result["file"], "error": result["error"]},
+                    "progress",
+                    _thumbnail_progress_payload(index, total, stats, result, start),
                 )
-            connected = await self._emit_sse(
-                response,
-                "progress",
-                _thumbnail_progress_payload(index, total, stats, result, start),
-            )
-            if not connected:
-                self.logger.info("Thumbnail client disconnected; stopping early")
-                return
-            await asyncio.sleep(0)  # let other requests run between files
+                if not connected:
+                    self.logger.info("Thumbnail client disconnected; stopping early")
+                    return
+            await asyncio.sleep(0)  # let other requests run between batches
         payload = _thumbnail_complete_payload(total, stats, start)
         await self._emit_sse(response, "complete", payload)
         self.logger.info(payload["message"])

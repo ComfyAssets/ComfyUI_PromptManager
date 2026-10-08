@@ -1629,5 +1629,79 @@ class TestOutputScanIsABackgroundJob(AdminAPITestCase):
         self.assertEqual(data["last_event"]["type"], "error")
 
 
+class TestWorkerThreadsSetting(AdminAPITestCase):
+    """The worker-thread count is exposed, validated, persisted and used by the scan."""
+
+    async def test_get_settings_reports_worker_threads_and_cpu_count(self):
+        data = await (
+            await self.client.request("GET", "/prompt_manager/settings")
+        ).json()
+        settings = data["settings"]
+        self.assertEqual(
+            settings["cpu_count"], PromptManagerConfig.max_worker_threads()
+        )
+        self.assertEqual(settings["worker_threads"], PromptManagerConfig.WORKER_THREADS)
+        self.assertGreaterEqual(settings["worker_threads"], 1)
+
+    async def test_save_persists_worker_threads_under_performance(self):
+        self._write_config({"performance": {"max_search_results": 25}})
+
+        resp = await self.client.request(
+            "POST", "/prompt_manager/settings", json={"worker_threads": 1}
+        )
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(PromptManagerConfig.WORKER_THREADS, 1)
+        saved = self._read_config()
+        self.assertEqual(saved["performance"]["worker_threads"], 1)
+        self.assertEqual(saved["performance"]["max_search_results"], 25)
+
+    async def test_save_rejects_more_threads_than_cores(self):
+        before = PromptManagerConfig.WORKER_THREADS
+        too_many = PromptManagerConfig.max_worker_threads() + 1
+
+        resp = await self.client.request(
+            "POST", "/prompt_manager/settings", json={"worker_threads": too_many}
+        )
+
+        self.assertEqual(resp.status, 400)
+        self.assertFalse((await resp.json())["success"])
+        self.assertEqual(PromptManagerConfig.WORKER_THREADS, before)
+
+    async def test_scan_reads_metadata_on_several_threads(self):
+        import threading
+        import time
+
+        for i in range(8):
+            _write_png(self.output_dir / f"gen{i}.png", prompt_text=f"prompt {i}")
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        PromptManagerConfig.WORKER_THREADS = 4
+        seen = set()
+        lock = threading.Lock()
+        original = self.api._extract_comfyui_metadata
+
+        def recording(path):
+            with lock:
+                seen.add(threading.current_thread().name)
+            time.sleep(0.05)
+            return original(path)
+
+        self.api._extract_comfyui_metadata = recording
+
+        body = await (await self.client.request("POST", "/prompt_manager/scan")).text()
+
+        self.assertIn('"added": 8', body)
+        self.assertGreaterEqual(len(seen), 2)
+
+    async def test_scan_with_one_worker_still_completes(self):
+        _write_png(self.output_dir / "gen.png", prompt_text="solo")
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        PromptManagerConfig.WORKER_THREADS = 1
+
+        body = await (await self.client.request("POST", "/prompt_manager/scan")).text()
+
+        self.assertIn('"added": 1', body)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -504,6 +504,29 @@ class PromptManagerConfig:
     MAX_SEARCH_RESULTS = 100
     ENABLE_FUZZY_SEARCH = False  # Requires fuzzywuzzy
     AUTO_BACKUP_INTERVAL = 24  # Hours
+    # Threads for the output scan and thumbnail generation; half the cores by
+    # default so ComfyUI's own generation keeps CPU headroom. 1..max_worker_threads().
+    WORKER_THREADS = max(1, (os.cpu_count() or 1) // 2)
+
+    @classmethod
+    def max_worker_threads(cls) -> int:
+        """Largest accepted worker-thread count: the detected core count."""
+        return os.cpu_count() or 1
+
+    @classmethod
+    def clamp_worker_threads(cls, value, fallback: int) -> int:
+        """Coerce a worker count from config.json into ``[1, max_worker_threads()]``.
+
+        Non-numeric values (and booleans) return ``fallback`` so a hand-edited
+        file cannot disable the setting.
+        """
+        if isinstance(value, bool):
+            return fallback
+        if isinstance(value, str) and value.strip().isdigit():
+            value = int(value.strip())
+        if not isinstance(value, int):
+            return fallback
+        return max(1, min(value, cls.max_worker_threads()))
 
     @classmethod
     def get_config(cls) -> Dict[str, Any]:
@@ -536,6 +559,7 @@ class PromptManagerConfig:
                 "max_search_results": cls.MAX_SEARCH_RESULTS,
                 "enable_fuzzy_search": cls.ENABLE_FUZZY_SEARCH,
                 "auto_backup_interval": cls.AUTO_BACKUP_INTERVAL,
+                "worker_threads": cls.WORKER_THREADS,
             },
             "gallery": GalleryConfig.get_config(),
             "integrations": IntegrationConfig.get_config(),
@@ -664,6 +688,10 @@ class PromptManagerConfig:
             cls.ENABLE_FUZZY_SEARCH = performance["enable_fuzzy_search"]
         if "auto_backup_interval" in performance:
             cls.AUTO_BACKUP_INTERVAL = performance["auto_backup_interval"]
+        if "worker_threads" in performance:
+            cls.WORKER_THREADS = cls.clamp_worker_threads(
+                performance["worker_threads"], cls.WORKER_THREADS
+            )
 
         # Update gallery config
         if "gallery" in new_config:

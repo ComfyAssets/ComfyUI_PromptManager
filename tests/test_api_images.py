@@ -380,6 +380,64 @@ class ThumbnailTestCase(ImageAPITestCase):
 class TestThumbnailProgressStream(ThumbnailTestCase):
     """POST /prompt_manager/images/generate-thumbnails/progress (SSE)."""
 
+    def _record_threads(self):
+        """Make every thumbnail write record its thread and take a moment."""
+        import threading
+        import time
+
+        from py.api import images as images_module
+
+        seen = set()
+        lock = threading.Lock()
+        original = images_module._write_image_thumbnail
+
+        def recording(src, dst, size):
+            with lock:
+                seen.add(threading.current_thread().name)
+            time.sleep(0.05)
+            return original(src, dst, size)
+
+        images_module._write_image_thumbnail = recording
+        self.addCleanup(setattr, images_module, "_write_image_thumbnail", original)
+        return seen
+
+    async def test_thumbnails_are_generated_on_several_threads(self):
+        from py.config import PromptManagerConfig
+
+        for i in range(8):
+            make_png(self.output_dir / f"p{i}.png", size=(64, 64))
+        orig = PromptManagerConfig.WORKER_THREADS
+        PromptManagerConfig.WORKER_THREADS = 4
+        self.addCleanup(setattr, PromptManagerConfig, "WORKER_THREADS", orig)
+        seen = self._record_threads()
+
+        resp = await self.client.request("POST", self.PROGRESS_URL)
+        events = parse_sse(await resp.text())
+
+        names = [e for e, _ in events]
+        self.assertEqual(names.count("progress"), 8)
+        self.assertEqual(dict(events)["complete"]["count"], 8)
+        self.assertGreaterEqual(len(seen), 2)
+        for i in range(8):
+            self.assertTrue(self._thumb_path(f"p{i}").is_file())
+
+    async def test_blocking_endpoint_also_uses_the_worker_threads(self):
+        from py.config import PromptManagerConfig
+
+        for i in range(8):
+            make_png(self.output_dir / f"p{i}.png", size=(64, 64))
+        orig = PromptManagerConfig.WORKER_THREADS
+        PromptManagerConfig.WORKER_THREADS = 4
+        self.addCleanup(setattr, PromptManagerConfig, "WORKER_THREADS", orig)
+        seen = self._record_threads()
+
+        resp = await self.client.request(
+            "POST", "/prompt_manager/images/generate-thumbnails", json={}
+        )
+
+        self.assertEqual((await resp.json())["count"], 8)
+        self.assertGreaterEqual(len(seen), 2)
+
     async def test_get_is_method_not_allowed(self):
         # The stream writes thumbnails, so a plain GET (prefetch, link
         # preview, <img src>) must not be able to trigger it.
@@ -409,8 +467,9 @@ class TestThumbnailProgressStream(ThumbnailTestCase):
             self.assertTrue(self._thumb_path(name).is_file(), name)
         with Image.open(self._thumb_path("a")) as thumb:
             self.assertLessEqual(max(thumb.size), 150)
-        # PIL work ran in the executor, once per file, plus the scan.
-        self.assertEqual(calls.count("_generate_one"), 3)
+        # PIL work ran in the executor in batches (never on the loop), plus the scan.
+        self.assertGreaterEqual(calls.count("_generate_batch"), 1)
+        self.assertNotIn("_generate_one", calls)
         self.assertIn("_thumbnail_targets", calls)
 
     async def test_corrupt_png_is_reported_and_loop_continues(self):

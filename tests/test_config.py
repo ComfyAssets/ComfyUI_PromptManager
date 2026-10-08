@@ -136,6 +136,32 @@ class TestPromptManagerConfig(unittest.TestCase):
         PromptManagerConfig.update_config({"performance": {"max_search_results": 50}})
         self.assertEqual(PromptManagerConfig.MAX_SEARCH_RESULTS, 50)
 
+    def test_worker_threads_default_is_within_the_machine(self):
+        cores = PromptManagerConfig.max_worker_threads()
+        self.assertGreaterEqual(cores, 1)
+        default = PromptManagerConfig.get_config()["performance"]["worker_threads"]
+        self.assertGreaterEqual(default, 1)
+        self.assertLessEqual(default, cores)
+        self.assertEqual(default, max(1, cores // 2))
+
+    def test_update_worker_threads_is_clamped_to_the_machine(self):
+        cores = PromptManagerConfig.max_worker_threads()
+        PromptManagerConfig.update_config({"performance": {"worker_threads": 1}})
+        self.assertEqual(PromptManagerConfig.WORKER_THREADS, 1)
+        PromptManagerConfig.update_config(
+            {"performance": {"worker_threads": cores + 50}}
+        )
+        self.assertEqual(PromptManagerConfig.WORKER_THREADS, cores)
+        PromptManagerConfig.update_config({"performance": {"worker_threads": 0}})
+        self.assertEqual(PromptManagerConfig.WORKER_THREADS, 1)
+
+    def test_update_worker_threads_ignores_junk_from_a_hand_edited_file(self):
+        PromptManagerConfig.update_config({"performance": {"worker_threads": 1}})
+        PromptManagerConfig.update_config({"performance": {"worker_threads": "lots"}})
+        self.assertEqual(PromptManagerConfig.WORKER_THREADS, 1)
+        PromptManagerConfig.update_config({"performance": {"worker_threads": True}})
+        self.assertEqual(PromptManagerConfig.WORKER_THREADS, 1)
+
     def test_update_propagates_to_gallery(self):
         PromptManagerConfig.update_config(
             {"gallery": {"monitoring": {"enabled": False}}}
