@@ -431,6 +431,39 @@ class TestPublicPathsInPromptResponses(RouteCoverageCase):
             self.assertIn("prompts.db", data["error"], route)
 
 
+class TestTagNamesAreDecodedOnce(RouteCoverageCase):
+    """aiohttp already decodes match_info; a tag literally named '%41' stays '%41'."""
+
+    async def setUpAsync(self):
+        await super().setUpAsync()
+        self.pid = self._save_prompt("percent tag", tags=["%41"])
+
+    async def test_tag_prompts_lookup(self):
+        status, data = await self._json("GET", "/prompt_manager/tags/%2541/prompts")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["tag"], "%41")
+        self.assertEqual(len(data["prompts"]), 1)
+
+    async def test_rename_tag(self):
+        status, data = await self._json(
+            "PUT", "/prompt_manager/tags/%2541", json={"new_name": "renamed"}
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["old_name"], "%41")
+        self.assertEqual(data["affected_count"], 1)
+        self.assertEqual(self.api.db.get_prompt_by_id(self.pid)["tags"], ["renamed"])
+
+    async def test_delete_tag(self):
+        status, data = await self._json("DELETE", "/prompt_manager/tags/%2541")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["tag_name"], "%41")
+        self.assertEqual(data["affected_count"], 1)
+        self.assertEqual(self.api.db.get_prompt_by_id(self.pid)["tags"], [])
+
+
 class TestTagMutationRoutes(RouteCoverageCase):
 
     async def test_rename_rejects_bad_json_and_empty_name(self):

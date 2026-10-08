@@ -387,9 +387,9 @@ class PromptRoutesMixin:
     async def get_tag_prompts(self, request):
         """Get prompts for a single tag."""
         try:
-            from urllib.parse import unquote
-
-            tag_name = unquote(request.match_info.get("tag_name", ""))
+            # aiohttp has already percent-decoded match_info; decoding again
+            # would turn a tag literally named "%41" into "A".
+            tag_name = request.match_info.get("tag_name", "")
             if not tag_name:
                 return web.json_response(
                     {"success": False, "error": "Tag name required"}, status=400
@@ -497,9 +497,9 @@ class PromptRoutesMixin:
     async def rename_tag_endpoint(self, request):
         """Rename a tag across all prompts."""
         try:
-            from urllib.parse import unquote
-
-            tag_name = unquote(request.match_info.get("tag_name", ""))
+            # aiohttp has already percent-decoded match_info; decoding again
+            # would turn a tag literally named "%41" into "A".
+            tag_name = request.match_info.get("tag_name", "")
             if not tag_name:
                 return web.json_response(
                     {"success": False, "error": "Tag name required"}, status=400
@@ -542,9 +542,9 @@ class PromptRoutesMixin:
     async def delete_tag_endpoint(self, request):
         """Delete a tag from all prompts."""
         try:
-            from urllib.parse import unquote
-
-            tag_name = unquote(request.match_info.get("tag_name", ""))
+            # aiohttp has already percent-decoded match_info; decoding again
+            # would turn a tag literally named "%41" into "A".
+            tag_name = request.match_info.get("tag_name", "")
             if not tag_name:
                 return web.json_response(
                     {"success": False, "error": "Tag name required"}, status=400
