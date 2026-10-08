@@ -59,24 +59,14 @@ def _thumbnail_rel_path(rel_path, thumbnail_ext):
 
 
 async def _read_json(request):
-    """Parse a JSON object body.
+    """Parse a JSON object body through the package's capped reader.
 
     Returns:
-        (data, None) on success, or (None, response) carrying a 400 reply.
+        (data, None) on success, or (None, response) carrying a 400/413 reply.
     """
-    try:
-        data = await request.json()
-    except ValueError:
-        return None, web.json_response(
-            {"success": False, "error": "Request body must be valid JSON"},
-            status=400,
-        )
-    if not isinstance(data, dict):
-        return None, web.json_response(
-            {"success": False, "error": "Request body must be a JSON object"},
-            status=400,
-        )
-    return data, None
+    from . import _read_json_body
+
+    return await _read_json_body(request)
 
 
 def _sse(payload):
@@ -253,8 +243,17 @@ class AdminRoutesMixin:
         async def scan_images_route(request):
             return await self.scan_images(request)
 
+    LONG_JOB_DUPLICATES = "duplicates"
+
     async def scan_duplicates_endpoint(self, request):
-        """Scan for duplicate images without removing them."""
+        """Scan for duplicate images without removing them (single flight)."""
+        job = self._acquire_long_job(self.LONG_JOB_DUPLICATES)
+        if job is None:
+            return self._long_job_busy_response("Duplicate scan")
+        async with job:
+            return await self._scan_duplicates(request)
+
+    async def _scan_duplicates(self, request):
         try:
             duplicates = await self.find_duplicate_images()
 
@@ -372,7 +371,14 @@ class AdminRoutesMixin:
         return hash_sha256.hexdigest()
 
     async def delete_duplicate_images_endpoint(self, request):
-        """Delete duplicate image files from disk."""
+        """Delete duplicate image files from disk (single flight with the scan)."""
+        job = self._acquire_long_job(self.LONG_JOB_DUPLICATES)
+        if job is None:
+            return self._long_job_busy_response("Duplicate scan or delete")
+        async with job:
+            return await self._delete_duplicate_images(request)
+
+    async def _delete_duplicate_images(self, request):
         try:
             data, error_response = await _read_json(request)
             if error_response is not None:

@@ -711,6 +711,94 @@ class TestDeleteDuplicatesEndpoint(AdminAPITestCase):
         self.assertNotIn(self.tmpdir, result["failed_files"][0])
 
 
+class TestJsonBodyCap(AdminAPITestCase):
+    """Every JSON POST in the admin API rejects bodies over the shared cap."""
+
+    JSON_POSTS = (
+        "/prompt_manager/settings",
+        "/prompt_manager/delete_duplicate_images",
+        "/prompt_manager/diagnostics/test-link",
+        "/prompt_manager/maintenance",
+    )
+
+    async def test_oversized_bodies_are_413(self):
+        body = json.dumps({"pad": "x" * 1_000_100}).encode()
+        for path in self.JSON_POSTS:
+            resp = await self.client.request(
+                "POST", path, data=body, headers={"Content-Type": "application/json"}
+            )
+            self.assertEqual(resp.status, 413, path)
+            self.assertFalse((await resp.json())["success"], path)
+
+
+class TestDuplicateJobsAreSingleFlight(AdminAPITestCase):
+    """A duplicate scan or delete refuses to overlap with a running one."""
+
+    def _block_scan(self):
+        import asyncio
+
+        gate = asyncio.Event()
+
+        async def slow_scan():
+            await gate.wait()
+            return []
+
+        self.api.find_duplicate_images = slow_scan
+        return gate
+
+    async def test_second_scan_while_one_runs_is_409(self):
+        import asyncio
+
+        gate = self._block_scan()
+        first = asyncio.ensure_future(
+            self.client.request("GET", "/prompt_manager/scan_duplicates")
+        )
+        await asyncio.sleep(0.05)
+
+        second = await asyncio.wait_for(
+            self.client.request("GET", "/prompt_manager/scan_duplicates"), 5
+        )
+        self.assertEqual(second.status, 409)
+        data = await second.json()
+        self.assertFalse(data["success"])
+        self.assertIn("already running", data["error"])
+
+        gate.set()
+        self.assertEqual((await first).status, 200)
+
+    async def test_delete_while_scan_runs_is_409_and_scan_after_is_fine(self):
+        import asyncio
+
+        gate = self._block_scan()
+        first = asyncio.ensure_future(
+            self.client.request("GET", "/prompt_manager/scan_duplicates")
+        )
+        await asyncio.sleep(0.05)
+
+        resp = await asyncio.wait_for(
+            self.client.request(
+                "POST",
+                "/prompt_manager/delete_duplicate_images",
+                json={"image_paths": ["a.png"]},
+            ),
+            5,
+        )
+        self.assertEqual(resp.status, 409)
+
+        gate.set()
+        await first
+        resp = await self.client.request("GET", "/prompt_manager/scan_duplicates")
+        self.assertEqual(resp.status, 200)
+
+    async def test_lock_is_released_after_a_failed_scan(self):
+        self.api._find_comfyui_output_dir = _raise
+        resp = await self.client.request("GET", "/prompt_manager/scan_duplicates")
+        self.assertEqual(resp.status, 500)
+        self.api._find_comfyui_output_dir = lambda: None
+        resp = await self.client.request("GET", "/prompt_manager/scan_duplicates")
+        self.assertEqual(resp.status, 200)
+
+
 class TestSettingsMisc(AdminAPITestCase):
 
     async def test_result_timeout_and_display_mode_saved(self):

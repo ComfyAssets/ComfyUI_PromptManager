@@ -207,6 +207,18 @@ class TestUpdateLogConfigWhitelist(LoggingAPITestCase):
         self.assertEqual(resp.status, 400)
         self.assertEqual(self.manager.update_calls, [])
 
+    async def test_oversized_body_is_413(self):
+        body = json.dumps({"level": "x" * 1_000_100}).encode()
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/logs/config",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resp.status, 413)
+        self.assertFalse((await resp.json())["success"])
+        self.assertEqual(self.manager.update_calls, [])
+
 
 class TestNoAbsolutePathsInLogResponses(LoggingAPITestCase):
 

@@ -244,13 +244,9 @@ class LoggingRoutesMixin:
     async def update_log_config(self, request):
         """Update logging configuration (whitelisted keys only)."""
         try:
-            try:
-                data = await request.json()
-            except ValueError:
-                return web.json_response(
-                    {"success": False, "error": "Request body must be valid JSON"},
-                    status=400,
-                )
+            data, error_response = await self._read_json_body(request)
+            if error_response is not None:
+                return error_response
 
             clean, error = _validate_log_config(data)
             if error:

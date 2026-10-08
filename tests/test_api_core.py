@@ -215,6 +215,147 @@ class TestGzipMiddleware(AioHTTPTestCase):
         self.assertEqual(len(await resp.read()), 4000)
 
 
+# ── JSON body reader ──────────────────────────────────────────────────
+
+
+class TestReadJsonBody(AioHTTPTestCase):
+    """_read_json_body: chunked read with a byte cap, object-only payloads."""
+
+    async def get_application(self):
+        async def echo(request):
+            data, error = await api_module._read_json_body(request)
+            if error is not None:
+                return error
+            return web.json_response({"success": True, "keys": sorted(data)})
+
+        async def small(request):
+            data, error = await api_module._read_json_body(request, max_bytes=64)
+            if error is not None:
+                return error
+            return web.json_response({"success": True, "data": data})
+
+        app = web.Application(client_max_size=4 * 1024 * 1024)
+        app.router.add_post("/echo", echo)
+        app.router.add_post("/small", small)
+        return app
+
+    async def test_valid_object_is_parsed(self):
+        resp = await self.client.request("POST", "/echo", json={"b": 1, "a": 2})
+        self.assertEqual(resp.status, 200)
+        self.assertEqual((await resp.json())["keys"], ["a", "b"])
+
+    async def test_default_cap_is_one_megabyte(self):
+        self.assertEqual(api_module.JSON_BODY_MAX_BYTES, 1_000_000)
+        body = json.dumps({"pad": "x" * 1_000_100}).encode()
+        resp = await self.client.request(
+            "POST", "/echo", data=body, headers={"Content-Type": "application/json"}
+        )
+        self.assertEqual(resp.status, 413)
+        data = await resp.json()
+        self.assertFalse(data["success"])
+        self.assertIn("too large", data["error"].lower())
+
+    async def test_body_just_under_cap_is_accepted(self):
+        payload = {"pad": "x" * (1_000_000 - 20)}
+        body = json.dumps(payload).encode()
+        self.assertLessEqual(len(body), 1_000_000)
+        resp = await self.client.request(
+            "POST", "/echo", data=body, headers={"Content-Type": "application/json"}
+        )
+        self.assertEqual(resp.status, 200)
+
+    async def test_chunked_upload_without_content_length_is_capped(self):
+        async def gen():
+            for _ in range(10):
+                yield b'{"pad": "' + b"x" * 20 + b'"}'
+
+        resp = await self.client.request(
+            "POST",
+            "/small",
+            data=gen(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resp.status, 413)
+
+    async def test_declared_oversize_content_length_is_413(self):
+        body = b'{"pad": "' + b"x" * 200 + b'"}'
+        resp = await self.client.request(
+            "POST", "/small", data=body, headers={"Content-Type": "application/json"}
+        )
+        self.assertEqual(resp.status, 413)
+
+    async def test_invalid_json_is_400(self):
+        for body in (b"{oops", b"\xff\xfe", b""):
+            resp = await self.client.request(
+                "POST",
+                "/echo",
+                data=body,
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(resp.status, 400, body)
+            self.assertFalse((await resp.json())["success"])
+
+    async def test_non_object_json_is_400(self):
+        for body in (b"[1, 2]", b'"text"', b"3", b"null", b"true"):
+            resp = await self.client.request(
+                "POST",
+                "/echo",
+                data=body,
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(resp.status, 400, body)
+            self.assertIn("object", (await resp.json())["error"])
+
+    def test_helper_is_exposed_on_the_api_object(self):
+        self.assertIs(PromptManagerAPI._read_json_body, api_module._read_json_body)
+
+
+class TestLongJobLock(unittest.TestCase):
+    """_acquire_long_job: one job per family at a time, released on exit."""
+
+    def setUp(self):
+        self.api = PromptManagerAPI()
+
+    def _run(self, coro):
+        import asyncio
+
+        return asyncio.run(coro)
+
+    def test_second_acquire_is_refused_until_first_releases(self):
+        async def scenario():
+            first = self.api._acquire_long_job("duplicates")
+            self.assertIsNotNone(first)
+            async with first:
+                self.assertIsNone(self.api._acquire_long_job("duplicates"))
+                # Other families are independent
+                other = self.api._acquire_long_job("thumbnails")
+                self.assertIsNotNone(other)
+                async with other:
+                    pass
+            again = self.api._acquire_long_job("duplicates")
+            self.assertIsNotNone(again)
+            async with again:
+                pass
+
+        self._run(scenario())
+
+    def test_lock_is_released_when_the_job_raises(self):
+        async def scenario():
+            with self.assertRaises(RuntimeError):
+                async with self.api._acquire_long_job("duplicates"):
+                    raise RuntimeError("boom")
+            self.assertIsNotNone(self.api._acquire_long_job("duplicates"))
+
+        self._run(scenario())
+
+    def test_busy_response_is_409_with_envelope(self):
+        resp = self.api._long_job_busy_response("Duplicate scan")
+        self.assertEqual(resp.status, 409)
+        data = json.loads(resp.body)
+        self.assertFalse(data["success"])
+        self.assertEqual(data["error"], "Duplicate scan already running")
+
+
 # ── UI and static routes ──────────────────────────────────────────────
 
 

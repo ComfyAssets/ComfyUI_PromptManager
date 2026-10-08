@@ -129,6 +129,64 @@ def _resolve_static_file(root, filepath):
     return str(candidate)
 
 
+# ── JSON request bodies ────────────────────────────────────────────────
+JSON_BODY_MAX_BYTES = 1_000_000
+_JSON_READ_CHUNK = 64 * 1024
+
+
+def _json_error(message, status):
+    return web.json_response({"success": False, "error": message}, status=status)
+
+
+async def _read_json_body(request, max_bytes=JSON_BODY_MAX_BYTES):
+    """Read and parse a JSON object body of at most ``max_bytes``.
+
+    The body is read in chunks so an oversized or chunked upload is refused
+    as soon as it crosses the cap rather than buffered whole.
+
+    Returns:
+        (data, None) on success, or (None, response) where ``response`` is a
+        413 (body too large) or 400 (invalid JSON, or not a JSON object).
+    """
+    too_large = _json_error(f"Request body too large (max {max_bytes} bytes)", 413)
+    declared = request.content_length
+    if declared is not None and declared > max_bytes:
+        return None, too_large
+
+    chunks = []
+    size = 0
+    async for chunk in request.content.iter_chunked(_JSON_READ_CHUNK):
+        size += len(chunk)
+        if size > max_bytes:
+            return None, too_large
+        chunks.append(chunk)
+
+    try:
+        data = json.loads(b"".join(chunks).decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None, _json_error("Request body must be valid JSON", 400)
+    if not isinstance(data, dict):
+        return None, _json_error("Request body must be a JSON object", 400)
+    return data, None
+
+
+class _LongJobGuard:
+    """Async context manager handed out by ``_acquire_long_job``."""
+
+    def __init__(self, lock):
+        self._lock = lock
+
+    async def __aenter__(self):
+        # The caller checked ``locked()`` on this same loop iteration, so this
+        # acquire never waits.
+        await self._lock.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self._lock.release()
+        return False
+
+
 # ── Gzip compression middleware ────────────────────────────────────────
 _GZIP_MIN_SIZE = 1024  # Only compress bodies larger than 1 KB
 _GZIP_TYPES = frozenset(
@@ -212,6 +270,10 @@ class PromptManagerAPI(
         self._html_cache = {}  # Cached HTML file contents keyed by path
         self._gallery_cache = {}  # dict: path_str -> (files, timestamp)
         self._gallery_cache_ttl = 30  # Cache TTL in seconds
+        # Single-flight locks for long jobs, keyed by job family; see
+        # _acquire_long_job(). Created lazily so no lock binds to an event
+        # loop before the server's loop exists.
+        self._long_jobs: dict = {}
 
         # Run cleanup on initialization to remove any existing duplicates
         try:
@@ -227,6 +289,32 @@ class PromptManagerAPI(
 
     _public_path = staticmethod(_public_path)
     _public_error = staticmethod(_public_error)
+    _read_json_body = staticmethod(_read_json_body)
+
+    def _acquire_long_job(self, name):
+        """Claim the single-flight slot for a long job family, or None when busy.
+
+        Usage in a handler::
+
+            job = self._acquire_long_job("duplicates")
+            if job is None:
+                return self._long_job_busy_response("Duplicate scan")
+            async with job:
+                ...
+
+        Families are free-form strings ("duplicates", "thumbnails",
+        "autotag", ...); the lock is released when the ``async with`` block
+        exits, including on exceptions. Must be called from the event loop.
+        """
+        lock = self._long_jobs.setdefault(name, asyncio.Lock())
+        if lock.locked():
+            return None
+        return _LongJobGuard(lock)
+
+    @staticmethod
+    def _long_job_busy_response(label):
+        """409 envelope for a long job that is already running."""
+        return _json_error(f"{label} already running", 409)
 
     async def _run_in_executor(self, func, *args, **kwargs):
         """Run a blocking function in the default thread pool executor.
