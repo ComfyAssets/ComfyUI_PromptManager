@@ -53,8 +53,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptSearchList": "Prompt Search List",
 }
 
-# Define path to web directory for UI components
-WEB_DIRECTORY = "web"
+# Canvas extension only. ComfyUI loads every .js under this directory into the
+# canvas page, so the admin/gallery bundles and vendored libraries under web/
+# are served by our own routes instead (see py/api).
+WEB_DIRECTORY = "web/comfy"
 
 # Add API routes (same pattern as ComfyUI_Assets)
 try:
