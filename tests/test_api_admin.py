@@ -604,5 +604,494 @@ class TestSettingsReadMonitorThroughModule(AdminAPITestCase):
         self.assertEqual(data["settings"]["gallery_root_paths"], ["output"])
 
 
+def _raise(*args, **kwargs):
+    raise RuntimeError("boom")
+
+
+class TestStatsCleanupAndErrors(AdminAPITestCase):
+
+    async def test_stats_success(self):
+        resp = await self.client.request("GET", "/prompt_manager/stats")
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertIn("total_prompts", data["stats"])
+
+    async def test_stats_db_failure_is_500(self):
+        self.api.db.get_statistics = _raise
+        resp = await self.client.request("GET", "/prompt_manager/stats")
+        self.assertEqual(resp.status, 500)
+        self.assertFalse((await resp.json())["success"])
+
+    async def test_cleanup_success(self):
+        resp = await self.client.request("POST", "/prompt_manager/cleanup")
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(data["duplicates_removed"], 0)
+
+    async def test_cleanup_failure_is_500(self):
+        self.api.db.cleanup_duplicates = _raise
+        resp = await self.client.request("POST", "/prompt_manager/cleanup")
+        self.assertEqual(resp.status, 500)
+
+    async def test_scan_duplicates_failure_is_500(self):
+        self.api._find_comfyui_output_dir = _raise
+        resp = await self.client.request("GET", "/prompt_manager/scan_duplicates")
+        body = await resp.text()
+        self.assertEqual(resp.status, 500)
+        self.assertNotIn("boom", body)
+
+    async def test_scan_duplicates_without_output_dir_is_empty(self):
+        self.api._find_comfyui_output_dir = lambda: None
+        resp = await self.client.request("GET", "/prompt_manager/scan_duplicates")
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(data["duplicates"], [])
+
+
+class TestDeleteDuplicatesEndpoint(AdminAPITestCase):
+
+    async def _post(self, payload):
+        return await self.client.request(
+            "POST", "/prompt_manager/delete_duplicate_images", json=payload
+        )
+
+    async def test_empty_list_is_400(self):
+        resp = await self._post({"image_paths": []})
+        self.assertEqual(resp.status, 400)
+
+    async def test_non_list_is_400(self):
+        resp = await self._post({"image_paths": "a.png"})
+        self.assertEqual(resp.status, 400)
+
+    async def test_malformed_json_is_400(self):
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/delete_duplicate_images",
+            data=b"{",
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_failures_are_reported(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        resp = await self._post({"image_paths": ["ghost.png"]})
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(data["failed_count"], 1)
+        self.assertIn("1 failed", data["message"])
+        self.assertEqual(len(data["failed_files"]), 1)
+
+    async def test_unexpected_error_is_500(self):
+        self.api._find_comfyui_output_dir = _raise
+        resp = await self._post({"image_paths": ["a.png"]})
+        self.assertEqual(resp.status, 500)
+
+    def test_thumbnail_removal_failure_does_not_fail_delete(self):
+        target = self.output_dir / "x.png"
+        target.write_bytes(b"x")
+        thumb_dir = self.output_dir / "thumbnails" / "x_thumb.png"
+        thumb_dir.mkdir(parents=True)
+        (thumb_dir / "child").write_bytes(b"c")  # os.remove on a dir raises OSError
+
+        result = self.api._delete_duplicate_images_sync(
+            [str(target)], str(self.output_dir)
+        )
+
+        self.assertEqual(result["deleted_count"], 1)
+        self.assertFalse(target.exists())
+        self.assertTrue(thumb_dir.exists())
+
+    def test_unexpected_error_per_file_is_reported_without_path(self):
+        self.api._delete_one_duplicate = lambda *a: (_ for _ in ()).throw(
+            PermissionError(13, "Permission denied", os.path.join(self.tmpdir, "x.png"))
+        )
+        result = self.api._delete_duplicate_images_sync(["x.png"], str(self.output_dir))
+        self.assertEqual(result["failed_count"], 1)
+        self.assertIn("Permission denied", result["failed_files"][0])
+        self.assertNotIn(self.tmpdir, result["failed_files"][0])
+
+
+class TestSettingsMisc(AdminAPITestCase):
+
+    async def test_result_timeout_and_display_mode_saved(self):
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/settings",
+            json={"result_timeout": 9, "webui_display_mode": "popup"},
+        )
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertFalse(data["restart_required"])
+        self.assertEqual(PromptManagerConfig.RESULT_TIMEOUT, 9)
+        self.assertEqual(PromptManagerConfig.WEBUI_DISPLAY_MODE, "popup")
+        saved = self._read_config()
+        self.assertEqual(saved["web_ui"]["result_timeout"], 9)
+
+    async def test_invalid_result_timeout_is_400(self):
+        resp = await self.client.request(
+            "POST", "/prompt_manager/settings", json={"result_timeout": "soon"}
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_malformed_json_is_400(self):
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/settings",
+            data=b"{oops",
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_unchanged_roots_do_not_require_restart(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [
+            os.path.normcase(os.path.realpath(self.output_dir))
+        ]
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/settings",
+            json={"gallery_root_paths": [str(self.output_dir)]},
+        )
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertFalse(data["restart_required"])
+
+    async def test_unwritable_config_path_still_succeeds(self):
+        os.environ[CONFIG_PATH_ENV] = os.path.join(self.tmpdir, "missing", "c.json")
+        resp = await self.client.request(
+            "POST", "/prompt_manager/settings", json={"result_timeout": 3}
+        )
+        self.assertEqual(resp.status, 200)
+
+    async def test_save_unexpected_error_is_500(self):
+        self.api._parse_gallery_roots = _raise
+        resp = await self.client.request(
+            "POST", "/prompt_manager/settings", json={"gallery_root_paths": []}
+        )
+        self.assertEqual(resp.status, 500)
+        self.assertNotIn("boom", await resp.text())
+
+    async def test_get_unexpected_error_is_500(self):
+        self.api._monitored_directories = _raise
+        resp = await self.client.request("GET", "/prompt_manager/settings")
+        self.assertEqual(resp.status, 500)
+
+
+class TestDiagnostics(AdminAPITestCase):
+
+    def _install_monitor(self, monitor):
+        import utils.image_monitor as im_mod
+
+        orig = im_mod._monitor_instance
+        im_mod._monitor_instance = monitor
+        self.addCleanup(setattr, im_mod, "_monitor_instance", orig)
+
+    async def _diag(self):
+        resp = await self.client.request("GET", "/prompt_manager/diagnostics")
+        return resp, (await resp.json())["diagnostics"]
+
+    async def test_healthy_report(self):
+        self.api.db.save_prompt(text="hello", prompt_hash="h1")
+        self._install_monitor(FakeMonitor([str(self.output_dir)]))
+
+        resp, diag = await self._diag()
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(diag["database"]["status"], "ok")
+        self.assertEqual(diag["database"]["prompt_count"], 1)
+        self.assertTrue(diag["database"]["has_images_table"])
+        self.assertEqual(diag["dependencies"]["status"], "ok")
+        self.assertEqual(diag["comfyui_output"]["status"], "ok")
+        self.assertEqual(diag["image_monitor"]["status"], "ok")
+
+    async def test_corrupt_database_reported(self):
+        bad = os.path.join(self.tmpdir, "bad.db")
+        with open(bad, "wb") as f:
+            f.write(b"not a database at all, definitely not sqlite")
+        self.api.db.model.db_path = bad
+
+        _, diag = await self._diag()
+
+        self.assertEqual(diag["database"]["status"], "error")
+        self.assertIn("Database error", diag["database"]["message"])
+
+    async def test_monitor_not_running_and_no_output_dirs(self):
+        self._install_monitor(None)
+        sys.modules.pop("folder_paths", None)
+        orig_cwd = os.getcwd()
+        os.chdir(self.outside_dir)
+        self.addCleanup(os.chdir, orig_cwd)
+
+        _, diag = await self._diag()
+
+        self.assertEqual(diag["image_monitor"]["status"], "error")
+        self.assertIn("not initialized", diag["image_monitor"]["message"])
+        self.assertEqual(diag["comfyui_output"]["status"], "warning")
+        self.assertEqual(diag["comfyui_output"]["output_dirs"], [])
+
+    async def test_relative_output_fallback_without_folder_paths(self):
+        sys.modules.pop("folder_paths", None)
+        orig_cwd = os.getcwd()
+        os.chdir(self.comfy_dir)  # has an "output" child
+        self.addCleanup(os.chdir, orig_cwd)
+
+        _, diag = await self._diag()
+
+        self.assertEqual(diag["comfyui_output"]["status"], "ok")
+        self.assertEqual(diag["comfyui_output"]["output_dirs"], ["output"])
+
+    async def test_monitor_status_failure_reported(self):
+        broken = MagicMock()
+        broken.get_status = _raise
+        self._install_monitor(broken)
+
+        _, diag = await self._diag()
+
+        self.assertEqual(diag["image_monitor"]["status"], "error")
+        self.assertIn("Failed to get monitor status", diag["image_monitor"]["message"])
+
+    async def test_unexpected_error_is_500(self):
+        import py.api.admin as admin_module
+
+        orig = admin_module._diagnose_database
+        admin_module._diagnose_database = _raise
+        self.addCleanup(setattr, admin_module, "_diagnose_database", orig)
+        resp = await self.client.request("GET", "/prompt_manager/diagnostics")
+        self.assertEqual(resp.status, 500)
+
+
+class TestTestImageLink(AdminAPITestCase):
+
+    async def _post(self, payload):
+        return await self.client.request(
+            "POST", "/prompt_manager/diagnostics/test-link", json=payload
+        )
+
+    async def test_missing_prompt_id_is_400(self):
+        resp = await self._post({})
+        self.assertEqual(resp.status, 400)
+
+    async def test_links_test_image(self):
+        pid = self.api.db.save_prompt(text="hello", prompt_hash="h1")
+        resp = await self._post({"prompt_id": pid})
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(data["result"]["status"], "ok")
+        self.assertIsInstance(data["result"]["image_id"], int)
+
+    async def test_db_failure_is_reported_in_result(self):
+        self.api.db.link_image_to_prompt = _raise
+        resp = await self._post({"prompt_id": 1})
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertFalse(data["success"])
+        self.assertEqual(data["result"]["status"], "error")
+
+    async def test_malformed_json_is_400(self):
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/diagnostics/test-link",
+            data=b"nope",
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resp.status, 400)
+
+
+class TestMaintenance(AdminAPITestCase):
+
+    ALL_OPS = [
+        "cleanup_duplicates",
+        "vacuum",
+        "cleanup_orphaned_images",
+        "check_hash_duplicates",
+        "statistics",
+        "prune_orphaned_prompts",
+        "check_consistency",
+    ]
+
+    async def _post(self, payload=None, **kwargs):
+        if payload is None:
+            return await self.client.request(
+                "POST", "/prompt_manager/maintenance", **kwargs
+            )
+        return await self.client.request(
+            "POST", "/prompt_manager/maintenance", json=payload, **kwargs
+        )
+
+    async def test_default_operations_without_body(self):
+        resp = await self._post(data=b"", headers={"Content-Type": "text/plain"})
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(data["operations_completed"], 3)
+        self.assertTrue(data["all_successful"])
+        self.assertEqual(
+            set(data["results"]),
+            {"cleanup_duplicates", "vacuum", "cleanup_orphaned_images"},
+        )
+
+    async def test_all_operations(self):
+        self.api.db.save_prompt(text="orphan", prompt_hash="h1")
+        resp = await self._post({"operations": self.ALL_OPS})
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(data["operations_completed"], len(self.ALL_OPS))
+        self.assertTrue(data["all_successful"], data["results"])
+        self.assertIn("info", data["results"]["statistics"])
+        self.assertEqual(data["results"]["check_consistency"]["issues_found"], 0)
+
+    async def test_unknown_operation_does_nothing(self):
+        resp = await self._post({"operations": ["reboot"]})
+        data = await resp.json()
+        self.assertEqual(data["operations_completed"], 0)
+        self.assertTrue(data["all_successful"])
+
+    async def test_each_operation_reports_its_own_failure(self):
+        self.api.db.cleanup_duplicates = _raise
+        self.api.db.model.vacuum_database = _raise
+        self.api.db.cleanup_missing_images = _raise
+        self.api.db.check_hash_duplicates = _raise
+        self.api.db.model.get_database_info = _raise
+        self.api.db.prune_orphaned_prompts = _raise
+        self.api.db.check_consistency = _raise
+
+        resp = await self._post({"operations": self.ALL_OPS})
+        data = await resp.json()
+
+        self.assertEqual(resp.status, 200)
+        self.assertFalse(data["all_successful"])
+        self.assertEqual(len(data["results"]), len(self.ALL_OPS))
+        for name in self.ALL_OPS:
+            self.assertFalse(data["results"][name]["success"], name)
+            self.assertEqual(data["results"][name]["error"], "boom")
+
+    async def test_unexpected_error_is_500(self):
+        self.api._run_in_executor = _raise
+        resp = await self._post({"operations": ["vacuum"]})
+        self.assertEqual(resp.status, 500)
+
+
+class TestBackupRestoreContract(AdminAPITestCase):
+    """Contract tests only: status codes and envelope of backup/restore."""
+
+    async def test_backup_downloads_sqlite_file(self):
+        self.api.db.save_prompt(text="keep me", prompt_hash="h1")
+        resp = await self.client.request("GET", "/prompt_manager/backup")
+        body = await resp.read()
+        self.assertEqual(resp.status, 200)
+        self.assertIn("attachment", resp.headers["Content-Disposition"])
+        self.assertTrue(body.startswith(b"SQLite format 3"))
+
+    async def test_backup_without_db_file_is_404(self):
+        self.api.db.model.db_path = os.path.join(self.tmpdir, "nope.db")
+        resp = await self.client.request("GET", "/prompt_manager/backup")
+        self.assertEqual(resp.status, 404)
+
+    async def _restore(self, field_name, content):
+        from aiohttp import FormData
+
+        form = FormData()
+        form.add_field(field_name, content, filename="upload.db")
+        return await self.client.request("POST", "/prompt_manager/restore", data=form)
+
+    async def test_restore_wrong_field_is_400(self):
+        resp = await self._restore("other", b"x")
+        self.assertEqual(resp.status, 400)
+
+    async def test_restore_empty_file_is_400(self):
+        resp = await self._restore("database_file", b"")
+        self.assertEqual(resp.status, 400)
+
+    async def test_restore_non_sqlite_is_400_and_db_untouched(self):
+        self.api.db.save_prompt(text="keep me", prompt_hash="h1")
+        resp = await self._restore("database_file", b"definitely not sqlite data")
+        self.assertEqual(resp.status, 400)
+        self.assertIsNotNone(self.api.db.get_prompt_by_hash("h1"))
+
+    async def test_restore_valid_db_succeeds(self):
+        import sqlite3
+
+        PromptManagerConfig.DEFAULT_DB_PATH = self.api.db.model.db_path
+        self.api.db.save_prompt(text="restored", prompt_hash="h1")
+        # Rows may still sit in the WAL file: build a self-contained copy.
+        snapshot = os.path.join(self.tmpdir, "snapshot.db")
+        with sqlite3.connect(self.api.db.model.db_path) as src:
+            with sqlite3.connect(snapshot) as dst:
+                src.backup(dst)
+        with open(snapshot, "rb") as f:
+            upload = f.read()
+        resp = await self._restore("database_file", upload)
+        data = await resp.json()
+        self.assertEqual(resp.status, 200, data)
+        self.assertTrue(data["success"])
+        self.assertEqual(data["prompt_count"], 1)
+        with sqlite3.connect(self.api.db.model.db_path) as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM prompts").fetchone()[0], 1
+            )
+
+
+class TestOutputScanInternals(AdminAPITestCase):
+
+    def test_metadata_extraction_failure_yields_empty(self):
+        self.api._extract_comfyui_metadata = _raise
+        results = self.api._extract_batch_metadata_sync([Path("a.png")])
+        self.assertEqual(results, [(Path("a.png"), {})])
+
+    def test_ingest_outcomes(self):
+        f = Path("gen.png")
+        meta = {
+            "prompt": json.dumps(
+                {"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a cat"}}}
+            )
+        }
+        self.assertIsNone(self.api._ingest_scanned_file(f, {}))
+        self.assertIsNone(self.api._ingest_scanned_file(f, {"prompt": "{}"}))
+        self.assertEqual(
+            self.api._ingest_scanned_file(f, {"parameters": "  \nNegative prompt: x"}),
+            "found",
+        )
+        self.assertEqual(self.api._ingest_scanned_file(f, meta), "added")
+        self.assertEqual(self.api._ingest_scanned_file(f, meta), "linked")
+
+    def test_ingest_link_failures_are_tolerated(self):
+        f = Path("gen.png")
+        meta = {
+            "prompt": json.dumps(
+                {"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a dog"}}}
+            )
+        }
+        self.api.db.link_image_to_prompt = _raise
+        self.assertEqual(self.api._ingest_scanned_file(f, meta), "added")
+        self.assertEqual(self.api._ingest_scanned_file(f, meta), "found")
+
+    def test_ingest_save_failure_counts_as_found(self):
+        f = Path("gen.png")
+        meta = {
+            "prompt": json.dumps(
+                {"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a bird"}}}
+            )
+        }
+        self.api.db.save_prompt = lambda *a, **k: None
+        self.assertEqual(self.api._ingest_scanned_file(f, meta), "found")
+
+    def test_batch_counts_and_per_file_errors(self):
+        meta = {
+            "prompt": json.dumps(
+                {"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a fish"}}}
+            )
+        }
+        self.api.db.get_prompt_by_hash = _raise
+        counts = self.api._ingest_scan_batch_sync(
+            [(Path("a.png"), meta), (Path("b.png"), {})]
+        )
+        self.assertEqual(counts, {"processed": 2, "found": 0, "added": 0, "linked": 0})
+
+    async def test_scan_internal_error_streams_error_event(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        self.api._collect_output_media_sync = _raise
+        body = await (await self.client.request("POST", "/prompt_manager/scan")).text()
+        self.assertIn('"type": "error"', body)
+        self.assertNotIn("boom", body)
+
+
 if __name__ == "__main__":
     unittest.main()
