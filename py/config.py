@@ -31,7 +31,8 @@ routes = server_instance.routes
 extension_uri = None  # Will be set in __init__.py
 
 import os
-from typing import Dict, Any, List
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 # Import logging system
 try:
@@ -45,6 +46,58 @@ except ImportError:
 
 # Initialize logger for config operations
 config_logger = get_logger("prompt_manager.config")
+
+# Environment variable listing extra directories (os.pathsep-separated) that
+# may be used as gallery roots in addition to ComfyUI's own directories.
+EXTRA_GALLERY_ROOTS_ENV = "PROMPT_MANAGER_EXTRA_GALLERY_ROOTS"
+
+# Environment variable overriding where config.json is read from and saved to.
+CONFIG_PATH_ENV = "PROMPT_MANAGER_CONFIG_PATH"
+
+# ComfyUI folder_paths getters whose directories are valid gallery parents.
+_COMFYUI_DIRECTORY_GETTERS = (
+    "get_output_directory",
+    "get_input_directory",
+    "get_temp_directory",
+    "get_user_directory",
+)
+
+
+def _canonical_path(path: str) -> str:
+    """Return a path normalised for comparison (realpath + normcase)."""
+    return os.path.normcase(os.path.realpath(path))
+
+
+def _is_filesystem_root(path: str) -> bool:
+    """True for '/' on POSIX and drive roots such as 'C:\\' on Windows."""
+    return os.path.dirname(path) == path
+
+
+def _comfyui_directories() -> List[str]:
+    """Directories reported by ComfyUI's folder_paths module, if importable."""
+    try:
+        import folder_paths
+    except ImportError:
+        return []
+
+    found = []
+    for getter_name in _COMFYUI_DIRECTORY_GETTERS:
+        getter = getattr(folder_paths, getter_name, None)
+        if getter is None:
+            continue
+        try:
+            directory = getter()
+        except Exception:
+            continue
+        if isinstance(directory, str) and directory:
+            found.append(directory)
+    return found
+
+
+def _extra_gallery_roots() -> List[str]:
+    """Directories the user opted in through PROMPT_MANAGER_EXTRA_GALLERY_ROOTS."""
+    raw = os.environ.get(EXTRA_GALLERY_ROOTS_ENV, "")
+    return [entry.strip() for entry in raw.split(os.pathsep) if entry.strip()]
 
 
 class GalleryConfig:
@@ -200,6 +253,61 @@ class GalleryConfig:
         if "metadata_extraction_timeout" in performance:
             cls.METADATA_EXTRACTION_TIMEOUT = performance["metadata_extraction_timeout"]
 
+    @classmethod
+    def allowed_gallery_parents(cls) -> List[str]:
+        """Canonical directories under which gallery roots may live.
+
+        Filesystem roots are never allowed as parents, even when listed in
+        the environment, because that would re-open the whole disk.
+        """
+        parents = []
+        for candidate in _comfyui_directories() + _extra_gallery_roots():
+            try:
+                canonical = _canonical_path(candidate)
+            except (OSError, ValueError):
+                continue
+            if _is_filesystem_root(canonical) or not os.path.isdir(canonical):
+                continue
+            if canonical not in parents:
+                parents.append(canonical)
+        return parents
+
+    @classmethod
+    def validate_gallery_root(cls, path: Any) -> Tuple[bool, str]:
+        """Check whether ``path`` may be used as a gallery root.
+
+        Returns:
+            (True, "") when the directory lies inside one of
+            :meth:`allowed_gallery_parents`; otherwise (False, reason).
+        """
+        if not isinstance(path, str) or not path.strip():
+            return False, "Gallery root must be a non-empty path"
+
+        try:
+            canonical = _canonical_path(path.strip())
+        except (OSError, ValueError):
+            return False, "Gallery root could not be resolved"
+
+        if _is_filesystem_root(canonical):
+            return False, "Gallery root cannot be a filesystem root"
+        if canonical == _canonical_path(os.path.expanduser("~")):
+            return False, "Gallery root cannot be the home directory"
+        if not os.path.exists(canonical):
+            return False, "Gallery root does not exist"
+        if not os.path.isdir(canonical):
+            return False, "Gallery root is not a directory"
+
+        candidate = Path(canonical)
+        for parent in cls.allowed_gallery_parents():
+            if candidate.is_relative_to(Path(parent)):
+                return True, ""
+
+        return (
+            False,
+            "Gallery root must be inside a ComfyUI directory "
+            f"(output, input, temp, user) or one listed in {EXTRA_GALLERY_ROOTS_ENV}",
+        )
+
 
 class IntegrationConfig:
     """Configuration for third-party extension integrations.
@@ -315,7 +423,20 @@ class PromptManagerConfig:
         }
 
     @classmethod
-    def load_from_file(cls, config_path: str):
+    def get_config_path(cls) -> str:
+        """Path of the persisted config.json.
+
+        Honours ``PROMPT_MANAGER_CONFIG_PATH`` when set; otherwise the file
+        lives at the repository root next to ``pyproject.toml``.
+        """
+        override = os.environ.get(CONFIG_PATH_ENV, "").strip()
+        if override:
+            return override
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(repo_root, "config.json")
+
+    @classmethod
+    def load_from_file(cls, config_path: Optional[str] = None):
         """Load configuration settings from a JSON file.
 
         Reads configuration from the specified JSON file and updates the current
@@ -324,7 +445,8 @@ class PromptManagerConfig:
 
         Args:
             config_path (str): Path to the JSON configuration file to load.
-                            Can be relative or absolute path.
+                            Can be relative or absolute path. Defaults to
+                            :meth:`get_config_path`.
 
         Raises:
             The method handles all exceptions internally and logs errors rather
@@ -335,6 +457,9 @@ class PromptManagerConfig:
             PromptManagerConfig.load_from_file('/path/to/config.json')
         """
         import json
+
+        if config_path is None:
+            config_path = cls.get_config_path()
 
         if os.path.exists(config_path):
             try:
@@ -348,7 +473,7 @@ class PromptManagerConfig:
             config_logger.info(f"Config file not found: {config_path}, using defaults")
 
     @classmethod
-    def save_to_file(cls, config_path: str):
+    def save_to_file(cls, config_path: Optional[str] = None):
         """Save the current configuration to a JSON file.
 
         Serializes the complete configuration (including gallery settings) to
@@ -357,6 +482,7 @@ class PromptManagerConfig:
         Args:
             config_path (str): Path where the JSON configuration file should be saved.
                             Parent directories will be created if they don't exist.
+                            Defaults to :meth:`get_config_path`.
 
         Raises:
             The method handles all exceptions internally and logs errors rather
@@ -368,9 +494,14 @@ class PromptManagerConfig:
         """
         import json
 
+        if config_path is None:
+            config_path = cls.get_config_path()
+
         try:
             config = cls.get_config()
-            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+            parent_dir = os.path.dirname(config_path)
+            if parent_dir:
+                os.makedirs(parent_dir, exist_ok=True)
 
             with open(config_path, "w") as f:
                 json.dump(config, f, indent=2)
@@ -434,8 +565,6 @@ class PromptManagerConfig:
 
 # Load configuration on import
 try:
-    config_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    config_file = os.path.join(config_dir, "config.json")
-    PromptManagerConfig.load_from_file(config_file)
+    PromptManagerConfig.load_from_file()
 except Exception as e:
     config_logger.error(f"Error during config initialization: {e}")

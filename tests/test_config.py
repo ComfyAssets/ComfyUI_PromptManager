@@ -291,5 +291,59 @@ class TestIntegrationConfig(unittest.TestCase):
         self.assertEqual(config1, config2)
 
 
+class TestConfigPathOverride(unittest.TestCase):
+    """PROMPT_MANAGER_CONFIG_PATH relocates the persisted config.json."""
+
+    ENV = "PROMPT_MANAGER_CONFIG_PATH"
+
+    def setUp(self):
+        self._orig_env = os.environ.pop(self.ENV, None)
+        self._orig = PromptManagerConfig.get_config()
+
+    def tearDown(self):
+        if self._orig_env is None:
+            os.environ.pop(self.ENV, None)
+        else:
+            os.environ[self.ENV] = self._orig_env
+        PromptManagerConfig.update_config(self._orig)
+
+    def test_default_config_path_is_repo_config_json(self):
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        expected = os.path.join(repo_root, "config.json")
+        self.assertEqual(
+            os.path.normcase(PromptManagerConfig.get_config_path()),
+            os.path.normcase(expected),
+        )
+
+    def test_env_override_is_used(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            custom = os.path.join(tmpdir, "custom.json")
+            os.environ[self.ENV] = custom
+            self.assertEqual(PromptManagerConfig.get_config_path(), custom)
+
+    def test_save_without_path_uses_env_override(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            custom = os.path.join(tmpdir, "nested", "custom.json")
+            os.environ[self.ENV] = custom
+            PromptManagerConfig.RESULT_TIMEOUT = 42
+
+            PromptManagerConfig.save_to_file()
+
+            with open(custom) as f:
+                saved = json.load(f)
+            self.assertEqual(saved["web_ui"]["result_timeout"], 42)
+
+    def test_load_without_path_uses_env_override(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            custom = os.path.join(tmpdir, "custom.json")
+            with open(custom, "w") as f:
+                json.dump({"web_ui": {"result_timeout": 77}}, f)
+            os.environ[self.ENV] = custom
+
+            PromptManagerConfig.load_from_file()
+
+            self.assertEqual(PromptManagerConfig.RESULT_TIMEOUT, 77)
+
+
 if __name__ == "__main__":
     unittest.main()

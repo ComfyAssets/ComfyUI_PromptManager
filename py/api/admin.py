@@ -402,12 +402,10 @@ class AdminRoutesMixin:
     async def save_settings(self, request):
         """Save settings."""
         try:
-            from ..config import PromptManagerConfig, GalleryConfig
+            from ..config import PromptManagerConfig
 
             data = await request.json()
-            restart_required = False
 
-            # Update in-memory config
             if "result_timeout" in data:
                 try:
                     PromptManagerConfig.RESULT_TIMEOUT = validate_result_timeout(
@@ -420,124 +418,15 @@ class AdminRoutesMixin:
             if "webui_display_mode" in data:
                 PromptManagerConfig.WEBUI_DISPLAY_MODE = data["webui_display_mode"]
 
-            # Blocked system directories (shared by both path handlers)
-            blocked = [
-                "/etc",
-                "/usr",
-                "/bin",
-                "/sbin",
-                "/boot",
-                "/proc",
-                "/sys",
-                "/dev",
-                "/var/log",
-                "/root",
-                "C:\\Windows",
-                "C:\\Program Files",
-            ]
+            new_roots, error = self._parse_gallery_roots(data)
+            if error:
+                return web.json_response({"success": False, "error": error}, status=400)
 
-            # Handle gallery root paths (array — preferred)
-            if "gallery_root_paths" in data:
-                new_paths = data["gallery_root_paths"]
-                if not isinstance(new_paths, list):
-                    return web.json_response(
-                        {
-                            "success": False,
-                            "error": "gallery_root_paths must be a list",
-                        },
-                        status=400,
-                    )
+            restart_required = False
+            if new_roots is not None:
+                restart_required = self._apply_gallery_roots(new_roots)
 
-                validated_paths = []
-                for path_str in new_paths:
-                    path_str = path_str.strip()
-                    if not path_str:
-                        continue
-                    resolved = Path(path_str).resolve()
-                    if not resolved.is_dir():
-                        return web.json_response(
-                            {
-                                "success": False,
-                                "error": f"Path does not exist or is not a directory: {path_str}",
-                            },
-                            status=400,
-                        )
-                    for b in blocked:
-                        if str(resolved).startswith(b):
-                            return web.json_response(
-                                {
-                                    "success": False,
-                                    "error": f"Cannot use system directory: {path_str}",
-                                },
-                                status=400,
-                            )
-                    validated_paths.append(path_str)
-
-                old_paths = list(GalleryConfig.MONITORING_DIRECTORIES)
-                if validated_paths != old_paths:
-                    GalleryConfig.MONITORING_DIRECTORIES = validated_paths
-                    self._cached_output_dir = None
-                    self._gallery_cache = {}
-                    restart_required = True
-
-            elif "gallery_root_path" in data:
-                # Backward compat: single path string
-                new_path = data["gallery_root_path"].strip()
-                old_path = (
-                    GalleryConfig.MONITORING_DIRECTORIES[0]
-                    if GalleryConfig.MONITORING_DIRECTORIES
-                    else ""
-                )
-
-                if new_path != old_path:
-                    if new_path:
-                        resolved = Path(new_path).resolve()
-                        if not resolved.is_dir():
-                            return web.json_response(
-                                {
-                                    "success": False,
-                                    "error": f"Gallery path does not exist or is not a directory: {new_path}",
-                                },
-                                status=400,
-                            )
-                        for b in blocked:
-                            if str(resolved).startswith(b):
-                                return web.json_response(
-                                    {
-                                        "success": False,
-                                        "error": "Gallery path cannot point to a system directory",
-                                    },
-                                    status=400,
-                                )
-                        GalleryConfig.MONITORING_DIRECTORIES = [new_path]
-                    else:
-                        GalleryConfig.MONITORING_DIRECTORIES = []
-                    self._cached_output_dir = None
-                    self._gallery_cache = {}
-                    restart_required = True
-
-            # Save to config file for persistence
-            config_dir = os.path.dirname(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            )
-            config_file = os.path.join(config_dir, "config.json")
-
-            config_data = {
-                "web_ui": {
-                    "result_timeout": PromptManagerConfig.RESULT_TIMEOUT,
-                    "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE,
-                },
-                "gallery": {
-                    "monitoring": {"directories": GalleryConfig.MONITORING_DIRECTORIES}
-                },
-            }
-
-            try:
-                with open(config_file, "w") as f:
-                    json.dump(config_data, f, indent=2)
-                self.logger.info(f"Settings saved to {config_file}")
-            except Exception as save_err:
-                self.logger.warning(f"Could not save config file: {save_err}")
+            self._persist_settings()
 
             return web.json_response(
                 {
@@ -547,10 +436,81 @@ class AdminRoutesMixin:
                 }
             )
         except Exception as e:
+            self.logger.error(f"Save settings error: {e}", exc_info=True)
             return web.json_response(
-                {"success": False, "error": f"Failed to save settings: {str(e)}"},
+                {"success": False, "error": "Failed to save settings"},
                 status=500,
             )
+
+    def _parse_gallery_roots(self, data):
+        """Extract and validate gallery roots from a settings payload.
+
+        Accepts ``gallery_root_paths`` (list, preferred) or the legacy single
+        ``gallery_root_path`` string. Blank entries are dropped.
+
+        Returns:
+            (roots, error): ``roots`` is the validated list, or ``None`` when
+            the payload carries no gallery root key; ``error`` is a message
+            when validation failed (and ``roots`` is then ``None``).
+        """
+        if "gallery_root_paths" in data:
+            raw = data["gallery_root_paths"]
+            if not isinstance(raw, list):
+                return None, "gallery_root_paths must be a list"
+        elif "gallery_root_path" in data:
+            raw = [data["gallery_root_path"]]
+        else:
+            return None, None
+
+        from ..config import GalleryConfig
+
+        roots = []
+        for entry in raw:
+            if not isinstance(entry, str):
+                return None, "Gallery root paths must be strings"
+            entry = entry.strip()
+            if not entry:
+                continue
+            ok, reason = GalleryConfig.validate_gallery_root(entry)
+            if not ok:
+                return (
+                    None,
+                    f"Invalid gallery root '{os.path.basename(entry)}': {reason}",
+                )
+            roots.append(entry)
+        return roots, None
+
+    def _apply_gallery_roots(self, roots):
+        """Install validated gallery roots; returns True when they changed."""
+        from ..config import GalleryConfig
+
+        if roots == list(GalleryConfig.MONITORING_DIRECTORIES):
+            return False
+        GalleryConfig.MONITORING_DIRECTORIES = roots
+        self._cached_output_dir = None
+        self._gallery_cache = {}
+        return True
+
+    def _persist_settings(self):
+        """Write the user-editable settings to the configured config.json."""
+        from ..config import PromptManagerConfig, GalleryConfig
+
+        config_file = PromptManagerConfig.get_config_path()
+        config_data = {
+            "web_ui": {
+                "result_timeout": PromptManagerConfig.RESULT_TIMEOUT,
+                "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE,
+            },
+            "gallery": {
+                "monitoring": {"directories": GalleryConfig.MONITORING_DIRECTORIES}
+            },
+        }
+        try:
+            with open(config_file, "w") as f:
+                json.dump(config_data, f, indent=2)
+            self.logger.info(f"Settings saved to {config_file}")
+        except OSError as save_err:
+            self.logger.warning(f"Could not save config file: {save_err}")
 
     async def run_diagnostics(self, request):
         """Run comprehensive system diagnostics and health checks."""

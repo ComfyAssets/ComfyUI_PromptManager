@@ -557,27 +557,49 @@ class PromptManagerAPI(
         return None
 
     def _get_all_output_dirs(self):
-        """Get all configured output directories, falling back to auto-detect.
+        """Get the directories images may be served from.
+
+        Configured gallery roots are filtered through
+        ``GalleryConfig.validate_gallery_root`` so a root that was hand-edited
+        into config.json (or persisted before validation existed) can never
+        expose files outside ComfyUI's directories.
 
         Returns:
-            List[Path]: Valid output directory paths, possibly empty.
+            List[Path]: Validated directory paths, possibly empty.
         """
         from ..config import GalleryConfig
 
+        configured = list(GalleryConfig.MONITORING_DIRECTORIES)
         output_dirs = []
-        if GalleryConfig.MONITORING_DIRECTORIES:
-            for d in GalleryConfig.MONITORING_DIRECTORIES:
-                p = Path(d).resolve()
-                if p.is_dir():
-                    output_dirs.append(p)
+        for d in configured:
+            ok, reason = GalleryConfig.validate_gallery_root(d)
+            if ok:
+                output_dirs.append(Path(os.path.realpath(d)))
+            else:
+                self.logger.warning(f"Ignoring configured gallery root: {reason}")
 
-        # Fallback to auto-detect if no configured dirs are valid
-        if not output_dirs:
-            fallback = self._find_comfyui_output_dir()
-            if fallback:
-                output_dirs.append(Path(fallback))
+        if output_dirs:
+            return output_dirs
 
-        return output_dirs
+        if configured:
+            # Every configured root was rejected: never let auto-detection
+            # resurrect it, serve ComfyUI's own output directory instead.
+            return self._comfyui_output_dir_list()
+
+        fallback = self._find_comfyui_output_dir()
+        return [Path(fallback)] if fallback else []
+
+    def _comfyui_output_dir_list(self):
+        """ComfyUI's output directory as a one-element list, or [] if unknown."""
+        try:
+            import folder_paths
+
+            output_dir = folder_paths.get_output_directory()
+        except (ImportError, AttributeError, OSError):
+            return []
+        if isinstance(output_dir, str) and os.path.isdir(output_dir):
+            return [Path(os.path.realpath(output_dir))]
+        return []
 
     def _extract_comfyui_metadata(self, image_path):
         """Extract ComfyUI workflow metadata from PNG image files."""
