@@ -95,10 +95,23 @@ class LoraIntegrationMixin:
             enabled = data.get("enabled", False)
             path = data.get("path", "")
             trigger_words = data.get("trigger_words_enabled", False)
-            civitai_key = data.get("civitai_api_key", "")
 
             from ..config import IntegrationConfig, PromptManagerConfig
             from ..lora_utils import detect_lora_manager, get_trigger_cache
+
+            # The key is never echoed back to the UI, so a blank or absent
+            # field means "unchanged"; clearing is an explicit request.
+            civitai_key = IntegrationConfig.CIVITAI_API_KEY
+            submitted_key = data.get("civitai_api_key")
+            if submitted_key is not None and not isinstance(submitted_key, str):
+                return web.json_response(
+                    {"success": False, "error": "civitai_api_key must be a string"},
+                    status=400,
+                )
+            if data.get("clear_civitai_api_key"):
+                civitai_key = ""
+            elif submitted_key and submitted_key.strip():
+                civitai_key = submitted_key.strip()
 
             # If enabling, validate the path
             if enabled:

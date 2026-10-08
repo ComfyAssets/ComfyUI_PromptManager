@@ -267,6 +267,50 @@ class TestLoraEnableRoute(LoraAPITestCase):
         self.assertFalse(get_trigger_cache().is_loaded)
         self.assertFalse(IntegrationConfig.LORA_MANAGER_ENABLED)
 
+    async def test_empty_key_keeps_the_stored_key(self):
+        IntegrationConfig.CIVITAI_API_KEY = SECRET_KEY
+
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable", {"enabled": False, "civitai_api_key": ""}
+        )
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(IntegrationConfig.CIVITAI_API_KEY, SECRET_KEY)
+
+    async def test_absent_key_keeps_the_stored_key(self):
+        IntegrationConfig.CIVITAI_API_KEY = SECRET_KEY
+
+        await self._post_json("/prompt_manager/lora/enable", {"enabled": False})
+
+        self.assertEqual(IntegrationConfig.CIVITAI_API_KEY, SECRET_KEY)
+
+    async def test_new_key_replaces_the_stored_key(self):
+        IntegrationConfig.CIVITAI_API_KEY = SECRET_KEY
+
+        await self._post_json(
+            "/prompt_manager/lora/enable",
+            {"enabled": False, "civitai_api_key": "  new-key  "},
+        )
+
+        self.assertEqual(IntegrationConfig.CIVITAI_API_KEY, "new-key")
+
+    async def test_clear_flag_removes_the_stored_key(self):
+        IntegrationConfig.CIVITAI_API_KEY = SECRET_KEY
+
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable",
+            {"enabled": False, "clear_civitai_api_key": True},
+        )
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(IntegrationConfig.CIVITAI_API_KEY, "")
+
+    async def test_non_string_key_is_400(self):
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable", {"enabled": False, "civitai_api_key": 123}
+        )
+        self.assertEqual(resp.status, 400)
+
     async def test_persist_failure_is_500(self):
         self.save_mock.side_effect = OSError("read-only")
         resp = await self._post_json("/prompt_manager/lora/enable", {"enabled": False})
