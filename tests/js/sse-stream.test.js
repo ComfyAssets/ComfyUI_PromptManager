@@ -104,6 +104,50 @@ test("close() aborts the request and suppresses later callbacks", async () => {
     assert.equal(errors, 0);
 });
 
+test("connect forwards a request body and an Accept header", async () => {
+    let init = null;
+    const fetchImpl = async (_url, i) => { init = i; return new Response(streamOf([]), { status: 200 }); };
+    const source = connect("/x", { method: "POST", body: '{"a":1}', fetchImpl });
+    await until(() => source.readyState === source.CLOSED);
+    assert.equal(init.body, '{"a":1}');
+    assert.equal(init.headers.Accept, "text/event-stream");
+});
+
+test("events arriving with no onmessage handler are dropped without error", async () => {
+    const fetchImpl = async () => new Response(streamOf(["data: 1\n\n", "data: 2\n\n"]), { status: 200 });
+    const source = connect("/x", { fetchImpl });
+    let errors = 0;
+    source.onerror = () => errors++;
+    await until(() => source.readyState === source.CLOSED);
+    assert.equal(errors, 0);
+});
+
+test("close() during delivery stops further messages and skips onclose", async () => {
+    const seen = [];
+    let closed = false;
+    const fetchImpl = async () => new Response(streamOf(["data: 1\n\ndata: 2\n\ndata: 3\n\n"]), { status: 200 });
+    const source = connect("/x", { fetchImpl });
+    source.onmessage = (e) => { seen.push(e.data); if (e.data === "1") source.close(); };
+    source.onclose = () => { closed = true; };
+    await until(() => source.readyState === source.CLOSED);
+    await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(seen, ["1"]);
+    assert.equal(closed, false);
+});
+
+test("close() before the response arrives discards it silently", async () => {
+    let resolveFetch;
+    let errors = 0;
+    const fetchImpl = () => new Promise((resolve) => { resolveFetch = resolve; });
+    const source = connect("/x", { fetchImpl });
+    source.onerror = () => errors++;
+    source.close();
+    resolveFetch(new Response(streamOf(["data: late\n\n"]), { status: 200 }));
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(errors, 0);
+    assert.equal(source.readyState, source.CLOSED);
+});
+
 test("connect defaults to GET and the global fetch", async () => {
     const original = globalThis.fetch;
     let init = null;
