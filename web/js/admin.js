@@ -248,10 +248,9 @@
                 document.querySelectorAll("[id$='Modal']").forEach((modal) => {
                     modal.addEventListener("click", (e) => {
                         if (e.target !== modal) return;
-                        if (modal.id === "scanModal") {
-                            this.dismissScanModal(); // a running scan minimizes instead of closing
-                            return;
-                        }
+                        // The scan modal only leaves through its own buttons (Cancel / Hide): a click
+                        // that merely focuses the window must not close or minimize a long job.
+                        if (modal.id === "scanModal") return;
                         modal.classList.add("hidden");
                         modal.classList.remove("flex");
                         document.body.style.overflow = "";
@@ -2107,8 +2106,8 @@
             // Scan functionality
             //
             // The scan is a background job on the server. The modal shows its progress,
-            // can be hidden to a small pill while it runs, and re-attaches to a scan that
-            // is still running after a page reload.
+            // can be hidden to a small pill with the Hide button while it runs (backdrop
+            // clicks are ignored), and re-attaches to a scan still running after a reload.
             showScanModal() {
                 if (this.scanState.status !== ScanProgress.RUNNING) this.resetScanControls();
                 document.getElementById("scanPill").classList.add("hidden");
