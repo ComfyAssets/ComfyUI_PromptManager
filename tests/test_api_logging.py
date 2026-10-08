@@ -230,5 +230,165 @@ class TestNoAbsolutePathsInLogResponses(LoggingAPITestCase):
         self.assertIn("x.log", json.loads(body)["error"])
 
 
+class TestGetLogs(LoggingAPITestCase):
+
+    def _fill(self, n):
+        for i in range(n):
+            self.manager.logs.append(
+                {"level": "INFO" if i % 2 else "ERROR", "message": f"m{i}"}
+            )
+
+    async def test_default_limit_and_count(self):
+        self._fill(3)
+        resp = await self.client.request("GET", "/prompt_manager/logs")
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertTrue(data["success"])
+        self.assertEqual(data["count"], 3)
+        self.assertEqual(data["limit"], 100)
+        self.assertIsNone(data["level_filter"])
+
+    async def test_level_filter_passed_through(self):
+        self._fill(4)
+        resp = await self.client.request("GET", "/prompt_manager/logs?level=error")
+        data = await resp.json()
+        self.assertEqual(data["level_filter"], "error")
+        self.assertEqual(data["count"], 2)
+
+    async def test_limit_is_clamped_to_500(self):
+        resp = await self.client.request("GET", "/prompt_manager/logs?limit=99999")
+        self.assertEqual((await resp.json())["limit"], 500)
+
+    async def test_limit_below_one_becomes_one(self):
+        self._fill(3)
+        resp = await self.client.request("GET", "/prompt_manager/logs?limit=0")
+        data = await resp.json()
+        self.assertEqual(data["limit"], 1)
+        self.assertEqual(data["count"], 1)
+
+    async def test_non_integer_limit_is_400(self):
+        resp = await self.client.request("GET", "/prompt_manager/logs?limit=ten")
+        self.assertEqual(resp.status, 400)
+        self.assertFalse((await resp.json())["success"])
+
+    async def test_manager_failure_is_500_with_empty_logs(self):
+        def boom(**kwargs):
+            raise RuntimeError("buffer gone")
+
+        self.manager.get_recent_logs = boom
+        resp = await self.client.request("GET", "/prompt_manager/logs")
+        data = await resp.json()
+        self.assertEqual(resp.status, 500)
+        self.assertEqual(data["logs"], [])
+
+
+class TestLogFilesAndDownload(LoggingAPITestCase):
+
+    async def test_files_failure_is_500(self):
+        def boom():
+            raise RuntimeError("no dir")
+
+        self.manager.get_log_files = boom
+        resp = await self.client.request("GET", "/prompt_manager/logs/files")
+        data = await resp.json()
+        self.assertEqual(resp.status, 500)
+        self.assertEqual(data["files"], [])
+
+    async def test_download_existing_file(self):
+        (self.log_dir / "prompt_manager.log").write_text("line1\nline2\n")
+
+        resp = await self.client.request(
+            "GET", "/prompt_manager/logs/download/prompt_manager.log"
+        )
+
+        self.assertEqual(resp.status, 200)
+        self.assertIn("attachment", resp.headers["Content-Disposition"])
+        self.assertEqual(await resp.text(), "line1\nline2\n")
+
+    async def test_download_missing_file_is_404(self):
+        resp = await self.client.request(
+            "GET", "/prompt_manager/logs/download/nope.log"
+        )
+        self.assertEqual(resp.status, 404)
+
+    async def test_download_rejects_traversal(self):
+        resp = await self.client.request(
+            "GET", "/prompt_manager/logs/download/..%2F..%2Fetc%2Fpasswd"
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_download_rejects_backslash(self):
+        resp = await self.client.request(
+            "GET", "/prompt_manager/logs/download/..%5Cx.log"
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_download_read_failure_is_500(self):
+        (self.log_dir / "dir.log").mkdir()
+        resp = await self.client.request("GET", "/prompt_manager/logs/download/dir.log")
+        body = await resp.text()
+        self.assertEqual(resp.status, 500)
+        self.assertNotIn(self.tmpdir, body)
+
+
+class TestTruncateConfigAndStats(LoggingAPITestCase):
+
+    async def test_truncate_success(self):
+        (self.log_dir / "prompt_manager.log").write_text("data")
+        resp = await self.client.request("POST", "/prompt_manager/logs/truncate")
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(data["results"]["truncated"], ["prompt_manager.log"])
+        self.assertEqual((self.log_dir / "prompt_manager.log").read_text(), "")
+
+    async def test_truncate_failure_is_500(self):
+        def boom():
+            raise RuntimeError("locked")
+
+        self.manager.truncate_logs = boom
+        resp = await self.client.request("POST", "/prompt_manager/logs/truncate")
+        self.assertEqual(resp.status, 500)
+
+    async def test_get_config(self):
+        resp = await self.client.request("GET", "/prompt_manager/logs/config")
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(data["config"]["level"], "INFO")
+
+    async def test_get_config_failure_is_500(self):
+        def boom():
+            raise RuntimeError("gone")
+
+        self.manager.get_config = boom
+        resp = await self.client.request("GET", "/prompt_manager/logs/config")
+        self.assertEqual(resp.status, 500)
+
+    async def test_update_config_manager_failure_is_500(self):
+        def boom(config):
+            raise RuntimeError("handler error")
+
+        self.manager.update_config = boom
+        resp = await self.client.request(
+            "POST", "/prompt_manager/logs/config", json={"level": "INFO"}
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_stats_success(self):
+        resp = await self.client.request("GET", "/prompt_manager/logs/stats")
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(data["stats"]["current_level"], "INFO")
+
+
+class TestLoggerManagerResolution(LoggingAPITestCase):
+
+    def test_default_manager_is_the_singleton(self):
+        from py.api.logging_routes import LoggingRoutesMixin
+        from utils.logging_config import get_logger_manager
+
+        manager = LoggingRoutesMixin._get_logger_manager(self.api)
+        self.assertIs(manager, get_logger_manager())
+
+
 if __name__ == "__main__":
     unittest.main()

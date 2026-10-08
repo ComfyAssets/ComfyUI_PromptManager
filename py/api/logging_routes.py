@@ -20,6 +20,21 @@ _LOG_INT_KEYS = frozenset({"max_file_size", "backup_count", "buffer_size"})
 _LOG_BOOL_KEYS = frozenset({"console_logging", "file_logging"})
 _LOG_LEVEL_NAMES = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
+DEFAULT_LOG_LIMIT = 100
+MAX_LOG_LIMIT = 500
+
+
+def _parse_limit(raw):
+    """Parse a ``limit`` query value, clamped to [1, MAX_LOG_LIMIT].
+
+    Raises:
+        ValueError: when ``raw`` is not an integer.
+    """
+    if raw is None or raw == "":
+        return DEFAULT_LOG_LIMIT
+    limit = int(raw)
+    return max(1, min(limit, MAX_LOG_LIMIT))
+
 
 def _validate_log_config(data):
     """Validate a log-config payload against LOG_CONFIG_KEYS.
@@ -108,13 +123,14 @@ class LoggingRoutesMixin:
         try:
             logger_manager = self._get_logger_manager()
 
-            limit = int(request.query.get("limit", 100))
+            try:
+                limit = _parse_limit(request.query.get("limit"))
+            except ValueError:
+                return web.json_response(
+                    {"success": False, "error": "limit must be an integer", "logs": []},
+                    status=400,
+                )
             level = request.query.get("level", None)
-
-            if limit > 1000:
-                limit = 1000
-            elif limit < 1:
-                limit = 1
 
             logs = logger_manager.get_recent_logs(limit=limit, level=level)
 
