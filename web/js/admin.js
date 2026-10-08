@@ -40,7 +40,6 @@
                     delete: ({ promptId }) => this.deletePrompt(promptId),
                     "open-film": ({ promptId, index }) => this.openFilmStripViewer(promptId, index),
                     "download-log": ({ filename }) => this.downloadLogFile(filename),
-                    "copy-text": ({ copyText }) => this.copyToClipboard(copyText),
                     "remove-review-tag": ({ index }) => this.removeReviewTag(index),
                 };
 
