@@ -5,6 +5,7 @@ Tests metadata parsing, trigger word extraction, image URL extraction,
 directory detection, TriggerWordCache, and image download logic.
 """
 
+import email
 import json
 import os
 import shutil
@@ -12,6 +13,10 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.parse
+import urllib.request
+import urllib.response
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -323,7 +328,7 @@ class TestDownloadOne(unittest.TestCase):
         self.target = self.tmpdir / "out.jpg"
 
     def _run(self, url, opener, api_key="secret-key"):
-        with patch("urllib.request.urlopen", opener):
+        with patch.object(lora_utils, "_open_url", opener):
             return lora_utils._download_one(url, self.target, api_key)
 
     def test_off_host_url_is_refused_without_a_request(self):
@@ -384,6 +389,68 @@ class TestDownloadOne(unittest.TestCase):
         self.assertFalse(self.target.exists())
 
 
+class _FakeHTTPSHandler(urllib.request.HTTPSHandler):
+    """Serves canned responses through a real urllib opener, recording requests.
+
+    CivitAI hosts answer with a 302 to ``redirect_to``; every other host
+    answers 200 with a PNG body.
+    """
+
+    def __init__(self, redirect_to):
+        super().__init__()
+        self.redirect_to = redirect_to
+        self.requests = []
+
+    def https_open(self, req):
+        self.requests.append(req)
+        host = (urllib.parse.urlsplit(req.full_url).hostname or "").lower()
+        if host in CIVITAI_HOSTS:
+            headers = email.message_from_string(f"Location: {self.redirect_to}\n")
+            return urllib.response.addinfourl(BytesIO(b""), headers, req.full_url, 302)
+        headers = email.message_from_string("Content-Type: image/png\n")
+        return urllib.response.addinfourl(
+            BytesIO(_png_bytes()), headers, req.full_url, 200
+        )
+
+
+class TestRedirectsAreRefused(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmpdir, True)
+
+    def test_redirect_to_other_host_is_not_followed(self):
+        handler = _FakeHTTPSHandler("https://evil.example/steal")
+        opener = lora_utils._build_opener(handler)
+
+        with patch.object(lora_utils, "_opener", opener):
+            result = lora_utils._download_one(
+                "https://civitai.com/api/download/1", self.tmpdir / "x.jpg", "key"
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            [r.full_url for r in handler.requests],
+            ["https://civitai.com/api/download/1"],
+        )
+        for req in handler.requests:
+            host = urllib.parse.urlsplit(req.full_url).hostname
+            if host not in CIVITAI_HOSTS:
+                self.assertIsNone(req.get_header("Authorization"))
+
+    def test_redirect_to_civitai_is_not_followed_either(self):
+        handler = _FakeHTTPSHandler("https://image.civitai.com/other.png")
+        opener = lora_utils._build_opener(handler)
+
+        with patch.object(lora_utils, "_opener", opener):
+            result = lora_utils._download_one(
+                "https://civitai.com/api/download/1", self.tmpdir / "x.jpg", "key"
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(len(handler.requests), 1)
+
+
 class TestDownloadCivitaiImages(unittest.TestCase):
 
     def setUp(self):
@@ -402,7 +469,7 @@ class TestDownloadCivitaiImages(unittest.TestCase):
             ]
         )
 
-        with patch("urllib.request.urlopen", opener):
+        with patch.object(lora_utils, "_open_url", opener):
             paths = download_civitai_images(
                 metadata, self.meta_path, self.tmpdir / "cache", "key"
             )
@@ -418,7 +485,7 @@ class TestDownloadCivitaiImages(unittest.TestCase):
         metadata = _make_metadata(images=[{"url": "https://civitai.com/a.png"}])
         cache = self.tmpdir / "cache"
 
-        with patch("urllib.request.urlopen", opener):
+        with patch.object(lora_utils, "_open_url", opener):
             first = download_civitai_images(metadata, self.meta_path, cache, "")
             second = download_civitai_images(metadata, self.meta_path, cache, "")
 

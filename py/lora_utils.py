@@ -307,6 +307,27 @@ MAX_CIVITAI_DOWNLOAD_BYTES = 50 * 1024 * 1024
 _DOWNLOAD_CHUNK_BYTES = 64 * 1024
 
 
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: urllib would re-send the Bearer header to it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        logger.warning(f"Refusing redirect from {req.full_url} to {newurl}")
+        return None
+
+
+def _build_opener(*handlers) -> urllib.request.OpenerDirector:
+    """Build the outbound opener; extra handlers let tests serve canned responses."""
+    return urllib.request.build_opener(_RefuseRedirects, *handlers)
+
+
+_opener = _build_opener()
+
+
+def _open_url(req: urllib.request.Request, timeout: float = 10):
+    """Open ``req`` through the redirect-refusing opener."""
+    return _opener.open(req, timeout=timeout)
+
+
 def is_civitai_url(url: str) -> bool:
     """True when ``url`` is an HTTPS URL on an allow-listed CivitAI host."""
     try:
@@ -355,7 +376,7 @@ def _download_one(url: str, local_path: Path, api_key: str) -> Optional[str]:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _open_url(req, timeout=10) as resp:
             raw = _read_capped(resp, MAX_CIVITAI_DOWNLOAD_BYTES)
         if raw is None:
             logger.warning(f"Refusing oversized download: {url}")
