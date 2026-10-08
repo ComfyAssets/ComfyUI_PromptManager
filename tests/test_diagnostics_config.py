@@ -84,9 +84,18 @@ class TestAdminEndpointsUseConfigPath(unittest.TestCase):
 
     def _make_api_stub(self, db_path):
         """Create a minimal object that mimics the admin mixin's self."""
+        from py.api import PromptManagerAPI
+
         stub = MagicMock()
         stub.db.model.db_path = db_path
         stub.logger = MagicMock()
+        stub._public_path = PromptManagerAPI._public_path
+        stub._public_error = PromptManagerAPI._public_error
+
+        async def run_in_executor(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        stub._run_in_executor = run_in_executor
         return stub
 
     def _run_async(self, coro):

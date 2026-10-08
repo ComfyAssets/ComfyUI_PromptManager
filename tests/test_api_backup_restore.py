@@ -5,6 +5,7 @@ stream the upload to disk, reject anything that is not a healthy prompts
 database and leave the live database untouched when it does.
 """
 
+import glob
 import os
 import sqlite3
 import sys
@@ -19,7 +20,7 @@ from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
 from database.operations import PromptDatabase
-from py.api import PromptManagerAPI
+from py.api import PromptManagerAPI, _public_path
 from utils.hashing import generate_prompt_hash
 
 
@@ -142,8 +143,12 @@ class TestRestoreRoute(BackupRestoreTestCase):
         data = await resp.json()
         self.assertTrue(data["success"])
         self.assertEqual(data["prompt_count"], 2)
-        self.assertTrue(os.path.exists(data["backup_created"]))
-        self.assertEqual(_texts(data["backup_created"]), ["old prompt"])
+        # The response names the safety backup without the server's layout
+        backups = glob.glob(self.db_path + ".backup_*")
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(data["backup_created"], _public_path(backups[0]))
+        self.assertNotIn(self.tmpdir, data["backup_created"])
+        self.assertEqual(_texts(backups[0]), ["old prompt"])
         self.assertIsNot(self.api.db, old_db)
         self.assertEqual(self.api.db.model.db_path, self.db_path)
 

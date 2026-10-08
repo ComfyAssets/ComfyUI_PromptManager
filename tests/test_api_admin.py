@@ -1026,6 +1026,14 @@ class TestMaintenance(AdminAPITestCase):
         self.assertIn("info", data["results"]["statistics"])
         self.assertEqual(data["results"]["check_consistency"]["issues_found"], 0)
 
+    async def test_statistics_database_path_is_public(self):
+        resp = await self._post({"operations": ["statistics"]})
+        body = await resp.text()
+        self.assertEqual(resp.status, 200)
+        self.assertNotIn(self.tmpdir, body)
+        info = json.loads(body)["results"]["statistics"]["info"]
+        self.assertEqual(info["database_path"], "prompts.db")
+
     async def test_unknown_operation_does_nothing(self):
         resp = await self._post({"operations": ["reboot"]})
         data = await resp.json()
@@ -1094,20 +1102,27 @@ class TestBackupRestoreContract(AdminAPITestCase):
         self.assertEqual(resp.status, 400)
         self.assertIsNotNone(self.api.db.get_prompt_by_hash("h1"))
 
+    def _snapshot_upload(self, extra_sql=()):
+        """Bytes of a self-contained copy of the live DB (WAL rows included)."""
+        import sqlite3
+        from contextlib import closing
+
+        snapshot = os.path.join(self.tmpdir, "snapshot.db")
+        with closing(sqlite3.connect(self.api.db.model.db_path)) as src:
+            with closing(sqlite3.connect(snapshot)) as dst:
+                src.backup(dst)
+                for statement in extra_sql:
+                    dst.execute(statement)
+                dst.commit()
+        with open(snapshot, "rb") as f:
+            return f.read()
+
     async def test_restore_valid_db_succeeds(self):
         import sqlite3
         from contextlib import closing
 
         self.api.db.save_prompt(text="restored", prompt_hash="h1")
-        # Rows may still sit in the WAL file: build a self-contained copy.
-        # Close both raw connections, otherwise the restore cannot replace the
-        # live file (Windows) or its WAL/shm sidecars (disk I/O error).
-        snapshot = os.path.join(self.tmpdir, "snapshot.db")
-        with closing(sqlite3.connect(self.api.db.model.db_path)) as src:
-            with closing(sqlite3.connect(snapshot)) as dst:
-                src.backup(dst)
-        with open(snapshot, "rb") as f:
-            upload = f.read()
+        upload = self._snapshot_upload()
         resp = await self._restore("database_file", upload)
         data = await resp.json()
         self.assertEqual(resp.status, 200, data)
@@ -1117,6 +1132,117 @@ class TestBackupRestoreContract(AdminAPITestCase):
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM prompts").fetchone()[0], 1
             )
+
+    async def test_restore_backup_created_is_a_public_path(self):
+        self.api.db.save_prompt(text="restored", prompt_hash="h1")
+        resp = await self._restore("database_file", self._snapshot_upload())
+        body = await resp.text()
+        self.assertEqual(resp.status, 200, body)
+        self.assertNotIn(self.tmpdir, body)
+        data = json.loads(body)
+        self.assertTrue(data["backup_created"].startswith("prompts.db.backup_"))
+
+    async def test_restore_rejects_database_with_a_trigger(self):
+        self.api.db.save_prompt(text="keep me", prompt_hash="h1")
+        upload = self._snapshot_upload(
+            [
+                "CREATE TRIGGER evil AFTER INSERT ON prompts "
+                "BEGIN DELETE FROM prompts; END"
+            ]
+        )
+        resp = await self._restore("database_file", upload)
+        data = await resp.json()
+        self.assertEqual(resp.status, 400, data)
+        self.assertIn("trigger", data["error"].lower())
+        self.assertIsNotNone(self.api.db.get_prompt_by_hash("h1"))
+
+    async def test_restore_rejects_database_with_a_view(self):
+        self.api.db.save_prompt(text="keep me", prompt_hash="h1")
+        upload = self._snapshot_upload(["CREATE VIEW peek AS SELECT text FROM prompts"])
+        resp = await self._restore("database_file", upload)
+        data = await resp.json()
+        self.assertEqual(resp.status, 400, data)
+        self.assertIn("view", data["error"].lower())
+
+    async def test_restore_verifies_in_the_executor(self):
+        self.api.db.save_prompt(text="restored", prompt_hash="h1")
+        upload = self._snapshot_upload()
+        calls = []
+        original = self.api._run_in_executor
+
+        async def spy(func, *args, **kwargs):
+            calls.append(getattr(func, "__name__", repr(func)))
+            return await original(func, *args, **kwargs)
+
+        self.api._run_in_executor = spy
+        resp = await self._restore("database_file", upload)
+        self.assertEqual(resp.status, 200)
+        self.assertIn("verify_database_file", calls)
+        self.assertIn("restore_from_file", calls)
+
+    async def test_restore_keeps_at_most_ten_safety_backups(self):
+        import time
+
+        from py.api.admin import MAX_SAFETY_BACKUPS
+
+        self.assertEqual(MAX_SAFETY_BACKUPS, 10)
+        db_path = self.api.db.model.db_path
+        stale = []
+        now = time.time()
+        for i in range(12):
+            path = f"{db_path}.backup_202001{i + 1:02d}_000000"
+            with open(path, "wb") as f:
+                f.write(b"old")
+            os.utime(path, (now - 10_000 + i, now - 10_000 + i))
+            stale.append(path)
+        unrelated = os.path.join(self.tmpdir, "other.db.backup_20200101_000000")
+        with open(unrelated, "wb") as f:
+            f.write(b"x")
+        self.api.db.save_prompt(text="restored", prompt_hash="h1")
+
+        resp = await self._restore("database_file", self._snapshot_upload())
+
+        self.assertEqual(resp.status, 200)
+        remaining = sorted(
+            name
+            for name in os.listdir(self.tmpdir)
+            if name.startswith("prompts.db.backup_")
+        )
+        self.assertEqual(len(remaining), MAX_SAFETY_BACKUPS)
+        data = await resp.json()
+        self.assertIn(data["backup_created"], remaining)
+        for path in stale[:3]:
+            self.assertFalse(os.path.exists(path), path)
+        self.assertTrue(os.path.exists(unrelated))
+
+    async def test_restore_failure_body_has_no_absolute_path(self):
+        self.api.db.save_prompt(text="restored", prompt_hash="h1")
+        upload = self._snapshot_upload()
+
+        def boom(src_path):
+            raise PermissionError(
+                13, "Permission denied", os.path.join(self.tmpdir, "prompts.db")
+            )
+
+        self.api.db.model.restore_from_file = boom
+        resp = await self._restore("database_file", upload)
+        body = await resp.text()
+        self.assertEqual(resp.status, 500)
+        self.assertNotIn(self.tmpdir, body)
+        self.assertIn("Permission denied", json.loads(body)["error"])
+
+    async def test_backup_failure_body_has_no_absolute_path(self):
+        def boom(path):
+            raise PermissionError(
+                13, "Permission denied", os.path.join(self.tmpdir, "x.db")
+            )
+
+        self.api.db.model.backup_database = boom
+        resp = await self.client.request("GET", "/prompt_manager/backup")
+        body = await resp.text()
+        self.assertEqual(resp.status, 500)
+        self.assertNotIn(self.tmpdir, body)
+        self.assertIn("Permission denied", json.loads(body)["error"])
 
 
 class TestOutputScanInternals(AdminAPITestCase):

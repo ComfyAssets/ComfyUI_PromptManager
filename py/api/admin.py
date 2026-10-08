@@ -30,6 +30,7 @@ except ImportError:
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff")
 VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".wmv")
 SCAN_BATCH_SIZE = 50  # Files per executor call during the output scan
+MAX_SAFETY_BACKUPS = 10  # '<db>.backup_*' files kept next to the live database
 
 
 def _collect_media_files(output_dirs, extensions):
@@ -72,6 +73,73 @@ async def _read_json(request):
 def _sse(payload):
     """Encode one server-sent event."""
     return f"data: {json.dumps(payload)}\n\n"
+
+
+def _inspect_restore_upload(path):
+    """Checks on a restore upload beyond PromptModel.verify_database_file.
+
+    Opens the file read-only with ``PRAGMA trusted_schema=OFF`` (so nothing
+    in the schema runs while it is inspected) and refuses databases that
+    carry triggers or views: the prompts database never needs either, and a
+    crafted upload could use them to run SQL against the live data later.
+
+    Returns:
+        None when acceptable, otherwise a human-readable reason (blocking).
+    """
+    uri = Path(os.path.abspath(path)).as_uri() + "?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error as e:
+        return f"Invalid SQLite database: {e}"
+    try:
+        conn.execute("PRAGMA trusted_schema=OFF")
+        rows = conn.execute(
+            "SELECT type, name FROM sqlite_master "
+            "WHERE type IN ('trigger', 'view') ORDER BY type, name"
+        ).fetchall()
+    except sqlite3.Error as e:
+        return f"Invalid SQLite database: {e}"
+    finally:
+        conn.close()
+    if rows:
+        listed = ", ".join(f"{kind} {name}" for kind, name in rows[:5])
+        return (
+            "Database contains triggers or views, which a prompts database "
+            f"never has: {listed}"
+        )
+    return None
+
+
+def _prune_safety_backups(db_path, keep=None):
+    """Delete the oldest ``<db_path>.backup_*`` files beyond ``keep`` (blocking).
+
+    Returns the paths removed. Errors deleting a file are ignored so a
+    stubborn old backup never fails the restore that just succeeded.
+    """
+    if keep is None:
+        keep = MAX_SAFETY_BACKUPS
+    db_path = os.path.abspath(db_path)
+    directory = os.path.dirname(db_path)
+    prefix = os.path.basename(db_path) + ".backup_"
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return []
+    candidates = [
+        os.path.join(directory, name)
+        for name in names
+        if name.startswith(prefix) and os.path.isfile(os.path.join(directory, name))
+    ]
+    candidates.sort(key=lambda p: (os.path.getmtime(p), p))
+    excess = candidates[: max(0, len(candidates) - keep)]
+    removed = []
+    for path in excess:
+        try:
+            os.remove(path)
+            removed.append(path)
+        except OSError:
+            continue
+    return removed
 
 
 def _public_helpers():
@@ -790,7 +858,7 @@ class AdminRoutesMixin:
                 db.check_hash_duplicates()
             ),
             "statistics": lambda: {
-                "info": db.model.get_database_info(),
+                "info": self._public_database_info(db.model.get_database_info()),
                 "message": "Database statistics retrieved",
             },
             "prune_orphaned_prompts": lambda: count_result(
@@ -802,6 +870,13 @@ class AdminRoutesMixin:
                 db.check_consistency()
             ),
         }
+
+    def _public_database_info(self, info):
+        """``get_database_info()`` with the absolute database_path made public."""
+        info = dict(info or {})
+        if info.get("database_path"):
+            info["database_path"] = self._public_path(info["database_path"])
+        return info
 
     @staticmethod
     def _hash_duplicates_result(groups):
@@ -832,8 +907,7 @@ class AdminRoutesMixin:
             fd, temp_path = tempfile.mkstemp(suffix=".db")
             os.close(fd)
             try:
-                loop = asyncio.get_running_loop()
-                ok = await loop.run_in_executor(None, model.backup_database, temp_path)
+                ok = await self._run_in_executor(model.backup_database, temp_path)
                 if not ok:
                     return web.json_response(
                         {"success": False, "error": "Failed to create database backup"},
@@ -862,7 +936,10 @@ class AdminRoutesMixin:
         except Exception as e:
             self.logger.error(f"Backup error: {e}", exc_info=True)
             return web.json_response(
-                {"success": False, "error": f"Failed to backup database: {str(e)}"},
+                {
+                    "success": False,
+                    "error": f"Failed to backup database: {self._public_error(e)}",
+                },
                 status=500,
             )
 
@@ -919,16 +996,23 @@ class AdminRoutesMixin:
                 )
 
             model = self.db.model
-            ok, reason = model.verify_database_file(temp_path)
+            ok, reason = await self._run_in_executor(
+                model.verify_database_file, temp_path
+            )
+            if ok:
+                reason = await self._run_in_executor(_inspect_restore_upload, temp_path)
+                ok = reason is None
             if not ok:
                 return web.json_response(
                     {"success": False, "error": reason}, status=400
                 )
 
-            loop = asyncio.get_running_loop()
-            backup_path = await loop.run_in_executor(
-                None, model.restore_from_file, temp_path
+            backup_path = await self._run_in_executor(
+                model.restore_from_file, temp_path
             )
+            removed = await self._run_in_executor(_prune_safety_backups, model.db_path)
+            if removed:
+                self.logger.info(f"Removed {len(removed)} old safety backups")
             self.db = PromptDatabase(model.db_path)
             prompt_count = self.db.model.get_database_info().get("total_prompts", 0)
 
@@ -940,14 +1024,19 @@ class AdminRoutesMixin:
                         f"Found {prompt_count} prompts."
                     ),
                     "prompt_count": prompt_count,
-                    "backup_created": backup_path or None,
+                    "backup_created": (
+                        self._public_path(backup_path) if backup_path else None
+                    ),
                 }
             )
 
         except Exception as e:
             self.logger.error(f"Restore error: {e}", exc_info=True)
             return web.json_response(
-                {"success": False, "error": f"Failed to restore database: {str(e)}"},
+                {
+                    "success": False,
+                    "error": f"Failed to restore database: {self._public_error(e)}",
+                },
                 status=500,
             )
         finally:
