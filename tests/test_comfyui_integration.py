@@ -76,8 +76,11 @@ class IntegrationTestCase(unittest.TestCase):
     def setUp(self):
         ComfyUIMetadataIntegration._instance = None
         comfyui_integration._integration_instance = None
+        # Patch the module's own ``time`` name rather than ``time.time`` globally:
+        # background threads from other tests (image monitor, watchdog) would
+        # otherwise tick this clock and make fresh registrations look stale.
         self.clock = mock.patch.object(
-            comfyui_integration.time, "time", side_effect=self._now
+            comfyui_integration, "time", types.SimpleNamespace(time=self._now)
         )
         self.clock.start()
         self.addCleanup(self.clock.stop)

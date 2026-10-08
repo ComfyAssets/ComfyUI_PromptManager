@@ -5,6 +5,7 @@ import os
 import pathlib
 import sys
 import tempfile
+import threading
 import unittest
 import unittest.mock as mock
 
@@ -32,7 +33,14 @@ class IsolatedLoggerTestCase(unittest.TestCase):
             self.manager = object.__new__(PromptManagerLogger)  # bypass singleton
             self.manager.__init__()
         self.manager.update_config({"console_logging": False})
-        self.manager._log_buffer.clear()  # drop the "Updated logging configuration" entry
+        # Drop the "Updated logging configuration" entry.
+        self.manager._log_buffer.clear()
+        # Other tests leave daemon threads (image monitor, watchdog) logging under
+        # "prompt_manager.*"; only records from this test's thread may reach the buffer.
+        this_thread = threading.get_ident()
+        for handler in self.manager.logger.handlers:
+            if isinstance(handler, MemoryBufferHandler):
+                handler.addFilter(lambda record: record.thread == this_thread)
         self.logger = logging.getLogger("prompt_manager.coverage_test")
         self.addCleanup(self._restore_global_logging)
 

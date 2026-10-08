@@ -112,10 +112,12 @@ class TestAdminEndpointsUseConfigPath(unittest.TestCase):
 
             with sqlite3.connect(db_file) as conn:
                 conn.execute(
-                    "CREATE TABLE prompts (id INTEGER PRIMARY KEY, text TEXT, created_at TEXT)"
+                    "CREATE TABLE prompts "
+                    "(id INTEGER PRIMARY KEY, text TEXT, created_at TEXT)"
                 )
                 conn.execute(
-                    "INSERT INTO prompts (text, created_at) VALUES ('test', '2024-01-01')"
+                    "INSERT INTO prompts (text, created_at) "
+                    "VALUES ('test', '2024-01-01')"
                 )
 
             stub = self._make_api_stub(db_file)
@@ -155,20 +157,29 @@ class TestAdminEndpointsUseConfigPath(unittest.TestCase):
 
         from py.api.admin import AdminRoutesMixin
 
+        from database.operations import PromptDatabase
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as f:
             db_file = f.name
-            f.write(b"SQLite format 3\x00test data for backup")
 
+        # A WAL-safe backup copies pages through sqlite itself, so the
+        # configured path has to hold a real database, not arbitrary bytes.
+        real_db = PromptDatabase(db_file)
         try:
             stub = self._make_api_stub(db_file)
+            stub.db.model = real_db.model
             result = self._run_async(
                 AdminRoutesMixin.backup_database(stub, MagicMock())
             )
 
             self.assertEqual(result.content_type, "application/octet-stream")
             self.assertGreater(len(result.body), 0)
+            self.assertTrue(result.body.startswith(b"SQLite format 3\x00"))
         finally:
-            os.unlink(db_file)
+            real_db.close()
+            for suffix in ("", "-wal", "-shm"):
+                if os.path.exists(db_file + suffix):
+                    os.unlink(db_file + suffix)
 
     def test_backup_reports_missing_custom_path(self):
         """backup_database should return 404 when configured path doesn't exist."""
