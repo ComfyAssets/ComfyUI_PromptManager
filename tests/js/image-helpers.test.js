@@ -1,7 +1,52 @@
 // Run with: node --test tests/js/
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { formatImageCaption, workflowDocumentHtml } = require("../../web/js/image-helpers.js");
+const {
+    formatImageCaption,
+    workflowDocumentHtml,
+    autotagSingleBody,
+} = require("../../web/js/image-helpers.js");
+
+const WD14 = { modelType: "wd14-vit", generalThreshold: 0.35, characterThreshold: 0.85, prompt: "ignored" };
+const CAPTION = { modelType: "blip", generalThreshold: 0.35, characterThreshold: 0.85, prompt: "describe it" };
+
+test("autotagSingleBody sends image_id for a database row", () => {
+    const body = autotagSingleBody({ id: 42, prompt_id: 7, image_path: "/out/a.png" }, WD14);
+    assert.equal(body.image_id, 42);
+    assert.equal("path" in body, false);
+});
+
+test("autotagSingleBody sends path for an output-folder entry whose id is a digest", () => {
+    const body = autotagSingleBody({ id: "3f2a9c1b0d4e5f67", path: "/out/sub/a.png", filename: "a.png" }, WD14);
+    assert.equal(body.path, "/out/sub/a.png");
+    assert.equal("image_id" in body, false);
+});
+
+test("autotagSingleBody prefers path when a numeric-looking string id has no prompt link", () => {
+    const body = autotagSingleBody({ id: "1234567890abcdef", path: "/out/b.png" }, WD14);
+    assert.deepEqual(Object.keys(body).filter((k) => k === "path" || k === "image_id"), ["path"]);
+});
+
+test("autotagSingleBody adds wd14 thresholds and no prompt", () => {
+    const body = autotagSingleBody({ id: 1 }, WD14);
+    assert.equal(body.model_type, "wd14-vit");
+    assert.equal(body.general_threshold, 0.35);
+    assert.equal(body.character_threshold, 0.85);
+    assert.equal("prompt" in body, false);
+});
+
+test("autotagSingleBody adds the prompt for caption models and no thresholds", () => {
+    const body = autotagSingleBody({ id: 1 }, CAPTION);
+    assert.equal(body.model_type, "blip");
+    assert.equal(body.prompt, "describe it");
+    assert.equal("general_threshold" in body, false);
+});
+
+test("autotagSingleBody does not mutate its inputs", () => {
+    const image = Object.freeze({ id: 1 });
+    const settings = Object.freeze({ ...WD14 });
+    assert.doesNotThrow(() => autotagSingleBody(image, settings));
+});
 
 const XSS = '"><img src=x onerror=1>';
 const formatFileSize = (bytes) => `${bytes} B`;

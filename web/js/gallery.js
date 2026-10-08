@@ -3380,16 +3380,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 document.getElementById('reviewTagsContainer').innerHTML = '<div class="text-pm-secondary">Generating tags...</div>';
 
                 try {
-                    const requestBody = {
-                        image_id: image.id,
-                        model_type: this.autoTagState.modelType,
-                    };
-                    if (this.autoTagState.modelType.startsWith('wd14')) {
-                        requestBody.general_threshold = this.autoTagState.generalThreshold;
-                        requestBody.character_threshold = this.autoTagState.characterThreshold;
-                    } else {
-                        requestBody.prompt = this.autoTagState.prompt;
-                    }
+                    // Gallery entries come from /images/output: id is a path digest, so address by path
+                    const requestBody = ImageHelpers.autotagSingleBody(image, this.autoTagState);
 
                     const response = await fetch('/prompt_manager/autotag/single', {
                         method: 'POST',

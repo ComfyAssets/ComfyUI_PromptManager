@@ -3671,16 +3671,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 this.autoTagState.tagsExpanded = false;  // Reset accordion for new image
 
                 try {
-                    const requestBody = {
-                        image_id: image.id,
-                        model_type: this.autoTagState.modelType,
-                    };
-                    if (this.autoTagState.modelType.startsWith('wd14')) {
-                        requestBody.general_threshold = this.autoTagState.generalThreshold;
-                        requestBody.character_threshold = this.autoTagState.characterThreshold;
-                    } else {
-                        requestBody.prompt = this.autoTagState.prompt;
-                    }
+                    // Review rows come from /images/all (database ids), so this resolves to image_id
+                    const requestBody = ImageHelpers.autotagSingleBody(image, this.autoTagState);
 
                     const response = await fetch('/prompt_manager/autotag/single', {
                         method: 'POST',

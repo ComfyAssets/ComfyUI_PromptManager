@@ -62,7 +62,34 @@
         ].join("\n");
     }
 
-    const api = { formatImageCaption, workflowDocumentHtml };
+    /**
+     * Body for POST /prompt_manager/autotag/single.
+     *
+     * Database rows (admin review, /images/all) have an integer id the server
+     * looks up; output-folder entries (gallery review, /images/output) have a
+     * path digest as id, which would 404, so those are addressed by path.
+     *
+     * @param {{id?: unknown, path?: unknown}} image
+     * @param {{modelType: string, generalThreshold?: number, characterThreshold?: number, prompt?: string}} settings
+     * @returns {object} JSON-serialisable request body
+     */
+    function autotagSingleBody(image, settings) {
+        const entry = image || {};
+        const target =
+            typeof entry.path === "string" && entry.path && !Number.isInteger(entry.id)
+                ? { path: entry.path }
+                : { image_id: entry.id };
+        const modelType = String(settings.modelType || "");
+        const params = modelType.startsWith("wd14")
+            ? {
+                  general_threshold: settings.generalThreshold,
+                  character_threshold: settings.characterThreshold,
+              }
+            : { prompt: settings.prompt };
+        return { ...target, model_type: modelType, ...params };
+    }
+
+    const api = { formatImageCaption, workflowDocumentHtml, autotagSingleBody };
     if (typeof module !== "undefined" && module.exports) module.exports = api;
     else root.ImageHelpers = api;
 })(typeof window !== "undefined" ? window : globalThis);
