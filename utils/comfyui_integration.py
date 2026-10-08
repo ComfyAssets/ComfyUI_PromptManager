@@ -185,7 +185,8 @@ class ComfyUIMetadataIntegration:
 
         Args:
             max_age_seconds: Maximum age in seconds before a prompt registration
-                           is considered stale and removed (default: 600 seconds/10 minutes)
+                           is considered stale and removed (default: 600
+                           seconds/10 minutes)
         """
         current_time = time.time()
 

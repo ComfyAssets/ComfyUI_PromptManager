@@ -1,8 +1,9 @@
 """ComfyUI metadata extraction utilities.
 
-This module provides comprehensive metadata extraction capabilities for ComfyUI-generated
-images. It can extract workflow information, prompt data, and generation parameters from
-PNG images that contain embedded ComfyUI metadata in their text chunks.
+This module provides comprehensive metadata extraction capabilities for
+ComfyUI-generated images. It can extract workflow information, prompt data, and
+generation parameters from PNG images that contain embedded ComfyUI metadata in
+their text chunks.
 
 The extractor supports:
 - Complete workflow data extraction from PNG text chunks
@@ -34,7 +35,6 @@ import os
 import json
 from typing import Optional, Dict, Any
 from PIL import Image
-from PIL.PngImagePlugin import PngInfo
 
 from .logging_config import get_logger
 

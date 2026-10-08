@@ -1,9 +1,9 @@
 """Image monitoring system for ComfyUI generated images.
 
-This module provides real-time monitoring of ComfyUI output directories to automatically
-detect newly generated images and associate them with their corresponding prompts. The system
-uses filesystem watchers to detect image creation events and extract metadata from the images
-to maintain a gallery system.
+This module provides real-time monitoring of ComfyUI output directories to
+automatically detect newly generated images and associate them with their
+corresponding prompts. The system uses filesystem watchers to detect image creation
+events and extract metadata from the images to maintain a gallery system.
 
 The main components are:
 - ImageGenerationHandler: Handles filesystem events for new image creation
@@ -211,7 +211,8 @@ class ImageGenerationHandler(FileSystemEventHandler):
             True if the file has a supported image extension and is not
             inside a thumbnails directory, False otherwise
         """
-        # Skip files in thumbnails directory - those are derivatives, not generated images
+        # Skip files in thumbnails directory - those are derivatives, not
+        # generated images
         if "/thumbnails/" in filepath or "\\thumbnails\\" in filepath:
             return False
         return filepath.lower().endswith(self.supported_extensions)
@@ -363,9 +364,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 # node): leave it to the queue rather than guess from workflow widgets
                 return "unknown", None
 
-        # Fallback (no executed graph): check text_encoder_nodes from workflow, but only if
-        # the text input is NOT connected (connected inputs override widget values,
-        # so the widget value would be stale in batch workflows).
+        # Fallback (no executed graph): check text_encoder_nodes from workflow, but
+        # only if the text input is NOT connected (connected inputs override widget
+        # values, so the widget value would be stale in batch workflows).
         if not prompt_text:
             text_nodes = metadata.get("text_encoder_nodes", [])
             if text_nodes and not any(
@@ -485,13 +486,15 @@ class ImageGenerationHandler(FileSystemEventHandler):
     ):
         """Link an image to a prompt in the database.
 
-        Creates a database record associating the generated image with its source prompt,
-        including any extracted metadata from the image file.
+        Creates a database record associating the generated image with its source
+        prompt, including any extracted metadata from the image file.
 
         Args:
             image_path: Full path to the image file
-            prompt_context: Dictionary containing prompt information including ID and text
-            metadata: Extracted metadata from the image file (workflow, parameters, etc.)
+            prompt_context: Dictionary containing prompt information including ID
+                and text
+            metadata: Extracted metadata from the image file (workflow, parameters,
+                etc.)
         """
         try:
             image_id = self.db_manager.link_image_to_prompt(
@@ -499,7 +502,8 @@ class ImageGenerationHandler(FileSystemEventHandler):
             )
             fallback_note = " (fallback)" if prompt_context.get("fallback") else ""
             self.logger.debug(
-                f"Successfully linked image {image_id} to prompt {prompt_context['id']}{fallback_note}"
+                f"Successfully linked image {image_id} to prompt "
+                f"{prompt_context['id']}{fallback_note}"
             )
         except Exception as e:
             self.logger.error(f"Failed to link image to prompt: {e}")
@@ -543,7 +547,8 @@ class ImageMonitor:
         All monitoring is done recursively to catch images in subdirectories.
 
         Args:
-            output_directories: List of directory paths to monitor. If None, uses config or auto-detection.
+            output_directories: List of directory paths to monitor. If None, uses
+                config or auto-detection.
         """
         if self.observer:
             self.logger.warning("Image monitoring already running")
@@ -641,7 +646,8 @@ class ImageMonitor:
 
         Attempts to locate ComfyUI output directories using multiple strategies:
         1. Import ComfyUI's folder_paths module to get the configured output directory
-        2. Search common relative paths where ComfyUI output directories are typically located
+        2. Search common relative paths where ComfyUI output directories are
+           typically located
         3. Verify that detected directories actually exist
 
         Returns:

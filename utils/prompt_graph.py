@@ -134,7 +134,8 @@ def run_prompt_nodes(graph: Any) -> List[str]:
 def _join_text_inputs(
     inputs: Dict[str, Any], keys: List[str], resolve
 ) -> Optional[str]:
-    """WAS-style join: resolve each key, optionally strip, skip empty, join by delimiter."""
+    """WAS-style join: resolve each key, optionally strip, skip empty, join by
+    delimiter."""
     delimiter = inputs.get("delimiter", " ")
     if not isinstance(delimiter, str):
         return None
