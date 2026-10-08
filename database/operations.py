@@ -99,6 +99,51 @@ def _resolve_db_path(db_path: Optional[str] = None) -> str:
     return db_path
 
 
+# Bounds for the file_info a link request may attach to an image. Anything
+# outside them (or of the wrong type) is stored as NULL instead of being
+# trusted into an INTEGER or TEXT column and echoed back to the gallery.
+MAX_IMAGE_FILE_SIZE = 10**12
+MAX_IMAGE_DIMENSION = 65535
+IMAGE_FORMATS = frozenset(
+    {"PNG", "JPEG", "JPG", "WEBP", "GIF", "BMP", "TIFF", "MP4", "WEBM", "MOV"}
+)
+
+
+def _bounded_int(value: Any, upper: int) -> Optional[int]:
+    """``value`` as an int within ``[0, upper]``; None for anything else."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if 0 <= number <= upper else None
+
+
+def _known_image_format(value: Any) -> Optional[str]:
+    """Upper-cased *value* when it names a supported media format, else None."""
+    if not isinstance(value, str):
+        return None
+    name = value.strip().upper()
+    return name if name in IMAGE_FORMATS else None
+
+
+def _coerce_file_info(metadata: Any) -> tuple:
+    """``(size, width, height, format)`` from request metadata, each validated."""
+    file_info = metadata.get("file_info") if isinstance(metadata, dict) else None
+    if not isinstance(file_info, dict):
+        return None, None, None, None
+    dimensions = file_info.get("dimensions")
+    if not isinstance(dimensions, (list, tuple)) or len(dimensions) < 2:
+        dimensions = (None, None)
+    return (
+        _bounded_int(file_info.get("size"), MAX_IMAGE_FILE_SIZE),
+        _bounded_int(dimensions[0], MAX_IMAGE_DIMENSION),
+        _bounded_int(dimensions[1], MAX_IMAGE_DIMENSION),
+        _known_image_format(file_info.get("format")),
+    )
+
+
 class PromptDatabase:
     """Database operations class for managing prompts."""
 
@@ -1325,9 +1370,11 @@ class PromptDatabase:
                     return 0
 
                 # Proceed with linking
+                if not isinstance(metadata, dict):
+                    metadata = {}
                 filename = os.path.basename(image_path)
                 file_path = normalize_image_path(image_path)
-                file_info = metadata.get("file_info", {}) if metadata else {}
+                file_size, width, height, image_format = _coerce_file_info(metadata)
 
                 # INSERT OR IGNORE skips a file already linked to this prompt
                 # (same prompt_id + normalised full path)
@@ -1343,21 +1390,13 @@ class PromptDatabase:
                         image_path,
                         filename,
                         file_path,
-                        file_info.get("size"),
-                        (
-                            file_info.get("dimensions", [None, None])[0]
-                            if file_info.get("dimensions")
-                            else None
-                        ),
-                        (
-                            file_info.get("dimensions", [None, None])[1]
-                            if file_info.get("dimensions")
-                            else None
-                        ),
-                        file_info.get("format"),
-                        json.dumps(metadata.get("workflow", {}) if metadata else {}),
-                        json.dumps(metadata.get("prompt", {}) if metadata else {}),
-                        json.dumps(metadata.get("parameters", {}) if metadata else {}),
+                        file_size,
+                        width,
+                        height,
+                        image_format,
+                        json.dumps(metadata.get("workflow", {})),
+                        json.dumps(metadata.get("prompt", {})),
+                        json.dumps(metadata.get("parameters", {})),
                     ),
                 )
                 conn.commit()

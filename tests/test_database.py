@@ -500,6 +500,73 @@ class TestImageUniquenessByPath(DatabaseTestCase):
         self.assertTrue(self._link(b, path))
 
 
+class TestLinkImageMetadataCoercion(DatabaseTestCase):
+    """file_info from the request body is coerced; junk never reaches a column."""
+
+    XSS = '"><img src=x>'
+
+    def _link(self, file_info):
+        pid = self._save("coerce")
+        path = f"/out/c{len(self.db.get_prompt_images(pid))}.png"
+        image_id = self.db.link_image_to_prompt(pid, path, {"file_info": file_info})
+        self.assertGreater(image_id, 0, "image must still link")
+        return self.db.get_image_by_id(image_id)
+
+    def test_string_payloads_are_stored_as_null(self):
+        row = self._link({"size": self.XSS, "dimensions": self.XSS, "format": self.XSS})
+
+        self.assertIsNone(row["file_size"])
+        self.assertIsNone(row["width"])
+        self.assertIsNone(row["height"])
+        self.assertIsNone(row["format"])
+
+    def test_numbers_and_known_formats_are_kept(self):
+        row = self._link({"size": 1234, "dimensions": [640, 480], "format": "png"})
+
+        self.assertEqual(row["file_size"], 1234)
+        self.assertEqual(row["width"], 640)
+        self.assertEqual(row["height"], 480)
+        self.assertEqual(row["format"], "PNG")
+
+    def test_numeric_strings_are_accepted(self):
+        row = self._link({"size": "99", "dimensions": ["8", "16"], "format": "webp"})
+
+        self.assertEqual((row["file_size"], row["width"], row["height"]), (99, 8, 16))
+        self.assertEqual(row["format"], "WEBP")
+
+    def test_out_of_range_values_are_dropped(self):
+        too_big = self._link({"size": 10**12 + 1, "dimensions": [65536, 65535]})
+        negative = self._link({"size": -1, "dimensions": [-1, 0]})
+
+        self.assertIsNone(too_big["file_size"])
+        self.assertIsNone(too_big["width"])
+        self.assertEqual(too_big["height"], 65535)
+        self.assertIsNone(negative["file_size"])
+        self.assertIsNone(negative["width"])
+        self.assertEqual(negative["height"], 0)
+
+    def test_unknown_format_and_short_dimensions_are_dropped(self):
+        row = self._link({"dimensions": [640], "format": "svg"})
+
+        self.assertIsNone(row["width"])
+        self.assertIsNone(row["height"])
+        self.assertIsNone(row["format"])
+
+    def test_non_dict_metadata_still_links(self):
+        pid = self._save("junk metadata")
+
+        first = self.db.link_image_to_prompt(pid, "/out/a.png", "not a dict")
+        second = self.db.link_image_to_prompt(
+            pid, "/out/b.png", {"file_info": ["not", "a", "dict"]}
+        )
+
+        self.assertGreater(first, 0)
+        self.assertGreater(second, 0)
+        for row in self.db.get_prompt_images(pid):
+            self.assertIsNone(row["width"])
+            self.assertIsNone(row["format"])
+
+
 class TestSearchEscapesLikeWildcards(DatabaseTestCase):
     def test_percent_is_literal(self):
         self._save("100% sure")
