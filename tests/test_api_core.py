@@ -297,19 +297,99 @@ class TestStaticRoutes(CoreRoutesTestCase):
     async def test_lib_served(self):
         web_dir = self._fake_root()
         (web_dir / "lib" / "x.css").write_text("body{}")
-        (web_dir / "lib" / "x.bin").write_bytes(b"\x00\x01")
         resp = await self.client.request("GET", "/prompt_manager/lib/x.css")
         self.assertEqual(resp.status, 200)
         self.assertIn("text/css", resp.headers["Content-Type"])
-        resp = await self.client.request("GET", "/prompt_manager/lib/x.bin")
-        self.assertIn("application/octet-stream", resp.headers["Content-Type"])
+        self.assertEqual(await resp.text(), "body{}")
+
+    async def test_real_lib_file_served_with_content_type(self):
+        resp = await self.client.request(
+            "GET", "/prompt_manager/lib/viewerjs/viewer.min.css"
+        )
+        self.assertEqual(resp.status, 200)
+        self.assertIn("text/css", resp.headers["Content-Type"])
+
+    async def test_allowed_asset_types_get_their_mime(self):
+        web_dir = self._fake_root()
+        expected = {
+            "a.map": "application/json",
+            "f.woff": "font/woff",
+            "f.woff2": "font/woff2",
+            "f.ttf": "font/ttf",
+            "i.png": "image/png",
+            "i.svg": "image/svg+xml",
+            "i.ico": "image/x-icon",
+            "p.html": "text/html",
+        }
+        for name in expected:
+            (web_dir / "lib" / name).write_bytes(b"\x00\x01")
+        for name, mime in expected.items():
+            resp = await self.client.request("GET", f"/prompt_manager/lib/{name}")
+            self.assertEqual(resp.status, 200, name)
+            self.assertIn(mime, resp.headers["Content-Type"], name)
+
+    async def test_disallowed_extensions_are_403_even_when_present(self):
+        web_dir = self._fake_root()
+        for name in ("x.bin", "x.py", "x.json", "noext", "x.JS.bak"):
+            (web_dir / "lib" / name).write_bytes(b"\x00")
+            (web_dir / "js" / name).write_bytes(b"\x00")
+        for prefix in ("lib", "js"):
+            for name in ("x.bin", "x.py", "x.json", "noext", "x.JS.bak"):
+                resp = await self.client.request(
+                    "GET", f"/prompt_manager/{prefix}/{name}"
+                )
+                self.assertEqual(resp.status, 403, f"{prefix}/{name}")
 
     async def test_traversal_is_403(self):
         for prefix in ("lib", "js"):
-            resp = await self.client.request(
-                "GET", f"/prompt_manager/{prefix}/..%2F..%2Fpyproject.toml"
-            )
-            self.assertEqual(resp.status, 403, prefix)
+            for encoded in (
+                "..%2F..%2Fpyproject.toml",
+                "..%5C..%5Cpyproject.toml",
+                "sub%2F..%2F..%2F..%2Fpyproject.toml",
+                "%2E%2E%2Fpyproject.toml",
+            ):
+                resp = await self.client.request(
+                    "GET", f"/prompt_manager/{prefix}/{encoded}"
+                )
+                self.assertEqual(resp.status, 403, f"{prefix}/{encoded}")
+
+    async def test_absolute_drive_and_unc_paths_are_rejected_on_every_os(self):
+        # Built literally so the Windows-only escapes are exercised everywhere:
+        # os.path.join(root, "C:/x") drops root on Windows, "\\x" and UNC
+        # shares re-anchor the path as well.
+        candidates = (
+            "C:/Windows/win.ini",
+            "C:%5CWindows%5Cwin.ini",
+            "c:win.ini",
+            "%5C%5Cserver%5Cshare%5Cx.js",
+            "%2F%2Fserver%2Fshare%2Fx.js",
+            "%5CWindows%5Cwin.ini",
+            "%2Fetc%2Fpasswd",
+        )
+        for prefix in ("lib", "js"):
+            for encoded in candidates:
+                resp = await self.client.request(
+                    "GET", f"/prompt_manager/{prefix}/{encoded}"
+                )
+                self.assertIn(resp.status, (403, 404), f"{prefix}/{encoded}")
+                self.assertNotIn("[extensions]", await resp.text())
+
+    async def test_symlink_escaping_web_dir_is_403(self):
+        web_dir = self._fake_root()
+        secret = Path(self.tmpdir) / "secret.js"
+        secret.write_text("secret")
+        link = web_dir / "lib" / "link.js"
+        try:
+            os.symlink(secret, link)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks not available")
+        resp = await self.client.request("GET", "/prompt_manager/lib/link.js")
+        self.assertEqual(resp.status, 403)
+
+    async def test_empty_path_is_not_served(self):
+        for prefix in ("lib", "js"):
+            resp = await self.client.request("GET", f"/prompt_manager/{prefix}/")
+            self.assertIn(resp.status, (403, 404), prefix)
 
     async def test_missing_is_404(self):
         for prefix in ("lib", "js"):
@@ -317,8 +397,14 @@ class TestStaticRoutes(CoreRoutesTestCase):
             self.assertEqual(resp.status, 404, prefix)
 
     async def test_directory_is_404(self):
-        resp = await self.client.request("GET", "/prompt_manager/lib/tailwind")
+        web_dir = self._fake_root()
+        (web_dir / "lib" / "dir.js").mkdir()
+        resp = await self.client.request("GET", "/prompt_manager/lib/dir.js")
         self.assertEqual(resp.status, 404)
+
+    async def test_root_of_static_dir_is_not_listed(self):
+        resp = await self.client.request("GET", "/prompt_manager/lib/tailwind")
+        self.assertEqual(resp.status, 403)
 
 
 # ── instance helpers ──────────────────────────────────────────────────

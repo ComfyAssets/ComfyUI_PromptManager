@@ -13,7 +13,9 @@ import datetime
 import functools
 import gzip as gzip_module
 import json
+import ntpath
 import os
+import re
 from pathlib import Path
 
 from aiohttp import web
@@ -73,6 +75,58 @@ def _public_error(exc: BaseException) -> str:
             parts.append(os.path.basename(str(exc.filename)))
         return ": ".join(parts)
     return str(exc) or type(exc).__name__
+
+
+# ── Static file serving ────────────────────────────────────────────────
+# Only these extensions are ever served from web/lib and web/js; the map
+# doubles as the allow-list.
+STATIC_MIME_TYPES = {
+    ".js": "application/javascript",
+    ".css": "text/css",
+    ".map": "application/json",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".ttf": "font/ttf",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".html": "text/html",
+}
+_STATIC_SEPARATORS = re.compile(r"[\\/]+")
+
+
+def _resolve_static_file(root, filepath):
+    """Real path of ``filepath`` under ``root``, or None when it must not be served.
+
+    The request path is untrusted. It is rejected when it is empty, carries a
+    ``..`` segment, is absolute on any platform (a leading slash or backslash,
+    a drive letter such as ``C:`` or a UNC ``\\\\server\\share`` prefix all
+    re-anchor ``os.path.join`` on Windows), has an extension outside
+    STATIC_MIME_TYPES, or resolves (symlinks included) outside ``root``.
+    """
+    if not isinstance(filepath, str) or not filepath:
+        return None
+    if (
+        os.path.isabs(filepath)
+        or ntpath.isabs(filepath)
+        or ntpath.splitdrive(filepath)[0]
+    ):
+        return None
+    segments = _STATIC_SEPARATORS.split(filepath)
+    if any(segment in ("", ".", "..") for segment in segments):
+        return None
+    if os.path.splitext(filepath)[1].lower() not in STATIC_MIME_TYPES:
+        return None
+    try:
+        root_real = Path(os.path.normcase(os.path.realpath(root)))
+        candidate = Path(
+            os.path.normcase(os.path.realpath(os.path.join(root, *segments)))
+        )
+    except (OSError, ValueError):
+        return None
+    if candidate == root_real or not candidate.is_relative_to(root_real):
+        return None
+    return str(candidate)
 
 
 # ── Gzip compression middleware ────────────────────────────────────────
@@ -234,59 +288,12 @@ class PromptManagerAPI(
         @routes.get("/prompt_manager/lib/{filepath:.*}")
         async def serve_lib_static(request):
             """Serve static library files (JS, CSS) from web/lib directory."""
-            MIME_TYPES = {
-                ".js": "application/javascript",
-                ".css": "text/css",
-                ".json": "application/json",
-                ".map": "application/json",
-            }
-
-            filepath = request.match_info.get("filepath", "")
-
-            # Security: prevent directory traversal
-            if ".." in filepath or filepath.startswith("/"):
-                return web.Response(text="Forbidden", status=403)
-
-            file_path = os.path.join(_get_project_root(), "web", "lib", filepath)
-
-            if not os.path.exists(file_path) or not os.path.isfile(file_path):
-                return web.Response(text=f"Not Found: {filepath}", status=404)
-
-            ext = os.path.splitext(file_path)[1].lower()
-            content_type = MIME_TYPES.get(ext, "application/octet-stream")
-
-            with open(file_path, "rb") as f:
-                content = f.read()
-
-            return web.Response(body=content, content_type=content_type)
+            return self._serve_static_file("lib", request.match_info.get("filepath"))
 
         @routes.get("/prompt_manager/js/{filepath:.*}")
         async def serve_js_static(request):
             """Serve static JavaScript files from web/js directory."""
-            MIME_TYPES = {
-                ".js": "application/javascript",
-                ".css": "text/css",
-                ".json": "application/json",
-                ".map": "application/json",
-            }
-
-            filepath = request.match_info.get("filepath", "")
-
-            if ".." in filepath or filepath.startswith("/"):
-                return web.Response(text="Forbidden", status=403)
-
-            file_path = os.path.join(_get_project_root(), "web", "js", filepath)
-
-            if not os.path.exists(file_path) or not os.path.isfile(file_path):
-                return web.Response(text=f"Not Found: {filepath}", status=404)
-
-            ext = os.path.splitext(file_path)[1].lower()
-            content_type = MIME_TYPES.get(ext, "application/octet-stream")
-
-            with open(file_path, "rb") as f:
-                content = f.read()
-
-            return web.Response(body=content, content_type=content_type)
+            return self._serve_static_file("js", request.match_info.get("filepath"))
 
         # ── Register domain-specific routes from mixins ───────────────
 
@@ -310,6 +317,19 @@ class PromptManagerAPI(
                 self.logger.warning(f"Could not register gzip middleware: {e}")
 
         self.logger.info("All routes registered with decorator pattern")
+
+    def _serve_static_file(self, subdir, filepath):
+        """Serve ``web/<subdir>/<filepath>``; 403 outside it, 404 when missing."""
+        root = os.path.join(_get_project_root(), "web", subdir)
+        file_path = _resolve_static_file(root, filepath)
+        if file_path is None:
+            return web.Response(text="Forbidden", status=403)
+        if not os.path.isfile(file_path):
+            return web.Response(text="Not Found", status=404)
+        ext = os.path.splitext(file_path)[1].lower()
+        with open(file_path, "rb") as f:
+            content = f.read()
+        return web.Response(body=content, content_type=STATIC_MIME_TYPES[ext])
 
     def _serve_html_page(self, filename, title, cache=True):
         """Serve ``web/<filename>``; 404 when missing, 500 when unreadable."""
