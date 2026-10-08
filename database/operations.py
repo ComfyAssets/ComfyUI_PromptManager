@@ -6,7 +6,7 @@ import sqlite3
 import json
 import datetime
 import os
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any
 
 from .models import PromptModel, normalize_image_path, utc_now_iso
 
@@ -500,7 +500,7 @@ class PromptDatabase:
                 params.append(datetime.datetime.now(datetime.timezone.utc).isoformat())
                 params.append(prompt_id)
                 query = f"UPDATE prompts SET {', '.join(updates)} WHERE id = ?"
-                cursor = conn.execute(query, params)
+                conn.execute(query, params)
             if tags is not None:
                 self._sync_prompt_tags(conn, prompt_id, tags)
                 conn.execute(
@@ -1536,10 +1536,10 @@ class PromptDatabase:
                 SELECT gi.*, p.text as prompt_text
                 FROM generated_images gi
                 JOIN prompts p ON gi.prompt_id = p.id
-                WHERE p.text LIKE ?
+                WHERE p.text LIKE ? ESCAPE '\\'
                 ORDER BY gi.generation_time DESC
                 """,
-                (f"%{search_term}%",),
+                (f"%{escape_like(search_term)}%",),
             )
             return [self._image_row_to_dict(row) for row in cursor.fetchall()]
 
