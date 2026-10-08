@@ -59,9 +59,133 @@ def _thumbnail_rel_path(rel_path, thumbnail_ext):
     return f"thumbnails/{rel_path.with_suffix('').as_posix()}_thumb{thumbnail_ext}"
 
 
+async def _read_json(request):
+    """Parse a JSON object body.
+
+    Returns:
+        (data, None) on success, or (None, response) carrying a 400 reply.
+    """
+    try:
+        data = await request.json()
+    except ValueError:
+        return None, web.json_response(
+            {"success": False, "error": "Request body must be valid JSON"},
+            status=400,
+        )
+    if not isinstance(data, dict):
+        return None, web.json_response(
+            {"success": False, "error": "Request body must be a JSON object"},
+            status=400,
+        )
+    return data, None
+
+
 def _sse(payload):
     """Encode one server-sent event."""
     return f"data: {json.dumps(payload)}\n\n"
+
+
+def _public_helpers():
+    """The package's public-path helpers (imported lazily to avoid a cycle)."""
+    from . import _public_error, _public_path
+
+    return _public_path, _public_error
+
+
+def _diagnose_database(db_path):
+    """Row counts straight from the database file (small blocking query)."""
+    _public_path, _public_error = _public_helpers()
+    if not os.path.exists(db_path):
+        return {
+            "status": "error",
+            "message": f"Database file not found: {os.path.basename(db_path)}",
+        }
+    try:
+        with sqlite3.connect(db_path) as conn:
+            prompt_count = conn.execute("SELECT COUNT(*) FROM prompts").fetchone()[0]
+            has_images_table = (
+                conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name='generated_images'"
+                ).fetchone()
+                is not None
+            )
+            image_count = 0
+            if has_images_table:
+                image_count = conn.execute(
+                    "SELECT COUNT(*) FROM generated_images"
+                ).fetchone()[0]
+        return {
+            "status": "ok",
+            "prompt_count": prompt_count,
+            "has_images_table": has_images_table,
+            "image_count": image_count,
+        }
+    except Exception as e:
+        return {"status": "error", "message": f"Database error: {_public_error(e)}"}
+
+
+def _diagnose_dependencies():
+    """Presence of the optional runtime dependencies."""
+    dependencies = {"sqlite3": True}
+    for name in ("watchdog", "PIL"):
+        try:
+            __import__(name)
+            dependencies[name] = True
+        except ImportError:
+            dependencies[name] = False
+    return {
+        "status": "ok" if all(dependencies.values()) else "error",
+        "dependencies": dependencies,
+    }
+
+
+def _diagnose_output_dirs(configured_dirs):
+    """Configured gallery roots, ComfyUI's output dir, or relative fallbacks."""
+    _public_path, _ = _public_helpers()
+    candidates = list(configured_dirs)
+    try:
+        import folder_paths
+
+        candidates.append(folder_paths.get_output_directory())
+    except ImportError:
+        pass
+
+    output_dirs = []
+    for candidate in candidates:
+        abs_path = os.path.abspath(candidate) if candidate else None
+        if abs_path and os.path.exists(abs_path) and abs_path not in output_dirs:
+            output_dirs.append(abs_path)
+
+    if not output_dirs:
+        for rel in ("output", "../output", "../../output"):
+            abs_path = os.path.abspath(rel)
+            if os.path.exists(abs_path) and abs_path not in output_dirs:
+                output_dirs.append(abs_path)
+
+    return {
+        "status": "ok" if output_dirs else "warning",
+        "output_dirs": [_public_path(d) for d in output_dirs],
+    }
+
+
+def _diagnose_image_monitor():
+    """Status of the running image monitor, with public directory names."""
+    _public_path, _public_error = _public_helpers()
+    try:
+        monitor = _current_image_monitor()
+        if monitor is None:
+            return {"status": "error", "message": "Image monitor not initialized"}
+        status = dict(monitor.get_status())
+        status["monitored_directories"] = [
+            _public_path(d) for d in status.get("monitored_directories", [])
+        ]
+        return {"status": "ok" if status.get("observer_alive") else "error", **status}
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Failed to get monitor status: {_public_error(e)}",
+        }
 
 
 def _image_monitor_module():
@@ -250,7 +374,9 @@ class AdminRoutesMixin:
     async def delete_duplicate_images_endpoint(self, request):
         """Delete duplicate image files from disk."""
         try:
-            data = await request.json()
+            data, error_response = await _read_json(request)
+            if error_response is not None:
+                return error_response
             image_paths = data.get("image_paths", [])
 
             if not image_paths or not isinstance(image_paths, list):
@@ -392,7 +518,9 @@ class AdminRoutesMixin:
         try:
             from ..config import PromptManagerConfig
 
-            data = await request.json()
+            data, error_response = await _read_json(request)
+            if error_response is not None:
+                return error_response
 
             if "result_timeout" in data:
                 try:
@@ -503,138 +631,16 @@ class AdminRoutesMixin:
     async def run_diagnostics(self, request):
         """Run comprehensive system diagnostics and health checks."""
         try:
-            results = {}
+            from ..config import GalleryConfig
 
-            # Check database
-            try:
-                db_path = self.db.model.db_path
-                if os.path.exists(db_path):
-                    with sqlite3.connect(db_path) as conn:
-                        conn.row_factory = sqlite3.Row
-                        cursor = conn.execute("SELECT COUNT(*) as count FROM prompts")
-                        prompt_count = cursor.fetchone()["count"]
-
-                        cursor = conn.execute(
-                            "SELECT name FROM sqlite_master WHERE type='table' AND name='generated_images'"
-                        )
-                        has_images_table = cursor.fetchone() is not None
-
-                        if has_images_table:
-                            cursor = conn.execute(
-                                "SELECT COUNT(*) as count FROM generated_images"
-                            )
-                            image_count = cursor.fetchone()["count"]
-                        else:
-                            image_count = 0
-
-                        results["database"] = {
-                            "status": "ok",
-                            "prompt_count": prompt_count,
-                            "has_images_table": has_images_table,
-                            "image_count": image_count,
-                        }
-                else:
-                    results["database"] = {
-                        "status": "error",
-                        "message": (
-                            f"Database file not found: {os.path.basename(db_path)}"
-                        ),
-                    }
-            except Exception as e:
-                results["database"] = {
-                    "status": "error",
-                    "message": f"Database error: {self._public_error(e)}",
-                }
-
-            # Check dependencies
-            dependencies = {}
-            try:
-                import watchdog
-
-                dependencies["watchdog"] = True
-            except ImportError:
-                dependencies["watchdog"] = False
-
-            try:
-                from PIL import Image
-
-                dependencies["PIL"] = True
-            except ImportError:
-                dependencies["PIL"] = False
-
-            dependencies["sqlite3"] = True  # Always available in Python
-
-            results["dependencies"] = {
-                "status": "ok" if all(dependencies.values()) else "error",
-                "dependencies": dependencies,
+            results = {
+                "database": _diagnose_database(self.db.model.db_path),
+                "dependencies": _diagnose_dependencies(),
+                "comfyui_output": _diagnose_output_dirs(
+                    GalleryConfig.MONITORING_DIRECTORIES
+                ),
+                "image_monitor": _diagnose_image_monitor(),
             }
-
-            # Check output directories
-            output_dirs = []
-
-            # Check user-configured gallery directories from config.json
-            try:
-                from ..config import GalleryConfig
-
-                for cfg_dir in GalleryConfig.MONITORING_DIRECTORIES:
-                    abs_path = os.path.abspath(cfg_dir)
-                    if os.path.exists(abs_path) and abs_path not in output_dirs:
-                        output_dirs.append(abs_path)
-            except Exception as e:
-                self.logger.debug(f"Could not load gallery config: {e}")
-
-            # Check ComfyUI's own output directory (respects --output-directory)
-            try:
-                import folder_paths
-
-                comfyui_output = folder_paths.get_output_directory()
-                if comfyui_output and os.path.exists(comfyui_output):
-                    abs_path = os.path.abspath(comfyui_output)
-                    if abs_path not in output_dirs:
-                        output_dirs.append(abs_path)
-            except ImportError:
-                self.logger.debug(
-                    "folder_paths not available, skipping ComfyUI output dir"
-                )
-
-            # Fallback: check common relative paths
-            if not output_dirs:
-                for dir_path in ["output", "../output", "../../output"]:
-                    abs_path = os.path.abspath(dir_path)
-                    if os.path.exists(abs_path) and abs_path not in output_dirs:
-                        output_dirs.append(abs_path)
-
-            results["comfyui_output"] = {
-                "status": "ok" if output_dirs else "warning",
-                "output_dirs": [self._public_path(d) for d in output_dirs],
-            }
-
-            # Check image monitor status
-            try:
-                monitor = _current_image_monitor()
-                if monitor is not None:
-                    monitor_status = dict(monitor.get_status())
-                    monitor_status["monitored_directories"] = [
-                        self._public_path(d)
-                        for d in monitor_status.get("monitored_directories", [])
-                    ]
-                    results["image_monitor"] = {
-                        "status": (
-                            "ok" if monitor_status.get("observer_alive") else "error"
-                        ),
-                        **monitor_status,
-                    }
-                else:
-                    results["image_monitor"] = {
-                        "status": "error",
-                        "message": "Image monitor not initialized",
-                    }
-            except Exception as e:
-                results["image_monitor"] = {
-                    "status": "error",
-                    "message": f"Failed to get monitor status: {self._public_error(e)}",
-                }
-
             return web.json_response({"success": True, "diagnostics": results})
 
         except Exception as e:
@@ -646,55 +652,18 @@ class AdminRoutesMixin:
     async def test_image_link(self, request):
         """Test creating an image link."""
         try:
-            data = await request.json()
+            data, error_response = await _read_json(request)
+            if error_response is not None:
+                return error_response
             prompt_id = data.get("prompt_id")
-            test_image_path = data.get("image_path", "/test/fake/image.png")
-
             if not prompt_id:
                 return web.json_response(
                     {"success": False, "error": "prompt_id is required"}, status=400
                 )
 
-            test_metadata = {
-                "file_info": {
-                    "size": 1024000,
-                    "dimensions": [512, 512],
-                    "format": "PNG",
-                },
-                "workflow": {"test": True},
-                "prompt": {"test_prompt": "This is a test image"},
-            }
-
-            try:
-                image_id = await self._run_in_executor(
-                    self.db.link_image_to_prompt,
-                    prompt_id=str(prompt_id),
-                    image_path=test_image_path,
-                    metadata=test_metadata,
-                )
-
-                return web.json_response(
-                    {
-                        "success": True,
-                        "result": {
-                            "status": "ok",
-                            "image_id": image_id,
-                            "message": f"Test image linked successfully with ID {image_id}",
-                        },
-                    }
-                )
-            except Exception as e:
-                return web.json_response(
-                    {
-                        "success": False,
-                        "result": {
-                            "status": "error",
-                            "message": (
-                                f"Failed to create test link: {self._public_error(e)}"
-                            ),
-                        },
-                    }
-                )
+            image_path = data.get("image_path", "/test/fake/image.png")
+            payload = await self._link_test_image(str(prompt_id), image_path)
+            return web.json_response(payload)
 
         except Exception as e:
             self.logger.error(f"Test link error: {e}", exc_info=True)
@@ -702,132 +671,59 @@ class AdminRoutesMixin:
                 {"success": False, "error": "Test link failed"}, status=500
             )
 
-    async def run_maintenance(self, request):
-        """Perform comprehensive database maintenance and optimization."""
+    async def _link_test_image(self, prompt_id, image_path):
+        """Link a synthetic image record to ``prompt_id``; returns the envelope."""
+        test_metadata = {
+            "file_info": {"size": 1024000, "dimensions": [512, 512], "format": "PNG"},
+            "workflow": {"test": True},
+            "prompt": {"test_prompt": "This is a test image"},
+        }
         try:
-            data = (
-                await request.json()
-                if request.content_type == "application/json"
-                else {}
+            image_id = await self._run_in_executor(
+                self.db.link_image_to_prompt,
+                prompt_id=prompt_id,
+                image_path=image_path,
+                metadata=test_metadata,
             )
+        except Exception as e:
+            return {
+                "success": False,
+                "result": {
+                    "status": "error",
+                    "message": f"Failed to create test link: {self._public_error(e)}",
+                },
+            }
+        return {
+            "success": True,
+            "result": {
+                "status": "ok",
+                "image_id": image_id,
+                "message": f"Test image linked successfully with ID {image_id}",
+            },
+        }
+
+    DEFAULT_MAINTENANCE_OPERATIONS = (
+        "cleanup_duplicates",
+        "vacuum",
+        "cleanup_orphaned_images",
+    )
+
+    async def run_maintenance(self, request):
+        """Perform database maintenance operations and report each outcome."""
+        try:
+            data = {}
+            if request.content_type == "application/json":
+                data, error_response = await _read_json(request)
+                if error_response is not None:
+                    return error_response
             operations = data.get(
-                "operations",
-                ["cleanup_duplicates", "vacuum", "cleanup_orphaned_images"],
+                "operations", list(self.DEFAULT_MAINTENANCE_OPERATIONS)
             )
 
-            results = {}
-
-            def _run_maintenance():
-                if "cleanup_duplicates" in operations:
-                    try:
-                        duplicates_removed = self.db.cleanup_duplicates()
-                        results["cleanup_duplicates"] = {
-                            "success": True,
-                            "removed_count": duplicates_removed,
-                            "message": f"Removed {duplicates_removed} duplicate prompts",
-                        }
-                    except Exception as e:
-                        results["cleanup_duplicates"] = {
-                            "success": False,
-                            "error": self._public_error(e),
-                            "message": "Failed to cleanup duplicates",
-                        }
-
-                if "vacuum" in operations:
-                    try:
-                        self.db.model.vacuum_database()
-                        results["vacuum"] = {
-                            "success": True,
-                            "message": "Database vacuum completed successfully",
-                        }
-                    except Exception as e:
-                        results["vacuum"] = {
-                            "success": False,
-                            "error": self._public_error(e),
-                            "message": "Failed to vacuum database",
-                        }
-
-                if "cleanup_orphaned_images" in operations:
-                    try:
-                        orphaned_removed = self.db.cleanup_missing_images()
-                        results["cleanup_orphaned_images"] = {
-                            "success": True,
-                            "removed_count": orphaned_removed,
-                            "message": f"Removed {orphaned_removed} orphaned image records",
-                        }
-                    except Exception as e:
-                        results["cleanup_orphaned_images"] = {
-                            "success": False,
-                            "error": self._public_error(e),
-                            "message": "Failed to cleanup orphaned images",
-                        }
-
-                if "check_hash_duplicates" in operations:
-                    try:
-                        hash_duplicates = self.db.check_hash_duplicates()
-                        results["check_hash_duplicates"] = {
-                            "success": True,
-                            "duplicate_hashes": len(hash_duplicates),
-                            "message": f"Found {len(hash_duplicates)} duplicate hash groups",
-                        }
-                    except Exception as e:
-                        results["check_hash_duplicates"] = {
-                            "success": False,
-                            "error": self._public_error(e),
-                            "message": "Failed to check hash duplicates",
-                        }
-
-                if "statistics" in operations:
-                    try:
-                        db_info = self.db.model.get_database_info()
-                        results["statistics"] = {
-                            "success": True,
-                            "info": db_info,
-                            "message": "Database statistics retrieved",
-                        }
-                    except Exception as e:
-                        results["statistics"] = {
-                            "success": False,
-                            "error": self._public_error(e),
-                            "message": "Failed to get database statistics",
-                        }
-
-                if "prune_orphaned_prompts" in operations:
-                    try:
-                        removed_count = self.db.prune_orphaned_prompts()
-                        results["prune_orphaned_prompts"] = {
-                            "success": True,
-                            "removed_count": removed_count,
-                            "message": f"Removed {removed_count} orphaned prompts (prompts with no linked images, excluding protected prompts)",
-                        }
-                    except Exception as e:
-                        results["prune_orphaned_prompts"] = {
-                            "success": False,
-                            "error": self._public_error(e),
-                            "message": "Failed to prune orphaned prompts",
-                        }
-
-                if "check_consistency" in operations:
-                    try:
-                        consistency_issues = self.db.check_consistency()
-                        results["check_consistency"] = {
-                            "success": True,
-                            "issues_found": len(consistency_issues),
-                            "issues": consistency_issues[:10],
-                            "message": f"Found {len(consistency_issues)} consistency issues",
-                        }
-                    except Exception as e:
-                        results["check_consistency"] = {
-                            "success": False,
-                            "error": self._public_error(e),
-                            "message": "Failed to check database consistency",
-                        }
-
-            await self._run_in_executor(_run_maintenance)
-
-            all_successful = all(
-                result.get("success", False) for result in results.values()
+            results = await self._run_in_executor(
+                self._run_maintenance_operations, operations
             )
+            all_successful = all(r.get("success", False) for r in results.values())
 
             return web.json_response(
                 {
@@ -844,6 +740,74 @@ class AdminRoutesMixin:
             return web.json_response(
                 {"success": False, "error": "Maintenance failed"}, status=500
             )
+
+    def _run_maintenance_operations(self, operations):
+        """Run each known operation in order; unknown names are ignored (blocking)."""
+        results = {}
+        for name in operations:
+            runner = self._maintenance_runners().get(name)
+            if runner is None:
+                continue
+            try:
+                results[name] = {"success": True, **runner()}
+            except Exception as e:
+                results[name] = {
+                    "success": False,
+                    "error": self._public_error(e),
+                    "message": f"Failed to run {name.replace('_', ' ')}",
+                }
+        return results
+
+    def _maintenance_runners(self):
+        """Map of operation name to a callable returning that operation's result."""
+        db = self.db
+
+        def count_result(count, noun):
+            return {"removed_count": count, "message": f"Removed {count} {noun}"}
+
+        def vacuum():
+            db.model.vacuum_database()
+            return {"message": "Database vacuum completed successfully"}
+
+        return {
+            "cleanup_duplicates": lambda: count_result(
+                db.cleanup_duplicates(), "duplicate prompts"
+            ),
+            "vacuum": vacuum,
+            "cleanup_orphaned_images": lambda: count_result(
+                db.cleanup_missing_images(), "orphaned image records"
+            ),
+            "check_hash_duplicates": lambda: self._hash_duplicates_result(
+                db.check_hash_duplicates()
+            ),
+            "statistics": lambda: {
+                "info": db.model.get_database_info(),
+                "message": "Database statistics retrieved",
+            },
+            "prune_orphaned_prompts": lambda: count_result(
+                db.prune_orphaned_prompts(),
+                "orphaned prompts (prompts with no linked images, "
+                "excluding protected prompts)",
+            ),
+            "check_consistency": lambda: self._consistency_result(
+                db.check_consistency()
+            ),
+        }
+
+    @staticmethod
+    def _hash_duplicates_result(groups):
+        return {
+            "duplicate_hashes": len(groups),
+            "message": f"Found {len(groups)} duplicate hash groups",
+        }
+
+    @staticmethod
+    def _consistency_result(issues):
+        return {
+            "issues_found": len(issues),
+            "issues": issues[:10],
+            "message": f"Found {len(issues)} consistency issues",
+        }
 
     async def backup_database(self, request):
         """Download a consistent copy of the prompts database (WAL included)."""

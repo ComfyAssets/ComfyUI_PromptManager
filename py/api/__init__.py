@@ -215,132 +215,19 @@ class PromptManagerAPI(
 
         @routes.get("/prompt_manager/web")
         async def serve_web_ui(request):
-            try:
-                html_path = os.path.join(_get_project_root(), "web", "index.html")
-
-                if os.path.exists(html_path):
-                    with open(html_path, "r", encoding="utf-8") as f:
-                        html_content = f.read()
-
-                    return web.Response(
-                        text=html_content, content_type="text/html", charset="utf-8"
-                    )
-                else:
-                    return web.Response(
-                        text="<h1>Web UI not found</h1><p>HTML file not located at expected path.</p>",
-                        content_type="text/html",
-                        status=404,
-                    )
-
-            except Exception as e:
-                self.logger.exception("Failed to load web UI")
-                return web.Response(
-                    text="<h1>Error</h1><p>Failed to load web UI. Check server logs for details.</p>",
-                    content_type="text/html",
-                    status=500,
-                )
+            return self._serve_html_page("index.html", "Web UI", cache=False)
 
         @routes.get("/prompt_manager/gallery.html")
         async def serve_gallery_ui(request):
-            try:
-                html_path = os.path.join(
-                    _get_project_root(),
-                    "web",
-                    "metadata.html",
-                )
-
-                if html_path not in self._html_cache:
-                    if os.path.exists(html_path):
-                        with open(html_path, "r", encoding="utf-8") as f:
-                            self._html_cache[html_path] = f.read()
-                    else:
-                        return web.Response(
-                            text="<h1>Gallery not found</h1><p>gallery.html file not located at expected path.</p>",
-                            content_type="text/html",
-                            status=404,
-                        )
-
-                return web.Response(
-                    text=self._html_cache[html_path],
-                    content_type="text/html",
-                    charset="utf-8",
-                )
-
-            except Exception as e:
-                self.logger.exception("Failed to load gallery")
-                return web.Response(
-                    text="<h1>Error</h1><p>Failed to load gallery. Check server logs for details.</p>",
-                    content_type="text/html",
-                    status=500,
-                )
+            return self._serve_html_page("metadata.html", "Gallery")
 
         @routes.get("/prompt_manager/admin")
         async def serve_admin_ui(request):
-            try:
-                html_path = os.path.join(
-                    _get_project_root(),
-                    "web",
-                    "admin.html",
-                )
-
-                if html_path not in self._html_cache:
-                    if os.path.exists(html_path):
-                        with open(html_path, "r", encoding="utf-8") as f:
-                            self._html_cache[html_path] = f.read()
-                    else:
-                        return web.Response(
-                            text="<h1>Admin UI not found</h1>",
-                            content_type="text/html",
-                            status=404,
-                        )
-
-                return web.Response(
-                    text=self._html_cache[html_path],
-                    content_type="text/html",
-                    charset="utf-8",
-                )
-
-            except Exception as e:
-                self.logger.exception("Failed to load admin UI")
-                return web.Response(
-                    text="<h1>Error</h1><p>Failed to load admin UI. Check server logs for details.</p>",
-                    content_type="text/html",
-                    status=500,
-                )
+            return self._serve_html_page("admin.html", "Admin UI")
 
         @routes.get("/prompt_manager/gallery")
         async def serve_gallery_admin_ui(request):
-            try:
-                html_path = os.path.join(
-                    _get_project_root(),
-                    "web",
-                    "gallery.html",
-                )
-
-                if html_path not in self._html_cache:
-                    if os.path.exists(html_path):
-                        with open(html_path, "r", encoding="utf-8") as f:
-                            self._html_cache[html_path] = f.read()
-                    else:
-                        return web.Response(
-                            text="<h1>Gallery not found</h1><p>gallery.html file not located at expected path.</p>",
-                            content_type="text/html",
-                            status=404,
-                        )
-
-                return web.Response(
-                    text=self._html_cache[html_path],
-                    content_type="text/html",
-                    charset="utf-8",
-                )
-
-            except Exception as e:
-                self.logger.exception("Failed to load gallery")
-                return web.Response(
-                    text="<h1>Error</h1><p>Failed to load gallery. Check server logs for details.</p>",
-                    content_type="text/html",
-                    status=500,
-                )
+            return self._serve_html_page("gallery.html", "Gallery")
 
         # ── Static file serving ───────────────────────────────────────
 
@@ -423,6 +310,34 @@ class PromptManagerAPI(
                 self.logger.warning(f"Could not register gzip middleware: {e}")
 
         self.logger.info("All routes registered with decorator pattern")
+
+    def _serve_html_page(self, filename, title, cache=True):
+        """Serve ``web/<filename>``; 404 when missing, 500 when unreadable."""
+        html_path = os.path.join(_get_project_root(), "web", filename)
+        try:
+            if cache and html_path in self._html_cache:
+                content = self._html_cache[html_path]
+            elif os.path.exists(html_path):
+                with open(html_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if cache:
+                    self._html_cache[html_path] = content
+            else:
+                return web.Response(
+                    text=f"<h1>{title} not found</h1>"
+                    "<p>HTML file not located at expected path.</p>",
+                    content_type="text/html",
+                    status=404,
+                )
+            return web.Response(text=content, content_type="text/html", charset="utf-8")
+        except Exception:
+            self.logger.exception(f"Failed to load {title}")
+            return web.Response(
+                text=f"<h1>Error</h1><p>Failed to load {title}. "
+                "Check server logs for details.</p>",
+                content_type="text/html",
+                status=500,
+            )
 
     # ── Shared utilities used by multiple mixins ──────────────────────
 
