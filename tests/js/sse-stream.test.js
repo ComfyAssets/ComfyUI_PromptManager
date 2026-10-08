@@ -160,3 +160,53 @@ test("connect defaults to GET and the global fetch", async () => {
         globalThis.fetch = original;
     }
 });
+
+test("addEventListener receives named events and unnamed ones go to 'message'", async () => {
+    const named = [];
+    const plain = [];
+    let closed = false;
+    const fetchImpl = async () =>
+        new Response(
+            streamOf(['event: start\ndata: {"total":3}\n\n', 'data: {"n":1}\n\n', 'event: complete\ndata: {"ok":true}\n\n']),
+            { status: 200 },
+        );
+    const source = connect("/prompt_manager/images/generate-thumbnails/progress", { method: "POST", fetchImpl });
+    source.addEventListener("start", (e) => named.push(["start", JSON.parse(e.data).total]));
+    source.addEventListener("complete", (e) => named.push(["complete", JSON.parse(e.data).ok]));
+    source.addEventListener("message", (e) => plain.push(JSON.parse(e.data).n));
+    source.onclose = () => { closed = true; };
+    await until(() => closed);
+    assert.deepEqual(named, [["start", 3], ["complete", true]]);
+    assert.deepEqual(plain, [1]);
+});
+
+test("removeEventListener stops delivery and onmessage still sees every event", async () => {
+    const all = [];
+    const progress = [];
+    let closed = false;
+    const fetchImpl = async () =>
+        new Response(streamOf(["event: progress\ndata: 1\n\n", "event: progress\ndata: 2\n\n"]), { status: 200 });
+    const source = connect("/x", { fetchImpl });
+    const listener = (e) => {
+        progress.push(e.data);
+        source.removeEventListener("progress", listener);
+    };
+    source.addEventListener("progress", listener);
+    source.onmessage = (e) => all.push(`${e.event}:${e.data}`);
+    source.onclose = () => { closed = true; };
+    await until(() => closed);
+    assert.deepEqual(progress, ["1"]);
+    assert.deepEqual(all, ["progress:1", "progress:2"]);
+});
+
+test("a listener that closes the source stops later events", async () => {
+    const seen = [];
+    const fetchImpl = async () =>
+        new Response(streamOf(["event: error\ndata: boom\n\n", "event: progress\ndata: 2\n\n"]), { status: 200 });
+    const source = connect("/x", { fetchImpl });
+    source.addEventListener("error", (e) => { seen.push(e.data); source.close(); });
+    source.addEventListener("progress", (e) => seen.push(e.data));
+    await until(() => source.readyState === source.CLOSED);
+    await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(seen, ["boom"]);
+});

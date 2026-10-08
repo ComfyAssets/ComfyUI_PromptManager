@@ -1,10 +1,12 @@
 /**
  * Server-sent events over fetch.
  *
- * EventSource can only GET. The auto-tag download/start endpoints are POST
- * (they have side effects), so their progress streams are read with fetch and
- * a small parser. `connect()` returns an object with the EventSource surface
- * the pages already use: onmessage, onerror, onclose, readyState, close().
+ * EventSource can only GET. The auto-tag download/start and thumbnail
+ * generation endpoints are POST (they have side effects), so their progress
+ * streams are read with fetch and a small parser. `connect()` returns an
+ * object with the EventSource surface the pages already use: onmessage,
+ * onerror, onclose, readyState, close(), and addEventListener(name, fn) for
+ * named `event:` frames.
  *
  * Loadable in the browser (window.SseStream) and in Node for tests.
  */
@@ -60,6 +62,7 @@
     function connect(url, { method = "GET", body, fetchImpl } = {}) {
         const doFetch = fetchImpl || ((...args) => globalThis.fetch(...args));
         const controller = new AbortController();
+        const listeners = new Map();
         const source = {
             onmessage: null,
             onerror: null,
@@ -73,7 +76,26 @@
                 source.readyState = CLOSED;
                 controller.abort();
             },
+            /** Named `event:` frames reach listeners for that name; unnamed ones reach "message". */
+            addEventListener(name, listener) {
+                if (!listeners.has(name)) listeners.set(name, new Set());
+                listeners.get(name).add(listener);
+            },
+            removeEventListener(name, listener) {
+                const set = listeners.get(name);
+                if (set) set.delete(listener);
+            },
         };
+
+        function deliver(event) {
+            if (source.onmessage) source.onmessage(event);
+            const set = listeners.get(event.event || "message");
+            if (!set) return;
+            for (const listener of Array.from(set)) {
+                if (source.readyState === CLOSED) return;
+                listener(event);
+            }
+        }
 
         (async () => {
             try {
@@ -95,7 +117,7 @@
                     buffer = rest;
                     for (const event of events) {
                         if (source.readyState === CLOSED) return;
-                        if (source.onmessage) source.onmessage(event);
+                        deliver(event);
                     }
                     if (done) break;
                 }

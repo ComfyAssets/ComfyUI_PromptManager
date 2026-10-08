@@ -1840,7 +1840,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     
                     
                     // Set up Server-Sent Events
-                    const eventSource = new EventSource(`/prompt_manager/images/generate-thumbnails/progress?quality=${options.quality}`);
+                    // The progress route is POST (it generates files), so read it with SseStream like the autotag streams
+                    const eventSource = SseStream.connect(`/prompt_manager/images/generate-thumbnails/progress?quality=${encodeURIComponent(options.quality)}`, { method: 'POST' });
                     
                     // Log connection
                     
@@ -1993,7 +1994,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         console.error('EventSource readyState:', eventSource.readyState);
                         
                         // Check if connection is closing normally
-                        if (eventSource.readyState === EventSource.CLOSED) {
+                        if (eventSource.readyState === eventSource.CLOSED) {
                         } else {
                             console.error('EventSource connection failed');
                         }
@@ -2007,6 +2008,14 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         if (!resultData) {
                             reject(new Error('Connection to server lost during thumbnail generation'));
                         }
+                    };
+
+                    // Stream ended without a complete/error frame (close() does not trigger this)
+                    eventSource.onclose = () => {
+                        if (cancelled || resultData) return;
+                        cancelBtn.removeEventListener('click', cancelHandler);
+                        cancelBtn.classList.add('hidden');
+                        reject(new Error('Connection to server closed before thumbnail generation finished'));
                     };
                 });
             }
@@ -2580,7 +2589,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     
                     
                     // Set up Server-Sent Events (same as the settings modal)
-                    const eventSource = new EventSource(`/prompt_manager/images/generate-thumbnails/progress?quality=${quality}`);
+                    // The progress route is POST (it generates files), so read it with SseStream like the autotag streams
+                    const eventSource = SseStream.connect(`/prompt_manager/images/generate-thumbnails/progress?quality=${encodeURIComponent(quality)}`, { method: 'POST' });
                     
                     let resultData = null;
                     
@@ -2750,7 +2760,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         console.error('EventSource connection error in modal:', error);
                         
                         // Check if connection is closing normally (after complete event)
-                        if (eventSource.readyState === EventSource.CLOSED && resultData) {
+                        if (eventSource.readyState === eventSource.CLOSED && resultData) {
                             return;
                         }
                         
@@ -2764,6 +2774,13 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         if (!resultData) {
                             reject(new Error('Connection to server lost during thumbnail generation'));
                         }
+                    };
+
+                    // Stream ended without a complete/error frame (close() does not trigger this)
+                    eventSource.onclose = () => {
+                        if (isCancelled() || resultData) return;
+                        addStatusMessage('Connection to server closed before thumbnail generation finished', 'error');
+                        reject(new Error('Connection to server closed before thumbnail generation finished'));
                     };
                 });
             }
