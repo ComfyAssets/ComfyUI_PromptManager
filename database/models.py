@@ -2,6 +2,7 @@
 Database schema and models for KikoTextEncode prompt storage.
 """
 
+import contextlib
 import datetime
 import shutil
 import sqlite3
@@ -40,6 +41,12 @@ REQUIRED_PROMPT_COLUMNS = ("id", "text", "created_at")
 class PromptModel:
     """Database model for prompt storage and schema management."""
 
+    # Paths (normalised, see _schema_key) whose schema has been created and
+    # migrated in this process. Many PromptDatabase instances point at the
+    # same file; only the first one pays for the schema check.
+    _initialized_paths: Set[str] = set()
+    _init_lock = threading.Lock()
+
     def __init__(self, db_path: str):
         """
         Initialize the database model.
@@ -70,20 +77,59 @@ class PromptModel:
         Raises:
             Exception: If database creation fails
         """
-        try:
-            conn = sqlite3.connect(self.db_path)
+        key = self._schema_key()
+        with PromptModel._init_lock:
+            if key in PromptModel._initialized_paths and os.path.exists(self.db_path):
+                return
             try:
-                conn.execute("PRAGMA journal_mode = WAL")
-                conn.execute("PRAGMA busy_timeout = 5000")
-                conn.execute("PRAGMA foreign_keys = ON")
-                self._create_tables(conn)
-                self._create_indexes(conn)
-                conn.commit()
-            finally:
-                conn.close()
-        except Exception as e:
-            self.logger.error(f"Error creating database: {e}")
+                conn = sqlite3.connect(self.db_path)
+                try:
+                    conn.execute("PRAGMA journal_mode = WAL")
+                    conn.execute("PRAGMA busy_timeout = 5000")
+                    conn.execute("PRAGMA foreign_keys = ON")
+                    self._create_tables(conn)
+                    self._create_indexes(conn)
+                    conn.commit()
+                finally:
+                    conn.close()
+            except Exception as e:
+                self.logger.error(f"Error creating database: {e}")
+                raise
+            PromptModel._initialized_paths.add(key)
+
+    def _schema_key(self) -> str:
+        """Normalised identity of db_path for the once-per-process schema cache."""
+        return os.path.normcase(os.path.realpath(self.db_path))
+
+    @classmethod
+    def reset_schema_cache(cls) -> None:
+        """Forget which databases were initialised (tests and restores)."""
+        with cls._init_lock:
+            cls._initialized_paths.clear()
+
+    @contextlib.contextmanager
+    def _table_rebuild(self, conn: sqlite3.Connection):
+        """Run a copy-and-swap table rebuild with foreign keys disabled.
+
+        DROP TABLE on a parent table with foreign_keys ON performs an implicit
+        DELETE that cascades into child rows (generated_images, prompt_tags),
+        so the rebuild runs with the pragma off. The pragma is a no-op inside
+        a transaction, hence the commits around it. Errors roll back and
+        propagate after the pragma is restored.
+        """
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = OFF")
+        # Explicit BEGIN: in sqlite3's legacy transaction mode DDL autocommits,
+        # so without it a failed copy would leave the *_new table behind.
+        conn.execute("BEGIN")
+        try:
+            yield
+            conn.commit()
+        except BaseException:
+            conn.rollback()
             raise
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         """
@@ -267,16 +313,20 @@ class PromptModel:
 
         This migration handles legacy schema updates by removing the deprecated
         workflow_name column while preserving all other data.
+
+        Raises:
+            sqlite3.Error: If the rebuild fails (logged, nothing half-applied)
         """
         try:
-            # Check if workflow_name column exists
             cursor = conn.execute("PRAGMA table_info(prompts)")
             columns = [column[1] for column in cursor.fetchall()]
+            if "workflow_name" not in columns:
+                return
 
-            if "workflow_name" in columns:
-                self.logger.info("Migrating database: removing workflow_name column")
-
-                # Create new table without workflow_name
+            self.logger.info("Migrating database: removing workflow_name column")
+            with self._table_rebuild(conn):
+                # A previous attempt may have died between CREATE and RENAME
+                conn.execute("DROP TABLE IF EXISTS prompts_new")
                 conn.execute("""
                     CREATE TABLE prompts_new (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -290,23 +340,18 @@ class PromptModel:
                         hash TEXT UNIQUE
                     )
                 """)
-
-                # Copy data from old table to new table
                 conn.execute("""
                     INSERT INTO prompts_new (id, text, created_at, updated_at, category, tags, rating, notes, hash)
                     SELECT id, text, created_at, updated_at, category, tags, rating, notes, hash
                     FROM prompts
                 """)
-
-                # Drop old table and rename new one
                 conn.execute("DROP TABLE prompts")
                 conn.execute("ALTER TABLE prompts_new RENAME TO prompts")
+            self.logger.info("Database migration completed")
 
-                self.logger.info("Database migration completed")
-
-        except Exception as e:
-            self.logger.error(f"Migration error: {e}")
-            # If migration fails, the table creation will handle it
+        except sqlite3.Error as e:
+            self.logger.error(f"Migration error (workflow_name removal): {e}")
+            raise
 
     def _migrate_foreign_key_types(self, conn: sqlite3.Connection) -> None:
         """
@@ -317,18 +362,19 @@ class PromptModel:
 
         Converts prompt_id from TEXT to INTEGER type to match the prompts table's
         primary key type, ensuring referential integrity.
+
+        Raises:
+            sqlite3.Error: If the rebuild fails (logged, nothing half-applied)
         """
         try:
-            # Check if generated_images table exists and has TEXT prompt_id
             cursor = conn.execute("PRAGMA table_info(generated_images)")
             columns = {column[1]: column[2] for column in cursor.fetchall()}
+            if columns.get("prompt_id") != "TEXT":
+                return
 
-            if "prompt_id" in columns and columns["prompt_id"] == "TEXT":
-                self.logger.info(
-                    "Migrating foreign key types: prompt_id TEXT -> INTEGER"
-                )
-
-                # Create new table with correct types
+            self.logger.info("Migrating foreign key types: prompt_id TEXT -> INTEGER")
+            with self._table_rebuild(conn):
+                conn.execute("DROP TABLE IF EXISTS generated_images_new")
                 conn.execute("""
                     CREATE TABLE generated_images_new (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -346,30 +392,25 @@ class PromptModel:
                         FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE
                     )
                 """)
-
-                # Copy data, converting prompt_id from TEXT to INTEGER
                 conn.execute("""
-                    INSERT INTO generated_images_new 
-                    (id, prompt_id, image_path, filename, generation_time, file_size, 
+                    INSERT INTO generated_images_new
+                    (id, prompt_id, image_path, filename, generation_time, file_size,
                      width, height, format, workflow_data, prompt_metadata, parameters)
-                    SELECT id, CAST(prompt_id AS INTEGER), image_path, filename, generation_time, 
+                    SELECT id, CAST(prompt_id AS INTEGER), image_path, filename, generation_time,
                            file_size, width, height, format, workflow_data, prompt_metadata, parameters
                     FROM generated_images
                     WHERE prompt_id != '' AND prompt_id IS NOT NULL
                     AND CAST(prompt_id AS INTEGER) IN (SELECT id FROM prompts)
                 """)
-
-                # Drop old table and rename new one
                 conn.execute("DROP TABLE generated_images")
                 conn.execute(
                     "ALTER TABLE generated_images_new RENAME TO generated_images"
                 )
+            self.logger.info("Foreign key migration completed")
 
-                self.logger.info("Foreign key migration completed")
-
-        except Exception as e:
-            self.logger.error(f"Foreign key migration error: {e}")
-            # If migration fails, continue with existing schema
+        except sqlite3.Error as e:
+            self.logger.error(f"Migration error (foreign key types): {e}")
+            raise
 
     def _migrate_add_unique_constraint(self, conn: sqlite3.Connection) -> None:
         """
@@ -382,13 +423,14 @@ class PromptModel:
 
         Args:
             conn: Active database connection
+
+        Raises:
+            sqlite3.Error: If the rebuild fails (logged, nothing half-applied)
         """
         try:
-            # Check if the unique constraint already exists by looking at table info
             cursor = conn.execute("PRAGMA index_list(generated_images)")
             indexes = cursor.fetchall()
 
-            # Check if we have a unique index on prompt_id, filename
             has_unique_constraint = False
             for idx in indexes:
                 if idx[2] == 1:  # unique flag
@@ -404,72 +446,65 @@ class PromptModel:
             self.logger.info(
                 "Migrating database: adding UNIQUE constraint on (prompt_id, filename)"
             )
+            with self._table_rebuild(conn):
+                # Remove duplicates keeping only the most recent (highest id)
+                cursor = conn.execute("""
+                    DELETE FROM generated_images
+                    WHERE id NOT IN (
+                        SELECT MAX(id) FROM generated_images
+                        GROUP BY prompt_id, filename
+                    )
+                """)
+                if cursor.rowcount > 0:
+                    self.logger.info(
+                        f"Removed {cursor.rowcount} duplicate image entries"
+                    )
 
-            # First, remove duplicates keeping only the most recent (highest id)
-            conn.execute("""
-                DELETE FROM generated_images
-                WHERE id NOT IN (
-                    SELECT MAX(id) FROM generated_images
-                    GROUP BY prompt_id, filename
+                conn.execute("DROP TABLE IF EXISTS generated_images_new")
+                conn.execute("""
+                    CREATE TABLE generated_images_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        prompt_id INTEGER NOT NULL,
+                        image_path TEXT NOT NULL,
+                        filename TEXT NOT NULL,
+                        generation_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        file_size INTEGER,
+                        width INTEGER,
+                        height INTEGER,
+                        format TEXT,
+                        workflow_data TEXT,
+                        prompt_metadata TEXT,
+                        parameters TEXT,
+                        FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE,
+                        UNIQUE(prompt_id, filename)
+                    )
+                """)
+                conn.execute("""
+                    INSERT INTO generated_images_new
+                    (id, prompt_id, image_path, filename, generation_time, file_size,
+                     width, height, format, workflow_data, prompt_metadata, parameters)
+                    SELECT id, prompt_id, image_path, filename, generation_time, file_size,
+                           width, height, format, workflow_data, prompt_metadata, parameters
+                    FROM generated_images
+                """)
+                conn.execute("DROP TABLE generated_images")
+                conn.execute(
+                    "ALTER TABLE generated_images_new RENAME TO generated_images"
                 )
-            """)
-
-            duplicates_removed = conn.total_changes
-            if duplicates_removed > 0:
-                self.logger.info(
-                    f"Removed {duplicates_removed} duplicate image entries"
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_prompt_images ON generated_images(prompt_id)"
                 )
-
-            # Create new table with UNIQUE constraint
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS generated_images_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    prompt_id INTEGER NOT NULL,
-                    image_path TEXT NOT NULL,
-                    filename TEXT NOT NULL,
-                    generation_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    file_size INTEGER,
-                    width INTEGER,
-                    height INTEGER,
-                    format TEXT,
-                    workflow_data TEXT,
-                    prompt_metadata TEXT,
-                    parameters TEXT,
-                    FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE,
-                    UNIQUE(prompt_id, filename)
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_image_path ON generated_images(image_path)"
                 )
-            """)
-
-            # Copy data
-            conn.execute("""
-                INSERT INTO generated_images_new
-                (id, prompt_id, image_path, filename, generation_time, file_size,
-                 width, height, format, workflow_data, prompt_metadata, parameters)
-                SELECT id, prompt_id, image_path, filename, generation_time, file_size,
-                       width, height, format, workflow_data, prompt_metadata, parameters
-                FROM generated_images
-            """)
-
-            # Drop old table and rename new one
-            conn.execute("DROP TABLE generated_images")
-            conn.execute("ALTER TABLE generated_images_new RENAME TO generated_images")
-
-            # Recreate indexes
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_prompt_images ON generated_images(prompt_id)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_image_path ON generated_images(image_path)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_generation_time ON generated_images(generation_time)"
-            )
-
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_generation_time ON generated_images(generation_time)"
+                )
             self.logger.info("UNIQUE constraint migration completed successfully")
 
-        except Exception as e:
-            self.logger.error(f"UNIQUE constraint migration error: {e}")
-            # Continue with existing schema if migration fails
+        except sqlite3.Error as e:
+            self.logger.error(f"Migration error (image UNIQUE constraint): {e}")
+            raise
 
     def _migrate_json_tags_to_junction(self, conn: sqlite3.Connection) -> None:
         """
@@ -477,6 +512,9 @@ class PromptModel:
 
         Runs once: skips if the tags table already has data. Uses json_each()
         to extract tag names from the JSON arrays stored in prompts.tags.
+
+        Raises:
+            sqlite3.Error: If the migration fails (logged)
         """
         try:
             cursor = conn.execute("SELECT COUNT(*) FROM tags")
@@ -514,8 +552,9 @@ class PromptModel:
                 f"Tag migration complete: {tag_count} unique tags, {link_count} prompt-tag links"
             )
 
-        except Exception as e:
-            self.logger.error(f"Tag junction migration error: {e}")
+        except sqlite3.Error as e:
+            self.logger.error(f"Migration error (tag junction): {e}")
+            raise
 
     def _migrate_add_usage_columns(self, conn: sqlite3.Connection) -> None:
         """
@@ -558,8 +597,9 @@ class PromptModel:
             """)
             if cursor.rowcount:
                 self.logger.info(f"Estimated usage for {cursor.rowcount} prompts")
-        except Exception as e:
-            self.logger.error(f"Usage tracking migration error: {e}")
+        except sqlite3.Error as e:
+            self.logger.error(f"Migration error (usage columns): {e}")
+            raise
 
     def migrate_database(self) -> None:
         """
@@ -746,6 +786,8 @@ class PromptModel:
             stale = self.db_path + suffix
             if os.path.exists(stale):
                 os.remove(stale)
+        with PromptModel._init_lock:
+            PromptModel._initialized_paths.discard(self._schema_key())
         self._ensure_database_exists()
         self.logger.info(f"Database restored from {src_path}")
         return backup_path

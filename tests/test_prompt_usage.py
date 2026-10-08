@@ -8,6 +8,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from database.models import PromptModel
 from database.operations import PromptDatabase
 from prompt_manager_base import PromptManagerBase
 from utils.hashing import generate_prompt_hash
@@ -160,6 +161,9 @@ class TestUsageMigration(unittest.TestCase):
                 conn.execute(f"DROP INDEX IF EXISTS {index}")
             conn.execute("ALTER TABLE prompts DROP COLUMN last_used_at")
             conn.execute("ALTER TABLE prompts DROP COLUMN run_count")
+        # Schema init runs once per process per path; the next PromptDatabase()
+        # must look at the file again to see the downgraded schema.
+        PromptModel.reset_schema_cache()
 
     def tearDown(self):
         if getattr(self, "db", None) is not None:
@@ -191,6 +195,7 @@ class TestUsageMigration(unittest.TestCase):
             ).fetchone()[0]
         self.assertIsNone(db.get_prompt_by_id(legacy_id)["last_used_at"])
 
+        PromptModel.reset_schema_cache()
         healed = PromptDatabase(self.path).get_prompt_by_id(legacy_id)
         self.assertTrue(healed["last_used_at"].startswith("2026-04-01T00:00:00"))
         self.assertEqual(healed["run_count"], 1)
