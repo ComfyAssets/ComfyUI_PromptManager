@@ -5,7 +5,8 @@ gallery system.
 
 This module provides two main node types:
 - PromptManager: CLIP encoding node that outputs CONDITIONING
-- PromptManagerText: Text-only node that outputs STRING with prepend/append functionality
+- PromptManagerText: Text-only node that outputs STRING with prepend/append
+  functionality
 
 Both nodes share the same database backend for persistent prompt storage and include
 an automatic image gallery system that monitors ComfyUI output directories and links
@@ -37,9 +38,9 @@ def get_version():
     return "unknown"
 
 
-from .prompt_manager import PromptManager
-from .prompt_manager_text import PromptManagerText
-from .prompt_search_list import PromptSearchList
+from .prompt_manager import PromptManager  # noqa: E402
+from .prompt_manager_text import PromptManagerText  # noqa: E402
+from .prompt_search_list import PromptSearchList  # noqa: E402
 
 NODE_CLASS_MAPPINGS = {
     "PromptManager": PromptManager,

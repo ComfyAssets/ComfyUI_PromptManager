@@ -6,7 +6,6 @@ OUTPUT_IS_LIST=True, allowing direct connection to nodes that accept list inputs
 """
 
 import re
-from typing import Any, Dict, List, Tuple
 
 try:
     from .utils.logging_config import get_logger
@@ -80,7 +79,9 @@ class PromptSearchList(ComfyNodeABC):
                     IO.STRING,
                     {
                         "default": "",
-                        "tooltip": "Comma-separated list of tags to filter by (partial match)",
+                        "tooltip": (
+                            "Comma-separated list of tags to filter by (partial match)"
+                        ),
                     },
                 ),
                 "min_rating": (
@@ -105,7 +106,10 @@ class PromptSearchList(ComfyNodeABC):
                     "BOOLEAN",
                     {
                         "default": True,
-                        "tooltip": "Skip prompts containing Clip_1/Clip_2/etc. multi-part markers",
+                        "tooltip": (
+                            "Skip prompts containing Clip_1/Clip_2/etc. "
+                            "multi-part markers"
+                        ),
                     },
                 ),
             },

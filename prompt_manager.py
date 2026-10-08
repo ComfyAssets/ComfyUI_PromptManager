@@ -51,7 +51,9 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
                     {
                         "multiline": True,
                         "dynamicPrompts": True,
-                        "tooltip": "The text prompt to be encoded and saved to database.",
+                        "tooltip": (
+                            "The text prompt to be encoded and saved to database."
+                        ),
                     },
                 ),
                 "clip": (
@@ -64,33 +66,48 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
                     IO.STRING,
                     {
                         "default": "",
-                        "tooltip": "Optional category for organizing prompts (e.g., 'landscapes', 'portraits')",
+                        "tooltip": (
+                            "Optional category for organizing prompts "
+                            "(e.g., 'landscapes', 'portraits')"
+                        ),
                     },
                 ),
                 "tags": (
                     IO.STRING,
                     {
                         "default": "",
-                        "tooltip": "Comma-separated tags for the prompt (e.g., 'anime, detailed, sunset')",
+                        "tooltip": (
+                            "Comma-separated tags for the prompt "
+                            "(e.g., 'anime, detailed, sunset')"
+                        ),
                     },
                 ),
                 "search_text": (
                     IO.STRING,
                     {
                         "default": "",
-                        "tooltip": 'Search past prompts by text; add tag:name (or tag:"two words") to filter by tag',
+                        "tooltip": (
+                            "Search past prompts by text; add tag:name "
+                            '(or tag:"two words") to filter by tag'
+                        ),
                     },
                 ),
                 "prepend_text": (
                     IO.STRING,
                     {
-                        "tooltip": "Text to prepend to the main prompt (connected STRING nodes will be added before the main text)"
+                        "tooltip": (
+                            "Text to prepend to the main prompt (connected STRING "
+                            "nodes will be added before the main text)"
+                        )
                     },
                 ),
                 "append_text": (
                     IO.STRING,
                     {
-                        "tooltip": "Text to append to the main prompt (connected STRING nodes will be added after the main text)"
+                        "tooltip": (
+                            "Text to append to the main prompt (connected STRING "
+                            "nodes will be added after the main text)"
+                        )
                     },
                 ),
             },
@@ -104,15 +121,18 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
 
     RETURN_TYPES = (IO.CONDITIONING, IO.STRING)
     OUTPUT_TOOLTIPS = (
-        "A conditioning containing the embedded text used to guide the diffusion model.",
-        "The final combined text string (with prepend/append applied) that was encoded.",
+        "A conditioning containing the embedded text used to guide the diffusion "
+        "model.",
+        "The final combined text string (with prepend/append applied) that was "
+        "encoded.",
     )
     FUNCTION = "encode_prompt"
     OUTPUT_NODE = True
     CATEGORY = "🫶 ComfyAssets/🧠 Prompts"
     DESCRIPTION = (
-        "Encodes a text prompt using a CLIP model into an embedding that can be used to guide "
-        "the diffusion model towards generating specific images. Additionally saves all prompts "
+        "Encodes a text prompt using a CLIP model into an embedding that can be used "
+        "to guide the diffusion model towards generating specific images. "
+        "Additionally saves all prompts "
         "to a local SQLite database with optional metadata for search and retrieval."
     )
 
@@ -141,7 +161,8 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
             append_text: Text to append to the main prompt
 
         Returns:
-            Tuple containing the conditioning for the diffusion model and the final text string
+            Tuple containing the conditioning for the diffusion model and the final
+            text string
 
         Raises:
             RuntimeError: If clip input is invalid
@@ -162,7 +183,8 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
         # Use the combined text for encoding
         encoding_text = final_text
 
-        # For database storage, save the original main text with metadata about prepend/append
+        # For database storage, save the original main text with metadata
+        # about prepend/append
         storage_text = text
 
         # Validate CLIP model
