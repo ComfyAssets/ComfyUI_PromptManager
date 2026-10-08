@@ -28,7 +28,10 @@ ISO_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%f+00:00"
 
 
 def utc_now_iso() -> str:
-    """Current UTC time as ISO text with microseconds, e.g. 2026-10-07T18:39:06.758123+00:00."""
+    """Current UTC time as ISO text with microseconds.
+
+    Example: 2026-10-07T18:39:06.758123+00:00
+    """
     return datetime.datetime.now(datetime.timezone.utc).isoformat(
         timespec="microseconds"
     )
@@ -242,10 +245,13 @@ class PromptModel:
             "CREATE INDEX IF NOT EXISTS idx_prompts_rating ON prompts(rating)",
             "CREATE INDEX IF NOT EXISTS idx_prompts_last_used ON prompts(last_used_at)",
             "CREATE INDEX IF NOT EXISTS idx_prompts_run_count ON prompts(run_count)",
-            "CREATE INDEX IF NOT EXISTS idx_prompt_images ON generated_images(prompt_id)",
+            "CREATE INDEX IF NOT EXISTS idx_prompt_images ON "
+            "generated_images(prompt_id)",
             "CREATE INDEX IF NOT EXISTS idx_image_path ON generated_images(image_path)",
-            "CREATE INDEX IF NOT EXISTS idx_image_file_path ON generated_images(file_path)",
-            "CREATE INDEX IF NOT EXISTS idx_generation_time ON generated_images(generation_time)",
+            "CREATE INDEX IF NOT EXISTS idx_image_file_path ON "
+            "generated_images(file_path)",
+            "CREATE INDEX IF NOT EXISTS idx_generation_time ON "
+            "generated_images(generation_time)",
             "CREATE INDEX IF NOT EXISTS idx_prompt_tags_tag ON prompt_tags(tag_id)",
             "CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)",
         ]
@@ -353,8 +359,10 @@ class PromptModel:
                     )
                 """)
                 conn.execute("""
-                    INSERT INTO prompts_new (id, text, created_at, updated_at, category, tags, rating, notes, hash)
-                    SELECT id, text, created_at, updated_at, category, tags, rating, notes, hash
+                    INSERT INTO prompts_new (id, text, created_at, updated_at,
+                        category, tags, rating, notes, hash)
+                    SELECT id, text, created_at, updated_at, category, tags, rating,
+                        notes, hash
                     FROM prompts
                 """)
                 conn.execute("DROP TABLE prompts")
@@ -408,8 +416,10 @@ class PromptModel:
                     INSERT INTO generated_images_new
                     (id, prompt_id, image_path, filename, generation_time, file_size,
                      width, height, format, workflow_data, prompt_metadata, parameters)
-                    SELECT id, CAST(prompt_id AS INTEGER), image_path, filename, generation_time,
-                           file_size, width, height, format, workflow_data, prompt_metadata, parameters
+                    SELECT id, CAST(prompt_id AS INTEGER), image_path, filename,
+                        generation_time,
+                           file_size, width, height, format, workflow_data,
+                               prompt_metadata, parameters
                     FROM generated_images
                     WHERE prompt_id != '' AND prompt_id IS NOT NULL
                     AND CAST(prompt_id AS INTEGER) IN (SELECT id FROM prompts)
@@ -452,7 +462,8 @@ class PromptModel:
             conn.execute(
                 "INSERT OR IGNORE INTO tags (name) "
                 "SELECT DISTINCT je.value FROM prompts, json_each(prompts.tags) AS je "
-                "WHERE prompts.tags IS NOT NULL AND prompts.tags != '' AND prompts.tags != '[]'"
+                "WHERE prompts.tags IS NOT NULL AND prompts.tags != '' AND "
+                "prompts.tags != '[]'"
             )
 
             # Populate junction table
@@ -467,7 +478,8 @@ class PromptModel:
             tag_count = conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
             link_count = conn.execute("SELECT COUNT(*) FROM prompt_tags").fetchone()[0]
             self.logger.info(
-                f"Tag migration complete: {tag_count} unique tags, {link_count} prompt-tag links"
+                f"Tag migration complete: {tag_count} unique tags, {link_count} "
+                "prompt-tag links"
             )
 
         except sqlite3.Error as e:
@@ -498,7 +510,8 @@ class PromptModel:
             if "run_count" not in columns:
                 self.logger.info("Adding prompt usage column run_count")
                 conn.execute(
-                    "ALTER TABLE prompts ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0"
+                    "ALTER TABLE prompts ADD COLUMN run_count INTEGER NOT NULL "
+                    "DEFAULT 0"
                 )
                 added = True
             if not added:
@@ -569,7 +582,8 @@ class PromptModel:
                         prompt_metadata TEXT,
                         parameters TEXT,
                         file_path TEXT,
-                        FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE,
+                        FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE
+                            CASCADE,
                         UNIQUE(prompt_id, file_path)
                     )
                 """)
@@ -579,8 +593,10 @@ class PromptModel:
                     (id, prompt_id, image_path, filename, generation_time, file_size,
                      width, height, format, workflow_data, prompt_metadata, parameters,
                      file_path)
-                    SELECT id, prompt_id, image_path, filename, generation_time, file_size,
-                           width, height, format, workflow_data, prompt_metadata, parameters,
+                    SELECT id, prompt_id, image_path, filename, generation_time,
+                        file_size,
+                           width, height, format, workflow_data, prompt_metadata,
+                               parameters,
                            ?
                     FROM generated_images WHERE id = ?
                     """,
@@ -598,16 +614,6 @@ class PromptModel:
         except sqlite3.Error as e:
             self.logger.error(f"Migration error (image path uniqueness): {e}")
             raise
-
-    def migrate_database(self) -> None:
-        """
-        Apply any pending database migrations.
-
-        This method serves as an entry point for future schema migrations.
-        Add new migration logic here as the database evolves.
-        """
-        # Future migrations can be added here
-        pass
 
     def vacuum_database(self) -> None:
         """
@@ -636,12 +642,14 @@ class PromptModel:
                 total_prompts = cursor.fetchone()["total_prompts"]
 
                 cursor = conn.execute(
-                    "SELECT COUNT(DISTINCT category) as unique_categories FROM prompts WHERE category IS NOT NULL"
+                    "SELECT COUNT(DISTINCT category) as unique_categories FROM "
+                    "prompts WHERE category IS NOT NULL"
                 )
                 unique_categories = cursor.fetchone()["unique_categories"]
 
                 cursor = conn.execute(
-                    "SELECT AVG(rating) as avg_rating FROM prompts WHERE rating IS NOT NULL"
+                    "SELECT AVG(rating) as avg_rating FROM prompts WHERE rating IS "
+                    "NOT NULL"
                 )
                 avg_rating = cursor.fetchone()["avg_rating"]
 

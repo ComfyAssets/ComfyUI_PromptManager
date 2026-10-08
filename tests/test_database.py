@@ -646,18 +646,6 @@ class TestDuplicateMerging(DatabaseTestCase):
             )
         return pid
 
-    def test_find_duplicates_groups_case_insensitively_oldest_first(self):
-        newer = self._save_dup("Same Text", "2026-02-01T00:00:00", tags=["t2"])
-        older = self._save_dup("same text  ", "2026-01-01T00:00:00", tags=["t1"])
-        self._save_dup("unique", "2026-01-01T00:00:00")
-
-        groups = self.db.find_duplicates()
-
-        self.assertEqual(len(groups), 1)
-        self.assertEqual([p["id"] for p in groups[0]["prompts"]], [older, newer])
-        self.assertEqual(groups[0]["text"], "same text")
-        self.assertEqual(groups[0]["prompts"][0]["tags"], ["t1"])
-
     def test_cleanup_keeps_oldest_merges_metadata_and_moves_images(self):
         keep = self._save_dup(
             "dup", "2026-01-01T00:00:00", tags=["a"], notes="first", rating=2
@@ -694,7 +682,6 @@ class TestDuplicateMerging(DatabaseTestCase):
         with patch.object(
             self.db.model, "get_connection", side_effect=sqlite3.OperationalError
         ):
-            self.assertEqual(self.db.find_duplicates(), [])
             self.assertEqual(self.db.cleanup_duplicates(), 0)
 
     def test_hash_duplicates_are_impossible_under_unique_hash(self):
@@ -1083,10 +1070,9 @@ class TestModelHousekeeping(DatabaseTestCase):
         ):
             self.assertEqual(self.db.model.get_database_info(), {})
 
-    def test_vacuum_and_noop_migrate(self):
+    def test_vacuum_logs_errors_instead_of_raising(self):
         self._save("x")
         self.db.model.vacuum_database()
-        self.db.model.migrate_database()
         with patch(
             "database.models.sqlite3.connect", side_effect=sqlite3.OperationalError
         ):
@@ -1106,3 +1092,39 @@ class TestModelHousekeeping(DatabaseTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestImagePaging(DatabaseTestCase):
+    """Image listings page in the database, not by over-fetching in the API."""
+
+    def _link_many(self, count):
+        pid = self._save("paged prompt")
+        image_ids = [
+            self.db.link_image_to_prompt(pid, f"/out/img{i:03d}.png")
+            for i in range(count)
+        ]
+        # Stamp distinct times afterwards through the model's own connection,
+        # so no second connection holds a write lock while linking.
+        with self.db.model.get_connection() as conn:
+            for i, image_id in enumerate(image_ids):
+                conn.execute(
+                    "UPDATE generated_images SET generation_time = ? WHERE id = ?",
+                    (f"2026-01-01T00:00:{i:02d}", image_id),
+                )
+        return pid
+
+    def test_recent_images_offset_skips_newest_rows(self):
+        self._link_many(5)
+        newest_first = [img["filename"] for img in self.db.get_recent_images(limit=5)]
+        page = self.db.get_recent_images(limit=2, offset=2)
+        self.assertEqual([img["filename"] for img in page], newest_first[2:4])
+        self.assertEqual(self.db.get_recent_images(limit=2, offset=10), [])
+
+    def test_search_images_by_prompt_is_bounded_and_pages(self):
+        self._link_many(5)
+        first = self.db.search_images_by_prompt("paged", limit=2)
+        second = self.db.search_images_by_prompt("paged", limit=2, offset=2)
+        self.assertEqual(len(first), 2)
+        self.assertEqual(len(second), 2)
+        self.assertNotEqual({img["id"] for img in first}, {img["id"] for img in second})
+        self.assertEqual(len(self.db.search_images_by_prompt("paged")), 5)

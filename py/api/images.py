@@ -149,7 +149,6 @@ def _thumbnail_complete_payload(total, stats, start):
 
 # Caps on request-driven work (list sizes, scans, request bodies).
 MAX_GALLERY_FILES = 50_000
-MAX_RECENT_IMAGES_WINDOW = 5_000
 MAX_BULK_LIMIT = 5_000
 MAX_JSON_BODY_BYTES = 1024 * 1024
 _READ_CHUNK = 64 * 1024
@@ -367,13 +366,9 @@ class ImageRoutesMixin:
             except ValueError:
                 return bad_request("limit and offset must be integers")
 
-            # The DB query has no offset: fetch one bounded window and slice,
-            # so the offset is capped to keep the window small.
-            offset = min(offset, MAX_RECENT_IMAGES_WINDOW - limit)
-            rows = await self._run_in_executor(
-                self.db.get_recent_images, limit + offset
+            images = await self._run_in_executor(
+                self.db.get_recent_images, limit, offset
             )
-            images = rows[offset:]
 
             return web.json_response(
                 {
@@ -436,14 +431,32 @@ class ImageRoutesMixin:
                     {"success": False, "error": "Search query required"}, status=400
                 )
 
-            images = await self._run_in_executor(self.db.search_images_by_prompt, query)
+            try:
+                limit, offset = parse_page_params(request.query)
+            except ValueError:
+                return bad_request("limit and offset must be integers")
+
+            images = await self._run_in_executor(
+                self.db.search_images_by_prompt, query, limit, offset
+            )
 
             return web.json_response(
-                {"success": True, "images": images, "query": query}
+                {
+                    "success": True,
+                    "images": images,
+                    "query": query,
+                    "pagination": {
+                        "limit": limit,
+                        "offset": offset,
+                        "count": len(images),
+                    },
+                }
             )
         except Exception as e:
             self.logger.error(f"Search images error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": _safe_error(e)}, status=500
+            )
 
     def _scan_gallery_files_sync(self, output_path):
         """Scan output directory for media files (blocking I/O, run in executor).
@@ -972,7 +985,6 @@ class ImageRoutesMixin:
     async def clear_thumbnails(self, request):
         """Safely clear only our generated thumbnails, never touch original images."""
         try:
-            import shutil
 
             # Find ComfyUI output directory
             output_dir = self._find_comfyui_output_dir()
@@ -1006,12 +1018,14 @@ class ImageRoutesMixin:
                     or thumbnails_dir.name != "thumbnails"
                 ):
                     self.logger.error(
-                        f"Safety check failed: thumbnails directory path invalid: {thumbnails_dir}"
+                        "Safety check failed: thumbnails directory path invalid: "
+                        f"{thumbnails_dir}"
                     )
                     return web.json_response(
                         {
                             "success": False,
-                            "error": "Safety check failed: invalid thumbnails directory path",
+                            "error": "Safety check failed: invalid thumbnails "
+                            "directory path",
                         },
                         status=400,
                     )
@@ -1064,7 +1078,8 @@ class ImageRoutesMixin:
                 return f"{bytes_size:.1f} TB"
 
             self.logger.info(
-                f"Thumbnail cleanup: cleared {cleared_count} files ({format_size(cleared_size)})"
+                f"Thumbnail cleanup: cleared {cleared_count} files "
+                f"({format_size(cleared_size)})"
             )
 
             return web.json_response(
@@ -1073,7 +1088,8 @@ class ImageRoutesMixin:
                     "cleared_files": cleared_count,
                     "cleared_size": cleared_size,
                     "cleared_size_formatted": format_size(cleared_size),
-                    "message": f"Cleared {cleared_count} thumbnail files ({format_size(cleared_size)})",
+                    "message": f"Cleared {cleared_count} thumbnail files "
+                    "({format_size(cleared_size)})",
                 }
             )
 

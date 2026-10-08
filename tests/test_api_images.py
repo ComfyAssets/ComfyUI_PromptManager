@@ -502,9 +502,9 @@ class TestRecentImagesCaps(ImageAPITestCase):
         seen = []
         original = self.api.db.get_recent_images
 
-        def spy(limit):
-            seen.append(limit)
-            return original(limit)
+        def spy(limit, offset=0):
+            seen.append((limit, offset))
+            return original(limit, offset)
 
         self.api.db.get_recent_images = spy
         return seen
@@ -516,7 +516,7 @@ class TestRecentImagesCaps(ImageAPITestCase):
 
         data = await resp.json()
         self.assertEqual(data["pagination"]["limit"], 50)
-        self.assertEqual(seen, [50])
+        self.assertEqual(seen, [(50, 0)])
 
     async def test_huge_offset_is_clamped_before_reaching_db(self):
         seen = self._spy_db()
@@ -527,10 +527,9 @@ class TestRecentImagesCaps(ImageAPITestCase):
 
         self.assertEqual(resp.status, 200)
         data = await resp.json()
-        self.assertLessEqual(seen[0], images_module.MAX_RECENT_IMAGES_WINDOW)
-        self.assertEqual(
-            data["pagination"]["offset"], images_module.MAX_RECENT_IMAGES_WINDOW - 10
-        )
+        # The offset is paged in SQL, so the DB sees the clamped value itself.
+        self.assertEqual(seen[0], (10, data["pagination"]["offset"]))
+        self.assertLess(data["pagination"]["offset"], 999999999999)
 
     async def test_float_string_limit_is_400(self):
         resp = await self.client.request(
@@ -544,7 +543,7 @@ class TestRecentImagesCaps(ImageAPITestCase):
 
         await self.client.request("GET", "/prompt_manager/images/recent?limit=0")
 
-        self.assertEqual(seen, [1])
+        self.assertEqual(seen, [(1, 0)])
 
 
 class TestAllImagesCaps(ImageAPITestCase):

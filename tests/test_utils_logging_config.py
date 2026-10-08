@@ -35,15 +35,26 @@ class IsolatedLoggerTestCase(unittest.TestCase):
         self.manager.update_config({"console_logging": False})
         # Drop the "Updated logging configuration" entry.
         self.manager._log_buffer.clear()
-        # Other tests leave daemon threads (image monitor, watchdog) logging under
-        # "prompt_manager.*"; only records from this test's thread may reach the buffer.
-        # The same goes for the rotating file handler: a stray line after a
-        # truncate would roll the file over again and resurrect the backups.
+        # Other tests leave daemon threads (image monitor, watchdog) logging
+        # under "prompt_manager.*"; only records from this test's thread may
+        # reach the buffer or the rotating file (a stray line after a truncate
+        # would roll the file over and resurrect the backups). update_config
+        # rebuilds the handlers, so the filter is re-applied after every call.
+        self._filter_to_this_thread()
+        original_update = self.manager.update_config
+
+        def update_and_refilter(new_config):
+            original_update(new_config)
+            self._filter_to_this_thread()
+
+        self.manager.update_config = update_and_refilter
+        self.logger = logging.getLogger("prompt_manager.coverage_test")
+        self.addCleanup(self._restore_global_logging)
+
+    def _filter_to_this_thread(self):
         this_thread = threading.get_ident()
         for handler in self.manager.logger.handlers:
             handler.addFilter(lambda record: record.thread == this_thread)
-        self.logger = logging.getLogger("prompt_manager.coverage_test")
-        self.addCleanup(self._restore_global_logging)
 
     def _restore_global_logging(self):
         for handler in logging.getLogger("prompt_manager").handlers[:]:
@@ -186,7 +197,10 @@ class TestFilesAndRotation(IsolatedLoggerTestCase):
         self.assertEqual(result["errors"], [])
         self.logger.info("after truncate")
         leftovers = sorted(p.name for p in pathlib.Path(self.log_dir).iterdir())
-        self.assertEqual(leftovers, ["prompt_manager.log"])
+        contents = {
+            name: pathlib.Path(self.log_dir, name).read_bytes() for name in leftovers
+        }
+        self.assertEqual(leftovers, ["prompt_manager.log"], contents)
         main_log = pathlib.Path(self.log_dir, "prompt_manager.log").read_bytes()
         self.assertNotIn(b"\x00", main_log)
         self.assertIn(b"after truncate", main_log)

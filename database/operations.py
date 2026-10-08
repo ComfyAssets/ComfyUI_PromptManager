@@ -154,7 +154,8 @@ class PromptDatabase:
             raise ValueError("Rating must be between 1 and 5")
 
         self.logger.debug(
-            f"Saving prompt: text_length={len(text)}, category={category}, tags={tags}, rating={rating}"
+            f"Saving prompt: text_length={len(text)}, category={category}, "
+            f"tags={tags}, rating={rating}"
         )
 
         try:
@@ -424,7 +425,8 @@ class PromptDatabase:
         """
         with self.model.get_connection() as conn:
             cursor = conn.execute(
-                f"SELECT prompts.*, {TAG_SUBQUERY} FROM prompts WHERE category = ? ORDER BY created_at DESC LIMIT ?",
+                f"SELECT prompts.*, {TAG_SUBQUERY} FROM prompts WHERE category = ? "
+                "ORDER BY created_at DESC LIMIT ?",
                 (category, limit),
             )
             rows = cursor.fetchall()
@@ -574,7 +576,8 @@ class PromptDatabase:
         """
         with self.model.get_connection() as conn:
             cursor = conn.execute(
-                "SELECT DISTINCT TRIM(category) as category FROM prompts WHERE category IS NOT NULL AND TRIM(category) != '' ORDER BY category"
+                "SELECT DISTINCT TRIM(category) as category FROM prompts WHERE "
+                "category IS NOT NULL AND TRIM(category) != '' ORDER BY category"
             )
             return [row["category"] for row in cursor.fetchall()]
 
@@ -949,7 +952,8 @@ class PromptDatabase:
             conn.commit()
 
         self.logger.info(
-            f"Merged {tags_merged} tags into '{target_tag}', affected {affected} prompts"
+            f"Merged {tags_merged} tags into '{target_tag}', affected {affected} "
+            "prompts"
         )
         return {
             "success": True,
@@ -968,7 +972,8 @@ class PromptDatabase:
         with self.model.get_connection() as conn:
             cursor = conn.execute(
                 "SELECT COUNT(*) as total FROM prompts "
-                "WHERE NOT EXISTS (SELECT 1 FROM prompt_tags WHERE prompt_id = prompts.id)"
+                "WHERE NOT EXISTS (SELECT 1 FROM prompt_tags WHERE prompt_id = "
+                "prompts.id)"
             )
             return cursor.fetchone()["total"]
 
@@ -1081,7 +1086,8 @@ class PromptDatabase:
                 tag_id = tag_map.get(tag_name)
                 if tag_id:
                     conn.execute(
-                        "INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)",
+                        "INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) "
+                        "VALUES (?, ?)",
                         (prompt_id, tag_id),
                     )
 
@@ -1170,79 +1176,6 @@ class PromptDatabase:
             self.logger.error(f"Error exporting prompts: {e}")
             return False
 
-    def find_duplicates(self) -> List[Dict[str, Any]]:
-        """
-        Find duplicate prompts based on text content without removing them.
-
-        Returns:
-            List of duplicate groups, each containing:
-            - text: The duplicate text content
-            - prompts: List of prompt records with same text
-        """
-        self.logger.info("Scanning for duplicate prompts")
-        try:
-            with self.model.get_connection() as conn:
-                # Find duplicates by text content (case-insensitive)
-                # Note: Removed ORDER BY from GROUP_CONCAT for SQLite compatibility
-                # We'll sort the IDs manually after fetching
-                cursor = conn.execute("""
-                    SELECT LOWER(TRIM(text)) as normalized_text, COUNT(*) as count,
-                           GROUP_CONCAT(id) as ids,
-                           GROUP_CONCAT(created_at) as created_dates
-                    FROM prompts
-                    GROUP BY LOWER(TRIM(text))
-                    HAVING COUNT(*) > 1
-                """)
-
-                duplicate_groups = cursor.fetchall()
-                self.logger.debug(
-                    f"Found {len(duplicate_groups)} groups of duplicate prompts"
-                )
-
-                result = []
-
-                for group in duplicate_groups:
-                    ids = group["ids"].split(",")
-                    created_dates = group["created_dates"].split(",")
-
-                    # Sort IDs by created_at date
-                    id_date_pairs = list(zip(ids, created_dates))
-                    id_date_pairs.sort(key=lambda x: x[1])  # Sort by date
-                    ids = [pair[0] for pair in id_date_pairs]
-
-                    # Get full details for all prompts in this duplicate group
-                    prompts = []
-                    for prompt_id in ids:
-                        cursor = conn.execute(
-                            "SELECT id, text, category, rating, created_at, updated_at "
-                            "FROM prompts WHERE id = ?",
-                            (int(prompt_id),),
-                        )
-                        prompt_data = cursor.fetchone()
-                        if prompt_data:
-                            prompt_dict = dict(prompt_data)
-                            prompt_dict["tags"] = self._get_prompt_tags(
-                                conn, int(prompt_id)
-                            )
-                            prompts.append(prompt_dict)
-
-                    if prompts:
-                        result.append(
-                            {
-                                "text": prompts[0][
-                                    "text"
-                                ],  # Use the actual text (not normalized)
-                                "prompts": prompts,
-                            }
-                        )
-
-                self.logger.info(f"Found {len(result)} groups with duplicates")
-                return result
-
-        except Exception as e:
-            self.logger.error(f"Error finding duplicates: {e}")
-            return []
-
     def cleanup_duplicates(self) -> int:
         """
         Remove duplicate prompts based on text content, preserving all image links.
@@ -1287,7 +1220,8 @@ class PromptDatabase:
                     duplicate_ids = sorted_ids[1:]
 
                     self.logger.debug(
-                        f"Merging duplicates: keeping {primary_id}, removing {duplicate_ids}"
+                        f"Merging duplicates: keeping {primary_id}, removing "
+                        f"{duplicate_ids}"
                     )
 
                     # Get primary prompt details
@@ -1327,7 +1261,8 @@ class PromptDatabase:
 
                 if total_removed > 0:
                     self.logger.info(
-                        f"Removed {total_removed} duplicate prompts, transferred {total_images_transferred} images"
+                        f"Removed {total_removed} duplicate prompts, transferred "
+                        f"{total_images_transferred} images"
                     )
                 else:
                     self.logger.info("No duplicate prompts found")
@@ -1380,7 +1315,8 @@ class PromptDatabase:
                 )
                 if not cursor.fetchone():
                     self.logger.warning(
-                        f"Prompt ID {prompt_id_int} not found in database, skipping image linking"
+                        f"Prompt ID {prompt_id_int} not found in database, skipping "
+                        "image linking"
                     )
                     return 0
 
@@ -1455,12 +1391,15 @@ class PromptDatabase:
             )
             return [self._image_row_to_dict(row) for row in cursor.fetchall()]
 
-    def get_recent_images(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_recent_images(
+        self, limit: int = 50, offset: int = 0
+    ) -> List[Dict[str, Any]]:
         """
-        Get recently generated images across all prompts.
+        Get recently generated images across all prompts, newest first.
 
         Args:
             limit: Maximum number of images to return
+            offset: Number of newest images to skip (paging)
 
         Returns:
             List of image records with prompt text
@@ -1472,9 +1411,9 @@ class PromptDatabase:
                 FROM generated_images gi
                 LEFT JOIN prompts p ON gi.prompt_id = p.id
                 ORDER BY gi.generation_time DESC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (limit,),
+                (int(limit), max(0, int(offset))),
             )
             return [self._image_row_to_dict(row) for row in cursor.fetchall()]
 
@@ -1496,7 +1435,8 @@ class PromptDatabase:
         sql = (
             "SELECT gi.*, p.text as prompt_text, "
             "(SELECT GROUP_CONCAT(t.name, '|||') FROM prompt_tags pt "
-            "JOIN tags t ON pt.tag_id = t.id WHERE pt.prompt_id = p.id) AS _prompt_tags_list "
+            "JOIN tags t ON pt.tag_id = t.id WHERE pt.prompt_id = p.id) AS "
+            "_prompt_tags_list "
             "FROM generated_images gi "
             "INNER JOIN prompts p ON gi.prompt_id = p.id "
             "WHERE gi.image_path IS NOT NULL AND gi.image_path != '' "
@@ -1520,12 +1460,16 @@ class PromptDatabase:
                 result.append(data)
             return result
 
-    def search_images_by_prompt(self, search_term: str) -> List[Dict[str, Any]]:
+    def search_images_by_prompt(
+        self, search_term: str, limit: Optional[int] = None, offset: int = 0
+    ) -> List[Dict[str, Any]]:
         """
-        Search images by prompt text.
+        Search images by prompt text, newest first.
 
         Args:
             search_term: Text to search for in prompt content
+            limit: Maximum number of images to return (None for no limit)
+            offset: Number of newest matches to skip (paging)
 
         Returns:
             List of image records with prompt text
@@ -1538,8 +1482,13 @@ class PromptDatabase:
                 JOIN prompts p ON gi.prompt_id = p.id
                 WHERE p.text LIKE ? ESCAPE '\\'
                 ORDER BY gi.generation_time DESC
+                LIMIT ? OFFSET ?
                 """,
-                (f"%{escape_like(search_term)}%",),
+                (
+                    f"%{escape_like(search_term)}%",
+                    -1 if limit is None else int(limit),
+                    max(0, int(offset)),
+                ),
             )
             return [self._image_row_to_dict(row) for row in cursor.fetchall()]
 
@@ -1710,7 +1659,8 @@ class PromptDatabase:
 
                 if cursor.rowcount > 0:
                     self.logger.debug(
-                        f"Transferred {cursor.rowcount} images from prompt {dup_id} to {primary_id}"
+                        f"Transferred {cursor.rowcount} images from prompt {dup_id} "
+                        f"to {primary_id}"
                     )
 
             return transferred_count
@@ -1888,7 +1838,8 @@ class PromptDatabase:
                     tag_id = tag_map.get(tag_name)
                     if tag_id:
                         cursor = conn.execute(
-                            "INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)",
+                            "INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) "
+                            "VALUES (?, ?)",
                             (pid, tag_id),
                         )
                         if cursor.rowcount > 0:
@@ -2025,7 +1976,8 @@ class PromptDatabase:
             """)
             for ref in cursor.fetchall():
                 issues.append(
-                    f"prompt_tags entry references non-existent prompt {ref['prompt_id']}"
+                    "prompt_tags entry references non-existent prompt "
+                    f"{ref['prompt_id']}"
                 )
 
             # Check for orphaned image entries
@@ -2036,7 +1988,8 @@ class PromptDatabase:
             """)
             for ref in cursor.fetchall():
                 issues.append(
-                    f"Image {ref['id']} references non-existent prompt {ref['prompt_id']}"
+                    f"Image {ref['id']} references non-existent prompt "
+                    f"{ref['prompt_id']}"
                 )
         return issues
 
