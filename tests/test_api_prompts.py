@@ -18,7 +18,11 @@ from aiohttp.test_utils import AioHTTPTestCase  # noqa: E402
 
 from database.operations import PromptDatabase  # noqa: E402
 from py.api import PromptManagerAPI  # noqa: E402
-from py.api.prompts import MAX_PAGE_LIMIT, safe_error_message  # noqa: E402
+from py.api.prompts import (  # noqa: E402
+    MAX_PAGE_LIMIT,
+    MAX_PAGE_OFFSET,
+    safe_error_message,
+)
 from utils.hashing import generate_prompt_hash  # noqa: E402
 
 
@@ -118,6 +122,15 @@ class TestSearchBounds(PromptAPITestCase):
         self.assertEqual(resp.status, 200)
         data = await resp.json()
         self.assertEqual(data["pagination"]["offset"], 0)
+
+    async def test_offset_beyond_int64_is_clamped_not_500(self):
+        resp = await self.client.request(
+            "GET", "/prompt_manager/search?offset=99999999999999999999999"
+        )
+
+        self.assertEqual(resp.status, 200)
+        data = await resp.json()
+        self.assertEqual(data["pagination"]["offset"], MAX_PAGE_OFFSET)
 
     async def test_offset_skips_results(self):
         for i in range(3):

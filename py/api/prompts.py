@@ -6,19 +6,22 @@ import os
 
 from aiohttp import web
 
-# Upper bound on page sizes for every list endpoint.
+# Upper bounds on page sizes and offsets for every list endpoint. The offset
+# ceiling keeps values inside SQLite's 64-bit range and bounds skip work.
 MAX_PAGE_LIMIT = 500
+MAX_PAGE_OFFSET = 10_000_000
 
 
-def parse_page_params(query, default_limit=50):
+def parse_page_params(query, default_limit=50, max_limit=MAX_PAGE_LIMIT):
     """Return ``(limit, offset)`` from a query mapping, clamped to safe bounds.
 
-    ``limit`` is clamped to ``[1, MAX_PAGE_LIMIT]`` and ``offset`` to ``>= 0``.
-    Non-integer values raise ``ValueError`` so the caller can answer 400.
+    ``limit`` is clamped to ``[1, max_limit]`` and ``offset`` to
+    ``[0, MAX_PAGE_OFFSET]``. Non-integer values raise ``ValueError`` so the
+    caller can answer 400.
     """
     limit = int(query.get("limit", default_limit))
     offset = int(query.get("offset", 0))
-    return max(1, min(limit, MAX_PAGE_LIMIT)), max(0, offset)
+    return max(1, min(limit, max_limit)), max(0, min(offset, MAX_PAGE_OFFSET))
 
 
 def bad_request(message):

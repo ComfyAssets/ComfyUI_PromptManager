@@ -147,6 +147,120 @@ def _thumbnail_complete_payload(total, stats, start):
     }
 
 
+# Caps on request-driven work (list sizes, scans, request bodies).
+MAX_GALLERY_FILES = 50_000
+MAX_RECENT_IMAGES_WINDOW = 5_000
+MAX_BULK_LIMIT = 5_000
+MAX_JSON_BODY_BYTES = 1024 * 1024
+_READ_CHUNK = 64 * 1024
+
+
+class _BodyTooLarge(Exception):
+    """Raised when a request body exceeds MAX_JSON_BODY_BYTES."""
+
+
+def _json_error(message, status):
+    return web.json_response({"success": False, "error": message}, status=status)
+
+
+async def _read_json_body(request):
+    """Read a JSON object body in bounded chunks.
+
+    Raises _BodyTooLarge past MAX_JSON_BODY_BYTES (declared or streamed) and
+    ValueError when the body is not a JSON object.
+    """
+    limit = MAX_JSON_BODY_BYTES
+    if request.content_length is not None and request.content_length > limit:
+        raise _BodyTooLarge()
+    chunks, size = [], 0
+    while True:
+        chunk = await request.content.read(_READ_CHUNK)
+        if not chunk:
+            break
+        size += len(chunk)
+        if size > limit:
+            raise _BodyTooLarge()
+        chunks.append(chunk)
+    data = json.loads(b"".join(chunks).decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("JSON body must be an object")
+    return data
+
+
+async def _json_body_or_error(request):
+    """Return ``(data, None)`` or ``(None, error_response)``."""
+    try:
+        return await _read_json_body(request), None
+    except _BodyTooLarge:
+        return None, _json_error("Request body too large", 413)
+    except (ValueError, UnicodeDecodeError):
+        return None, _json_error("Invalid JSON body", 400)
+
+
+def _iter_media_files(output_path, max_files):
+    """Yield media files under *output_path* with bounded effort.
+
+    Symlinks are never followed, ``thumbnails/`` is skipped, descent stops
+    at MAX_SCAN_DEPTH and at most *max_files* paths are produced.
+    """
+    output_path = Path(output_path)
+    root_depth = len(output_path.parts)
+    produced = 0
+    for root, dirs, files in os.walk(output_path):
+        root_path = Path(root)
+        rel_parts = root_path.parts[root_depth:]
+        if "thumbnails" in rel_parts:
+            dirs[:] = []
+            continue
+        if len(rel_parts) >= MAX_SCAN_DEPTH:
+            dirs[:] = []
+        for name in sorted(files):
+            if Path(name).suffix.lower() not in MEDIA_EXTENSIONS:
+                continue
+            if produced >= max_files:
+                return
+            produced += 1
+            yield root_path / name
+
+
+def _output_image_entry(media_path, output_path, root_index):
+    """Build one gallery entry for *media_path* (blocking stat)."""
+    stat = media_path.stat()
+    rel_path = media_path.relative_to(output_path)
+    extension = media_path.suffix.lower()
+    is_video = extension in VIDEO_EXTENSIONS
+
+    thumbnail_url = None
+    thumb_rel = (
+        f"thumbnails/{rel_path.with_suffix('').as_posix()}_thumb"
+        f"{'.jpg' if is_video else extension}"
+    )
+    if (output_path / thumb_rel).exists():
+        thumbnail_url = (
+            f"/prompt_manager/images/serve/{urllib.parse.quote(thumb_rel, safe='/')}"
+        )
+
+    return {
+        "id": str(hash(str(media_path))),
+        "filename": media_path.name,
+        "path": str(media_path),
+        "relative_path": str(rel_path),
+        "root_dir": str(output_path),
+        "root_index": root_index,
+        "url": f"/prompt_manager/images/serve/{rel_path.as_posix()}",
+        "thumbnail_url": thumbnail_url,
+        "size": stat.st_size,
+        "modified_time": stat.st_mtime,
+        "extension": extension,
+        "media_type": "video" if is_video else "image",
+        "is_video": is_video,
+    }
+
+
+def _in_subfolder(rel_dir, subfolder):
+    return rel_dir == subfolder or rel_dir.startswith(subfolder + os.sep)
+
+
 class ImageRoutesMixin:
     """Mixin providing image and gallery-related API endpoints."""
 
@@ -246,14 +360,16 @@ class ImageRoutesMixin:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
     async def get_recent_images(self, request):
-        """Get recently generated images."""
+        """Get recently generated images (bounded window, newest first)."""
         try:
             try:
                 limit, offset = parse_page_params(request.query)
             except ValueError:
                 return bad_request("limit and offset must be integers")
 
-            # The DB query has no offset; fetch one bounded window and slice.
+            # The DB query has no offset: fetch one bounded window and slice,
+            # so the offset is capped to keep the window small.
+            offset = min(offset, MAX_RECENT_IMAGES_WINDOW - limit)
             rows = await self._run_in_executor(
                 self.db.get_recent_images, limit + offset
             )
@@ -277,16 +393,39 @@ class ImageRoutesMixin:
             )
 
     async def get_all_images(self, request):
-        """Get all generated images with linked prompts."""
+        """Get generated images with linked prompts (bulk-capped pages)."""
         try:
-            images = await self._run_in_executor(self.db.get_all_images)
+            try:
+                limit, offset = parse_page_params(
+                    request.query,
+                    default_limit=MAX_BULK_LIMIT,
+                    max_limit=MAX_BULK_LIMIT,
+                )
+            except ValueError:
+                return bad_request("limit and offset must be integers")
+
+            images = await self._run_in_executor(
+                self.db.get_all_images, limit=limit, offset=offset
+            )
 
             return web.json_response(
-                {"success": True, "images": images, "count": len(images)}
+                {
+                    "success": True,
+                    "images": images,
+                    "count": len(images),
+                    "pagination": {
+                        "limit": limit,
+                        "offset": offset,
+                        "count": len(images),
+                        "has_more": len(images) == limit,
+                    },
+                }
             )
         except Exception as e:
             self.logger.error(f"Get all images error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": _safe_error(e)}, status=500
+            )
 
     async def search_images(self, request):
         """Search images by prompt text."""
@@ -309,29 +448,19 @@ class ImageRoutesMixin:
     def _scan_gallery_files_sync(self, output_path):
         """Scan output directory for media files (blocking I/O, run in executor).
 
-        Returns list of (path, mtime) tuples sorted by mtime descending.
+        Returns list of (path, mtime) tuples sorted by mtime descending; the
+        walk is bounded by MAX_SCAN_DEPTH and MAX_GALLERY_FILES.
         """
-        image_extensions = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
-        video_extensions = [".mp4", ".webm", ".avi", ".mov", ".mkv", ".m4v", ".wmv"]
-        media_extensions = image_extensions + video_extensions
-        all_images = []
-
-        seen_paths = set()
-        for ext in media_extensions:
-            for pattern in [f"*{ext}", f"*{ext.upper()}"]:
-                for media_path in output_path.rglob(pattern):
-                    if "thumbnails" not in media_path.parts:
-                        normalized_path = str(media_path).lower()
-                        if normalized_path not in seen_paths:
-                            seen_paths.add(normalized_path)
-                            try:
-                                mtime = media_path.stat().st_mtime
-                                all_images.append((media_path, mtime))
-                            except OSError:
-                                continue
-
-        all_images.sort(key=lambda x: x[1], reverse=True)
-        return all_images
+        found = []
+        for media_path in _iter_media_files(output_path, MAX_GALLERY_FILES):
+            try:
+                found.append((media_path, media_path.stat().st_mtime))
+            except OSError:
+                continue
+        if len(found) >= MAX_GALLERY_FILES:
+            self.logger.warning(f"Gallery scan capped at {MAX_GALLERY_FILES} files")
+        found.sort(key=lambda x: x[1], reverse=True)
+        return found
 
     async def _get_gallery_files(self, output_path):
         """Get gallery files with per-directory TTL cache."""
@@ -348,8 +477,6 @@ class ImageRoutesMixin:
     async def get_output_images(self, request):
         """Get all images from ComfyUI output folder(s)."""
         try:
-            from urllib.parse import quote
-
             output_dirs = self._get_all_output_dirs()
             if not output_dirs:
                 return web.json_response(
@@ -359,78 +486,16 @@ class ImageRoutesMixin:
                         "images": [],
                     },
                 )
-
-            limit = int(request.query.get("limit", 100))
-            offset = int(request.query.get("offset", 0))
+            try:
+                limit, offset = parse_page_params(request.query, default_limit=100)
+            except ValueError:
+                return bad_request("limit and offset must be integers")
             subfolder = request.query.get("subfolder", "").strip()
 
-            # Collect (path, mtime, root, root_index) from all directories
-            all_images = []
-            for root_idx, output_path in enumerate(output_dirs):
-                dir_images = await self._get_gallery_files(output_path)
-                for img_path, mtime in dir_images:
-                    all_images.append((img_path, mtime, output_path, root_idx))
-
-            # Sort combined results by mtime (newest first) — no .stat() calls
-            all_images.sort(key=lambda x: x[1], reverse=True)
-
-            # Apply subfolder filter if provided
-            if subfolder:
-                filtered = []
-                for img_path, mtime, root, ridx in all_images:
-                    rel_dir = str(img_path.relative_to(root).parent)
-                    if rel_dir == subfolder or rel_dir.startswith(subfolder + os.sep):
-                        filtered.append((img_path, mtime, root, ridx))
-                all_images = filtered
-
+            all_images = await self._collect_output_images(output_dirs, subfolder)
             total = len(all_images)
-            paginated = all_images[offset : offset + limit]
-
-            video_extensions = [".mp4", ".webm", ".avi", ".mov", ".mkv", ".m4v", ".wmv"]
-
-            def _format_page():
-                images = []
-                for media_path, mtime, output_path, root_index in paginated:
-                    try:
-                        stat = media_path.stat()
-                        rel_path = media_path.relative_to(output_path)
-                        extension = media_path.suffix.lower()
-                        is_video = extension in video_extensions
-                        media_type = "video" if is_video else "image"
-
-                        thumbnail_url = None
-                        thumbnails_dir = output_path / "thumbnails"
-                        if thumbnails_dir.exists():
-                            thumbnail_ext = ".jpg" if is_video else extension
-                            rel_path_no_ext = rel_path.with_suffix("")
-                            thumbnail_rel_path = f"thumbnails/{rel_path_no_ext.as_posix()}_thumb{thumbnail_ext}"
-                            thumbnail_abs_path = output_path / thumbnail_rel_path
-                            if thumbnail_abs_path.exists():
-                                thumbnail_url = f'/prompt_manager/images/serve/{quote(thumbnail_rel_path, safe="/")}'
-
-                        images.append(
-                            {
-                                "id": str(hash(str(media_path))),
-                                "filename": media_path.name,
-                                "path": str(media_path),
-                                "relative_path": str(rel_path),
-                                "root_dir": str(output_path),
-                                "root_index": root_index,
-                                "url": f"/prompt_manager/images/serve/{rel_path.as_posix()}",
-                                "thumbnail_url": thumbnail_url,
-                                "size": stat.st_size,
-                                "modified_time": stat.st_mtime,
-                                "extension": extension,
-                                "media_type": media_type,
-                                "is_video": is_video,
-                            }
-                        )
-                    except Exception as e:
-                        self.logger.error(f"Error processing media {media_path}: {e}")
-                        continue
-                return images
-
-            images = await self._run_in_executor(_format_page)
+            page = all_images[offset : offset + limit]
+            images = await self._run_in_executor(self._format_output_page, page)
 
             return web.json_response(
                 {
@@ -444,7 +509,9 @@ class ImageRoutesMixin:
             )
         except Exception as e:
             self.logger.error(f"Output images error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": _safe_error(e)}, status=500
+            )
 
     async def serve_image(self, request):
         """Serve the actual image file using streamed FileResponse."""
@@ -590,12 +657,17 @@ class ImageRoutesMixin:
 
     @classmethod
     def _thumbnail_size(cls, quality):
+        """Map a quality preset name to a pixel size; anything else is medium."""
+        if not isinstance(quality, str):
+            return cls.THUMBNAIL_SIZES["medium"]
         return cls.THUMBNAIL_SIZES.get(quality, cls.THUMBNAIL_SIZES["medium"])
 
     async def generate_thumbnails(self, request):
         """Generate every thumbnail in one executor job (POST, blocking)."""
         try:
-            data = await request.json()
+            data, error = await _json_body_or_error(request)
+            if error is not None:
+                return error
             thumbnail_size = self._thumbnail_size(data.get("quality", "medium"))
 
             output_dir = self._find_comfyui_output_dir()
@@ -639,38 +711,23 @@ class ImageRoutesMixin:
     def _thumbnail_targets(self, output_path, thumbnails_dir):
         """Scan *output_path* for media (blocking); returns (src, dst, is_video).
 
-        The walk never follows symlinks, stops at MAX_SCAN_DEPTH and returns
-        at most MAX_THUMBNAIL_FILES entries per request.
+        Bounded by _iter_media_files (no symlinks, MAX_SCAN_DEPTH) and
+        MAX_THUMBNAIL_FILES per request.
         """
         output_path = Path(output_path)
-        root_depth = len(output_path.parts)
         targets = []
-        for root, dirs, files in os.walk(output_path):
-            root_path = Path(root)
-            rel_parts = root_path.parts[root_depth:]
-            if "thumbnails" in rel_parts:
-                dirs[:] = []
+        for src in _iter_media_files(output_path, MAX_THUMBNAIL_FILES):
+            suffix = src.suffix.lower()
+            is_video = suffix in VIDEO_EXTENSIONS
+            rel_no_ext = src.relative_to(output_path).with_suffix("")
+            thumb_suffix = ".jpg" if is_video else suffix
+            dst = thumbnails_dir / f"{rel_no_ext.as_posix()}_thumb{thumb_suffix}"
+            if not _is_within(dst, thumbnails_dir):
+                self.logger.warning(f"Skipping thumbnail outside safe dir: {src.name}")
                 continue
-            if len(rel_parts) >= MAX_SCAN_DEPTH:
-                dirs[:] = []
-            for name in sorted(files):
-                src = root_path / name
-                suffix = src.suffix.lower()
-                if suffix not in MEDIA_EXTENSIONS:
-                    continue
-                is_video = suffix in VIDEO_EXTENSIONS
-                rel_no_ext = src.relative_to(output_path).with_suffix("")
-                thumb_suffix = ".jpg" if is_video else suffix
-                dst = thumbnails_dir / f"{rel_no_ext.as_posix()}_thumb{thumb_suffix}"
-                if not _is_within(dst, thumbnails_dir):
-                    self.logger.warning(f"Skipping thumbnail outside safe dir: {name}")
-                    continue
-                if len(targets) >= MAX_THUMBNAIL_FILES:
-                    self.logger.warning(
-                        f"Thumbnail scan capped at {MAX_THUMBNAIL_FILES} files"
-                    )
-                    return targets
-                targets.append((src, dst, is_video))
+            targets.append((src, dst, is_video))
+        if len(targets) >= MAX_THUMBNAIL_FILES:
+            self.logger.warning(f"Thumbnail scan capped at {MAX_THUMBNAIL_FILES}")
         return targets
 
     def _generate_one(self, src, dst, thumbnail_size, is_video):
@@ -1025,23 +1082,23 @@ class ImageRoutesMixin:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
     async def link_image_to_prompt(self, request):
-        """Link a generated image to a prompt."""
+        """Link a generated image (inside an allowed directory) to a prompt."""
         try:
-            data = await request.json()
+            data, error = await _json_body_or_error(request)
+            if error is not None:
+                return error
             prompt_id = data.get("prompt_id")
             image_path = data.get("image_path")
             metadata = data.get("metadata", {})
 
-            if not prompt_id or not image_path:
-                return web.json_response(
-                    {
-                        "success": False,
-                        "error": "prompt_id and image_path are required",
-                    },
-                    status=400,
-                )
+            if not prompt_id or not isinstance(image_path, str) or not image_path:
+                return bad_request("prompt_id and image_path are required")
 
-            if not os.path.exists(image_path):
+            denied = _media_access_error(image_path, self._get_all_output_dirs())
+            if denied is not None:
+                return denied
+
+            if not os.path.isfile(image_path):
                 return web.json_response(
                     {"success": False, "error": "Image file not found"}, status=404
                 )
@@ -1060,7 +1117,9 @@ class ImageRoutesMixin:
 
         except Exception as e:
             self.logger.error(f"Link image error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": _safe_error(e)}, status=500
+            )
 
     async def get_image_prompt(self, request):
         """Get prompt information for a specific image path."""
@@ -1130,3 +1189,27 @@ class ImageRoutesMixin:
         except Exception as e:
             self.logger.error(f"Delete image error: {e}")
             return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def _collect_output_images(self, output_dirs, subfolder):
+        """Merge cached per-root listings, newest first, optionally filtered."""
+        merged = []
+        for root_idx, output_path in enumerate(output_dirs):
+            for img_path, mtime in await self._get_gallery_files(output_path):
+                merged.append((img_path, mtime, output_path, root_idx))
+        merged.sort(key=lambda x: x[1], reverse=True)
+        if not subfolder:
+            return merged
+        return [
+            entry
+            for entry in merged
+            if _in_subfolder(str(entry[0].relative_to(entry[2]).parent), subfolder)
+        ]
+
+    def _format_output_page(self, page):
+        entries = []
+        for media_path, _mtime, output_path, root_index in page:
+            try:
+                entries.append(_output_image_entry(media_path, output_path, root_index))
+            except Exception as e:
+                self.logger.error(f"Error processing media {media_path.name}: {e}")
+        return entries
