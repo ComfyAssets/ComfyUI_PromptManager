@@ -5,6 +5,7 @@ Uses aiohttp's test client against a real PromptManagerAPI wired to a
 temporary SQLite database and a temporary output directory.
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -323,6 +324,174 @@ class TestRecentImagesBounds(ImageAPITestCase):
         data = await page.json()
         self.assertEqual(len(data["images"]), 1)
         self.assertEqual(data["pagination"]["offset"], 2)
+
+
+def parse_sse(text):
+    """Turn an SSE body into a list of (event, data_dict) tuples."""
+    events = []
+    for block in text.strip().split("\n\n"):
+        event, data = None, None
+        for line in block.splitlines():
+            if line.startswith("event:"):
+                event = line[len("event:") :].strip()
+            elif line.startswith("data:"):
+                data = json.loads(line[len("data:") :].strip())
+        if event is not None:
+            events.append((event, data))
+    return events
+
+
+class ThumbnailTestCase(ImageAPITestCase):
+    """Shared helpers for the thumbnail routes."""
+
+    PROGRESS_URL = "/prompt_manager/images/generate-thumbnails/progress"
+
+    def _spy_executor(self):
+        """Record the __name__ of every callable sent to _run_in_executor."""
+        original = self.api._run_in_executor
+        calls = []
+
+        async def spy(func, *args, **kwargs):
+            calls.append(getattr(func, "__name__", repr(func)))
+            return await original(func, *args, **kwargs)
+
+        self.api._run_in_executor = spy
+        return calls
+
+    def _thumb_path(self, name, suffix=".png"):
+        return self.output_dir / "thumbnails" / f"{name}_thumb{suffix}"
+
+
+class TestThumbnailProgressStream(ThumbnailTestCase):
+    """GET /prompt_manager/images/generate-thumbnails/progress (SSE)."""
+
+    async def test_three_pngs_yield_three_thumbnails_and_events(self):
+        for name in ("a", "b", "c"):
+            make_png(self.output_dir / f"{name}.png", size=(64, 64))
+        calls = self._spy_executor()
+
+        resp = await self.client.request("GET", f"{self.PROGRESS_URL}?quality=low")
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.headers["Content-Type"], "text/event-stream")
+        events = parse_sse(await resp.text())
+        names = [e for e, _ in events]
+        self.assertEqual(names.count("progress"), 3)
+        self.assertEqual(names.count("complete"), 1)
+        complete = dict(events)["complete"]
+        self.assertEqual(complete["count"], 3)
+        for name in ("a", "b", "c"):
+            self.assertTrue(self._thumb_path(name).is_file(), name)
+        with Image.open(self._thumb_path("a")) as thumb:
+            self.assertLessEqual(max(thumb.size), 150)
+        # PIL work ran in the executor, once per file, plus the scan.
+        self.assertEqual(calls.count("_generate_one"), 3)
+        self.assertIn("_thumbnail_targets", calls)
+
+    async def test_corrupt_png_is_reported_and_loop_continues(self):
+        make_png(self.output_dir / "good1.png")
+        (self.output_dir / "bad.png").write_bytes(b"\x89PNG definitely not a png")
+        make_png(self.output_dir / "good2.png")
+
+        resp = await self.client.request("GET", self.PROGRESS_URL)
+
+        events = parse_sse(await resp.text())
+        file_errors = [d for e, d in events if e == "file_error"]
+        self.assertEqual(len(file_errors), 1)
+        self.assertEqual(file_errors[0]["file"], "bad.png")
+        complete = dict(events)["complete"]
+        self.assertEqual(complete["count"], 2)
+        self.assertEqual(complete["error_count"], 1)
+        self.assertTrue(self._thumb_path("good1").is_file())
+        self.assertTrue(self._thumb_path("good2").is_file())
+        self.assertFalse(self._thumb_path("bad").exists())
+
+    async def test_response_has_no_wildcard_cors_header(self):
+        make_png(self.output_dir / "one.png")
+
+        resp = await self.client.request("GET", self.PROGRESS_URL)
+        await resp.text()
+
+        self.assertNotIn("Access-Control-Allow-Origin", resp.headers)
+
+    async def test_existing_newer_thumbnail_is_skipped(self):
+        make_png(self.output_dir / "one.png")
+        first = await self.client.request("GET", self.PROGRESS_URL)
+        await first.text()
+
+        second = await self.client.request("GET", self.PROGRESS_URL)
+
+        complete = dict(parse_sse(await second.text()))["complete"]
+        self.assertEqual(complete["skipped"], 1)
+        self.assertEqual(complete["count"], 0)
+
+    async def test_empty_output_dir_completes_with_zero(self):
+        resp = await self.client.request("GET", self.PROGRESS_URL)
+
+        events = parse_sse(await resp.text())
+        self.assertEqual(events[-1][0], "complete")
+        self.assertEqual(events[-1][1]["total_images"], 0)
+
+    async def test_missing_output_dir_sends_error_event(self):
+        self.api._find_comfyui_output_dir = lambda: None
+
+        resp = await self.client.request("GET", self.PROGRESS_URL)
+
+        events = parse_sse(await resp.text())
+        self.assertEqual(events[-1][0], "error")
+
+    async def test_unknown_quality_falls_back_to_medium(self):
+        make_png(self.output_dir / "one.png", size=(400, 400))
+
+        resp = await self.client.request("GET", f"{self.PROGRESS_URL}?quality=huge")
+        await resp.text()
+
+        with Image.open(self._thumb_path("one")) as thumb:
+            self.assertEqual(max(thumb.size), 300)
+
+
+class TestGenerateThumbnailsPost(ThumbnailTestCase):
+    """POST /prompt_manager/images/generate-thumbnails (blocking variant)."""
+
+    async def test_generates_then_skips(self):
+        make_png(self.output_dir / "sub" / "x.png")
+        make_png(self.output_dir / "y.png")
+
+        first = await self.client.request(
+            "POST",
+            "/prompt_manager/images/generate-thumbnails",
+            json={"quality": "high"},
+        )
+        second = await self.client.request(
+            "POST", "/prompt_manager/images/generate-thumbnails", json={}
+        )
+
+        self.assertEqual(first.status, 200)
+        data = await first.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["count"], 2)
+        self.assertTrue(self._thumb_path("sub/x").is_file())
+        data2 = await second.json()
+        self.assertEqual(data2["skipped"], 2)
+        self.assertEqual(data2["count"], 0)
+
+    async def test_missing_output_dir_is_404(self):
+        self.api._find_comfyui_output_dir = lambda: None
+
+        resp = await self.client.request(
+            "POST", "/prompt_manager/images/generate-thumbnails", json={}
+        )
+
+        self.assertEqual(resp.status, 404)
+
+    async def test_no_media_reports_zero(self):
+        resp = await self.client.request(
+            "POST", "/prompt_manager/images/generate-thumbnails", json={}
+        )
+
+        data = await resp.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["total_images"], 0)
 
 
 if __name__ == "__main__":

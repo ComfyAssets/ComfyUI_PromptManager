@@ -9,7 +9,7 @@ import urllib.parse
 from pathlib import Path
 
 from aiohttp import web
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 from .prompts import bad_request, parse_page_params
 from .prompts import safe_error_message as _safe_error
@@ -68,6 +68,83 @@ def _media_access_error(path, allowed_dirs):
     if not any(_is_within(path, root) for root in allowed_dirs):
         return _forbidden()
     return None
+
+
+# Media types the gallery scans and thumbnails (a superset is never served).
+GALLERY_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
+VIDEO_EXTENSIONS = frozenset({".mp4", ".webm", ".avi", ".mov", ".mkv", ".m4v", ".wmv"})
+MEDIA_EXTENSIONS = GALLERY_IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+
+# Caps on request-triggered filesystem work.
+MAX_SCAN_DEPTH = 12
+MAX_THUMBNAIL_FILES = 10_000
+
+
+def _write_image_thumbnail(src, dst, thumbnail_size):
+    """Resize *src* into *dst* (blocking PIL work)."""
+    with Image.open(src) as img:
+        if img.mode in ("RGBA", "LA", "P"):
+            img = img.convert("RGB")
+        img.thumbnail(thumbnail_size, Image.Resampling.LANCZOS)
+        save_kwargs = {"quality": 85, "optimize": True}
+        if dst.suffix.lower() == ".png":
+            save_kwargs = {"optimize": True}
+        img.save(dst, **save_kwargs)
+
+
+def _new_thumbnail_stats():
+    return {"generated": 0, "skipped": 0, "errors": []}
+
+
+def _record_thumbnail_result(stats, result):
+    action = result["action"]
+    if action == "generated":
+        stats["generated"] += 1
+    elif action == "skipped":
+        stats["skipped"] += 1
+    else:
+        stats["errors"].append(f"{result['file']}: {result.get('error', 'failed')}")
+
+
+def _thumbnail_progress_payload(index, total, stats, result, start):
+    elapsed = _time.monotonic() - start
+    rate = index / elapsed if elapsed > 0 else 0
+    eta = (total - index) / rate if rate > 0 else 0
+    return {
+        "processed": index,
+        "total_images": total,
+        "generated": stats["generated"],
+        "skipped": stats["skipped"],
+        "error_count": len(stats["errors"]),
+        "percentage": round(index / total * 100, 1) if total else 100.0,
+        "rate": round(rate, 1),
+        "eta": round(eta),
+        "elapsed": round(elapsed, 1),
+        "current_file": f"{result['dir']}/{result['file']}",
+        "file_type": result["type"],
+        "action": result["action"],
+    }
+
+
+def _thumbnail_complete_payload(total, stats, start):
+    elapsed = _time.monotonic() - start
+    errors = stats["errors"]
+    message = (
+        f"Generated {stats['generated']} new thumbnails, "
+        f"skipped {stats['skipped']} existing"
+    )
+    if errors:
+        message += f" ({len(errors)} errors occurred)"
+    return {
+        "count": stats["generated"],
+        "skipped": stats["skipped"],
+        "total_images": total,
+        "errors": errors[:10],
+        "error_count": len(errors),
+        "elapsed_time": round(elapsed, 2),
+        "processing_rate": round(total / elapsed if elapsed > 0 else 0, 2),
+        "message": message,
+    }
 
 
 class ImageRoutesMixin:
@@ -508,18 +585,19 @@ class ImageRoutesMixin:
             self.logger.error(f"Subfolders error: {e}")
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
+    # Fixed quality presets: clients choose a name, never a raw pixel size.
+    THUMBNAIL_SIZES = {"low": (150, 150), "medium": (300, 300), "high": (600, 600)}
+
+    @classmethod
+    def _thumbnail_size(cls, quality):
+        return cls.THUMBNAIL_SIZES.get(quality, cls.THUMBNAIL_SIZES["medium"])
+
     async def generate_thumbnails(self, request):
-        """Generate thumbnails for all images and videos in the ComfyUI output directory."""
+        """Generate every thumbnail in one executor job (POST, blocking)."""
         try:
-            # Get request parameters
             data = await request.json()
-            quality = data.get("quality", "medium")
+            thumbnail_size = self._thumbnail_size(data.get("quality", "medium"))
 
-            # Map quality to size
-            size_map = {"low": (150, 150), "medium": (300, 300), "high": (600, 600)}
-            thumbnail_size = size_map.get(quality, (300, 300))
-
-            # Find ComfyUI output directory
             output_dir = self._find_comfyui_output_dir()
             if not output_dir:
                 return web.json_response(
@@ -528,479 +606,193 @@ class ImageRoutesMixin:
                 )
 
             output_path = Path(output_dir)
-            thumbnails_dir = output_path / "thumbnails"
-
-            # Run the entire thumbnail generation in executor (heavy PIL I/O)
             result = await self._run_in_executor(
                 self._generate_thumbnails_sync,
                 output_path,
-                thumbnails_dir,
+                output_path / "thumbnails",
                 thumbnail_size,
             )
-
-            # Invalidate gallery cache since thumbnails changed
             self.invalidate_gallery_cache()
-
             return web.json_response(result)
 
-        except ImportError:
-            return web.json_response(
-                {
-                    "success": False,
-                    "error": "PIL (Pillow) library not available. Install with: pip install Pillow",
-                },
-                status=500,
-            )
         except Exception as e:
             self.logger.error(f"Generate thumbnails error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": _safe_error(e)}, status=500
+            )
 
     def _generate_thumbnails_sync(self, output_path, thumbnails_dir, thumbnail_size):
         """Blocking thumbnail generation loop (run in executor)."""
-        import time
+        start = _time.monotonic()
+        targets = self._thumbnail_targets(output_path, thumbnails_dir)
+        stats = _new_thumbnail_stats()
+        for src, dst, is_video in targets:
+            _record_thumbnail_result(
+                stats, self._generate_one(src, dst, thumbnail_size, is_video)
+            )
+        payload = _thumbnail_complete_payload(len(targets), stats, start)
+        payload["success"] = True
+        payload["thumbnails_path"] = str(thumbnails_dir)
+        self.logger.info(payload["message"])
+        return payload
 
-        thumbnails_dir.mkdir(exist_ok=True)
+    def _thumbnail_targets(self, output_path, thumbnails_dir):
+        """Scan *output_path* for media (blocking); returns (src, dst, is_video).
 
-        self.logger.info("Scanning for media files to generate thumbnails...")
-        image_extensions = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
-        video_extensions = [".mp4", ".webm", ".avi", ".mov", ".mkv", ".m4v", ".wmv"]
-        media_extensions = image_extensions + video_extensions
-        media_files = []
+        The walk never follows symlinks, stops at MAX_SCAN_DEPTH and returns
+        at most MAX_THUMBNAIL_FILES entries per request.
+        """
+        output_path = Path(output_path)
+        root_depth = len(output_path.parts)
+        targets = []
         for root, dirs, files in os.walk(output_path):
-            if "thumbnails" in Path(root).parts:
+            root_path = Path(root)
+            rel_parts = root_path.parts[root_depth:]
+            if "thumbnails" in rel_parts:
+                dirs[:] = []
                 continue
-            for file in files:
-                if any(file.lower().endswith(ext) for ext in media_extensions):
-                    media_files.append(Path(root) / file)
-
-        total_images = len(media_files)
-        self.logger.info(f"Found {total_images} media files to process for thumbnails")
-
-        if total_images == 0:
-            return {
-                "success": True,
-                "count": 0,
-                "total_images": 0,
-                "message": "No media files found to process",
-                "errors": [],
-            }
-
-        generated_count = 0
-        skipped_count = 0
-        errors = []
-        start_time = time.time()
-
-        for i, media_file in enumerate(media_files):
-            try:
-                rel_path = media_file.relative_to(output_path)
-                is_video = any(
-                    media_file.name.lower().endswith(ext) for ext in video_extensions
-                )
-
-                rel_path_no_ext = rel_path.with_suffix("")
-                if is_video:
-                    thumbnail_path = (
-                        thumbnails_dir / f"{rel_path_no_ext.as_posix()}_thumb.jpg"
-                    )
-                else:
-                    thumbnail_path = (
-                        thumbnails_dir
-                        / f"{rel_path_no_ext.as_posix()}_thumb{rel_path.suffix}"
-                    )
-
-                if (
-                    thumbnail_path.exists()
-                    and thumbnail_path.stat().st_mtime > media_file.stat().st_mtime
-                ):
-                    skipped_count += 1
+            if len(rel_parts) >= MAX_SCAN_DEPTH:
+                dirs[:] = []
+            for name in sorted(files):
+                src = root_path / name
+                suffix = src.suffix.lower()
+                if suffix not in MEDIA_EXTENSIONS:
                     continue
-
-                thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
-
-                if is_video:
-                    if self._generate_video_thumbnail(
-                        media_file, thumbnail_path, thumbnail_size
-                    ):
-                        generated_count += 1
-                    else:
-                        errors.append(
-                            f"Failed to generate video thumbnail for {media_file.name}"
-                        )
-                else:
-                    with Image.open(media_file) as img:
-                        if img.mode in ("RGBA", "LA", "P"):
-                            img = img.convert("RGB")
-                        img.thumbnail(thumbnail_size, Image.Resampling.LANCZOS)
-                        save_kwargs = {"quality": 85, "optimize": True}
-                        if thumbnail_path.suffix.lower() == ".png":
-                            save_kwargs = {"optimize": True}
-                        img.save(thumbnail_path, **save_kwargs)
-                        generated_count += 1
-
-                if (
-                    generated_count % 100 == 0
-                    or (i + 1) % max(1, total_images // 10) == 0
-                ):
-                    progress = ((i + 1) / total_images) * 100
-                    elapsed = time.time() - start_time
-                    rate = (i + 1) / elapsed if elapsed > 0 else 0
-                    eta = ((total_images - i - 1) / rate) if rate > 0 else 0
-                    self.logger.info(
-                        f"Thumbnail progress: {i+1}/{total_images} ({progress:.1f}%) - "
-                        f"Generated: {generated_count}, Skipped: {skipped_count}, "
-                        f"Rate: {rate:.1f} img/s, ETA: {eta:.0f}s"
+                is_video = suffix in VIDEO_EXTENSIONS
+                rel_no_ext = src.relative_to(output_path).with_suffix("")
+                thumb_suffix = ".jpg" if is_video else suffix
+                dst = thumbnails_dir / f"{rel_no_ext.as_posix()}_thumb{thumb_suffix}"
+                if not _is_within(dst, thumbnails_dir):
+                    self.logger.warning(f"Skipping thumbnail outside safe dir: {name}")
+                    continue
+                if len(targets) >= MAX_THUMBNAIL_FILES:
+                    self.logger.warning(
+                        f"Thumbnail scan capped at {MAX_THUMBNAIL_FILES} files"
                     )
+                    return targets
+                targets.append((src, dst, is_video))
+        return targets
 
-            except Exception as e:
-                error_msg = (
-                    f"Failed to generate thumbnail for {media_file.name}: {str(e)}"
-                )
-                errors.append(error_msg)
-                self.logger.warning(error_msg)
-
-        elapsed_time = time.time() - start_time
-        self.logger.info(
-            f"Thumbnail generation completed: {generated_count} generated, "
-            f"{skipped_count} skipped, {len(errors)} errors in {elapsed_time:.1f}s"
-        )
-
-        return {
-            "success": True,
-            "count": generated_count,
-            "skipped": skipped_count,
-            "total_images": total_images,
-            "errors": errors,
-            "thumbnails_path": str(thumbnails_dir),
-            "elapsed_time": round(elapsed_time, 2),
-            "processing_rate": round(
-                (total_images / elapsed_time) if elapsed_time > 0 else 0, 2
-            ),
+    def _generate_one(self, src, dst, thumbnail_size, is_video):
+        """Create one thumbnail (blocking). Never raises; returns a result dict."""
+        result = {
+            "file": src.name,
+            "dir": src.parent.name,
+            "type": "video" if is_video else "image",
         }
+        try:
+            if not src.is_file():
+                return {**result, "action": "error", "error": "File no longer exists"}
+            if dst.exists() and dst.stat().st_mtime > src.stat().st_mtime:
+                return {**result, "action": "skipped"}
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if is_video:
+                if not self._generate_video_thumbnail(src, dst, thumbnail_size):
+                    return {**result, "action": "error", "error": "Video decode failed"}
+            else:
+                _write_image_thumbnail(src, dst, thumbnail_size)
+            return {**result, "action": "generated"}
+        except UnidentifiedImageError:
+            return {**result, "action": "error", "error": "Not a valid image file"}
+        except Exception as e:
+            self.logger.warning(f"Thumbnail failed for {src.name}", exc_info=True)
+            return {**result, "action": "error", "error": _safe_error(e)}
 
     async def generate_thumbnails_with_progress(self, request):
-        """Generate thumbnails with Server-Sent Events progress updates."""
+        """Generate thumbnails with Server-Sent Events progress updates.
+
+        Every blocking step (scan, PIL/ffmpeg) runs in the executor; the
+        event loop only writes SSE frames between files.
+        """
+        thumbnail_size = self._thumbnail_size(request.query.get("quality", "medium"))
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+        await response.prepare(request)
         try:
-            import time
+            output_dir = self._find_comfyui_output_dir()
+            if not output_dir:
+                await self._emit_sse(
+                    response, "error", {"error": "ComfyUI output directory not found"}
+                )
+                return response
 
-            # Parse query parameters
-            quality = request.query.get("quality", "medium")
-
-            # Map quality to size
-            size_map = {"low": (150, 150), "medium": (300, 300), "high": (600, 600)}
-            thumbnail_size = size_map.get(quality, (300, 300))
-
-            # Set up SSE response
-            response = web.StreamResponse(
-                status=200,
-                headers={
-                    "Content-Type": "text/event-stream",
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "Access-Control-Allow-Origin": "*",
-                },
+            output_path = Path(output_dir)
+            await self._emit_sse(
+                response,
+                "status",
+                {"phase": "scanning", "message": "Scanning for images and videos..."},
             )
-            await response.prepare(request)
-
-            async def send_progress(event_type, data):
-                """Send SSE event to client."""
-                try:
-                    message = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-                    await response.write(message.encode("utf-8"))
-                    await asyncio.sleep(0.01)
-                except Exception as e:
-                    self.logger.warning(f"Failed to send SSE message: {e}")
-
-            try:
-                # Find ComfyUI output directory
-                output_dir = self._find_comfyui_output_dir()
-                if not output_dir:
-                    await send_progress(
-                        "error", {"error": "ComfyUI output directory not found"}
-                    )
-                    return response
-
-                output_path = Path(output_dir)
-                thumbnails_dir = output_path / "thumbnails"
-                thumbnails_dir.mkdir(exist_ok=True)
-
-                # Send scanning event
-                await send_progress(
-                    "status",
-                    {
-                        "phase": "scanning",
-                        "message": f"Scanning {output_path} for images and videos to process...",
-                    },
-                )
-
-                self.logger.info(
-                    f"Starting thumbnail generation scan in: {output_path}"
-                )
-
-                # Find all media files (images and videos)
-                image_extensions = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
-                video_extensions = [
-                    ".mp4",
-                    ".webm",
-                    ".avi",
-                    ".mov",
-                    ".mkv",
-                    ".m4v",
-                    ".wmv",
-                ]
-                media_extensions = image_extensions + video_extensions
-                media_files = []
-                scanned_dirs = 0
-
-                for root, dirs, files in os.walk(output_path):
-                    if "thumbnails" in Path(root).parts:
-                        continue
-
-                    scanned_dirs += 1
-                    if scanned_dirs % 5 == 0:
-                        await send_progress(
-                            "status",
-                            {
-                                "phase": "scanning",
-                                "message": f"Scanning directories... ({scanned_dirs} checked, {len(media_files)} files found)",
-                            },
-                        )
-
-                    for file in files:
-                        if any(file.lower().endswith(ext) for ext in media_extensions):
-                            media_files.append(Path(root) / file)
-
-                self.logger.info(
-                    f"Scan complete: Found {len(media_files)} media files in {scanned_dirs} directories"
-                )
-
-                total_images = len(media_files)
-
-                # Count images vs videos for more detail
-                image_count = sum(
-                    1
-                    for f in media_files
-                    if any(f.name.lower().endswith(ext) for ext in image_extensions)
-                )
-                video_count = total_images - image_count
-
-                await send_progress(
-                    "start",
-                    {
-                        "total_images": total_images,
-                        "phase": "processing",
-                        "message": f"Found {image_count} images and {video_count} videos to process",
-                        "image_count": image_count,
-                        "video_count": video_count,
-                    },
-                )
-
-                self.logger.info(
-                    f"Starting thumbnail generation for {image_count} images and {video_count} videos"
-                )
-
-                if total_images == 0:
-                    await send_progress(
-                        "complete",
-                        {
-                            "count": 0,
-                            "skipped": 0,
-                            "total_images": 0,
-                            "elapsed_time": 0,
-                            "message": "No media files found to process",
-                        },
-                    )
-                    return response
-
-                generated_count = 0
-                skipped_count = 0
-                errors = []
-                start_time = time.time()
-
-                for i, media_file in enumerate(media_files):
-                    try:
-                        if not media_file.exists() or not media_file.is_file():
-                            continue
-
-                        is_video = any(
-                            media_file.name.lower().endswith(ext)
-                            for ext in video_extensions
-                        )
-
-                        rel_path = media_file.relative_to(output_path)
-
-                        rel_path_no_ext = rel_path.with_suffix("")
-                        if is_video:
-                            thumbnail_path = (
-                                thumbnails_dir
-                                / f"{rel_path_no_ext.as_posix()}_thumb.jpg"
-                            )
-                        else:
-                            thumbnail_path = (
-                                thumbnails_dir
-                                / f"{rel_path_no_ext.as_posix()}_thumb{rel_path.suffix}"
-                            )
-
-                        # Ensure thumbnail path is within our thumbnails directory
-                        try:
-                            thumbnail_path = thumbnail_path.resolve()
-                            thumbnails_dir_resolved = thumbnails_dir.resolve()
-                            if not str(thumbnail_path).startswith(
-                                str(thumbnails_dir_resolved)
-                            ):
-                                self.logger.warning(
-                                    f"Skipping thumbnail outside safe directory: {thumbnail_path}"
-                                )
-                                continue
-                        except Exception as e:
-                            self.logger.warning(
-                                f"Path validation failed for {rel_path}: {e}"
-                            )
-                            continue
-
-                        # Skip if thumbnail already exists and is newer than original
-                        if (
-                            thumbnail_path.exists()
-                            and thumbnail_path.stat().st_mtime
-                            > media_file.stat().st_mtime
-                        ):
-                            skipped_count += 1
-                        else:
-                            thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
-
-                            if is_video:
-                                if self._generate_video_thumbnail(
-                                    media_file, thumbnail_path, thumbnail_size
-                                ):
-                                    generated_count += 1
-                                else:
-                                    errors.append(
-                                        f"Failed to generate video thumbnail for {media_file.name}"
-                                    )
-                            else:
-                                with Image.open(media_file) as img:
-                                    if img.mode in ("RGBA", "LA", "P"):
-                                        img = img.convert("RGB")
-                                    img.thumbnail(
-                                        thumbnail_size, Image.Resampling.LANCZOS
-                                    )
-                                    save_kwargs = {"quality": 85, "optimize": True}
-                                    if thumbnail_path.suffix.lower() == ".png":
-                                        save_kwargs = {"optimize": True}
-                                    img.save(thumbnail_path, **save_kwargs)
-                                    generated_count += 1
-
-                        # Send progress update
-                        if (
-                            (i + 1) % 5 == 0
-                            or (i + 1) % max(1, total_images // 100) == 0
-                            or i == total_images - 1
-                        ):
-                            elapsed = time.time() - start_time
-                            progress_percent = ((i + 1) / total_images) * 100
-                            rate = (i + 1) / elapsed if elapsed > 0 else 0
-                            eta = ((total_images - i - 1) / rate) if rate > 0 else 0
-
-                            file_info = {
-                                "name": media_file.name,
-                                "dir": media_file.parent.name,
-                                "type": "video" if is_video else "image",
-                                "action": (
-                                    "skipped"
-                                    if thumbnail_path.exists()
-                                    else "generating"
-                                ),
-                            }
-
-                            await send_progress(
-                                "progress",
-                                {
-                                    "processed": i + 1,
-                                    "total_images": total_images,
-                                    "generated": generated_count,
-                                    "skipped": skipped_count,
-                                    "percentage": round(progress_percent, 1),
-                                    "rate": round(rate, 1),
-                                    "eta": round(eta, 0),
-                                    "elapsed": round(elapsed, 1),
-                                    "current_file": f"{file_info['dir']}/{file_info['name']}",
-                                    "file_type": file_info["type"],
-                                    "action": file_info["action"],
-                                },
-                            )
-
-                            if (i + 1) % 50 == 0:
-                                self.logger.info(
-                                    f"Thumbnail progress: {i+1}/{total_images} ({progress_percent:.1f}%) - Generated: {generated_count}, Skipped: {skipped_count}"
-                                )
-
-                    except Exception as e:
-                        self.logger.warning(
-                            f"Failed to generate thumbnail for {media_file.name}",
-                            exc_info=True,
-                        )
-                        error_msg = (
-                            f"Failed to generate thumbnail for {media_file.name}"
-                        )
-                        errors.append(error_msg)
-
-                        if len(errors) <= 5:
-                            await send_progress(
-                                "status",
-                                {
-                                    "phase": "processing",
-                                    "message": f"Error processing {media_file.name}",
-                                },
-                            )
-
-                elapsed_time = time.time() - start_time
-
-                completion_message = f"Successfully generated {generated_count} new thumbnails, skipped {skipped_count} existing"
-                if errors:
-                    completion_message += f" ({len(errors)} errors occurred)"
-
-                await send_progress(
-                    "complete",
-                    {
-                        "count": generated_count,
-                        "skipped": skipped_count,
-                        "total_images": total_images,
-                        "errors": errors[:10],
-                        "error_count": len(errors),
-                        "elapsed_time": round(elapsed_time, 2),
-                        "processing_rate": round(
-                            (total_images / elapsed_time) if elapsed_time > 0 else 0, 2
-                        ),
-                        "message": completion_message,
-                    },
-                )
-
-                self.logger.info(
-                    f"Thumbnail generation completed: {generated_count} generated, {skipped_count} skipped, {len(errors)} errors in {elapsed_time:.2f}s"
-                )
-
-            except Exception as e:
-                self.logger.exception("Thumbnail generation failed")
-                await send_progress(
-                    "error",
-                    {
-                        "error": "An internal error occurred",
-                        "message": "Thumbnail generation failed. Check server logs for details.",
-                    },
-                )
-
-            return response
-
-        except ImportError:
-            return web.json_response(
+            targets = await self._run_in_executor(
+                self._thumbnail_targets, output_path, output_path / "thumbnails"
+            )
+            await self._stream_thumbnails(response, targets, thumbnail_size)
+            self.invalidate_gallery_cache()
+        except Exception:
+            self.logger.exception("Thumbnail generation failed")
+            await self._emit_sse(
+                response,
+                "error",
                 {
-                    "success": False,
-                    "error": "PIL (Pillow) library not available. Install with: pip install Pillow",
+                    "error": "An internal error occurred",
+                    "message": "Thumbnail generation failed. Check server logs.",
                 },
-                status=500,
             )
+        return response
+
+    async def _stream_thumbnails(self, response, targets, thumbnail_size):
+        """Process *targets* one per executor job, emitting SSE after each."""
+        total = len(targets)
+        video_count = sum(1 for _, _, is_video in targets if is_video)
+        await self._emit_sse(
+            response,
+            "start",
+            {
+                "total_images": total,
+                "phase": "processing",
+                "image_count": total - video_count,
+                "video_count": video_count,
+                "message": (
+                    f"Found {total - video_count} images and "
+                    f"{video_count} videos to process"
+                ),
+            },
+        )
+        stats = _new_thumbnail_stats()
+        start = _time.monotonic()
+        for index, (src, dst, is_video) in enumerate(targets, start=1):
+            result = await self._run_in_executor(
+                self._generate_one, src, dst, thumbnail_size, is_video
+            )
+            _record_thumbnail_result(stats, result)
+            if result["action"] == "error":
+                await self._emit_sse(
+                    response,
+                    "file_error",
+                    {"file": result["file"], "error": result["error"]},
+                )
+            await self._emit_sse(
+                response,
+                "progress",
+                _thumbnail_progress_payload(index, total, stats, result, start),
+            )
+            await asyncio.sleep(0)  # let other requests run between files
+        payload = _thumbnail_complete_payload(total, stats, start)
+        await self._emit_sse(response, "complete", payload)
+        self.logger.info(payload["message"])
+
+    async def _emit_sse(self, response, event, data):
+        """Write one SSE frame; a closed client is logged, not raised."""
+        try:
+            frame = f"event: {event}\ndata: {json.dumps(data)}\n\n"
+            await response.write(frame.encode("utf-8"))
         except Exception as e:
-            self.logger.error(f"Generate thumbnails with progress error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            self.logger.warning(f"Failed to send SSE message: {e}")
 
     def _generate_video_thumbnail(self, video_path, thumbnail_path, thumbnail_size):
         """Generate thumbnail from video file. Returns True if successful."""
