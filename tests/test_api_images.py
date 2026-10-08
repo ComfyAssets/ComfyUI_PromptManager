@@ -11,7 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -857,6 +857,437 @@ class TestLinkImage(ImageAPITestCase):
         )
 
         self.assertEqual(resp.status, 404)
+
+
+def _raise(*_args, **_kwargs):
+    raise RuntimeError("boom")
+
+
+class ImageRouteCoverageCase(ImageAPITestCase):
+    """Helpers for driving success and failure branches of each route."""
+
+    def _break_db(self, db_method):
+        setattr(self.api.db, db_method, _raise)
+
+    async def _json(self, method, path, **kwargs):
+        resp = await self.client.request(method, path, **kwargs)
+        return resp.status, await resp.json()
+
+
+class TestPathHelpers(unittest.TestCase):
+
+    def test_has_traversal(self):
+        self.assertTrue(images_module._has_traversal(""))
+        self.assertTrue(images_module._has_traversal("a/../b.png"))
+        self.assertTrue(images_module._has_traversal("\\\\srv\\share\\x.png"))
+        self.assertTrue(images_module._has_traversal(os.path.abspath(os.sep)))
+        self.assertFalse(images_module._has_traversal("sub/x.png"))
+
+
+class TestPromptImagesAndSearch(ImageRouteCoverageCase):
+
+    async def test_prompt_images_success_and_nan_cleanup(self):
+        png = make_png(self.output_dir / "p.png")
+        self._link_image(png, text="owner")
+        prompt_id = self.api.db.get_prompt_by_hash(generate_prompt_hash("owner"))["id"]
+
+        status, data = await self._json(
+            "GET", f"/prompt_manager/prompts/{prompt_id}/images"
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(len(data["images"]), 1)
+        self.assertTrue(data["images"][0]["url"].endswith("p.png"))
+
+        self.api.db.get_prompt_images = lambda _pid: [
+            {"id": 1, "image_path": str(png), "width": float("nan")}
+        ]
+        status, data = await self._json("GET", "/prompt_manager/prompts/1/images")
+        self.assertEqual(status, 200)
+        self.assertIsNone(data["images"][0]["width"])
+
+    async def test_prompt_images_db_failure(self):
+        self._break_db("get_prompt_images")
+        status, data = await self._json("GET", "/prompt_manager/prompts/1/images")
+        self.assertEqual(status, 500)
+        self.assertFalse(data["success"])
+
+    async def test_search_images_paths(self):
+        self._link_image(make_png(self.output_dir / "s.png"), text="sunset beach")
+        missing, _ = await self._json("GET", "/prompt_manager/images/search")
+        ok, data = await self._json("GET", "/prompt_manager/images/search?q=sunset")
+        self._break_db("search_images_by_prompt")
+        err, _ = await self._json("GET", "/prompt_manager/images/search?q=x")
+        self.assertEqual((missing, ok, err), (400, 200, 500))
+        self.assertEqual(data["query"], "sunset")
+        self.assertEqual(len(data["images"]), 1)
+
+    async def test_list_routes_db_failures(self):
+        self._break_db("get_recent_images")
+        self._break_db("get_all_images")
+        recent, _ = await self._json("GET", "/prompt_manager/images/recent")
+        every, _ = await self._json("GET", "/prompt_manager/images/all")
+        self.assertEqual((recent, every), (500, 500))
+
+
+class TestServeErrorBranches(ImageRouteCoverageCase):
+
+    async def test_serve_by_id_db_failure(self):
+        self._break_db("get_image_by_id")
+        status, _ = await self._json("GET", "/prompt_manager/images/1/file")
+        self.assertEqual(status, 500)
+
+    async def test_serve_output_lookup_failure(self):
+        self.api._get_all_output_dirs = _raise
+        status, _ = await self._json("GET", "/prompt_manager/images/serve/x.png")
+        self.assertEqual(status, 500)
+
+    async def test_out_of_range_root_index_searches_all_roots(self):
+        make_png(self.output_dir / "r.png")
+        resp = await self.client.request(
+            "GET", "/prompt_manager/images/serve/r.png?root=7"
+        )
+        self.assertEqual(resp.status, 200)
+
+    async def test_directory_named_like_media_is_404(self):
+        (self.output_dir / "dir.png").mkdir()
+        status, _ = await self._json("GET", "/prompt_manager/images/serve/dir.png")
+        self.assertEqual(status, 404)
+
+    async def test_lora_dirs_extend_allowed_roots(self):
+        from py.config import IntegrationConfig
+
+        with (
+            tempfile.TemporaryDirectory() as lora,
+            tempfile.TemporaryDirectory() as cache,
+        ):
+            png = make_png(Path(lora) / "preview.png")
+            image_id = self._link_image(png)
+            with (
+                patch.object(IntegrationConfig, "LORA_MANAGER_ENABLED", True),
+                patch("py.lora_utils.find_lora_directories", return_value=[lora]),
+                patch("py.lora_utils.get_lora_image_cache_dir", return_value=cache),
+            ):
+                resp = await self.client.request(
+                    "GET", f"/prompt_manager/images/{image_id}/file"
+                )
+                self.assertEqual(resp.status, 200)
+
+            with (
+                patch.object(IntegrationConfig, "LORA_MANAGER_ENABLED", True),
+                patch("py.lora_utils.find_lora_directories", side_effect=RuntimeError),
+            ):
+                resp = await self.client.request(
+                    "GET", f"/prompt_manager/images/{image_id}/file"
+                )
+                self.assertEqual(resp.status, 403)
+
+
+class TestGalleryListing(ImageRouteCoverageCase):
+
+    async def test_subfolders_with_and_without_ancestors(self):
+        make_png(self.output_dir / "a" / "b" / "x.png")
+        make_png(self.output_dir / "c" / "y.png")
+        plain, data = await self._json("GET", "/prompt_manager/gallery/subfolders")
+        _, with_anc = await self._json(
+            "GET", "/prompt_manager/gallery/subfolders?include_ancestors=true"
+        )
+        self.assertEqual(plain, 200)
+        self.assertEqual(data["subfolders"], [os.path.join("a", "b"), "c"])
+        self.assertIn("a", with_anc["subfolders"])
+
+    async def test_subfolders_and_output_lookup_failures(self):
+        self.api._get_all_output_dirs = _raise
+        sub, _ = await self._json("GET", "/prompt_manager/gallery/subfolders")
+        out, _ = await self._json("GET", "/prompt_manager/images/output")
+        self.assertEqual((sub, out), (500, 500))
+
+    async def test_vanished_file_is_dropped_from_page(self):
+        png = make_png(self.output_dir / "gone.png")
+        await self._json("GET", "/prompt_manager/images/output")
+        png.unlink()
+        status, data = await self._json("GET", "/prompt_manager/images/output")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["images"], [])
+
+    def test_gallery_scan_skips_unreadable_entries(self):
+        ghost = self.output_dir / "ghost.png"
+        with patch.object(
+            images_module, "_iter_media_files", return_value=iter([ghost])
+        ):
+            found = self.api._scan_gallery_files_sync(self.output_dir)
+        self.assertEqual(found, [])
+
+
+class TestThumbnailUnits(ImageRouteCoverageCase):
+
+    SIZE = (64, 64)
+
+    def test_generate_one_reports_vanished_source(self):
+        result = self.api._generate_one(
+            self.output_dir / "nope.png", self._dst("nope"), self.SIZE, False
+        )
+        self.assertEqual(result["action"], "error")
+        self.assertIn("no longer exists", result["error"])
+
+    def test_generate_one_video_success_and_failure(self):
+        src = self.output_dir / "clip.mp4"
+        src.write_bytes(b"\x00")
+        with patch.object(self.api, "_generate_video_thumbnail", return_value=True):
+            ok = self.api._generate_one(src, self._dst("clip", ".jpg"), self.SIZE, True)
+        with patch.object(self.api, "_generate_video_thumbnail", return_value=False):
+            bad = self.api._generate_one(
+                src, self._dst("clip", ".jpg"), self.SIZE, True
+            )
+        self.assertEqual((ok["action"], ok["type"]), ("generated", "video"))
+        self.assertEqual(bad["action"], "error")
+
+    def test_generate_one_unexpected_error_is_safe(self):
+        src = make_png(self.output_dir / "boom.png")
+        with patch.object(
+            images_module, "_write_image_thumbnail", side_effect=RuntimeError("bad")
+        ):
+            result = self.api._generate_one(src, self._dst("boom"), self.SIZE, False)
+        self.assertEqual(result["action"], "error")
+        self.assertEqual(result["error"], "bad")
+
+    def test_rgba_and_jpeg_sources(self):
+        with Image.new("RGBA", (32, 32), (0, 255, 0, 128)) as img:
+            img.save(self.output_dir / "alpha.png")
+        with Image.new("RGB", (32, 32), (0, 0, 255)) as img:
+            img.save(self.output_dir / "photo.jpg", "JPEG")
+        result = self.api._generate_thumbnails_sync(
+            self.output_dir, self.output_dir / "thumbnails", self.SIZE
+        )
+        self.assertEqual(result["count"], 2)
+        self.assertTrue(self._dst("alpha").is_file())
+        self.assertTrue(self._dst("photo", ".jpg").is_file())
+
+    async def test_emit_sse_swallows_write_errors(self):
+        response = MagicMock()
+        response.write = AsyncMock(side_effect=ConnectionResetError("gone"))
+        await self.api._emit_sse(response, "progress", {"n": 1})
+        response.write.assert_awaited_once()
+
+    async def test_progress_stream_reports_internal_failure(self):
+        self.api._thumbnail_targets = _raise
+        resp = await self.client.request(
+            "GET", "/prompt_manager/images/generate-thumbnails/progress"
+        )
+        events = parse_sse(await resp.text())
+        self.assertEqual(events[-1][0], "error")
+
+    async def test_post_generate_reports_internal_failure(self):
+        self.api._find_comfyui_output_dir = _raise
+        status, _ = await self._json(
+            "POST", "/prompt_manager/images/generate-thumbnails", json={}
+        )
+        self.assertEqual(status, 500)
+
+    def _dst(self, name, suffix=".png"):
+        return self.output_dir / "thumbnails" / f"{name}_thumb{suffix}"
+
+
+class TestVideoThumbnailFallbacks(ImageRouteCoverageCase):
+    """_generate_video_thumbnail degrades: cv2 -> ffmpeg -> placeholder."""
+
+    SIZE = (48, 48)
+
+    @property
+    def video(self):
+        # output_dir only exists once the app is built, so create lazily.
+        path = self.output_dir / "clip.mp4"
+        if not path.exists():
+            path.write_bytes(b"\x00\x00")
+        return path
+
+    @property
+    def thumb(self):
+        return self.output_dir / "clip_thumb.jpg"
+
+    def _fake_cv2(self, opened=True, read_ok=True):
+        numpy = self._numpy()
+        cv2 = MagicMock()
+        cap = cv2.VideoCapture.return_value
+        cap.isOpened.return_value = opened
+        cap.get.return_value = 30
+        frame = numpy.zeros((8, 8, 3), dtype=numpy.uint8)
+        cap.read.return_value = (read_ok, frame if read_ok else None)
+        cv2.cvtColor.side_effect = lambda f, _code: f
+        return cv2
+
+    def _numpy(self):
+        try:
+            import numpy
+        except ImportError:
+            self.skipTest("numpy not installed")
+        return numpy
+
+    def test_cv2_success(self):
+        with patch.dict(sys.modules, {"cv2": self._fake_cv2()}):
+            ok = self.api._generate_video_thumbnail(self.video, self.thumb, self.SIZE)
+        self.assertTrue(ok)
+        with Image.open(self.thumb) as img:
+            self.assertEqual(img.format, "JPEG")
+
+    def test_cv2_cannot_open_or_read(self):
+        with patch.dict(sys.modules, {"cv2": self._fake_cv2(opened=False)}):
+            closed = self.api._generate_video_thumbnail(
+                self.video, self.thumb, self.SIZE
+            )
+        with patch.dict(sys.modules, {"cv2": self._fake_cv2(read_ok=False)}):
+            unread = self.api._generate_video_thumbnail(
+                self.video, self.thumb, self.SIZE
+            )
+        self.assertEqual((closed, unread), (False, False))
+
+    def test_cv2_crash_is_contained(self):
+        cv2 = MagicMock()
+        cv2.VideoCapture.side_effect = RuntimeError("driver crash")
+        with patch.dict(sys.modules, {"cv2": cv2}):
+            ok = self.api._generate_video_thumbnail(self.video, self.thumb, self.SIZE)
+        self.assertFalse(ok)
+
+    def test_ffmpeg_absent_yields_placeholder(self):
+        with (
+            patch.dict(sys.modules, {"cv2": None}),
+            patch("subprocess.run", side_effect=FileNotFoundError("ffmpeg")),
+        ):
+            ok = self.api._generate_video_thumbnail(self.video, self.thumb, self.SIZE)
+        self.assertTrue(ok)
+        with Image.open(self.thumb) as img:
+            self.assertEqual(img.size, self.SIZE)
+
+    def test_ffmpeg_failure_yields_placeholder(self):
+        failed = MagicMock(returncode=1, stderr="no stream")
+        with (
+            patch.dict(sys.modules, {"cv2": None}),
+            patch("subprocess.run", return_value=failed),
+        ):
+            ok = self.api._generate_video_thumbnail(self.video, self.thumb, self.SIZE)
+        self.assertTrue(ok)
+        self.assertTrue(self.thumb.is_file())
+
+    def test_ffmpeg_success(self):
+        with (
+            patch.dict(sys.modules, {"cv2": None}),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)) as run,
+        ):
+            ok = self.api._generate_video_thumbnail(self.video, self.thumb, self.SIZE)
+        self.assertTrue(ok)
+        self.assertEqual(run.call_args.args[0][0], "ffmpeg")
+
+    def test_placeholder_failure_returns_false(self):
+        with (
+            patch.dict(sys.modules, {"cv2": None}),
+            patch("subprocess.run", side_effect=FileNotFoundError),
+            patch.object(
+                images_module.Image, "new", side_effect=RuntimeError("no PIL")
+            ),
+        ):
+            ok = self.api._generate_video_thumbnail(self.video, self.thumb, self.SIZE)
+        self.assertFalse(ok)
+
+
+class TestClearThumbnails(ImageRouteCoverageCase):
+
+    URL = "/prompt_manager/images/clear-thumbnails"
+
+    async def test_missing_output_dir_is_404(self):
+        self.api._find_comfyui_output_dir = lambda: None
+        status, _ = await self._json("POST", self.URL)
+        self.assertEqual(status, 404)
+
+    async def test_no_thumbnails_dir_is_noop(self):
+        status, data = await self._json("POST", self.URL)
+        self.assertEqual(status, 200)
+        self.assertEqual(data["cleared_files"], 0)
+
+    async def test_clears_only_generated_thumbnails(self):
+        thumbs = self.output_dir / "thumbnails"
+        make_png(thumbs / "sub" / "a_thumb.png")
+        make_png(thumbs / "b_thumb.png")
+        (thumbs / "readme.txt").write_text("keep")
+        make_png(self.output_dir / "original.png")
+
+        status, data = await self._json("POST", self.URL)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["cleared_files"], 2)
+        self.assertIn("cleared_size_formatted", data)
+        self.assertFalse((thumbs / "sub").exists())
+        self.assertTrue((thumbs / "readme.txt").is_file())
+        self.assertTrue((self.output_dir / "original.png").is_file())
+
+    async def test_unlink_failure_is_logged_not_raised(self):
+        make_png(self.output_dir / "thumbnails" / "a_thumb.png")
+        with patch.object(Path, "unlink", side_effect=PermissionError("locked")):
+            status, data = await self._json("POST", self.URL)
+        self.assertEqual(status, 200)
+        self.assertEqual(data["cleared_files"], 0)
+
+    async def test_internal_failure_is_500(self):
+        self.api._find_comfyui_output_dir = _raise
+        status, _ = await self._json("POST", self.URL)
+        self.assertEqual(status, 500)
+
+
+class TestImagePromptLookup(ImageRouteCoverageCase):
+
+    URL = "/prompt_manager/images/prompt/"
+
+    async def test_relative_path_resolves_against_output_dir(self):
+        self._link_image(make_png(self.output_dir / "gen.png"), text="the prompt")
+        status, data = await self._json("GET", f"{self.URL}gen.png")
+        self.assertEqual(status, 200)
+        self.assertTrue(data["success"])
+        self.assertEqual(data["prompt"]["text"], "the prompt")
+        self.assertEqual(data["prompt"]["image_path"], str(self.output_dir / "gen.png"))
+
+    async def test_unknown_image_reports_no_prompt(self):
+        status, data = await self._json("GET", f"{self.URL}unknown.png")
+        self.assertEqual(status, 200)
+        self.assertFalse(data["success"])
+        self.assertIn("image_path", data)
+
+    async def test_empty_path_is_400(self):
+        status, _ = await self._json("GET", self.URL)
+        self.assertEqual(status, 400)
+
+    async def test_db_failure_is_500_without_details(self):
+        self._break_db("get_image_prompt_info")
+        status, data = await self._json("GET", f"{self.URL}x.png")
+        self.assertEqual(status, 500)
+        self.assertEqual(data["error"], "Database error occurred")
+
+    async def test_output_dir_lookup_failure_is_500(self):
+        self.api._find_comfyui_output_dir = _raise
+        status, _ = await self._json("GET", f"{self.URL}x.png")
+        self.assertEqual(status, 500)
+
+
+class TestDeleteAndLinkErrors(ImageRouteCoverageCase):
+
+    async def test_delete_image_paths(self):
+        image_id = self._link_image(make_png(self.output_dir / "d.png"))
+        ok, _ = await self._json("DELETE", f"/prompt_manager/images/{image_id}")
+        gone, _ = await self._json("DELETE", f"/prompt_manager/images/{image_id}")
+        bad, _ = await self._json("DELETE", "/prompt_manager/images/abc")
+        self._break_db("delete_image")
+        err, _ = await self._json("DELETE", "/prompt_manager/images/1")
+        self.assertEqual((ok, gone, bad, err), (200, 404, 400, 500))
+
+    async def test_link_db_failure_is_500(self):
+        prompt_id = self._save_prompt("to link")
+        png = make_png(self.output_dir / "l.png")
+        self._break_db("link_image_to_prompt")
+        status, _ = await self._json(
+            "POST",
+            "/prompt_manager/images/link",
+            json={"prompt_id": prompt_id, "image_path": str(png)},
+        )
+        self.assertEqual(status, 500)
 
 
 if __name__ == "__main__":
