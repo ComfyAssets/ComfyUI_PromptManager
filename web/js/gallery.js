@@ -1548,47 +1548,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }
             }
 
-            async parsePNGMetadata(arrayBuffer) {
-                const dataView = new DataView(arrayBuffer);
-                let offset = 8; // Skip PNG signature
-                const metadata = {};
-
-                while (offset < arrayBuffer.byteLength - 8) {
-                    const length = dataView.getUint32(offset);
-                    const type = new TextDecoder().decode(arrayBuffer.slice(offset + 4, offset + 8));
-                    
-                    if (type === 'tEXt' || type === 'iTXt' || type === 'zTXt') {
-                        const chunkData = arrayBuffer.slice(offset + 8, offset + 8 + length);
-                        let text;
-                        
-                        if (type === 'tEXt') {
-                            text = new TextDecoder().decode(chunkData);
-                        } else if (type === 'iTXt') {
-                            // iTXt format: keyword\0compression\0language\0translated_keyword\0text
-                            const textData = new TextDecoder().decode(chunkData);
-                            const parts = textData.split('\0');
-                            if (parts.length >= 5) {
-                                metadata[parts[0]] = parts[4];
-                            }
-                            text = textData;
-                        } else if (type === 'zTXt') {
-                            // zTXt is compressed - basic parsing (might need proper decompression)
-                            text = new TextDecoder().decode(chunkData);
-                        }
-                        
-                        // Parse the text chunk for key-value pairs
-                        const nullIndex = text.indexOf('\0');
-                        if (nullIndex !== -1) {
-                            const key = text.substring(0, nullIndex);
-                            const value = text.substring(nullIndex + 1);
-                            metadata[key] = value;
-                        }
-                    }
-                    
-                    offset += 8 + length + 4; // Move to next chunk (8 = length + type, 4 = CRC)
-                }
-
-                return metadata;
+            parsePNGMetadata(arrayBuffer) {
+                return PngMetadata.parsePngTextChunks(arrayBuffer);
             }
 
             extractComfyUIData(metadata) {
