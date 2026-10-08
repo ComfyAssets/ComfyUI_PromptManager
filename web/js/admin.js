@@ -452,7 +452,7 @@
                 }
             }
 
-            async search() {
+            async search(page = 1) {
                 const searchText = document.getElementById("searchText").value;
                 const category = document.getElementById("searchCategory").value;
                 const tags = document.getElementById("searchTags").value;
@@ -467,21 +467,32 @@
                     if (tags) params.append("tags", tags);
                     const folder = document.getElementById("searchFolder").value;
                     if (folder) params.append("folder", folder);
-                    params.append("limit", "100");
+                    const limit = this.pagination.limit;
+                    params.append("limit", String(limit));
+                    params.append("offset", String((page - 1) * limit));
+                    params.append("page", String(page));
 
                     this.listMode = "search";
                     const url = `/prompt_manager/search?${PromptListSort.withSort(params, this.currentSort())}`;
                     const data = await this.listRequest((signal) => this.api.get(url, { signal }));
                     if (data === ApiClient.STALE) return; // a newer list request owns the loading state
 
+                    const reported = data.pagination || {};
+                    const next = ListState.nextPageState(
+                        { page: this.pagination.currentPage, limit, total: this.pagination.total },
+                        { page: reported.page ?? page, total: reported.total ?? data.results.length },
+                    );
                     this.prompts = data.results;
+                    this.pagination = { ...this.pagination, currentPage: next.page, total: next.total, totalPages: next.totalPages };
                     this.renderPrompts();
+                    this.updatePaginationControls();
                     document.getElementById("resultsTitle").textContent = "Search Results";
                 } catch (error) {
                     this.showNotification("Search failed", "error");
                     console.error("Search error:", error);
                 }
                 this.showListLoaded();
+                document.getElementById("paginationControls").classList.remove("hidden");
             }
 
             currentSort() {
@@ -495,7 +506,8 @@
 
             /** Re-fetch the page currently shown, e.g. after a prompt was edited, tagged or deleted. */
             refreshList() {
-                return this.listMode === "search" ? this.search() : this.loadRecentPrompts(this.pagination.currentPage);
+                const page = this.pagination.currentPage;
+                return this.listMode === "search" ? this.search(page) : this.loadRecentPrompts(page);
             }
 
             handleActionClick(e) {
@@ -828,7 +840,12 @@
                             toggle.disabled = false;
                             document.getElementById("loraManagerPath").value = status.path;
                             document.getElementById("loraTriggerWords").checked = status.trigger_words_enabled;
-                            document.getElementById("civitaiApiKey").value = status.civitai_api_key || "";
+                            const keyInput = document.getElementById("civitaiApiKey");
+                            keyInput.value = "";
+                            keyInput.placeholder = status.has_civitai_api_key
+                                ? "A key is stored — leave empty to keep it"
+                                : "Optional — required for NSFW example images";
+                            document.getElementById("clearCivitaiKey").checked = false;
                             settings.classList.remove("hidden");
                             this._loraPath = status.path;
                             this._bindLoraEvents();
@@ -884,18 +901,20 @@
                 const enabled = document.getElementById("loraEnabled").checked;
                 const triggerWords = document.getElementById("loraTriggerWords").checked;
                 const civitaiKey = document.getElementById("civitaiApiKey").value.trim();
+                const clearKey = document.getElementById("clearCivitaiKey").checked;
                 const path = this._loraPath || "";
+
+                // The server never returns the stored key: an empty field keeps it, the
+                // checkbox removes it, and a non-empty field replaces it
+                const payload = { enabled, path, trigger_words_enabled: triggerWords };
+                if (clearKey) payload.clear_civitai_api_key = true;
+                else if (civitaiKey) payload.civitai_api_key = civitaiKey;
 
                 try {
                     const res = await fetch("/prompt_manager/lora/enable", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                            enabled,
-                            path,
-                            trigger_words_enabled: triggerWords,
-                            civitai_api_key: civitaiKey,
-                        }),
+                        body: JSON.stringify(payload),
                     });
                     const data = await res.json();
                     if (!data.success) {
@@ -2467,15 +2486,14 @@
                 if (page < 1 || page > this.pagination.totalPages || page === this.pagination.currentPage) {
                     return;
                 }
-                await this.loadRecentPrompts(page);
+                await (this.listMode === "search" ? this.search(page) : this.loadRecentPrompts(page));
                 // Scroll to top of results after page loads
                 window.scrollTo({ top: 0, behavior: 'smooth' });
             }
 
             async changeLimit(newLimit) {
                 this.pagination.limit = newLimit;
-                this.pagination.currentPage = 1; // Reset to first page
-                await this.loadRecentPrompts(1);
+                await this.reloadPrompts(); // back to the first page of the current list
             }
 
             // Metadata functionality
@@ -3401,7 +3419,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 this.showModal("autoTagDownloadModal");
 
                 try {
-                    this.autoTagState.downloadEventSource = new EventSource(`/prompt_manager/autotag/download/${modelType}`);
+                    this.autoTagState.downloadEventSource = SseStream.connect(`/prompt_manager/autotag/download/${modelType}`, { method: 'POST' });
 
                     this.autoTagState.downloadEventSource.onmessage = (event) => {
                         const data = JSON.parse(event.data);
@@ -3487,7 +3505,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         formData.append('prompt', prompt);
                     }
 
-                    this.autoTagState.eventSource = new EventSource(`/prompt_manager/autotag/start?${formData.toString()}`);
+                    this.autoTagState.eventSource = SseStream.connect(`/prompt_manager/autotag/start?${formData.toString()}`, { method: 'POST' });
 
                     this.autoTagState.eventSource.onmessage = (event) => {
                         const data = JSON.parse(event.data);
@@ -3561,10 +3579,9 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                 // Get ALL images with linked prompts from the database
                 try {
-                    const scanResponse = await fetch('/prompt_manager/images/all');
-                    const scanData = await scanResponse.json();
+                    const scanData = { images: await this.fetchAllImages() };
 
-                    if (!scanData.success || !scanData.images || scanData.images.length === 0) {
+                    if (scanData.images.length === 0) {
                         this.hideModal("autoTagLoadingModal");
                         this.showNotification('No images with linked prompts found in database', 'warning');
                         return;
@@ -3611,7 +3628,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                     // Set up the modal content
                     document.getElementById('retagPreviewImage').src = imageUrl;
-                    document.getElementById('retagImageName').textContent = image.image_path.split('/').pop();
+                    document.getElementById('retagImageName').textContent = image.filename || String(image.image_path || '').split(/[\\/]/).pop();
 
                     // Display existing tags
                     const tagsContainer = document.getElementById('retagExistingTags');
@@ -3690,7 +3707,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                 try {
                     const requestBody = {
-                        image_path: image.image_path,
+                        image_id: image.id,
                         model_type: this.autoTagState.modelType,
                     };
                     if (this.autoTagState.modelType.startsWith('wd14')) {
@@ -3721,6 +3738,19 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     console.error('Error generating tags:', error);
                     document.getElementById('reviewTagsVisible').innerHTML =
                         '<div class="text-pm-error">Failed to generate tags</div>';
+                }
+            }
+
+            /** /prompt_manager/images/all is capped per call; collect every page. */
+            async fetchAllImages() {
+                const images = [];
+                let offset = 0;
+                for (;;) {
+                    const data = await this.api.get(`/prompt_manager/images/all?offset=${offset}`);
+                    const page = Array.isArray(data.images) ? data.images : [];
+                    images.push(...page);
+                    if (!ListState.hasMorePages(data, page.length)) return images;
+                    offset += page.length;
                 }
             }
 

@@ -1951,7 +1951,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         
                         // More detailed progress information
                         const elapsedText = data.elapsed ? ` | Time: ${Math.floor(data.elapsed)}s` : '';
-                        progressDetails.textContent = `Generated: ${data.generated}, Skipped: ${data.skipped} | Rate: ${data.rate} img/s${elapsedText}`;
+                        const failedText = data.error_count ? `, Failed: ${data.error_count}` : '';
+                        progressDetails.textContent = `Generated: ${data.generated}, Skipped: ${data.skipped}${failedText} | Rate: ${data.rate} img/s${elapsedText}`;
                         
                         // Update ETA
                         if (data.eta > 0 && data.eta < 3600) {
@@ -2003,6 +2004,17 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         resolve(resultData);
                     });
                     
+                    // Per-file failures: count them, keep listening
+                    eventSource.addEventListener('file_error', (event) => {
+                        if (cancelled) return;
+                        try {
+                            const data = JSON.parse(event.data);
+                            console.warn('Thumbnail failed:', data.current_file || data.file || '', data.error || '');
+                        } catch (e) {
+                            console.warn('Thumbnail failed (unparseable event)');
+                        }
+                    });
+
                     // Handle errors
                     eventSource.addEventListener('error', (event) => {
                         if (cancelled) return;
@@ -2676,7 +2688,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         
                         // Update details
                         const elapsedText = data.elapsed ? ` | Time: ${Math.floor(data.elapsed)}s` : '';
-                        progressDetails.textContent = `Generated: ${data.generated}, Skipped: ${data.skipped} | Rate: ${data.rate} img/s${elapsedText}`;
+                        const failedText = data.error_count ? `, Failed: ${data.error_count}` : '';
+                        progressDetails.textContent = `Generated: ${data.generated}, Skipped: ${data.skipped}${failedText} | Rate: ${data.rate} img/s${elapsedText}`;
                         
                         // Update ETA
                         if (data.eta > 0 && data.eta < 3600) {
@@ -2731,6 +2744,19 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         resolve(resultData);
                     });
                     
+                    // Per-file failures: report them, keep listening
+                    eventSource.addEventListener('file_error', (event) => {
+                        if (isCancelled()) return;
+                        let detail = 'Thumbnail failed';
+                        try {
+                            const data = JSON.parse(event.data);
+                            detail = `Thumbnail failed: ${data.current_file || data.file || ''} ${data.error || ''}`.trim();
+                        } catch (e) {
+                            // non-JSON frame; keep the generic message
+                        }
+                        addStatusMessage(detail, 'error');
+                    });
+
                     // Handle errors
                     eventSource.addEventListener('error', (event) => {
                         if (isCancelled()) {
@@ -3183,7 +3209,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 this.showModal("autoTagDownloadModal");
 
                 try {
-                    this.autoTagState.downloadEventSource = new EventSource(`/prompt_manager/autotag/download/${modelType}`);
+                    this.autoTagState.downloadEventSource = SseStream.connect(`/prompt_manager/autotag/download/${modelType}`, { method: 'POST' });
 
                     this.autoTagState.downloadEventSource.onmessage = (event) => {
                         const data = JSON.parse(event.data);
@@ -3295,7 +3321,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         formData.append('prompt', prompt);
                     }
 
-                    this.autoTagState.eventSource = new EventSource(`/prompt_manager/autotag/start?${formData.toString()}`);
+                    this.autoTagState.eventSource = SseStream.connect(`/prompt_manager/autotag/start?${formData.toString()}`, { method: 'POST' });
 
                     this.autoTagState.eventSource.onmessage = (event) => {
                         const data = JSON.parse(event.data);
@@ -3397,7 +3423,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                 try {
                     const requestBody = {
-                        image_path: image.path,
+                        image_id: image.id,
                         model_type: this.autoTagState.modelType,
                     };
                     if (this.autoTagState.modelType.startsWith('wd14')) {
