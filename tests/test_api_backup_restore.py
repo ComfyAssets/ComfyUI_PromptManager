@@ -45,7 +45,7 @@ class BackupRestoreTestCase(AioHTTPTestCase):
         return app
 
     async def tearDownAsync(self):
-        self.api.db.close()
+        self.api.db.close_all()
         for name in os.listdir(self.tmpdir):
             os.unlink(os.path.join(self.tmpdir, name))
         os.rmdir(self.tmpdir)
@@ -66,7 +66,7 @@ class BackupRestoreTestCase(AioHTTPTestCase):
         db = PromptDatabase(path)
         for text in texts:
             db.save_prompt(text=text, prompt_hash=generate_prompt_hash(text))
-        db.close()
+        db.close_all()
         return path
 
     async def _restore(self, path, field="database_file"):

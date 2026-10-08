@@ -29,7 +29,7 @@ class ConcurrencyTestCase(unittest.TestCase):
         self.addCleanup(self._cleanup)
 
     def _cleanup(self):
-        self.db.close()
+        self.db.close_all()
         for suffix in ("", "-wal", "-shm"):
             if os.path.exists(self.path + suffix):
                 os.unlink(self.path + suffix)

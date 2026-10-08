@@ -22,7 +22,7 @@ class UsageTestCase(unittest.TestCase):
 
     def tearDown(self):
         if getattr(self, "db", None) is not None:
-            self.db.close()
+            self.db.close_all()
         for suffix in ("", "-wal", "-shm"):
             if os.path.exists(self.path + suffix):
                 os.unlink(self.path + suffix)
@@ -164,9 +164,11 @@ class TestUsageMigration(unittest.TestCase):
     def setUp(self):
         fd, self.path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
-        db = PromptDatabase(self.path)
+        self.dbs = []
+        db = self._open()
         self.with_images = db.save_prompt(text="has images", prompt_hash="h1")
         self.no_images = db.save_prompt(text="no images", prompt_hash="h2")
+        db.close_all()
         with sqlite3.connect(self.path) as conn:
             conn.execute(
                 "UPDATE prompts SET created_at = '2026-01-01T10:00:00.000000+00:00'"
@@ -188,15 +190,21 @@ class TestUsageMigration(unittest.TestCase):
         # must look at the file again to see the downgraded schema.
         PromptModel.reset_schema_cache()
 
+    def _open(self):
+        """Open the database under test and close it again in tearDown."""
+        db = PromptDatabase(self.path)
+        self.dbs.append(db)
+        return db
+
     def tearDown(self):
-        if getattr(self, "db", None) is not None:
-            self.db.close()
+        for db in self.dbs:
+            db.close_all()
         for suffix in ("", "-wal", "-shm"):
             if os.path.exists(self.path + suffix):
                 os.unlink(self.path + suffix)
 
     def test_backfill_estimates_usage_from_linked_images(self):
-        db = PromptDatabase(self.path)
+        db = self._open()
         used = db.get_prompt_by_id(self.with_images)
         unused = db.get_prompt_by_id(self.no_images)
 
@@ -206,7 +214,7 @@ class TestUsageMigration(unittest.TestCase):
         self.assertTrue(unused["last_used_at"].startswith("2026-01-01T10:00:00"))
 
     def test_backfill_runs_only_when_the_columns_are_added(self):
-        db = PromptDatabase(self.path)
+        db = self._open()
         # A row whose usage is unknown (e.g. written by 3.2.3 after a downgrade)
         # stays "never run": a restart must not invent a run for it, otherwise
         # Recently Used could never tell saved-but-unused prompts from run ones.
@@ -221,14 +229,14 @@ class TestUsageMigration(unittest.TestCase):
         self.assertIsNone(db.get_prompt_by_id(legacy_id)["last_used_at"])
 
         PromptModel.reset_schema_cache()
-        later = PromptDatabase(self.path).get_prompt_by_id(legacy_id)
+        later = self._open().get_prompt_by_id(legacy_id)
         self.assertIsNone(later["last_used_at"])
         self.assertEqual(later["run_count"], 0)
 
     def test_migration_runs_once(self):
-        db = PromptDatabase(self.path)
+        db = self._open()
         db.record_prompt_use(self.no_images)
-        reopened = PromptDatabase(self.path)
+        reopened = self._open()
         self.assertEqual(reopened.get_prompt_by_id(self.no_images)["run_count"], 2)
 
 

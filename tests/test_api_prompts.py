@@ -43,6 +43,8 @@ class PromptAPITestCase(AioHTTPTestCase):
         return app
 
     async def tearDownAsync(self):
+        # Windows refuses to unlink a database that still has open handles.
+        self.api.db.close_all()
         for path in (
             self._temp_db.name,
             self._temp_db.name + "-wal",

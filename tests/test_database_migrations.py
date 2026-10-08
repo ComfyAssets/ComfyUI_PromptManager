@@ -42,7 +42,7 @@ class MigrationTestCase(unittest.TestCase):
 
     def _cleanup(self):
         for db in self.dbs:
-            db.close()
+            db.close_all()
         PromptModel.reset_schema_cache()
         for name in os.listdir(self.tmpdir):
             os.unlink(os.path.join(self.tmpdir, name))
@@ -105,7 +105,7 @@ class TestSchemaInitOncePerProcess(MigrationTestCase):
 
     def test_deleted_database_file_is_recreated_on_next_construction(self):
         db = self._open()
-        db.close()
+        db.close_all()
         os.unlink(self.path)
         for suffix in ("-wal", "-shm"):
             if os.path.exists(self.path + suffix):
@@ -118,7 +118,7 @@ class TestSchemaInitOncePerProcess(MigrationTestCase):
     def test_close_then_unlink_succeeds(self):
         db = self._open()
         db.save_prompt(text="x", prompt_hash="x")
-        db.close()
+        db.close_all()
         os.unlink(self.path)
         self.assertFalse(os.path.exists(self.path))
 

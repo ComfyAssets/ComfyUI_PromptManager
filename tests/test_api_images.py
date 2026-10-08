@@ -27,6 +27,7 @@ from database.operations import PromptDatabase  # noqa: E402
 import py.api.images as images_module  # noqa: E402
 from py.api import PromptManagerAPI  # noqa: E402
 from py.api.prompts import MAX_PAGE_LIMIT  # noqa: E402
+from py.config import GalleryConfig  # noqa: E402
 from utils.hashing import generate_prompt_hash  # noqa: E402
 
 
@@ -46,8 +47,17 @@ class ImageAPITestCase(AioHTTPTestCase):
         self._temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
         self._temp_db.close()
 
-        self._output_tmp = tempfile.TemporaryDirectory()
-        self.output_dir = Path(os.path.realpath(self._output_tmp.name))
+        self._output_tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        # A fake ComfyUI tree: <tmp>/output is the gallery root and <tmp> is the
+        # anchor that public (response) paths are rendered relative to.
+        self.comfy_dir = Path(os.path.realpath(self._output_tmp.name))
+        self.output_dir = self.comfy_dir / "output"
+        self.output_dir.mkdir()
+        anchors = [os.path.normcase(str(self.comfy_dir))]
+        self._anchor_patch = patch.object(
+            GalleryConfig, "path_anchors", classmethod(lambda cls: list(anchors))
+        )
+        self._anchor_patch.start()
 
         app = web.Application()
         routes = web.RouteTableDef()
@@ -61,6 +71,9 @@ class ImageAPITestCase(AioHTTPTestCase):
         return app
 
     async def tearDownAsync(self):
+        self._anchor_patch.stop()
+        # Windows refuses to unlink a database that still has open handles.
+        self.api.db.close_all()
         for path in (
             self._temp_db.name,
             self._temp_db.name + "-wal",

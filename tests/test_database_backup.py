@@ -45,7 +45,7 @@ class BackupTestCase(unittest.TestCase):
         self.addCleanup(self._cleanup)
 
     def _cleanup(self):
-        self.db.close()
+        self.db.close_all()
         for name in os.listdir(self.tmpdir):
             os.unlink(os.path.join(self.tmpdir, name))
         os.rmdir(self.tmpdir)
@@ -59,7 +59,7 @@ class BackupTestCase(unittest.TestCase):
         src = PromptDatabase(src_path)
         for text in texts:
             self._save(src, text)
-        src.close()
+        src.close_all()
         return src_path
 
 
@@ -230,7 +230,7 @@ class TestRestoreFromFile(BackupTestCase):
 
     def test_restore_without_a_live_database_returns_empty_backup_path(self):
         src = self._make_source_db(["fresh"])
-        self.db.close()
+        self.db.close_all()
         os.unlink(self.path)
         for suffix in ("-wal", "-shm"):
             if os.path.exists(self.path + suffix):

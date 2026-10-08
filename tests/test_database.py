@@ -31,7 +31,7 @@ class DatabaseTestCase(unittest.TestCase):
         self.db = PromptDatabase(self.temp_db.name)
 
     def tearDown(self):
-        self.db.close()
+        self.db.close_all()
         for suffix in ("", "-wal", "-shm"):
             path = self.temp_db.name + suffix
             if os.path.exists(path):
@@ -341,14 +341,17 @@ class TestPagination(DatabaseTestCase):
         # Use a fresh empty DB
         empty_db_file = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
         empty_db_file.close()
+        empty_db = PromptDatabase(empty_db_file.name)
         try:
-            empty_db = PromptDatabase(empty_db_file.name)
             result = empty_db.get_recent_prompts(limit=10, offset=0)
             self.assertEqual(result["total"], 0)
             self.assertEqual(len(result["prompts"]), 0)
             self.assertFalse(result["has_more"])
         finally:
-            os.unlink(empty_db_file.name)
+            empty_db.close_all()
+            for suffix in ("", "-wal", "-shm"):
+                if os.path.exists(empty_db_file.name + suffix):
+                    os.unlink(empty_db_file.name + suffix)
 
     def test_total_count_is_integer(self):
         result = self.db.get_recent_prompts(limit=5)
