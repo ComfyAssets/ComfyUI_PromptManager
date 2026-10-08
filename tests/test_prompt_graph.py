@@ -4,10 +4,15 @@ import os
 import sys
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from utils import prompt_graph
 from utils.prompt_graph import (
+    MAX_DEPTH,
+    MAX_TEXT_LENGTH,
+    MAX_VISITS,
     _upstream_links,
     follows_input,
     has_sampler,
@@ -404,20 +409,74 @@ class TestResolveText(unittest.TestCase):
         }
         self.assertIsNone(resolve_text(graph, "1"))
 
-    def test_visit_budget_bounds_shared_fan_out(self):
-        # A chain of concatenations that each read the previous node twice
-        # expands exponentially without memoisation; MAX_VISITS must cap it.
-        graph = {"0": {"class_type": "PrimitiveString", "inputs": {"value": "a"}}}
-        for i in range(1, 400):
+    @staticmethod
+    def _diamond_chain(levels, leaf):
+        """Node i reads node i+1 on both inputs: 2**levels paths, levels nodes."""
+        graph = {"0": {"class_type": "PrimitiveString", "inputs": {"value": leaf}}}
+        for i in range(1, levels + 1):
             prev = [str(i - 1), 0]
             graph[str(i)] = {
                 "class_type": "StringConcatenate",
                 "inputs": {"string_a": prev, "string_b": prev, "delimiter": ""},
             }
-        graph["pm"] = pm(["399", 0])
-        start = time.monotonic()
+        graph["pm"] = pm([str(levels), 0])
+        return graph
+
+    def _count_expansions(self, graph):
+        real = prompt_graph._resolve_string_node
+        with mock.patch.object(
+            prompt_graph, "_resolve_string_node", side_effect=real
+        ) as spy:
+            start = time.monotonic()
+            text = resolve_text(graph, "pm")
+            elapsed = time.monotonic() - start
+        return text, spy.call_count, elapsed
+
+    def test_forty_level_diamond_chain_expands_each_node_once(self):
+        text, expansions, elapsed = self._count_expansions(self._diamond_chain(40, ""))
+        self.assertIsNone(text)  # the leaf is empty, so the prompt is empty
+        self.assertLessEqual(expansions, 41)
+        self.assertLess(elapsed, 0.5)
+
+    def test_diamond_chain_with_text_stays_within_budget(self):
+        # Doubling "a" 400 times would be a 2**400-character string: the
+        # length cap turns it into None long before, and the visit budget
+        # holds regardless of how the graph is shaped.
+        text, expansions, elapsed = self._count_expansions(
+            self._diamond_chain(400, "a")
+        )
+        self.assertIsNone(text)
+        self.assertLessEqual(expansions, MAX_VISITS)
+        self.assertLess(elapsed, 0.5)
+
+    def test_shallow_diamond_chain_resolves_doubled_text(self):
+        text, expansions, _ = self._count_expansions(self._diamond_chain(4, "ab"))
+        self.assertEqual(text, "ab" * 16)
+        self.assertLessEqual(expansions, 5)
+
+    def test_chain_deeper_than_max_depth_is_none_without_raising(self):
+        graph = {"0": {"class_type": "PrimitiveString", "inputs": {"value": "a"}}}
+        for i in range(1, 5000):
+            graph[str(i)] = {
+                "class_type": "ShowText|pysssss",
+                "inputs": {"text": [str(i - 1), 0]},
+            }
+        graph["pm"] = pm(["4999", 0])
         self.assertIsNone(resolve_text(graph, "pm"))
-        self.assertLess(time.monotonic() - start, 2.0)
+        graph["pm"] = pm([str(MAX_DEPTH - 1), 0])
+        self.assertEqual(resolve_text(graph, "pm"), "a")
+
+    def test_resolved_text_longer_than_cap_is_none(self):
+        graph = {
+            "1": pm(["2", 0]),
+            "2": {
+                "class_type": "PrimitiveString",
+                "inputs": {"value": "x" * (MAX_TEXT_LENGTH + 1)},
+            },
+        }
+        self.assertIsNone(resolve_text(graph, "1"))
+        graph["2"]["inputs"]["value"] = "x" * MAX_TEXT_LENGTH
+        self.assertEqual(len(resolve_text(graph, "1")), MAX_TEXT_LENGTH)
 
     def test_cycles_and_missing_links(self):
         graph = {

@@ -15,6 +15,11 @@ PROMPT_MANAGER_TYPES = frozenset({"PromptManager", "PromptManagerText"})
 
 # Upper bound on nodes expanded per graph; queued and embedded graphs are untrusted
 MAX_VISITS = 500
+# Longest text resolve_text will build; StringConcatenate chains can double
+# the text at every level, so anything larger is treated as unknowable
+MAX_TEXT_LENGTH = 100_000
+# Deepest chain of string nodes resolve_text follows (recursion stays bounded)
+MAX_DEPTH = 64
 
 # Inputs that carry positive conditioning or prompt text towards a sampler
 _CONDITIONING_KEY = re.compile(r"^conditioning(_\w+)?$")
@@ -183,31 +188,41 @@ def resolve_text(graph: Any, node_id: str) -> Optional[str]:
         return None
     # Cycle detection is scoped to the current path so a node read by two
     # branches (a diamond, or StringConcatenate(string_a=X, string_b=X))
-    # resolves in both; the visit counter bounds total work regardless.
+    # resolves in both. Each node's text is computed once and memoised, so a
+    # chain of diamonds costs one expansion per node rather than one per path,
+    # and the shared visit budget bounds total work whatever the shape. A node
+    # that fails because of a cycle fails from every path (the cycle is in the
+    # graph, not in the walk), so memoising None is sound.
     path = {str(node_id)}
-    visits = [0]
+    memo: Dict[str, Optional[str]] = {}
+    budget = [MAX_VISITS]
 
     def resolve(value: Any) -> Optional[str]:
         if isinstance(value, str):
-            return value
+            return value if len(value) <= MAX_TEXT_LENGTH else None
         if not _is_link(value):
             return None
-        visits[0] += 1
-        if visits[0] > MAX_VISITS:
-            return None
         source_id = str(value[0])
-        if source_id in path:
+        if source_id in memo:
+            return memo[source_id]
+        if source_id in path or budget[0] <= 0 or len(path) > MAX_DEPTH:
             return None
+        budget[0] -= 1
         source = graph.get(source_id)
         if not isinstance(source, dict):
+            memo[source_id] = None
             return None
         path.add(source_id)
         try:
-            return _resolve_string_node(
+            text = _resolve_string_node(
                 str(source.get("class_type", "")), _inputs(source), resolve
             )
         finally:
             path.discard(source_id)
+        if isinstance(text, str) and len(text) > MAX_TEXT_LENGTH:
+            text = None
+        memo[source_id] = text
+        return text
 
     text = resolve(_inputs(graph.get(str(node_id))).get("text"))
     return text.strip() if isinstance(text, str) and text.strip() else None
