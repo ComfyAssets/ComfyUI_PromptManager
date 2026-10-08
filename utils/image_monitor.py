@@ -463,7 +463,11 @@ class ImageGenerationHandler(FileSystemEventHandler):
             or None if no recent prompt is available
         """
         try:
-            recent_prompts = self.db_manager.get_recent_prompts(limit=1)
+            recent = self.db_manager.get_recent_prompts(limit=1)
+            # Paginated dict ({"prompts": [...]}) or a plain list
+            recent_prompts = (
+                recent.get("prompts") if isinstance(recent, dict) else recent
+            )
             if recent_prompts:
                 prompt = recent_prompts[0]
                 return {

@@ -121,7 +121,9 @@ class TestMetadataLinking(LinkingTestCase):
         self.assertEqual(
             self.handler._find_prompt_from_metadata(metadata), ("unknown", None)
         )
-        self.assertNotEqual(self._process(metadata), negative)
+        latest = self._save("most recent prompt")  # recency fallback picks this
+        self.assertEqual(self._process(metadata), latest)
+        self.assertNotEqual(latest, negative)
 
     def test_workflow_fallback_still_used_without_an_api_graph(self):
         positive = self._save("from workflow only")
@@ -220,6 +222,15 @@ class TestForeignWorkflows(LinkingTestCase):
             self.handler._find_prompt_from_metadata({"prompt": graph("not saved")}),
             ("unknown", None),
         )
+
+    def test_unknown_image_without_any_context_falls_back_to_the_latest_prompt(self):
+        self._save("older")
+        latest = self._save("latest")
+        self.assertEqual(self._process(None), latest)
+
+    def test_recent_prompt_fallback_handles_an_empty_database(self):
+        self.assertIsNone(self.handler._get_fallback_prompt())
+        self.assertIsNone(self._process(None))
 
     def test_metadata_lookup_errors_are_unknown(self):
         self._save("a cat")
