@@ -1049,15 +1049,12 @@ class ImageRoutesMixin:
                     }
                 )
 
-            # Verify this is actually our thumbnails directory
+            # Verify this is actually our thumbnails directory: a real child
+            # of the output root (symlinks resolved), not merely a path that
+            # shares its prefix such as "<root>2/thumbnails".
             try:
-                thumbnails_dir_resolved = thumbnails_dir.resolve()
-                output_path_resolved = output_path.resolve()
-
                 if (
-                    not str(thumbnails_dir_resolved).startswith(
-                        str(output_path_resolved)
-                    )
+                    not _is_within(thumbnails_dir, output_path)
                     or thumbnails_dir.name != "thumbnails"
                 ):
                     self.logger.error(

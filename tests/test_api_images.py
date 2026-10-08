@@ -1254,6 +1254,22 @@ class TestClearThumbnails(ImageRouteCoverageCase):
         status, _ = await self._json("POST", self.URL)
         self.assertEqual(status, 500)
 
+    async def test_sibling_prefix_directory_is_refused(self):
+        # "<base>/out2/thumbnails" starts with "<base>/out" as a string but is
+        # not inside it; a symlinked thumbnails dir pointing there must be
+        # refused rather than emptied.
+        out = self.comfy_dir / "out"
+        out.mkdir()
+        sibling = make_png(self.comfy_dir / "out2" / "thumbnails" / "a_thumb.png")
+        self._make_symlink(sibling.parent, out / "thumbnails")
+        self.api._find_comfyui_output_dir = lambda: str(out)
+
+        status, data = await self._json("POST", self.URL)
+
+        self.assertEqual(status, 400)
+        self.assertFalse(data["success"])
+        self.assertTrue(sibling.is_file())
+
 
 class TestImagePromptLookup(ImageRouteCoverageCase):
 
