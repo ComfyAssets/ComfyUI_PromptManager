@@ -1,5 +1,6 @@
 """Tests for the core API module (py/api/__init__.py): helpers and base routes."""
 
+import json
 import os
 import shutil
 import sys
@@ -15,7 +16,13 @@ sys.modules["server"] = _mock_server
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from py.api import _public_error, _public_path  # noqa: E402
+from aiohttp import web  # noqa: E402
+from aiohttp.test_utils import AioHTTPTestCase  # noqa: E402
+
+import py.api as api_module  # noqa: E402
+from database.operations import PromptDatabase  # noqa: E402
+from py.api import PromptManagerAPI, _public_error, _public_path  # noqa: E402
+from py.config import GalleryConfig  # noqa: E402
 
 EXTRA_ROOTS_ENV = "PROMPT_MANAGER_EXTRA_GALLERY_ROOTS"
 
@@ -116,6 +123,438 @@ class TestPublicError(FolderPathsFixture):
 
     def test_non_oserror_with_empty_message_uses_type_name(self):
         self.assertEqual(_public_error(RuntimeError()), "RuntimeError")
+
+
+# ── gzip middleware ───────────────────────────────────────────────────
+
+
+class TestGzipMiddleware(AioHTTPTestCase):
+
+    async def get_application(self):
+        big = json.dumps({"data": "x" * 4000})
+
+        async def big_json(request):
+            return web.json_response(text=big)
+
+        async def small_json(request):
+            return web.json_response({"ok": True})
+
+        async def already_encoded(request):
+            return web.Response(
+                text=big, content_type="text/plain", headers={"Content-Encoding": "br"}
+            )
+
+        async def binary(request):
+            return web.Response(body=b"\x89PNG" * 1000, content_type="image/png")
+
+        async def incompressible(request):
+            return web.Response(body=os.urandom(4096), content_type="text/plain")
+
+        async def streamed(request):
+            resp = web.StreamResponse()
+            await resp.prepare(request)
+            await resp.write(b"x" * 4000)
+            await resp.write_eof()
+            return resp
+
+        app = web.Application(middlewares=[api_module._gzip_middleware])
+        app.router.add_get("/prompt_manager/big", big_json)
+        app.router.add_get("/prompt_manager/small", small_json)
+        app.router.add_get("/prompt_manager/encoded", already_encoded)
+        app.router.add_get("/prompt_manager/binary", binary)
+        app.router.add_get("/prompt_manager/random", incompressible)
+        app.router.add_get("/prompt_manager/stream", streamed)
+        app.router.add_get("/other/big", big_json)
+        return app
+
+    async def _get(self, path, accept="gzip"):
+        headers = {"Accept-Encoding": accept} if accept else {}
+        return await self.client.request(
+            "GET",
+            path,
+            headers=headers,
+            auto_decompress=False,
+            skip_auto_headers=["Accept-Encoding"],
+        )
+
+    async def test_large_json_is_gzipped(self):
+        resp = await self._get("/prompt_manager/big")
+        self.assertEqual(resp.headers.get("Content-Encoding"), "gzip")
+        self.assertEqual(resp.headers.get("Vary"), "Accept-Encoding")
+        import gzip
+
+        self.assertIn(b'"data"', gzip.decompress(await resp.read()))
+
+    async def test_small_body_not_compressed(self):
+        resp = await self._get("/prompt_manager/small")
+        self.assertIsNone(resp.headers.get("Content-Encoding"))
+
+    async def test_other_paths_untouched(self):
+        resp = await self._get("/other/big")
+        self.assertIsNone(resp.headers.get("Content-Encoding"))
+
+    async def test_without_accept_encoding(self):
+        resp = await self._get("/prompt_manager/big", accept=None)
+        self.assertIsNone(resp.headers.get("Content-Encoding"))
+
+    async def test_already_encoded_untouched(self):
+        resp = await self._get("/prompt_manager/encoded")
+        self.assertEqual(resp.headers.get("Content-Encoding"), "br")
+
+    async def test_binary_type_untouched(self):
+        resp = await self._get("/prompt_manager/binary")
+        self.assertIsNone(resp.headers.get("Content-Encoding"))
+
+    async def test_incompressible_body_untouched(self):
+        resp = await self._get("/prompt_manager/random")
+        self.assertIsNone(resp.headers.get("Content-Encoding"))
+
+    async def test_stream_response_untouched(self):
+        resp = await self._get("/prompt_manager/stream")
+        self.assertIsNone(resp.headers.get("Content-Encoding"))
+        self.assertEqual(len(await resp.read()), 4000)
+
+
+# ── UI and static routes ──────────────────────────────────────────────
+
+
+class CoreRoutesTestCase(AioHTTPTestCase):
+
+    async def get_application(self):
+        self.tmpdir = tempfile.mkdtemp()
+        app = web.Application()
+        routes = web.RouteTableDef()
+        self.api = PromptManagerAPI()
+        self.api.db = PromptDatabase(os.path.join(self.tmpdir, "prompts.db"))
+        self.api.add_routes(routes)
+        app.router.add_routes(routes)
+        return app
+
+    async def tearDownAsync(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _fake_root(self):
+        """Point _get_project_root at the temp dir and return its web/ dir."""
+        web_dir = Path(self.tmpdir) / "web"
+        (web_dir / "js").mkdir(parents=True)
+        (web_dir / "lib").mkdir()
+        orig_root = api_module._get_project_root
+        api_module._get_project_root = lambda: self.tmpdir
+        self.addCleanup(setattr, api_module, "_get_project_root", orig_root)
+        return web_dir
+
+
+UI_PATHS = (
+    "/prompt_manager/web",
+    "/prompt_manager/gallery.html",
+    "/prompt_manager/admin",
+    "/prompt_manager/gallery",
+)
+
+
+class TestUiRoutes(CoreRoutesTestCase):
+
+    async def test_pages_are_served(self):
+        for path in UI_PATHS:
+            resp = await self.client.request("GET", path)
+            self.assertEqual(resp.status, 200, path)
+            self.assertIn("text/html", resp.headers["Content-Type"])
+            self.assertIn("<", await resp.text())
+
+    async def test_pages_are_cached_after_first_read(self):
+        await self.client.request("GET", "/prompt_manager/admin")
+        self.assertTrue(any(p.endswith("admin.html") for p in self.api._html_cache))
+        resp = await self.client.request("GET", "/prompt_manager/admin")
+        self.assertEqual(resp.status, 200)
+
+    async def test_missing_pages_are_404(self):
+        self._fake_root()
+        for path in UI_PATHS:
+            resp = await self.client.request("GET", path)
+            self.assertEqual(resp.status, 404, path)
+
+    async def test_unreadable_pages_are_500(self):
+        web_dir = self._fake_root()
+        for name in ("index.html", "metadata.html", "admin.html", "gallery.html"):
+            (web_dir / name).mkdir()  # a directory cannot be read as a file
+        for path in UI_PATHS:
+            resp = await self.client.request("GET", path)
+            self.assertEqual(resp.status, 500, path)
+            self.assertNotIn(self.tmpdir, await resp.text())
+
+    async def test_test_route(self):
+        resp = await self.client.request("GET", "/prompt_manager/test")
+        self.assertTrue((await resp.json())["success"])
+
+
+class TestStaticRoutes(CoreRoutesTestCase):
+
+    async def test_js_served_with_mime(self):
+        resp = await self.client.request("GET", "/prompt_manager/js/admin.js")
+        self.assertEqual(resp.status, 200)
+        self.assertIn("application/javascript", resp.headers["Content-Type"])
+
+    async def test_lib_served(self):
+        web_dir = self._fake_root()
+        (web_dir / "lib" / "x.css").write_text("body{}")
+        (web_dir / "lib" / "x.bin").write_bytes(b"\x00\x01")
+        resp = await self.client.request("GET", "/prompt_manager/lib/x.css")
+        self.assertEqual(resp.status, 200)
+        self.assertIn("text/css", resp.headers["Content-Type"])
+        resp = await self.client.request("GET", "/prompt_manager/lib/x.bin")
+        self.assertIn("application/octet-stream", resp.headers["Content-Type"])
+
+    async def test_traversal_is_403(self):
+        for prefix in ("lib", "js"):
+            resp = await self.client.request(
+                "GET", f"/prompt_manager/{prefix}/..%2F..%2Fpyproject.toml"
+            )
+            self.assertEqual(resp.status, 403, prefix)
+
+    async def test_missing_is_404(self):
+        for prefix in ("lib", "js"):
+            resp = await self.client.request("GET", f"/prompt_manager/{prefix}/nope.js")
+            self.assertEqual(resp.status, 404, prefix)
+
+    async def test_directory_is_404(self):
+        resp = await self.client.request("GET", "/prompt_manager/lib/tailwind")
+        self.assertEqual(resp.status, 404)
+
+
+# ── instance helpers ──────────────────────────────────────────────────
+
+
+class TestInstanceHelpers(FolderPathsFixture):
+
+    def setUp(self):
+        super().setUp()
+        self.api = PromptManagerAPI()
+        self.api.db = PromptDatabase(os.path.join(self.tmpdir, "prompts.db"))
+        orig_dirs = list(GalleryConfig.MONITORING_DIRECTORIES)
+        self.addCleanup(setattr, GalleryConfig, "MONITORING_DIRECTORIES", orig_dirs)
+
+    def _run(self, coro):
+        import asyncio
+
+        return asyncio.run(coro)
+
+    def test_run_in_executor_with_kwargs(self):
+        def add(a, b=0):
+            return a + b
+
+        self.assertEqual(self._run(self.api._run_in_executor(add, 1, b=2)), 3)
+        self.assertEqual(self._run(self.api._run_in_executor(add, 1, 2)), 3)
+
+    def test_invalidate_gallery_cache(self):
+        self.api._gallery_cache = {"x": 1}
+        self.api.invalidate_gallery_cache()
+        self.assertEqual(self.api._gallery_cache, {})
+
+    def test_enrich_images_adds_urls_and_thumbnails(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        img = self.output_dir / "sub" / "a.png"
+        img.parent.mkdir()
+        img.write_bytes(b"x")
+        thumb = self.output_dir / "thumbnails" / "sub" / "a_thumb.png"
+        thumb.parent.mkdir(parents=True)
+        thumb.write_bytes(b"t")
+        outside = Path(self.tmpdir) / "elsewhere.png"
+        outside.write_bytes(b"o")
+
+        images = [
+            {"id": 7, "image_path": str(img)},
+            {"id": 8, "image_path": str(outside)},
+            {"id": 9, "image_path": ""},
+            {"image_path": str(self.output_dir / "missing.png")},
+        ]
+        result = self.api._enrich_images(images)
+
+        self.assertEqual(result[0]["url"], "/prompt_manager/images/serve/sub/a.png")
+        self.assertEqual(
+            result[0]["thumbnail_url"],
+            "/prompt_manager/images/serve/thumbnails/sub/a_thumb.png",
+        )
+        self.assertEqual(result[0]["relative_path"], os.path.join("sub", "a.png"))
+        self.assertEqual(result[1]["url"], "/prompt_manager/images/8/file")
+        self.assertNotIn("relative_path", result[1])
+        self.assertNotIn("url", result[2])
+        self.assertEqual(result[3]["url"], "/prompt_manager/images/serve/missing.png")
+        self.assertNotIn("thumbnail_url", result[3])
+
+    def test_enrich_prompt_images_walks_prompts(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        prompts = [
+            {"images": [{"id": 1, "image_path": str(self.output_dir / "p.png")}]},
+            {},
+        ]
+        result = self.api._enrich_prompt_images(prompts)
+        self.assertEqual(
+            result[0]["images"][0]["url"], "/prompt_manager/images/serve/p.png"
+        )
+
+    def test_clean_nan_recursive(self):
+        nan = float("nan")
+        cleaned = self.api._clean_nan_recursive(
+            {"a": nan, "b": [nan, 1.5, {"c": nan}], "d": "x"}
+        )
+        self.assertEqual(cleaned, {"a": None, "b": [None, 1.5, {"c": None}], "d": "x"})
+
+    def test_find_output_dir_uses_configured_and_caches(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        self.api._cached_output_dir = None
+        first = self.api._find_comfyui_output_dir()
+        self.assertEqual(first, str(self.output_dir.resolve()))
+        GalleryConfig.MONITORING_DIRECTORIES = []
+        self.assertEqual(self.api._find_comfyui_output_dir(), first)
+
+    def test_find_output_dir_skips_missing_configured(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [os.path.join(self.tmpdir, "nope")]
+        self.api._cached_output_dir = None
+        result = self.api._find_comfyui_output_dir()
+        self.assertNotEqual(result, os.path.join(self.tmpdir, "nope"))
+
+
+# ── metadata parsing ──────────────────────────────────────────────────
+
+
+class TestMetadataParsing(unittest.TestCase):
+
+    def setUp(self):
+        self.api = PromptManagerAPI()
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, True)
+
+    def test_extract_metadata_from_png_and_garbage(self):
+        from PIL import Image, PngImagePlugin
+
+        path = os.path.join(self.tmpdir, "m.png")
+        info = PngImagePlugin.PngInfo()
+        info.add_text("prompt", "{}")
+        Image.new("RGB", (1, 1)).save(path, pnginfo=info)
+        self.assertEqual(self.api._extract_comfyui_metadata(path), {"prompt": "{}"})
+
+        garbage = os.path.join(self.tmpdir, "g.png")
+        with open(garbage, "wb") as f:
+            f.write(b"nope")
+        self.assertEqual(self.api._extract_comfyui_metadata(garbage), {})
+
+    def test_parse_a1111_parameters(self):
+        meta = {"parameters": "a cat\nNegative prompt: dog\nSteps: 20"}
+        parsed = self.api._parse_comfyui_prompt(meta)
+        self.assertEqual(parsed["positive_prompt"], "a cat")
+        self.assertEqual(parsed["negative_prompt"], "dog")
+        self.assertEqual(parsed["parameters"]["parameters"], meta["parameters"])
+        self.assertEqual(self.api._extract_readable_prompt(parsed), "a cat")
+
+    def test_parse_comfyui_fields(self):
+        meta = {
+            "prompt": json.dumps({"1": {"class_type": "X", "inputs": {}}}),
+            "workflow": "not json",
+            "steps": "20",
+            "cfg": "not-json-either",
+        }
+        parsed = self.api._parse_comfyui_prompt(meta)
+        self.assertIsInstance(parsed["prompt"], dict)
+        self.assertEqual(parsed["workflow"], "not json")
+        self.assertEqual(parsed["parameters"]["steps"], 20)
+        self.assertEqual(parsed["parameters"]["cfg"], "not-json-either")
+
+        parsed = self.api._parse_comfyui_prompt(
+            {"prompt": "plain text", "workflow": json.dumps({"nodes": []})}
+        )
+        self.assertEqual(parsed["prompt"], "plain text")
+        self.assertEqual(parsed["workflow"], {"nodes": []})
+
+    def test_extract_readable_prompt_variants(self):
+        extract = self.api._extract_readable_prompt
+        self.assertEqual(extract({"prompt": "plain"}), "plain")
+        self.assertEqual(extract({"prompt": ["a", "", "b"]}), "a b")
+        self.assertEqual(extract({"prompt": 42}), "42")
+        self.assertEqual(
+            extract({"prompt": None, "parameters": {"positive": ["x", "y"]}}), "x y"
+        )
+        self.assertIsNone(extract({"prompt": {}, "parameters": {}}))
+
+        graph = {
+            "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "pos"}},
+            "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "neg"}},
+            "3": {
+                "class_type": "KSampler",
+                "inputs": {"positive": ["1", 0], "negative": ["2", 0]},
+            },
+        }
+        self.assertEqual(extract({"prompt": graph}), "pos")
+        self.assertEqual(extract({"prompt": {"x": 1}, "workflow": graph}), "pos")
+
+    def test_node_inputs_and_text_lookup(self):
+        self.assertEqual(self.api._get_node_inputs("nope"), {})
+        self.assertEqual(self.api._get_node_inputs({"inputs": 5}), {})
+        self.assertEqual(self.api._get_node_inputs({"inputs": {"a": 1}}), {"a": 1})
+        listed = self.api._get_node_inputs(
+            {"inputs": [{"name": "text", "link": None}, {"nope": 1}, "junk"]}
+        )
+        self.assertEqual(list(listed), ["text"])
+
+        self.assertIsNone(self.api._find_text_in_node(None))
+        self.assertEqual(self.api._find_text_in_node({"inputs": {"text": "hi"}}), "hi")
+        self.assertEqual(
+            self.api._find_text_in_node(
+                {"type": "CLIPTextEncode", "widgets_values": ["w"]}
+            ),
+            "w",
+        )
+        self.assertIsNone(
+            self.api._find_text_in_node(
+                {"type": "CLIPTextEncode", "widgets_values": [" "]}
+            )
+        )
+        self.assertIsNone(self.api._find_text_in_node({"type": "KSampler"}))
+
+    def test_positive_prompt_from_nodes_array_and_fallbacks(self):
+        extract = self.api._extract_positive_prompt_from_comfyui_data
+        self.assertIsNone(extract("x"))
+        self.assertIsNone(extract({}))
+        self.assertIsNone(extract({"nodes": []}))
+
+        workflow = {
+            "nodes": [
+                {"id": 1, "type": "CLIPTextEncode", "widgets_values": ["pos"]},
+                {
+                    "id": 2,
+                    "type": "CLIPTextEncode",
+                    "widgets_values": ["neg"],
+                    "title": "Negative",
+                },
+                {"id": 3, "type": "KSampler", "inputs": [{"name": "seed", "link": 4}]},
+                "junk",
+            ]
+        }
+        self.assertEqual(extract(workflow), "pos")
+
+        only_negative = {
+            "nodes": [
+                {
+                    "id": 2,
+                    "type": "CLIPTextEncode",
+                    "widgets_values": ["neg"],
+                    "title": "neg",
+                },
+            ]
+        }
+        self.assertEqual(extract(only_negative), "neg")
+
+        bad_link = {
+            "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "pos"}},
+            "3": {
+                "class_type": "KSampler",
+                "inputs": {"positive": "oops", "negative": []},
+            },
+            "4": {
+                "class_type": "KSampler",
+                "inputs": {"positive": ["zz", 0], "negative": []},
+            },
+        }
+        self.assertEqual(extract(bad_link), "pos")
 
 
 if __name__ == "__main__":
