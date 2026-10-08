@@ -15,6 +15,7 @@ omit =
     */static/*
     */media/*
     */htmlcov/*
+    */.claude/*
     restart_gallery.py
     standalone_tagger.py
     
