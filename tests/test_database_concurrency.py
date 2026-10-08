@@ -105,6 +105,26 @@ class TestConcurrentWrites(ConcurrencyTestCase):
         self.assertEqual(len(prompts), THREADS * CALLS_PER_THREAD)
         self.assertTrue(all(p["run_count"] == 1 for p in prompts))
 
+    def test_saving_the_same_prompt_from_many_threads_keeps_one_row(self):
+        text = "the same prompt from every thread"
+        prompt_hash = generate_prompt_hash(text)
+        ids = []
+
+        def work(_index):
+            for _ in range(CALLS_PER_THREAD):
+                pid = self.db.save_prompt(text=text, prompt_hash=prompt_hash)
+                ids.append(pid)
+                self.assertTrue(self.db.record_prompt_use(pid))
+
+        self.assertEqual(self._run_threads(work), [])
+
+        self.assertEqual(len(ids), THREADS * CALLS_PER_THREAD)
+        self.assertEqual(len(set(ids)), 1)
+        self.assertEqual(self.db.model.get_database_info()["total_prompts"], 1)
+        prompt = self.db.get_prompt_by_hash(prompt_hash)
+        self.assertEqual(prompt["id"], ids[0])
+        self.assertEqual(prompt["run_count"], THREADS * CALLS_PER_THREAD)
+
 
 if __name__ == "__main__":
     unittest.main()

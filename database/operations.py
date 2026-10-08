@@ -141,31 +141,43 @@ class PromptDatabase:
             f"Saving prompt: text_length={len(text)}, category={category}, tags={tags}, rating={rating}"
         )
 
-        with self.model.get_connection() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO prompts (
-                    text, category, tags, rating, notes, hash, created_at, updated_at,
-                    last_used_at
-                ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    text.strip(),
-                    category,
-                    rating,
-                    notes,
-                    prompt_hash,
-                    datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    utc_now_iso(),
-                ),
+        try:
+            with self.model.get_connection() as conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO prompts (
+                        text, category, tags, rating, notes, hash, created_at,
+                        updated_at, last_used_at
+                    ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        text.strip(),
+                        category,
+                        rating,
+                        notes,
+                        prompt_hash,
+                        datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        utc_now_iso(),
+                    ),
+                )
+                prompt_id = cursor.lastrowid
+                if tags:
+                    self._sync_prompt_tags(conn, prompt_id, tags)
+                conn.commit()
+                self.logger.debug(f"Successfully saved prompt with ID: {prompt_id}")
+                return prompt_id
+        except sqlite3.IntegrityError:
+            # Another caller inserted the same hash between the caller's
+            # duplicate check and this INSERT (the with-block rolled back).
+            existing = self.get_prompt_by_hash(prompt_hash) if prompt_hash else None
+            if existing is None:
+                raise
+            self.logger.debug(
+                f"Prompt with hash {prompt_hash} was saved concurrently; "
+                f"returning existing ID {existing['id']}"
             )
-            prompt_id = cursor.lastrowid
-            if tags:
-                self._sync_prompt_tags(conn, prompt_id, tags)
-            conn.commit()
-            self.logger.debug(f"Successfully saved prompt with ID: {prompt_id}")
-            return prompt_id
+            return existing["id"]
 
     def record_prompt_use(self, prompt_id: int, times: int = 1) -> bool:
         """

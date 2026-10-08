@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -48,6 +49,31 @@ class DatabaseTestCase(unittest.TestCase):
 
 class TestPromptCRUD(DatabaseTestCase):
     """Test basic create, read, update, delete operations."""
+
+    def test_save_existing_prompt_returns_its_id_when_check_raced(self):
+        # Two callers check the hash, both see nothing, both insert: the second
+        # insert hits the UNIQUE(hash) constraint and must yield the first id.
+        text = "raced prompt"
+        prompt_hash = generate_prompt_hash(text)
+        original = self.db.get_prompt_by_hash
+        calls = []
+
+        def racing_lookup(h):
+            calls.append(h)
+            return None if len(calls) == 1 else original(h)
+
+        first_id = self._save(text)
+        with patch.object(self.db, "get_prompt_by_hash", racing_lookup):
+            self.assertIsNone(self.db.get_prompt_by_hash(prompt_hash))
+            second_id = self.db.save_prompt(text=text, prompt_hash=prompt_hash)
+
+        self.assertEqual(second_id, first_id)
+        self.assertEqual(len(self.db.search_prompts(text=text)), 1)
+
+    def test_save_without_hash_never_collides(self):
+        first = self.db.save_prompt(text="no hash a")
+        second = self.db.save_prompt(text="no hash b")
+        self.assertNotEqual(first, second)
 
     def test_save_and_retrieve(self):
         pid = self._save(
