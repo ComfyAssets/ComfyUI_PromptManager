@@ -986,8 +986,11 @@ class TestServeErrorBranches(ImageRouteCoverageCase):
         ):
             png = make_png(Path(lora) / "preview.png")
             image_id = self._link_image(png)
+            # An empty configured path means auto-detection; a developer's
+            # own config.json may hold a real LoraManager path, so pin it.
             with (
                 patch.object(IntegrationConfig, "LORA_MANAGER_ENABLED", True),
+                patch.object(IntegrationConfig, "LORA_MANAGER_PATH", ""),
                 patch("py.lora_utils.find_lora_directories", return_value=[lora]),
                 patch("py.lora_utils.get_lora_image_cache_dir", return_value=cache),
             ):
@@ -998,6 +1001,7 @@ class TestServeErrorBranches(ImageRouteCoverageCase):
 
             with (
                 patch.object(IntegrationConfig, "LORA_MANAGER_ENABLED", True),
+                patch.object(IntegrationConfig, "LORA_MANAGER_PATH", ""),
                 patch("py.lora_utils.find_lora_directories", side_effect=RuntimeError),
             ):
                 resp = await self.client.request(

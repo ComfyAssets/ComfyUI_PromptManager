@@ -3630,13 +3630,9 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 const image = this.autoTagState.reviewImages[this.autoTagState.reviewIndex];
                 document.getElementById('reviewCurrentIndex').textContent = this.autoTagState.reviewIndex + 1;
 
-                // Build image URL from image_path (database field)
-                const imagePath = image.image_path;
-                const filename = imagePath.split('/').pop();
-                // Use the serve endpoint with relative path
-                const relPath = imagePath.includes('/output/') ?
-                    imagePath.substring(imagePath.indexOf('/output/') + 8) : filename;
-                const imageUrl = `/prompt_manager/images/serve/${relPath}`;
+                // The API describes images relative to the ComfyUI tree and
+                // always provides a servable url; never rebuild it from the path.
+                const imageUrl = this.getImageUrl(image);
 
                 // Check if image already has real tags (excluding auto-scanned)
                 const realTags = this.getRealTags(image.prompt_tags);
