@@ -1434,14 +1434,21 @@
                 content.classList.remove("hidden");
                 empty.classList.add("hidden");
                 
-                content.innerHTML = images.map((image, index) => `
+                const formatFileSize = (bytes) => this.formatFileSize(bytes);
+                content.innerHTML = images.map((image, index) => {
+                    const generated = new Date(image.generation_time);
+                    const when = escapeHtml(`${generated.toLocaleDateString()} ${generated.toLocaleTimeString()}`);
+                    const fileUrl = `/prompt_manager/images/${escapeHtml(image.id)}/file`;
+                    const caption = ImageHelpers.formatImageCaption(image, { formatFileSize });
+                    const details = ImageHelpers.formatImageCaption(image, { formatFileSize, separator: ' • ' });
+                    return `
                     <div class="group cursor-pointer bg-pm-surface rounded-pm-md overflow-hidden border border-pm hover:border-pm transition-all duration-200">
                         <div class="aspect-square bg-pm-surface overflow-hidden relative">
-                            <img src="/prompt_manager/images/${image.id}/file" 
-                                 alt="Generated image ${index + 1}" 
+                            <img src="${fileUrl}"
+                                 alt="Generated image ${index + 1}"
                                  class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                                 data-original="/prompt_manager/images/${image.id}/file"
-                                 data-caption="Generated: ${new Date(image.generation_time).toLocaleDateString()} ${new Date(image.generation_time).toLocaleTimeString()} | ${image.width && image.height ? `${image.width}×${image.height}` : 'Unknown size'}${image.file_size ? ` | ${this.formatFileSize(image.file_size)}` : ''}"
+                                 data-original="${fileUrl}"
+                                 data-caption="Generated: ${when} | ${caption}"
                                  onerror="this.parentElement.innerHTML='<div class=\\'flex items-center justify-center h-full text-pm-secondary\\'>⚠️ Image not found</div>'">
                             <div class="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-opacity duration-300 flex items-center justify-center pointer-events-none">
                                 <svg class="w-8 h-8 text-pm opacity-0 group-hover:opacity-100 transition-opacity duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1451,15 +1458,15 @@
                         </div>
                         <div class="p-3">
                             <div class="text-xs text-pm-secondary mb-1">
-                                ${new Date(image.generation_time).toLocaleDateString()} ${new Date(image.generation_time).toLocaleTimeString()}
+                                ${when}
                             </div>
                             <div class="text-xs text-pm-muted">
-                                ${image.width && image.height ? `${image.width}×${image.height}` : 'Unknown size'}
-                                ${image.file_size ? ` • ${this.formatFileSize(image.file_size)}` : ''}
+                                ${details}
                             </div>
                         </div>
                     </div>
-                `).join('');
+                `;
+                }).join('');
                 
                 // Store images for navigation
                 this.currentGalleryImages = images;
@@ -2856,15 +2863,12 @@
             showWorkflowData() {
                 if (this.currentMetadata && this.currentMetadata.workflow) {
                     const newWindow = window.open('', '_blank');
-                    newWindow.document.write(`
-                        <html>
-                            <head><title>ComfyUI Workflow Data</title></head>
-                            <body style="background: #111; color: #fff; font-family: monospace; padding: 20px;">
-                                <h2>ComfyUI Workflow JSON</h2>
-                                <pre style="background: #222; padding: 15px; border-radius: 5px; overflow: auto;">${JSON.stringify(this.currentMetadata.workflow, null, 2)}</pre>
-                            </body>
-                        </html>
-                    `);
+                    if (!newWindow) {
+                        this.showNotification('Popup blocked: allow popups to view the workflow', 'warning');
+                        return;
+                    }
+                    newWindow.document.write(ImageHelpers.workflowDocumentHtml(this.currentMetadata.workflow));
+                    newWindow.document.close();
                 }
             }
 

@@ -1461,15 +1461,12 @@
             showWorkflowData() {
                 if (this.currentMetadata && this.currentMetadata.workflow) {
                     const newWindow = window.open('', '_blank');
-                    newWindow.document.write(`
-                        <html>
-                            <head><title>ComfyUI Workflow Data</title></head>
-                            <body style="background: #111; color: #fff; font-family: monospace; padding: 20px;">
-                                <h2>ComfyUI Workflow JSON</h2>
-                                <pre style="background: #222; padding: 15px; border-radius: 5px; overflow: auto;">${JSON.stringify(this.currentMetadata.workflow, null, 2)}</pre>
-                            </body>
-                        </html>
-                    `);
+                    if (!newWindow) {
+                        this.showNotification('Popup blocked: allow popups to view the workflow', 'warning');
+                        return;
+                    }
+                    newWindow.document.write(ImageHelpers.workflowDocumentHtml(this.currentMetadata.workflow));
+                    newWindow.document.close();
                 }
             }
 
