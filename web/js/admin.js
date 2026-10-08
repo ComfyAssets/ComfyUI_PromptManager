@@ -50,6 +50,7 @@
                 this.bindEvents();
                 this.initRouter();
                 this.loadInitialData();
+                this.resumeRunningScan();
                 this.checkUpdateNotice();
             }
 
@@ -127,6 +128,11 @@
                 document.getElementById("lastPageBtn").addEventListener("click", () => this.goToPage(this.pagination.totalPages));
 
                 // Modals
+                // Output scan: a server-side job that survives modal dismissal and reloads
+                this.scanState = ScanProgress.initialState();
+                this.scanSource = null;
+                window.addEventListener("beforeunload", (e) => this.warnIfScanRunning(e));
+
                 this.bindModalEvents();
 
                 // One delegated click handler for every data-action element; images declare a
@@ -188,7 +194,8 @@
 
                 // Scan modal
                 document.getElementById("startScan").addEventListener("click", () => this.startScan());
-                document.getElementById("cancelScan").addEventListener("click", () => this.hideModal("scanModal"));
+                document.getElementById("cancelScan").addEventListener("click", () => this.dismissScanModal());
+                document.getElementById("scanPill").addEventListener("click", () => this.showScanModal());
                 document.getElementById("quickBackupBtn").addEventListener("click", () => this.quickBackup());
 
                 // Logs modal
@@ -237,11 +244,14 @@
                 // Close modals on backdrop click
                 document.querySelectorAll("[id$='Modal']").forEach((modal) => {
                     modal.addEventListener("click", (e) => {
-                        if (e.target === modal) {
-                            modal.classList.add("hidden");
-                            modal.classList.remove("flex");
-                            document.body.style.overflow = "";
+                        if (e.target !== modal) return;
+                        if (modal.id === "scanModal") {
+                            this.dismissScanModal(); // a running scan minimizes instead of closing
+                            return;
                         }
+                        modal.classList.add("hidden");
+                        modal.classList.remove("flex");
+                        document.body.style.overflow = "";
                     });
                 });
             }
@@ -2075,12 +2085,126 @@
             }
 
             // Scan functionality
+            //
+            // The scan is a background job on the server. The modal shows its progress,
+            // can be hidden to a small pill while it runs, and re-attaches to a scan that
+            // is still running after a page reload.
             showScanModal() {
-                // Reset progress display
-                document.getElementById("scanProgress").classList.add("hidden");
-                document.getElementById("startScan").disabled = false;
-                document.getElementById("startScan").textContent = "Start Scan";
+                if (this.scanState.status !== ScanProgress.RUNNING) this.resetScanControls();
+                document.getElementById("scanPill").classList.add("hidden");
                 this.showModal("scanModal");
+            }
+
+            resetScanControls() {
+                document.getElementById("scanProgress").classList.add("hidden");
+                const start = document.getElementById("startScan");
+                start.disabled = false;
+                start.textContent = "Start Scan";
+                document.getElementById("cancelScan").textContent = "Cancel";
+            }
+
+            dismissScanModal() {
+                if (ScanProgress.dismissAction(this.scanState) === "minimize") {
+                    this.minimizeScan();
+                } else {
+                    this.hideModal("scanModal");
+                }
+            }
+
+            minimizeScan() {
+                this.hideModal("scanModal");
+                document.getElementById("scanPillText").textContent = ScanProgress.progressLabel(this.scanState);
+                document.getElementById("scanPill").classList.remove("hidden");
+            }
+
+            warnIfScanRunning(e) {
+                if (this.scanState.status !== ScanProgress.RUNNING) return;
+                // The scan keeps running on the server; the prompt only guards the progress view.
+                e.preventDefault();
+                e.returnValue = "";
+            }
+
+            startScan() {
+                if (this.scanState.status === ScanProgress.RUNNING) return;
+                this.scanState = ScanProgress.reduceScanEvent(ScanProgress.initialState(), {
+                    type: "progress", progress: 0, status: "Initializing scan...", processed: 0, found: 0,
+                });
+                this.renderScanState();
+                this.attachScanStream();
+            }
+
+            attachScanStream() {
+                if (this.scanSource) this.scanSource.close();
+                // POST starts a scan, or attaches to the one already running.
+                const source = SseStream.connect("/prompt_manager/scan", { method: "POST", body: "{}" });
+                this.scanSource = source;
+                source.onmessage = (e) => {
+                    let data;
+                    try {
+                        data = JSON.parse(e.data);
+                    } catch (_) {
+                        return;
+                    }
+                    this.applyScanEvent(data);
+                };
+                source.onerror = () => {
+                    if (this.scanSource !== source || this.scanState.status !== ScanProgress.RUNNING) return;
+                    this.showNotification("Lost the connection to the scan; it is still running on the server. Reconnecting...", "warning");
+                    setTimeout(() => this.resumeRunningScan(), 2000);
+                };
+                source.onclose = () => {
+                    // The stream ended without a complete/error event (server restart): ask the server.
+                    if (this.scanSource === source && this.scanState.status === ScanProgress.RUNNING) this.resumeRunningScan();
+                };
+            }
+
+            async resumeRunningScan() {
+                let status;
+                try {
+                    const response = await fetch("/prompt_manager/scan/status");
+                    if (!response.ok) return;
+                    status = await response.json();
+                } catch (_) {
+                    return;
+                }
+                const state = ScanProgress.fromStatus(status);
+                if (state.status !== ScanProgress.RUNNING) {
+                    if (this.scanState.status === ScanProgress.RUNNING) {
+                        // A scan we were following ended while we were disconnected.
+                        const last = status.last_event;
+                        const terminal = last && (last.type === "complete" || last.type === "error");
+                        this.applyScanEvent(
+                            terminal ? last : { type: "error", message: "the server no longer reports a running scan" }
+                        );
+                    }
+                    return;
+                }
+                this.scanState = state;
+                this.renderScanState();
+                if (document.getElementById("scanModal").classList.contains("hidden")) this.minimizeScan();
+                this.attachScanStream();
+            }
+
+            applyScanEvent(data) {
+                const next = ScanProgress.reduceScanEvent(this.scanState, data);
+                if (next === this.scanState) return;
+                this.scanState = next;
+                this.renderScanState();
+                if (next.status === ScanProgress.DONE) this.completeScan(next);
+                else if (next.status === ScanProgress.FAILED) this.failScan(next);
+            }
+
+            renderScanState() {
+                const state = this.scanState;
+                if (state.status === ScanProgress.IDLE) return;
+                const running = state.status === ScanProgress.RUNNING;
+                document.getElementById("scanProgress").classList.remove("hidden");
+                const start = document.getElementById("startScan");
+                start.disabled = running;
+                start.textContent = running ? "Scanning..." : "Start New Scan";
+                document.getElementById("cancelScan").textContent = running ? "Hide" : "Close";
+                document.getElementById("scanPillText").textContent = ScanProgress.progressLabel(state);
+                this.updateScanProgress(state.progress, state.statusText, state.processed, state.found);
             }
 
             async quickBackup() {
@@ -2105,67 +2229,6 @@
                 }
             }
 
-            async startScan() {
-                // Show progress section
-                document.getElementById("scanProgress").classList.remove("hidden");
-                document.getElementById("startScan").disabled = true;
-                document.getElementById("startScan").textContent = "Scanning...";
-                
-                // Reset progress
-                this.updateScanProgress(0, "Initializing scan...", 0, 0);
-                
-                try {
-                    const response = await fetch("/prompt_manager/scan", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({})
-                    });
-
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                    }
-
-                    // Handle streaming response
-                    const reader = response.body.getReader();
-                    const decoder = new TextDecoder();
-
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done) break;
-
-                        const chunk = decoder.decode(value);
-                        const lines = chunk.split('\n');
-                        
-                        for (const line of lines) {
-                            if (line.trim().startsWith('data: ')) {
-                                try {
-                                    const data = JSON.parse(line.substring(6));
-                                    if (data.type === 'progress') {
-                                        this.updateScanProgress(
-                                            data.progress,
-                                            data.status,
-                                            data.processed,
-                                            data.found
-                                        );
-                                    } else if (data.type === 'complete') {
-                                        this.completeScan(data.processed, data.found, data.added, data.linked);
-                                        return;
-                                    } else if (data.type === 'error') {
-                                        throw new Error(data.message);
-                                    }
-                                } catch (e) {
-                                    console.warn('Non-JSON line:', line);
-                                }
-                            }
-                        }
-                    }
-                } catch (error) {
-                    this.showNotification(`Scan failed: ${error.message}`, "error");
-                    document.getElementById("startScan").disabled = false;
-                    document.getElementById("startScan").textContent = "Start Scan";
-                }
-            }
-
             updateScanProgress(progress, status, processed, found) {
                 document.getElementById("scanProgressBar").style.width = `${progress}%`;
                 document.getElementById("scanStatusText").textContent = status;
@@ -2173,27 +2236,26 @@
                 document.getElementById("scanFound").textContent = `${found} prompts found`;
             }
 
-            completeScan(processed, found, added, linked = 0) {
-                this.updateScanProgress(100, "Scan completed!", processed, found);
-                document.getElementById("startScan").disabled = false;
-                document.getElementById("startScan").textContent = "Start New Scan";
-                
-                // Show detailed notification with all counts
+            completeScan(state) {
+                const { processed, found, added, linked } = state;
+                document.getElementById("scanPill").classList.add("hidden");
                 const linkedText = linked > 0 ? `, linked ${linked} images to existing prompts` : '';
                 this.showNotification(
                     `Scan completed! Processed ${processed} files, found ${found} prompts, added ${added} new prompts to database${linkedText}.`,
                     "success"
                 );
-                
-                // Auto-close modal after a short delay to let user see the completion message
+
+                // Auto-close after a short delay so the completion message is visible
                 setTimeout(() => {
                     this.hideModal("scanModal");
-                    
-                    // Refresh the statistics immediately
                     this.loadStatistics();
-                    
                     this.refreshList();
                 }, 2000);
+            }
+
+            failScan(state) {
+                document.getElementById("scanPill").classList.add("hidden");
+                this.showNotification(`Scan failed: ${state.message}`, "error");
             }
 
             // Logs functionality

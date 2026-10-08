@@ -274,6 +274,8 @@ class PromptManagerAPI(
         # _acquire_long_job(). Created lazily so no lock binds to an event
         # loop before the server's loop exists.
         self._long_jobs: dict = {}
+        # The current output scan (py/api/scan_job.ScanJob), if one was started.
+        self._scan_job = None
 
         # Run cleanup on initialization to remove any existing duplicates
         try:

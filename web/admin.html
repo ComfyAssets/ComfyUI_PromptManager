@@ -11,6 +11,7 @@
     <script src="/prompt_manager/js/png-metadata.js"></script>
     <script src="/prompt_manager/js/list-state.js"></script>
     <script src="/prompt_manager/js/sse-stream.js"></script>
+    <script src="/prompt_manager/js/scan-progress.js"></script>
     <script src="/prompt_manager/js/data-actions.js"></script>
     <link rel="stylesheet" href="lib/tailwind/comfyui-theme.css">
     <link rel="stylesheet" href="lib/tailwind/styles.css">
@@ -822,6 +823,12 @@
             </div>
         </div>
     </div>
+
+    <!-- Minimized scan progress: shown while a scan runs with its modal hidden -->
+    <button id="scanPill" type="button" title="Show scan progress"
+            class="hidden fixed bottom-4 right-4 z-40 px-3 py-1.5 bg-pm-surface border border-pm shadow-pm rounded-pm-md text-xs text-pm hover:bg-pm-hover transition-colors">
+        <span class="inline-block w-1.5 h-1.5 rounded-full bg-pm-accent mr-1.5 align-middle animate-pulse"></span><span id="scanPillText" class="align-middle">Scanning...</span>
+    </button>
 
     <!-- Logs Modal -->
     <div id="logsModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">

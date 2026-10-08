@@ -1,6 +1,7 @@
 """Admin and maintenance API routes for PromptManager."""
 
 import asyncio
+import contextlib
 import datetime
 import hashlib
 import json
@@ -10,6 +11,8 @@ import tempfile
 from pathlib import Path
 
 from aiohttp import web
+
+from .scan_job import ScanJob
 
 try:
     from ...utils.validators import validate_result_timeout
@@ -335,6 +338,10 @@ class AdminRoutesMixin:
         @routes.post("/prompt_manager/scan")
         async def scan_images_route(request):
             return await self.scan_images(request)
+
+        @routes.get("/prompt_manager/scan/status")
+        async def scan_status_route(request):
+            return await self.scan_status(request)
 
     LONG_JOB_DUPLICATES = "duplicates"
 
@@ -1105,9 +1112,43 @@ class AdminRoutesMixin:
     async def scan_images(self, request):
         """Scan ComfyUI output images for prompt metadata and add them to the database.
 
-        Streams progress as server-sent events; all filesystem and database
-        work runs through the executor.
+        The scan runs as a background task that outlives this request, so a
+        closed tab never leaves a half-finished scan. Progress streams as
+        server-sent events; while a scan is running, a new request attaches
+        to it instead of starting another one.
         """
+        job = self._scan_job
+        if job is None or job.finished:
+            job = self._start_scan_job()
+        return await self._stream_scan_job(request, job)
+
+    async def scan_status(self, request):
+        """Whether an output scan is running, and its latest progress event."""
+        job = self._scan_job
+        return web.json_response(
+            {
+                "success": True,
+                "running": bool(job and job.running),
+                "last_event": job.last_event if job else None,
+            }
+        )
+
+    def _start_scan_job(self):
+        """Create the job record synchronously, then run the scan as a task."""
+        job = ScanJob()
+        self._scan_job = job
+        job.task = asyncio.ensure_future(self._run_scan_job(job))
+        return job
+
+    async def _run_scan_job(self, job):
+        try:
+            async for payload in self._scan_images_events():
+                job.publish(payload)
+        finally:
+            job.finish()
+
+    async def _stream_scan_job(self, request, job):
+        """Stream ``job`` as SSE; stop quietly if the client goes away."""
         response = web.StreamResponse(
             status=200,
             reason="OK",
@@ -1118,27 +1159,30 @@ class AdminRoutesMixin:
             },
         )
         await response.prepare(request)
-
-        async for chunk in self._scan_images_events():
-            await response.write(chunk.encode("utf-8"))
-
-        await response.write_eof()
+        try:
+            async with contextlib.aclosing(job.events()) as events:
+                async for payload in events:
+                    await response.write(_sse(payload).encode("utf-8"))
+            await response.write_eof()
+        except Exception as e:  # the socket closed under us; the scan goes on
+            self.logger.info(
+                f"Scan progress client disconnected ({e}); "
+                "the scan continues in the background"
+            )
         return response
 
     async def _scan_images_events(self):
-        """Yield SSE strings while scanning every configured output directory."""
+        """Yield progress payloads while scanning every configured output directory."""
         try:
             self.logger.info("Starting image scan operation")
             output_dirs = self._get_all_output_dirs()
             if not output_dirs:
                 self.logger.error("No output directories found")
-                yield _sse(
-                    {
-                        "type": "error",
-                        "message": "No output directories found. "
-                        "Configure scan directories in Settings.",
-                    }
-                )
+                yield {
+                    "type": "error",
+                    "message": "No output directories found. "
+                    "Configure scan directories in Settings.",
+                }
                 return
 
             dir_names = [self._public_path(d) for d in output_dirs]
@@ -1162,18 +1206,14 @@ class AdminRoutesMixin:
                 f"found={counts['found']}, new_prompts_added={counts['added']}, "
                 f"images_linked_to_existing={counts['linked']}"
             )
-            yield _sse({"type": "complete", **counts, "directories": dir_names})
+            yield {"type": "complete", **counts, "directories": dir_names}
 
         except Exception:
             self.logger.exception("Scan error")
-            yield _sse(
-                {
-                    "type": "error",
-                    "message": (
-                        "An internal error occurred. Check server logs for details."
-                    ),
-                }
-            )
+            yield {
+                "type": "error",
+                "message": "An internal error occurred. Check server logs for details.",
+            }
 
     async def _scan_batches(self, media_files, counts):
         """Process ``media_files`` in executor batches, updating ``counts`` in place.
@@ -1200,17 +1240,15 @@ class AdminRoutesMixin:
 
     @staticmethod
     def _scan_progress(progress, status, counts=None):
-        """SSE progress event for the output scan."""
+        """Progress event payload for the output scan."""
         counts = counts or {}
-        return _sse(
-            {
-                "type": "progress",
-                "progress": progress,
-                "status": status,
-                "processed": counts.get("processed", 0),
-                "found": counts.get("found", 0),
-            }
-        )
+        return {
+            "type": "progress",
+            "progress": progress,
+            "status": status,
+            "processed": counts.get("processed", 0),
+            "found": counts.get("found", 0),
+        }
 
     def _collect_output_media_sync(self, output_dirs):
         """Collect all media files from the output directories (blocking I/O)."""

@@ -4,6 +4,7 @@ Uses aiohttp's test client against a PromptManagerAPI wired to a temporary
 database and a stub ``folder_paths`` module, so the tests run without ComfyUI.
 """
 
+import asyncio
 import json
 import os
 import shutil
@@ -1506,6 +1507,126 @@ class TestOutputScanInternals(AdminAPITestCase):
         body = await (await self.client.request("POST", "/prompt_manager/scan")).text()
         self.assertIn('"type": "error"', body)
         self.assertNotIn("boom", body)
+
+
+class TestOutputScanIsABackgroundJob(AdminAPITestCase):
+    """The output scan keeps running when the browser goes away, and a second
+    request attaches to the running scan instead of starting another one."""
+
+    def _gate_collect(self):
+        """Block the media collection step until the returned event is set."""
+        import threading
+
+        gate = threading.Event()
+        calls = []
+        original = self.api._collect_output_media_sync
+
+        def gated(output_dirs):
+            calls.append(output_dirs)
+            gate.wait(5)
+            return original(output_dirs)
+
+        self.api._collect_output_media_sync = gated
+        return gate, calls
+
+    async def test_scan_survives_client_disconnect_and_finishes(self):
+        from unittest.mock import AsyncMock, patch
+
+        _write_png(self.output_dir / "gen.png", prompt_text="a red square")
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+
+        with self.assertNoLogs("aiohttp.server", level="ERROR"):
+            with patch.object(
+                web.StreamResponse,
+                "write",
+                AsyncMock(side_effect=ConnectionResetError("closing transport")),
+            ):
+                resp = await self.client.request("POST", "/prompt_manager/scan")
+                self.assertEqual(resp.status, 200)
+                await resp.release()
+            await asyncio.wait_for(self.api._scan_job.task, 10)
+
+        prompts = self.api.db.get_recent_prompts(limit=10)["prompts"]
+        self.assertEqual([p["text"] for p in prompts], ["a red square"])
+        self.assertEqual(self.api._scan_job.last_event["type"], "complete")
+        self.assertFalse(self.api._scan_job.running)
+
+    async def test_second_request_attaches_to_the_running_scan(self):
+        _write_png(self.output_dir / "gen.png", prompt_text="a red square")
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        gate, calls = self._gate_collect()
+
+        first = asyncio.ensure_future(
+            self.client.request("POST", "/prompt_manager/scan")
+        )
+        await asyncio.sleep(0.05)
+        second = await asyncio.wait_for(
+            self.client.request("POST", "/prompt_manager/scan"), 5
+        )
+        self.assertEqual(second.status, 200)
+        self.assertIn("text/event-stream", second.headers["Content-Type"])
+
+        gate.set()
+        first_body = await (await first).text()
+        second_body = await second.text()
+
+        self.assertEqual(len(calls), 1)
+        self.assertIn('"type": "complete"', first_body)
+        self.assertIn('"type": "complete"', second_body)
+        self.assertIn('"added": 1', second_body)
+
+    async def test_status_reports_running_scan_and_its_last_event(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        gate, _ = self._gate_collect()
+
+        first = asyncio.ensure_future(
+            self.client.request("POST", "/prompt_manager/scan")
+        )
+        await asyncio.sleep(0.05)
+        resp = await self.client.request("GET", "/prompt_manager/scan/status")
+        running = await resp.json()
+
+        gate.set()
+        await (await first).text()
+        resp = await self.client.request("GET", "/prompt_manager/scan/status")
+        finished = await resp.json()
+
+        self.assertEqual(resp.status, 200)
+        self.assertTrue(running["success"])
+        self.assertTrue(running["running"])
+        self.assertEqual(running["last_event"]["type"], "progress")
+        self.assertFalse(finished["running"])
+        self.assertEqual(finished["last_event"]["type"], "complete")
+
+    async def test_status_before_any_scan_is_idle(self):
+        resp = await self.client.request("GET", "/prompt_manager/scan/status")
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(data, {"success": True, "running": False, "last_event": None})
+
+    async def test_scan_after_a_finished_one_starts_fresh(self):
+        _write_png(self.output_dir / "gen.png", prompt_text="a red square")
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        gate, calls = self._gate_collect()
+        gate.set()
+
+        await (await self.client.request("POST", "/prompt_manager/scan")).text()
+        body = await (await self.client.request("POST", "/prompt_manager/scan")).text()
+
+        self.assertEqual(len(calls), 2)
+        self.assertIn('"linked": 1', body)
+
+    async def test_failed_scan_is_not_left_running(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        self.api._collect_output_media_sync = _raise
+
+        await (await self.client.request("POST", "/prompt_manager/scan")).text()
+        data = await (
+            await self.client.request("GET", "/prompt_manager/scan/status")
+        ).json()
+
+        self.assertFalse(data["running"])
+        self.assertEqual(data["last_event"]["type"], "error")
 
 
 if __name__ == "__main__":
