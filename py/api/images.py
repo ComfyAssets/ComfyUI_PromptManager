@@ -11,6 +11,63 @@ from pathlib import Path
 from aiohttp import web
 from PIL import Image
 
+from .prompts import safe_error_message as _safe_error
+
+# Only these file types are ever served by the image routes, regardless of
+# what sits inside an allowed directory (defence in depth for the gallery).
+IMAGE_EXTENSIONS = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".gif",
+        ".bmp",
+        ".tiff",
+        ".tif",
+        ".mp4",
+        ".webm",
+        ".mov",
+    }
+)
+
+
+def _canonical(path):
+    """Resolve symlinks and normalise case so paths compare on every OS."""
+    return Path(os.path.normcase(os.path.realpath(str(path))))
+
+
+def _is_within(path, root):
+    """True when *path* (after realpath) lives under *root* (after realpath)."""
+    return _canonical(path).is_relative_to(_canonical(root))
+
+
+def _has_traversal(relative):
+    """True for absolute paths, drive-qualified paths or any ``..`` segment."""
+    if not relative or os.path.isabs(relative) or os.path.splitdrive(relative)[0]:
+        return True
+    if relative[0] in ("/", "\\"):
+        return True
+    return ".." in re.split(r"[\\/]+", relative)
+
+
+def _forbidden(message="Access denied"):
+    return web.json_response({"success": False, "error": message}, status=403)
+
+
+def _media_access_error(path, allowed_dirs):
+    """Return a 403 response when *path* must not be served, else None.
+
+    Fails closed: an empty *allowed_dirs* denies everything.
+    """
+    if Path(path).suffix.lower() not in IMAGE_EXTENSIONS:
+        return _forbidden("Only media files can be served")
+    if not allowed_dirs:
+        return _forbidden("No allowed image directories configured")
+    if not any(_is_within(path, root) for root in allowed_dirs):
+        return _forbidden()
+    return None
+
 
 class ImageRoutesMixin:
     """Mixin providing image and gallery-related API endpoints."""
@@ -302,47 +359,19 @@ class ImageRoutesMixin:
                     {"success": False, "error": "Image not found"}, status=404
                 )
 
-            image_path = Path(image["image_path"]).resolve()
+            image_path = Path(image["image_path"])
+            allowed_dirs = list(self._get_all_output_dirs()) + self._lora_image_dirs()
 
-            # Validate path is within any allowed directory
-            allowed_dirs = list(self._get_all_output_dirs())
+            denied = _media_access_error(image_path, allowed_dirs)
+            if denied is not None:
+                return denied
 
-            # Also allow LoRA directories when integration is enabled
-            try:
-                from ..config import IntegrationConfig
-
-                if IntegrationConfig.LORA_MANAGER_ENABLED:
-                    from ..lora_utils import (
-                        find_lora_directories,
-                        get_lora_image_cache_dir,
-                    )
-
-                    lora_dirs = find_lora_directories(
-                        IntegrationConfig.LORA_MANAGER_PATH
-                    )
-                    allowed_dirs.extend(Path(d) for d in lora_dirs)
-                    allowed_dirs.append(get_lora_image_cache_dir())
-            except Exception:
-                # LoRA integration is optional — skip if unavailable
-                pass
-
-            if allowed_dirs:
-                allowed = any(
-                    image_path.is_relative_to(d.resolve()) for d in allowed_dirs
-                )
-                if not allowed:
-                    return web.json_response(
-                        {"success": False, "error": "Access denied"}, status=403
-                    )
-
-            if not image_path.exists():
+            if not image_path.is_file():
                 return web.json_response(
                     {"success": False, "error": "Image file not found"}, status=404
                 )
 
-            response = web.FileResponse(image_path)
-            response.headers["Cache-Control"] = "public, max-age=3600"
-            return response
+            return self._file_response(image_path)
 
         except ValueError:
             return web.json_response(
@@ -350,44 +379,73 @@ class ImageRoutesMixin:
             )
         except Exception as e:
             self.logger.error(f"Serve image error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": _safe_error(e)}, status=500
+            )
+
+    def _lora_image_dirs(self):
+        """Extra directories served when the LoRA integration is enabled."""
+        try:
+            from ..config import IntegrationConfig
+
+            if not IntegrationConfig.LORA_MANAGER_ENABLED:
+                return []
+            from ..lora_utils import find_lora_directories, get_lora_image_cache_dir
+
+            dirs = [
+                Path(d)
+                for d in find_lora_directories(IntegrationConfig.LORA_MANAGER_PATH)
+            ]
+            dirs.append(Path(get_lora_image_cache_dir()))
+            return dirs
+        except Exception:
+            # LoRA integration is optional; never widen access on failure.
+            return []
+
+    @staticmethod
+    def _file_response(path):
+        response = web.FileResponse(path)
+        response.headers["Cache-Control"] = "public, max-age=3600"
+        return response
+
+    @staticmethod
+    def _select_root(output_dirs, root_param):
+        """Narrow *output_dirs* to the ``?root=N`` entry when it is valid."""
+        if root_param is None:
+            return output_dirs
+        try:
+            idx = int(root_param)
+        except ValueError:
+            return output_dirs
+        if 0 <= idx < len(output_dirs):
+            return [output_dirs[idx]]
+        return output_dirs
 
     async def serve_output_image(self, request):
-        """Serve image file directly from ComfyUI output folder using streamed FileResponse."""
+        """Serve a media file from the ComfyUI output folder(s)."""
         try:
             filepath = request.match_info["filepath"]
+            if _has_traversal(filepath):
+                return _forbidden()
+            if Path(filepath).suffix.lower() not in IMAGE_EXTENSIONS:
+                return _forbidden("Only media files can be served")
 
-            # Search all configured output directories
-            output_dirs = self._get_all_output_dirs()
+            output_dirs = self._select_root(
+                list(self._get_all_output_dirs()), request.query.get("root")
+            )
             if not output_dirs:
-                return web.json_response(
-                    {"success": False, "error": "ComfyUI output directory not found"},
-                    status=404,
-                )
+                return _forbidden("No allowed image directories configured")
 
-            # If a root index is provided, use only that root to avoid
-            # path collisions when multiple roots share the same relative path.
-            root_idx = request.query.get("root")
-            if root_idx is not None:
-                try:
-                    idx = int(root_idx)
-                    if 0 <= idx < len(output_dirs):
-                        output_dirs = [output_dirs[idx]]
-                except (ValueError, IndexError):
-                    pass
-
-            # Try each root directory until the file is found
             for output_path in output_dirs:
-                image_path = (output_path / filepath).resolve()
-
-                # Security check: must be within this output directory
-                if not image_path.is_relative_to(output_path.resolve()):
+                image_path = output_path / filepath
+                if not image_path.exists():
                     continue
-
-                if image_path.exists():
-                    response = web.FileResponse(image_path)
-                    response.headers["Cache-Control"] = "public, max-age=3600"
-                    return response
+                # A symlink that points outside the root is a hard deny, not
+                # a fall-through to the next root.
+                if not _is_within(image_path, output_path):
+                    return _forbidden()
+                if image_path.is_file():
+                    return self._file_response(image_path)
 
             return web.json_response(
                 {"success": False, "error": "Image file not found"}, status=404
@@ -395,7 +453,9 @@ class ImageRoutesMixin:
 
         except Exception as e:
             self.logger.error(f"Serve output image error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": _safe_error(e)}, status=500
+            )
 
     async def get_gallery_subfolders(self, request):
         """Get distinct subfolders from gallery output directories."""

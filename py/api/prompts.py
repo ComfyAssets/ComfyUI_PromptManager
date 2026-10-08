@@ -2,8 +2,24 @@
 
 import datetime
 import json
+import os
 
 from aiohttp import web
+
+
+def safe_error_message(exc):
+    """Describe *exc* for a client without leaking absolute server paths.
+
+    OSError carries the offending path in ``filename``; only its basename
+    is echoed back together with ``strerror``.
+    """
+    if isinstance(exc, OSError):
+        reason = exc.strerror or exc.__class__.__name__
+        if exc.filename:
+            return f"{reason}: {os.path.basename(str(exc.filename))}"
+        return reason
+    return str(exc) or exc.__class__.__name__
+
 
 try:
     from ...utils.validators import (
