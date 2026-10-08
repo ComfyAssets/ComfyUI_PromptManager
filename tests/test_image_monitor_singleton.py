@@ -212,6 +212,32 @@ class TestStartStop(unittest.TestCase):
         self.assertEqual(self.monitor.monitored_directories, [])
         self.assertFalse(self.monitor.get_status()["running"])
 
+    def test_stop_shuts_the_handler_worker_down(self):
+        fake = FakeObserver()
+        with patch.object(im_mod, "Observer", return_value=fake):
+            self.monitor.start_monitoring([self.tmp.name])
+        handler = self.monitor.handler
+        handler.processing_delay = 10
+        image = os.path.join(self.tmp.name, "w.png")
+        with open(image, "wb") as f:
+            f.write(b"x" * 16)
+        handler.schedule(image)
+        worker = handler._worker
+        self.assertTrue(worker.is_alive())
+
+        self.monitor.stop_monitoring()
+
+        worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(handler.pending_count(), 0)
+        # A restart gets a fresh handler and observer
+        fake2 = FakeObserver()
+        with patch.object(im_mod, "Observer", return_value=fake2):
+            self.monitor.start_monitoring([self.tmp.name])
+        self.assertTrue(self.monitor.is_monitoring)
+        self.assertIsNot(self.monitor.handler, handler)
+        self.monitor.stop_monitoring()
+
     def test_observer_failing_to_start_leaves_monitoring_off(self):
         fake = FakeObserver()
         fake.start = MagicMock(side_effect=OSError("inotify limit reached"))
@@ -365,6 +391,43 @@ class TestHandlerScheduling(unittest.TestCase):
         self.assertTrue(self.handler.wait_until_settled(path))
         empty = self._image("empty.png", content=b"")
         self.assertFalse(self.handler.wait_until_settled(empty))
+
+    def test_shutdown_stops_the_worker_and_clears_pending(self):
+        self.handler.processing_delay = 10  # keep the first image waiting
+        self.handler.schedule(self._image("s1.png"))
+        self.handler.schedule(self._image("s2.png"))
+        worker = self.handler._worker
+        self.assertTrue(worker.is_alive())
+
+        self.handler.shutdown()
+
+        worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(self.handler.pending_count(), 0)
+
+    def test_shutdown_is_idempotent_and_safe_before_start(self):
+        fresh = im_mod.ImageGenerationHandler(MagicMock(), self.tracker)
+        fresh.shutdown()
+        fresh.shutdown()
+        self.handler.schedule(self._image("s3.png"))
+        self.assertTrue(wait_for(lambda: self.handler.pending_count() == 0))
+        self.handler.shutdown()
+        self.handler.shutdown()
+
+    def test_scheduling_after_shutdown_restarts_the_worker(self):
+        self.handler.schedule(self._image("r1.png"))
+        self.assertTrue(wait_for(lambda: self.handler.pending_count() == 0))
+        old_worker = self.handler._worker
+        self.handler.shutdown()
+        old_worker.join(timeout=2)
+        self.assertFalse(old_worker.is_alive())
+
+        path = self._image("r2.png")
+        self.assertTrue(self.handler.schedule(path))
+        self.assertTrue(wait_for(lambda: self.handler.pending_count() == 0))
+        self.assertIn(path, [p for p, _ in self.processed])
+        self.assertIsNot(self.handler._worker, old_worker)
+        self.handler.shutdown()
 
     def test_processing_errors_do_not_kill_the_worker(self):
         def explode(path, prompt_snapshot=None):

@@ -89,7 +89,10 @@ class ImageGenerationHandler(FileSystemEventHandler):
         # prompt queue in creation order.
         self._pending: Dict[str, Tuple[Any, float]] = {}
         self._pending_lock = threading.Lock()
-        self._work: "queue.Queue[str]" = queue.Queue()
+        # Each worker owns its queue and stop event (replaced on shutdown),
+        # so a worker that is still draining never swallows a later image.
+        self._work: "queue.Queue[Optional[str]]" = queue.Queue()
+        self._stop = threading.Event()
         self._worker: Optional[threading.Thread] = None
 
     def on_created(self, event):
@@ -141,7 +144,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
             due = time.monotonic() + self.processing_delay
             self._pending[image_path] = (prompt_snapshot, due)
             self._ensure_worker()
-        self._work.put(image_path)
+            self._work.put(image_path)
         return True
 
     def pending_count(self) -> int:
@@ -149,46 +152,74 @@ class ImageGenerationHandler(FileSystemEventHandler):
         with self._pending_lock:
             return len(self._pending)
 
+    def shutdown(self) -> None:
+        """Stop the worker thread and drop every image still waiting.
+
+        The worker wakes from any delay or settle wait, finishes nothing more
+        and exits; the next ``schedule`` starts a fresh worker with its own
+        queue. Safe to call repeatedly and before anything was scheduled.
+        """
+        with self._pending_lock:
+            self._pending.clear()
+            worker, self._worker = self._worker, None
+            work, self._work = self._work, queue.Queue()
+            stop, self._stop = self._stop, threading.Event()
+        stop.set()
+        if worker is not None and worker.is_alive():
+            work.put(None)  # sentinel: wake a worker idle on an empty queue
+
     def _ensure_worker(self) -> None:
-        """Start the single daemon worker thread if it isn't running."""
+        """Start the single daemon worker thread if it isn't running.
+
+        Called with ``_pending_lock`` held.
+        """
         if self._worker is None or not self._worker.is_alive():
             self._worker = threading.Thread(
                 target=self._run_worker,
+                args=(self._work, self._stop),
                 name="PromptManagerImageWorker",
                 daemon=True,
             )
             self._worker.start()
 
-    def _run_worker(self) -> None:
-        while True:
-            image_path = self._work.get()
+    def _run_worker(self, work: "queue.Queue[Optional[str]]", stop) -> None:
+        while not stop.is_set():
+            image_path = work.get()
             try:
-                self._process_pending(image_path)
+                if image_path is None or stop.is_set():
+                    break
+                self._process_pending(image_path, stop)
             except Exception as e:
                 self.logger.error(f"Image worker failed on {image_path}: {e}")
             finally:
-                self._work.task_done()
+                work.task_done()
 
-    def _process_pending(self, image_path: str) -> None:
+    def _process_pending(self, image_path: str, stop=None) -> None:
         """Process one scheduled image; the pending entry is always cleared."""
+        stop = stop if stop is not None else self._stop
         try:
             with self._pending_lock:
                 prompt_snapshot, due = self._pending.get(image_path, (None, 0.0))
             remaining = due - time.monotonic()
-            if remaining > 0:
-                time.sleep(remaining)
-            if not self.wait_until_settled(image_path):
-                self.logger.warning(
-                    f"Image never settled or vanished, skipping: {image_path}"
-                )
+            if remaining > 0 and stop.wait(remaining):
+                return
+            if not self.wait_until_settled(image_path, stop):
+                if not stop.is_set():
+                    self.logger.warning(
+                        f"Image never settled or vanished, skipping: {image_path}"
+                    )
                 return
             self.process_new_image(image_path, prompt_snapshot=prompt_snapshot)
         finally:
             with self._pending_lock:
                 self._pending.pop(image_path, None)
 
-    def wait_until_settled(self, image_path: str) -> bool:
-        """True once the file's size is non-zero and unchanged across two reads."""
+    def wait_until_settled(self, image_path: str, stop=None) -> bool:
+        """True once the file's size is non-zero and unchanged across two reads.
+
+        Returns False as soon as ``stop`` (an Event) is set.
+        """
+        stop = stop if stop is not None else self._stop
         previous = None
         for _ in range(self.settle_attempts):
             try:
@@ -198,7 +229,8 @@ class ImageGenerationHandler(FileSystemEventHandler):
             if previous is not None and size == previous and size > 0:
                 return True
             previous = size
-            time.sleep(self.settle_interval)
+            if stop.wait(self.settle_interval):
+                return False
         return False
 
     def is_image_file(self, filepath: str) -> bool:
@@ -639,7 +671,7 @@ class ImageMonitor:
         Safe to call when monitoring never started.
         """
         observer, self.observer = self.observer, None
-        self.handler = None
+        handler, self.handler = self.handler, None
         self.monitored_directories = []
         if observer is None:
             return
@@ -648,6 +680,11 @@ class ImageMonitor:
             observer.join()
         except Exception as e:
             self.logger.warning(f"Error while stopping image monitoring: {e}")
+        if handler is not None:
+            try:
+                handler.shutdown()
+            except Exception as e:
+                self.logger.warning(f"Error while stopping the image worker: {e}")
         self.logger.debug("Image monitoring stopped")
 
     def detect_comfyui_output_dirs(self) -> list:
