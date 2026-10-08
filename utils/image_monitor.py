@@ -28,7 +28,7 @@ import time
 import threading
 import json
 from pathlib import Path
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, Tuple
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -150,7 +150,14 @@ class ImageGenerationHandler(FileSystemEventHandler):
             # Strategy 1: The image's own metadata. It records the positive prompt
             # that produced this image, independent of node caching and of any
             # negative-prompt PromptManager nodes in the workflow.
-            current_prompt = self._find_prompt_from_metadata(metadata)
+            state, current_prompt = self._find_prompt_from_metadata(metadata)
+            if state == "foreign":
+                # Another workflow saved this image: it belongs to no prompt of
+                # ours, and must not consume a batch queue entry.
+                self.logger.info(
+                    f"No PromptManager prompt in workflow, skipping image: {image_path}"
+                )
+                return
             if current_prompt:
                 self.logger.info(
                     f"Metadata match: prompt {current_prompt['id']} for "
@@ -220,40 +227,55 @@ class ImageGenerationHandler(FileSystemEventHandler):
 
             self.logger.error(traceback.format_exc())
 
-    def _find_prompt_from_metadata(self, metadata):
-        """Extract prompt text from image metadata and look up the matching DB prompt.
+    def _find_prompt_from_metadata(self, metadata) -> Tuple[str, Optional[Dict]]:
+        """Identify the prompt that produced an image from its embedded metadata.
 
-        Parses the ComfyUI workflow/prompt data embedded in the image to find
-        PromptManager node inputs, then matches against the database by hash.
+        Parses the ComfyUI workflow/prompt data embedded in the image to find the
+        PromptManager node feeding the positive input, then matches its text
+        against the database by hash.
 
         Args:
             metadata: Extracted metadata dict from the image, or None
 
         Returns:
-            Prompt context dict with 'id' and 'text', or None if not found
+            ``("linked", prompt)`` with a context dict holding 'id' and 'text';
+            ``("foreign", None)`` when the workflow has no positive PromptManager
+            node, so the image belongs to no prompt of ours;
+            ``("unknown", None)`` when metadata can't decide (missing, a batch
+            item whose text came from another node, or a lookup failure) and the
+            caller's queue and tracker fallbacks apply.
         """
         if not metadata:
-            return None
+            return "unknown", None
 
         prompt_text = None
 
         # The executed graph: use the PromptManager node feeding the positive input
         prompt_data = metadata.get("prompt")
         if isinstance(prompt_data, dict):
-            for node_id in run_prompt_nodes(prompt_data):
+            run_nodes = run_prompt_nodes(prompt_data)
+            if not run_nodes:
+                return "foreign", None
+            for node_id in run_nodes:
                 prompt_text = resolve_text(prompt_data, node_id)
                 if prompt_text:
                     break
             if not prompt_text:
                 # Positive text can't be known from the graph (batch item or unknown
                 # node): leave it to the queue rather than guess from workflow widgets
-                return None
+                return "unknown", None
 
         # Fallback (no executed graph): check text_encoder_nodes from workflow, but only if
         # the text input is NOT connected (connected inputs override widget values,
         # so the widget value would be stale in batch workflows).
         if not prompt_text:
             text_nodes = metadata.get("text_encoder_nodes", [])
+            if text_nodes and not any(
+                "PromptManager" in (n.get("type") or n.get("class_type") or "")
+                for n in text_nodes
+                if isinstance(n, dict)
+            ):
+                return "foreign", None
             for node in text_nodes:
                 node_type = node.get("type") or node.get("class_type") or ""
                 if "PromptManager" in node_type:
@@ -276,7 +298,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
                         break
 
         if not prompt_text:
-            return None
+            return "unknown", None
 
         # Look up by hash in database
         try:
@@ -289,7 +311,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 self.logger.debug(
                     f"Found DB prompt {existing['id']} from metadata text"
                 )
-                return {
+                return "linked", {
                     "id": existing["id"],
                     "text": existing["text"],
                     "from_metadata": True,
@@ -297,7 +319,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
         except Exception as e:
             self.logger.warning(f"Metadata-based prompt lookup failed: {e}")
 
-        return None
+        return "unknown", None
 
     def get_basic_file_info(self, image_path: str) -> Dict[str, Any]:
         """Get basic file information when metadata extraction fails.
