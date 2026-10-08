@@ -361,7 +361,8 @@ class GalleryDiagnostics:
             import watchdog
 
             dependencies["watchdog"] = True
-            self.logger.info(f"   [PASS] watchdog: {watchdog.__version__}")
+            version = getattr(watchdog, "__version__", "unknown version")
+            self.logger.info(f"   [PASS] watchdog: {version}")
         except ImportError:
             self.logger.error("   [FAIL] watchdog: NOT INSTALLED")
 
