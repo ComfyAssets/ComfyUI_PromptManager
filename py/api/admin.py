@@ -354,29 +354,6 @@ class AdminRoutesMixin:
         try:
             from ..config import PromptManagerConfig, GalleryConfig
 
-            # Get monitored directories from image monitor singleton if available
-            monitored_dirs = []
-            try:
-                import sys
-
-                monitor_module = None
-                for mod_name in list(sys.modules.keys()):
-                    if "image_monitor" in mod_name and hasattr(
-                        sys.modules[mod_name], "_monitor_instance"
-                    ):
-                        monitor_module = sys.modules[mod_name]
-                        break
-
-                if monitor_module and monitor_module._monitor_instance is not None:
-                    monitored_dirs = getattr(
-                        monitor_module._monitor_instance, "monitored_directories", []
-                    )
-                elif GalleryConfig.MONITORING_DIRECTORIES:
-                    monitored_dirs = GalleryConfig.MONITORING_DIRECTORIES
-            except Exception:
-                if GalleryConfig.MONITORING_DIRECTORIES:
-                    monitored_dirs = GalleryConfig.MONITORING_DIRECTORIES
-
             root_paths = [
                 self._public_path(d) for d in GalleryConfig.MONITORING_DIRECTORIES
             ]
@@ -389,7 +366,7 @@ class AdminRoutesMixin:
                         "gallery_root_paths": root_paths,
                         "gallery_root_path": root_paths[0] if root_paths else "",
                         "monitored_directories": [
-                            self._public_path(d) for d in monitored_dirs
+                            self._public_path(d) for d in self._monitored_directories()
                         ],
                     },
                 }
@@ -400,6 +377,15 @@ class AdminRoutesMixin:
                 {"success": False, "error": "Failed to get settings"},
                 status=500,
             )
+
+    def _monitored_directories(self):
+        """Directories the running image monitor watches, else the configured roots."""
+        from ..config import GalleryConfig
+
+        monitor = _current_image_monitor()
+        if monitor is not None:
+            return list(getattr(monitor, "monitored_directories", []))
+        return list(GalleryConfig.MONITORING_DIRECTORIES)
 
     async def save_settings(self, request):
         """Save settings."""

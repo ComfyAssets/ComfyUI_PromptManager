@@ -562,5 +562,47 @@ class TestDeleteDuplicatesSyncBody(AdminAPITestCase):
         self.assertEqual(result["deleted_count"], 0)
 
 
+class TestSettingsReadMonitorThroughModule(AdminAPITestCase):
+    """get_settings reaches the image monitor through utils.image_monitor."""
+
+    def test_no_sys_modules_scan(self):
+        import inspect
+
+        from py.api.admin import AdminRoutesMixin
+
+        source = inspect.getsource(AdminRoutesMixin.get_settings)
+        self.assertNotIn("sys.modules", source)
+
+    async def test_reports_directories_of_running_monitor(self):
+        import utils.image_monitor as im_mod
+        from utils.image_monitor import get_image_monitor
+
+        orig = im_mod._monitor_instance
+        im_mod._monitor_instance = None
+        self.addCleanup(setattr, im_mod, "_monitor_instance", orig)
+        monitor = get_image_monitor(MagicMock(), MagicMock())
+        monitor.monitored_directories = [str(self.output_dir)]
+
+        resp = await self.client.request("GET", "/prompt_manager/settings")
+
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(data["settings"]["monitored_directories"], ["output"])
+
+    async def test_falls_back_to_configured_roots_without_monitor(self):
+        import utils.image_monitor as im_mod
+
+        orig = im_mod._monitor_instance
+        im_mod._monitor_instance = None
+        self.addCleanup(setattr, im_mod, "_monitor_instance", orig)
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+
+        resp = await self.client.request("GET", "/prompt_manager/settings")
+
+        data = await resp.json()
+        self.assertEqual(data["settings"]["monitored_directories"], ["output"])
+        self.assertEqual(data["settings"]["gallery_root_paths"], ["output"])
+
+
 if __name__ == "__main__":
     unittest.main()
