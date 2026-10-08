@@ -48,13 +48,13 @@ def fake_folder_paths_module(output_dir):
     return module
 
 
-def load_package(name, db_path, output_dir):
+def load_package(name, db_path, output_dir, server=None):
     """Import ROOT/__init__.py as package ``name`` with ComfyUI stubbed.
 
     Returns (package, server instance). The caller stops the image monitor.
     """
     saved = {key: sys.modules.get(key) for key in ("server", "folder_paths")}
-    server = fake_server_module()
+    server = server or fake_server_module()
     sys.modules["server"] = server
     sys.modules["folder_paths"] = fake_folder_paths_module(output_dir)
     try:
@@ -92,12 +92,16 @@ class PackageTestCase(unittest.TestCase):
         os.makedirs(cls.output_dir)
         cls.db_path = cls.make_db_path(cls.tmp.name)
         cls.package, cls.server = load_package(
-            cls.package_name, cls.db_path, cls.output_dir
+            cls.package_name, cls.db_path, cls.output_dir, server=cls.make_server()
         )
 
     @classmethod
     def make_db_path(cls, tmp):
         return os.path.join(tmp, "prompts.db")
+
+    @classmethod
+    def make_server(cls):
+        return fake_server_module()
 
     @classmethod
     def tearDownClass(cls):
@@ -172,6 +176,46 @@ class TestPackageWithoutDatabase(PackageTestCase):
             ((0, request["prompt_id"], request["prompt"], {}, [], False), 1)
         )
         self.assertIsNotNone(self.server.prompt_queue.get())
+
+
+class TestVersion(PackageTestCase):
+    def test_version_comes_from_pyproject(self):
+        import re
+
+        with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as f:
+            expected = re.search(r'version\s*=\s*["\']([^"\']+)["\']', f.read())
+        self.assertEqual(self.package.get_version(), expected.group(1))
+
+    def test_unreadable_pyproject_gives_unknown(self):
+        with mock.patch.object(self.package, "Path", side_effect=OSError("denied")):
+            self.assertEqual(self.package.get_version(), "unknown")
+        missing = mock.Mock()
+        missing.parent.__truediv__ = lambda self_, name: mock.Mock(exists=lambda: False)
+        with mock.patch.object(self.package, "Path", return_value=missing):
+            self.assertEqual(self.package.get_version(), "unknown")
+
+
+class TestPackageWhenHookRegistrationFails(PackageTestCase):
+    """A server that rejects the hook must not break the rest of the package."""
+
+    package_name = "prompt_manager_pkg_nohook"
+
+    @classmethod
+    def make_server(cls):
+        module = fake_server_module()
+        instance = module.PromptServer.instance
+
+        def reject(handler):
+            raise RuntimeError("hooks unsupported")
+
+        instance.add_on_prompt_handler = reject
+        return module
+
+    def test_nodes_and_monitoring_still_come_up(self):
+        self.assertIn("PromptManager", self.package.NODE_CLASS_MAPPINGS)
+        self.assertIsNotNone(self.package._global_db)
+        self.assertTrue(self.package._global_image_monitor.is_monitoring)
+        self.assertEqual(self.server.handlers, [])
 
 
 if __name__ == "__main__":
