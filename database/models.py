@@ -34,6 +34,16 @@ def utc_now_iso() -> str:
     )
 
 
+def normalize_image_path(path: str) -> str:
+    """Canonical form of an image path for generated_images.file_path.
+
+    Absolute, with '..' and '.' collapsed and the platform's case folding
+    applied, so two spellings of one file (or the same basename in two date
+    folders) compare the way the filesystem would.
+    """
+    return os.path.normcase(os.path.normpath(os.path.abspath(path)))
+
+
 SQLITE_HEADER = b"SQLite format 3\x00"
 REQUIRED_PROMPT_COLUMNS = ("id", "text", "created_at")
 
@@ -173,8 +183,9 @@ class PromptModel:
                 workflow_data TEXT,
                 prompt_metadata TEXT,
                 parameters TEXT,
+                file_path TEXT,
                 FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE,
-                UNIQUE(prompt_id, filename)
+                UNIQUE(prompt_id, file_path)
             )
         """)
 
@@ -195,9 +206,6 @@ class PromptModel:
             )
         """)
 
-        # Add unique constraint to existing databases (migration)
-        self._migrate_add_unique_constraint(conn)
-
         # Check if we need to migrate from old schema with workflow_name
         self._migrate_workflow_name_removal(conn)
 
@@ -207,8 +215,11 @@ class PromptModel:
         # Migrate JSON tags to normalized junction tables
         self._migrate_json_tags_to_junction(conn)
 
-        # Usage tracking columns (last, after any migration that rebuilds prompts)
+        # Usage tracking columns (after any migration that rebuilds prompts)
         self._migrate_add_usage_columns(conn)
+
+        # Image uniqueness by full path instead of basename (3.2.4)
+        self._migrate_image_uniqueness_by_path(conn)
 
     def _create_indexes(self, conn: sqlite3.Connection) -> None:
         """
@@ -233,6 +244,7 @@ class PromptModel:
             "CREATE INDEX IF NOT EXISTS idx_prompts_run_count ON prompts(run_count)",
             "CREATE INDEX IF NOT EXISTS idx_prompt_images ON generated_images(prompt_id)",
             "CREATE INDEX IF NOT EXISTS idx_image_path ON generated_images(image_path)",
+            "CREATE INDEX IF NOT EXISTS idx_image_file_path ON generated_images(file_path)",
             "CREATE INDEX IF NOT EXISTS idx_generation_time ON generated_images(generation_time)",
             "CREATE INDEX IF NOT EXISTS idx_prompt_tags_tag ON prompt_tags(tag_id)",
             "CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)",
@@ -412,100 +424,6 @@ class PromptModel:
             self.logger.error(f"Migration error (foreign key types): {e}")
             raise
 
-    def _migrate_add_unique_constraint(self, conn: sqlite3.Connection) -> None:
-        """
-        Add UNIQUE constraint on (prompt_id, filename) to prevent duplicate image entries.
-
-        This migration:
-        1. Checks if the constraint already exists
-        2. Removes duplicate entries (keeping the most recent)
-        3. Recreates the table with the UNIQUE constraint
-
-        Args:
-            conn: Active database connection
-
-        Raises:
-            sqlite3.Error: If the rebuild fails (logged, nothing half-applied)
-        """
-        try:
-            cursor = conn.execute("PRAGMA index_list(generated_images)")
-            indexes = cursor.fetchall()
-
-            has_unique_constraint = False
-            for idx in indexes:
-                if idx[2] == 1:  # unique flag
-                    cursor = conn.execute(f"PRAGMA index_info({idx[1]})")
-                    columns = [col[2] for col in cursor.fetchall()]
-                    if "prompt_id" in columns and "filename" in columns:
-                        has_unique_constraint = True
-                        break
-
-            if has_unique_constraint:
-                return  # Already migrated
-
-            self.logger.info(
-                "Migrating database: adding UNIQUE constraint on (prompt_id, filename)"
-            )
-            with self._table_rebuild(conn):
-                # Remove duplicates keeping only the most recent (highest id)
-                cursor = conn.execute("""
-                    DELETE FROM generated_images
-                    WHERE id NOT IN (
-                        SELECT MAX(id) FROM generated_images
-                        GROUP BY prompt_id, filename
-                    )
-                """)
-                if cursor.rowcount > 0:
-                    self.logger.info(
-                        f"Removed {cursor.rowcount} duplicate image entries"
-                    )
-
-                conn.execute("DROP TABLE IF EXISTS generated_images_new")
-                conn.execute("""
-                    CREATE TABLE generated_images_new (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        prompt_id INTEGER NOT NULL,
-                        image_path TEXT NOT NULL,
-                        filename TEXT NOT NULL,
-                        generation_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        file_size INTEGER,
-                        width INTEGER,
-                        height INTEGER,
-                        format TEXT,
-                        workflow_data TEXT,
-                        prompt_metadata TEXT,
-                        parameters TEXT,
-                        FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE,
-                        UNIQUE(prompt_id, filename)
-                    )
-                """)
-                conn.execute("""
-                    INSERT INTO generated_images_new
-                    (id, prompt_id, image_path, filename, generation_time, file_size,
-                     width, height, format, workflow_data, prompt_metadata, parameters)
-                    SELECT id, prompt_id, image_path, filename, generation_time, file_size,
-                           width, height, format, workflow_data, prompt_metadata, parameters
-                    FROM generated_images
-                """)
-                conn.execute("DROP TABLE generated_images")
-                conn.execute(
-                    "ALTER TABLE generated_images_new RENAME TO generated_images"
-                )
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_prompt_images ON generated_images(prompt_id)"
-                )
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_image_path ON generated_images(image_path)"
-                )
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_generation_time ON generated_images(generation_time)"
-                )
-            self.logger.info("UNIQUE constraint migration completed successfully")
-
-        except sqlite3.Error as e:
-            self.logger.error(f"Migration error (image UNIQUE constraint): {e}")
-            raise
-
     def _migrate_json_tags_to_junction(self, conn: sqlite3.Connection) -> None:
         """
         Populate tags and prompt_tags tables from legacy JSON tags column.
@@ -558,11 +476,12 @@ class PromptModel:
 
     def _migrate_add_usage_columns(self, conn: sqlite3.Connection) -> None:
         """
-        Add last_used_at and run_count (3.2.4) and fill in any prompt without usage data.
+        Add last_used_at and run_count (3.2.4) and estimate usage for existing rows.
 
-        The backfill runs on every start but only touches rows whose last_used_at
-        is NULL, so it is a no-op once healed. That also repairs rows written by an
-        older version after a downgrade, or left unfilled by an interrupted upgrade.
+        The backfill runs only when the columns are added, i.e. on the upgrade
+        from a version without usage tracking. Afterwards a NULL last_used_at
+        means "never run": saving a prompt does not stamp it, only
+        record_prompt_use does, and "Recently Used" relies on that.
 
         The estimate comes from linked images: run_count is the image count (at
         least 1) and last_used_at the newest image time, falling back to created_at.
@@ -571,14 +490,19 @@ class PromptModel:
         """
         try:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(prompts)")}
+            added = False
             if "last_used_at" not in columns:
                 self.logger.info("Adding prompt usage column last_used_at")
                 conn.execute("ALTER TABLE prompts ADD COLUMN last_used_at TIMESTAMP")
+                added = True
             if "run_count" not in columns:
                 self.logger.info("Adding prompt usage column run_count")
                 conn.execute(
                     "ALTER TABLE prompts ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0"
                 )
+                added = True
+            if not added:
+                return
 
             cursor = conn.execute(f"""
                 UPDATE prompts SET
@@ -599,6 +523,80 @@ class PromptModel:
                 self.logger.info(f"Estimated usage for {cursor.rowcount} prompts")
         except sqlite3.Error as e:
             self.logger.error(f"Migration error (usage columns): {e}")
+            raise
+
+    def _migrate_image_uniqueness_by_path(self, conn: sqlite3.Connection) -> None:
+        """
+        Rebuild generated_images so an image is unique per (prompt_id, file_path).
+
+        Older schemas were unique per (prompt_id, filename), i.e. the basename,
+        so ComfyUI's same-named files in different date folders were silently
+        dropped. file_path holds normalize_image_path(image_path); rows whose
+        paths normalise to the same file collapse to the newest one.
+
+        Raises:
+            sqlite3.Error: If the rebuild fails (logged, nothing half-applied)
+        """
+        try:
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(generated_images)")
+            }
+            if "file_path" in columns:
+                return
+
+            self.logger.info("Migrating database: image uniqueness by full path")
+            with self._table_rebuild(conn):
+                rows = conn.execute(
+                    "SELECT id, prompt_id, image_path FROM generated_images ORDER BY id"
+                ).fetchall()
+                keep = {}
+                for row_id, prompt_id, image_path in rows:
+                    keep[(prompt_id, normalize_image_path(image_path))] = row_id
+
+                conn.execute("DROP TABLE IF EXISTS generated_images_new")
+                conn.execute("""
+                    CREATE TABLE generated_images_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        prompt_id INTEGER NOT NULL,
+                        image_path TEXT NOT NULL,
+                        filename TEXT NOT NULL,
+                        generation_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        file_size INTEGER,
+                        width INTEGER,
+                        height INTEGER,
+                        format TEXT,
+                        workflow_data TEXT,
+                        prompt_metadata TEXT,
+                        parameters TEXT,
+                        file_path TEXT,
+                        FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE,
+                        UNIQUE(prompt_id, file_path)
+                    )
+                """)
+                conn.executemany(
+                    """
+                    INSERT INTO generated_images_new
+                    (id, prompt_id, image_path, filename, generation_time, file_size,
+                     width, height, format, workflow_data, prompt_metadata, parameters,
+                     file_path)
+                    SELECT id, prompt_id, image_path, filename, generation_time, file_size,
+                           width, height, format, workflow_data, prompt_metadata, parameters,
+                           ?
+                    FROM generated_images WHERE id = ?
+                    """,
+                    [(file_path, row_id) for (_, file_path), row_id in keep.items()],
+                )
+                conn.execute("DROP TABLE generated_images")
+                conn.execute(
+                    "ALTER TABLE generated_images_new RENAME TO generated_images"
+                )
+            dropped = len(rows) - len(keep)
+            if dropped:
+                self.logger.info(f"Collapsed {dropped} duplicate image rows")
+            self.logger.info("Image path uniqueness migration completed")
+
+        except sqlite3.Error as e:
+            self.logger.error(f"Migration error (image path uniqueness): {e}")
             raise
 
     def migrate_database(self) -> None:

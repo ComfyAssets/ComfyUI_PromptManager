@@ -194,6 +194,71 @@ class TestIdempotentMigrations(MigrationTestCase):
         db = self._open()
         self.assertEqual(db.get_prompt_by_id(1)["text"], "a")
 
+    def test_image_table_is_rebuilt_with_uniqueness_by_full_path(self):
+        self._legacy_db(
+            [
+                "INSERT INTO prompts (text, hash, workflow_name) VALUES ('a', 'h1', 'wf')",
+                # same basename in two folders: both must survive
+                "INSERT INTO generated_images (prompt_id, image_path, filename)"
+                " VALUES (1, '/out/2026-01-01/a.png', 'a.png')",
+                "INSERT INTO generated_images (prompt_id, image_path, filename)"
+                " VALUES (1, '/out/2026-01-02/a.png', 'a.png')",
+                # two spellings of one file: only the newest row survives
+                "INSERT INTO generated_images (prompt_id, image_path, filename)"
+                " VALUES (1, '/out/x/../b.png', 'b.png')",
+                "INSERT INTO generated_images (prompt_id, image_path, filename)"
+                " VALUES (1, '/out/b.png', 'b.png')",
+            ]
+        )
+
+        db = self._open()
+
+        images = db.get_prompt_images(1)
+        self.assertEqual(len(images), 3)
+        self.assertIn("file_path", self._columns("generated_images"))
+        self.assertEqual(
+            sorted(i["file_path"] for i in images),
+            sorted(
+                os.path.normcase(os.path.normpath(p))
+                for p in (
+                    "/out/2026-01-01/a.png",
+                    "/out/2026-01-02/a.png",
+                    "/out/b.png",
+                )
+            ),
+        )
+        self.assertEqual([i["id"] for i in images if i["filename"] == "b.png"], [4])
+        self.assertEqual(
+            self._unique_columns("generated_images"), ["file_path", "prompt_id"]
+        )
+
+    def test_image_uniqueness_migration_is_not_undone_on_the_next_start(self):
+        self._legacy_db(
+            ["INSERT INTO prompts (text, hash, workflow_name) VALUES ('a', 'h1', 'wf')"]
+        )
+        self._open().close()
+        PromptModel.reset_schema_cache()
+        db = self._open()
+        self.assertEqual(
+            self._unique_columns("generated_images"), ["file_path", "prompt_id"]
+        )
+        self.assertTrue(db.link_image_to_prompt(1, "/out/1/a.png"))
+        self.assertTrue(db.link_image_to_prompt(1, "/out/2/a.png"))
+        self.assertEqual(len(db.get_prompt_images(1)), 2)
+
+    def _unique_columns(self, table):
+        conn = sqlite3.connect(self.path)
+        try:
+            columns = []
+            for idx in conn.execute(f"PRAGMA index_list({table})"):
+                if idx[2] == 1:
+                    columns.extend(
+                        c[2] for c in conn.execute(f"PRAGMA index_info({idx[1]})")
+                    )
+            return sorted(columns)
+        finally:
+            conn.close()
+
     def _table_names(self):
         conn = sqlite3.connect(self.path)
         try:

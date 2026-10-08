@@ -8,7 +8,7 @@ import datetime
 import os
 from typing import Optional, List, Dict, Any, Union
 
-from .models import PromptModel, utc_now_iso
+from .models import PromptModel, normalize_image_path, utc_now_iso
 
 # Import logging system
 try:
@@ -30,11 +30,15 @@ TAG_SUBQUERY = (
 
 # Server-side sort orders, keyed by the value the UI sends. Only these strings ever
 # reach ORDER BY; unknown keys fall back to DEFAULT_SORT.
+# last_used_at is NULL until the prompt has run, so "IS NULL" first keeps
+# never-run prompts after every run one (SQLite sorts NULL first in DESC).
 SORT_ORDERS = {
-    "last_used_desc": "last_used_at DESC, id DESC",
+    "last_used_desc": "last_used_at IS NULL, last_used_at DESC, id DESC",
     "created_desc": "created_at DESC, id DESC",
     "created_asc": "created_at ASC, id ASC",
-    "run_count_desc": "run_count DESC, last_used_at DESC, id DESC",
+    "run_count_desc": (
+        "run_count DESC, last_used_at IS NULL, last_used_at DESC, id DESC"
+    ),
     "rating_desc": "rating IS NULL, rating DESC, id DESC",
     "rating_asc": "rating IS NULL, rating ASC, id DESC",
     "text_asc": "text COLLATE NOCASE ASC, id ASC",
@@ -46,6 +50,18 @@ DEFAULT_SORT = "created_desc"
 def order_by_clause(sort: Optional[str]) -> str:
     """Return a whitelisted ORDER BY expression for a UI sort key."""
     return SORT_ORDERS.get(sort or DEFAULT_SORT, SORT_ORDERS[DEFAULT_SORT])
+
+
+LIKE_ESCAPE = "\\"
+
+
+def escape_like(term: str) -> str:
+    """Escape LIKE wildcards in user text; use with ``LIKE ? ESCAPE '\\'``."""
+    return (
+        term.replace(LIKE_ESCAPE, LIKE_ESCAPE + LIKE_ESCAPE)
+        .replace("%", LIKE_ESCAPE + "%")
+        .replace("_", LIKE_ESCAPE + "_")
+    )
 
 
 def _resolve_db_path(db_path: Optional[str] = None) -> str:
@@ -147,8 +163,8 @@ class PromptDatabase:
                     """
                     INSERT INTO prompts (
                         text, category, tags, rating, notes, hash, created_at,
-                        updated_at, last_used_at
-                    ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)
+                        updated_at
+                    ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)
                     """,
                     (
                         text.strip(),
@@ -158,7 +174,6 @@ class PromptDatabase:
                         prompt_hash,
                         datetime.datetime.now(datetime.timezone.utc).isoformat(),
                         datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                        utc_now_iso(),
                     ),
                 )
                 prompt_id = cursor.lastrowid
@@ -274,8 +289,8 @@ class PromptDatabase:
         params = []
 
         if text:
-            query_parts.append("AND text LIKE ?")
-            params.append(f"%{text}%")
+            query_parts.append("AND text LIKE ? ESCAPE '\\'")
+            params.append(f"%{escape_like(text)}%")
 
         if category:
             query_parts.append("AND category = ?")
@@ -287,9 +302,10 @@ class PromptDatabase:
                     query_parts.append(
                         "AND prompts.id IN ("
                         "  SELECT pt.prompt_id FROM prompt_tags pt"
-                        "  JOIN tags t ON pt.tag_id = t.id WHERE t.name LIKE ?)"
+                        "  JOIN tags t ON pt.tag_id = t.id"
+                        "  WHERE t.name LIKE ? ESCAPE '\\')"
                     )
-                    params.append(f"%{tag}%")
+                    params.append(f"%{escape_like(tag)}%")
                 else:
                     query_parts.append(
                         "AND prompts.id IN ("
@@ -659,8 +675,8 @@ class PromptDatabase:
         search_clause = ""
         params: list = []
         if search:
-            search_clause = "HAVING t.name LIKE ?"
-            params.append(f"%{search}%")
+            search_clause = "HAVING t.name LIKE ? ESCAPE '\\'"
+            params.append(f"%{escape_like(search)}%")
 
         sort_map = {
             "alpha_desc": "tag COLLATE NOCASE DESC",
@@ -1370,20 +1386,23 @@ class PromptDatabase:
 
                 # Proceed with linking
                 filename = os.path.basename(image_path)
+                file_path = normalize_image_path(image_path)
                 file_info = metadata.get("file_info", {}) if metadata else {}
 
-                # Use INSERT OR IGNORE to skip duplicates (same prompt_id + filename)
+                # INSERT OR IGNORE skips a file already linked to this prompt
+                # (same prompt_id + normalised full path)
                 cursor = conn.execute(
                     """
                     INSERT OR IGNORE INTO generated_images
-                    (prompt_id, image_path, filename, file_size, width, height, format,
-                     workflow_data, prompt_metadata, parameters)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (prompt_id, image_path, filename, file_path, file_size, width,
+                     height, format, workflow_data, prompt_metadata, parameters)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         prompt_id_int,
                         image_path,
                         filename,
+                        file_path,
                         file_info.get("size"),
                         (
                             file_info.get("dimensions", [None, None])[0]
@@ -1403,9 +1422,9 @@ class PromptDatabase:
                 )
                 conn.commit()
 
-                if cursor.lastrowid == 0:
+                if cursor.rowcount == 0:
                     self.logger.debug(
-                        f"Image {filename} already linked to prompt {prompt_id_int}"
+                        f"Image {file_path} already linked to prompt {prompt_id_int}"
                     )
                     return 0
 
@@ -1913,8 +1932,13 @@ class PromptDatabase:
                           gi.workflow_data, gi.prompt_metadata, gi.generation_time
                    FROM generated_images gi
                    JOIN prompts p ON gi.prompt_id = p.id
-                   WHERE gi.image_path = ? OR gi.image_path LIKE ?""",
-                (image_path, f"%{os.path.basename(image_path)}"),
+                   WHERE gi.image_path = ? OR gi.file_path = ?
+                      OR gi.image_path LIKE ? ESCAPE '\\'""",
+                (
+                    image_path,
+                    normalize_image_path(image_path),
+                    f"%{escape_like(os.path.basename(image_path))}",
+                ),
             )
             row = cursor.fetchone()
             if not row:
@@ -1944,8 +1968,9 @@ class PromptDatabase:
         """Return the prompt_id linked to an image, or None."""
         with self.model.get_connection() as conn:
             cursor = conn.execute(
-                "SELECT prompt_id FROM generated_images WHERE image_path = ?",
-                (image_path,),
+                "SELECT prompt_id FROM generated_images"
+                " WHERE image_path = ? OR file_path = ?",
+                (image_path, normalize_image_path(image_path)),
             )
             row = cursor.fetchone()
             return row[0] if row else None

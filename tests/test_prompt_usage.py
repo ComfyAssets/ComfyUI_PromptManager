@@ -44,10 +44,32 @@ class UsageTestCase(unittest.TestCase):
 
 
 class TestRecordPromptUse(UsageTestCase):
-    def test_new_prompt_starts_unused_but_timestamped(self):
+    def test_new_prompt_starts_unused_and_unstamped(self):
+        # Saving is not using: only record_prompt_use stamps last_used_at
         prompt = self.db.get_prompt_by_id(self._save("fresh"))
         self.assertEqual(prompt["run_count"], 0)
-        self.assertTrue(prompt["last_used_at"])
+        self.assertIsNone(prompt["last_used_at"])
+
+    def test_never_run_prompts_sort_after_run_ones(self):
+        ran = self._save("run once")
+        later = self._save("saved later, never run")
+        self.db.record_prompt_use(ran)
+        last = self._save("saved last, never run")
+
+        result = self.db.get_recent_prompts(limit=10, sort="last_used_desc")
+        # The run prompt leads; never-run prompts follow, newest first
+        self.assertEqual(self._ids(result["prompts"]), [ran, last, later])
+
+        searched = self.db.search_prompts(text="run", sort="last_used_desc")
+        self.assertEqual(self._ids(searched)[0], ran)
+
+    def test_most_used_sort_breaks_ties_with_unstamped_last(self):
+        a = self._save("a")
+        b = self._save("b")
+        self._set(a, run_count=2, last_used_at="2026-01-01T00:00:00.000+00:00")
+        self._set(b, run_count=2)  # same count, never stamped
+        result = self.db.get_recent_prompts(limit=10, sort="run_count_desc")
+        self.assertEqual(self._ids(result["prompts"]), [a, b])
 
     def test_record_use_increments_and_touches_last_used(self):
         pid = self._save("used")
@@ -182,9 +204,11 @@ class TestUsageMigration(unittest.TestCase):
         self.assertEqual(unused["run_count"], 1)
         self.assertTrue(unused["last_used_at"].startswith("2026-01-01T10:00:00"))
 
-    def test_rows_written_while_downgraded_are_healed_on_next_start(self):
+    def test_backfill_runs_only_when_the_columns_are_added(self):
         db = PromptDatabase(self.path)
-        # 3.2.3 does not know the columns: its inserts leave last_used_at NULL
+        # A row whose usage is unknown (e.g. written by 3.2.3 after a downgrade)
+        # stays "never run": a restart must not invent a run for it, otherwise
+        # Recently Used could never tell saved-but-unused prompts from run ones.
         with sqlite3.connect(self.path) as conn:
             conn.execute(
                 "INSERT INTO prompts (text, hash, created_at)"
@@ -196,9 +220,9 @@ class TestUsageMigration(unittest.TestCase):
         self.assertIsNone(db.get_prompt_by_id(legacy_id)["last_used_at"])
 
         PromptModel.reset_schema_cache()
-        healed = PromptDatabase(self.path).get_prompt_by_id(legacy_id)
-        self.assertTrue(healed["last_used_at"].startswith("2026-04-01T00:00:00"))
-        self.assertEqual(healed["run_count"], 1)
+        later = PromptDatabase(self.path).get_prompt_by_id(legacy_id)
+        self.assertIsNone(later["last_used_at"])
+        self.assertEqual(later["run_count"], 0)
 
     def test_migration_runs_once(self):
         db = PromptDatabase(self.path)

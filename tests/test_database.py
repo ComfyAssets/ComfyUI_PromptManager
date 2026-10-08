@@ -455,6 +455,72 @@ class TestImageOperations(DatabaseTestCase):
         self.assertEqual(len(images), 0)
 
 
+class TestImageUniquenessByPath(DatabaseTestCase):
+    """ComfyUI writes same-named files into different date folders."""
+
+    def _link(self, prompt_id, path):
+        return self.db.link_image_to_prompt(prompt_id=prompt_id, image_path=path)
+
+    def test_same_filename_in_different_folders_both_link(self):
+        pid = self._save("two folders")
+        first = self._link(pid, os.path.join("out", "2026-01-01", "a.png"))
+        second = self._link(pid, os.path.join("out", "2026-01-02", "a.png"))
+
+        self.assertTrue(first)
+        self.assertTrue(second)
+        self.assertNotEqual(first, second)
+        self.assertEqual(len(self.db.get_prompt_images(pid)), 2)
+
+    def test_same_path_spelled_differently_links_once(self):
+        pid = self._save("one file")
+        first = self._link(pid, os.path.join("out", "x", "..", "a.png"))
+        second = self._link(pid, os.path.join(".", "out", "a.png"))
+
+        self.assertTrue(first)
+        self.assertEqual(second, 0)
+        images = self.db.get_prompt_images(pid)
+        self.assertEqual(len(images), 1)
+        expected = os.path.normcase(
+            os.path.normpath(os.path.abspath(os.path.join("out", "a.png")))
+        )
+        self.assertEqual(images[0]["file_path"], expected)
+
+    def test_same_file_can_link_to_two_prompts(self):
+        a = self._save("prompt a")
+        b = self._save("prompt b")
+        path = os.path.join("out", "shared.png")
+        self.assertTrue(self._link(a, path))
+        self.assertTrue(self._link(b, path))
+
+
+class TestSearchEscapesLikeWildcards(DatabaseTestCase):
+    def test_percent_is_literal(self):
+        self._save("100% sure")
+        self._save("100 percent sure")
+        texts = [p["text"] for p in self.db.search_prompts(text="100%")]
+        self.assertEqual(texts, ["100% sure"])
+
+    def test_underscore_is_literal(self):
+        self._save("snake_case name")
+        self._save("snakeXcase name")
+        texts = [p["text"] for p in self.db.search_prompts(text="snake_case")]
+        self.assertEqual(texts, ["snake_case name"])
+
+    def test_backslash_is_literal(self):
+        self._save("path C:\\out\\img")
+        self._save("path C:out img")
+        texts = [p["text"] for p in self.db.search_prompts(text="C:\\out")]
+        self.assertEqual(texts, ["path C:\\out\\img"])
+
+    def test_partial_tag_filter_is_literal(self):
+        self._save("tagged a", tags=["50%_off"])
+        self._save("tagged b", tags=["50x_off"])
+        texts = [
+            p["text"] for p in self.db.search_prompts(tags=["50%"], tag_partial=True)
+        ]
+        self.assertEqual(texts, ["tagged a"])
+
+
 class TestEdgeCases(DatabaseTestCase):
     """Test edge cases and boundary conditions."""
 
