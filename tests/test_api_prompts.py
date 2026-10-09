@@ -336,6 +336,62 @@ class TestTagStatsAndFilters(RouteCoverageCase):
         self.assertEqual((bad_status, err_status), (400, 500))
 
 
+class TestTagSuggestRoute(RouteCoverageCase):
+    """GET /prompt_manager/tags/suggest?q=&with=&limit="""
+
+    URL = "/prompt_manager/tags/suggest"
+
+    def _seed(self):
+        for text, tags in (
+            ("P1", ["asian", "portrait", "smile"]),
+            ("P2", ["asian", "portrait"]),
+            ("P3", ["portrait", "dog"]),
+        ):
+            self.api.db.save_prompt(text, "test", tags)
+
+    async def test_suggestions_narrow_by_context_tags(self):
+        self._seed()
+
+        status, data = await self._json("GET", f"{self.URL}?q=&with=asian")
+
+        self.assertEqual(status, 200)
+        self.assertTrue(data["success"])
+        self.assertEqual(
+            [(t["name"], t["count"]) for t in data["suggestions"]],
+            [("portrait", 2), ("smile", 1)],
+        )
+
+    async def test_prefix_and_messy_context_parsing(self):
+        self._seed()
+
+        status, data = await self._json(
+            "GET", f"{self.URL}?q=S&with=%20asian%2C%2Cportrait%2Casian%20"
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual([t["name"] for t in data["suggestions"]], ["smile"])
+
+    async def test_limit_is_clamped_and_route_is_not_a_tag_name(self):
+        self._seed()
+
+        status, data = await self._json("GET", f"{self.URL}?limit=1")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(data["suggestions"]), 1)
+
+        status, data = await self._json("GET", f"{self.URL}?limit=9999")
+        self.assertEqual(status, 200)
+        self.assertLessEqual(len(data["suggestions"]), 50)
+
+        status, data = await self._json("GET", f"{self.URL}?limit=abc")
+        self.assertEqual(status, 200)
+
+    async def test_db_failure_is_500(self):
+        self._break("suggest_tags")
+        status, data = await self._json("GET", self.URL)
+        self.assertEqual(status, 500)
+        self.assertFalse(data["success"])
+
+
 class TestTagRoutePagingBounds(RouteCoverageCase):
     """Tag listings clamp limit/offset like every other list endpoint."""
 

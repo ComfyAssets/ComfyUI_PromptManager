@@ -769,6 +769,53 @@ class PromptDatabase:
             "has_more": (offset + limit) < total,
         }
 
+    def suggest_tags(
+        self, prefix: str, with_tags: List[str], limit: int = 15
+    ) -> List[Dict[str, Any]]:
+        """Tag autocomplete narrowed by co-occurrence.
+
+        Returns tags whose name starts with ``prefix`` (case-insensitive),
+        counted over the prompts that carry every tag in ``with_tags``; the
+        context tags themselves are left out. Ordered by count, then name.
+        """
+        seen = set()
+        context = []
+        for raw in with_tags or []:
+            name = str(raw).strip()
+            if name and name.lower() not in seen:
+                seen.add(name.lower())
+                context.append(name)
+
+        where = ["t.name LIKE ? ESCAPE '\\'"]
+        params: list = [f"{escape_like(prefix or '')}%"]
+        if context:
+            placeholders = ",".join("?" * len(context))
+            where.append(
+                "pt.prompt_id IN ("
+                " SELECT pt2.prompt_id FROM prompt_tags pt2"
+                " JOIN tags t2 ON t2.id = pt2.tag_id"
+                f" WHERE t2.name COLLATE NOCASE IN ({placeholders})"
+                " GROUP BY pt2.prompt_id"
+                " HAVING COUNT(DISTINCT lower(t2.name)) = ?)"
+            )
+            params.extend(context)
+            params.append(len(context))
+            where.append(f"t.name COLLATE NOCASE NOT IN ({placeholders})")
+            params.extend(context)
+        params.append(max(1, int(limit)))
+
+        sql = (
+            "SELECT t.name AS name, COUNT(*) AS count"
+            " FROM prompt_tags pt JOIN tags t ON t.id = pt.tag_id"
+            f" WHERE {' AND '.join(where)}"
+            " GROUP BY t.id"
+            " ORDER BY count DESC, t.name COLLATE NOCASE ASC"
+            " LIMIT ?"
+        )
+        with self.model.get_connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [{"name": row["name"], "count": row["count"]} for row in rows]
+
     def get_prompts_by_tags(
         self, tags: List[str], mode: str = "and", limit: int = 20, offset: int = 0
     ) -> Dict[str, Any]:

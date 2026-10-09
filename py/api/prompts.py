@@ -134,6 +134,10 @@ class PromptRoutesMixin:
         async def get_tags_filter_route(request):
             return await self.get_tags_filter(request)
 
+        @routes.get("/prompt_manager/tags/suggest")
+        async def suggest_tags_route(request):
+            return await self.suggest_tags(request)
+
         # Bulk tag operations (register BEFORE {tag_name} to avoid path param match)
         @routes.post("/prompt_manager/tags/merge")
         async def merge_tags_route(request):
@@ -450,6 +454,43 @@ class PromptRoutesMixin:
             self.logger.error(f"Tag prompts error: {e}", exc_info=True)
             return web.json_response(
                 {"success": False, "error": safe_error_message(e)}, status=500
+            )
+
+    async def suggest_tags(self, request):
+        """Autocomplete for the tag search box.
+
+        ``q`` is the prefix being typed, ``with`` the comma-separated tags
+        already entered: only tags that co-occur with all of them are offered.
+        """
+        try:
+            prefix = request.query.get("q", "").strip()[:100]
+            context = []
+            seen = set()
+            for raw in request.query.get("with", "").split(","):
+                name = raw.strip()
+                if name and name.lower() not in seen:
+                    seen.add(name.lower())
+                    context.append(name)
+            context = context[:10]
+            try:
+                limit = int(request.query.get("limit", 15))
+            except ValueError:
+                limit = 15
+            limit = max(1, min(limit, 50))
+
+            suggestions = await self._run_in_executor(
+                self.db.suggest_tags, prefix, context, limit
+            )
+            return web.json_response({"success": True, "suggestions": suggestions})
+        except Exception as e:
+            self.logger.error(f"Tag suggest error: {e}")
+            return web.json_response(
+                {
+                    "success": False,
+                    "error": "Failed to suggest tags",
+                    "suggestions": [],
+                },
+                status=500,
             )
 
     async def get_tags_filter(self, request):

@@ -43,6 +43,7 @@
                     "open-film": ({ promptId, index }) => this.openFilmStripViewer(promptId, index),
                     "download-log": ({ filename }) => this.downloadLogFile(filename),
                     "remove-review-tag": ({ index }) => this.removeReviewTag(index),
+                    "pick-tag-suggestion": ({ tag }) => this.pickTagSuggestion(tag),
                 };
 
                 this.init();
@@ -100,6 +101,16 @@
                 document.getElementById("searchText").addEventListener("keyup", (e) => {
                     if (e.key === "Enter") this.search();
                 });
+
+                // Tag autocomplete: suggestions narrow to tags that co-occur with the ones typed
+                this.tagSuggest = { items: [], index: -1, request: ApiClient.latestOnly(), timer: null };
+                const tagsInput = document.getElementById("searchTags");
+                tagsInput.addEventListener("input", () => this.scheduleTagSuggestions());
+                tagsInput.addEventListener("focus", () => this.scheduleTagSuggestions(0));
+                tagsInput.addEventListener("keydown", (e) => this.handleTagSuggestKey(e));
+                tagsInput.addEventListener("blur", () => setTimeout(() => this.hideTagSuggestions(), 150));
+                // A click on a suggestion must not blur the input before the click lands
+                document.getElementById("searchTagSuggestions").addEventListener("mousedown", (e) => e.preventDefault());
 
                 // Bulk actions
                 document.getElementById("selectAll").addEventListener("change", (e) =>
@@ -464,6 +475,89 @@
                         document.getElementById("avgRating").textContent = avgRating.toFixed(1);
                     }
                 }
+            }
+
+            // ── Tag autocomplete ─────────────────────────────────────────────
+            scheduleTagSuggestions(delay = 150) {
+                clearTimeout(this.tagSuggest.timer);
+                this.tagSuggest.timer = setTimeout(() => this.loadTagSuggestions(), delay);
+            }
+
+            async loadTagSuggestions() {
+                const input = document.getElementById("searchTags");
+                const url = TagAutocomplete.suggestUrl(input.value);
+                try {
+                    const data = await this.tagSuggest.request((signal) => this.api.get(url, { signal }));
+                    if (data === ApiClient.STALE) return;
+                    this.renderTagSuggestions(data.suggestions || []);
+                } catch (_) {
+                    this.hideTagSuggestions();
+                }
+            }
+
+            renderTagSuggestions(items) {
+                const box = document.getElementById("searchTagSuggestions");
+                this.tagSuggest.items = items;
+                this.tagSuggest.index = -1;
+                const focused = document.activeElement === document.getElementById("searchTags");
+                if (!items.length || !focused) {
+                    box.classList.add("hidden");
+                    return;
+                }
+                box.innerHTML = items.map((s, i) => `
+                    <div class="flex items-center justify-between px-3 py-1.5 cursor-pointer text-[13px] text-pm hover:bg-pm-hover"
+                         role="option" data-index="${i}" data-action="pick-tag-suggestion" data-tag="${escapeHtml(s.name)}">
+                        <span class="truncate">${escapeHtml(s.name)}</span>
+                        <span class="text-xs text-pm-muted ml-3">${escapeHtml(String(s.count))}</span>
+                    </div>`).join("");
+                box.classList.remove("hidden");
+            }
+
+            hideTagSuggestions() {
+                document.getElementById("searchTagSuggestions").classList.add("hidden");
+                this.tagSuggest.index = -1;
+            }
+
+            highlightTagSuggestion() {
+                const box = document.getElementById("searchTagSuggestions");
+                box.querySelectorAll("[data-index]").forEach((el) => {
+                    const selected = Number(el.dataset.index) === this.tagSuggest.index;
+                    el.classList.toggle("bg-pm-hover", selected);
+                    if (selected) el.scrollIntoView({ block: "nearest" });
+                });
+            }
+
+            handleTagSuggestKey(e) {
+                const open = !document.getElementById("searchTagSuggestions").classList.contains("hidden");
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                    e.preventDefault();
+                    if (!open) {
+                        this.scheduleTagSuggestions(0);
+                        return;
+                    }
+                    const delta = e.key === "ArrowDown" ? 1 : -1;
+                    this.tagSuggest.index = TagAutocomplete.moveSelection(this.tagSuggest.index, delta, this.tagSuggest.items.length);
+                    this.highlightTagSuggestion();
+                    return;
+                }
+                if ((e.key === "Enter" || e.key === "Tab") && open && this.tagSuggest.index >= 0) {
+                    e.preventDefault();
+                    this.pickTagSuggestion(this.tagSuggest.items[this.tagSuggest.index].name);
+                    return;
+                }
+                if (e.key === "Enter") {
+                    this.hideTagSuggestions();
+                    this.search();
+                    return;
+                }
+                if (e.key === "Escape") this.hideTagSuggestions();
+            }
+
+            pickTagSuggestion(tag) {
+                const input = document.getElementById("searchTags");
+                input.value = TagAutocomplete.applySuggestion(input.value, tag);
+                input.focus();
+                this.scheduleTagSuggestions(0); // offer the next tag, narrowed by this one
             }
 
             async search(page = 1) {

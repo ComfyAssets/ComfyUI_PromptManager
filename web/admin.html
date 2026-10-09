@@ -10,6 +10,7 @@
     <script src="/prompt_manager/js/api-client.js"></script>
     <script src="/prompt_manager/js/png-metadata.js"></script>
     <script src="/prompt_manager/js/list-state.js"></script>
+    <script src="/prompt_manager/js/tag-autocomplete.js"></script>
     <script src="/prompt_manager/js/sse-stream.js"></script>
     <script src="/prompt_manager/js/scan-progress.js"></script>
     <script src="/prompt_manager/js/data-actions.js"></script>
@@ -106,10 +107,13 @@
                                 <option value="">All Folders</option>
                             </select>
                         </div>
-                        <div>
+                        <div class="relative">
                             <label class="block text-xs font-medium text-pm-secondary mb-1 uppercase tracking-wide">Tags</label>
-                            <input type="text" id="searchTags" placeholder="tag1, tag2..."
+                            <input type="text" id="searchTags" placeholder="tag1, tag2..." autocomplete="off"
                                    class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] placeholder:text-pm-muted focus:outline-none">
+                            <!-- Autocomplete: tags that co-occur with the ones already typed -->
+                            <div id="searchTagSuggestions" role="listbox"
+                                 class="absolute left-0 right-0 top-full mt-1 bg-pm-surface border border-pm rounded-pm-md shadow-pm hidden z-20 max-h-56 overflow-y-auto"></div>
                         </div>
                         <div>
                             <label class="block text-xs font-medium text-pm-secondary mb-1 uppercase tracking-wide">Sort By</label>

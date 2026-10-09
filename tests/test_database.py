@@ -146,6 +146,52 @@ class TestPromptCRUD(DatabaseTestCase):
         self.assertFalse(result)
 
 
+class TestTagSuggestions(DatabaseTestCase):
+    """suggest_tags(prefix, with_tags, limit): autocomplete narrowed by co-occurrence.
+
+    Context tags restrict suggestions to tags seen on the same prompts.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._save("P1", tags=["asian", "portrait", "smile"])
+        self._save("P2", tags=["asian", "portrait"])
+        self._save("P3", tags=["portrait", "dog"])
+        self._save("P4", tags=["asian", "dog"])
+        self._save("P5", tags=["snow_day"])
+
+    def _names(self, *args, **kwargs):
+        return [(t["name"], t["count"]) for t in self.db.suggest_tags(*args, **kwargs)]
+
+    def test_no_context_lists_every_tag_by_frequency_then_name(self):
+        self.assertEqual(
+            self._names("", []),
+            [("asian", 3), ("portrait", 3), ("dog", 2), ("smile", 1), ("snow_day", 1)],
+        )
+
+    def test_prefix_is_case_insensitive_and_anchored_at_the_start(self):
+        self.assertEqual(self._names("P", []), [("portrait", 3)])
+        self.assertEqual(self._names("s", []), [("smile", 1), ("snow_day", 1)])
+        self.assertEqual(self._names("ort", []), [])
+
+    def test_context_tags_narrow_to_co_occurring_tags_and_exclude_themselves(self):
+        self.assertEqual(
+            self._names("", ["asian"]), [("portrait", 2), ("dog", 1), ("smile", 1)]
+        )
+        self.assertEqual(self._names("", ["asian", "portrait"]), [("smile", 1)])
+        self.assertEqual(self._names("S", ["asian"]), [("smile", 1)])
+        self.assertEqual(self._names("", ["ASIAN", "dog"]), [])
+
+    def test_unknown_context_tag_yields_nothing(self):
+        self.assertEqual(self._names("", ["unicorn"]), [])
+
+    def test_limit_and_like_wildcards(self):
+        self.assertEqual(len(self._names("", [], limit=2)), 2)
+        self.assertEqual(self._names("%", []), [])
+        self.assertEqual(self._names("snow_", []), [("snow_day", 1)])
+        self.assertEqual(self._names("snow%", []), [])
+
+
 class TestTagJunctionTables(DatabaseTestCase):
     """Test normalized tag storage via junction tables."""
 
