@@ -1,7 +1,7 @@
 [project]
 name = "promptmanager"
 description = "A powerful ComfyUI custom node that extends the standard text encoder with persistent prompt storage, advanced search capabilities, and an automatic image gallery system using SQLite."
-version = "3.2.4"
+version = "3.3.0"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
 dependencies = ["watchdog>=2.1.0", "Pillow>=8.0.0"]
