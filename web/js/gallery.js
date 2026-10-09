@@ -1796,7 +1796,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     progressText.textContent = 'Completed!';
                     progressDetails.textContent = `Generated ${result.count} new, skipped ${result.skipped || 0} existing (${result.total_images} total) in ${result.elapsed_time}s`;
                     
-                    this.showNotification('Thumbnails generated successfully!', 'success');
+                    this.notifyThumbnailsDone(result);
                     
                     // Hide progress after a delay
                     setTimeout(() => {
@@ -2531,7 +2531,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     addStatusMessage('Connecting to thumbnail generation service...');
                     
                     // Start thumbnail generation with progress monitoring
-                    await this.generateThumbnailsWithProgressInModal({
+                    const thumbResult = await this.generateThumbnailsWithProgressInModal({
                         progressText,
                         progressPercent,
                         progressBar,
@@ -2554,7 +2554,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         localStorage.setItem('gallerySettings', JSON.stringify(settings));
                         
                         // Show notification
-                        this.showNotification('Thumbnails generated successfully!', 'success');
+                        this.notifyThumbnailsDone(thumbResult);
                     }
                     
                 } catch (error) {
@@ -3486,6 +3486,19 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 this.autoTagState.reviewIndex = 0;
                 this.autoTagState.currentTags = [];
                 this.hideModal("autoTagReviewModal");
+            }
+
+            notifyThumbnailsDone(result) {
+                // A run stops at the server's per-run cap; say so instead of claiming it is finished.
+                const remaining = Number(result && result.remaining) || 0;
+                if (remaining > 0) {
+                    this.showNotification(
+                        `${remaining} thumbnails still pending. Run "Generate Thumbnails" again to continue.`,
+                        'warning'
+                    );
+                    return;
+                }
+                this.showNotification('Thumbnails generated successfully!', 'success');
             }
 
             showNotification(message, type = 'info') {
