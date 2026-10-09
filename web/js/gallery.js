@@ -25,6 +25,7 @@
                 };
 
                 this.initializeEventListeners();
+                this.applySettings(this.getSettings());
                 this.loadFolderTree();
                 this.loadImages();
 
@@ -44,8 +45,26 @@
                 });
             }
 
+            handleMediaError(img) {
+                if (!img || img.tagName !== 'IMG' || !img.dataset || img.dataset.original === undefined) return;
+                const next = ImageHelpers.fallbackImageSource(img.getAttribute('src'), img.dataset);
+                if (next) {
+                    // The thumbnail failed (stale cache, half-written file): show the original instead
+                    img.dataset.fellBack = '1';
+                    img.src = next;
+                    return;
+                }
+                img.style.display = 'none';
+                const fallback = img.nextElementSibling;
+                if (fallback && fallback.dataset && fallback.dataset.mediaFallback !== undefined) {
+                    fallback.style.display = 'flex';
+                }
+            }
+
             initializeEventListeners() {
                 document.addEventListener('click', (e) => this.handleActionClick(e));
+                // Image load failures do not bubble; capture them once for every card
+                document.addEventListener('error', (e) => this.handleMediaError(e.target), true);
                 document.getElementById('refreshBtn').addEventListener('click', () => this.loadImages());
                 document.getElementById('limitSelector').addEventListener('change', (e) => this.changeLimit(parseInt(e.target.value)));
                 document.getElementById('gridViewBtn').addEventListener('click', () => this.setViewMode('grid'));
@@ -408,6 +427,7 @@
             renderGridView() {
                 const grid = document.getElementById('galleryGrid');
                 const list = document.getElementById('galleryList');
+                const showInfo = this.getSettings().showImageInfo;
                 
                 list.classList.add('hidden');
                 grid.classList.remove('hidden');
@@ -431,9 +451,9 @@
                                  data-caption="${escapeHtml(this.formatImageCaption(image))}"
                                  data-media-type="${escapeHtml(mediaType)}"
                                  data-is-video="${isVideo}"
-                                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'">
+>
                             <!-- Fallback for failed thumbnails -->
-                            <div class="hidden absolute inset-0 bg-pm-surface text-pm-secondary flex items-center justify-center">
+                            <div data-media-fallback class="hidden absolute inset-0 bg-pm-surface text-pm-secondary flex items-center justify-center">
                                 <div class="text-center">
                                     <div class="text-lg mb-1">${isVideo ? '🎬' : '🖼️'}</div>
                                     <div class="text-xs">Failed to load</div>
@@ -457,7 +477,7 @@
                         </div>
                         <div class="p-2">
                             <div class="text-xs text-pm-secondary truncate" title="${escapeHtml(image.filename)}">${escapeHtml(image.filename)}</div>
-                            <div class="text-xs text-pm-muted">${this.formatFileSize(image.size)}${hasThumb ? ' • Fast' : ''}${isVideo ? ' • Video' : ''}</div>
+                            ${showInfo ? `<div class="text-xs text-pm-muted">${this.formatFileSize(image.size)}${hasThumb ? ' • Fast' : ''}${isVideo ? ' • Video' : ''}</div>` : ''}
                         </div>
                     </div>
                 `;
@@ -467,6 +487,7 @@
             renderListView() {
                 const grid = document.getElementById('galleryGrid');
                 const list = document.getElementById('galleryList');
+                const showInfo = this.getSettings().showImageInfo;
                 
                 grid.classList.add('hidden');
                 list.classList.remove('hidden');
@@ -489,14 +510,13 @@
                                  data-thumbnail="${escapeHtml(image.thumbnail_url || '')}"
                                  data-caption="${escapeHtml(this.formatImageCaption(image))}"
                                  data-media-type="${escapeHtml(mediaType)}"
-                                 data-is-video="${isVideo}"
-                                 onerror="this.style.display='none'">
+                                 data-is-video="${isVideo}">
                             ${hasThumb ? '<div class="absolute top-1 right-1 w-2 h-2 bg-pm-success rounded-full" title="Thumbnail available"></div>' : ''}
                             ${isVideo ? '<div class="absolute top-1 left-1 w-4 h-3 bg-pm-error text-pm text-xs flex items-center justify-center rounded" title="Video">▶</div>' : ''}
                         </div>
                         <div class="flex-1 min-w-0">
                             <div class="text-sm font-medium text-pm truncate">${escapeHtml(image.filename)}${isVideo ? ' 🎬' : ''}</div>
-                            <div class="text-xs text-pm-secondary">${this.formatFileSize(image.size)} • ${new Date(image.modified_time * 1000).toLocaleDateString()}${hasThumb ? ' • Fast' : ''}${isVideo ? ' • Video' : ''}</div>
+                            ${showInfo ? `<div class="text-xs text-pm-secondary">${this.formatFileSize(image.size)} • ${new Date(image.modified_time * 1000).toLocaleDateString()}${hasThumb ? ' • Fast' : ''}${isVideo ? ' • Video' : ''}</div>` : ''}
                             <div class="text-xs text-pm-muted truncate">${escapeHtml(image.relative_path)}</div>
                         </div>
                         <div class="flex-shrink-0 ml-4">
@@ -1657,37 +1677,14 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
 
             getSettings() {
-                const defaultSettings = {
-                    lazyLoading: true,
-                    imageQuality: 'medium',
-                    defaultViewMode: 'grid',
-                    defaultLimit: 100,
-                    gridColumns: 8,
-                    showImageInfo: true,
-                    autoLoadMetadata: true,
-                    cacheMetadata: true,
-                    showFilePaths: true,
-                    sidebarCollapsedByDefault: false,
-                    debugMode: false,
-                    apiTimeout: 30,
-                    thumbnailsGenerated: false,
-                    checkThumbnailsAtStartup: true,
-                    // Video settings
-                    videoAutoplay: false,
-                    videoMute: true,
-                    videoLoop: true
-                };
-
+                let stored = null;
                 try {
-                    const stored = localStorage.getItem('gallerySettings');
-                    if (stored) {
-                        return { ...defaultSettings, ...JSON.parse(stored) };
-                    }
+                    const raw = localStorage.getItem('gallerySettings');
+                    if (raw) stored = JSON.parse(raw);
                 } catch (e) {
                     console.warn('Failed to load settings from localStorage:', e);
                 }
-
-                return defaultSettings;
+                return GallerySettings.normalizeGallerySettings(stored);
             }
 
             saveSettings() {
@@ -1734,29 +1731,31 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
 
             applySettings(settings) {
-                // Apply grid columns
+                // Runs at startup and after Save, so every display setting takes effect
+                // without a reload. Settings that change what is rendered re-render.
+                const loaded = this.images.length > 0;
                 this.updateGridColumns(settings.gridColumns);
-                
-                // Apply default view mode if different
+
+                const limitChanged = this.limit !== settings.defaultLimit;
+                this.limit = settings.defaultLimit;
+                const limitSelector = document.getElementById('limitSelector');
+                if (limitSelector) limitSelector.value = String(settings.defaultLimit);
+
                 if (this.viewMode !== settings.defaultViewMode) {
                     this.setViewMode(settings.defaultViewMode);
+                } else if (loaded && !limitChanged) {
+                    this.renderGallery(); // e.g. "Show Media Info" toggled
                 }
-                
-                // Apply default limit if different
-                if (this.limit !== settings.defaultLimit) {
-                    this.limit = settings.defaultLimit;
-                    document.getElementById('limitSelector').value = settings.defaultLimit;
-                }
+                if (loaded && limitChanged) this.loadImages(1);
             }
 
             updateGridColumns(columns) {
                 const gridContainer = document.getElementById('galleryGrid');
-                if (gridContainer) {
-                    // Remove existing column classes
-                    gridContainer.className = gridContainer.className.replace(/xl:grid-cols-\d+/g, '');
-                    // Add new column class
-                    gridContainer.classList.add(`xl:grid-cols-${columns}`);
-                }
+                if (!gridContainer) return;
+                // The Tailwind column classes are compiled for a fixed set of values and a
+                // wider breakpoint overrides them; an explicit template wins on desktop widths.
+                gridContainer.style.setProperty('--gallery-columns', GallerySettings.gridColumnsStyle(columns));
+                gridContainer.classList.add('gallery-columns-custom');
             }
 
             async generateThumbnails() {
