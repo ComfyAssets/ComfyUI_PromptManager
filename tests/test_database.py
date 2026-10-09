@@ -1058,8 +1058,10 @@ class TestMaintenanceOperations(DatabaseTestCase):
         self.db.link_image_to_prompt(pid, "loose.png")
 
         flat = self.db.get_prompt_subfolders(root_dirs=[root])
-        self.assertIn(os.path.join("2026", "08-Aug", "2026-08-06"), flat)
-        self.assertIn(os.path.join(os.sep, "elsewhere", "deep"), flat)
+        self.assertIn("2026/08-Aug/2026-08-06", flat)
+        self.assertIn(
+            os.path.join(os.sep, "elsewhere", "deep").replace(os.sep, "/"), flat
+        )
         self.assertNotIn(".", flat)
 
         nested = self.db.get_prompt_subfolders(root_dirs=[root], include_ancestors=True)

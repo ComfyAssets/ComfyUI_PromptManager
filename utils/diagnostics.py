@@ -84,7 +84,7 @@ class GalleryDiagnostics:
             db_path = "prompts.db"
 
         if not os.path.isabs(db_path):
-            db_path = os.path.join(extension_root, db_path)
+            db_path = os.path.normpath(os.path.join(extension_root, db_path))
         return db_path
 
     def run_full_diagnostic(self) -> Dict[str, Any]:

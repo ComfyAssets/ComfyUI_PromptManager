@@ -683,7 +683,7 @@ class PromptDatabase:
                     # Preserve full relative-style path instead of collapsing
                     # to just the basename, which loses hierarchy and creates
                     # ambiguity (e.g. foo/bar and baz/bar both become "bar").
-                    folders.add(parent)
+                    folders.add(parent.replace(os.sep, "/"))
 
         if include_ancestors:
             ancestors = set()

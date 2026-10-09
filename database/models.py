@@ -49,6 +49,10 @@ def normalize_image_path(path: str) -> str:
     return os.path.normcase(os.path.normpath(os.path.abspath(path)))
 
 
+# How long a connection waits for a locked database before giving up. Thirty
+# seconds covers a scan or a thumbnail run writing while ComfyUI saves images,
+# and the slow disks of CI runners.
+BUSY_TIMEOUT_SECONDS = 30
 SQLITE_HEADER = b"SQLite format 3\x00"
 REQUIRED_PROMPT_COLUMNS = ("id", "text", "created_at")
 
@@ -103,10 +107,10 @@ class PromptModel:
             if key in PromptModel._initialized_paths and os.path.exists(self.db_path):
                 return
             try:
-                conn = sqlite3.connect(self.db_path)
+                conn = sqlite3.connect(self.db_path, timeout=BUSY_TIMEOUT_SECONDS)
                 try:
                     conn.execute("PRAGMA journal_mode = WAL")
-                    conn.execute("PRAGMA busy_timeout = 5000")
+                    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_SECONDS * 1000}")
                     conn.execute("PRAGMA foreign_keys = ON")
                     self._create_tables(conn)
                     self._create_indexes(conn)
@@ -275,10 +279,10 @@ class PromptModel:
         ``threading.local``), created on first use and reused by that thread
         thereafter. Every connection is configured with WAL journaling,
         ``row_factory = sqlite3.Row``, ``PRAGMA foreign_keys = ON`` and
-        ``PRAGMA busy_timeout = 5000`` so concurrent writers wait instead of
-        failing. Callers use it as a context manager (``with conn:``), which
-        commits or rolls back that thread's transaction and leaves the
-        connection open. No lock is held while a connection is in use.
+        ``PRAGMA busy_timeout`` of BUSY_TIMEOUT_SECONDS so concurrent writers
+        wait instead of failing. Callers use it as a context manager
+        (``with conn:``), which commits or rolls back that thread's transaction
+        and leaves the connection open. No lock is held while a connection is in use.
 
         Returns:
             sqlite3.Connection: The current thread's configured connection
@@ -289,11 +293,13 @@ class PromptModel:
 
         # check_same_thread=False only so restore_from_file can close other
         # threads' connections; each connection is still used by one thread.
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn = sqlite3.connect(
+            self.db_path, check_same_thread=False, timeout=BUSY_TIMEOUT_SECONDS
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_SECONDS * 1000}")
         self._local.conn = conn
         self._local.generation = self._generation
         with self._conn_lock:

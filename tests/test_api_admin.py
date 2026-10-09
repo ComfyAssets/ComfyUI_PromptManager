@@ -95,6 +95,11 @@ class AdminAPITestCase(AioHTTPTestCase):
 
     # ── helpers ────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _root(path):
+        """A gallery root as the config stores it: resolved, case-folded on Windows."""
+        return GalleryConfig.resolve_gallery_root(str(path))
+
     def _write_config(self, content):
         with open(self.config_path, "w") as f:
             json.dump(content, f)
@@ -127,7 +132,7 @@ class TestSaveSettingsGalleryRoots(AdminAPITestCase):
         resp = await self.client.request(
             "POST",
             "/prompt_manager/settings",
-            json={"gallery_root_paths": [str(self.outside_dir)]},
+            json={"gallery_root_paths": [self._root(self.outside_dir)]},
         )
 
         self.assertEqual(resp.status, 400)
@@ -168,16 +173,18 @@ class TestSaveSettingsGalleryRoots(AdminAPITestCase):
         resp = await self.client.request(
             "POST",
             "/prompt_manager/settings",
-            json={"gallery_root_paths": [str(good)]},
+            json={"gallery_root_paths": [self._root(good)]},
         )
 
         self.assertEqual(resp.status, 200)
         data = await resp.json()
         self.assertTrue(data["success"])
         self.assertTrue(data["restart_required"])
-        self.assertEqual(GalleryConfig.MONITORING_DIRECTORIES, [str(good)])
+        self.assertEqual(GalleryConfig.MONITORING_DIRECTORIES, [self._root(good)])
         saved = self._read_config()
-        self.assertEqual(saved["gallery"]["monitoring"]["directories"], [str(good)])
+        self.assertEqual(
+            saved["gallery"]["monitoring"]["directories"], [self._root(good)]
+        )
 
     async def test_accepts_env_listed_directory(self):
         os.environ[EXTRA_ROOTS_ENV] = str(self.outside_dir)
@@ -185,11 +192,13 @@ class TestSaveSettingsGalleryRoots(AdminAPITestCase):
         resp = await self.client.request(
             "POST",
             "/prompt_manager/settings",
-            json={"gallery_root_paths": [str(self.outside_dir)]},
+            json={"gallery_root_paths": [self._root(self.outside_dir)]},
         )
 
         self.assertEqual(resp.status, 200)
-        self.assertEqual(GalleryConfig.MONITORING_DIRECTORIES, [str(self.outside_dir)])
+        self.assertEqual(
+            GalleryConfig.MONITORING_DIRECTORIES, [self._root(self.outside_dir)]
+        )
 
     async def test_legacy_single_path_accepted(self):
         resp = await self.client.request(
@@ -199,10 +208,12 @@ class TestSaveSettingsGalleryRoots(AdminAPITestCase):
         )
 
         self.assertEqual(resp.status, 200)
-        self.assertEqual(GalleryConfig.MONITORING_DIRECTORIES, [str(self.output_dir)])
+        self.assertEqual(
+            GalleryConfig.MONITORING_DIRECTORIES, [self._root(self.output_dir)]
+        )
 
     async def test_empty_paths_clear_roots(self):
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
 
         resp = await self.client.request(
             "POST",
@@ -293,8 +304,8 @@ class TestNoAbsolutePathsInResponses(AdminAPITestCase):
         )
 
     async def test_diagnostics_paths_are_relative(self):
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
-        self._install_monitor([str(self.output_dir)])
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
+        self._install_monitor([self._root(self.output_dir)])
 
         resp, body = await self._body("GET", "/prompt_manager/diagnostics")
 
@@ -322,7 +333,7 @@ class TestNoAbsolutePathsInResponses(AdminAPITestCase):
         (self.output_dir / "a.png").write_bytes(b"same-bytes")
         (self.output_dir / "sub").mkdir()
         (self.output_dir / "sub" / "b.png").write_bytes(b"same-bytes")
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
 
         resp, body = await self._body("GET", "/prompt_manager/scan_duplicates")
 
@@ -337,7 +348,7 @@ class TestNoAbsolutePathsInResponses(AdminAPITestCase):
         target = self.output_dir / "sub" / "b.png"
         target.parent.mkdir()
         target.write_bytes(b"bytes")
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
 
         resp, body = await self._body(
             "POST",
@@ -351,7 +362,7 @@ class TestNoAbsolutePathsInResponses(AdminAPITestCase):
         self.assertFalse(target.exists())
 
     async def test_scan_images_stream_has_no_absolute_paths(self):
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
 
         resp, body = await self._body("POST", "/prompt_manager/scan")
 
@@ -396,7 +407,7 @@ class TestScansRunOffTheEventLoop(AdminAPITestCase):
     async def test_scan_duplicates_runs_in_executor(self):
         (self.output_dir / "a.png").write_bytes(b"dup")
         (self.output_dir / "b.png").write_bytes(b"dup")
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
         calls = self._spy_executor()
 
         resp = await self.client.request("GET", "/prompt_manager/scan_duplicates")
@@ -407,7 +418,7 @@ class TestScansRunOffTheEventLoop(AdminAPITestCase):
 
     async def test_delete_duplicates_runs_in_executor(self):
         (self.output_dir / "a.png").write_bytes(b"dup")
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
         calls = self._spy_executor()
 
         resp = await self.client.request(
@@ -422,7 +433,7 @@ class TestScansRunOffTheEventLoop(AdminAPITestCase):
 
     async def test_output_scan_runs_in_executor(self):
         _write_png(self.output_dir / "gen.png", prompt_text="a red square")
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
         calls = self._spy_executor()
 
         resp = await self.client.request("POST", "/prompt_manager/scan")
@@ -440,7 +451,7 @@ class TestScansRunOffTheEventLoop(AdminAPITestCase):
 
     async def test_output_scan_links_existing_prompt_on_second_pass(self):
         _write_png(self.output_dir / "gen.png", prompt_text="a red square")
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
 
         first = await (await self.client.request("POST", "/prompt_manager/scan")).text()
         second = await (
@@ -454,7 +465,7 @@ class TestScansRunOffTheEventLoop(AdminAPITestCase):
         self.assertEqual([p["text"] for p in prompts], ["a red square"])
 
     async def test_output_scan_without_directories_reports_error(self):
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.outside_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.outside_dir)]
         sys.modules.pop("folder_paths", None)
         self.api._find_comfyui_output_dir = lambda: None
 
@@ -717,7 +728,7 @@ class TestSettingsReadMonitorThroughModule(AdminAPITestCase):
         im_mod._monitor_instance = None
         self.addCleanup(setattr, im_mod, "_monitor_instance", orig)
         monitor = get_image_monitor(MagicMock(), MagicMock())
-        monitor.monitored_directories = [str(self.output_dir)]
+        monitor.monitored_directories = [self._root(self.output_dir)]
 
         resp = await self.client.request("GET", "/prompt_manager/settings")
 
@@ -731,7 +742,7 @@ class TestSettingsReadMonitorThroughModule(AdminAPITestCase):
         orig = im_mod._monitor_instance
         im_mod._monitor_instance = None
         self.addCleanup(setattr, im_mod, "_monitor_instance", orig)
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
 
         resp = await self.client.request("GET", "/prompt_manager/settings")
 
@@ -809,7 +820,7 @@ class TestDeleteDuplicatesEndpoint(AdminAPITestCase):
         self.assertEqual(resp.status, 400)
 
     async def test_failures_are_reported(self):
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
         resp = await self._post({"image_paths": ["ghost.png"]})
         data = await resp.json()
         self.assertEqual(resp.status, 200)
@@ -986,7 +997,10 @@ class TestSettingsMisc(AdminAPITestCase):
         resp = await self.client.request(
             "POST",
             "/prompt_manager/settings",
-            json={"result_timeout": 7, "gallery_root_paths": [str(self.output_dir)]},
+            json={
+                "result_timeout": 7,
+                "gallery_root_paths": [self._root(self.output_dir)],
+            },
         )
 
         self.assertEqual(resp.status, 200)
@@ -997,7 +1011,7 @@ class TestSettingsMisc(AdminAPITestCase):
         self.assertEqual(saved["web_ui"]["result_timeout"], 7)
         self.assertEqual(saved["web_ui"]["show_test_button"], True)
         self.assertEqual(
-            saved["gallery"]["monitoring"]["directories"], [str(self.output_dir)]
+            saved["gallery"]["monitoring"]["directories"], [self._root(self.output_dir)]
         )
 
     async def test_save_replaces_a_corrupt_config_file(self):
@@ -1042,7 +1056,7 @@ class TestSettingsMisc(AdminAPITestCase):
         resp = await self.client.request(
             "POST",
             "/prompt_manager/settings",
-            json={"gallery_root_paths": [str(self.output_dir)]},
+            json={"gallery_root_paths": [self._root(self.output_dir)]},
         )
         data = await resp.json()
         self.assertEqual(resp.status, 200)
@@ -1084,7 +1098,7 @@ class TestDiagnostics(AdminAPITestCase):
 
     async def test_healthy_report(self):
         self.api.db.save_prompt(text="hello", prompt_hash="h1")
-        self._install_monitor(FakeMonitor([str(self.output_dir)]))
+        self._install_monitor(FakeMonitor([self._root(self.output_dir)]))
 
         resp, diag = await self._diag()
 
@@ -1172,7 +1186,7 @@ class TestTestImageLink(AdminAPITestCase):
         self.assertIsInstance(data["result"]["image_id"], int)
 
     async def test_client_supplied_path_is_not_stored(self):
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
         pid = self.api.db.save_prompt(text="hello", prompt_hash="h1")
         evil = os.path.join(self.tmpdir, "etc", "passwd")
 
@@ -1535,7 +1549,7 @@ class TestOutputScanInternals(AdminAPITestCase):
         self.assertEqual(counts, {"processed": 2, "found": 0, "added": 0, "linked": 0})
 
     async def test_scan_internal_error_streams_error_event(self):
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
         self.api._collect_output_media_sync = _raise
         body = await (await self.client.request("POST", "/prompt_manager/scan")).text()
         self.assertIn('"type": "error"', body)
@@ -1566,7 +1580,7 @@ class TestOutputScanIsABackgroundJob(AdminAPITestCase):
         from unittest.mock import AsyncMock, patch
 
         _write_png(self.output_dir / "gen.png", prompt_text="a red square")
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
 
         with self.assertNoLogs("aiohttp.server", level="ERROR"):
             with patch.object(
@@ -1586,7 +1600,7 @@ class TestOutputScanIsABackgroundJob(AdminAPITestCase):
 
     async def test_second_request_attaches_to_the_running_scan(self):
         _write_png(self.output_dir / "gen.png", prompt_text="a red square")
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
         gate, calls = self._gate_collect()
 
         first = asyncio.ensure_future(
@@ -1609,7 +1623,7 @@ class TestOutputScanIsABackgroundJob(AdminAPITestCase):
         self.assertIn('"added": 1', second_body)
 
     async def test_status_reports_running_scan_and_its_last_event(self):
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
         gate, _ = self._gate_collect()
 
         first = asyncio.ensure_future(
@@ -1639,7 +1653,7 @@ class TestOutputScanIsABackgroundJob(AdminAPITestCase):
 
     async def test_scan_after_a_finished_one_starts_fresh(self):
         _write_png(self.output_dir / "gen.png", prompt_text="a red square")
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
         gate, calls = self._gate_collect()
         gate.set()
 
@@ -1650,7 +1664,7 @@ class TestOutputScanIsABackgroundJob(AdminAPITestCase):
         self.assertIn('"linked": 1', body)
 
     async def test_failed_scan_is_not_left_running(self):
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
         self.api._collect_output_media_sync = _raise
 
         await (await self.client.request("POST", "/prompt_manager/scan")).text()
@@ -1707,7 +1721,7 @@ class TestWorkerThreadsSetting(AdminAPITestCase):
 
         for i in range(8):
             _write_png(self.output_dir / f"gen{i}.png", prompt_text=f"prompt {i}")
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
         PromptManagerConfig.WORKER_THREADS = 4
         seen = set()
         lock = threading.Lock()
@@ -1728,7 +1742,7 @@ class TestWorkerThreadsSetting(AdminAPITestCase):
 
     async def test_scan_with_one_worker_still_completes(self):
         _write_png(self.output_dir / "gen.png", prompt_text="solo")
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
         PromptManagerConfig.WORKER_THREADS = 1
 
         body = await (await self.client.request("POST", "/prompt_manager/scan")).text()
@@ -1777,7 +1791,7 @@ class TestScanReadsVideos(AdminAPITestCase):
         _write_mp4(
             self.output_dir / "clip.mp4", json.dumps({"prompt": json.dumps(graph)})
         )
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
 
         with self.assertNoLogs(level="ERROR"):
             body = await (
@@ -1795,7 +1809,7 @@ class TestScanReadsVideos(AdminAPITestCase):
         from utils import video_metadata
 
         (self.output_dir / "clip.mp4").write_bytes(b"\x00\x00\x00\x18ftypisom")
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
 
         with patch.object(video_metadata.shutil, "which", return_value=None):
             with self.assertNoLogs("prompt_manager", level="WARNING"):
@@ -1808,7 +1822,7 @@ class TestScanReadsVideos(AdminAPITestCase):
 
     async def test_unreadable_image_is_a_warning_not_an_error(self):
         (self.output_dir / "bad.png").write_bytes(b"\x89PNG not really")
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
 
         with self.assertLogs(level="WARNING") as cm:
             body = await (
@@ -1837,7 +1851,7 @@ class TestDuplicateScanIsABackgroundJob(AdminAPITestCase):
         (self.output_dir / "a.png").write_bytes(b"same bytes")
         (self.output_dir / "b.png").write_bytes(b"same bytes")
         (self.output_dir / "c.png").write_bytes(b"other bytes")
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
 
     def _gate_hashing(self):
         import threading
@@ -1906,7 +1920,7 @@ class TestDuplicateScanIsABackgroundJob(AdminAPITestCase):
         self.assertEqual(data, {"success": True, "running": False, "last_event": None})
 
     async def test_failed_scan_streams_an_error_and_releases_the_lock(self):
-        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
         self.api._find_comfyui_output_dir = _raise
 
         body = await (await self.client.request("POST", self.STREAM)).text()
