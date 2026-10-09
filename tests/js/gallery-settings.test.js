@@ -55,3 +55,9 @@ test("gridColumnsStyle produces an explicit grid template", () => {
     assert.equal(gridColumnsStyle("6"), "repeat(6, minmax(0, 1fr))");
     assert.equal(gridColumnsStyle("x"), "repeat(8, minmax(0, 1fr))");
 });
+
+test("infinite scrolling is off by default and must be a boolean", () => {
+    assert.equal(DEFAULT_SETTINGS.infiniteScroll, false);
+    assert.equal(normalizeGallerySettings({ infiniteScroll: true }).infiniteScroll, true);
+    assert.equal(normalizeGallerySettings({ infiniteScroll: "yes" }).infiniteScroll, false);
+});

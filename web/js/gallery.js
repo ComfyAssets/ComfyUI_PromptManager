@@ -9,6 +9,12 @@
                 this.currentSubfolder = '';
                 this.expandedFolders = new Set();
                 this.thumbSize = 'md'; // sm, md, lg
+                this.infiniteScroll = false;
+                this.loadingMore = false;
+                // Duplicate scan: a server-side job the modal follows (see scanDuplicates)
+                this.dupScan = ScanProgress.initialState();
+                this.dupSource = null;
+                this.dupResults = null;
 
                 this.api = ApiClient.createApiClient();
                 // Only the newest page request may update the grid
@@ -28,6 +34,7 @@
                 this.applySettings(this.getSettings());
                 this.loadFolderTree();
                 this.loadImages();
+                this.resumeDuplicateScan();
 
                 // Check thumbnails at startup if enabled
                 this.checkThumbnailsAtStartup();
@@ -90,6 +97,8 @@
                 document.getElementById('clearCacheBtn').addEventListener('click', () => this.clearCache());
                 document.getElementById('rescanFolderBtn').addEventListener('click', () => this.rescanFolder());
                 document.getElementById('scanDuplicatesBtn').addEventListener('click', () => this.scanDuplicates());
+                document.getElementById('dupScanPill').addEventListener('click', () => this.openDuplicatesModal());
+                document.getElementById('galleryScroll').addEventListener('scroll', () => this.maybeLoadMore(), { passive: true });
                 
                 // Duplicates modal event listeners
                 document.getElementById('closeDuplicatesBtn').addEventListener('click', () => this.hideDuplicatesModal());
@@ -303,6 +312,7 @@
                     lg: { cols: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '12px' },
                 };
                 const s = sizes[size] || sizes.md;
+                grid.classList.remove('gallery-columns-custom'); // an explicit size wins over the column setting
                 grid.style.gridTemplateColumns = s.cols;
                 grid.style.gap = s.gap;
                 // Update button states
@@ -322,8 +332,9 @@
              * Load one page of images. `page` is committed to this.currentPage only after the
              * server answered, and a newer request supersedes an older one still in flight.
              */
-            async loadImages(page = this.currentPage) {
-                this.showLoading();
+            async loadImages(page = this.currentPage, { append = false } = {}) {
+                if (!append) this.showLoading();
+                else document.getElementById('loadingStatus').textContent = 'Loading more...';
 
                 const offset = (page - 1) * this.limit;
                 let url = `/prompt_manager/images/output?limit=${this.limit}&offset=${offset}`;
@@ -341,14 +352,41 @@
                     );
                     this.currentPage = next.page;
                     this.total = next.total;
-                    this.images = data.images;
+                    this.images = append ? this.images.concat(data.images) : data.images;
                     this.updateStats();
                     this.renderGallery();
                     this.updatePagination();
                     document.getElementById('loadingStatus').textContent = 'Loaded';
+                    this.maybeLoadMore(); // a short page may not fill the viewport
                 } catch (error) {
                     console.error('Error loading images:', error);
                     this.showError(error.message);
+                }
+            }
+
+            maybeLoadMore() {
+                const el = document.getElementById('galleryScroll');
+                if (!el) return;
+                const wanted = ListState.shouldLoadMore({
+                    infiniteScroll: this.infiniteScroll,
+                    loading: this.loadingMore,
+                    page: this.currentPage,
+                    limit: this.limit,
+                    total: this.total,
+                    scrollTop: el.scrollTop,
+                    clientHeight: el.clientHeight,
+                    scrollHeight: el.scrollHeight,
+                });
+                if (wanted) this.loadMoreImages();
+            }
+
+            async loadMoreImages() {
+                if (this.loadingMore) return;
+                this.loadingMore = true;
+                try {
+                    await this.loadImages(this.currentPage + 1, { append: true });
+                } finally {
+                    this.loadingMore = false;
                 }
             }
 
@@ -372,8 +410,8 @@
             }
 
             updateStats() {
-                const start = (this.currentPage - 1) * this.limit + 1;
-                const end = Math.min(this.currentPage * this.limit, this.total);
+                const start = this.infiniteScroll ? 1 : (this.currentPage - 1) * this.limit + 1;
+                const end = this.infiniteScroll ? this.images.length : Math.min(this.currentPage * this.limit, this.total);
                 
                 document.getElementById('showingStart').textContent = this.images.length > 0 ? start : 0;
                 document.getElementById('showingEnd').textContent = end;
@@ -1654,6 +1692,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 document.getElementById('cacheMetadataToggle').checked = settings.cacheMetadata;
                 document.getElementById('showFilePathsToggle').checked = settings.showFilePaths;
                 document.getElementById('sidebarCollapsedByDefaultToggle').checked = settings.sidebarCollapsedByDefault;
+                document.getElementById('infiniteScrollToggle').checked = settings.infiniteScroll;
                 document.getElementById('showImageInfoToggle').checked = settings.showImageInfo;
                 document.getElementById('debugModeToggle').checked = settings.debugMode;
                 document.getElementById('checkThumbnailsAtStartup').checked = settings.checkThumbnailsAtStartup;
@@ -1699,6 +1738,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     cacheMetadata: document.getElementById('cacheMetadataToggle').checked,
                     showFilePaths: document.getElementById('showFilePathsToggle').checked,
                     sidebarCollapsedByDefault: document.getElementById('sidebarCollapsedByDefaultToggle').checked,
+                    infiniteScroll: document.getElementById('infiniteScrollToggle').checked,
                     debugMode: document.getElementById('debugModeToggle').checked,
                     apiTimeout: parseInt(document.getElementById('apiTimeoutInput').value),
                     thumbnailsGenerated: this.getSettings().thumbnailsGenerated, // Preserve this
@@ -1738,6 +1778,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                 const limitChanged = this.limit !== settings.defaultLimit;
                 this.limit = settings.defaultLimit;
+                const scrollChanged = this.infiniteScroll !== settings.infiniteScroll;
+                this.infiniteScroll = settings.infiniteScroll;
                 const limitSelector = document.getElementById('limitSelector');
                 if (limitSelector) limitSelector.value = String(settings.defaultLimit);
 
@@ -1746,7 +1788,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 } else if (loaded && !limitChanged) {
                     this.renderGallery(); // e.g. "Show Media Info" toggled
                 }
-                if (loaded && limitChanged) this.loadImages(1);
+                if (loaded && (limitChanged || scrollChanged)) this.loadImages(1);
             }
 
             updateGridColumns(columns) {
@@ -1754,6 +1796,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 if (!gridContainer) return;
                 // The Tailwind column classes are compiled for a fixed set of values and a
                 // wider breakpoint overrides them; an explicit template wins on desktop widths.
+                gridContainer.style.removeProperty('grid-template-columns'); // undo a thumb-size override
                 gridContainer.style.setProperty('--gallery-columns', GallerySettings.gridColumnsStyle(columns));
                 gridContainer.classList.add('gallery-columns-custom');
             }
@@ -2092,48 +2135,149 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }
             }
 
-            async scanDuplicates() {
-                this.showDuplicatesModal();
-                
-                const btn = document.getElementById('scanDuplicatesBtn');
-                btn.disabled = true;
-                btn.textContent = 'Scanning...';
-                
-                try {
-                    const response = await fetch('/prompt_manager/scan_duplicates');
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        this.displayDuplicates(data.duplicates || []);
-                        this.showNotification(`Found ${data.duplicates?.length || 0} duplicate image groups`, 'info');
-                    } else {
-                        throw new Error(data.error || 'Failed to scan for duplicate images');
+            // ── Duplicate scan ──────────────────────────────────────────────
+            // The scan runs on the server (POST /scan_duplicates/stream starts or attaches).
+            // Closing the modal only hides it: a pill shows progress and reopens it, and a
+            // reload re-attaches to a scan that is still running.
+            scanDuplicates() {
+                if (this.dupScan.status === ScanProgress.RUNNING) {
+                    this.openDuplicatesModal();
+                    return;
+                }
+                this.dupResults = null;
+                this.dupScan = ScanProgress.reduceScanEvent(ScanProgress.initialState(), {
+                    type: 'progress', progress: 0, status: 'Starting...', processed: 0, found: 0,
+                });
+                this.setDuplicateButton(true);
+                this.openDuplicatesModal();
+                this.attachDuplicateStream();
+            }
+
+            attachDuplicateStream() {
+                if (this.dupSource) this.dupSource.close();
+                const source = SseStream.connect('/prompt_manager/scan_duplicates/stream', { method: 'POST', body: '{}' });
+                this.dupSource = source;
+                source.onmessage = (e) => {
+                    let data;
+                    try {
+                        data = JSON.parse(e.data);
+                    } catch (_) {
+                        return;
                     }
-                } catch (error) {
-                    console.error('Duplicate scan error:', error);
-                    this.showNotification('Failed to scan for duplicate images', 'error');
+                    this.applyDuplicateEvent(data);
+                };
+                source.onerror = () => {
+                    if (this.dupSource !== source || this.dupScan.status !== ScanProgress.RUNNING) return;
+                    setTimeout(() => this.resumeDuplicateScan(), 2000);
+                };
+                source.onclose = () => {
+                    if (this.dupSource === source && this.dupScan.status === ScanProgress.RUNNING) this.resumeDuplicateScan();
+                };
+            }
+
+            async resumeDuplicateScan() {
+                let status;
+                try {
+                    const response = await fetch('/prompt_manager/scan_duplicates/status');
+                    if (!response.ok) return;
+                    status = await response.json();
+                } catch (_) {
+                    return;
+                }
+                const state = ScanProgress.fromStatus(status);
+                if (state.status !== ScanProgress.RUNNING) {
+                    if (this.dupScan.status === ScanProgress.RUNNING) {
+                        // The scan we were following ended while we were away
+                        const last = status.last_event;
+                        const terminal = last && (last.type === 'complete' || last.type === 'error');
+                        this.applyDuplicateEvent(terminal ? last : { type: 'error', message: 'the server no longer reports a running scan' });
+                    }
+                    return;
+                }
+                this.dupScan = state;
+                this.setDuplicateButton(true);
+                this.renderDuplicateProgress();
+                if (document.getElementById('duplicatesModal').classList.contains('hidden')) this.showDuplicatePill();
+                this.attachDuplicateStream();
+            }
+
+            applyDuplicateEvent(data) {
+                const next = ScanProgress.reduceScanEvent(this.dupScan, data);
+                if (next === this.dupScan) return;
+                this.dupScan = next;
+                this.renderDuplicateProgress();
+                if (next.status === ScanProgress.DONE) {
+                    this.dupResults = Array.isArray(data.duplicates) ? data.duplicates : [];
+                    this.setDuplicateButton(false);
+                    const modalOpen = !document.getElementById('duplicatesModal').classList.contains('hidden');
+                    if (modalOpen) {
+                        this.hideDuplicatePill();
+                        this.displayDuplicates(this.dupResults);
+                    } else {
+                        this.showDuplicatePill(`Duplicate scan done: ${this.dupResults.length} groups · click to view`);
+                    }
+                    this.showNotification(`Found ${this.dupResults.length} duplicate image groups`, 'info');
+                } else if (next.status === ScanProgress.FAILED) {
+                    this.setDuplicateButton(false);
+                    this.hideDuplicatePill();
                     this.hideDuplicatesModal();
-                } finally {
-                    btn.disabled = false;
-                    btn.textContent = 'Scan';
+                    this.showNotification(`Duplicate scan failed: ${next.message}`, 'error');
                 }
             }
 
-            showDuplicatesModal() {
+            renderDuplicateProgress() {
+                const state = this.dupScan;
+                const bar = document.getElementById('dupProgressBar');
+                const text = document.getElementById('dupProgressText');
+                if (bar) bar.style.width = `${state.progress}%`;
+                if (text) text.textContent = state.status === ScanProgress.RUNNING ? `${state.progress}% · ${state.processed} files hashed` : state.statusText;
+                const pill = document.getElementById('dupScanPillText');
+                if (pill && state.status === ScanProgress.RUNNING) pill.textContent = `Finding duplicates ${state.progress}% · ${state.processed} files`;
+            }
+
+            setDuplicateButton(running) {
+                const btn = document.getElementById('scanDuplicatesBtn');
+                if (!btn) return;
+                btn.disabled = running;
+                btn.textContent = running ? 'Scanning...' : 'Scan';
+            }
+
+            showDuplicatePill(label) {
+                const pill = document.getElementById('dupScanPill');
+                if (label) document.getElementById('dupScanPillText').textContent = label;
+                pill.classList.remove('hidden');
+            }
+
+            hideDuplicatePill() {
+                document.getElementById('dupScanPill').classList.add('hidden');
+            }
+
+            /** Show the modal in whatever state the scan is in: progress, or results. */
+            openDuplicatesModal() {
+                this.hideDuplicatePill();
                 document.getElementById('duplicatesModal').classList.remove('hidden');
                 document.getElementById('duplicatesModal').classList.add('flex');
                 document.body.style.overflow = 'hidden';
-                
-                // Reset modal state
+                if (this.dupScan.status === ScanProgress.DONE && this.dupResults) {
+                    this.displayDuplicates(this.dupResults);
+                    return;
+                }
                 document.getElementById('duplicatesScanStatus').classList.remove('hidden');
                 document.getElementById('duplicatesContent').classList.add('hidden');
                 document.getElementById('duplicatesFooter').classList.add('hidden');
+                this.renderDuplicateProgress();
+            }
+
+            showDuplicatesModal() {
+                this.openDuplicatesModal();
             }
 
             hideDuplicatesModal() {
                 document.getElementById('duplicatesModal').classList.add('hidden');
                 document.getElementById('duplicatesModal').classList.remove('flex');
                 document.body.style.overflow = '';
+                // Minimize rather than abandon: the scan keeps running on the server
+                if (this.dupScan.status === ScanProgress.RUNNING) this.showDuplicatePill();
             }
 
             displayDuplicates(duplicates) {
@@ -2312,7 +2456,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 pageInput.value = this.currentPage;
                 pageInput.max = totalPages;
 
-                if (totalPages > 1) {
+                if (totalPages > 1 && !this.infiniteScroll) {
                     document.getElementById('paginationControls').classList.remove('hidden');
                 } else {
                     document.getElementById('paginationControls').classList.add('hidden');

@@ -44,7 +44,21 @@
         return Boolean(pagination && pagination.has_more) && receivedCount > 0;
     }
 
-    const api = { nextPageState, shouldSaveEdit, hasMorePages };
+    /**
+     * Infinite scrolling: fetch the next page when the user is within `threshold`
+     * pixels of the bottom (or the content does not fill the viewport yet), no
+     * load is in flight and pages remain.
+     */
+    function shouldLoadMore({ infiniteScroll, loading, page, limit, total, scrollTop, clientHeight, scrollHeight, threshold = 600 }) {
+        if (!infiniteScroll || loading) return false;
+        const pageSize = nonNegativeInt(limit) || 1;
+        const totalPages = Math.ceil(nonNegativeInt(total) / pageSize);
+        if (nonNegativeInt(page) >= totalPages) return false;
+        const remaining = scrollHeight - clientHeight - scrollTop;
+        return remaining < threshold;
+    }
+
+    const api = { nextPageState, shouldSaveEdit, hasMorePages, shouldLoadMore };
     if (typeof module !== "undefined" && module.exports) module.exports = api;
     else root.ListState = api;
 })(typeof window !== "undefined" ? window : globalThis);

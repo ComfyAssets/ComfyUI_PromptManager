@@ -8,6 +8,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 from pathlib import Path
 
 from aiohttp import web
@@ -298,6 +299,14 @@ class AdminRoutesMixin:
         async def scan_duplicates_route(request):
             return await self.scan_duplicates_endpoint(request)
 
+        @routes.post("/prompt_manager/scan_duplicates/stream")
+        async def scan_duplicates_stream_route(request):
+            return await self.scan_duplicates_stream(request)
+
+        @routes.get("/prompt_manager/scan_duplicates/status")
+        async def scan_duplicates_status_route(request):
+            return await self.scan_duplicates_status(request)
+
         @routes.post("/prompt_manager/delete_duplicate_images")
         async def delete_duplicate_images_route(request):
             return await self.delete_duplicate_images_endpoint(request)
@@ -375,6 +384,89 @@ class AdminRoutesMixin:
                 status=500,
             )
 
+    async def scan_duplicates_stream(self, request):
+        """Run the duplicate scan as a background job and stream its progress.
+
+        A request while a scan is running attaches to it. The job holds the
+        duplicates lock, so a delete is refused (409) until it finishes.
+        """
+        job = self._duplicate_job
+        if job is None or job.finished:
+            guard = self._acquire_long_job(self.LONG_JOB_DUPLICATES)
+            if guard is None:
+                return self._long_job_busy_response("Duplicate scan or delete")
+            job = ScanJob()
+            self._duplicate_job = job
+            job.task = asyncio.ensure_future(self._run_duplicate_job(job, guard))
+        return await self._stream_scan_job(request, job)
+
+    async def scan_duplicates_status(self, request):
+        """Whether a duplicate scan is running, and its latest event."""
+        job = self._duplicate_job
+        return web.json_response(
+            {
+                "success": True,
+                "running": bool(job and job.running),
+                "last_event": job.last_event if job else None,
+            }
+        )
+
+    async def _run_duplicate_job(self, job, guard):
+        loop = asyncio.get_running_loop()
+        counts = {"processed": 0}
+
+        def report(done, total):
+            # Called from worker threads; hand the event to the loop.
+            counts["processed"] = done
+            pct = int(done / total * 100) if total else 100
+            loop.call_soon_threadsafe(
+                job.publish,
+                {
+                    "type": "progress",
+                    "progress": pct,
+                    "status": f"Hashing file {done}/{total}...",
+                    "processed": done,
+                    "found": 0,
+                },
+            )
+
+        try:
+            async with guard:
+                job.publish(
+                    {
+                        "type": "progress",
+                        "progress": 0,
+                        "status": "Collecting media files...",
+                        "processed": 0,
+                        "found": 0,
+                    }
+                )
+                output_dir = await self._run_in_executor(self._find_comfyui_output_dir)
+                groups = await self._run_in_executor(
+                    self._find_duplicate_images_sync, output_dir, report
+                )
+                job.publish(
+                    {
+                        "type": "complete",
+                        "processed": counts["processed"],
+                        "found": len(groups),
+                        "duplicates": groups,
+                        "message": f"Found {len(groups)} groups of duplicate images",
+                    }
+                )
+        except Exception:
+            self.logger.exception("Duplicate scan error")
+            job.publish(
+                {
+                    "type": "error",
+                    "message": (
+                        "An internal error occurred. Check server logs for details."
+                    ),
+                }
+            )
+        finally:
+            job.finish()
+
     async def cleanup_duplicates_endpoint(self, request):
         """Cleanup duplicate prompts endpoint."""
         try:
@@ -400,8 +492,15 @@ class AdminRoutesMixin:
         output_dir = await self._run_in_executor(self._find_comfyui_output_dir)
         return await self._run_in_executor(self._find_duplicate_images_sync, output_dir)
 
-    def _find_duplicate_images_sync(self, output_dir):
-        """Group media files under ``output_dir`` by content hash (blocking)."""
+    def _find_duplicate_images_sync(self, output_dir, progress=None):
+        """Group media files under ``output_dir`` by content hash (blocking).
+
+        Files are hashed on ``PromptManagerConfig.WORKER_THREADS`` threads.
+        ``progress(done, total)`` is called from those threads about every
+        percent and once at the end.
+        """
+        from ..config import PromptManagerConfig
+
         if not output_dir or not os.path.isdir(output_dir):
             self.logger.warning("ComfyUI output directory not found")
             return []
@@ -409,21 +508,35 @@ class AdminRoutesMixin:
         output_path = Path(output_dir)
         extensions = IMAGE_EXTENSIONS + VIDEO_EXTENSIONS
         media_files = _collect_media_files([output_path], extensions)
-        self.logger.info(f"Found {len(media_files)} media files to analyze")
+        total = len(media_files)
+        self.logger.info(f"Found {total} media files to analyze")
+        step = max(1, total // 100)
+        counter = {"done": 0}
+        lock = threading.Lock()
 
-        file_hashes = {}
-        for index, media_path in enumerate(media_files, start=1):
+        def describe(media_path):
             try:
                 info = self._describe_media_file(media_path, output_path)
             except Exception as e:
-                self.logger.error(f"Error processing file {media_path}: {e}")
-                continue
-            file_hashes.setdefault(info["hash"], []).append(info)
-            if index % 100 == 0:
+                self.logger.error(f"Error processing file {media_path.name}: {e}")
+                info = None
+            with lock:
+                counter["done"] += 1
+                done = counter["done"]
+            if done % 100 == 0:
                 self.logger.info(
-                    f"Processed {index}/{len(media_files)} files "
-                    "for duplicate detection"
+                    f"Processed {done}/{total} files " "for duplicate detection"
                 )
+            if progress and (done % step == 0 or done == total):
+                progress(done, total)
+            return info
+
+        infos = map_parallel(describe, media_files, PromptManagerConfig.WORKER_THREADS)
+
+        file_hashes = {}
+        for info in infos:
+            if info is not None:
+                file_hashes.setdefault(info["hash"], []).append(info)
 
         duplicates = []
         for file_hash, images in file_hashes.items():

@@ -1788,5 +1788,134 @@ class TestScanReadsVideos(AdminAPITestCase):
         self.assertEqual([line for line in cm.output if line.startswith("ERROR")], [])
 
 
+def _sse_payloads(body):
+    return [
+        json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")
+    ]
+
+
+class TestDuplicateScanIsABackgroundJob(AdminAPITestCase):
+    """The duplicate scan streams progress, survives the client, and is single-flight
+    with the duplicate delete."""
+
+    STREAM = "/prompt_manager/scan_duplicates/stream"
+    STATUS = "/prompt_manager/scan_duplicates/status"
+
+    def _two_dups_one_single(self):
+        (self.output_dir / "a.png").write_bytes(b"same bytes")
+        (self.output_dir / "b.png").write_bytes(b"same bytes")
+        (self.output_dir / "c.png").write_bytes(b"other bytes")
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+
+    def _gate_hashing(self):
+        import threading
+
+        gate = threading.Event()
+        calls = []
+        original = self.api._calculate_file_hash
+
+        def gated(path):
+            calls.append(path)
+            gate.wait(5)
+            return original(path)
+
+        self.api._calculate_file_hash = gated
+        return gate, calls
+
+    async def test_stream_reports_progress_then_the_groups(self):
+        self._two_dups_one_single()
+
+        body = await (await self.client.request("POST", self.STREAM)).text()
+        events = _sse_payloads(body)
+
+        types = [e["type"] for e in events]
+        self.assertIn("progress", types)
+        self.assertEqual(types[-1], "complete")
+        done = events[-1]
+        self.assertEqual(done["processed"], 3)
+        self.assertEqual(done["found"], 1)
+        self.assertEqual(done["duplicates"][0]["count"], 2)
+        self.assertEqual(
+            sorted(i["filename"] for i in done["duplicates"][0]["images"]),
+            ["a.png", "b.png"],
+        )
+        self.assertNotIn(self.tmpdir, body)
+
+    async def test_second_request_attaches_and_delete_is_refused_meanwhile(self):
+        self._two_dups_one_single()
+        gate, calls = self._gate_hashing()
+
+        first = asyncio.ensure_future(self.client.request("POST", self.STREAM))
+        await asyncio.sleep(0.1)
+        second = await asyncio.wait_for(self.client.request("POST", self.STREAM), 5)
+        self.assertEqual(second.status, 200)
+        delete = await self.client.request(
+            "POST",
+            "/prompt_manager/delete_duplicate_images",
+            json={"image_paths": ["a.png"]},
+        )
+        self.assertEqual(delete.status, 409)
+        running = await (await self.client.request("GET", self.STATUS)).json()
+        self.assertTrue(running["running"])
+
+        gate.set()
+        first_body = await (await first).text()
+        second_body = await second.text()
+        finished = await (await self.client.request("GET", self.STATUS)).json()
+
+        self.assertIn('"type": "complete"', first_body)
+        self.assertIn('"type": "complete"', second_body)
+        self.assertEqual(len(calls), 3)  # one scan, each file hashed once
+        self.assertFalse(finished["running"])
+        self.assertEqual(finished["last_event"]["found"], 1)
+
+    async def test_status_is_idle_before_any_scan(self):
+        data = await (await self.client.request("GET", self.STATUS)).json()
+        self.assertEqual(data, {"success": True, "running": False, "last_event": None})
+
+    async def test_failed_scan_streams_an_error_and_releases_the_lock(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]
+        self.api._find_comfyui_output_dir = _raise
+
+        body = await (await self.client.request("POST", self.STREAM)).text()
+        self.api._find_comfyui_output_dir = lambda: str(self.output_dir)
+        legacy = await self.client.request("GET", "/prompt_manager/scan_duplicates")
+
+        self.assertEqual(_sse_payloads(body)[-1]["type"], "error")
+        self.assertNotIn("boom", body)
+        self.assertEqual(legacy.status, 200)
+
+    def test_hashing_runs_on_worker_threads_and_reports_progress(self):
+        import threading
+        import time
+
+        for i in range(8):
+            (self.output_dir / f"f{i}.png").write_bytes(f"bytes {i % 4}".encode())
+        PromptManagerConfig.WORKER_THREADS = 4
+        seen = set()
+        lock = threading.Lock()
+        original = self.api._calculate_file_hash
+
+        def recording(path):
+            with lock:
+                seen.add(threading.current_thread().name)
+            time.sleep(0.05)
+            return original(path)
+
+        self.api._calculate_file_hash = recording
+        reports = []
+
+        groups = self.api._find_duplicate_images_sync(
+            str(self.output_dir),
+            progress=lambda done, total: reports.append((done, total)),
+        )
+
+        self.assertEqual(len(groups), 4)
+        self.assertGreaterEqual(len(seen), 2)
+        self.assertEqual(reports[-1], (8, 8))
+        self.assertEqual([t for _, t in reports], [8] * len(reports))
+        self.assertEqual(sorted(d for d, _ in reports), [d for d, _ in reports])
+
+
 if __name__ == "__main__":
     unittest.main()

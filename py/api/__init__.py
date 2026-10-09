@@ -278,6 +278,8 @@ class PromptManagerAPI(
         self._long_jobs: dict = {}
         # The current output scan (py/api/scan_job.ScanJob), if one was started.
         self._scan_job = None
+        # The current duplicate scan (also a ScanJob), if one was started.
+        self._duplicate_job = None
 
         # Run cleanup on initialization to remove any existing duplicates
         try:

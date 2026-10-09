@@ -1,7 +1,7 @@
 // Run with: node --test tests/js/
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { nextPageState, shouldSaveEdit, hasMorePages } = require("../../web/js/list-state.js");
+const { nextPageState, shouldSaveEdit, hasMorePages, shouldLoadMore } = require("../../web/js/list-state.js");
 
 test("hasMorePages follows pagination.has_more only while pages keep arriving", () => {
     assert.equal(hasMorePages({ pagination: { has_more: true } }, 5000), true);
@@ -48,4 +48,18 @@ test("shouldSaveEdit is true only for a non-empty text that changed", () => {
     assert.equal(shouldSaveEdit("same", "  same \n"), false, "whitespace-only changes are not saved");
     assert.equal(shouldSaveEdit("old", "   "), false, "an emptied prompt is not saved");
     assert.equal(shouldSaveEdit("old", null), false);
+});
+
+test("shouldLoadMore asks for the next page only near the bottom with pages left", () => {
+    const base = {
+        infiniteScroll: true, loading: false, page: 1, limit: 100, total: 1000,
+        scrollTop: 0, clientHeight: 800, scrollHeight: 4000, threshold: 600,
+    };
+    assert.equal(shouldLoadMore(base), false, "far from the bottom");
+    assert.equal(shouldLoadMore({ ...base, scrollTop: 2700 }), true, "within the threshold");
+    assert.equal(shouldLoadMore({ ...base, scrollTop: 2700, loading: true }), false, "a load is in flight");
+    assert.equal(shouldLoadMore({ ...base, scrollTop: 2700, infiniteScroll: false }), false, "setting off");
+    assert.equal(shouldLoadMore({ ...base, scrollTop: 2700, page: 10 }), false, "last page reached");
+    assert.equal(shouldLoadMore({ ...base, scrollHeight: 700 }), true, "content shorter than the viewport");
+    assert.equal(shouldLoadMore({ ...base, total: 0, scrollHeight: 700 }), false, "nothing to load");
 });
