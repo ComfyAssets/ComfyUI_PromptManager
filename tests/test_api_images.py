@@ -471,7 +471,47 @@ class TestThumbnailProgressStream(ThumbnailTestCase):
         # PIL work ran in the executor in batches (never on the loop), plus the scan.
         self.assertGreaterEqual(calls.count("_generate_batch"), 1)
         self.assertNotIn("_generate_one", calls)
-        self.assertIn("_thumbnail_targets", calls)
+        self.assertIn("_plan_thumbnails", calls)
+
+    async def test_capped_run_reports_remaining_and_the_next_run_finishes(self):
+        for name in ("a", "b", "c"):
+            make_png(self.output_dir / f"{name}.png", size=(64, 64))
+
+        with patch.object(images_module, "MAX_THUMBNAIL_FILES", 2):
+            first = parse_sse(
+                await (await self.client.request("POST", self.PROGRESS_URL)).text()
+            )
+        second = parse_sse(
+            await (await self.client.request("POST", self.PROGRESS_URL)).text()
+        )
+
+        names = [e for e, _ in first]
+        self.assertEqual(names.count("progress"), 2)  # only pending files are work
+        done = dict(first)["complete"]
+        self.assertEqual(done["count"], 2)
+        self.assertEqual(done["remaining"], 1)
+        self.assertEqual(done["total_images"], 3)
+        self.assertIn("1 more", done["message"])
+        done = dict(second)["complete"]
+        self.assertEqual(done["count"], 1)
+        self.assertEqual(done["skipped"], 2)
+        self.assertEqual(done["remaining"], 0)
+        self.assertEqual(done["total_images"], 3)
+        self.assertNotIn("more", done["message"])
+
+    async def test_blocking_endpoint_reports_remaining(self):
+        for name in ("a", "b", "c"):
+            make_png(self.output_dir / f"{name}.png", size=(64, 64))
+
+        with patch.object(images_module, "MAX_THUMBNAIL_FILES", 2):
+            resp = await self.client.request(
+                "POST", "/prompt_manager/images/generate-thumbnails", json={}
+            )
+        data = await resp.json()
+
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(data["remaining"], 1)
+        self.assertEqual(data["total_images"], 3)
 
     async def test_corrupt_png_is_reported_and_loop_continues(self):
         make_png(self.output_dir / "good1.png")
@@ -790,6 +830,36 @@ class TestMediaScanCaps(ImageAPITestCase):
         found = [p.name for p, _ in self.api._scan_gallery_files_sync(self.output_dir)]
 
         self.assertEqual(found, ["keep.png"])
+
+    def test_thumbnail_plan_skips_fresh_thumbnails_before_applying_the_cap(self):
+        for name in ("a", "b", "c"):
+            make_png(self.output_dir / f"{name}.png")
+        self.api._generate_thumbnails_sync(
+            self.output_dir, self.output_dir / "thumbnails", (64, 64)
+        )
+        for name in ("d", "e", "f"):
+            make_png(self.output_dir / f"{name}.png")
+
+        with patch.object(images_module, "MAX_THUMBNAIL_FILES", 2):
+            plan = self.api._plan_thumbnails(
+                self.output_dir, self.output_dir / "thumbnails"
+            )
+
+        self.assertEqual(plan["skipped"], 3)
+        self.assertEqual([t[0].name for t in plan["targets"]], ["d.png", "e.png"])
+        self.assertEqual(plan["remaining"], 1)
+
+    def test_thumbnail_walk_is_bounded_like_the_gallery_walk(self):
+        for name in ("a", "b", "c"):
+            make_png(self.output_dir / f"{name}.png")
+
+        with patch.object(images_module, "MAX_GALLERY_FILES", 2):
+            plan = self.api._plan_thumbnails(
+                self.output_dir, self.output_dir / "thumbnails"
+            )
+
+        self.assertEqual(len(plan["targets"]), 2)
+        self.assertEqual(plan["remaining"], 0)
 
     def test_thumbnail_targets_honour_file_cap(self):
         for name in ("a", "b", "c"):
@@ -1247,7 +1317,7 @@ class TestThumbnailUnits(ImageRouteCoverageCase):
         response.write.assert_awaited_once()
 
     async def test_progress_stream_reports_internal_failure(self):
-        self.api._thumbnail_targets = _raise
+        self.api._plan_thumbnails = _raise
         resp = await self.client.request(
             "POST", "/prompt_manager/images/generate-thumbnails/progress"
         )

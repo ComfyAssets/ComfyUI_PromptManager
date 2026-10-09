@@ -157,25 +157,44 @@ def _thumbnail_progress_payload(index, total, stats, result, start):
     }
 
 
-def _thumbnail_complete_payload(total, stats, start):
+def _thumbnail_complete_payload(total, stats, start, remaining=0, processed=None):
+    """Final payload of a thumbnail run.
+
+    ``total`` counts every media file considered (pending, already fresh and
+    left over), ``processed`` the files this run actually worked on (defaults
+    to ``total``) and ``remaining`` the pending files left for the next run
+    because of MAX_THUMBNAIL_FILES.
+    """
     elapsed = _time.monotonic() - start
+    processed = total if processed is None else processed
     errors = stats["errors"]
     message = (
         f"Generated {stats['generated']} new thumbnails, "
         f"skipped {stats['skipped']} existing"
     )
+    if remaining:
+        message += f", {remaining} more to generate on the next run"
     if errors:
         message += f" ({len(errors)} errors occurred)"
     return {
         "count": stats["generated"],
         "skipped": stats["skipped"],
         "total_images": total,
+        "remaining": remaining,
         "errors": errors[:10],
         "error_count": len(errors),
         "elapsed_time": round(elapsed, 2),
-        "processing_rate": round(total / elapsed if elapsed > 0 else 0, 2),
+        "processing_rate": round(processed / elapsed if elapsed > 0 else 0, 2),
         "message": message,
     }
+
+
+def _thumbnail_is_fresh(src, dst):
+    """True when ``dst`` exists and is newer than ``src`` (blocking stat)."""
+    try:
+        return dst.stat().st_mtime > src.stat().st_mtime
+    except OSError:
+        return False
 
 
 # Caps on request-driven work (list sizes, scans, request bodies).
@@ -772,25 +791,40 @@ class ImageRoutesMixin:
     def _generate_thumbnails_sync(self, output_path, thumbnails_dir, thumbnail_size):
         """Blocking thumbnail generation loop (run in executor)."""
         start = _time.monotonic()
-        targets = self._thumbnail_targets(output_path, thumbnails_dir)
+        plan = self._plan_thumbnails(output_path, thumbnails_dir)
+        targets = plan["targets"]
         stats = _new_thumbnail_stats()
+        stats["skipped"] = plan["skipped"]
         for result in self._generate_batch(targets, thumbnail_size):
             _record_thumbnail_result(stats, result)
-        payload = _thumbnail_complete_payload(len(targets), stats, start)
+        payload = _thumbnail_complete_payload(
+            len(targets) + plan["skipped"] + plan["remaining"],
+            stats,
+            start,
+            remaining=plan["remaining"],
+            processed=len(targets),
+        )
         payload["success"] = True
         payload["thumbnails_path"] = _public_path(thumbnails_dir)
         self.logger.info(payload["message"])
         return payload
 
-    def _thumbnail_targets(self, output_path, thumbnails_dir):
-        """Scan *output_path* for media (blocking); returns (src, dst, is_video).
+    def _plan_thumbnails(self, output_path, thumbnails_dir):
+        """Decide which media files need a thumbnail (blocking walk).
 
-        Bounded by _iter_media_files (no symlinks, MAX_SCAN_DEPTH) and
-        MAX_THUMBNAIL_FILES per request.
+        Returns ``{"targets": [(src, dst, is_video)], "skipped": n, "remaining": n}``.
+        Files whose thumbnail is already newer than the source are counted as
+        skipped and never queued, so a large library that is mostly done only
+        pays for the files that changed. The walk is bounded like the gallery
+        listing (MAX_SCAN_DEPTH, MAX_GALLERY_FILES, no symlinks) and at most
+        MAX_THUMBNAIL_FILES pending files are queued per run; ``remaining``
+        counts the pending files beyond that cap.
         """
         output_path = Path(output_path)
         targets = []
-        for src in _iter_media_files(output_path, MAX_THUMBNAIL_FILES):
+        skipped = 0
+        remaining = 0
+        for src in _iter_media_files(output_path, MAX_GALLERY_FILES):
             suffix = src.suffix.lower()
             is_video = suffix in VIDEO_EXTENSIONS
             rel_no_ext = src.relative_to(output_path).with_suffix("")
@@ -799,10 +833,23 @@ class ImageRoutesMixin:
             if not _is_within(dst, thumbnails_dir):
                 self.logger.warning(f"Skipping thumbnail outside safe dir: {src.name}")
                 continue
+            if _thumbnail_is_fresh(src, dst):
+                skipped += 1
+                continue
+            if len(targets) >= MAX_THUMBNAIL_FILES:
+                remaining += 1
+                continue
             targets.append((src, dst, is_video))
-        if len(targets) >= MAX_THUMBNAIL_FILES:
-            self.logger.warning(f"Thumbnail scan capped at {MAX_THUMBNAIL_FILES}")
-        return targets
+        if remaining:
+            self.logger.warning(
+                f"Thumbnail run capped at {MAX_THUMBNAIL_FILES} new files; "
+                f"{remaining} more will be generated on the next run"
+            )
+        return {"targets": targets, "skipped": skipped, "remaining": remaining}
+
+    def _thumbnail_targets(self, output_path, thumbnails_dir):
+        """Pending (src, dst, is_video) triples; see _plan_thumbnails."""
+        return self._plan_thumbnails(output_path, thumbnails_dir)["targets"]
 
     def _generate_batch(self, targets, thumbnail_size):
         """Create thumbnails for ``targets`` on the configured worker threads.
@@ -873,10 +920,16 @@ class ImageRoutesMixin:
                 "status",
                 {"phase": "scanning", "message": "Scanning for images and videos..."},
             )
-            targets = await self._run_in_executor(
-                self._thumbnail_targets, output_path, output_path / "thumbnails"
+            plan = await self._run_in_executor(
+                self._plan_thumbnails, output_path, output_path / "thumbnails"
             )
-            await self._stream_thumbnails(response, targets, thumbnail_size)
+            await self._stream_thumbnails(
+                response,
+                plan["targets"],
+                thumbnail_size,
+                skipped=plan["skipped"],
+                remaining=plan["remaining"],
+            )
             self.invalidate_gallery_cache()
         except Exception:
             self.logger.exception("Thumbnail generation failed")
@@ -890,27 +943,38 @@ class ImageRoutesMixin:
             )
         return response
 
-    async def _stream_thumbnails(self, response, targets, thumbnail_size):
-        """Process *targets* in worker-thread batches, emitting SSE per file."""
+    async def _stream_thumbnails(
+        self, response, targets, thumbnail_size, skipped=0, remaining=0
+    ):
+        """Process pending *targets* in worker-thread batches, emitting SSE per file.
+
+        ``skipped`` files already had fresh thumbnails and ``remaining`` were
+        left for the next run; both only feed the start/complete payloads.
+        """
         total = len(targets)
         video_count = sum(1 for _, _, is_video in targets if is_video)
+        message = (
+            f"Found {total - video_count} images and {video_count} videos to process"
+        )
+        if skipped:
+            message += f" ({skipped} already have thumbnails)"
         connected = await self._emit_sse(
             response,
             "start",
             {
                 "total_images": total,
+                "skipped": skipped,
+                "remaining": remaining,
                 "phase": "processing",
                 "image_count": total - video_count,
                 "video_count": video_count,
-                "message": (
-                    f"Found {total - video_count} images and "
-                    f"{video_count} videos to process"
-                ),
+                "message": message,
             },
         )
         if not connected:
             return
         stats = _new_thumbnail_stats()
+        stats["skipped"] = skipped
         start = _time.monotonic()
         batch_size = _thumbnail_batch_size(_worker_threads())
         index = 0
@@ -937,7 +1001,13 @@ class ImageRoutesMixin:
                     self.logger.info("Thumbnail client disconnected; stopping early")
                     return
             await asyncio.sleep(0)  # let other requests run between batches
-        payload = _thumbnail_complete_payload(total, stats, start)
+        payload = _thumbnail_complete_payload(
+            total + skipped + remaining,
+            stats,
+            start,
+            remaining=remaining,
+            processed=total,
+        )
         await self._emit_sse(response, "complete", payload)
         self.logger.info(payload["message"])
 
