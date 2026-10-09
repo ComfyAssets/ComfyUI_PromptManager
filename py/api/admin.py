@@ -12,6 +12,7 @@ from pathlib import Path
 
 from aiohttp import web
 
+from .prompts import thumbnail_url_for
 from .scan_job import ScanJob
 
 try:
@@ -437,17 +438,13 @@ class AdminRoutesMixin:
 
     def _describe_media_file(self, media_path, output_path):
         """Hash one media file and describe it for the duplicates response."""
-        from urllib.parse import quote
-
         stat = media_path.stat()
         rel_path = media_path.relative_to(output_path)
         extension = media_path.suffix.lower()
         is_video = extension in VIDEO_EXTENSIONS
 
-        thumbnail_url = None
         thumb_rel = _thumbnail_rel_path(rel_path, ".jpg" if is_video else extension)
-        if (output_path / thumb_rel).exists():
-            thumbnail_url = f"/prompt_manager/images/serve/{quote(thumb_rel, safe='/')}"
+        thumbnail_url = thumbnail_url_for(thumb_rel, output_path / thumb_rel)
 
         return {
             "id": str(hash(str(media_path))),

@@ -485,12 +485,13 @@ class PromptManagerAPI(
                     thumb_rel = (
                         f"thumbnails/{rel_no_ext.as_posix()}_thumb{rel_path.suffix}"
                     )
-                    thumb_abs = output_path / thumb_rel
-                    if thumb_abs.exists():
-                        image["thumbnail_url"] = (
-                            "/prompt_manager/images/serve/"
-                            f"{url_quote(thumb_rel, safe='/')}"
-                        )
+                    from .prompts import thumbnail_url_for
+
+                    thumbnail_url = thumbnail_url_for(
+                        thumb_rel, output_path / thumb_rel
+                    )
+                    if thumbnail_url:
+                        image["thumbnail_url"] = thumbnail_url
                     break  # Found matching root, stop searching
                 except (ValueError, RuntimeError):
                     continue  # Try next root

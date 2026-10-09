@@ -13,8 +13,13 @@ import tempfile
 import threading
 import types
 import unittest
+from unittest.mock import MagicMock
 from pathlib import Path
 from unittest.mock import patch
+
+_mock_server = MagicMock()
+_mock_server.PromptServer.instance.routes = MagicMock()
+sys.modules.setdefault("server", _mock_server)  # py.config imports it at module load
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -965,9 +970,9 @@ class TestScanOutputDir(AutotagAPITestCase):
         self.assertEqual(data["count"], 2)
         self.assertIs(data["truncated"], False)
         self.assertIsNone(data["images"][0]["thumbnail_url"])
-        self.assertEqual(
+        self.assertRegex(
             data["images"][1]["thumbnail_url"],
-            "/prompt_manager/images/serve/thumbnails/sub/b_thumb.JPG",
+            r"^/prompt_manager/images/serve/thumbnails/sub/b_thumb\.JPG\?v=\d+$",
         )
         self.assertEqual(
             data["images"][1]["url"], "/prompt_manager/images/serve/sub/b.JPG"

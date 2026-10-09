@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time as _time
 import urllib.parse
 from pathlib import Path
@@ -13,6 +14,7 @@ from aiohttp import web
 from PIL import Image, UnidentifiedImageError
 
 from .prompts import bad_request, parse_page_params, publish_image_paths
+from .prompts import thumbnail_url_for
 from .prompts import safe_error_message as _safe_error
 
 try:
@@ -111,8 +113,27 @@ def _thumbnail_batch_size(workers):
     return max(4, workers * 2)
 
 
+def _temp_sibling(dst):
+    """Hidden temp path next to *dst* that keeps its extension (for format sniffing)."""
+    dst = Path(dst)
+    token = f"{os.getpid()}-{threading.get_ident()}"
+    return dst.with_name(f".{dst.stem}.part-{token}{dst.suffix}")
+
+
+def _atomic_save(img, dst, fmt=None, **save_kwargs):
+    """Save a PIL image to *dst* without a partially written file ever being
+    visible at that path: write a temp sibling, then rename over it."""
+    tmp = _temp_sibling(dst)
+    try:
+        img.save(tmp, fmt, **save_kwargs)
+        os.replace(tmp, dst)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
 def _write_image_thumbnail(src, dst, thumbnail_size):
-    """Resize *src* into *dst* (blocking PIL work)."""
+    """Resize *src* into *dst* (blocking PIL work), atomically."""
     with Image.open(src) as img:
         if img.mode in ("RGBA", "LA", "P"):
             img = img.convert("RGB")
@@ -120,7 +141,7 @@ def _write_image_thumbnail(src, dst, thumbnail_size):
         save_kwargs = {"quality": 85, "optimize": True}
         if dst.suffix.lower() == ".png":
             save_kwargs = {"optimize": True}
-        img.save(dst, **save_kwargs)
+        _atomic_save(img, dst, **save_kwargs)
 
 
 def _new_thumbnail_stats():
@@ -287,15 +308,11 @@ def _output_image_entry(media_path, output_path, root_index, public_root=None):
     extension = media_path.suffix.lower()
     is_video = extension in VIDEO_EXTENSIONS
 
-    thumbnail_url = None
     thumb_rel = (
         f"thumbnails/{rel_path.with_suffix('').as_posix()}_thumb"
         f"{'.jpg' if is_video else extension}"
     )
-    if (output_path / thumb_rel).exists():
-        thumbnail_url = (
-            f"/prompt_manager/images/serve/{urllib.parse.quote(thumb_rel, safe='/')}"
-        )
+    thumbnail_url = thumbnail_url_for(thumb_rel, output_path / thumb_rel)
 
     return {
         "id": hashlib.sha1(str(media_path).encode("utf-8")).hexdigest()[:16],
@@ -705,8 +722,12 @@ class ImageRoutesMixin:
                 if image_path.is_file():
                     return self._file_response(image_path)
 
+            # ComfyUI's cache middleware would otherwise let browsers cache this
+            # miss for an hour, hiding a thumbnail generated a moment later.
             return web.json_response(
-                {"success": False, "error": "Image file not found"}, status=404
+                {"success": False, "error": "Image file not found"},
+                status=404,
+                headers={"Cache-Control": "no-store"},
             )
 
         except Exception as e:
@@ -1046,7 +1067,7 @@ class ImageRoutesMixin:
 
                 img = Image.fromarray(frame_rgb)
                 img.thumbnail(thumbnail_size, Image.Resampling.LANCZOS)
-                img.save(thumbnail_path, "JPEG", quality=85, optimize=True)
+                _atomic_save(img, thumbnail_path, "JPEG", quality=85, optimize=True)
                 self.logger.debug(
                     f"Generated video thumbnail using OpenCV: {thumbnail_path}"
                 )
@@ -1059,6 +1080,7 @@ class ImageRoutesMixin:
             try:
                 import subprocess
 
+                tmp_path = _temp_sibling(thumbnail_path)
                 cmd = [
                     "ffmpeg",
                     "-i",
@@ -1070,11 +1092,12 @@ class ImageRoutesMixin:
                     "-s",
                     f"{thumbnail_size[0]}x{thumbnail_size[1]}",
                     "-y",
-                    str(thumbnail_path),
+                    str(tmp_path),
                 ]
 
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                if result.returncode == 0:
+                if result.returncode == 0 and tmp_path.exists():
+                    os.replace(tmp_path, thumbnail_path)
                     self.logger.debug(
                         f"Generated video thumbnail using ffmpeg: {thumbnail_path}"
                     )
@@ -1086,6 +1109,11 @@ class ImageRoutesMixin:
 
             except (ImportError, subprocess.TimeoutExpired, FileNotFoundError):
                 pass
+            finally:
+                try:
+                    tmp_path.unlink()
+                except (NameError, OSError):
+                    pass
 
             # Last resort: create a placeholder thumbnail
             try:
@@ -1121,7 +1149,7 @@ class ImageRoutesMixin:
                 except (OSError, AttributeError):
                     pass
 
-                img.save(thumbnail_path, "JPEG", quality=85)
+                _atomic_save(img, thumbnail_path, "JPEG", quality=85)
                 self.logger.debug(
                     f"Generated placeholder video thumbnail: {thumbnail_path}"
                 )

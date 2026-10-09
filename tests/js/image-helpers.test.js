@@ -5,6 +5,7 @@ const {
     formatImageCaption,
     workflowDocumentHtml,
     autotagSingleBody,
+    fallbackImageSource,
 } = require("../../web/js/image-helpers.js");
 
 const WD14 = { modelType: "wd14-vit", generalThreshold: 0.35, characterThreshold: 0.85, prompt: "ignored" };
@@ -94,4 +95,16 @@ test("workflowDocumentHtml escapes the JSON so it cannot close the pre block", (
 test("workflowDocumentHtml pretty-prints the workflow with two-space indentation", () => {
     const html = workflowDocumentHtml({ a: 1 });
     assert.ok(html.includes('{\n  &quot;a&quot;: 1\n}'), html);
+});
+
+test("fallbackImageSource offers the original once when a thumbnail fails", () => {
+    const dataset = { original: "/serve/a.png", thumbnail: "/serve/thumbnails/a_thumb.png?v=1" };
+    assert.equal(fallbackImageSource("/serve/thumbnails/a_thumb.png?v=1", dataset), "/serve/a.png");
+});
+
+test("fallbackImageSource gives up when the original itself failed or was already tried", () => {
+    assert.equal(fallbackImageSource("/serve/a.png", { original: "/serve/a.png" }), null);
+    assert.equal(fallbackImageSource("/serve/t.png", { original: "/serve/a.png", fellBack: "1" }), null);
+    assert.equal(fallbackImageSource("/serve/t.png", {}), null);
+    assert.equal(fallbackImageSource("/serve/t.png", undefined), null);
 });

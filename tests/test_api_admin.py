@@ -498,13 +498,13 @@ class TestDuplicateScanSyncBody(AdminAPITestCase):
         self.assertEqual(len(groups), 1)
         by_name = {img["filename"]: img for img in groups[0]["images"]}
         self.assertEqual(set(by_name), {"a.png", "b.png"})
-        self.assertEqual(
+        self.assertRegex(
             by_name["a.png"]["thumbnail_url"],
-            "/prompt_manager/images/serve/thumbnails/a_thumb.png",
+            r"^/prompt_manager/images/serve/thumbnails/a_thumb\.png\?v=\d+$",
         )
-        self.assertEqual(
+        self.assertRegex(
             by_name["b.png"]["thumbnail_url"],
-            "/prompt_manager/images/serve/thumbnails/b_thumb.png",
+            r"^/prompt_manager/images/serve/thumbnails/b_thumb\.png\?v=\d+$",
         )
 
     def test_videos_are_flagged_and_unreadable_entries_skipped(self):

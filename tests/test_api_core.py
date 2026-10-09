@@ -600,9 +600,9 @@ class TestInstanceHelpers(FolderPathsFixture):
         result = self.api._enrich_images(images)
 
         self.assertEqual(result[0]["url"], "/prompt_manager/images/serve/sub/a.png")
-        self.assertEqual(
+        self.assertRegex(
             result[0]["thumbnail_url"],
-            "/prompt_manager/images/serve/thumbnails/sub/a_thumb.png",
+            r"^/prompt_manager/images/serve/thumbnails/sub/a_thumb\.png\?v=\d+$",
         )
         self.assertEqual(result[0]["relative_path"], os.path.join("sub", "a.png"))
         self.assertEqual(result[1]["url"], "/prompt_manager/images/8/file")

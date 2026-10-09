@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
+from .prompts import thumbnail_url_for
+
 from aiohttp import web
 
 _INTERNAL_ERROR = "An internal error occurred. Check server logs for details."
@@ -694,10 +696,9 @@ class AutotagRoutesMixin:
                         f"thumbnails/{rel_path.with_suffix('').as_posix()}"
                         f"_thumb{image_path.suffix}"
                     )
-                    if (output_path / thumb_rel).exists():
-                        thumbnail_url = "/prompt_manager/images/serve/" + quote(
-                            thumb_rel, safe="/"
-                        )
+                    thumbnail_url = thumbnail_url_for(
+                        thumb_rel, output_path / thumb_rel
+                    )
                 images.append(
                     {
                         "filename": image_path.name,

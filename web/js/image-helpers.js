@@ -89,7 +89,21 @@
         return { ...target, model_type: modelType, ...params };
     }
 
-    const api = { formatImageCaption, workflowDocumentHtml, autotagSingleBody };
+    /**
+     * Next source to try after an <img> fails. Cards show the thumbnail first;
+     * when it fails (stale cache, half-written file) the original is worth one
+     * attempt. Returns null when there is nothing left to try.
+     * @param {string} currentSrc
+     * @param {DOMStringMap|object|undefined} dataset `data-original`, `data-fell-back`
+     */
+    function fallbackImageSource(currentSrc, dataset) {
+        if (!dataset || dataset.fellBack) return null;
+        const original = dataset.original;
+        if (!original || original === currentSrc) return null;
+        return original;
+    }
+
+    const api = { formatImageCaption, workflowDocumentHtml, autotagSingleBody, fallbackImageSource };
     if (typeof module !== "undefined" && module.exports) module.exports = api;
     else root.ImageHelpers = api;
 })(typeof window !== "undefined" ? window : globalThis);

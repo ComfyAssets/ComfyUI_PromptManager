@@ -7,6 +7,7 @@ temporary SQLite database and a temporary output directory.
 
 import json
 import os
+import pathlib
 import sys
 import tempfile
 import unittest
@@ -788,6 +789,85 @@ class TestOutputImagesCaps(ImageAPITestCase):
 
         data = await resp.json()
         self.assertFalse(data["success"])
+
+
+class TestThumbnailFilesAreNeverSeenHalfWritten(ThumbnailTestCase):
+    """A browser that lists the gallery mid-run must never fetch a partial file,
+    and a regenerated thumbnail must never be served from a stale cache entry."""
+
+    def test_image_thumbnail_write_is_atomic(self):
+        import os
+
+        make_png(self.output_dir / "a.png", size=(64, 64))
+        thumbs = self.output_dir / "thumbnails"
+        thumbs.mkdir()
+        dst = thumbs / "a_thumb.png"
+
+        def crash_mid_write(self_img, fp, *args, **kwargs):
+            # Simulates an interrupted encoder: bytes on disk, then failure.
+            pathlib.Path(fp).write_bytes(b"\x89PNG partial")
+            raise OSError("disk full")
+
+        with patch.object(Image.Image, "save", crash_mid_write):
+            with self.assertRaises(OSError):
+                images_module._write_image_thumbnail(
+                    self.output_dir / "a.png", dst, (32, 32)
+                )
+        self.assertFalse(dst.exists(), "a half-written thumbnail was left in place")
+        self.assertEqual(os.listdir(thumbs), [])
+
+        images_module._write_image_thumbnail(self.output_dir / "a.png", dst, (32, 32))
+        self.assertTrue(dst.is_file())
+        self.assertEqual(os.listdir(thumbs), ["a_thumb.png"])
+
+    def test_thumbnail_url_is_versioned_by_its_mtime(self):
+        import os
+        import re
+
+        make_png(self.output_dir / "a.png", size=(64, 64))
+        self.api._generate_thumbnails_sync(
+            self.output_dir, self.output_dir / "thumbnails", (32, 32)
+        )
+        thumb = self._thumb_path("a")
+
+        entry = images_module._output_image_entry(
+            self.output_dir / "a.png", self.output_dir, 0
+        )
+        self.assertRegex(
+            entry["thumbnail_url"],
+            r"^/prompt_manager/images/serve/thumbnails/a_thumb\.png\?v=\d+$",
+        )
+        first = int(re.search(r"v=(\d+)", entry["thumbnail_url"]).group(1))
+        self.assertEqual(first, int(thumb.stat().st_mtime))
+
+        later = thumb.stat().st_mtime + 10
+        os.utime(thumb, (later, later))
+        entry = images_module._output_image_entry(
+            self.output_dir / "a.png", self.output_dir, 0
+        )
+        second = int(re.search(r"v=(\d+)", entry["thumbnail_url"]).group(1))
+        self.assertEqual(second, first + 10)
+
+    async def test_versioned_thumbnail_url_is_served(self):
+        make_png(self.output_dir / "a.png", size=(64, 64))
+        self.api._generate_thumbnails_sync(
+            self.output_dir, self.output_dir / "thumbnails", (32, 32)
+        )
+        entry = images_module._output_image_entry(
+            self.output_dir / "a.png", self.output_dir, 0
+        )
+
+        resp = await self.client.request("GET", entry["thumbnail_url"])
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.headers["Content-Type"], "image/png")
+
+    async def test_missing_image_404_is_not_cacheable(self):
+        resp = await self.client.request(
+            "GET", "/prompt_manager/images/serve/thumbnails/nope_thumb.png"
+        )
+        self.assertEqual(resp.status, 404)
+        self.assertEqual(resp.headers.get("Cache-Control"), "no-store")
 
 
 class TestMediaScanCaps(ImageAPITestCase):

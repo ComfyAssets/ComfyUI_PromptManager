@@ -5,6 +5,7 @@ import json
 import os
 
 from aiohttp import web
+from urllib.parse import quote
 
 # Upper bounds on page sizes and offsets for every list endpoint. The offset
 # ceiling keeps values inside SQLite's 64-bit range and bounds skip work.
@@ -53,6 +54,20 @@ def safe_error_message(exc):
             return f"{reason}: {os.path.basename(str(exc.filename))}"
         return reason
     return str(exc) or exc.__class__.__name__
+
+
+def thumbnail_url_for(thumb_rel, thumb_abs):
+    """Serve URL for an existing thumbnail, or None when the file is missing.
+
+    The URL carries the file's mtime as ``?v=``: thumbnails are served with a
+    long cache lifetime, so a regenerated file must get a new URL or browsers
+    keep showing whatever they cached for the old one.
+    """
+    try:
+        version = int(thumb_abs.stat().st_mtime)
+    except OSError:
+        return None
+    return f"/prompt_manager/images/serve/{quote(thumb_rel, safe='/')}?v={version}"
 
 
 def publish_image_paths(images, public_path):
