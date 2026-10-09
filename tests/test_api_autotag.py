@@ -27,7 +27,7 @@ if "folder_paths" not in sys.modules:
     _stub = types.ModuleType("folder_paths")
     _stub.models_dir = tempfile.gettempdir()
     _stub.base_path = tempfile.gettempdir()
-    _stub.get_output_directory = lambda: tempfile.gettempdir()
+    _stub.get_output_directory = tempfile.gettempdir
     sys.modules["folder_paths"] = _stub
 
 from aiohttp import web

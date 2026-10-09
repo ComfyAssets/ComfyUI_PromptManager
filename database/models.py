@@ -250,26 +250,23 @@ class PromptModel:
             - Hash values for duplicate detection
         """
         indexes = [
-            "CREATE INDEX IF NOT EXISTS idx_prompts_text ON prompts(text)",
-            "CREATE INDEX IF NOT EXISTS idx_prompts_category ON prompts(category)",
-            "CREATE INDEX IF NOT EXISTS idx_prompts_created_at ON prompts(created_at)",
-            "CREATE INDEX IF NOT EXISTS idx_prompts_hash ON prompts(hash)",
-            "CREATE INDEX IF NOT EXISTS idx_prompts_rating ON prompts(rating)",
-            "CREATE INDEX IF NOT EXISTS idx_prompts_last_used ON prompts(last_used_at)",
-            "CREATE INDEX IF NOT EXISTS idx_prompts_run_count ON prompts(run_count)",
-            "CREATE INDEX IF NOT EXISTS idx_prompt_images ON "
-            "generated_images(prompt_id)",
-            "CREATE INDEX IF NOT EXISTS idx_image_path ON generated_images(image_path)",
-            "CREATE INDEX IF NOT EXISTS idx_image_file_path ON "
-            "generated_images(file_path)",
-            "CREATE INDEX IF NOT EXISTS idx_generation_time ON "
-            "generated_images(generation_time)",
-            "CREATE INDEX IF NOT EXISTS idx_prompt_tags_tag ON prompt_tags(tag_id)",
-            "CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)",
+            ("idx_prompts_text", "prompts(text)"),
+            ("idx_prompts_category", "prompts(category)"),
+            ("idx_prompts_created_at", "prompts(created_at)"),
+            ("idx_prompts_hash", "prompts(hash)"),
+            ("idx_prompts_rating", "prompts(rating)"),
+            ("idx_prompts_last_used", "prompts(last_used_at)"),
+            ("idx_prompts_run_count", "prompts(run_count)"),
+            ("idx_prompt_images", "generated_images(prompt_id)"),
+            ("idx_image_path", "generated_images(image_path)"),
+            ("idx_image_file_path", "generated_images(file_path)"),
+            ("idx_generation_time", "generated_images(generation_time)"),
+            ("idx_prompt_tags_tag", "prompt_tags(tag_id)"),
+            ("idx_tags_name", "tags(name)"),
         ]
 
-        for index_sql in indexes:
-            conn.execute(index_sql)
+        for name, target in indexes:
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {target}")
 
     def get_connection(self) -> sqlite3.Connection:
         """

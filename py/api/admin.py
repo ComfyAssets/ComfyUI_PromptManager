@@ -242,16 +242,23 @@ def _diagnose_output_dirs(configured_dirs):
         pass
 
     output_dirs = []
+    seen = set()
+
+    def add(path):
+        # One entry per directory: resolve links and fold case (Windows)
+        real = os.path.realpath(path)
+        key = os.path.normcase(real)
+        if os.path.exists(real) and key not in seen:
+            seen.add(key)
+            output_dirs.append(real)
+
     for candidate in candidates:
-        abs_path = os.path.abspath(candidate) if candidate else None
-        if abs_path and os.path.exists(abs_path) and abs_path not in output_dirs:
-            output_dirs.append(abs_path)
+        if candidate:
+            add(candidate)
 
     if not output_dirs:
         for rel in ("output", "../output", "../../output"):
-            abs_path = os.path.abspath(rel)
-            if os.path.exists(abs_path) and abs_path not in output_dirs:
-                output_dirs.append(abs_path)
+            add(rel)
 
     return {
         "status": "ok" if output_dirs else "warning",
@@ -742,7 +749,7 @@ class AdminRoutesMixin:
         return list(GalleryConfig.MONITORING_DIRECTORIES)
 
     async def save_settings(self, request):
-        """Save settings."""
+        """Save settings: the whole payload is validated before anything changes."""
         try:
             from ..config import PromptManagerConfig
 
@@ -750,41 +757,19 @@ class AdminRoutesMixin:
             if error_response is not None:
                 return error_response
 
-            if "result_timeout" in data:
-                try:
-                    PromptManagerConfig.RESULT_TIMEOUT = validate_result_timeout(
-                        data["result_timeout"]
-                    )
-                except ValueError as ve:
-                    return web.json_response(
-                        {"success": False, "error": str(ve)}, status=400
-                    )
-            if "webui_display_mode" in data:
-                PromptManagerConfig.WEBUI_DISPLAY_MODE = data["webui_display_mode"]
-            if "infinite_scroll" in data:
-                if not isinstance(data["infinite_scroll"], bool):
-                    return web.json_response(
-                        {
-                            "success": False,
-                            "error": "infinite_scroll must be true or false",
-                        },
-                        status=400,
-                    )
-                PromptManagerConfig.INFINITE_SCROLL = data["infinite_scroll"]
-            if "worker_threads" in data:
-                try:
-                    PromptManagerConfig.WORKER_THREADS = validate_worker_threads(
-                        data["worker_threads"], PromptManagerConfig.max_worker_threads()
-                    )
-                except ValueError as ve:
-                    return web.json_response(
-                        {"success": False, "error": str(ve)}, status=400
-                    )
+            try:
+                updates = self._validate_settings(data)
+            except ValueError as ve:
+                return web.json_response(
+                    {"success": False, "error": str(ve)}, status=400
+                )
 
             new_roots, error = self._parse_gallery_roots(data)
             if error:
                 return web.json_response({"success": False, "error": error}, status=400)
 
+            for name, value in updates.items():
+                setattr(PromptManagerConfig, name, value)
             restart_required = False
             if new_roots is not None:
                 restart_required = self._apply_gallery_roots(new_roots)
@@ -804,6 +789,33 @@ class AdminRoutesMixin:
                 {"success": False, "error": "Failed to save settings"},
                 status=500,
             )
+
+    @staticmethod
+    def _validate_settings(data):
+        """Scalar settings of a payload as ``{CONFIG_ATTR: value}``.
+
+        Raises ValueError with a user-facing message on the first bad value;
+        nothing is applied until every value passed.
+        """
+        from ..config import PromptManagerConfig
+
+        updates = {}
+        if "result_timeout" in data:
+            updates["RESULT_TIMEOUT"] = validate_result_timeout(data["result_timeout"])
+        if "webui_display_mode" in data:
+            mode = data["webui_display_mode"]
+            if mode not in ("popup", "newtab"):
+                raise ValueError("webui_display_mode must be 'popup' or 'newtab'")
+            updates["WEBUI_DISPLAY_MODE"] = mode
+        if "infinite_scroll" in data:
+            if not isinstance(data["infinite_scroll"], bool):
+                raise ValueError("infinite_scroll must be true or false")
+            updates["INFINITE_SCROLL"] = data["infinite_scroll"]
+        if "worker_threads" in data:
+            updates["WORKER_THREADS"] = validate_worker_threads(
+                data["worker_threads"], PromptManagerConfig.max_worker_threads()
+            )
+        return updates
 
     def _parse_gallery_roots(self, data):
         """Extract and validate gallery roots from a settings payload.

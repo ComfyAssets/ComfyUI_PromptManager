@@ -187,6 +187,18 @@ class TestServeOutputImage(ImageAPITestCase):
 
             self.assertEqual(resp.status, 403)
 
+    async def test_every_gallery_video_format_is_served(self):
+        # The gallery lists these as playable cards; opening them must not be a 403.
+        for ext in sorted(images_module.VIDEO_EXTENSIONS):
+            (self.output_dir / f"clip{ext}").write_bytes(b"\x00\x00\x00\x18ftyp")
+
+        for ext in sorted(images_module.VIDEO_EXTENSIONS):
+            resp = await self.client.request(
+                "GET", f"/prompt_manager/images/serve/clip{ext}"
+            )
+            await resp.read()
+            self.assertEqual(resp.status, 200, ext)
+
     async def test_missing_file_is_404(self):
         resp = await self.client.request("GET", "/prompt_manager/images/serve/nope.png")
 

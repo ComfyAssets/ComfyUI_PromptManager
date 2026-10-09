@@ -303,6 +303,23 @@ class TestNoAbsolutePathsInResponses(AdminAPITestCase):
             [os.path.normcase(os.path.realpath(renders))],
         )
 
+    @unittest.skipIf(sys.platform == "win32", "symlinks need privileges on Windows")
+    async def test_same_output_dir_spelled_twice_is_listed_once(self):
+        alias = self.comfy_dir / "alias"
+        os.symlink(self.output_dir, alias, target_is_directory=True)
+        # Two spellings of one directory (Windows adds case differences too)
+        GalleryConfig.MONITORING_DIRECTORIES = [str(alias), self._root(self.output_dir)]
+        self._install_monitor([self._root(self.output_dir)])
+
+        resp, body = await self._body("GET", "/prompt_manager/diagnostics")
+
+        self.assertEqual(resp.status, 200)
+        data = json.loads(body)
+        self.assertEqual(
+            data["diagnostics"]["comfyui_output"]["output_dirs"], ["output"]
+        )
+        self.assertEqual(len(self.api._get_all_output_dirs()), 1)
+
     async def test_diagnostics_paths_are_relative(self):
         GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
         self._install_monitor([self._root(self.output_dir)])
@@ -882,8 +899,6 @@ class TestDuplicateJobsAreSingleFlight(AdminAPITestCase):
     """A duplicate scan or delete refuses to overlap with a running one."""
 
     def _block_scan(self):
-        import asyncio
-
         gate = asyncio.Event()
 
         async def slow_scan():
@@ -894,8 +909,6 @@ class TestDuplicateJobsAreSingleFlight(AdminAPITestCase):
         return gate
 
     async def test_second_scan_while_one_runs_is_409(self):
-        import asyncio
-
         gate = self._block_scan()
         first = asyncio.ensure_future(
             self.client.request("GET", "/prompt_manager/scan_duplicates")
@@ -914,8 +927,6 @@ class TestDuplicateJobsAreSingleFlight(AdminAPITestCase):
         self.assertEqual((await first).status, 200)
 
     async def test_delete_while_scan_runs_is_409_and_scan_after_is_fine(self):
-        import asyncio
-
         gate = self._block_scan()
         first = asyncio.ensure_future(
             self.client.request("GET", "/prompt_manager/scan_duplicates")
@@ -947,6 +958,38 @@ class TestDuplicateJobsAreSingleFlight(AdminAPITestCase):
 
 
 class TestSettingsMisc(AdminAPITestCase):
+
+    async def test_invalid_payload_changes_nothing(self):
+        before = (
+            PromptManagerConfig.RESULT_TIMEOUT,
+            PromptManagerConfig.WEBUI_DISPLAY_MODE,
+            PromptManagerConfig.WORKER_THREADS,
+            PromptManagerConfig.INFINITE_SCROLL,
+            list(GalleryConfig.MONITORING_DIRECTORIES),
+        )
+
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/settings",
+            json={
+                "result_timeout": 42,
+                "webui_display_mode": "popup",
+                "worker_threads": 1,
+                "infinite_scroll": True,
+                "gallery_root_paths": [os.path.abspath(os.sep)],  # rejected
+            },
+        )
+
+        self.assertEqual(resp.status, 400)
+        after = (
+            PromptManagerConfig.RESULT_TIMEOUT,
+            PromptManagerConfig.WEBUI_DISPLAY_MODE,
+            PromptManagerConfig.WORKER_THREADS,
+            PromptManagerConfig.INFINITE_SCROLL,
+            list(GalleryConfig.MONITORING_DIRECTORIES),
+        )
+        self.assertEqual(after, before)
+        self.assertFalse(os.path.exists(self.config_path))
 
     async def test_infinite_scroll_default_is_reported_saved_and_validated(self):
         data = await (

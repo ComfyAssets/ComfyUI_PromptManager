@@ -639,12 +639,18 @@ class PromptManagerAPI(
 
         configured = list(GalleryConfig.MONITORING_DIRECTORIES)
         output_dirs = []
+        seen = set()
         for d in configured:
             ok, reason = GalleryConfig.validate_gallery_root(d)
-            if ok:
-                output_dirs.append(Path(os.path.realpath(d)))
-            else:
+            if not ok:
                 self.logger.warning(f"Ignoring configured gallery root: {reason}")
+                continue
+            real = os.path.realpath(d)
+            key = os.path.normcase(real)  # one entry per directory, however spelled
+            if key in seen:
+                continue
+            seen.add(key)
+            output_dirs.append(Path(real))
 
         if output_dirs:
             return output_dirs

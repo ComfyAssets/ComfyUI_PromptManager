@@ -1069,7 +1069,10 @@ class TestMaintenanceOperations(DatabaseTestCase):
         self.assertIn("2026/08-Aug", nested)
 
         without_roots = self.db.get_prompt_subfolders()
-        self.assertIn(os.path.join(root, "2026", "08-Aug", "2026-08-06"), without_roots)
+        self.assertIn(
+            os.path.join(root, "2026", "08-Aug", "2026-08-06").replace(os.sep, "/"),
+            without_roots,
+        )
 
     def test_prompts_by_tags_and_or_modes(self):
         both = self._save("both", tags=["x", "y"])

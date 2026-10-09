@@ -79,7 +79,7 @@ def _media_access_error(path, allowed_dirs):
 
     Fails closed: an empty *allowed_dirs* denies everything.
     """
-    if Path(path).suffix.lower() not in IMAGE_EXTENSIONS:
+    if Path(path).suffix.lower() not in SERVABLE_EXTENSIONS:
         return _forbidden("Only media files can be served")
     if not allowed_dirs:
         return _forbidden("No allowed image directories configured")
@@ -92,6 +92,9 @@ def _media_access_error(path, allowed_dirs):
 GALLERY_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
 VIDEO_EXTENSIONS = frozenset({".mp4", ".webm", ".avi", ".mov", ".mkv", ".m4v", ".wmv"})
 MEDIA_EXTENSIONS = GALLERY_IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+# What the serve routes hand out: every image type above plus every video type
+# the gallery lists, so a card never points at a 403.
+SERVABLE_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
 # Caps on request-triggered filesystem work.
 MAX_SCAN_DEPTH = 12
@@ -707,7 +710,7 @@ class ImageRoutesMixin:
             filepath = request.match_info["filepath"]
             if _has_traversal(filepath):
                 return _forbidden()
-            if Path(filepath).suffix.lower() not in IMAGE_EXTENSIONS:
+            if Path(filepath).suffix.lower() not in SERVABLE_EXTENSIONS:
                 return _forbidden("Only media files can be served")
 
             output_dirs = self._select_root(
@@ -1347,7 +1350,7 @@ class ImageRoutesMixin:
             allowed_dirs = list(self._get_all_output_dirs())
             resolved = self._resolve_client_media_path(image_path, allowed_dirs)
             if resolved is None:
-                if Path(image_path).suffix.lower() not in IMAGE_EXTENSIONS:
+                if Path(image_path).suffix.lower() not in SERVABLE_EXTENSIONS:
                     return _forbidden("Only media files can be served")
                 return web.json_response(
                     {"success": False, "error": "Image file not found"}, status=404
