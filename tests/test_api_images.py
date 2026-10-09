@@ -213,6 +213,8 @@ class TestServeOutputImage(ImageAPITestCase):
             self.assertEqual(hit.status, 200)
             self.assertEqual(miss.status, 404)
             self.assertEqual(bad_index.status, 200)
+            for resp in (hit, miss, bad_index):
+                await resp.read()  # release the served file before the directory goes
 
 
 class TestServeImageById(ImageAPITestCase):
@@ -1269,6 +1271,7 @@ class TestLoraManagerPathAllowList(ImageRouteCoverageCase):
                 "GET", f"/prompt_manager/images/{image_id}/file"
             )
             self.assertEqual(resp.status, 200)
+            await resp.read()  # release the served file before the directory goes
             resolve.assert_called_once_with(configured)
 
 

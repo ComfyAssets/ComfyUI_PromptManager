@@ -2,11 +2,17 @@
 
 import os
 import sqlite3
+from contextlib import closing
 import sys
 import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+try:
+    from tests.open_handles import assert_closed  # noqa: E402
+except ImportError:  # discovered with tests/ as the top-level directory
+    from open_handles import assert_closed  # noqa: E402
 
 from database.models import PromptModel
 from database.operations import PromptDatabase
@@ -23,6 +29,8 @@ class UsageTestCase(unittest.TestCase):
     def tearDown(self):
         if getattr(self, "db", None) is not None:
             self.db.close_all()
+        PromptModel.close_all_instances()
+        assert_closed(self, self.path)
         for suffix in ("", "-wal", "-shm"):
             if os.path.exists(self.path + suffix):
                 os.unlink(self.path + suffix)
@@ -33,7 +41,7 @@ class UsageTestCase(unittest.TestCase):
         )
 
     def _set(self, prompt_id, **columns):
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             for column, value in columns.items():
                 conn.execute(
                     f"UPDATE prompts SET {column} = ? WHERE id = ?", (value, prompt_id)
@@ -169,7 +177,7 @@ class TestUsageMigration(unittest.TestCase):
         self.with_images = db.save_prompt(text="has images", prompt_hash="h1")
         self.no_images = db.save_prompt(text="no images", prompt_hash="h2")
         db.close_all()
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute(
                 "UPDATE prompts SET created_at = '2026-01-01T10:00:00.000000+00:00'"
             )
@@ -199,6 +207,8 @@ class TestUsageMigration(unittest.TestCase):
     def tearDown(self):
         for db in self.dbs:
             db.close_all()
+        PromptModel.close_all_instances()
+        assert_closed(self, self.path)
         for suffix in ("", "-wal", "-shm"):
             if os.path.exists(self.path + suffix):
                 os.unlink(self.path + suffix)
@@ -218,7 +228,7 @@ class TestUsageMigration(unittest.TestCase):
         # A row whose usage is unknown (e.g. written by 3.2.3 after a downgrade)
         # stays "never run": a restart must not invent a run for it, otherwise
         # Recently Used could never tell saved-but-unused prompts from run ones.
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute(
                 "INSERT INTO prompts (text, hash, created_at)"
                 " VALUES ('from 3.2.3', 'h3', '2026-04-01T00:00:00.000000+00:00')"

@@ -348,7 +348,7 @@ class TestLogFilesAndDownload(LoggingAPITestCase):
         self.assertEqual(data["files"], [])
 
     async def test_download_existing_file(self):
-        (self.log_dir / "prompt_manager.log").write_text("line1\nline2\n")
+        (self.log_dir / "prompt_manager.log").write_bytes(b"line1\nline2\n")
 
         resp = await self.client.request(
             "GET", "/prompt_manager/logs/download/prompt_manager.log"

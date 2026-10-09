@@ -3,6 +3,7 @@
 import os
 import pathlib
 import sqlite3
+from contextlib import closing
 import sys
 import tempfile
 import types
@@ -75,7 +76,7 @@ class TestDatabaseChecks(DiagnosticsTestCase):
         self.assertEqual(self.diag.check_images_table()["status"], "error")
 
     def test_database_without_images_table(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute("CREATE TABLE prompts (id INTEGER PRIMARY KEY, text TEXT)")
         self.assertEqual(
             self.diag.check_database(),

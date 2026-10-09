@@ -5,6 +5,7 @@ aiohttp>=3.8.0
 
 # Tests and coverage
 coverage>=7.0
+numpy>=1.24  # WD14 engine tests
 
 # Code quality
 black>=24.0.0

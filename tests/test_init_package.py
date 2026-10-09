@@ -17,6 +17,11 @@ from aiohttp import web
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+try:
+    from tests.open_handles import open_handles_under  # noqa: E402
+except ImportError:  # discovered with tests/ as the top-level directory
+    from open_handles import open_handles_under  # noqa: E402
+
 
 class FakePromptQueue:
     def __init__(self):
@@ -82,6 +87,17 @@ def load_package(name, db_path, output_dir, server=None):
     return package, server.PromptServer.instance
 
 
+def close_every_database():
+    """Close connections of every PromptModel registry in the process.
+
+    A package loaded under its own name imports its own copy of
+    database.models, whose PromptModel class keeps its own registry.
+    """
+    for name, module in list(sys.modules.items()):
+        if name.endswith("database.models") and hasattr(module, "PromptModel"):
+            module.PromptModel.close_all_instances()
+
+
 class PackageTestCase(unittest.TestCase):
     package_name = "prompt_manager_pkg"
 
@@ -109,7 +125,10 @@ class PackageTestCase(unittest.TestCase):
         if monitor is not None:
             monitor.stop_monitoring()
         sys.modules.pop(cls.package_name, None)
+        close_every_database()
+        hits = open_handles_under(cls.tmp.name)
         cls.tmp.cleanup()
+        assert not hits, f"files still open before temp dir cleanup: {hits}"
 
 
 class TestPackageWiring(PackageTestCase):
@@ -220,3 +239,30 @@ class TestPackageWhenHookRegistrationFails(PackageTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConsoleBanner(unittest.TestCase):
+    """Loading the node must not depend on the console being able to print emoji."""
+
+    def test_package_loads_with_a_cp1252_console(self):
+        import contextlib
+        import io
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.addCleanup(close_every_database)
+        output_dir = os.path.join(tmp.name, "output")
+        os.makedirs(output_dir)
+        name = "prompt_manager_pkg_cp1252"
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+
+        with contextlib.redirect_stdout(stream):
+            package, _ = load_package(name, os.path.join(tmp.name, "p.db"), output_dir)
+        self.addCleanup(sys.modules.pop, name, None)
+        monitor = getattr(package, "_global_image_monitor", None)
+        if monitor is not None:
+            self.addCleanup(monitor.stop_monitoring)
+
+        stream.flush()
+        banner = stream.buffer.getvalue().decode("cp1252")
+        self.assertIn("Loaded:", banner)

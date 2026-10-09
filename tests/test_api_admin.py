@@ -20,6 +20,12 @@ _mock_server.PromptServer.instance.routes = MagicMock()
 sys.modules.setdefault("server", _mock_server)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from database.models import PromptModel  # noqa: E402
+
+try:
+    from tests.open_handles import assert_closed  # noqa: E402
+except ImportError:  # discovered with tests/ as the top-level directory
+    from open_handles import assert_closed  # noqa: E402
 
 from aiohttp import web  # noqa: E402
 from aiohttp.test_utils import AioHTTPTestCase  # noqa: E402
@@ -36,7 +42,9 @@ class AdminAPITestCase(AioHTTPTestCase):
     """Test app with PromptManager routes, temp DB and config, fake ComfyUI tree."""
 
     async def get_application(self):
-        self.tmpdir = tempfile.mkdtemp()
+        # realpath: macOS hands out /var/... for a /private/var/... directory and
+        # the gallery roots are stored resolved
+        self.tmpdir = os.path.realpath(tempfile.mkdtemp())
         self.comfy_dir = Path(self.tmpdir) / "ComfyUI"
         self.output_dir = self.comfy_dir / "output"
         self.output_dir.mkdir(parents=True)
@@ -81,7 +89,8 @@ class AdminAPITestCase(AioHTTPTestCase):
             sys.modules.pop("folder_paths", None)
         else:
             sys.modules["folder_paths"] = self._orig_folder_paths
-        self.api.db.close_all()
+        PromptModel.close_all_instances()  # restore may have swapped api.db
+        assert_closed(self, self.tmpdir)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     # ── helpers ────────────────────────────────────────────────────────

@@ -14,6 +14,12 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from database.models import PromptModel  # noqa: E402
+
+try:
+    from tests.open_handles import assert_closed  # noqa: E402
+except ImportError:  # discovered with tests/ as the top-level directory
+    from open_handles import assert_closed  # noqa: E402
 
 import aiohttp
 from aiohttp import web
@@ -47,7 +53,8 @@ class BackupRestoreTestCase(AioHTTPTestCase):
 
     async def tearDownAsync(self):
         await super().tearDownAsync()  # closes the aiohttp test client
-        self.api.db.close_all()
+        PromptModel.close_all_instances()  # restore may have swapped api.db
+        assert_closed(self, self.tmpdir)
         for name in os.listdir(self.tmpdir):
             os.unlink(os.path.join(self.tmpdir, name))
         os.rmdir(self.tmpdir)

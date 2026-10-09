@@ -229,7 +229,7 @@ class TestGetLoraImageCacheDir(unittest.TestCase):
     def test_returns_path(self):
         cache_dir = get_lora_image_cache_dir()
         self.assertIsInstance(cache_dir, Path)
-        self.assertTrue(str(cache_dir).endswith("data/lora_images"))
+        self.assertEqual(cache_dir.parts[-2:], ("data", "lora_images"))
 
     def test_directory_exists(self):
         cache_dir = get_lora_image_cache_dir()

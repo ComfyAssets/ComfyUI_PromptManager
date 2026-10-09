@@ -8,6 +8,8 @@ import shutil
 import sqlite3
 import os
 import threading
+import weakref
+from contextlib import closing
 from pathlib import Path
 from typing import Set, Tuple
 
@@ -59,6 +61,10 @@ class PromptModel:
     # same file; only the first one pays for the schema check.
     _initialized_paths: Set[str] = set()
     _init_lock = threading.Lock()
+    # Every live model, so a shutdown or a test teardown can close them all
+    # before the database file is deleted (Windows refuses otherwise).
+    _instances: "weakref.WeakSet[PromptModel]" = weakref.WeakSet()
+    _instances_lock = threading.Lock()
 
     def __init__(self, db_path: str):
         """
@@ -78,6 +84,8 @@ class PromptModel:
         # Bumped by _close_all_connections so threads holding a closed
         # connection reopen on their next get_connection().
         self._generation = 0
+        with PromptModel._instances_lock:
+            PromptModel._instances.add(self)
         self._ensure_database_exists()
 
     def _ensure_database_exists(self) -> None:
@@ -291,6 +299,14 @@ class PromptModel:
         with self._conn_lock:
             self._connections.add(conn)
         return conn
+
+    @classmethod
+    def close_all_instances(cls) -> None:
+        """Close every connection of every live model in this process."""
+        with cls._instances_lock:
+            models = list(cls._instances)
+        for model in models:
+            model.close_all()
 
     def close_all(self) -> None:
         """Close every thread's connection; they reopen lazily on next use.
@@ -627,7 +643,7 @@ class PromptModel:
         improving query performance and reducing file size.
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 conn.execute("VACUUM")
                 conn.commit()
         except Exception as e:

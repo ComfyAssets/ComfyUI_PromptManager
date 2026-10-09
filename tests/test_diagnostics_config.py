@@ -10,6 +10,7 @@ Verifies that:
 import asyncio
 import json
 import os
+from contextlib import closing
 import sys
 import tempfile
 import types
@@ -119,7 +120,7 @@ class TestAdminEndpointsUseConfigPath(unittest.TestCase):
         try:
             import sqlite3
 
-            with sqlite3.connect(db_file) as conn:
+            with closing(sqlite3.connect(db_file)) as conn, conn:
                 conn.execute(
                     "CREATE TABLE prompts "
                     "(id INTEGER PRIMARY KEY, text TEXT, created_at TEXT)"

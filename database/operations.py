@@ -89,7 +89,7 @@ def _resolve_db_path(db_path: Optional[str] = None) -> str:
             db_path = "prompts.db"
 
     if not os.path.isabs(db_path):
-        db_path = os.path.join(extension_root, db_path)
+        db_path = os.path.normpath(os.path.join(extension_root, db_path))
 
     # Ensure parent directory exists for custom paths
     parent = os.path.dirname(db_path)
@@ -164,6 +164,11 @@ class PromptDatabase:
     def close(self) -> None:
         """Close the calling thread's database connection (see PromptModel.close)."""
         self.model.close()
+
+    @staticmethod
+    def close_all_instances() -> None:
+        """Close the connections of every PromptDatabase/PromptModel in the process."""
+        PromptModel.close_all_instances()
 
     def close_all(self) -> None:
         """Close every thread's connection (see PromptModel.close_all)."""
@@ -667,7 +672,8 @@ class PromptDatabase:
                             rel = os.path.relpath(parent, root)
                             if not rel.startswith(".."):
                                 if rel != ".":
-                                    folders.add(rel)
+                                    # Clients split and filter on "/" whatever the OS
+                                    folders.add(rel.replace(os.sep, "/"))
                                 made_relative = True
                                 break
                         except ValueError:

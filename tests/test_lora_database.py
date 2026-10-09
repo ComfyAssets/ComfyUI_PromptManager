@@ -195,6 +195,25 @@ class TestGetPromptSubfolders(LoraDBTestCase):
         self.assertIsInstance(folders, list)
         self.assertGreater(len(folders), 0)
 
+    def test_subfolders_use_forward_slashes_on_every_platform(self):
+        """Clients split folders on "/" whatever separator the OS produced."""
+        from unittest import mock
+
+        import database.operations as operations
+
+        pid = self._save("prompt")
+        self._link_image(pid, "/output/2026/08-Aug/06/img.png")
+
+        with (
+            mock.patch.object(
+                operations.os.path, "relpath", return_value="2026\\08-Aug\\06"
+            ),
+            mock.patch.object(operations.os, "sep", "\\"),
+        ):
+            folders = self.db.get_prompt_subfolders(root_dirs=["/output"])
+
+        self.assertEqual(folders, ["2026/08-Aug/06"])
+
     def test_include_ancestors_adds_intermediate_paths(self):
         pid = self._save("prompt")
         self._link_image(pid, "/output/2026/08-Aug/2026-08-06/img.png")

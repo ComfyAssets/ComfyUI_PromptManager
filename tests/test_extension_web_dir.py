@@ -14,7 +14,7 @@ ROOT = os.path.dirname(TESTS_DIR)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, TESTS_DIR)
 
-from test_init_package import load_package  # noqa: E402
+from test_init_package import close_every_database, load_package  # noqa: E402
 
 
 class TestExtensionWebDir(unittest.TestCase):
@@ -35,6 +35,7 @@ class TestExtensionWebDir(unittest.TestCase):
         if monitor is not None:
             monitor.stop_monitoring()
         sys.modules.pop(cls.package_name, None)
+        close_every_database()  # the package's database must not hold the temp dir open
         cls.tmp.cleanup()
 
     def test_web_directory_is_the_canvas_extension_folder(self):

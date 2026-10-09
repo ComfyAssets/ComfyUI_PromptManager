@@ -16,6 +16,12 @@ sys.modules.setdefault("server", _mock_server)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+try:
+    from tests.open_handles import assert_closed  # noqa: E402
+except ImportError:  # discovered with tests/ as the top-level directory
+    from open_handles import assert_closed  # noqa: E402
+from database.models import PromptModel  # noqa: E402
+
 from aiohttp import web  # noqa: E402
 from aiohttp.test_utils import AioHTTPTestCase  # noqa: E402
 
@@ -33,6 +39,8 @@ class FolderPathsFixture(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmpdir, True)
+        self.addCleanup(assert_closed, self, self.tmpdir)  # just before the rmtree
+        self.addCleanup(PromptModel.close_all_instances)
         self.comfy_dir = Path(self.tmpdir) / "ComfyUI"
         self.output_dir = self.comfy_dir / "output"
         self.output_dir.mkdir(parents=True)

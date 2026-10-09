@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database.models import PromptModel
 from database.operations import PromptDatabase
+from database.models import normalize_image_path  # noqa: E402
 
 LEGACY_PROMPTS_TABLE = (
     "CREATE TABLE prompts (id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -260,7 +261,7 @@ class TestIdempotentMigrations(MigrationTestCase):
         self.assertEqual(
             sorted(i["file_path"] for i in images),
             sorted(
-                os.path.normcase(os.path.normpath(p))
+                normalize_image_path(p)
                 for p in (
                     "/out/2026-01-01/a.png",
                     "/out/2026-01-02/a.png",

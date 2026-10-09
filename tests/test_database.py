@@ -10,6 +10,7 @@ import csv
 import json
 import os
 import sqlite3
+from contextlib import closing
 import sys
 import tempfile
 import types
@@ -17,6 +18,12 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from database.models import PromptModel  # noqa: E402
+
+try:
+    from tests.open_handles import assert_closed  # noqa: E402
+except ImportError:  # discovered with tests/ as the top-level directory
+    from open_handles import assert_closed  # noqa: E402
 
 from database.operations import PromptDatabase, _resolve_db_path
 from utils.hashing import generate_prompt_hash
@@ -31,7 +38,8 @@ class DatabaseTestCase(unittest.TestCase):
         self.db = PromptDatabase(self.temp_db.name)
 
     def tearDown(self):
-        self.db.close_all()
+        PromptModel.close_all_instances()
+        assert_closed(self, self.temp_db.name)
         for suffix in ("", "-wal", "-shm"):
             path = self.temp_db.name + suffix
             if os.path.exists(path):
@@ -756,7 +764,7 @@ class TestExport(DatabaseTestCase):
 class TestDuplicateMerging(DatabaseTestCase):
     def _save_dup(self, text, created_at, **kwargs):
         pid = self.db.save_prompt(text=text, prompt_hash=None, **kwargs)
-        with sqlite3.connect(self.temp_db.name) as conn:
+        with closing(sqlite3.connect(self.temp_db.name)) as conn, conn:
             conn.execute(
                 "UPDATE prompts SET created_at = ? WHERE id = ?", (created_at, pid)
             )
@@ -852,7 +860,7 @@ class TestImageQueries(DatabaseTestCase):
         b = self._save("beta prompt")
         self.db.link_image_to_prompt(a, "/out/a1.png")
         self.db.link_image_to_prompt(b, "/out/b1.png")
-        with sqlite3.connect(self.temp_db.name) as conn:
+        with closing(sqlite3.connect(self.temp_db.name)) as conn, conn:
             conn.execute(
                 "UPDATE generated_images SET generation_time = '2026-01-01 00:00:00'"
                 " WHERE filename = 'a1.png'"
@@ -938,7 +946,7 @@ class TestImageQueries(DatabaseTestCase):
     def test_image_row_with_broken_json_yields_empty_dicts(self):
         pid = self._save("broken")
         image_id = self.db.link_image_to_prompt(pid, "/out/broken.png")
-        with sqlite3.connect(self.temp_db.name) as conn:
+        with closing(sqlite3.connect(self.temp_db.name)) as conn, conn:
             conn.execute(
                 "UPDATE generated_images SET workflow_data = '{not json', "
                 "prompt_metadata = '{\"k\": 1}', parameters = NULL WHERE id = ?",
@@ -1027,7 +1035,7 @@ class TestMaintenanceOperations(DatabaseTestCase):
         pid = self._save("to orphan", tags=["t"])
         self.db.link_image_to_prompt(pid, "/out/o.png")
         self.db.close()
-        with sqlite3.connect(self.temp_db.name) as conn:
+        with closing(sqlite3.connect(self.temp_db.name)) as conn, conn:
             conn.execute("PRAGMA foreign_keys = OFF")
             conn.execute("DELETE FROM prompts WHERE id = ?", (pid,))
 
@@ -1139,7 +1147,7 @@ class TestRowConversion(DatabaseTestCase):
 
     def test_search_date_filters(self):
         pid = self._save("dated")
-        with sqlite3.connect(self.temp_db.name) as conn:
+        with closing(sqlite3.connect(self.temp_db.name)) as conn, conn:
             conn.execute(
                 "UPDATE prompts SET created_at = '2026-05-01T00:00:00' WHERE id = ?",
                 (pid,),

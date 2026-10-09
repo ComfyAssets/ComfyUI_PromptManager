@@ -151,6 +151,8 @@ __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 print()
 print(f"\033[94m[ComfyUI-PromptManager] Version:\033[0m {get_version()}")
 for node_key, display_name in NODE_DISPLAY_NAME_MAPPINGS.items():
-    print(f"🫶 \033[94mLoaded:\033[0m {display_name}")
+    # ASCII only: a Windows console using a legacy code page cannot print emoji,
+    # and a UnicodeEncodeError here would abort loading the whole node.
+    print(f"  \033[94mLoaded:\033[0m {display_name}")
 print(f"\033[94mTotal: {len(NODE_CLASS_MAPPINGS)} tools loaded\033[0m")
 print()

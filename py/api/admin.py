@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+from contextlib import closing
 import datetime
 import hashlib
 import json
@@ -190,7 +191,7 @@ def _diagnose_database(db_path):
             "message": f"Database file not found: {os.path.basename(db_path)}",
         }
     try:
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn:
             prompt_count = conn.execute("SELECT COUNT(*) FROM prompts").fetchone()[0]
             has_images_table = (
                 conn.execute(
@@ -1219,7 +1220,10 @@ class AdminRoutesMixin:
             removed = await self._run_in_executor(_prune_safety_backups, model.db_path)
             if removed:
                 self.logger.info(f"Removed {len(removed)} old safety backups")
+            previous = self.db
             self.db = PromptDatabase(model.db_path)
+            # Its connections would otherwise linger (a file lock on Windows)
+            previous.close_all()
             prompt_count = self.db.model.get_database_info().get("total_prompts", 0)
 
             return web.json_response(

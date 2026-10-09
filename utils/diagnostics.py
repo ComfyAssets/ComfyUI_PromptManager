@@ -32,6 +32,7 @@ The diagnostics provide:
 
 import os
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Dict, Any
 
@@ -147,7 +148,7 @@ class GalleryDiagnostics:
                     "message": f"Database file not found: {self.db_path}",
                 }
 
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 conn.row_factory = sqlite3.Row
 
                 # Check prompts table
@@ -189,7 +190,7 @@ class GalleryDiagnostics:
         self.logger.info("\n[IMG]  Checking Images Table...")
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 conn.row_factory = sqlite3.Row
 
                 # Check if table exists
