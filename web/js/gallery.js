@@ -2123,9 +2123,12 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 btn.textContent = 'Scanning...';
                 
                 try {
-                    // Force reload images
-                    await this.loadImages();
-                    this.showNotification('Folder rescanned successfully!', 'success');
+                    // The listing is cached on the server; ask it to rewalk the folders first
+                    const result = await this.api.post('/prompt_manager/gallery/rescan', {});
+                    this.hideSettings();
+                    await Promise.all([this.loadFolderTree(), this.loadImages(1)]);
+                    const where = result.roots === 1 ? 'the output folder' : `${result.roots} folders`;
+                    this.showNotification(`Rescanned ${where}: ${result.total} files`, 'success');
                 } catch (error) {
                     console.error('Rescan error:', error);
                     this.showNotification('Failed to rescan folder', 'error');

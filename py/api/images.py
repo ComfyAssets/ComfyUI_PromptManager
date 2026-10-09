@@ -397,6 +397,11 @@ class ImageRoutesMixin:
         async def get_gallery_subfolders_route(request):
             return await self.get_gallery_subfolders(request)
 
+        # POST: drops the server-side listing cache and rewalks the output roots.
+        @routes.post("/prompt_manager/gallery/rescan")
+        async def rescan_gallery_route(request):
+            return await self.rescan_gallery(request)
+
     def _present_images(self, images):
         """Image dicts ready for a response: urls added, server paths hidden."""
         self._enrich_images(images)
@@ -734,6 +739,27 @@ class ImageRoutesMixin:
             self.logger.error(f"Serve output image error: {e}")
             return web.json_response(
                 {"success": False, "error": _safe_error(e)}, status=500
+            )
+
+    async def rescan_gallery(self, request):
+        """Forget the cached listing and rewalk every output root now.
+
+        The listing is cached for ``_gallery_cache_ttl`` seconds; the gallery's
+        Rescan button needs files added or removed on disk to show up at once.
+        """
+        try:
+            self.invalidate_gallery_cache()
+            output_dirs = list(self._get_all_output_dirs())
+            total = 0
+            for output_path in output_dirs:
+                total += len(await self._get_gallery_files(output_path))
+            return web.json_response(
+                {"success": True, "total": total, "roots": len(output_dirs)}
+            )
+        except Exception:
+            self.logger.exception("Gallery rescan error")
+            return web.json_response(
+                {"success": False, "error": "Failed to rescan the gallery"}, status=500
             )
 
     async def get_gallery_subfolders(self, request):

@@ -1717,6 +1717,46 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class TestGalleryRescan(ImageAPITestCase):
+    """POST /prompt_manager/gallery/rescan drops the listing cache and rewalks."""
+
+    URL = "/prompt_manager/images/output"
+
+    async def _json(self, method, path, **kwargs):
+        resp = await self.client.request(method, path, **kwargs)
+        return resp.status, await resp.json()
+
+    async def test_rescan_makes_new_files_visible_before_the_cache_expires(self):
+        self.api._gallery_cache_ttl = 3600  # the cache alone would hide the new file
+        make_png(self.output_dir / "a.png")
+        _, first = await self._json("GET", self.URL)
+        self.assertEqual(first["total"], 1)
+
+        make_png(self.output_dir / "b.png")
+        _, stale = await self._json("GET", self.URL)
+        self.assertEqual(stale["total"], 1)
+
+        status, data = await self._json("POST", "/prompt_manager/gallery/rescan")
+        _, fresh = await self._json("GET", self.URL)
+
+        self.assertEqual(status, 200)
+        self.assertTrue(data["success"])
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(data["roots"], 1)
+        self.assertEqual(fresh["total"], 2)
+
+    async def test_rescan_is_post_only(self):
+        resp = await self.client.request("GET", "/prompt_manager/gallery/rescan")
+        self.assertEqual(resp.status, 405)
+
+    async def test_rescan_reports_internal_failure(self):
+        self.api._scan_gallery_files_sync = _raise
+        status, data = await self._json("POST", "/prompt_manager/gallery/rescan")
+        self.assertEqual(status, 500)
+        self.assertFalse(data["success"])
+        self.assertNotIn("boom", json.dumps(data))
+
+
 class TestOutputScanHelpers(ImageAPITestCase):
     """Stable ids for filesystem entries, no symlink reads, stop on disconnect."""
 
