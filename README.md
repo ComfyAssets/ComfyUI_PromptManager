@@ -164,7 +164,7 @@ _Powered by [ViewerJS](https://github.com/fengyuanchen/viewerjs) for professiona
 
 - **Full-text search** across all stored prompts
 - **Category filtering** for organized prompt collections
-- **Tag-based search** with support for multiple tags
+- **Tag-based search** with support for multiple tags, with autocomplete that narrows to tags seen together with the ones already typed
 - **Rating filters** to find your best prompts
 - **Date range filtering** for temporal searches
 - **Recent prompts** quick access
@@ -306,9 +306,12 @@ The comprehensive gallery system provides complete access to all your ComfyUI ou
 
 Configure your viewing experience in the settings panel:
 
-- **Performance Settings**: Grid columns, image quality, lazy loading
+- **Display Settings**: Default view, items per page, grid columns, media info, infinite scrolling
+- **Performance Settings**: Image quality, lazy loading
 - **Video Settings**: Autoplay, mute by default, loop videos
-- **Thumbnail Management**: Generate optimized thumbnails for faster loading
+- **Thumbnail Management**: Generate optimized thumbnails for faster loading (runs on the configured worker threads; a run that stops at the per-run cap tells you how many remain)
+- **Find Duplicate Images**: Hashes every file on the worker threads with a progress bar; close the window and it keeps running, results wait in a pill
+- **Rescan Output Folder**: Drops the server-side listing cache and rewalks the folders
 
 #### **🖼️ Image Viewing Experience**
 
@@ -358,13 +361,15 @@ Use the standalone metadata viewer to analyze any ComfyUI-generated PNG:
 Import existing ComfyUI images into your database:
 
 1. **Open admin dashboard** and click **"📸 Scan Images"**
-2. **Start scan** to analyze your entire output directory
-3. **Monitor progress** with real-time status updates
+2. **Start scan** to analyze every configured output directory
+3. **Monitor progress** with real-time status updates. The scan runs on the server: closing the window only minimizes it to a progress pill, and reloading the page re-attaches to a running scan
 4. **Review results** showing:
    - Images found and processed
    - Prompts extracted and linked
    - Any errors or issues encountered
 5. **Access imported data** through the normal gallery interface
+
+The scan reads PNG text chunks and A1111-style parameters, and, when `ffprobe` is installed, the prompt ComfyUI's video savers embed in MP4/MOV/WebM files. Files are read on the number of **worker threads** set in Settings → Performance (default: half your cores), which makes a large library several times faster.
 
 ### 🏷️ AI AutoTag
 
@@ -664,7 +669,8 @@ CREATE TABLE generated_images (
 - **`utils/diagnostics.py`** - System diagnostics and health checks
 - **`web/admin.html`** - Advanced admin dashboard with metadata panel
 - **`web/index.html`** - Simple web interface
-- **`web/js/prompt_manager.js`** - Dashboard JavaScript
+- **`web/comfy/prompt_manager.js`** - ComfyUI canvas extension (the only file ComfyUI loads)
+- **`web/js/admin.js`**, **`web/js/gallery.js`** - Dashboard and gallery JavaScript
 - **`web/js/tags-page.js`** - Tag management JavaScript
 - **`web/metadata.html`** - Standalone PNG metadata viewer
 
@@ -699,8 +705,11 @@ ComfyUI_PromptManager/
 │   ├── gallery.html             # Image gallery
 │   ├── index.html               # Simple web interface
 │   ├── metadata.html            # Standalone metadata viewer
+│   ├── comfy/
+│   │   └── prompt_manager.js    # ComfyUI canvas extension (WEB_DIRECTORY)
 │   └── js/
-│       ├── prompt_manager.js    # Dashboard JavaScript
+│       ├── admin.js             # Dashboard JavaScript
+│       ├── gallery.js           # Gallery JavaScript
 │       └── tags-page.js         # Tag management JavaScript
 ├── tests/
 │   ├── __init__.py
@@ -763,11 +772,15 @@ Configure the web interface behavior:
 # Web UI settings (PromptManagerConfig class)
 RESULT_TIMEOUT = 5  # Seconds to auto-hide results in ComfyUI node
 WEBUI_DISPLAY_MODE = 'newtab'  # 'popup' or 'newtab' for Web UI button
+INFINITE_SCROLL = False  # Dashboard list loads the next page on scroll by default
 SHOW_TEST_BUTTON = False  # Show API test button in node UI
 ```
 
+All of these are editable in the dashboard Settings modal and saved to `config.json` (which is private to the installation and holds the CivitAI key, so it is never committed).
+
 ### Performance Tuning
 
+- **Worker threads** (Settings → Performance): threads used by the image rescan, thumbnail generation and duplicate detection. Default is half the detected cores, maximum is the core count. Pillow releases the GIL while decoding, so the scan and thumbnails scale almost linearly; keep a few cores free while ComfyUI is generating.
 - The database automatically creates indexes for optimal search performance
 - Regular `VACUUM` operations keep the database optimized
 - Consider backing up the database periodically
@@ -811,8 +824,13 @@ db.model.backup_database("backup_prompts.db")
 
 ```bash
 cd ComfyUI_PromptManager
-python -m pytest tests/ -v
+pip install -r requirements-dev.txt
+python -m unittest discover -s tests          # Python (what CI runs)
+node --test tests/js/*.test.js                 # frontend pure modules
+python -m coverage run -m unittest discover -s tests && python -m coverage combine && python -m coverage report
 ```
+
+CI runs the suite on Linux, Windows and macOS for Python 3.10 to 3.12 with an 85% coverage gate. Tests that delete a database file first check that nothing in the process still holds it open (`tests/open_handles.py`), so a connection leak fails on Linux the way it would on Windows.
 
 ### Code Style
 
@@ -874,6 +892,10 @@ MIT License - see LICENSE file for details.
 
 ### Recently Completed
 
+- **✅ Security & Reliability Hardening (3.3.0)**: validated gallery roots, contained file serving, safe backups and restores, background scans, 85%+ test coverage on all three operating systems
+- **✅ Worker Threads**: scan, thumbnails and duplicate detection run on a configurable thread pool
+- **✅ Tag Autocomplete & Infinite Scrolling**: faster browsing in the dashboard and gallery
+- **✅ Queue-Time Run Counting (3.2.4)**: run counts and image linking follow the ComfyUI queue
 - **✅ LoRA Manager Integration**: Import LoRA metadata, trigger words, and preview images
 - **✅ Folder Filter**: Browse and filter prompts by output subdirectory
 - **✅ Multi-Directory Gallery**: Scan multiple output directories simultaneously
@@ -892,6 +914,26 @@ MIT License - see LICENSE file for details.
 - **📊 Visual Analytics**: Charts and graphs for prompt effectiveness analysis
 
 ## Changelog
+
+### v3.3.0 (Hardening, Background Jobs & Worker Threads)
+
+- **🔒 Security**: gallery roots restricted to ComfyUI directories and validated wherever they are read; media-only, fail-closed image serving; Windows path escape in static routes closed; quote-safe HTML escaping with inline handlers moved to data attributes; the CivitAI key is never returned and only sent to HTTPS CivitAI hosts; auto-tag paths contained; side-effect routes are POST-only; backups include the WAL and restores are size-capped, integrity-checked and applied through SQLite's online backup API
+- **🧵 Worker Threads**: a Settings slider (default half the cores) used by the image rescan, thumbnail generation and duplicate detection. Measured: a 1 GB sample scanned in 2.5 s instead of 18 s at 8 threads
+- **🔁 Background Jobs**: the image rescan and the duplicate scan run on the server, stream progress, survive a closed tab, minimize to a progress pill and re-attach after a reload
+- **🎬 Video Prompts**: the scan reads the prompt ComfyUI's video savers embed in MP4/MOV/WebM containers (needs `ffprobe`)
+- **🖼️ Thumbnails**: written atomically and served under versioned URLs so a regenerated thumbnail never shows a stale cached copy; the per-run cap applies only to thumbnails that still need generating and the gallery says how many remain
+- **🏷️ Tag Autocomplete**: the dashboard tag box suggests tags, narrowed to those that co-occur with the tags already typed
+- **♾️ Infinite Scrolling**: optional in the gallery and the dashboard list (saved default plus a session toggle)
+- **⚙️ Gallery Settings** now apply at load; grid columns, media info and the Rescan button work as labelled
+- **🐛 Correctness**: run counts increment when ComfyUI dequeues a prompt; negative prompts are never traced; per-thread SQLite connections and idempotent migrations (an old rebuild could delete every image row); `truncate_logs` no longer rolls the log over; the ComfyUI canvas loads only the canvas extension; Windows console banners are ASCII-safe; subfolders use `/` on every platform
+- **🧪 Tests & CI**: 1,460 Python and 142 JavaScript tests (from 510 and 26), coverage 96% with an 85% gate, CI on Linux, Windows and macOS for Python 3.10–3.12, flake8 clean
+- **⚠️ API changes**: image paths in responses are relative to the ComfyUI tree (use `url`); `autotag/download`, `autotag/start` and the thumbnail progress stream are POST-only; `lora/status` returns `has_civitai_api_key` instead of the key; `/search` is paginated
+
+### v3.2.4 (Recently Used Sorting & Queue-Time Run Counts)
+
+- **🕒 Recently Used Sort**: sort the dashboard by last use, most used or rating, server-side across pages
+- **🔢 Run Counts**: `run_count` and `last_used_at` are recorded through the ComfyUI queue hook, so cached nodes still count
+- **🔗 Positive-Prompt Image Linking**: generated images link to the positive prompt traced through the queued graph
 
 ### v3.2.1 (LoRA Manager Integration)
 

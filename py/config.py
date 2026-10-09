@@ -22,7 +22,7 @@ Example:
 extension_name = "PromptManager"
 
 # Get server instance and routes (same pattern as ComfyUI_Assets)
-from server import PromptServer
+from server import PromptServer  # noqa: E402
 
 server_instance = PromptServer.instance
 routes = server_instance.routes
@@ -30,8 +30,9 @@ routes = server_instance.routes
 # Extension info
 extension_uri = None  # Will be set in __init__.py
 
-import os
-from typing import Dict, Any, List
+import os  # noqa: E402
+from pathlib import Path  # noqa: E402
+from typing import Any, Dict, List, Optional, Tuple  # noqa: E402
 
 # Import logging system
 try:
@@ -45,6 +46,108 @@ except ImportError:
 
 # Initialize logger for config operations
 config_logger = get_logger("prompt_manager.config")
+
+# Environment variable listing extra directories (os.pathsep-separated) that
+# may be used as gallery roots in addition to ComfyUI's own directories.
+EXTRA_GALLERY_ROOTS_ENV = "PROMPT_MANAGER_EXTRA_GALLERY_ROOTS"
+
+# Environment variable overriding where config.json is read from and saved to.
+CONFIG_PATH_ENV = "PROMPT_MANAGER_CONFIG_PATH"
+
+# ComfyUI folder_paths getters whose directories are valid gallery parents.
+_COMFYUI_DIRECTORY_GETTERS = (
+    "get_output_directory",
+    "get_input_directory",
+    "get_temp_directory",
+    "get_user_directory",
+)
+
+
+def _canonical_path(path: str) -> str:
+    """Return a path normalised for comparison (realpath + normcase)."""
+    return os.path.normcase(os.path.realpath(path))
+
+
+def write_private_json(path: str, data: Any) -> None:
+    """Write ``data`` as JSON to ``path`` readable by the current user only.
+
+    config.json can hold an API key (integrations.lora_manager), so it is
+    created with mode 0600 and, on POSIX, an existing more open file is
+    tightened too. Windows has no POSIX modes; there the chmod is a best
+    effort that only affects the read-only bit. Parent directories are
+    created as needed. Raises OSError when the file cannot be written.
+    """
+    import json
+
+    parent_dir = os.path.dirname(path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    if os.name == "posix":
+        os.chmod(path, 0o600)
+
+
+def _is_filesystem_root(path: str) -> bool:
+    """True for '/' on POSIX and drive roots such as 'C:\\' on Windows."""
+    return os.path.dirname(path) == path
+
+
+def _import_folder_paths():
+    """ComfyUI's folder_paths module, or None outside ComfyUI."""
+    try:
+        import folder_paths
+    except ImportError:
+        return None
+    return folder_paths
+
+
+def _comfyui_base_directory() -> Optional[str]:
+    """ComfyUI's base directory: folder_paths.base_path, else the output dir's
+    parent."""
+    folder_paths = _import_folder_paths()
+    if folder_paths is None:
+        return None
+    base = getattr(folder_paths, "base_path", None)
+    if isinstance(base, str) and base:
+        return base
+    getter = getattr(folder_paths, "get_output_directory", None)
+    if getter is None:
+        return None
+    try:
+        output_dir = getter()
+    except Exception:
+        return None
+    if isinstance(output_dir, str) and output_dir:
+        return os.path.dirname(os.path.realpath(output_dir))
+    return None
+
+
+def _comfyui_directories() -> List[str]:
+    """Directories reported by ComfyUI's folder_paths module, if importable."""
+    folder_paths = _import_folder_paths()
+    if folder_paths is None:
+        return []
+
+    found = []
+    for getter_name in _COMFYUI_DIRECTORY_GETTERS:
+        getter = getattr(folder_paths, getter_name, None)
+        if getter is None:
+            continue
+        try:
+            directory = getter()
+        except Exception:
+            continue
+        if isinstance(directory, str) and directory:
+            found.append(directory)
+    return found
+
+
+def _extra_gallery_roots() -> List[str]:
+    """Directories the user opted in through PROMPT_MANAGER_EXTRA_GALLERY_ROOTS."""
+    raw = os.environ.get(EXTRA_GALLERY_ROOTS_ENV, "")
+    return [entry.strip() for entry in raw.split(os.pathsep) if entry.strip()]
 
 
 class GalleryConfig:
@@ -106,8 +209,9 @@ class GalleryConfig:
 
         Returns:
             Dict[str, Any]: A nested dictionary containing all gallery configuration
-                sections: monitoring, tracking, database, web_interface, and performance.
-                Each section contains the relevant configuration parameters as key-value pairs.
+                sections: monitoring, tracking, database, web_interface, and
+                performance. Each section contains the relevant configuration
+                parameters as key-value pairs.
 
         Example:
             config = GalleryConfig.get_config()
@@ -166,7 +270,9 @@ class GalleryConfig:
         if "enabled" in monitoring:
             cls.MONITORING_ENABLED = monitoring["enabled"]
         if "directories" in monitoring:
-            cls.MONITORING_DIRECTORIES = monitoring["directories"]
+            directories = cls._validated_directories(monitoring["directories"])
+            if directories is not None:
+                cls.MONITORING_DIRECTORIES = directories
         if "extensions" in monitoring:
             cls.SUPPORTED_EXTENSIONS = monitoring["extensions"]
         if "processing_delay" in monitoring:
@@ -199,6 +305,127 @@ class GalleryConfig:
             cls.MAX_CONCURRENT_PROCESSING = performance["max_concurrent_processing"]
         if "metadata_extraction_timeout" in performance:
             cls.METADATA_EXTRACTION_TIMEOUT = performance["metadata_extraction_timeout"]
+
+    @classmethod
+    def _validated_directories(cls, directories: Any) -> Optional[List[str]]:
+        """Gallery roots from a config payload that pass validate_gallery_root.
+
+        A hand-edited config.json is as untrusted as a settings request:
+        entries that fail validation are dropped with a warning (naming only
+        the basename), and a value that is not a list is ignored entirely
+        (``None`` is returned so the current roots stay as they are).
+        """
+        if not isinstance(directories, list):
+            config_logger.warning(
+                "Ignoring gallery monitoring directories: expected a list"
+            )
+            return None
+        kept = []
+        for entry in directories:
+            ok, reason = cls.validate_gallery_root(entry)
+            if ok:
+                kept.append(entry)
+                continue
+            label = os.path.basename(entry) if isinstance(entry, str) else entry
+            config_logger.warning(f"Ignoring gallery root {label!r}: {reason}")
+        return kept
+
+    @classmethod
+    def allowed_gallery_parents(cls) -> List[str]:
+        """Canonical directories under which gallery roots may live.
+
+        Filesystem roots are never allowed as parents, even when listed in
+        the environment, because that would re-open the whole disk.
+        """
+        parents = []
+        for candidate in _comfyui_directories() + _extra_gallery_roots():
+            try:
+                canonical = _canonical_path(candidate)
+            except (OSError, ValueError):
+                continue
+            if _is_filesystem_root(canonical) or not os.path.isdir(canonical):
+                continue
+            if canonical not in parents:
+                parents.append(canonical)
+        return parents
+
+    @classmethod
+    def path_anchors(cls) -> List[str]:
+        """Canonical directories that relative gallery paths are resolved against.
+
+        The ComfyUI base directory comes first, followed by the parent of each
+        directory listed in PROMPT_MANAGER_EXTRA_GALLERY_ROOTS, so an extra
+        root is addressed by its own name (``gallery/sub``) rather than by an
+        absolute path. The same anchors drive the public (relative) form of
+        paths in API responses.
+        """
+        anchors = []
+        base = _comfyui_base_directory()
+        candidates = [base] if base else []
+        candidates.extend(os.path.dirname(root) for root in _extra_gallery_roots())
+        for candidate in candidates:
+            try:
+                canonical = _canonical_path(candidate)
+            except (OSError, ValueError):
+                continue
+            if canonical not in anchors:
+                anchors.append(canonical)
+        return anchors
+
+    @classmethod
+    def resolve_gallery_root(cls, path: str) -> str:
+        """Canonical absolute path for a gallery root given in any accepted form.
+
+        Absolute paths are canonicalised as-is. Relative paths are tried
+        against each :meth:`path_anchors` entry and the first existing match
+        wins; otherwise the first anchor (or the current directory when there
+        is none) is used, so the caller's existence check reports it.
+        """
+        path = path.strip()
+        if os.path.isabs(path):
+            return _canonical_path(path)
+        anchors = cls.path_anchors()
+        for anchor in anchors:
+            candidate = os.path.join(anchor, path)
+            if os.path.exists(candidate):
+                return _canonical_path(candidate)
+        return _canonical_path(os.path.join(anchors[0], path) if anchors else path)
+
+    @classmethod
+    def validate_gallery_root(cls, path: Any) -> Tuple[bool, str]:
+        """Check whether ``path`` may be used as a gallery root.
+
+        Returns:
+            (True, "") when the directory lies inside one of
+            :meth:`allowed_gallery_parents`; otherwise (False, reason).
+        """
+        if not isinstance(path, str) or not path.strip():
+            return False, "Gallery root must be a non-empty path"
+
+        try:
+            canonical = cls.resolve_gallery_root(path)
+        except (OSError, ValueError):
+            return False, "Gallery root could not be resolved"
+
+        if _is_filesystem_root(canonical):
+            return False, "Gallery root cannot be a filesystem root"
+        if canonical == _canonical_path(os.path.expanduser("~")):
+            return False, "Gallery root cannot be the home directory"
+        if not os.path.exists(canonical):
+            return False, "Gallery root does not exist"
+        if not os.path.isdir(canonical):
+            return False, "Gallery root is not a directory"
+
+        candidate = Path(canonical)
+        for parent in cls.allowed_gallery_parents():
+            if candidate.is_relative_to(Path(parent)):
+                return True, ""
+
+        return (
+            False,
+            "Gallery root must be inside a ComfyUI directory "
+            f"(output, input, temp, user) or one listed in {EXTRA_GALLERY_ROOTS_ENV}",
+        )
 
 
 class IntegrationConfig:
@@ -272,11 +499,36 @@ class PromptManagerConfig:
     RESULT_TIMEOUT = 5  # Seconds to auto-hide results in ComfyUI node
     SHOW_TEST_BUTTON = False  # Show API test button in node UI
     WEBUI_DISPLAY_MODE = "newtab"  # 'popup' or 'newtab'
+    INFINITE_SCROLL = False  # Dashboard list: load the next page on scroll by default
 
     # Performance settings
     MAX_SEARCH_RESULTS = 100
     ENABLE_FUZZY_SEARCH = False  # Requires fuzzywuzzy
     AUTO_BACKUP_INTERVAL = 24  # Hours
+    # Threads for the output scan and thumbnail generation; half the cores by
+    # default so ComfyUI's own generation keeps CPU headroom. 1..max_worker_threads().
+    DEFAULT_WORKER_THREADS = max(1, (os.cpu_count() or 1) // 2)
+    WORKER_THREADS = DEFAULT_WORKER_THREADS
+
+    @classmethod
+    def max_worker_threads(cls) -> int:
+        """Largest accepted worker-thread count: the detected core count."""
+        return os.cpu_count() or 1
+
+    @classmethod
+    def clamp_worker_threads(cls, value, fallback: int) -> int:
+        """Coerce a worker count from config.json into ``[1, max_worker_threads()]``.
+
+        Non-numeric values (and booleans) return ``fallback`` so a hand-edited
+        file cannot disable the setting.
+        """
+        if isinstance(value, bool):
+            return fallback
+        if isinstance(value, str) and value.strip().isdigit():
+            value = int(value.strip())
+        if not isinstance(value, int):
+            return fallback
+        return max(1, min(value, cls.max_worker_threads()))
 
     @classmethod
     def get_config(cls) -> Dict[str, Any]:
@@ -304,18 +556,33 @@ class PromptManagerConfig:
                 "result_timeout": cls.RESULT_TIMEOUT,
                 "show_test_button": cls.SHOW_TEST_BUTTON,
                 "webui_display_mode": cls.WEBUI_DISPLAY_MODE,
+                "infinite_scroll": cls.INFINITE_SCROLL,
             },
             "performance": {
                 "max_search_results": cls.MAX_SEARCH_RESULTS,
                 "enable_fuzzy_search": cls.ENABLE_FUZZY_SEARCH,
                 "auto_backup_interval": cls.AUTO_BACKUP_INTERVAL,
+                "worker_threads": cls.WORKER_THREADS,
             },
             "gallery": GalleryConfig.get_config(),
             "integrations": IntegrationConfig.get_config(),
         }
 
     @classmethod
-    def load_from_file(cls, config_path: str):
+    def get_config_path(cls) -> str:
+        """Path of the persisted config.json.
+
+        Honours ``PROMPT_MANAGER_CONFIG_PATH`` when set; otherwise the file
+        lives at the repository root next to ``pyproject.toml``.
+        """
+        override = os.environ.get(CONFIG_PATH_ENV, "").strip()
+        if override:
+            return override
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(repo_root, "config.json")
+
+    @classmethod
+    def load_from_file(cls, config_path: Optional[str] = None):
         """Load configuration settings from a JSON file.
 
         Reads configuration from the specified JSON file and updates the current
@@ -324,7 +591,8 @@ class PromptManagerConfig:
 
         Args:
             config_path (str): Path to the JSON configuration file to load.
-                            Can be relative or absolute path.
+                            Can be relative or absolute path. Defaults to
+                            :meth:`get_config_path`.
 
         Raises:
             The method handles all exceptions internally and logs errors rather
@@ -335,6 +603,9 @@ class PromptManagerConfig:
             PromptManagerConfig.load_from_file('/path/to/config.json')
         """
         import json
+
+        if config_path is None:
+            config_path = cls.get_config_path()
 
         if os.path.exists(config_path):
             try:
@@ -348,7 +619,7 @@ class PromptManagerConfig:
             config_logger.info(f"Config file not found: {config_path}, using defaults")
 
     @classmethod
-    def save_to_file(cls, config_path: str):
+    def save_to_file(cls, config_path: Optional[str] = None):
         """Save the current configuration to a JSON file.
 
         Serializes the complete configuration (including gallery settings) to
@@ -357,6 +628,7 @@ class PromptManagerConfig:
         Args:
             config_path (str): Path where the JSON configuration file should be saved.
                             Parent directories will be created if they don't exist.
+                            Defaults to :meth:`get_config_path`.
 
         Raises:
             The method handles all exceptions internally and logs errors rather
@@ -366,15 +638,11 @@ class PromptManagerConfig:
             PromptManagerConfig.save_to_file('backup_config.json')
             PromptManagerConfig.save_to_file('/etc/comfyui/prompt_manager.json')
         """
-        import json
+        if config_path is None:
+            config_path = cls.get_config_path()
 
         try:
-            config = cls.get_config()
-            os.makedirs(os.path.dirname(config_path), exist_ok=True)
-
-            with open(config_path, "w") as f:
-                json.dump(config, f, indent=2)
-
+            write_private_json(config_path, cls.get_config())
             config_logger.info(f"Saved configuration to {config_path}")
         except Exception as e:
             config_logger.error(f"Error saving config to {config_path}: {e}")
@@ -390,7 +658,8 @@ class PromptManagerConfig:
         Args:
             new_config (Dict[str, Any]): Nested dictionary containing configuration
                 updates. Should follow the same structure as returned by get_config().
-                Valid top-level keys are: 'database', 'web_ui', 'performance', 'gallery'.
+                Valid top-level keys are: 'database', 'web_ui', 'performance',
+                'gallery'.
 
         Example:
             new_settings = {
@@ -414,6 +683,8 @@ class PromptManagerConfig:
             cls.SHOW_TEST_BUTTON = web_ui["show_test_button"]
         if "webui_display_mode" in web_ui:
             cls.WEBUI_DISPLAY_MODE = web_ui["webui_display_mode"]
+        if isinstance(web_ui.get("infinite_scroll"), bool):
+            cls.INFINITE_SCROLL = web_ui["infinite_scroll"]
 
         performance = new_config.get("performance", {})
         if "max_search_results" in performance:
@@ -422,6 +693,10 @@ class PromptManagerConfig:
             cls.ENABLE_FUZZY_SEARCH = performance["enable_fuzzy_search"]
         if "auto_backup_interval" in performance:
             cls.AUTO_BACKUP_INTERVAL = performance["auto_backup_interval"]
+        if "worker_threads" in performance:
+            cls.WORKER_THREADS = cls.clamp_worker_threads(
+                performance["worker_threads"], cls.WORKER_THREADS
+            )
 
         # Update gallery config
         if "gallery" in new_config:
@@ -434,8 +709,6 @@ class PromptManagerConfig:
 
 # Load configuration on import
 try:
-    config_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    config_file = os.path.join(config_dir, "config.json")
-    PromptManagerConfig.load_from_file(config_file)
+    PromptManagerConfig.load_from_file()
 except Exception as e:
     config_logger.error(f"Error during config initialization: {e}")

@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 # Mock ComfyUI's server module before importing config
 _mock_server = MagicMock()
 _mock_server.PromptServer.instance.routes = MagicMock()
-sys.modules["server"] = _mock_server
+sys.modules.setdefault("server", _mock_server)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -136,6 +136,43 @@ class TestPromptManagerConfig(unittest.TestCase):
         PromptManagerConfig.update_config({"performance": {"max_search_results": 50}})
         self.assertEqual(PromptManagerConfig.MAX_SEARCH_RESULTS, 50)
 
+    def test_infinite_scroll_default_off_and_only_booleans_apply(self):
+        self.assertIn("infinite_scroll", PromptManagerConfig.get_config()["web_ui"])
+        PromptManagerConfig.update_config({"web_ui": {"infinite_scroll": True}})
+        self.assertTrue(PromptManagerConfig.INFINITE_SCROLL)
+        PromptManagerConfig.update_config({"web_ui": {"infinite_scroll": "yes"}})
+        self.assertTrue(PromptManagerConfig.INFINITE_SCROLL)
+        PromptManagerConfig.update_config({"web_ui": {"infinite_scroll": False}})
+        self.assertFalse(PromptManagerConfig.INFINITE_SCROLL)
+
+    def test_worker_threads_default_is_half_the_cores_and_current_is_in_range(self):
+        # The current value may come from config.json (loaded at import), so the
+        # rule is checked on the constant and only the range on the live value.
+        cores = PromptManagerConfig.max_worker_threads()
+        self.assertGreaterEqual(cores, 1)
+        self.assertEqual(PromptManagerConfig.DEFAULT_WORKER_THREADS, max(1, cores // 2))
+        current = PromptManagerConfig.get_config()["performance"]["worker_threads"]
+        self.assertGreaterEqual(current, 1)
+        self.assertLessEqual(current, cores)
+
+    def test_update_worker_threads_is_clamped_to_the_machine(self):
+        cores = PromptManagerConfig.max_worker_threads()
+        PromptManagerConfig.update_config({"performance": {"worker_threads": 1}})
+        self.assertEqual(PromptManagerConfig.WORKER_THREADS, 1)
+        PromptManagerConfig.update_config(
+            {"performance": {"worker_threads": cores + 50}}
+        )
+        self.assertEqual(PromptManagerConfig.WORKER_THREADS, cores)
+        PromptManagerConfig.update_config({"performance": {"worker_threads": 0}})
+        self.assertEqual(PromptManagerConfig.WORKER_THREADS, 1)
+
+    def test_update_worker_threads_ignores_junk_from_a_hand_edited_file(self):
+        PromptManagerConfig.update_config({"performance": {"worker_threads": 1}})
+        PromptManagerConfig.update_config({"performance": {"worker_threads": "lots"}})
+        self.assertEqual(PromptManagerConfig.WORKER_THREADS, 1)
+        PromptManagerConfig.update_config({"performance": {"worker_threads": True}})
+        self.assertEqual(PromptManagerConfig.WORKER_THREADS, 1)
+
     def test_update_propagates_to_gallery(self):
         PromptManagerConfig.update_config(
             {"gallery": {"monitoring": {"enabled": False}}}
@@ -192,6 +229,28 @@ class TestPromptManagerConfig(unittest.TestCase):
             import shutil
 
             shutil.rmtree(tmp_dir)
+
+    def test_saved_file_is_private_to_the_user(self):
+        import stat
+
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            path = os.path.join(tmp_dir, "config.json")
+            PromptManagerConfig.save_to_file(path)
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+            if os.name == "posix":
+                self.assertEqual(mode, 0o600)
+            with open(path) as f:
+                self.assertIn("database", json.load(f))
+            # Overwriting an existing, more open file tightens it as well
+            os.chmod(path, 0o644)
+            PromptManagerConfig.save_to_file(path)
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+        finally:
+            import shutil
+
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def test_saved_file_is_valid_json(self):
         tmp = tempfile.NamedTemporaryFile(
@@ -289,6 +348,60 @@ class TestIntegrationConfig(unittest.TestCase):
         IntegrationConfig.update_config(config1)
         config2 = IntegrationConfig.get_config()
         self.assertEqual(config1, config2)
+
+
+class TestConfigPathOverride(unittest.TestCase):
+    """PROMPT_MANAGER_CONFIG_PATH relocates the persisted config.json."""
+
+    ENV = "PROMPT_MANAGER_CONFIG_PATH"
+
+    def setUp(self):
+        self._orig_env = os.environ.pop(self.ENV, None)
+        self._orig = PromptManagerConfig.get_config()
+
+    def tearDown(self):
+        if self._orig_env is None:
+            os.environ.pop(self.ENV, None)
+        else:
+            os.environ[self.ENV] = self._orig_env
+        PromptManagerConfig.update_config(self._orig)
+
+    def test_default_config_path_is_repo_config_json(self):
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        expected = os.path.join(repo_root, "config.json")
+        self.assertEqual(
+            os.path.normcase(PromptManagerConfig.get_config_path()),
+            os.path.normcase(expected),
+        )
+
+    def test_env_override_is_used(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            custom = os.path.join(tmpdir, "custom.json")
+            os.environ[self.ENV] = custom
+            self.assertEqual(PromptManagerConfig.get_config_path(), custom)
+
+    def test_save_without_path_uses_env_override(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            custom = os.path.join(tmpdir, "nested", "custom.json")
+            os.environ[self.ENV] = custom
+            PromptManagerConfig.RESULT_TIMEOUT = 42
+
+            PromptManagerConfig.save_to_file()
+
+            with open(custom) as f:
+                saved = json.load(f)
+            self.assertEqual(saved["web_ui"]["result_timeout"], 42)
+
+    def test_load_without_path_uses_env_override(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            custom = os.path.join(tmpdir, "custom.json")
+            with open(custom, "w") as f:
+                json.dump({"web_ui": {"result_timeout": 77}}, f)
+            os.environ[self.ENV] = custom
+
+            PromptManagerConfig.load_from_file()
+
+            self.assertEqual(PromptManagerConfig.RESULT_TIMEOUT, 77)
 
 
 if __name__ == "__main__":

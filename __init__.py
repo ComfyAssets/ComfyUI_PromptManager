@@ -5,7 +5,8 @@ gallery system.
 
 This module provides two main node types:
 - PromptManager: CLIP encoding node that outputs CONDITIONING
-- PromptManagerText: Text-only node that outputs STRING with prepend/append functionality
+- PromptManagerText: Text-only node that outputs STRING with prepend/append
+  functionality
 
 Both nodes share the same database backend for persistent prompt storage and include
 an automatic image gallery system that monitors ComfyUI output directories and links
@@ -37,9 +38,9 @@ def get_version():
     return "unknown"
 
 
-from .prompt_manager import PromptManager
-from .prompt_manager_text import PromptManagerText
-from .prompt_search_list import PromptSearchList
+from .prompt_manager import PromptManager  # noqa: E402
+from .prompt_manager_text import PromptManagerText  # noqa: E402
+from .prompt_search_list import PromptSearchList  # noqa: E402
 
 NODE_CLASS_MAPPINGS = {
     "PromptManager": PromptManager,
@@ -53,8 +54,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptSearchList": "Prompt Search List",
 }
 
-# Define path to web directory for UI components
-WEB_DIRECTORY = "web"
+# Canvas extension only. ComfyUI loads every .js under this directory into the
+# canvas page, so the admin/gallery bundles and vendored libraries under web/
+# are served by our own routes instead (see py/api).
+WEB_DIRECTORY = "web/comfy"
 
 # Add API routes (same pattern as ComfyUI_Assets)
 try:
@@ -81,6 +84,10 @@ except Exception as e:
         logger.error(f"Failed to register API routes: {e}")
     except Exception:
         pass
+
+# Shared database, set up with the monitoring system below. Stays None when that
+# fails so the queue hook can report the database as unavailable instead of crashing.
+_global_db = None
 
 # Start image monitoring globally at module import time
 # This ensures images are linked regardless of which node is used in the workflow
@@ -111,13 +118,21 @@ except Exception as e:
     except Exception:
         print(f"[ComfyUI-PromptManager] Warning: Failed to start image monitoring: {e}")
 
-# Count prompt runs when workflows are queued (ComfyUI skips unchanged nodes, so
+
+def _db_factory():
+    """The shared database for the queue hook; called lazily per request."""
+    if _global_db is None:
+        raise RuntimeError("PromptManager database unavailable")
+    return _global_db
+
+
+# Count prompt runs when ComfyUI dequeues workflows (it skips unchanged nodes, so
 # node execution alone misses re-runs). Separate from monitoring so either can fail.
 try:
     from .py.config import server_instance
     from .utils.usage_tracking import register_queue_hook
 
-    register_queue_hook(server_instance, lambda: _global_db)
+    register_queue_hook(server_instance, _db_factory)
 except Exception as e:
     try:
         from .utils.logging_config import get_logger
@@ -136,6 +151,8 @@ __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 print()
 print(f"\033[94m[ComfyUI-PromptManager] Version:\033[0m {get_version()}")
 for node_key, display_name in NODE_DISPLAY_NAME_MAPPINGS.items():
-    print(f"🫶 \033[94mLoaded:\033[0m {display_name}")
+    # ASCII only: a Windows console using a legacy code page cannot print emoji,
+    # and a UnicodeEncodeError here would abort loading the whole node.
+    print(f"  \033[94mLoaded:\033[0m {display_name}")
 print(f"\033[94mTotal: {len(NODE_CLASS_MAPPINGS)} tools loaded\033[0m")
 print()

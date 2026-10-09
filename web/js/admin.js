@@ -6,12 +6,13 @@
                 this.settings = {
                     resultTimeout: 5,
                     webuiDisplayMode: 'popup',
+                    workerThreads: 1,
+                    cpuCount: 1,
+                    infiniteScroll: false,
                 };
                 this.categories = [];
                 this.tags = [];
                 this.subfolders = [];
-                this.imageViewMode = 'fit'; // 'fit' or 'full'
-                this.naturalImageSize = { width: 0, height: 0 };
                 
                 // Pagination state
                 this.pagination = {
@@ -23,6 +24,32 @@
 
                 this.tagsPage = null;
 
+                this.api = ApiClient.createApiClient();
+                // Search and page loads share one guard: whichever list request is newest wins
+                this.listRequest = ApiClient.latestOnly();
+                this.infiniteScroll = false; // session value; seeded from settings, toggled in the header
+                this.infiniteScrollChosen = false;
+                this.loadingMore = false;
+                // The prompt currently edited in place, if any: { promptId, element, originalText }
+                this.activeEdit = null;
+
+                // Elements rendered with data-action="..." (prompt cards, film strips, log files,
+                // review chips) are dispatched here instead of through inline onclick handlers,
+                // so user-provided strings never land inside JavaScript source.
+                this.actionHandlers = {
+                    "copy-prompt": ({ promptId }) => this.copyPromptToClipboard(promptId),
+                    "add-tags": ({ promptId }) => this.addTag(promptId),
+                    "remove-tag": ({ promptId, tag }) => this.removeTag(promptId, tag),
+                    "toggle-tags": ({ promptId }) => this.toggleMainTags(promptId),
+                    gallery: ({ promptId }) => this.viewGallery(promptId),
+                    edit: ({ promptId }) => this.editPrompt(promptId),
+                    delete: ({ promptId }) => this.deletePrompt(promptId),
+                    "open-film": ({ promptId, index }) => this.openFilmStripViewer(promptId, index),
+                    "download-log": ({ filename }) => this.downloadLogFile(filename),
+                    "remove-review-tag": ({ index }) => this.removeReviewTag(index),
+                    "pick-tag-suggestion": ({ tag }) => this.pickTagSuggestion(tag),
+                };
+
                 this.init();
             }
 
@@ -30,6 +57,7 @@
                 this.bindEvents();
                 this.initRouter();
                 this.loadInitialData();
+                this.resumeRunningScan();
                 this.checkUpdateNotice();
             }
 
@@ -39,8 +67,7 @@
             }
 
             handleRoute() {
-                const hash = window.location.hash;
-                if (hash === '#/tags' || hash.startsWith('#/tags/')) {
+                if (ViewRouter.resolveView(window.location.hash) === "tags") {
                     this.showTagsPage();
                 } else {
                     this.showDashboard();
@@ -79,6 +106,16 @@
                     if (e.key === "Enter") this.search();
                 });
 
+                // Tag autocomplete: suggestions narrow to tags that co-occur with the ones typed
+                this.tagSuggest = { items: [], index: -1, request: ApiClient.latestOnly(), timer: null };
+                const tagsInput = document.getElementById("searchTags");
+                tagsInput.addEventListener("input", () => this.scheduleTagSuggestions());
+                tagsInput.addEventListener("focus", () => this.scheduleTagSuggestions(0));
+                tagsInput.addEventListener("keydown", (e) => this.handleTagSuggestKey(e));
+                tagsInput.addEventListener("blur", () => setTimeout(() => this.hideTagSuggestions(), 150));
+                // A click on a suggestion must not blur the input before the click lands
+                document.getElementById("searchTagSuggestions").addEventListener("mousedown", (e) => e.preventDefault());
+
                 // Bulk actions
                 document.getElementById("selectAll").addEventListener("change", (e) =>
                     this.toggleSelectAll(e.target.checked)
@@ -102,13 +139,31 @@
 
                 // Pagination controls
                 document.getElementById("limitSelector").addEventListener("change", (e) => this.changeLimit(parseInt(e.target.value)));
+                document.getElementById("infiniteScrollSession").addEventListener("change", (e) => this.setInfiniteScroll(e.target.checked, { session: true }));
+                document.getElementById("resultsList").addEventListener("scroll", () => this.maybeLoadMorePrompts(), { passive: true });
                 document.getElementById("firstPageBtn").addEventListener("click", () => this.goToPage(1));
                 document.getElementById("prevPageBtn").addEventListener("click", () => this.goToPage(this.pagination.currentPage - 1));
                 document.getElementById("nextPageBtn").addEventListener("click", () => this.goToPage(this.pagination.currentPage + 1));
                 document.getElementById("lastPageBtn").addEventListener("click", () => this.goToPage(this.pagination.totalPages));
 
                 // Modals
+                // Output scan: a server-side job that survives modal dismissal and reloads
+                this.scanState = ScanProgress.initialState();
+                this.scanSource = null;
+                window.addEventListener("beforeunload", (e) => this.warnIfScanRunning(e));
+
                 this.bindModalEvents();
+
+                // One delegated click handler for every data-action element; images declare a
+                // data-fallback-src instead of an inline onerror handler
+                document.addEventListener("click", (e) => this.handleActionClick(e));
+                document.addEventListener("error", (e) => this.applyImageFallback(e.target), true);
+
+                // In-place prompt editing: one keydown/focusout pair for the whole list, so
+                // listeners are not stacked per edit and a save is sent exactly once
+                const results = document.getElementById("resultsList");
+                results.addEventListener("keydown", (e) => this.handleEditKeydown(e));
+                results.addEventListener("focusout", (e) => this.handleEditFocusOut(e));
 
                 // Auto-search on filter changes
                 ["searchCategory", "searchFolder"].forEach((id) => {
@@ -118,7 +173,7 @@
                 // Sort dropdown: options come from PromptListSort; sorting runs on the server
                 const sortSelect = document.getElementById("sortBy");
                 sortSelect.innerHTML = PromptListSort.SORT_OPTIONS
-                    .map((o) => `<option value="${o.value}">${this.escapeHtml(o.label)}</option>`)
+                    .map((o) => `<option value="${o.value}">${escapeHtml(o.label)}</option>`)
                     .join("");
                 sortSelect.value = PromptListSort.DEFAULT_SORT;
                 sortSelect.addEventListener("change", () => this.reloadPrompts());
@@ -158,7 +213,8 @@
 
                 // Scan modal
                 document.getElementById("startScan").addEventListener("click", () => this.startScan());
-                document.getElementById("cancelScan").addEventListener("click", () => this.hideModal("scanModal"));
+                document.getElementById("cancelScan").addEventListener("click", () => this.dismissScanModal());
+                document.getElementById("scanPill").addEventListener("click", () => this.showScanModal());
                 document.getElementById("quickBackupBtn").addEventListener("click", () => this.quickBackup());
 
                 // Logs modal
@@ -193,6 +249,7 @@
                 document.getElementById('wd14GeneralThreshold').addEventListener('input', (e) => {
                     document.getElementById('wd14GeneralThresholdValue').textContent = parseFloat(e.target.value).toFixed(2);
                 });
+                document.getElementById("workerThreads").addEventListener("input", () => this.renderWorkerThreads());
                 document.getElementById('wd14CharacterThreshold').addEventListener('input', (e) => {
                     document.getElementById('wd14CharacterThresholdValue').textContent = parseFloat(e.target.value).toFixed(2);
                 });
@@ -207,11 +264,13 @@
                 // Close modals on backdrop click
                 document.querySelectorAll("[id$='Modal']").forEach((modal) => {
                     modal.addEventListener("click", (e) => {
-                        if (e.target === modal) {
-                            modal.classList.add("hidden");
-                            modal.classList.remove("flex");
-                            document.body.style.overflow = "";
-                        }
+                        if (e.target !== modal) return;
+                        // The scan modal only leaves through its own buttons (Cancel / Hide): a click
+                        // that merely focuses the window must not close or minimize a long job.
+                        if (modal.id === "scanModal") return;
+                        modal.classList.add("hidden");
+                        modal.classList.remove("flex");
+                        document.body.style.overflow = "";
                     });
                 });
             }
@@ -240,6 +299,13 @@
                         if (data.success && data.settings) {
                             this.settings.resultTimeout = data.settings.result_timeout ?? 5;
                             this.settings.webuiDisplayMode = data.settings.webui_display_mode || 'popup';
+                            this.settings.infiniteScroll = data.settings.infinite_scroll === true;
+                            // The saved default seeds the session until the header checkbox is used
+                            if (!this.infiniteScrollChosen) this.setInfiniteScroll(this.settings.infiniteScroll, { session: false });
+                            this.settings.cpuCount = Math.max(1, parseInt(data.settings.cpu_count, 10) || 1);
+                            this.settings.workerThreads = Math.min(
+                                this.settings.cpuCount, Math.max(1, parseInt(data.settings.worker_threads, 10) || 1)
+                            );
                             this.settings.monitoredDirectories = data.settings.monitored_directories || [];
                             this.settings.galleryRootPaths = data.settings.gallery_root_paths || [];
                             // Backward compat: if server only returned old field
@@ -258,7 +324,6 @@
                     const response = await fetch("/prompt_manager/stats");
                     if (response.ok) {
                         const data = await response.json();
-                        console.log("Stats response:", data); // Debug log
                         
                         if (data.success) {
                             // Try different possible response structures
@@ -359,37 +424,42 @@
                 select.value = current;
             }
 
-            async loadRecentPrompts(page = 1) {
+            /**
+             * Load one page of recent prompts. The page is committed to this.pagination only
+             * after the server answered; a newer list request supersedes one still in flight.
+             */
+            async loadRecentPrompts(page = 1, { append = false } = {}) {
+                this.listMode = "recent";
+                const url = PromptListSort.buildRecentUrl({
+                    page,
+                    limit: this.pagination.limit,
+                    sort: this.currentSort(),
+                });
                 try {
-                    this.listMode = "recent";
-                    this.pagination.currentPage = page;
-                    const response = await fetch(PromptListSort.buildRecentUrl({
-                        page,
-                        limit: this.pagination.limit,
-                        sort: this.currentSort(),
-                    }));
-                    if (response.ok) {
-                        const data = await response.json();
-                        if (data.success) {
-                            this.prompts = data.results;
-                            this.pagination = {
-                                ...this.pagination,
-                                total: data.pagination.total,
-                                totalPages: data.pagination.total_pages,
-                                currentPage: data.pagination.page
-                            };
-                            this.renderPrompts();
-                            this.updatePaginationControls();
-                            // Don't update stats from local data as it's only a subset of prompts
-                        }
-                    }
+                    const data = await this.listRequest((signal) => this.api.get(url, { signal }));
+                    if (data === ApiClient.STALE) return; // a newer list request owns the loading state
+
+                    const next = ListState.nextPageState(
+                        { page: this.pagination.currentPage, limit: this.pagination.limit, total: this.pagination.total },
+                        { page: data.pagination.page, total: data.pagination.total },
+                    );
+                    this.prompts = append ? this.prompts.concat(data.results) : data.results;
+                    this.pagination = { ...this.pagination, currentPage: next.page, total: next.total, totalPages: next.totalPages };
+                    this.renderPrompts();
+                    this.updatePaginationControls();
+                    document.getElementById("resultsTitle").textContent = "Recent Prompts";
+                    this.maybeLoadMorePrompts(); // a short page may not fill the list
                 } catch (error) {
                     console.error("Recent prompts error:", error);
-                } finally {
-                    document.getElementById("loadingState").classList.add("hidden");
-                    document.getElementById("resultsList").classList.remove("hidden");
-                    document.getElementById("paginationControls").classList.remove("hidden");
+                    this.showNotification("Failed to load prompts", "error");
                 }
+                this.showListLoaded();
+                this.updatePaginationVisibility();
+            }
+
+            showListLoaded() {
+                document.getElementById("loadingState").classList.add("hidden");
+                document.getElementById("resultsList").classList.remove("hidden");
             }
 
             updateLocalStats() {
@@ -417,13 +487,98 @@
                 }
             }
 
-            async search() {
+            // ── Tag autocomplete ─────────────────────────────────────────────
+            scheduleTagSuggestions(delay = 150) {
+                clearTimeout(this.tagSuggest.timer);
+                this.tagSuggest.timer = setTimeout(() => this.loadTagSuggestions(), delay);
+            }
+
+            async loadTagSuggestions() {
+                const input = document.getElementById("searchTags");
+                const url = TagAutocomplete.suggestUrl(input.value);
+                try {
+                    const data = await this.tagSuggest.request((signal) => this.api.get(url, { signal }));
+                    if (data === ApiClient.STALE) return;
+                    this.renderTagSuggestions(data.suggestions || []);
+                } catch (_) {
+                    this.hideTagSuggestions();
+                }
+            }
+
+            renderTagSuggestions(items) {
+                const box = document.getElementById("searchTagSuggestions");
+                this.tagSuggest.items = items;
+                this.tagSuggest.index = -1;
+                const focused = document.activeElement === document.getElementById("searchTags");
+                if (!items.length || !focused) {
+                    box.classList.add("hidden");
+                    return;
+                }
+                box.innerHTML = items.map((s, i) => `
+                    <div class="flex items-center justify-between px-3 py-1.5 cursor-pointer text-[13px] text-pm hover:bg-pm-hover"
+                         role="option" data-index="${i}" data-action="pick-tag-suggestion" data-tag="${escapeHtml(s.name)}">
+                        <span class="truncate">${escapeHtml(s.name)}</span>
+                        <span class="text-xs text-pm-muted ml-3">${escapeHtml(String(s.count))}</span>
+                    </div>`).join("");
+                box.classList.remove("hidden");
+            }
+
+            hideTagSuggestions() {
+                document.getElementById("searchTagSuggestions").classList.add("hidden");
+                this.tagSuggest.index = -1;
+            }
+
+            highlightTagSuggestion() {
+                const box = document.getElementById("searchTagSuggestions");
+                box.querySelectorAll("[data-index]").forEach((el) => {
+                    const selected = Number(el.dataset.index) === this.tagSuggest.index;
+                    el.classList.toggle("bg-pm-hover", selected);
+                    if (selected) el.scrollIntoView({ block: "nearest" });
+                });
+            }
+
+            handleTagSuggestKey(e) {
+                const open = !document.getElementById("searchTagSuggestions").classList.contains("hidden");
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                    e.preventDefault();
+                    if (!open) {
+                        this.scheduleTagSuggestions(0);
+                        return;
+                    }
+                    const delta = e.key === "ArrowDown" ? 1 : -1;
+                    this.tagSuggest.index = TagAutocomplete.moveSelection(this.tagSuggest.index, delta, this.tagSuggest.items.length);
+                    this.highlightTagSuggestion();
+                    return;
+                }
+                if ((e.key === "Enter" || e.key === "Tab") && open && this.tagSuggest.index >= 0) {
+                    e.preventDefault();
+                    this.pickTagSuggestion(this.tagSuggest.items[this.tagSuggest.index].name);
+                    return;
+                }
+                if (e.key === "Enter") {
+                    this.hideTagSuggestions();
+                    this.search();
+                    return;
+                }
+                if (e.key === "Escape") this.hideTagSuggestions();
+            }
+
+            pickTagSuggestion(tag) {
+                const input = document.getElementById("searchTags");
+                input.value = TagAutocomplete.applySuggestion(input.value, tag);
+                input.focus();
+                this.scheduleTagSuggestions(0); // offer the next tag, narrowed by this one
+            }
+
+            async search(page = 1, { append = false } = {}) {
                 const searchText = document.getElementById("searchText").value;
                 const category = document.getElementById("searchCategory").value;
                 const tags = document.getElementById("searchTags").value;
 
-                document.getElementById("loadingState").classList.remove("hidden");
-                document.getElementById("resultsList").classList.add("hidden");
+                if (!append) {
+                    document.getElementById("loadingState").classList.remove("hidden");
+                    document.getElementById("resultsList").classList.add("hidden");
+                }
 
                 try {
                     const params = new URLSearchParams();
@@ -432,34 +587,102 @@
                     if (tags) params.append("tags", tags);
                     const folder = document.getElementById("searchFolder").value;
                     if (folder) params.append("folder", folder);
-                    params.append("limit", "100");
+                    const limit = this.pagination.limit;
+                    params.append("limit", String(limit));
+                    params.append("offset", String((page - 1) * limit));
+                    params.append("page", String(page));
 
                     this.listMode = "search";
-                    const response = await fetch(`/prompt_manager/search?${PromptListSort.withSort(params, this.currentSort())}`);
-                    if (response.ok) {
-                        const data = await response.json();
-                        if (data.success) {
-                            this.prompts = data.results;
-                            this.renderPrompts();
-                            document.getElementById("resultsTitle").textContent = "Search Results";
-                        }
-                    }
+                    const url = `/prompt_manager/search?${PromptListSort.withSort(params, this.currentSort())}`;
+                    const data = await this.listRequest((signal) => this.api.get(url, { signal }));
+                    if (data === ApiClient.STALE) return; // a newer list request owns the loading state
+
+                    const reported = data.pagination || {};
+                    const next = ListState.nextPageState(
+                        { page: this.pagination.currentPage, limit, total: this.pagination.total },
+                        { page: reported.page ?? page, total: reported.total ?? data.results.length },
+                    );
+                    this.prompts = append ? this.prompts.concat(data.results) : data.results;
+                    this.pagination = { ...this.pagination, currentPage: next.page, total: next.total, totalPages: next.totalPages };
+                    this.renderPrompts();
+                    this.updatePaginationControls();
+                    document.getElementById("resultsTitle").textContent = "Search Results";
+                    this.maybeLoadMorePrompts();
                 } catch (error) {
                     this.showNotification("Search failed", "error");
                     console.error("Search error:", error);
-                } finally {
-                    document.getElementById("loadingState").classList.add("hidden");
-                    document.getElementById("resultsList").classList.remove("hidden");
                 }
+                this.showListLoaded();
+                this.updatePaginationVisibility();
             }
 
             currentSort() {
                 return PromptListSort.normalizeSort(document.getElementById("sortBy")?.value);
             }
 
-            /** Re-fetch the list currently shown, e.g. after the sort changes. */
+            /** Re-fetch the list currently shown from its first page, e.g. after the sort changes. */
             reloadPrompts() {
                 return this.listMode === "search" ? this.search() : this.loadRecentPrompts(1);
+            }
+
+            /** Re-fetch the page currently shown, e.g. after a prompt was edited, tagged or deleted. */
+            refreshList() {
+                // With infinite scroll the list holds several pages; re-fetch from the top.
+                const page = this.infiniteScroll ? 1 : this.pagination.currentPage;
+                return this.listMode === "search" ? this.search(page) : this.loadRecentPrompts(page);
+            }
+
+            // ── Infinite scrolling ───────────────────────────────────────────
+            setInfiniteScroll(enabled, { session }) {
+                if (session) this.infiniteScrollChosen = true;
+                const changed = this.infiniteScroll !== !!enabled;
+                this.infiniteScroll = !!enabled;
+                document.getElementById("infiniteScrollSession").checked = this.infiniteScroll;
+                this.updatePaginationVisibility();
+                if (changed && this.prompts.length) this.reloadPrompts();
+            }
+
+            updatePaginationVisibility() {
+                document.getElementById("paginationControls").classList.toggle("hidden", this.infiniteScroll);
+            }
+
+            maybeLoadMorePrompts() {
+                const el = document.getElementById("resultsList");
+                const wanted = ListState.shouldLoadMore({
+                    infiniteScroll: this.infiniteScroll,
+                    loading: this.loadingMore,
+                    page: this.pagination.currentPage,
+                    limit: this.pagination.limit,
+                    total: this.pagination.total,
+                    scrollTop: el.scrollTop,
+                    clientHeight: el.clientHeight,
+                    scrollHeight: el.scrollHeight,
+                });
+                if (wanted) this.loadMorePrompts();
+            }
+
+            async loadMorePrompts() {
+                if (this.loadingMore) return;
+                this.loadingMore = true;
+                try {
+                    const page = this.pagination.currentPage + 1;
+                    await (this.listMode === "search" ? this.search(page, { append: true }) : this.loadRecentPrompts(page, { append: true }));
+                } finally {
+                    this.loadingMore = false;
+                }
+            }
+
+            handleActionClick(e) {
+                const target = e.target.closest("[data-action]");
+                if (target) DataActions.dispatch(target.dataset, this.actionHandlers, target);
+            }
+
+            /** Swap a thumbnail for its full-size image once, when the thumbnail fails to load. */
+            applyImageFallback(img) {
+                if (!img || img.tagName !== "IMG" || !img.dataset.fallbackSrc) return;
+                const fallback = img.dataset.fallbackSrc;
+                delete img.dataset.fallbackSrc;
+                img.src = fallback;
             }
 
             renderPrompts() {
@@ -489,15 +712,6 @@
                 // Add hover behavior to all star ratings
                 this.prompts.forEach(prompt => {
                     this.addStarHoverBehavior(prompt.id);
-                });
-
-                // Delegated click handler for remove-tag buttons (avoids inline onclick XSS)
-                container.querySelectorAll('.remove-tag-btn').forEach(btn => {
-                    btn.addEventListener('click', (e) => {
-                        const promptId = parseInt(e.target.dataset.promptId);
-                        const tag = e.target.dataset.tag;
-                        window.admin.removeTag(promptId, tag);
-                    });
                 });
 
                 // Load film strips for each prompt (async, non-blocking)
@@ -550,8 +764,8 @@
 
                                 <div class="flex-1 min-w-0">
                                     <div class="bg-pm-surface rounded-pm-sm p-4 mb-4 relative group">
-                                        <div class="prompt-text text-pm leading-relaxed whitespace-pre-wrap" data-id="${prompt.id}">${this.escapeHtml(prompt.text)}</div>
-                                        <button class="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-pm-surface hover:bg-pm-hover text-pm-secondary hover:text-pm p-2 rounded-pm-sm text-sm" onclick="window.admin.copyPromptToClipboard(${prompt.id})">
+                                        <div class="prompt-text text-pm leading-relaxed whitespace-pre-wrap" data-id="${prompt.id}">${escapeHtml(prompt.text)}</div>
+                                        <button class="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-pm-surface hover:bg-pm-hover text-pm-secondary hover:text-pm p-2 rounded-pm-sm text-sm" data-action="copy-prompt" data-prompt-id="${prompt.id}">
                                             📋 Copy
                                         </button>
                                     </div>
@@ -559,18 +773,18 @@
                                     <div class="flex flex-wrap items-center gap-4 text-sm text-pm-secondary mb-3">
                                         <div class="flex items-center space-x-1">
                                             <span>📁</span>
-                                            <span class="category-text" data-id="${prompt.id}">${this.escapeHtml(category)}</span>
+                                            <span class="category-text" data-id="${prompt.id}">${escapeHtml(category)}</span>
                                         </div>
                                         <div class="flex items-center space-x-1">
                                             <span>📅</span>
                                             <span>${created}</span>
                                         </div>
-                                        ${runLabel ? `<div class="flex items-center space-x-1" title="${this.escapeHtml(lastUsedTitle)}">
+                                        ${runLabel ? `<div class="flex items-center space-x-1" title="${escapeHtml(lastUsedTitle)}">
                                             <span>🔁</span>
-                                            <span>${this.escapeHtml(runLabel)}</span>
+                                            <span>${escapeHtml(runLabel)}</span>
                                         </div>` : ""}
                                         <div class="flex items-center space-x-1">
-                                            <div class="rating flex space-x-1" data-id="${prompt.id}" data-rating="${rating}">
+                                            <div class="rating flex space-x-1" data-id="${escapeHtml(prompt.id)}" data-rating="${escapeHtml(rating)}">
                                                 ${this.renderStars(rating, prompt.id)}
                                             </div>
                                         </div>
@@ -580,11 +794,11 @@
                                         <div class="flex flex-wrap items-center gap-2">
                                             ${tags.slice(0, 10).map(tag => `
                                                 <span class="inline-flex items-center space-x-1 bg-pm-input text-pm px-3 py-1 rounded-full text-sm border border-pm">
-                                                    <span>${this.escapeHtml(tag)}</span>
-                                                    <button class="remove-tag-btn text-pm-secondary hover:text-pm ml-1" data-prompt-id="${prompt.id}" data-tag="${this.escapeHtml(tag)}">&times;</button>
+                                                    <span>${escapeHtml(tag)}</span>
+                                                    <button class="remove-tag-btn text-pm-secondary hover:text-pm ml-1" data-action="remove-tag" data-prompt-id="${prompt.id}" data-tag="${escapeHtml(tag)}">&times;</button>
                                                 </span>
                                             `).join("")}
-                                            <button class="inline-flex items-center space-x-1 bg-pm-input hover:bg-pm-hover text-pm-secondary px-3 py-1 rounded-full text-sm transition-colors" onclick="window.admin.addTag(${prompt.id})">
+                                            <button class="inline-flex items-center space-x-1 bg-pm-input hover:bg-pm-hover text-pm-secondary px-3 py-1 rounded-full text-sm transition-colors" data-action="add-tags" data-prompt-id="${prompt.id}">
                                                 <span>+</span>
                                                 <span>Add Tags</span>
                                             </button>
@@ -594,13 +808,13 @@
                                                 <div class="flex flex-wrap items-center gap-2 max-h-[180px] overflow-y-auto p-2 bg-pm-surface rounded-pm-sm">
                                                     ${tags.slice(10).map(tag => `
                                                         <span class="inline-flex items-center space-x-1 bg-pm-input text-pm px-3 py-1 rounded-full text-sm border border-pm">
-                                                            <span>${this.escapeHtml(tag)}</span>
-                                                            <button class="remove-tag-btn text-pm-secondary hover:text-pm ml-1" data-prompt-id="${prompt.id}" data-tag="${this.escapeHtml(tag)}">&times;</button>
+                                                            <span>${escapeHtml(tag)}</span>
+                                                            <button class="remove-tag-btn text-pm-secondary hover:text-pm ml-1" data-action="remove-tag" data-prompt-id="${prompt.id}" data-tag="${escapeHtml(tag)}">&times;</button>
                                                         </span>
                                                     `).join("")}
                                                 </div>
                                             </div>
-                                            <button class="tags-toggle-btn mt-2 text-sm text-pm-accent hover:text-pm-accent transition-colors flex items-center gap-1" onclick="window.admin.toggleMainTags(${prompt.id})">
+                                            <button class="tags-toggle-btn mt-2 text-sm text-pm-accent hover:text-pm-accent transition-colors flex items-center gap-1" data-action="toggle-tags" data-prompt-id="${prompt.id}">
                                                 <span class="toggle-icon">▼</span>
                                                 <span class="toggle-text">Show ${tags.length - 10} more tags</span>
                                             </button>
@@ -614,13 +828,13 @@
                                 </div>
 
                                 <div class="flex flex-col space-y-2">
-                                    <button class="px-4 py-2 bg-pm-accent hover:bg-pm-accent-hover text-pm text-sm font-medium rounded-pm-sm transition-colors" onclick="window.admin.viewGallery(${prompt.id})">
+                                    <button class="px-4 py-2 bg-pm-accent hover:bg-pm-accent-hover text-pm text-sm font-medium rounded-pm-sm transition-colors" data-action="gallery" data-prompt-id="${prompt.id}">
                                         🖼️ Gallery
                                     </button>
-                                    <button class="px-4 py-2 bg-pm-accent hover:bg-pm-accent-hover text-pm text-sm font-medium rounded-pm-sm transition-colors" onclick="window.admin.editPrompt(${prompt.id})">
+                                    <button class="px-4 py-2 bg-pm-accent hover:bg-pm-accent-hover text-pm text-sm font-medium rounded-pm-sm transition-colors" data-action="edit" data-prompt-id="${prompt.id}">
                                         ✏️ Edit
                                     </button>
-                                    <button class="px-4 py-2 bg-pm-error hover:bg-pm-error text-pm text-sm font-medium rounded-pm-sm transition-colors" onclick="window.admin.deletePrompt(${prompt.id})">
+                                    <button class="px-4 py-2 bg-pm-error hover:bg-pm-error text-pm text-sm font-medium rounded-pm-sm transition-colors" data-action="delete" data-prompt-id="${prompt.id}">
                                         🗑️ Delete
                                     </button>
                                 </div>
@@ -674,12 +888,6 @@
                         });
                     });
                 });
-            }
-
-            escapeHtml(text) {
-                const div = document.createElement("div");
-                div.textContent = text;
-                return div.innerHTML;
             }
 
             showNotification(message, type = "info") {
@@ -748,9 +956,20 @@
                 });
             }
 
+            renderWorkerThreads() {
+                const threads = document.getElementById("workerThreads");
+                document.getElementById("workerThreadsValue").textContent =
+                    `${threads.value} / ${this.settings.cpuCount} cores`;
+            }
+
             showSettingsModal() {
                 document.getElementById("resultTimeout").value = this.settings.resultTimeout;
                 document.getElementById("webuiDisplayMode").value = this.settings.webuiDisplayMode;
+                document.getElementById("infiniteScrollDefault").checked = this.settings.infiniteScroll;
+                const threads = document.getElementById("workerThreads");
+                threads.max = this.settings.cpuCount;
+                threads.value = this.settings.workerThreads;
+                this.renderWorkerThreads();
                 this.renderScanPaths();
                 this.updateMonitoringStatus();
                 this.detectLoraManager();
@@ -765,7 +984,7 @@
                         const data = await response.json();
                         const dirs = data.settings?.monitored_directories || [];
                         if (dirs.length > 0) {
-                            statusEl.innerHTML = dirs.map(d => `<div class="truncate" title="${d}">✓ ${d}</div>`).join('');
+                            statusEl.innerHTML = dirs.map(d => `<div class="truncate" title="${escapeHtml(d)}">✓ ${escapeHtml(d)}</div>`).join('');
                         } else {
                             statusEl.textContent = 'No directories being monitored (auto-detect on restart)';
                         }
@@ -794,7 +1013,12 @@
                             toggle.disabled = false;
                             document.getElementById("loraManagerPath").value = status.path;
                             document.getElementById("loraTriggerWords").checked = status.trigger_words_enabled;
-                            document.getElementById("civitaiApiKey").value = status.civitai_api_key || "";
+                            const keyInput = document.getElementById("civitaiApiKey");
+                            keyInput.value = "";
+                            keyInput.placeholder = status.has_civitai_api_key
+                                ? "A key is stored — leave empty to keep it"
+                                : "Optional — required for NSFW example images";
+                            document.getElementById("clearCivitaiKey").checked = false;
                             settings.classList.remove("hidden");
                             this._loraPath = status.path;
                             this._bindLoraEvents();
@@ -850,18 +1074,20 @@
                 const enabled = document.getElementById("loraEnabled").checked;
                 const triggerWords = document.getElementById("loraTriggerWords").checked;
                 const civitaiKey = document.getElementById("civitaiApiKey").value.trim();
+                const clearKey = document.getElementById("clearCivitaiKey").checked;
                 const path = this._loraPath || "";
+
+                // The server never returns the stored key: an empty field keeps it, the
+                // checkbox removes it, and a non-empty field replaces it
+                const payload = { enabled, path, trigger_words_enabled: triggerWords };
+                if (clearKey) payload.clear_civitai_api_key = true;
+                else if (civitaiKey) payload.civitai_api_key = civitaiKey;
 
                 try {
                     const res = await fetch("/prompt_manager/lora/enable", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                            enabled,
-                            path,
-                            trigger_words_enabled: triggerWords,
-                            civitai_api_key: civitaiKey,
-                        }),
+                        body: JSON.stringify(payload),
                     });
                     const data = await res.json();
                     if (!data.success) {
@@ -938,10 +1164,14 @@
             async saveSettings() {
                 const timeout = parseInt(document.getElementById("resultTimeout").value);
                 const displayMode = document.getElementById("webuiDisplayMode").value;
+                const workerThreads = parseInt(document.getElementById("workerThreads").value, 10) || 1;
+                const infiniteScroll = document.getElementById("infiniteScrollDefault").checked;
                 const galleryPaths = this._collectScanPaths().filter(p => p !== '');
 
                 this.settings.resultTimeout = timeout;
                 this.settings.webuiDisplayMode = displayMode;
+                this.settings.workerThreads = workerThreads;
+                this.settings.infiniteScroll = infiniteScroll;
                 this.settings.galleryRootPaths = galleryPaths;
 
                 try {
@@ -951,6 +1181,8 @@
                         body: JSON.stringify({
                             result_timeout: timeout,
                             webui_display_mode: displayMode,
+                            worker_threads: workerThreads,
+                            infinite_scroll: infiniteScroll,
                             gallery_root_paths: galleryPaths
                         }),
                     });
@@ -960,6 +1192,8 @@
 
                         // Save LoRA integration settings (fire-and-forget)
                         await this.saveLoraSettings();
+
+                        this.setInfiniteScroll(infiniteScroll, { session: false });
 
                         if (data.restart_required) {
                             this.showNotification("Settings saved. Restart ComfyUI for gallery path changes to take effect.", "warning");
@@ -1046,7 +1280,6 @@
             }
 
             async setRating(promptId, rating) {
-                console.log(`Setting rating for prompt ${promptId} to ${rating}`);
                 
                 // Update UI immediately for better UX
                 const ratingElement = document.querySelector(`[data-id="${promptId}"][data-rating]`);
@@ -1129,7 +1362,7 @@
                         this.hideModal("individualTagModal");
                         // Refresh both stats and results
                         await this.loadStatistics();
-                        this.search();
+                        this.refreshList();
                     }
                 } catch (error) {
                     this.showNotification("Failed to add tags", "error");
@@ -1148,82 +1381,79 @@
                         this.showNotification("Tag removed", "success");
                         // Refresh both stats and results
                         await this.loadStatistics();
-                        this.search();
+                        this.refreshList();
                     }
                 } catch (error) {
                     this.showNotification("Failed to remove tag", "error");
                 }
             }
 
-            async editPrompt(promptId) {
+            editPrompt(promptId) {
                 const promptElement = document.querySelector(`[data-id="${promptId}"].prompt-text`);
                 if (!promptElement) return;
+                if (this.activeEdit) this.finishEdit(false);
 
-                const originalText = promptElement.textContent;
+                this.activeEdit = { promptId, element: promptElement, originalText: promptElement.textContent };
                 promptElement.contentEditable = true;
                 promptElement.focus();
                 promptElement.classList.add("bg-pm-surface", "border", "border-pm-accent", "rounded-pm-sm", "p-3");
+            }
 
-                const saveEdit = async () => {
-                    const newText = promptElement.textContent.trim();
-                    if (newText !== originalText && newText) {
-                        try {
-                            const response = await fetch(`/prompt_manager/prompts/${promptId}`, {
-                                method: "PUT",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({ text: newText }),
-                            });
+            handleEditKeydown(e) {
+                if (!this.activeEdit || e.target !== this.activeEdit.element) return;
+                if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    this.finishEdit(true);
+                } else if (e.key === "Escape") {
+                    this.finishEdit(false);
+                }
+            }
 
-                            if (response.ok) {
-                                this.showNotification("Prompt updated", "success");
-                                // Refresh the page to show updated content
-                                setTimeout(() => {
-                                    this.loadStatistics();
-                                    setTimeout(() => window.location.reload(), 500);
-                                }, 1000);
-                            } else {
-                                throw new Error("Update failed");
-                            }
-                        } catch (error) {
-                            this.showNotification("Failed to update prompt", "error");
-                            promptElement.textContent = originalText;
-                        }
-                    }
-                    promptElement.contentEditable = false;
-                    promptElement.classList.remove("bg-pm-surface", "border", "border-pm-accent", "rounded-pm-sm", "p-3");
-                };
+            handleEditFocusOut(e) {
+                if (this.activeEdit && e.target === this.activeEdit.element) this.finishEdit(true);
+            }
 
-                promptElement.addEventListener("blur", saveEdit, { once: true });
-                promptElement.addEventListener("keydown", (e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        saveEdit();
-                    }
-                    if (e.key === "Escape") {
-                        promptElement.textContent = originalText;
-                        promptElement.contentEditable = false;
-                        promptElement.classList.remove("bg-pm-surface", "border", "border-pm-accent", "rounded-pm-sm", "p-3");
-                    }
-                });
+            /**
+             * End the in-place edit exactly once. The edit state is cleared before the element
+             * changes, so the focusout caused by contentEditable=false cannot save a second time.
+             */
+            async finishEdit(save) {
+                const edit = this.activeEdit;
+                if (!edit) return;
+                this.activeEdit = null;
+
+                const { element, originalText, promptId } = edit;
+                const newText = element.textContent.trim();
+                element.contentEditable = false;
+                element.classList.remove("bg-pm-surface", "border", "border-pm-accent", "rounded-pm-sm", "p-3");
+
+                if (!save || !ListState.shouldSaveEdit(originalText, newText)) {
+                    element.textContent = originalText;
+                    return;
+                }
+
+                try {
+                    await this.api.put(`/prompt_manager/prompts/${promptId}`, { text: newText });
+                    this.showNotification("Prompt updated", "success");
+                    await this.loadStatistics();
+                    this.refreshList();
+                } catch (error) {
+                    console.error("Update failed:", error);
+                    this.showNotification("Failed to update prompt", "error");
+                    element.textContent = originalText;
+                }
             }
 
             async deletePrompt(promptId) {
                 if (!confirm("Are you sure you want to delete this prompt?")) return;
 
                 try {
-                    const response = await fetch(`/prompt_manager/delete/${promptId}`, {
-                        method: "DELETE",
-                    });
-
-                    if (response.ok) {
-                        this.showNotification("Prompt deleted", "success");
-                        // Refresh stats and reload page
-                        setTimeout(() => {
-                            this.loadStatistics();
-                            setTimeout(() => window.location.reload(), 500);
-                        }, 1000);
-                    }
+                    await this.api.del(`/prompt_manager/delete/${promptId}`);
+                    this.showNotification("Prompt deleted", "success");
+                    await this.loadStatistics();
+                    this.refreshList();
                 } catch (error) {
+                    console.error("Delete failed:", error);
                     this.showNotification("Failed to delete prompt", "error");
                 }
             }
@@ -1257,7 +1487,7 @@
                         this.hideModal("bulkTagModal");
                         // Refresh both stats and results
                         await this.loadStatistics();
-                        this.search();
+                        this.refreshList();
                     }
                 } catch (error) {
                     this.showNotification("Failed to add tags", "error");
@@ -1283,7 +1513,7 @@
                         this.hideModal("bulkCategoryModal");
                         // Refresh both stats and results
                         await this.loadStatistics();
-                        this.search();
+                        this.refreshList();
                     }
                 } catch (error) {
                     this.showNotification("Failed to set category", "error");
@@ -1304,11 +1534,9 @@
 
                     if (response.ok) {
                         this.showNotification(`${this.selectedPrompts.size} prompts deleted`, "success");
-                        // Refresh stats and reload page
-                        setTimeout(() => {
-                            this.loadStatistics();
-                            setTimeout(() => window.location.reload(), 500);
-                        }, 1000);
+                        this.selectedPrompts.clear();
+                        await this.loadStatistics();
+                        this.refreshList();
                     }
                 } catch (error) {
                     this.showNotification("Failed to delete prompts", "error");
@@ -1388,14 +1616,21 @@
                 content.classList.remove("hidden");
                 empty.classList.add("hidden");
                 
-                content.innerHTML = images.map((image, index) => `
+                const formatFileSize = (bytes) => this.formatFileSize(bytes);
+                content.innerHTML = images.map((image, index) => {
+                    const generated = new Date(image.generation_time);
+                    const when = escapeHtml(`${generated.toLocaleDateString()} ${generated.toLocaleTimeString()}`);
+                    const fileUrl = `/prompt_manager/images/${escapeHtml(image.id)}/file`;
+                    const caption = ImageHelpers.formatImageCaption(image, { formatFileSize });
+                    const details = ImageHelpers.formatImageCaption(image, { formatFileSize, separator: ' • ' });
+                    return `
                     <div class="group cursor-pointer bg-pm-surface rounded-pm-md overflow-hidden border border-pm hover:border-pm transition-all duration-200">
                         <div class="aspect-square bg-pm-surface overflow-hidden relative">
-                            <img src="/prompt_manager/images/${image.id}/file" 
-                                 alt="Generated image ${index + 1}" 
+                            <img src="${fileUrl}"
+                                 alt="Generated image ${index + 1}"
                                  class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                                 data-original="/prompt_manager/images/${image.id}/file"
-                                 data-caption="Generated: ${new Date(image.generation_time).toLocaleDateString()} ${new Date(image.generation_time).toLocaleTimeString()} | ${image.width && image.height ? `${image.width}×${image.height}` : 'Unknown size'}${image.file_size ? ` | ${this.formatFileSize(image.file_size)}` : ''}"
+                                 data-original="${fileUrl}"
+                                 data-caption="Generated: ${when} | ${caption}"
                                  onerror="this.parentElement.innerHTML='<div class=\\'flex items-center justify-center h-full text-pm-secondary\\'>⚠️ Image not found</div>'">
                             <div class="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-opacity duration-300 flex items-center justify-center pointer-events-none">
                                 <svg class="w-8 h-8 text-pm opacity-0 group-hover:opacity-100 transition-opacity duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1405,15 +1640,15 @@
                         </div>
                         <div class="p-3">
                             <div class="text-xs text-pm-secondary mb-1">
-                                ${new Date(image.generation_time).toLocaleDateString()} ${new Date(image.generation_time).toLocaleTimeString()}
+                                ${when}
                             </div>
                             <div class="text-xs text-pm-muted">
-                                ${image.width && image.height ? `${image.width}×${image.height}` : 'Unknown size'}
-                                ${image.file_size ? ` • ${this.formatFileSize(image.file_size)}` : ''}
+                                ${details}
                             </div>
                         </div>
                     </div>
-                `).join('');
+                `;
+                }).join('');
                 
                 // Store images for navigation
                 this.currentGalleryImages = images;
@@ -1583,7 +1818,7 @@
                     resultsContainer.innerHTML = `
                         <div class="bg-pm-error-tint border border-pm-error rounded-pm-sm p-4">
                             <h4 class="text-pm-error font-medium mb-2">❌ Maintenance Failed</h4>
-                            <p class="text-pm-secondary">${error.message}</p>
+                            <p class="text-pm-secondary">${escapeHtml(error.message)}</p>
                         </div>
                     `;
                     this.showNotification('❌ Maintenance failed', 'error');
@@ -1605,7 +1840,7 @@
                 html += `
                     <div class="flex justify-between items-center p-2 bg-pm-input rounded">
                         <span class="text-pm-secondary">Operations Completed</span>
-                        <span class="text-pm-success font-mono text-sm">${data.operations_completed}</span>
+                        <span class="text-pm-success font-mono text-sm">${escapeHtml(data.operations_completed)}</span>
                     </div>
                 `;
                 html += `
@@ -1627,29 +1862,29 @@
                     html += `<div class="${bgColor} border rounded-pm-sm p-4">`;
                     html += `<h4 class="text-pm font-medium mb-2 flex items-center space-x-2">`;
                     html += `<span>${statusIcon}</span>`;
-                    html += `<span class="capitalize">${operation.replace(/_/g, ' ')}</span>`;
+                    html += `<span class="capitalize">${escapeHtml(operation.replace(/_/g, ' '))}</span>`;
                     html += `<span class="text-sm font-mono ${result.success ? 'text-pm-success' : 'text-pm-error'}">${statusText}</span>`;
                     html += `</h4>`;
 
                     if (result.message) {
-                        html += `<p class="text-pm-secondary mb-2">${result.message}</p>`;
+                        html += `<p class="text-pm-secondary mb-2">${escapeHtml(result.message)}</p>`;
                     }
 
                     // Show specific details
                     if (result.removed_count !== undefined) {
-                        html += `<div class="text-sm text-pm-secondary">Items removed: ${result.removed_count}</div>`;
+                        html += `<div class="text-sm text-pm-secondary">Items removed: ${escapeHtml(result.removed_count)}</div>`;
                     }
 
                     if (result.duplicate_hashes !== undefined) {
-                        html += `<div class="text-sm text-pm-secondary">Duplicate hash groups found: ${result.duplicate_hashes}</div>`;
+                        html += `<div class="text-sm text-pm-secondary">Duplicate hash groups found: ${escapeHtml(result.duplicate_hashes)}</div>`;
                     }
 
                     if (result.issues_found !== undefined) {
-                        html += `<div class="text-sm text-pm-secondary">Issues found: ${result.issues_found}</div>`;
+                        html += `<div class="text-sm text-pm-secondary">Issues found: ${escapeHtml(result.issues_found)}</div>`;
                         if (result.issues && result.issues.length > 0) {
                             html += `<ul class="ml-4 list-disc text-xs text-pm-muted mt-1">`;
                             result.issues.forEach(issue => {
-                                html += `<li>${issue}</li>`;
+                                html += `<li>${escapeHtml(issue)}</li>`;
                             });
                             html += `</ul>`;
                         }
@@ -1657,14 +1892,14 @@
 
                     if (result.info) {
                         html += `<div class="text-sm text-pm-secondary mt-2">`;
-                        html += `<p>Total prompts: ${result.info.total_prompts || 'N/A'}</p>`;
-                        html += `<p>Database size: ${result.info.database_size_bytes ? this.formatFileSize(result.info.database_size_bytes) : 'N/A'}</p>`;
+                        html += `<p>Total prompts: ${escapeHtml(result.info.total_prompts || 'N/A')}</p>`;
+                        html += `<p>Database size: ${escapeHtml(result.info.database_size_bytes ? this.formatFileSize(result.info.database_size_bytes) : 'N/A')}</p>`;
                         html += `</div>`;
                     }
 
                     if (result.error) {
                         html += `<div class="text-sm text-pm-error mt-2 font-mono bg-pm-error-tint p-2 rounded">`;
-                        html += `Error: ${result.error}`;
+                        html += `Error: ${escapeHtml(result.error)}`;
                         html += `</div>`;
                     }
                     
@@ -1701,7 +1936,7 @@
                     content.innerHTML = `
                         <div class="bg-pm-error-tint border border-pm-error rounded-pm-sm p-4">
                             <h4 class="text-pm-error font-medium mb-2">❌ Diagnostics Failed</h4>
-                            <p class="text-pm-secondary">${error.message}</p>
+                            <p class="text-pm-secondary">${escapeHtml(error.message)}</p>
                         </div>
                     `;
                 }
@@ -1723,7 +1958,7 @@
 
                     html += `
                         <div class="flex justify-between items-center p-2 bg-pm-input rounded">
-                            <span class="text-pm-secondary capitalize">${this.escapeHtml(category)}</span>
+                            <span class="text-pm-secondary capitalize">${escapeHtml(category)}</span>
                             <span class="${statusColor} font-mono text-sm">${status}</span>
                         </div>
                     `;
@@ -1737,28 +1972,28 @@
                                    (result.status === 'warning' ? 'bg-pm-warning/20 border-pm-warning' : 'bg-pm-error-tint border-pm-error');
 
                     html += `<div class="${bgColor} border rounded-pm-sm p-4">`;
-                    html += `<h4 class="text-pm font-medium mb-2 capitalize">${this.escapeHtml(category)}</h4>`;
+                    html += `<h4 class="text-pm font-medium mb-2 capitalize">${escapeHtml(category)}</h4>`;
 
                     if (result.message) {
-                        html += `<p class="text-pm-secondary mb-2">${result.message}</p>`;
+                        html += `<p class="text-pm-secondary mb-2">${escapeHtml(result.message)}</p>`;
                     }
 
                     // Show specific details based on category
                     if (category === 'database' && result.status === 'ok') {
                         html += `<div class="text-sm text-pm-secondary">`;
-                        html += `<p>Prompts: ${result.prompt_count || 0}</p>`;
+                        html += `<p>Prompts: ${escapeHtml(result.prompt_count || 0)}</p>`;
                         html += `<p>Images table: ${result.has_images_table ? 'Yes' : 'No'}</p>`;
                         html += `</div>`;
                     }
 
                     if (category === 'images_table' && result.status === 'ok') {
                         html += `<div class="text-sm text-pm-secondary">`;
-                        html += `<p>Images: ${result.image_count || 0}</p>`;
+                        html += `<p>Images: ${escapeHtml(result.image_count || 0)}</p>`;
                         if (result.recent_images && result.recent_images.length > 0) {
                             html += `<p>Recent images:</p>`;
                             html += `<ul class="ml-4 list-disc">`;
                             result.recent_images.slice(0, 3).forEach(img => {
-                                html += `<li>${img.filename} → Prompt ${img.prompt_id}</li>`;
+                                html += `<li>${escapeHtml(img.filename)} → Prompt ${escapeHtml(img.prompt_id)}</li>`;
                             });
                             html += `</ul>`;
                         }
@@ -1770,7 +2005,7 @@
                         html += `<p>Output directories found:</p>`;
                         html += `<ul class="ml-4 list-disc">`;
                         result.output_dirs.forEach(dir => {
-                            html += `<li>${dir}</li>`;
+                            html += `<li>${escapeHtml(dir)}</li>`;
                         });
                         html += `</ul>`;
                         html += `</div>`;
@@ -1780,7 +2015,7 @@
                         html += `<div class="text-sm text-pm-secondary">`;
                         for (const [dep, available] of Object.entries(result.dependencies)) {
                             const status = available ? '✅' : '❌';
-                            html += `<p>${status} ${dep}</p>`;
+                            html += `<p>${status} ${escapeHtml(dep)}</p>`;
                         }
                         html += `</div>`;
                     }
@@ -1816,7 +2051,7 @@
                         if (data.success) {
                             this.showNotification('✅ Test image link created successfully!', 'success');
                             // Refresh the gallery to show the test image
-                            setTimeout(() => this.search(), 1000);
+                            setTimeout(() => this.refreshList(), 1000);
                         } else {
                             throw new Error(data.result?.message || 'Test failed');
                         }
@@ -1923,10 +2158,8 @@
                         );
                         this.hideModal('restoreModal');
                         
-                        // Refresh the interface to show new data
-                        setTimeout(() => {
-                            window.location.reload();
-                        }, 2000);
+                        // Refresh the interface to show the restored data
+                        await this.loadInitialData();
                     } else {
                         throw new Error(data.error || 'Restore failed');
                     }
@@ -1993,7 +2226,7 @@
                     <div class="bg-pm-surface rounded-pm-md p-4 max-w-2xl w-full mx-4 border border-pm">
                         <h3 class="text-sm font-semibold text-pm mb-3">Copy Prompt Text</h3>
                         <p class="text-pm-secondary mb-4">Please manually copy the text below:</p>
-                        <textarea readonly class="w-full h-32 px-4 py-3 bg-pm-surface border border-pm rounded-pm-sm text-pm resize-none" style="font-family: monospace;">${text}</textarea>
+                        <textarea readonly class="w-full h-32 px-4 py-3 bg-pm-surface border border-pm rounded-pm-sm text-pm resize-none" style="font-family: monospace;"></textarea>
                         <div class="flex justify-end mt-4">
                             <button class="px-4 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm font-medium rounded-pm-sm transition-colors" onclick="this.closest('[class*=fixed]').remove()">
                                 Close
@@ -2006,6 +2239,7 @@
                 
                 // Auto-select the text in the textarea
                 const textarea = modal.querySelector('textarea');
+                textarea.value = text;
                 textarea.focus();
                 textarea.select();
                 
@@ -2024,12 +2258,126 @@
             }
 
             // Scan functionality
+            //
+            // The scan is a background job on the server. The modal shows its progress,
+            // can be hidden to a small pill with the Hide button while it runs (backdrop
+            // clicks are ignored), and re-attaches to a scan still running after a reload.
             showScanModal() {
-                // Reset progress display
-                document.getElementById("scanProgress").classList.add("hidden");
-                document.getElementById("startScan").disabled = false;
-                document.getElementById("startScan").textContent = "Start Scan";
+                if (this.scanState.status !== ScanProgress.RUNNING) this.resetScanControls();
+                document.getElementById("scanPill").classList.add("hidden");
                 this.showModal("scanModal");
+            }
+
+            resetScanControls() {
+                document.getElementById("scanProgress").classList.add("hidden");
+                const start = document.getElementById("startScan");
+                start.disabled = false;
+                start.textContent = "Start Scan";
+                document.getElementById("cancelScan").textContent = "Cancel";
+            }
+
+            dismissScanModal() {
+                if (ScanProgress.dismissAction(this.scanState) === "minimize") {
+                    this.minimizeScan();
+                } else {
+                    this.hideModal("scanModal");
+                }
+            }
+
+            minimizeScan() {
+                this.hideModal("scanModal");
+                document.getElementById("scanPillText").textContent = ScanProgress.progressLabel(this.scanState);
+                document.getElementById("scanPill").classList.remove("hidden");
+            }
+
+            warnIfScanRunning(e) {
+                if (this.scanState.status !== ScanProgress.RUNNING) return;
+                // The scan keeps running on the server; the prompt only guards the progress view.
+                e.preventDefault();
+                e.returnValue = "";
+            }
+
+            startScan() {
+                if (this.scanState.status === ScanProgress.RUNNING) return;
+                this.scanState = ScanProgress.reduceScanEvent(ScanProgress.initialState(), {
+                    type: "progress", progress: 0, status: "Initializing scan...", processed: 0, found: 0,
+                });
+                this.renderScanState();
+                this.attachScanStream();
+            }
+
+            attachScanStream() {
+                if (this.scanSource) this.scanSource.close();
+                // POST starts a scan, or attaches to the one already running.
+                const source = SseStream.connect("/prompt_manager/scan", { method: "POST", body: "{}" });
+                this.scanSource = source;
+                source.onmessage = (e) => {
+                    let data;
+                    try {
+                        data = JSON.parse(e.data);
+                    } catch (_) {
+                        return;
+                    }
+                    this.applyScanEvent(data);
+                };
+                source.onerror = () => {
+                    if (this.scanSource !== source || this.scanState.status !== ScanProgress.RUNNING) return;
+                    this.showNotification("Lost the connection to the scan; it is still running on the server. Reconnecting...", "warning");
+                    setTimeout(() => this.resumeRunningScan(), 2000);
+                };
+                source.onclose = () => {
+                    // The stream ended without a complete/error event (server restart): ask the server.
+                    if (this.scanSource === source && this.scanState.status === ScanProgress.RUNNING) this.resumeRunningScan();
+                };
+            }
+
+            async resumeRunningScan() {
+                let status;
+                try {
+                    const response = await fetch("/prompt_manager/scan/status");
+                    if (!response.ok) return;
+                    status = await response.json();
+                } catch (_) {
+                    return;
+                }
+                const state = ScanProgress.fromStatus(status);
+                if (state.status !== ScanProgress.RUNNING) {
+                    if (this.scanState.status === ScanProgress.RUNNING) {
+                        // A scan we were following ended while we were disconnected.
+                        const last = status.last_event;
+                        const terminal = last && (last.type === "complete" || last.type === "error");
+                        this.applyScanEvent(
+                            terminal ? last : { type: "error", message: "the server no longer reports a running scan" }
+                        );
+                    }
+                    return;
+                }
+                this.scanState = state;
+                this.renderScanState();
+                if (document.getElementById("scanModal").classList.contains("hidden")) this.minimizeScan();
+                this.attachScanStream();
+            }
+
+            applyScanEvent(data) {
+                const next = ScanProgress.reduceScanEvent(this.scanState, data);
+                if (next === this.scanState) return;
+                this.scanState = next;
+                this.renderScanState();
+                if (next.status === ScanProgress.DONE) this.completeScan(next);
+                else if (next.status === ScanProgress.FAILED) this.failScan(next);
+            }
+
+            renderScanState() {
+                const state = this.scanState;
+                if (state.status === ScanProgress.IDLE) return;
+                const running = state.status === ScanProgress.RUNNING;
+                document.getElementById("scanProgress").classList.remove("hidden");
+                const start = document.getElementById("startScan");
+                start.disabled = running;
+                start.textContent = running ? "Scanning..." : "Start New Scan";
+                document.getElementById("cancelScan").textContent = running ? "Hide" : "Close";
+                document.getElementById("scanPillText").textContent = ScanProgress.progressLabel(state);
+                this.updateScanProgress(state.progress, state.statusText, state.processed, state.found);
             }
 
             async quickBackup() {
@@ -2054,67 +2402,6 @@
                 }
             }
 
-            async startScan() {
-                // Show progress section
-                document.getElementById("scanProgress").classList.remove("hidden");
-                document.getElementById("startScan").disabled = true;
-                document.getElementById("startScan").textContent = "Scanning...";
-                
-                // Reset progress
-                this.updateScanProgress(0, "Initializing scan...", 0, 0);
-                
-                try {
-                    const response = await fetch("/prompt_manager/scan", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({})
-                    });
-
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                    }
-
-                    // Handle streaming response
-                    const reader = response.body.getReader();
-                    const decoder = new TextDecoder();
-
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done) break;
-
-                        const chunk = decoder.decode(value);
-                        const lines = chunk.split('\n');
-                        
-                        for (const line of lines) {
-                            if (line.trim().startsWith('data: ')) {
-                                try {
-                                    const data = JSON.parse(line.substring(6));
-                                    if (data.type === 'progress') {
-                                        this.updateScanProgress(
-                                            data.progress,
-                                            data.status,
-                                            data.processed,
-                                            data.found
-                                        );
-                                    } else if (data.type === 'complete') {
-                                        this.completeScan(data.processed, data.found, data.added, data.linked);
-                                        return;
-                                    } else if (data.type === 'error') {
-                                        throw new Error(data.message);
-                                    }
-                                } catch (e) {
-                                    console.log('Non-JSON line:', line);
-                                }
-                            }
-                        }
-                    }
-                } catch (error) {
-                    this.showNotification(`Scan failed: ${error.message}`, "error");
-                    document.getElementById("startScan").disabled = false;
-                    document.getElementById("startScan").textContent = "Start Scan";
-                }
-            }
-
             updateScanProgress(progress, status, processed, found) {
                 document.getElementById("scanProgressBar").style.width = `${progress}%`;
                 document.getElementById("scanStatusText").textContent = status;
@@ -2122,30 +2409,26 @@
                 document.getElementById("scanFound").textContent = `${found} prompts found`;
             }
 
-            completeScan(processed, found, added, linked = 0) {
-                this.updateScanProgress(100, "Scan completed!", processed, found);
-                document.getElementById("startScan").disabled = false;
-                document.getElementById("startScan").textContent = "Start New Scan";
-                
-                // Show detailed notification with all counts
+            completeScan(state) {
+                const { processed, found, added, linked } = state;
+                document.getElementById("scanPill").classList.add("hidden");
                 const linkedText = linked > 0 ? `, linked ${linked} images to existing prompts` : '';
                 this.showNotification(
                     `Scan completed! Processed ${processed} files, found ${found} prompts, added ${added} new prompts to database${linkedText}.`,
                     "success"
                 );
-                
-                // Auto-close modal after a short delay to let user see the completion message
+
+                // Auto-close after a short delay so the completion message is visible
                 setTimeout(() => {
                     this.hideModal("scanModal");
-                    
-                    // Refresh the statistics immediately
                     this.loadStatistics();
-                    
-                    // Also reload the page after a short delay to ensure everything is fully updated
-                    setTimeout(() => {
-                        window.location.reload();
-                    }, 1000);
+                    this.refreshList();
                 }, 2000);
+            }
+
+            failScan(state) {
+                document.getElementById("scanPill").classList.add("hidden");
+                this.showNotification(`Scan failed: ${state.message}`, "error");
             }
 
             // Logs functionality
@@ -2209,13 +2492,13 @@
                         container.innerHTML = data.files.map(file => `
                             <div class="bg-pm-surface rounded-pm-sm p-3">
                                 <div class="flex items-center justify-between mb-2">
-                                    <span class="text-sm font-medium text-pm">${file.filename}</span>
+                                    <span class="text-sm font-medium text-pm">${escapeHtml(file.filename)}</span>
                                     ${file.is_main ? '<span class="bg-pm-accent text-xs px-2 py-1 rounded">Active</span>' : ''}
                                 </div>
                                 <div class="text-xs text-pm-secondary mb-2">
                                     Size: ${this.formatBytes(file.size)} | Modified: ${new Date(file.modified).toLocaleString()}
                                 </div>
-                                <button onclick="window.admin.downloadLogFile('${file.filename}')"
+                                <button data-action="download-log" data-filename="${escapeHtml(file.filename)}"
                                         class="w-full px-3 py-1 bg-pm-success hover:bg-pm-success text-pm text-xs rounded transition-colors">
                                     📥 Download
                                 </button>
@@ -2274,13 +2557,13 @@
                     return `
                         <div class="border-l-2 border-pm pl-3 py-1 hover:bg-pm-surface transition-colors">
                             <div class="flex items-start space-x-2 text-sm">
-                                <span class="text-pm-muted text-xs font-mono w-24 flex-shrink-0">${timestamp.split(' ')[1]}</span>
-                                <span class="${levelColor} font-semibold w-16 flex-shrink-0">${log.level}</span>
-                                <span class="text-pm-accent text-xs w-32 flex-shrink-0">${log.logger}</span>
-                                <span class="text-pm-secondary flex-1">${log.message}</span>
+                                <span class="text-pm-muted text-xs font-mono w-24 flex-shrink-0">${escapeHtml(timestamp.split(' ')[1])}</span>
+                                <span class="${levelColor} font-semibold w-16 flex-shrink-0">${escapeHtml(log.level)}</span>
+                                <span class="text-pm-accent text-xs w-32 flex-shrink-0">${escapeHtml(log.logger)}</span>
+                                <span class="text-pm-secondary flex-1">${escapeHtml(log.message)}</span>
                             </div>
                             <div class="text-xs text-pm-muted ml-44">
-                                ${log.filename}:${log.lineno}
+                                ${escapeHtml(log.filename)}:${escapeHtml(log.lineno)}
                             </div>
                         </div>
                     `;
@@ -2444,15 +2727,14 @@
                 if (page < 1 || page > this.pagination.totalPages || page === this.pagination.currentPage) {
                     return;
                 }
-                await this.loadRecentPrompts(page);
+                await (this.listMode === "search" ? this.search(page) : this.loadRecentPrompts(page));
                 // Scroll to top of results after page loads
                 window.scrollTo({ top: 0, behavior: 'smooth' });
             }
 
             async changeLimit(newLimit) {
                 this.pagination.limit = newLimit;
-                this.pagination.currentPage = 1; // Reset to first page
-                await this.loadRecentPrompts(1);
+                await this.reloadPrompts(); // back to the first page of the current list
             }
 
             // Metadata functionality
@@ -2466,374 +2748,6 @@
             }
 
 
-
-            async parsePNGMetadata(arrayBuffer) {
-                const dataView = new DataView(arrayBuffer);
-                let offset = 8; // Skip PNG signature
-                const metadata = {};
-                let chunkCount = 0;
-
-                console.log('Starting PNG metadata parsing...');
-
-                while (offset < arrayBuffer.byteLength - 8) {
-                    const length = dataView.getUint32(offset);
-                    const type = new TextDecoder().decode(arrayBuffer.slice(offset + 4, offset + 8));
-                    
-                    chunkCount++;
-                    console.log(`Chunk ${chunkCount}: type=${type}, length=${length}`);
-                    
-                    if (type === 'tEXt' || type === 'iTXt' || type === 'zTXt') {
-                        const chunkData = arrayBuffer.slice(offset + 8, offset + 8 + length);
-                        let text;
-                        
-                        if (type === 'tEXt') {
-                            text = new TextDecoder().decode(chunkData);
-                        } else if (type === 'iTXt') {
-                            // iTXt format: keyword\0compression\0language\0translated_keyword\0text
-                            const textData = new TextDecoder().decode(chunkData);
-                            const parts = textData.split('\0');
-                            console.log(`iTXt parts count: ${parts.length}, first part: ${parts[0]}`);
-                            if (parts.length >= 5) {
-                                metadata[parts[0]] = parts[4];
-                            }
-                            text = textData;
-                        } else if (type === 'zTXt') {
-                            // zTXt is compressed - basic parsing (might need proper decompression)
-                            text = new TextDecoder().decode(chunkData);
-                        }
-                        
-                        // Parse the text chunk for key-value pairs
-                        const nullIndex = text.indexOf('\0');
-                        if (nullIndex !== -1) {
-                            const key = text.substring(0, nullIndex);
-                            const value = text.substring(nullIndex + 1);
-                            console.log(`Found metadata: ${key} = ${value.substring(0, 100)}...`);
-                            metadata[key] = value;
-                        }
-                    }
-                    
-                    offset += 8 + length + 4; // Move to next chunk (8 = length + type, 4 = CRC)
-                }
-
-                console.log(`Parsed ${chunkCount} chunks, found ${Object.keys(metadata).length} metadata items`);
-                return metadata;
-            }
-
-            extractComfyUIData(metadata) {
-                // Look for ComfyUI workflow data in various possible fields
-                let workflowData = null;
-                let promptData = null;
-
-                // Common ComfyUI metadata field names
-                const workflowFields = ['workflow', 'Workflow', 'comfy', 'ComfyUI'];
-                const promptFields = ['prompt', 'Prompt', 'parameters', 'Parameters'];
-
-                for (const field of workflowFields) {
-                    if (metadata[field]) {
-                        try {
-                            // Clean NaN values from JSON string before parsing
-                            let cleanedJson = metadata[field];
-                            cleanedJson = cleanedJson.replace(/:\s*NaN\b/g, ': null');
-                            cleanedJson = cleanedJson.replace(/\bNaN\b/g, 'null');
-                            
-                            workflowData = JSON.parse(cleanedJson);
-                            console.log(`Successfully parsed workflow field: ${field}`);
-                            break;
-                        } catch (e) {
-                            console.log('Failed to parse workflow field:', field, e.message);
-                        }
-                    }
-                }
-
-                for (const field of promptFields) {
-                    if (metadata[field]) {
-                        try {
-                            // Clean NaN values from JSON string before parsing
-                            let cleanedJson = metadata[field];
-                            cleanedJson = cleanedJson.replace(/:\s*NaN\b/g, ': null');
-                            cleanedJson = cleanedJson.replace(/\bNaN\b/g, 'null');
-                            
-                            promptData = JSON.parse(cleanedJson);
-                            console.log(`Successfully parsed prompt field: ${field}`);
-                            break;
-                        } catch (e) {
-                            console.log('Failed to parse prompt field:', field, e.message);
-                            console.log('Raw data:', metadata[field].substring(0, 200) + '...');
-                        }
-                    }
-                }
-
-                return { workflow: workflowData, prompt: promptData };
-            }
-
-            updateMetadataPanel(comfyData, imageSrc) {
-                const metadataContent = document.getElementById('metadataContent');
-                if (!metadataContent) return;
-
-                // Get the actual file path from current image data
-                let filePath = imageSrc; // fallback to URL
-                if (this.currentGalleryImages && this.currentImageIndex !== null && this.currentGalleryImages[this.currentImageIndex]) {
-                    const currentImage = this.currentGalleryImages[this.currentImageIndex];
-                    filePath = currentImage.image_path || currentImage.filename || imageSrc;
-                }
-
-                // Trace prompts, model and sampler settings through the node graph (#75)
-                const {
-                    checkpoint, positivePrompt, negativePrompt, steps, cfgScale, sampler, seed,
-                } = window.ComfyMetadata.extractGenerationParams(comfyData);
-
-                // Store the current metadata for copying
-                this.currentMetadata = {
-                    positivePrompt,
-                    negativePrompt,
-                    checkpoint,
-                    steps,
-                    cfgScale,
-                    sampler,
-                    seed,
-                    workflow: comfyData.workflow,
-                    prompt: comfyData.prompt
-                };
-
-                // Update the HTML
-                metadataContent.innerHTML = `
-                    <!-- File Path -->
-                    <div>
-                        <h2 class="text-sm font-medium text-pm-secondary mb-2">File Path</h2>
-                        <div class="text-sm text-pm-accent hover:text-pm-accent cursor-pointer bg-pm-surface p-2 rounded break-all" onclick="window.admin.copyToClipboard('${filePath}')">
-                            ${filePath}
-                        </div>
-                    </div>
-
-                    <!-- Resources used -->
-                    <div>
-                        <h2 class="text-sm font-medium text-pm-secondary mb-2">Resources used</h2>
-                        <div class="flex items-center justify-between">
-                            <div>
-                                <div class="text-pm-accent hover:text-pm-accent cursor-pointer">${checkpoint}</div>
-                                <div class="text-xs text-pm-muted">ComfyUI Generated</div>
-                            </div>
-                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">CHECKPOINT</span>
-                        </div>
-                    </div>
-
-                    <!-- Prompt -->
-                    <div>
-                        <div class="flex items-center gap-2 mb-2">
-                            <h2 class="text-sm font-medium text-pm-secondary">Prompt</h2>
-                            <span class="px-2 py-1 text-xs bg-orange-600 text-orange-100 rounded">COMFYUI</span>
-                            <button class="ml-auto text-pm-secondary hover:text-pm-secondary" onclick="window.admin.copyPrompt('positive')">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
-                                </svg>
-                            </button>
-                        </div>
-                        <div class="text-sm text-pm-secondary bg-pm-surface p-3 rounded max-h-32 overflow-y-auto">
-                            ${positivePrompt.substring(0, 200)}${positivePrompt.length > 200 ? '...' : ''}
-                        </div>
-                        ${positivePrompt.length > 200 ? '<button class="text-pm-accent hover:text-pm-accent text-sm mt-1" onclick="window.admin.showFullPrompt(\'positive\')">Show more</button>' : ''}
-                    </div>
-
-                    <!-- Negative prompt -->
-                    <div>
-                        <div class="flex items-center justify-between mb-2">
-                            <h2 class="text-sm font-medium text-pm-secondary">Negative prompt</h2>
-                            <button class="text-pm-secondary hover:text-pm-secondary" onclick="window.admin.copyPrompt('negative')">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
-                                </svg>
-                            </button>
-                        </div>
-                        <div class="text-sm text-pm-secondary bg-pm-surface p-3 rounded max-h-32 overflow-y-auto">
-                            ${negativePrompt.substring(0, 200)}${negativePrompt.length > 200 ? '...' : ''}
-                        </div>
-                        ${negativePrompt.length > 200 ? '<button class="text-pm-accent hover:text-pm-accent text-sm mt-1" onclick="window.admin.showFullPrompt(\'negative\')">Show more</button>' : ''}
-                    </div>
-
-                    <!-- Other metadata -->
-                    <div>
-                        <h2 class="text-sm font-medium text-pm-secondary mb-3">Other metadata</h2>
-                        <div class="flex flex-wrap gap-2">
-                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">CFG SCALE: ${cfgScale}</span>
-                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">STEPS: ${steps}</span>
-                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SAMPLER: ${sampler}</span>
-                        </div>
-                        <div class="mt-2">
-                            <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SEED: ${seed}</span>
-                        </div>
-                    </div>
-
-                    <!-- Raw Workflow Data -->
-                    <div>
-                        <h2 class="text-sm font-medium text-pm-secondary mb-2">ComfyUI Workflow</h2>
-                        <div class="flex items-center gap-2">
-                            <button class="text-pm-accent hover:text-pm-accent text-sm" onclick="window.admin.showWorkflowData()">View Raw Workflow JSON</button>
-                            <button class="text-pm-accent hover:text-pm-accent" onclick="window.admin.downloadWorkflowJSON()" title="Download JSON">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                                </svg>
-                            </button>
-                        </div>
-                    </div>
-                `;
-            }
-
-            showMetadataError() {
-                const metadataContent = document.getElementById('metadataContent');
-                if (!metadataContent) return;
-
-                metadataContent.innerHTML = `
-                    <div class="text-center text-pm-error py-8">
-                        <svg class="w-16 h-16 mx-auto mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                        </svg>
-                        <p class="text-sm mb-2">Error Loading Metadata</p>
-                        <p class="text-sm">Could not extract ComfyUI metadata from this image</p>
-                    </div>
-                `;
-            }
-
-            async copyPrompt(type) {
-                if (!this.currentMetadata) {
-                    this.showNotification('❌ No metadata available for copying', 'error');
-                    return;
-                }
-                
-                const text = type === 'positive' ? this.currentMetadata.positivePrompt : this.currentMetadata.negativePrompt;
-                
-                if (!text || text === 'No prompt found' || text === 'No negative prompt found') {
-                    this.showNotification(`❌ No ${type} prompt available`, 'error');
-                    return;
-                }
-                
-                await this.copyToClipboard(text);
-            }
-
-            async tryFallbackMetadata(imageSrc) {
-                console.log('Trying fallback metadata extraction for:', imageSrc);
-                
-                try {
-                    // Try to get prompt from current gallery image data
-                    let fallbackPrompt = 'No prompt found';
-                    
-                    if (this.currentGalleryImages && this.currentImageIndex !== null && this.currentGalleryImages[this.currentImageIndex]) {
-                        const currentImage = this.currentGalleryImages[this.currentImageIndex];
-                        console.log('Current image data:', currentImage);
-                        
-                        // If we have prompt_id, try to get the prompt from our local prompts array
-                        if (currentImage.prompt_id && this.prompts) {
-                            const prompt = this.prompts.find(p => p.id === currentImage.prompt_id);
-                            if (prompt) {
-                                fallbackPrompt = prompt.text;
-                                console.log('Found prompt from database:', fallbackPrompt.substring(0, 100));
-                            }
-                        }
-                    }
-                    
-                    // Set fallback metadata
-                    this.currentMetadata = {
-                        positivePrompt: fallbackPrompt,
-                        negativePrompt: 'No negative prompt found',
-                        checkpoint: 'Unknown',
-                        steps: 'Unknown',
-                        cfgScale: 'Unknown',
-                        sampler: 'Unknown',
-                        seed: 'Unknown',
-                        workflow: null,
-                        prompt: null
-                    };
-                    
-                    // Update metadata panel with fallback data
-                    this.updateMetadataPanel({}, imageSrc);
-                    
-                } catch (error) {
-                    console.error('Fallback metadata extraction failed:', error);
-                    this.showMetadataError();
-                    
-                    // Set empty metadata as last resort
-                    this.currentMetadata = {
-                        positivePrompt: 'No prompt found',
-                        negativePrompt: 'No negative prompt found',
-                        checkpoint: 'Unknown',
-                        steps: 'Unknown',
-                        cfgScale: 'Unknown',
-                        sampler: 'Unknown',
-                        seed: 'Unknown',
-                        workflow: null,
-                        prompt: null
-                    };
-                }
-            }
-
-            async copyAllMetadata() {
-                if (!this.currentMetadata) return;
-                
-                const allData = `Checkpoint: ${this.currentMetadata.checkpoint || 'Unknown'}
-Positive Prompt: ${this.currentMetadata.positivePrompt}
-Negative Prompt: ${this.currentMetadata.negativePrompt}
-Steps: ${this.currentMetadata.steps || 'Unknown'}
-CFG Scale: ${this.currentMetadata.cfgScale || 'Unknown'}
-Sampler: ${this.currentMetadata.sampler || 'Unknown'}
-Seed: ${this.currentMetadata.seed || 'Unknown'}`;
-                
-                await this.copyToClipboard(allData);
-            }
-
-            showFullPrompt(type) {
-                if (!this.currentMetadata) return;
-
-                const prompt = type === 'positive' ? this.currentMetadata.positivePrompt : this.currentMetadata.negativePrompt;
-                const safeType = this.escapeHtml(type.charAt(0).toUpperCase() + type.slice(1));
-                const newWindow = window.open('', '_blank');
-                const doc = newWindow.document;
-                doc.open();
-                doc.write('<!DOCTYPE html><html><head><title>' + safeType + ' Prompt</title></head><body></body></html>');
-                doc.close();
-                doc.body.style.cssText = 'background:#111;color:#fff;font-family:monospace;padding:20px;';
-                const h2 = doc.createElement('h2');
-                h2.textContent = type.charAt(0).toUpperCase() + type.slice(1) + ' Prompt';
-                doc.body.appendChild(h2);
-                const pre = doc.createElement('pre');
-                pre.style.cssText = 'background:#222;padding:15px;border-radius:5px;white-space:pre-wrap;line-height:1.5;';
-                pre.textContent = prompt;
-                doc.body.appendChild(pre);
-                const btn = doc.createElement('button');
-                btn.textContent = 'Copy to Clipboard';
-                btn.style.cssText = 'margin-top:20px;padding:10px 20px;background:#444;color:#fff;border:none;border-radius:5px;cursor:pointer;';
-                btn.addEventListener('click', () => { navigator.clipboard.writeText(pre.textContent).then(() => alert('Copied!')); });
-                doc.body.appendChild(btn);
-            }
-
-            showWorkflowData() {
-                if (!this.currentMetadata || !this.currentMetadata.workflow) return;
-                
-                const newWindow = window.open('', '_blank');
-                newWindow.document.write(`
-                    <html>
-                        <head><title>ComfyUI Workflow Data</title></head>
-                        <body style="background: #111; color: #fff; font-family: monospace; padding: 20px;">
-                            <h2>ComfyUI Workflow JSON</h2>
-                            <pre style="background: #222; padding: 15px; border-radius: 5px; overflow: auto;">${JSON.stringify(this.currentMetadata.workflow, null, 2)}</pre>
-                        </body>
-                    </html>
-                `);
-            }
-
-            downloadWorkflowJSON() {
-                if (!this.currentMetadata || !this.currentMetadata.workflow) return;
-                
-                const dataStr = JSON.stringify(this.currentMetadata.workflow, null, 2);
-                const dataBlob = new Blob([dataStr], {type: 'application/json'});
-                const url = URL.createObjectURL(dataBlob);
-                const link = document.createElement('a');
-                link.href = url;
-                link.download = 'comfyui_workflow.json';
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                URL.revokeObjectURL(url);
-            }
-
             async copyToClipboard(text) {
                 try {
                     await navigator.clipboard.writeText(text);
@@ -2844,47 +2758,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }
             }
 
-            async parsePNGMetadata(arrayBuffer) {
-                const dataView = new DataView(arrayBuffer);
-                let offset = 8; // Skip PNG signature
-                const metadata = {};
-
-                while (offset < arrayBuffer.byteLength - 8) {
-                    const length = dataView.getUint32(offset);
-                    const type = new TextDecoder().decode(arrayBuffer.slice(offset + 4, offset + 8));
-                    
-                    if (type === 'tEXt' || type === 'iTXt' || type === 'zTXt') {
-                        const chunkData = arrayBuffer.slice(offset + 8, offset + 8 + length);
-                        let text;
-                        
-                        if (type === 'tEXt') {
-                            text = new TextDecoder().decode(chunkData);
-                        } else if (type === 'iTXt') {
-                            // iTXt format: keyword\0compression\0language\0translated_keyword\0text
-                            const textData = new TextDecoder().decode(chunkData);
-                            const parts = textData.split('\0');
-                            if (parts.length >= 5) {
-                                metadata[parts[0]] = parts[4];
-                            }
-                            text = textData;
-                        } else if (type === 'zTXt') {
-                            // zTXt is compressed - basic parsing (might need proper decompression)
-                            text = new TextDecoder().decode(chunkData);
-                        }
-                        
-                        // Parse the text chunk for key-value pairs
-                        const nullIndex = text.indexOf('\0');
-                        if (nullIndex !== -1) {
-                            const key = text.substring(0, nullIndex);
-                            const value = text.substring(nullIndex + 1);
-                            metadata[key] = value;
-                        }
-                    }
-                    
-                    offset += 8 + length + 4; // Move to next chunk (8 = length + type, 4 = CRC)
-                }
-
-                return metadata;
+            parsePNGMetadata(arrayBuffer) {
+                return PngMetadata.parsePngTextChunks(arrayBuffer);
             }
 
             extractComfyUIData(metadata) {
@@ -2907,7 +2782,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             workflowData = JSON.parse(cleanedJson);
                             break;
                         } catch (e) {
-                            console.log('Failed to parse workflow field:', field);
+                            console.warn('Failed to parse workflow field:', field);
                         }
                     }
                 }
@@ -2923,7 +2798,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             promptData = JSON.parse(cleanedJson);
                             break;
                         } catch (e) {
-                            console.log('Failed to parse prompt field:', field);
+                            console.warn('Failed to parse prompt field:', field);
                         }
                     }
                 }
@@ -3058,7 +2933,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 <div>
                     <h2 class="text-sm font-medium text-pm-secondary mb-2">File Path</h2>
                     <div class="text-sm text-pm-accent hover:text-pm-accent cursor-pointer bg-pm-surface p-2 rounded break-all" data-copy-path="">
-                        ${metadata.imagePath}
+                        ${escapeHtml(metadata.imagePath)}
                     </div>
                 </div>
 
@@ -3067,7 +2942,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     <h2 class="text-sm font-medium text-pm-secondary mb-2">Resources used</h2>
                     <div class="flex items-center justify-between">
                         <div>
-                            <div class="text-pm-accent hover:text-pm-accent cursor-pointer">${metadata.checkpoint}</div>
+                            <div class="text-pm-accent hover:text-pm-accent cursor-pointer">${escapeHtml(metadata.checkpoint)}</div>
                             <div class="text-xs text-pm-muted">ComfyUI Generated</div>
                         </div>
                         <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">CHECKPOINT</span>
@@ -3086,7 +2961,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         </button>
                     </div>
                     <div class="text-sm text-pm-secondary bg-pm-surface p-3 rounded max-h-32 overflow-y-auto">
-                        ${metadata.positivePrompt.substring(0, 200)}${metadata.positivePrompt.length > 200 ? '...' : ''}
+                        ${escapeHtml(metadata.positivePrompt.substring(0, 200))}${metadata.positivePrompt.length > 200 ? '...' : ''}
                     </div>
                     ${metadata.positivePrompt.length > 200 ? '<button class="text-pm-accent hover:text-pm-accent text-sm mt-1" data-show-type="positive">Show more</button>' : ''}
                 </div>
@@ -3102,7 +2977,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         </button>
                     </div>
                     <div class="text-sm text-pm-secondary bg-pm-surface p-3 rounded max-h-32 overflow-y-auto">
-                        ${metadata.negativePrompt.substring(0, 200)}${metadata.negativePrompt.length > 200 ? '...' : ''}
+                        ${escapeHtml(metadata.negativePrompt.substring(0, 200))}${metadata.negativePrompt.length > 200 ? '...' : ''}
                     </div>
                     ${metadata.negativePrompt.length > 200 ? '<button class="text-pm-accent hover:text-pm-accent text-sm mt-1" data-show-type="negative">Show more</button>' : ''}
                 </div>
@@ -3111,12 +2986,12 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 <div>
                     <h2 class="text-sm font-medium text-pm-secondary mb-3">Other metadata</h2>
                     <div class="flex flex-wrap gap-2">
-                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">CFG SCALE: ${metadata.cfgScale}</span>
-                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">STEPS: ${metadata.steps}</span>
-                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SAMPLER: ${metadata.sampler}</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">CFG SCALE: ${escapeHtml(metadata.cfgScale)}</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">STEPS: ${escapeHtml(metadata.steps)}</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SAMPLER: ${escapeHtml(metadata.sampler)}</span>
                     </div>
                     <div class="mt-2">
-                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SEED: ${metadata.seed}</span>
+                        <span class="px-2 py-1 text-xs bg-pm-surface text-pm-secondary rounded">SEED: ${escapeHtml(metadata.seed)}</span>
                     </div>
                 </div>
 
@@ -3198,7 +3073,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             showFullPrompt(type) {
                 if (this.currentMetadata) {
                     const prompt = type === 'positive' ? this.currentMetadata.positivePrompt : this.currentMetadata.negativePrompt;
-                    const safeType = this.escapeHtml(type.charAt(0).toUpperCase() + type.slice(1));
+                    const safeType = escapeHtml(type.charAt(0).toUpperCase() + type.slice(1));
                     const newWindow = window.open('', '_blank');
                     const doc = newWindow.document;
                     doc.open();
@@ -3223,15 +3098,12 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             showWorkflowData() {
                 if (this.currentMetadata && this.currentMetadata.workflow) {
                     const newWindow = window.open('', '_blank');
-                    newWindow.document.write(`
-                        <html>
-                            <head><title>ComfyUI Workflow Data</title></head>
-                            <body style="background: #111; color: #fff; font-family: monospace; padding: 20px;">
-                                <h2>ComfyUI Workflow JSON</h2>
-                                <pre style="background: #222; padding: 15px; border-radius: 5px; overflow: auto;">${JSON.stringify(this.currentMetadata.workflow, null, 2)}</pre>
-                            </body>
-                        </html>
-                    `);
+                    if (!newWindow) {
+                        this.showNotification('Popup blocked: allow popups to view the workflow', 'warning');
+                        return;
+                    }
+                    newWindow.document.write(ImageHelpers.workflowDocumentHtml(this.currentMetadata.workflow));
+                    newWindow.document.close();
                 }
             }
 
@@ -3370,7 +3242,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 this.addPromptTags.forEach(tag => {
                     const chip = document.createElement('span');
                     chip.className = 'tag-chip inline-flex items-center px-2 py-1 bg-pm-accent text-pm text-xs rounded cursor-pointer hover:bg-pm-accent-hover';
-                    chip.innerHTML = `${tag} <span class="ml-1">&times;</span>`;
+                    chip.innerHTML = `${escapeHtml(tag)} <span class="ml-1">&times;</span>`;
                     chip.addEventListener('click', () => {
                         this.addPromptTags = this.addPromptTags.filter(t => t !== tag);
                         this.renderAddPromptTags();
@@ -3397,8 +3269,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }
 
                 suggestionsContainer.innerHTML = matchingTags.map(tag => `
-                    <div class="px-3 py-2 hover:bg-pm-hover cursor-pointer text-sm text-pm" data-tag="${tag}">
-                        ${tag}
+                    <div class="px-3 py-2 hover:bg-pm-hover cursor-pointer text-sm text-pm" data-tag="${escapeHtml(tag)}">
+                        ${escapeHtml(tag)}
                     </div>
                 `).join('');
 
@@ -3419,7 +3291,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
             populateAddPromptCategories() {
                 const datalist = document.getElementById('addPromptCategoryList');
-                datalist.innerHTML = this.categories.map(cat => `<option value="${cat}">`).join('');
+                datalist.innerHTML = this.categories.map(cat => `<option value="${escapeHtml(cat)}">`).join('');
             }
 
             async saveNewPrompt() {
@@ -3454,7 +3326,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         this.showNotification('Prompt added successfully!', 'success');
                         this.hideModal('addPromptModal');
                         // Refresh the prompts list
-                        this.search();
+                        this.refreshList();
                         // Reload categories and tags in case new ones were added
                         this.loadCategories();
                         this.loadTags();
@@ -3562,13 +3434,13 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                     html += `
                         <div class="film-strip-thumbnail"
+                             data-action="open-film"
                              data-index="${index}"
-                             data-prompt-id="${promptId}"
-                             onclick="window.admin.openFilmStripViewer(${promptId}, ${index})">
-                            <img src="${thumbnailUrl}"
+                             data-prompt-id="${promptId}">
+                            <img src="${escapeHtml(thumbnailUrl)}"
                                  alt="Image ${index + 1}"
                                  loading="lazy"
-                                 onerror="this.src='${imageUrl}'; this.onerror=null;">
+                                 data-fallback-src="${escapeHtml(imageUrl)}">
                         </div>
                     `;
                 });
@@ -3576,7 +3448,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 if (remaining > 0) {
                     html += `
                         <div class="film-strip-thumbnail film-strip-thumbnail--more"
-                             onclick="window.admin.viewGallery(${promptId})">
+                             data-action="gallery" data-prompt-id="${promptId}">
                             +${remaining}
                         </div>
                     `;
@@ -3746,7 +3618,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 this.showModal("autoTagDownloadModal");
 
                 try {
-                    this.autoTagState.downloadEventSource = new EventSource(`/prompt_manager/autotag/download/${modelType}`);
+                    this.autoTagState.downloadEventSource = SseStream.connect(`/prompt_manager/autotag/download/${modelType}`, { method: 'POST' });
 
                     this.autoTagState.downloadEventSource.onmessage = (event) => {
                         const data = JSON.parse(event.data);
@@ -3832,7 +3704,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         formData.append('prompt', prompt);
                     }
 
-                    this.autoTagState.eventSource = new EventSource(`/prompt_manager/autotag/start?${formData.toString()}`);
+                    this.autoTagState.eventSource = SseStream.connect(`/prompt_manager/autotag/start?${formData.toString()}`, { method: 'POST' });
 
                     this.autoTagState.eventSource.onmessage = (event) => {
                         const data = JSON.parse(event.data);
@@ -3850,7 +3722,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             this.autoTagState.eventSource.close();
                             this.hideModal("autoTagProgressModal");
                             this.showNotification(`Auto tagging complete! Applied tags to ${data.tagged || 0} prompts.`, 'success');
-                            this.search(); // Refresh the prompt list
+                            this.refreshList(); // Refresh the prompt list
                         } else if (data.type === 'error') {
                             this.autoTagState.eventSource.close();
                             this.hideModal("autoTagProgressModal");
@@ -3906,10 +3778,9 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                 // Get ALL images with linked prompts from the database
                 try {
-                    const scanResponse = await fetch('/prompt_manager/images/all');
-                    const scanData = await scanResponse.json();
+                    const scanData = { images: await this.fetchAllImages() };
 
-                    if (!scanData.success || !scanData.images || scanData.images.length === 0) {
+                    if (scanData.images.length === 0) {
                         this.hideModal("autoTagLoadingModal");
                         this.showNotification('No images with linked prompts found in database', 'warning');
                         return;
@@ -3956,12 +3827,12 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                     // Set up the modal content
                     document.getElementById('retagPreviewImage').src = imageUrl;
-                    document.getElementById('retagImageName').textContent = image.image_path.split('/').pop();
+                    document.getElementById('retagImageName').textContent = image.filename || String(image.image_path || '').split(/[\\/]/).pop();
 
                     // Display existing tags
                     const tagsContainer = document.getElementById('retagExistingTags');
                     tagsContainer.innerHTML = realTags.map(tag =>
-                        `<span class="px-2 py-1 bg-pm-accent text-pm text-xs rounded">${this.escapeHtml(tag)}</span>`
+                        `<span class="px-2 py-1 bg-pm-accent text-pm text-xs rounded">${escapeHtml(tag)}</span>`
                     ).join('');
 
                     // Show modal
@@ -3987,20 +3858,16 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 if (this.autoTagState.reviewIndex >= this.autoTagState.reviewImages.length) {
                     this.hideModal("autoTagReviewModal");
                     this.showNotification('Review complete!', 'success');
-                    this.search();
+                    this.refreshList();
                     return;
                 }
 
                 const image = this.autoTagState.reviewImages[this.autoTagState.reviewIndex];
                 document.getElementById('reviewCurrentIndex').textContent = this.autoTagState.reviewIndex + 1;
 
-                // Build image URL from image_path (database field)
-                const imagePath = image.image_path;
-                const filename = imagePath.split('/').pop();
-                // Use the serve endpoint with relative path
-                const relPath = imagePath.includes('/output/') ?
-                    imagePath.substring(imagePath.indexOf('/output/') + 8) : filename;
-                const imageUrl = `/prompt_manager/images/serve/${relPath}`;
+                // The API describes images relative to the ComfyUI tree and
+                // always provides a servable url; never rebuild it from the path.
+                const imageUrl = this.getImageUrl(image);
 
                 // Check if image already has real tags (excluding auto-scanned)
                 const realTags = this.getRealTags(image.prompt_tags);
@@ -4034,16 +3901,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 this.autoTagState.tagsExpanded = false;  // Reset accordion for new image
 
                 try {
-                    const requestBody = {
-                        image_path: image.image_path,
-                        model_type: this.autoTagState.modelType,
-                    };
-                    if (this.autoTagState.modelType.startsWith('wd14')) {
-                        requestBody.general_threshold = this.autoTagState.generalThreshold;
-                        requestBody.character_threshold = this.autoTagState.characterThreshold;
-                    } else {
-                        requestBody.prompt = this.autoTagState.prompt;
-                    }
+                    // Review rows come from /images/all (database ids), so this resolves to image_id
+                    const requestBody = ImageHelpers.autotagSingleBody(image, this.autoTagState);
 
                     const response = await fetch('/prompt_manager/autotag/single', {
                         method: 'POST',
@@ -4060,12 +3919,25 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         this.renderReviewTags();
                     } else {
                         document.getElementById('reviewTagsVisible').innerHTML =
-                            `<div class="text-pm-error">Error: ${data.error}</div>`;
+                            `<div class="text-pm-error">Error: ${escapeHtml(data.error)}</div>`;
                     }
                 } catch (error) {
                     console.error('Error generating tags:', error);
                     document.getElementById('reviewTagsVisible').innerHTML =
                         '<div class="text-pm-error">Failed to generate tags</div>';
+                }
+            }
+
+            /** /prompt_manager/images/all is capped per call; collect every page. */
+            async fetchAllImages() {
+                const images = [];
+                let offset = 0;
+                for (;;) {
+                    const data = await this.api.get(`/prompt_manager/images/all?offset=${offset}`);
+                    const page = Array.isArray(data.images) ? data.images : [];
+                    images.push(...page);
+                    if (!ListState.hasMorePages(data, page.length)) return images;
+                    offset += page.length;
                 }
             }
 
@@ -4093,8 +3965,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                 const createTagChip = (tag, index) => `
                     <span class="tag-chip">
-                        ${this.escapeHtml(tag)}
-                        <span class="tag-remove" onclick="window.admin.removeReviewTag(${index})">×</span>
+                        ${escapeHtml(tag)}
+                        <span class="tag-remove" data-action="remove-review-tag" data-index="${index}">×</span>
                     </span>
                 `;
 
@@ -4220,54 +4092,42 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
         }
 
-        // Initialize the admin interface
-        const admin = new PromptAdmin();
-        window.admin = admin;
+        /** Build the dashboard; needs the DOM, so it runs on DOMContentLoaded. */
+        function startAdmin() {
+            // Initialize the admin interface
+            const admin = new PromptAdmin();
+            window.admin = admin;
 
-        // Add event listeners for prompt selection
-        document.addEventListener("change", function (e) {
-            if (e.target.classList.contains("prompt-checkbox")) {
-                const promptId = parseInt(e.target.dataset.id);
-                if (e.target.checked) {
-                    admin.selectedPrompts.add(promptId);
-                } else {
-                    admin.selectedPrompts.delete(promptId);
+            // Add event listeners for prompt selection
+            document.addEventListener("change", function (e) {
+                if (e.target.classList.contains("prompt-checkbox")) {
+                    const promptId = parseInt(e.target.dataset.id);
+                    if (e.target.checked) {
+                        admin.selectedPrompts.add(promptId);
+                    } else {
+                        admin.selectedPrompts.delete(promptId);
+                    }
+                    admin.updateBulkActionButtons();
+
+                    const allCheckboxes = document.querySelectorAll(".prompt-checkbox");
+                    const checkedCheckboxes = document.querySelectorAll(".prompt-checkbox:checked");
+                    const selectAllCheckbox = document.getElementById("selectAll");
+                    selectAllCheckbox.checked = allCheckboxes.length === checkedCheckboxes.length;
+                    selectAllCheckbox.indeterminate = checkedCheckboxes.length > 0 && checkedCheckboxes.length < allCheckboxes.length;
                 }
-                admin.updateBulkActionButtons();
+            });
 
-                const allCheckboxes = document.querySelectorAll(".prompt-checkbox");
-                const checkedCheckboxes = document.querySelectorAll(".prompt-checkbox:checked");
-                const selectAllCheckbox = document.getElementById("selectAll");
-                selectAllCheckbox.checked = allCheckboxes.length === checkedCheckboxes.length;
-                selectAllCheckbox.indeterminate = checkedCheckboxes.length > 0 && checkedCheckboxes.length < allCheckboxes.length;
-            }
-        });
-
-        // Keyboard shortcuts for modals
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') {
-                // Close any open modals
-                if (document.getElementById('galleryModal') && !document.getElementById('galleryModal').classList.contains('hidden')) {
+            // Escape closes the gallery modal
+            document.addEventListener('keydown', function (e) {
+                const galleryModal = document.getElementById('galleryModal');
+                if (e.key === 'Escape' && galleryModal && !galleryModal.classList.contains('hidden')) {
                     admin.closeGallery();
-                } else if (document.getElementById('imageViewerModal') && !document.getElementById('imageViewerModal').classList.contains('hidden')) {
-                    admin.closeImageViewer();
                 }
-            } else if (document.getElementById('imageViewerModal') && !document.getElementById('imageViewerModal').classList.contains('hidden')) {
-                // Handle arrow keys in image viewer
-                if (e.key === 'ArrowLeft') {
-                    e.preventDefault();
-                    admin.previousImage();
-                } else if (e.key === 'ArrowRight') {
-                    e.preventDefault();
-                    admin.nextImage();
-                }
-            }
-        });
+            });
+        }
 
-        // Window resize listener for responsive image sizing
-        window.addEventListener('resize', function() {
-            // Only apply resize adjustments if image viewer is open and in fit mode
-            if (document.getElementById('imageViewerModal') && !document.getElementById('imageViewerModal').classList.contains('hidden') && admin.imageViewMode === 'fit') {
-                admin.applyImageSizing();
-            }
-        });
+        if (document.readyState === "loading") {
+            document.addEventListener("DOMContentLoaded", startAdmin);
+        } else {
+            startAdmin();
+        }

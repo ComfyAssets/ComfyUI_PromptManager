@@ -4,6 +4,86 @@ import os
 
 from aiohttp import web
 
+# Keys PromptManagerLogger.update_config() understands. Anything else is
+# rejected so a client cannot inject arbitrary entries into the logging config.
+LOG_CONFIG_KEYS = frozenset(
+    {
+        "level",
+        "max_file_size",
+        "backup_count",
+        "console_logging",
+        "file_logging",
+        "buffer_size",
+    }
+)
+_LOG_INT_KEYS = frozenset({"max_file_size", "backup_count", "buffer_size"})
+_LOG_BOOL_KEYS = frozenset({"console_logging", "file_logging"})
+_LOG_LEVEL_NAMES = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+# Inclusive bounds for the integer keys that size the log files on disk
+_MEGABYTE = 1024 * 1024
+_LOG_INT_BOUNDS = {
+    "max_file_size": (1 * _MEGABYTE, 1024 * _MEGABYTE),
+    "backup_count": (0, 50),
+}
+_LOG_INT_BOUND_LABELS = {
+    "max_file_size": "between 1 MB and 1024 MB (in bytes)",
+    "backup_count": "between 0 and 50",
+}
+
+DEFAULT_LOG_LIMIT = 100
+MAX_LOG_LIMIT = 500
+
+
+def _parse_limit(raw):
+    """Parse a ``limit`` query value, clamped to [1, MAX_LOG_LIMIT].
+
+    Raises:
+        ValueError: when ``raw`` is not an integer.
+    """
+    if raw is None or raw == "":
+        return DEFAULT_LOG_LIMIT
+    limit = int(raw)
+    return max(1, min(limit, MAX_LOG_LIMIT))
+
+
+def _validate_log_config(data):
+    """Validate a log-config payload against LOG_CONFIG_KEYS.
+
+    Returns:
+        (clean, error): ``clean`` is the normalised dict to apply, ``error``
+        a message describing the first problem (``clean`` is then ``None``).
+    """
+    if not isinstance(data, dict):
+        return None, "Request body must be a JSON object"
+
+    unknown = sorted(key for key in data if key not in LOG_CONFIG_KEYS)
+    if unknown:
+        return None, (
+            f"Unknown logging config keys: {', '.join(unknown)}. "
+            f"Allowed: {', '.join(sorted(LOG_CONFIG_KEYS))}"
+        )
+
+    clean = {}
+    for key, value in data.items():
+        if key == "level":
+            if not isinstance(value, str) or value.upper() not in _LOG_LEVEL_NAMES:
+                return None, (
+                    f"Invalid log level. Must be one of: {sorted(_LOG_LEVEL_NAMES)}"
+                )
+            clean[key] = value.upper()
+        elif key in _LOG_INT_KEYS:
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                return None, f"{key} must be a non-negative integer"
+            bounds = _LOG_INT_BOUNDS.get(key)
+            if bounds and not bounds[0] <= value <= bounds[1]:
+                return None, f"{key} must be {_LOG_INT_BOUND_LABELS[key]}"
+            clean[key] = value
+        elif key in _LOG_BOOL_KEYS:
+            if not isinstance(value, bool):
+                return None, f"{key} must be a boolean"
+            clean[key] = value
+    return clean, None
+
 
 class LoggingRoutesMixin:
     """Mixin providing logging-related API endpoints."""
@@ -56,13 +136,14 @@ class LoggingRoutesMixin:
         try:
             logger_manager = self._get_logger_manager()
 
-            limit = int(request.query.get("limit", 100))
+            try:
+                limit = _parse_limit(request.query.get("limit"))
+            except ValueError:
+                return web.json_response(
+                    {"success": False, "error": "limit must be an integer", "logs": []},
+                    status=400,
+                )
             level = request.query.get("level", None)
-
-            if limit > 1000:
-                limit = 1000
-            elif limit < 1:
-                limit = 1
 
             logs = logger_manager.get_recent_logs(limit=limit, level=level)
 
@@ -79,14 +160,18 @@ class LoggingRoutesMixin:
         except Exception as e:
             self.logger.error(f"Get logs error: {e}")
             return web.json_response(
-                {"success": False, "error": str(e), "logs": []}, status=500
+                {"success": False, "error": self._public_error(e), "logs": []},
+                status=500,
             )
 
     async def get_log_files(self, request):
         """Get information about available log files."""
         try:
             logger_manager = self._get_logger_manager()
-            log_files = logger_manager.get_log_files()
+            log_files = [
+                {**entry, "path": self._public_path(entry.get("path"))}
+                for entry in logger_manager.get_log_files()
+            ]
 
             return web.json_response(
                 {"success": True, "files": log_files, "count": len(log_files)}
@@ -95,7 +180,8 @@ class LoggingRoutesMixin:
         except Exception as e:
             self.logger.error(f"Get log files error: {e}")
             return web.json_response(
-                {"success": False, "error": str(e), "files": []}, status=500
+                {"success": False, "error": self._public_error(e), "files": []},
+                status=500,
             )
 
     async def download_log_file(self, request):
@@ -130,7 +216,9 @@ class LoggingRoutesMixin:
 
         except Exception as e:
             self.logger.error(f"Download log file error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": self._public_error(e)}, status=500
+            )
 
     async def truncate_logs(self, request):
         """Truncate all log files."""
@@ -148,7 +236,9 @@ class LoggingRoutesMixin:
 
         except Exception as e:
             self.logger.error(f"Truncate logs error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": self._public_error(e)}, status=500
+            )
 
     async def get_log_config(self, request):
         """Get current logging configuration."""
@@ -160,27 +250,23 @@ class LoggingRoutesMixin:
 
         except Exception as e:
             self.logger.error(f"Get log config error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": self._public_error(e)}, status=500
+            )
 
     async def update_log_config(self, request):
-        """Update logging configuration."""
+        """Update logging configuration (whitelisted keys only)."""
         try:
-            data = await request.json()
+            data, error_response = await self._read_json_body(request)
+            if error_response is not None:
+                return error_response
+
+            clean, error = _validate_log_config(data)
+            if error:
+                return web.json_response({"success": False, "error": error}, status=400)
+
             logger_manager = self._get_logger_manager()
-
-            if "level" in data:
-                valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-                if data["level"].upper() not in valid_levels:
-                    return web.json_response(
-                        {
-                            "success": False,
-                            "error": f"Invalid log level. Must be one of: {valid_levels}",
-                        },
-                        status=400,
-                    )
-                data["level"] = data["level"].upper()
-
-            logger_manager.update_config(data)
+            logger_manager.update_config(clean)
 
             return web.json_response(
                 {
@@ -192,16 +278,22 @@ class LoggingRoutesMixin:
 
         except Exception as e:
             self.logger.error(f"Update log config error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": "Failed to update logging configuration"},
+                status=500,
+            )
 
     async def get_log_stats(self, request):
         """Get logging statistics."""
         try:
             logger_manager = self._get_logger_manager()
-            stats = logger_manager.get_log_stats()
+            stats = dict(logger_manager.get_log_stats())
+            stats["log_directory"] = self._public_path(stats.get("log_directory"))
 
             return web.json_response({"success": True, "stats": stats})
 
         except Exception as e:
             self.logger.error(f"Get log stats error: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return web.json_response(
+                {"success": False, "error": self._public_error(e)}, status=500
+            )

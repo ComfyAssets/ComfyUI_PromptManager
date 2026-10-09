@@ -53,7 +53,9 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
                     {
                         "multiline": True,
                         "dynamicPrompts": True,
-                        "tooltip": "The text prompt to be processed and saved to database.",
+                        "tooltip": (
+                            "The text prompt to be processed and saved to database."
+                        ),
                     },
                 )
             },
@@ -62,35 +64,50 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
                     IO.STRING,
                     {
                         "default": "",
-                        "tooltip": "Optional category for organizing prompts (e.g., 'landscapes', 'portraits')",
+                        "tooltip": (
+                            "Optional category for organizing prompts "
+                            "(e.g., 'landscapes', 'portraits')"
+                        ),
                     },
                 ),
                 "tags": (
                     IO.STRING,
                     {
                         "default": "",
-                        "tooltip": "Comma-separated tags for the prompt (e.g., 'anime, detailed, sunset')",
+                        "tooltip": (
+                            "Comma-separated tags for the prompt "
+                            "(e.g., 'anime, detailed, sunset')"
+                        ),
                     },
                 ),
                 "search_text": (
                     IO.STRING,
                     {
                         "default": "",
-                        "tooltip": 'Search past prompts by text; add tag:name (or tag:"two words") to filter by tag',
+                        "tooltip": (
+                            "Search past prompts by text; add tag:name "
+                            '(or tag:"two words") to filter by tag'
+                        ),
                     },
                 ),
                 "prepend_text": (
                     IO.STRING,
                     {
                         "default": "",
-                        "tooltip": "Text to prepend to the main prompt (connected STRING nodes will be added before the main text)",
+                        "tooltip": (
+                            "Text to prepend to the main prompt (connected STRING "
+                            "nodes will be added before the main text)"
+                        ),
                     },
                 ),
                 "append_text": (
                     IO.STRING,
                     {
                         "default": "",
-                        "tooltip": "Text to append to the main prompt (connected STRING nodes will be added after the main text)",
+                        "tooltip": (
+                            "Text to append to the main prompt (connected STRING "
+                            "nodes will be added after the main text)"
+                        ),
                     },
                 ),
             },
@@ -104,15 +121,17 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
 
     RETURN_TYPES = (IO.STRING,)
     OUTPUT_TOOLTIPS = (
-        "The final combined text string (with prepend/append applied) ready for use in other nodes.",
+        "The final combined text string (with prepend/append applied) ready for use "
+        "in other nodes.",
     )
     FUNCTION = "process_text"
     OUTPUT_NODE = True
     CATEGORY = "🫶 ComfyAssets/🧠 Prompts"
     DESCRIPTION = (
-        "Processes and manages text prompts with database storage and search capabilities. "
-        "Outputs a plain STRING that can be used with any node that accepts text input. "
-        "Includes all PromptManager features: categorization, tagging, search, and prepend/append functionality."
+        "Processes and manages text prompts with database storage and search "
+        "capabilities. Outputs a plain STRING that can be used with any node that "
+        "accepts text input. Includes all PromptManager features: categorization, "
+        "tagging, search, and prepend/append functionality."
     )
 
     def process_text(
@@ -153,7 +172,8 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
         # Inject LoRA trigger words if integration is enabled
         final_text = self._inject_lora_trigger_words(final_text)
 
-        # For database storage, save the original main text with metadata about prepend/append
+        # For database storage, save the original main text with metadata
+        # about prepend/append
         storage_text = text
 
         # Save prompt to database and set execution context for gallery tracking
@@ -223,10 +243,11 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
         """
         ComfyUI method to determine if node needs re-execution.
 
-        Returns a hash of input values that affect the text output.
-        This enables proper branch execution - only re-execute when inputs change.
+        Returns a hash of input values that affect the text output or the
+        saved prompt's metadata. This enables proper branch execution - only
+        re-execute when inputs change.
         """
         import hashlib
 
-        combined = f"{text}|{prepend_text}|{append_text}"
+        combined = f"{text}|{prepend_text}|{append_text}|{category}|{tags}"
         return hashlib.sha256(combined.encode()).hexdigest()

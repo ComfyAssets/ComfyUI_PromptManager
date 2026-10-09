@@ -13,7 +13,9 @@ import datetime
 import functools
 import gzip as gzip_module
 import json
+import ntpath
 import os
+import re
 from pathlib import Path
 
 from aiohttp import web
@@ -29,6 +31,7 @@ from .lora_integration import LoraIntegrationMixin
 try:
     from ...database.operations import PromptDatabase
     from ...utils.logging_config import get_logger
+    from ...utils.video_metadata import is_video_path, read_video_metadata
 except ImportError:
     import sys
 
@@ -37,11 +40,153 @@ except ImportError:
     )
     from database.operations import PromptDatabase
     from utils.logging_config import get_logger
+    from utils.video_metadata import is_video_path, read_video_metadata
 
 
 def _get_project_root():
     """Get the project root directory (3 levels up from py/api/__init__.py)."""
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _public_path(path) -> str:
+    """Render a server path for an API response without revealing the layout.
+
+    Returns the path relative to the ComfyUI base directory (or to the parent
+    of an opted-in extra gallery root), as a POSIX-style string, or just the
+    basename when the path is not under any of those anchors.
+    """
+    if not path:
+        return ""
+    from ..config import GalleryConfig
+
+    try:
+        canonical = Path(os.path.normcase(os.path.realpath(str(path))))
+    except (OSError, ValueError):
+        return os.path.basename(str(path))
+    for anchor in GalleryConfig.path_anchors():
+        if canonical.is_relative_to(Path(anchor)):
+            return canonical.relative_to(Path(anchor)).as_posix() or "."
+    return canonical.name
+
+
+def _public_error(exc: BaseException) -> str:
+    """Error text safe for API responses: OSError paths reduced to basenames."""
+    if isinstance(exc, OSError):
+        parts = [exc.strerror or type(exc).__name__]
+        if exc.filename:
+            parts.append(os.path.basename(str(exc.filename)))
+        return ": ".join(parts)
+    return str(exc) or type(exc).__name__
+
+
+# ── Static file serving ────────────────────────────────────────────────
+# Only these extensions are ever served from web/lib and web/js; the map
+# doubles as the allow-list.
+STATIC_MIME_TYPES = {
+    ".js": "application/javascript",
+    ".css": "text/css",
+    ".map": "application/json",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".ttf": "font/ttf",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".html": "text/html",
+}
+_STATIC_SEPARATORS = re.compile(r"[\\/]+")
+
+
+def _resolve_static_file(root, filepath):
+    """Real path of ``filepath`` under ``root``, or None when it must not be served.
+
+    The request path is untrusted. It is rejected when it is empty, carries a
+    ``..`` segment, is absolute on any platform (a leading slash or backslash,
+    a drive letter such as ``C:`` or a UNC ``\\\\server\\share`` prefix all
+    re-anchor ``os.path.join`` on Windows), has an extension outside
+    STATIC_MIME_TYPES, or resolves (symlinks included) outside ``root``.
+    """
+    if not isinstance(filepath, str) or not filepath:
+        return None
+    if (
+        os.path.isabs(filepath)
+        or ntpath.isabs(filepath)
+        or ntpath.splitdrive(filepath)[0]
+    ):
+        return None
+    segments = _STATIC_SEPARATORS.split(filepath)
+    if any(segment in ("", ".", "..") for segment in segments):
+        return None
+    if os.path.splitext(filepath)[1].lower() not in STATIC_MIME_TYPES:
+        return None
+    try:
+        root_real = Path(os.path.normcase(os.path.realpath(root)))
+        candidate = Path(
+            os.path.normcase(os.path.realpath(os.path.join(root, *segments)))
+        )
+    except (OSError, ValueError):
+        return None
+    if candidate == root_real or not candidate.is_relative_to(root_real):
+        return None
+    return str(candidate)
+
+
+# ── JSON request bodies ────────────────────────────────────────────────
+JSON_BODY_MAX_BYTES = 1_000_000
+_JSON_READ_CHUNK = 64 * 1024
+
+
+def _json_error(message, status):
+    return web.json_response({"success": False, "error": message}, status=status)
+
+
+async def _read_json_body(request, max_bytes=JSON_BODY_MAX_BYTES):
+    """Read and parse a JSON object body of at most ``max_bytes``.
+
+    The body is read in chunks so an oversized or chunked upload is refused
+    as soon as it crosses the cap rather than buffered whole.
+
+    Returns:
+        (data, None) on success, or (None, response) where ``response`` is a
+        413 (body too large) or 400 (invalid JSON, or not a JSON object).
+    """
+    too_large = _json_error(f"Request body too large (max {max_bytes} bytes)", 413)
+    declared = request.content_length
+    if declared is not None and declared > max_bytes:
+        return None, too_large
+
+    chunks = []
+    size = 0
+    async for chunk in request.content.iter_chunked(_JSON_READ_CHUNK):
+        size += len(chunk)
+        if size > max_bytes:
+            return None, too_large
+        chunks.append(chunk)
+
+    try:
+        data = json.loads(b"".join(chunks).decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None, _json_error("Request body must be valid JSON", 400)
+    if not isinstance(data, dict):
+        return None, _json_error("Request body must be a JSON object", 400)
+    return data, None
+
+
+class _LongJobGuard:
+    """Async context manager handed out by ``_acquire_long_job``."""
+
+    def __init__(self, lock):
+        self._lock = lock
+
+    async def __aenter__(self):
+        # The caller checked ``locked()`` on this same loop iteration, so this
+        # acquire never waits.
+        await self._lock.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self._lock.release()
+        return False
 
 
 # ── Gzip compression middleware ────────────────────────────────────────
@@ -127,6 +272,14 @@ class PromptManagerAPI(
         self._html_cache = {}  # Cached HTML file contents keyed by path
         self._gallery_cache = {}  # dict: path_str -> (files, timestamp)
         self._gallery_cache_ttl = 30  # Cache TTL in seconds
+        # Single-flight locks for long jobs, keyed by job family; see
+        # _acquire_long_job(). Created lazily so no lock binds to an event
+        # loop before the server's loop exists.
+        self._long_jobs: dict = {}
+        # The current output scan (py/api/scan_job.ScanJob), if one was started.
+        self._scan_job = None
+        # The current duplicate scan (also a ScanJob), if one was started.
+        self._duplicate_job = None
 
         # Run cleanup on initialization to remove any existing duplicates
         try:
@@ -139,6 +292,35 @@ class PromptManagerAPI(
             self.logger.error(f"Startup cleanup failed: {e}")
 
         self.logger.info("PromptManager API initialization completed")
+
+    _public_path = staticmethod(_public_path)
+    _public_error = staticmethod(_public_error)
+    _read_json_body = staticmethod(_read_json_body)
+
+    def _acquire_long_job(self, name):
+        """Claim the single-flight slot for a long job family, or None when busy.
+
+        Usage in a handler::
+
+            job = self._acquire_long_job("duplicates")
+            if job is None:
+                return self._long_job_busy_response("Duplicate scan")
+            async with job:
+                ...
+
+        Families are free-form strings ("duplicates", "thumbnails",
+        "autotag", ...); the lock is released when the ``async with`` block
+        exits, including on exceptions. Must be called from the event loop.
+        """
+        lock = self._long_jobs.setdefault(name, asyncio.Lock())
+        if lock.locked():
+            return None
+        return _LongJobGuard(lock)
+
+    @staticmethod
+    def _long_job_busy_response(label):
+        """409 envelope for a long job that is already running."""
+        return _json_error(f"{label} already running", 409)
 
     async def _run_in_executor(self, func, *args, **kwargs):
         """Run a blocking function in the default thread pool executor.
@@ -181,191 +363,31 @@ class PromptManagerAPI(
 
         @routes.get("/prompt_manager/web")
         async def serve_web_ui(request):
-            try:
-                html_path = os.path.join(_get_project_root(), "web", "index.html")
-
-                if os.path.exists(html_path):
-                    with open(html_path, "r", encoding="utf-8") as f:
-                        html_content = f.read()
-
-                    return web.Response(
-                        text=html_content, content_type="text/html", charset="utf-8"
-                    )
-                else:
-                    return web.Response(
-                        text="<h1>Web UI not found</h1><p>HTML file not located at expected path.</p>",
-                        content_type="text/html",
-                        status=404,
-                    )
-
-            except Exception as e:
-                self.logger.exception("Failed to load web UI")
-                return web.Response(
-                    text="<h1>Error</h1><p>Failed to load web UI. Check server logs for details.</p>",
-                    content_type="text/html",
-                    status=500,
-                )
+            return self._serve_html_page("index.html", "Web UI", cache=False)
 
         @routes.get("/prompt_manager/gallery.html")
         async def serve_gallery_ui(request):
-            try:
-                html_path = os.path.join(
-                    _get_project_root(),
-                    "web",
-                    "metadata.html",
-                )
-
-                if html_path not in self._html_cache:
-                    if os.path.exists(html_path):
-                        with open(html_path, "r", encoding="utf-8") as f:
-                            self._html_cache[html_path] = f.read()
-                    else:
-                        return web.Response(
-                            text="<h1>Gallery not found</h1><p>gallery.html file not located at expected path.</p>",
-                            content_type="text/html",
-                            status=404,
-                        )
-
-                return web.Response(
-                    text=self._html_cache[html_path],
-                    content_type="text/html",
-                    charset="utf-8",
-                )
-
-            except Exception as e:
-                self.logger.exception("Failed to load gallery")
-                return web.Response(
-                    text="<h1>Error</h1><p>Failed to load gallery. Check server logs for details.</p>",
-                    content_type="text/html",
-                    status=500,
-                )
+            return self._serve_html_page("metadata.html", "Gallery")
 
         @routes.get("/prompt_manager/admin")
         async def serve_admin_ui(request):
-            try:
-                html_path = os.path.join(
-                    _get_project_root(),
-                    "web",
-                    "admin.html",
-                )
-
-                if html_path not in self._html_cache:
-                    if os.path.exists(html_path):
-                        with open(html_path, "r", encoding="utf-8") as f:
-                            self._html_cache[html_path] = f.read()
-                    else:
-                        return web.Response(
-                            text="<h1>Admin UI not found</h1>",
-                            content_type="text/html",
-                            status=404,
-                        )
-
-                return web.Response(
-                    text=self._html_cache[html_path],
-                    content_type="text/html",
-                    charset="utf-8",
-                )
-
-            except Exception as e:
-                self.logger.exception("Failed to load admin UI")
-                return web.Response(
-                    text="<h1>Error</h1><p>Failed to load admin UI. Check server logs for details.</p>",
-                    content_type="text/html",
-                    status=500,
-                )
+            return self._serve_html_page("admin.html", "Admin UI")
 
         @routes.get("/prompt_manager/gallery")
         async def serve_gallery_admin_ui(request):
-            try:
-                html_path = os.path.join(
-                    _get_project_root(),
-                    "web",
-                    "gallery.html",
-                )
-
-                if html_path not in self._html_cache:
-                    if os.path.exists(html_path):
-                        with open(html_path, "r", encoding="utf-8") as f:
-                            self._html_cache[html_path] = f.read()
-                    else:
-                        return web.Response(
-                            text="<h1>Gallery not found</h1><p>gallery.html file not located at expected path.</p>",
-                            content_type="text/html",
-                            status=404,
-                        )
-
-                return web.Response(
-                    text=self._html_cache[html_path],
-                    content_type="text/html",
-                    charset="utf-8",
-                )
-
-            except Exception as e:
-                self.logger.exception("Failed to load gallery")
-                return web.Response(
-                    text="<h1>Error</h1><p>Failed to load gallery. Check server logs for details.</p>",
-                    content_type="text/html",
-                    status=500,
-                )
+            return self._serve_html_page("gallery.html", "Gallery")
 
         # ── Static file serving ───────────────────────────────────────
 
         @routes.get("/prompt_manager/lib/{filepath:.*}")
         async def serve_lib_static(request):
             """Serve static library files (JS, CSS) from web/lib directory."""
-            MIME_TYPES = {
-                ".js": "application/javascript",
-                ".css": "text/css",
-                ".json": "application/json",
-                ".map": "application/json",
-            }
-
-            filepath = request.match_info.get("filepath", "")
-
-            # Security: prevent directory traversal
-            if ".." in filepath or filepath.startswith("/"):
-                return web.Response(text="Forbidden", status=403)
-
-            file_path = os.path.join(_get_project_root(), "web", "lib", filepath)
-
-            if not os.path.exists(file_path) or not os.path.isfile(file_path):
-                return web.Response(text=f"Not Found: {filepath}", status=404)
-
-            ext = os.path.splitext(file_path)[1].lower()
-            content_type = MIME_TYPES.get(ext, "application/octet-stream")
-
-            with open(file_path, "rb") as f:
-                content = f.read()
-
-            return web.Response(body=content, content_type=content_type)
+            return self._serve_static_file("lib", request.match_info.get("filepath"))
 
         @routes.get("/prompt_manager/js/{filepath:.*}")
         async def serve_js_static(request):
             """Serve static JavaScript files from web/js directory."""
-            MIME_TYPES = {
-                ".js": "application/javascript",
-                ".css": "text/css",
-                ".json": "application/json",
-                ".map": "application/json",
-            }
-
-            filepath = request.match_info.get("filepath", "")
-
-            if ".." in filepath or filepath.startswith("/"):
-                return web.Response(text="Forbidden", status=403)
-
-            file_path = os.path.join(_get_project_root(), "web", "js", filepath)
-
-            if not os.path.exists(file_path) or not os.path.isfile(file_path):
-                return web.Response(text=f"Not Found: {filepath}", status=404)
-
-            ext = os.path.splitext(file_path)[1].lower()
-            content_type = MIME_TYPES.get(ext, "application/octet-stream")
-
-            with open(file_path, "rb") as f:
-                content = f.read()
-
-            return web.Response(body=content, content_type=content_type)
+            return self._serve_static_file("js", request.match_info.get("filepath"))
 
         # ── Register domain-specific routes from mixins ───────────────
 
@@ -389,6 +411,47 @@ class PromptManagerAPI(
                 self.logger.warning(f"Could not register gzip middleware: {e}")
 
         self.logger.info("All routes registered with decorator pattern")
+
+    def _serve_static_file(self, subdir, filepath):
+        """Serve ``web/<subdir>/<filepath>``; 403 outside it, 404 when missing."""
+        root = os.path.join(_get_project_root(), "web", subdir)
+        file_path = _resolve_static_file(root, filepath)
+        if file_path is None:
+            return web.Response(text="Forbidden", status=403)
+        if not os.path.isfile(file_path):
+            return web.Response(text="Not Found", status=404)
+        ext = os.path.splitext(file_path)[1].lower()
+        with open(file_path, "rb") as f:
+            content = f.read()
+        return web.Response(body=content, content_type=STATIC_MIME_TYPES[ext])
+
+    def _serve_html_page(self, filename, title, cache=True):
+        """Serve ``web/<filename>``; 404 when missing, 500 when unreadable."""
+        html_path = os.path.join(_get_project_root(), "web", filename)
+        try:
+            if cache and html_path in self._html_cache:
+                content = self._html_cache[html_path]
+            elif os.path.exists(html_path):
+                with open(html_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if cache:
+                    self._html_cache[html_path] = content
+            else:
+                return web.Response(
+                    text=f"<h1>{title} not found</h1>"
+                    "<p>HTML file not located at expected path.</p>",
+                    content_type="text/html",
+                    status=404,
+                )
+            return web.Response(text=content, content_type="text/html", charset="utf-8")
+        except Exception:
+            self.logger.exception(f"Failed to load {title}")
+            return web.Response(
+                text=f"<h1>Error</h1><p>Failed to load {title}. "
+                "Check server logs for details.</p>",
+                content_type="text/html",
+                status=500,
+            )
 
     # ── Shared utilities used by multiple mixins ──────────────────────
 
@@ -415,7 +478,8 @@ class PromptManagerAPI(
                     rel_path = img_path.resolve().relative_to(output_path.resolve())
                     image["relative_path"] = str(rel_path)
                     image["url"] = (
-                        f"/prompt_manager/images/serve/{url_quote(rel_path.as_posix(), safe='/')}"
+                        "/prompt_manager/images/serve/"
+                        f"{url_quote(rel_path.as_posix(), safe='/')}"
                     )
 
                     # Check for thumbnail
@@ -423,11 +487,13 @@ class PromptManagerAPI(
                     thumb_rel = (
                         f"thumbnails/{rel_no_ext.as_posix()}_thumb{rel_path.suffix}"
                     )
-                    thumb_abs = output_path / thumb_rel
-                    if thumb_abs.exists():
-                        image["thumbnail_url"] = (
-                            f"/prompt_manager/images/serve/{url_quote(thumb_rel, safe='/')}"
-                        )
+                    from .prompts import thumbnail_url_for
+
+                    thumbnail_url = thumbnail_url_for(
+                        thumb_rel, output_path / thumb_rel
+                    )
+                    if thumbnail_url:
+                        image["thumbnail_url"] = thumbnail_url
                     break  # Found matching root, stop searching
                 except (ValueError, RuntimeError):
                     continue  # Try next root
@@ -476,17 +542,18 @@ class PromptManagerAPI(
             from ..config import GalleryConfig
 
             if GalleryConfig.MONITORING_DIRECTORIES:
-                configured_dir = Path(GalleryConfig.MONITORING_DIRECTORIES[0]).resolve()
-                if configured_dir.exists() and configured_dir.is_dir():
+                configured = GalleryConfig.MONITORING_DIRECTORIES[0]
+                # Same check as the settings endpoint: a root hand-edited
+                # into config.json must not open a directory outside ComfyUI
+                ok, reason = GalleryConfig.validate_gallery_root(configured)
+                if ok:
+                    configured_dir = Path(configured).resolve()
                     self.logger.info(
                         f"Using configured monitoring directory: {configured_dir}"
                     )
                     self._cached_output_dir = str(configured_dir)
                     return self._cached_output_dir
-                else:
-                    self.logger.warning(
-                        f"Configured directory does not exist: {GalleryConfig.MONITORING_DIRECTORIES[0]}"
-                    )
+                self.logger.warning(f"Ignoring configured directory: {reason}")
         except ImportError:
             self.logger.debug(
                 "GalleryConfig not available, skipping configured directory check"
@@ -506,7 +573,8 @@ class PromptManagerAPI(
                 output_dir = current_dir / "output"
                 if output_dir.exists() and output_dir.is_dir():
                     self.logger.debug(
-                        f"Found ComfyUI output directory via upward search: {output_dir}"
+                        "Found ComfyUI output directory via upward search: "
+                        f"{output_dir}"
                     )
                     self._cached_output_dir = str(output_dir)
                     return self._cached_output_dir
@@ -557,39 +625,72 @@ class PromptManagerAPI(
         return None
 
     def _get_all_output_dirs(self):
-        """Get all configured output directories, falling back to auto-detect.
+        """Get the directories images may be served from.
+
+        Configured gallery roots are filtered through
+        ``GalleryConfig.validate_gallery_root`` so a root that was hand-edited
+        into config.json (or persisted before validation existed) can never
+        expose files outside ComfyUI's directories.
 
         Returns:
-            List[Path]: Valid output directory paths, possibly empty.
+            List[Path]: Validated directory paths, possibly empty.
         """
         from ..config import GalleryConfig
 
+        configured = list(GalleryConfig.MONITORING_DIRECTORIES)
         output_dirs = []
-        if GalleryConfig.MONITORING_DIRECTORIES:
-            for d in GalleryConfig.MONITORING_DIRECTORIES:
-                p = Path(d).resolve()
-                if p.is_dir():
-                    output_dirs.append(p)
+        seen = set()
+        for d in configured:
+            ok, reason = GalleryConfig.validate_gallery_root(d)
+            if not ok:
+                self.logger.warning(f"Ignoring configured gallery root: {reason}")
+                continue
+            real = os.path.realpath(d)
+            key = os.path.normcase(real)  # one entry per directory, however spelled
+            if key in seen:
+                continue
+            seen.add(key)
+            output_dirs.append(Path(real))
 
-        # Fallback to auto-detect if no configured dirs are valid
-        if not output_dirs:
-            fallback = self._find_comfyui_output_dir()
-            if fallback:
-                output_dirs.append(Path(fallback))
+        if output_dirs:
+            return output_dirs
 
-        return output_dirs
+        if configured:
+            # Every configured root was rejected: never let auto-detection
+            # resurrect it, serve ComfyUI's own output directory instead.
+            return self._comfyui_output_dir_list()
+
+        fallback = self._find_comfyui_output_dir()
+        return [Path(fallback)] if fallback else []
+
+    def _comfyui_output_dir_list(self):
+        """ComfyUI's output directory as a one-element list, or [] if unknown."""
+        try:
+            import folder_paths
+
+            output_dir = folder_paths.get_output_directory()
+        except (ImportError, AttributeError, OSError):
+            return []
+        if isinstance(output_dir, str) and os.path.isdir(output_dir):
+            return [Path(os.path.realpath(output_dir))]
+        return []
 
     def _extract_comfyui_metadata(self, image_path):
-        """Extract ComfyUI workflow metadata from PNG image files."""
+        """Embedded ComfyUI metadata of an image (PNG text chunks) or a video.
+
+        Videos go through ffprobe (see utils/video_metadata). Unreadable files
+        are a warning, not an error: a scan over a large output tree meets
+        truncated and foreign files, and it carries on past them.
+        """
+        if is_video_path(image_path):
+            return read_video_metadata(image_path)
         try:
             with Image.open(image_path) as img:
-                metadata = {}
-                if hasattr(img, "text"):
-                    for key, value in img.text.items():
-                        metadata[key] = value
-                return metadata
+                return dict(getattr(img, "text", None) or {})
         except Exception as e:
-            self.logger.error(f"Error reading {image_path}: {e}")
+            self.logger.warning(
+                f"Unreadable image {os.path.basename(str(image_path))}: {e}"
+            )
             return {}
 
     def _parse_comfyui_prompt(self, metadata):
@@ -710,7 +811,8 @@ class PromptManagerAPI(
 
         New format: inputs is a list of connection objects
             inputs = [
-                {"name": "text", "type": "STRING", "link": null, "widget": {"name": "text"}},
+                {"name": "text", "type": "STRING", "link": null,
+                 "widget": {"name": "text"}},
                 {"name": "clip", "type": "CLIP", "link": 11}
             ]
         """
@@ -773,7 +875,10 @@ class PromptManagerAPI(
         return None
 
     def _extract_positive_prompt_from_comfyui_data(self, data):
-        """Extract positive prompt from ComfyUI data, handling both old and new formats."""
+        """Extract positive prompt from ComfyUI data.
+
+        Handles both old and new formats.
+        """
         if not isinstance(data, dict):
             return None
 

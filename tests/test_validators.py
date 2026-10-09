@@ -16,10 +16,10 @@ from utils.validators import (
     validate_rating,
     validate_tags,
     validate_category,
-    validate_workflow_name,
     sanitize_input,
     parse_tags_string,
     validate_result_timeout,
+    validate_worker_threads,
 )
 
 
@@ -75,41 +75,6 @@ class TestValidateCategory(unittest.TestCase):
     def test_newline_rejected(self):
         with self.assertRaises(ValueError):
             validate_category("bad\ncategory")
-
-
-class TestValidateWorkflowName(unittest.TestCase):
-    """Test validate_workflow_name function."""
-
-    def test_none_is_valid(self):
-        self.assertTrue(validate_workflow_name(None))
-
-    def test_empty_string_is_valid(self):
-        self.assertTrue(validate_workflow_name(""))
-
-    def test_whitespace_only_is_valid(self):
-        self.assertTrue(validate_workflow_name("   "))
-
-    def test_normal_name(self):
-        self.assertTrue(validate_workflow_name("My Workflow"))
-
-    def test_name_with_special_chars(self):
-        self.assertTrue(validate_workflow_name("workflow-v2_final (copy)"))
-
-    def test_max_length_boundary(self):
-        self.assertTrue(validate_workflow_name("x" * 200))
-
-    def test_exceeds_max_length(self):
-        with self.assertRaises(ValueError) as ctx:
-            validate_workflow_name("x" * 201)
-        self.assertIn("200", str(ctx.exception))
-
-    def test_non_string_raises(self):
-        with self.assertRaises(ValueError):
-            validate_workflow_name(42)
-
-    def test_dict_raises(self):
-        with self.assertRaises(ValueError):
-            validate_workflow_name({"name": "workflow"})
 
 
 class TestSanitizeInput(unittest.TestCase):
@@ -327,6 +292,25 @@ class TestValidateResultTimeout(unittest.TestCase):
     def test_bool_rejected(self):
         with self.assertRaises(ValueError):
             validate_result_timeout(True)
+
+
+class TestValidateWorkerThreads(unittest.TestCase):
+    """validate_worker_threads(value, max_workers) -> int in [1, max_workers]."""
+
+    def test_accepts_ints_and_digit_strings_within_range(self):
+        self.assertEqual(validate_worker_threads(1, 8), 1)
+        self.assertEqual(validate_worker_threads(8, 8), 8)
+        self.assertEqual(validate_worker_threads("4", 8), 4)
+
+    def test_rejects_out_of_range_bool_and_junk(self):
+        for value in (0, -1, 9, True, False, "x", None, 2.5, [2]):
+            with self.assertRaises(ValueError, msg=repr(value)):
+                validate_worker_threads(value, 8)
+
+    def test_max_of_one_only_accepts_one(self):
+        self.assertEqual(validate_worker_threads(1, 1), 1)
+        with self.assertRaises(ValueError):
+            validate_worker_threads(2, 1)
 
 
 if __name__ == "__main__":

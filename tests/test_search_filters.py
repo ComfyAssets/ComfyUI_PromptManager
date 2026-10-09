@@ -32,7 +32,8 @@ def apply_filters(texts, skip_multipart=True):
 
 
 class TestNewlineCollapse(unittest.TestCase):
-    """Newlines must be collapsed so StringOutputList treats each DB entry as one prompt."""
+    """Newlines must be collapsed so StringOutputList treats each DB entry as one
+    prompt."""
 
     def test_single_line_unchanged(self):
         result = apply_filters(["a beautiful landscape"])

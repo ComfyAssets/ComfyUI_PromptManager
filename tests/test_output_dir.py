@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Mock ComfyUI's server module before importing anything that touches config
 _mock_server = MagicMock()
 _mock_server.PromptServer.instance.routes = MagicMock()
-sys.modules["server"] = _mock_server
+sys.modules.setdefault("server", _mock_server)
 
 from py.api import PromptManagerAPI
 from py.config import GalleryConfig
@@ -34,7 +34,8 @@ class TestFindComfyuiOutputDir(unittest.TestCase):
         GalleryConfig.MONITORING_DIRECTORIES = self._orig_dirs
 
     def test_configured_directory_takes_priority(self):
-        """When a valid directory is configured, it should be used instead of auto-detect."""
+        """When a valid directory is configured, it should be used instead of
+        auto-detect."""
         with tempfile.TemporaryDirectory() as tmpdir:
             GalleryConfig.MONITORING_DIRECTORIES = [tmpdir]
             self.api._cached_output_dir = None

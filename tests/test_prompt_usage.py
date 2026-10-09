@@ -2,12 +2,19 @@
 
 import os
 import sqlite3
+from contextlib import closing
 import sys
 import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+try:
+    from tests.open_handles import assert_closed  # noqa: E402
+except ImportError:  # discovered with tests/ as the top-level directory
+    from open_handles import assert_closed  # noqa: E402
+
+from database.models import PromptModel
 from database.operations import PromptDatabase
 from prompt_manager_base import PromptManagerBase
 from utils.hashing import generate_prompt_hash
@@ -20,6 +27,10 @@ class UsageTestCase(unittest.TestCase):
         self.db = PromptDatabase(self.path)
 
     def tearDown(self):
+        if getattr(self, "db", None) is not None:
+            self.db.close_all()
+        PromptModel.close_all_instances()
+        assert_closed(self, self.path)
         for suffix in ("", "-wal", "-shm"):
             if os.path.exists(self.path + suffix):
                 os.unlink(self.path + suffix)
@@ -30,7 +41,7 @@ class UsageTestCase(unittest.TestCase):
         )
 
     def _set(self, prompt_id, **columns):
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             for column, value in columns.items():
                 conn.execute(
                     f"UPDATE prompts SET {column} = ? WHERE id = ?", (value, prompt_id)
@@ -41,10 +52,32 @@ class UsageTestCase(unittest.TestCase):
 
 
 class TestRecordPromptUse(UsageTestCase):
-    def test_new_prompt_starts_unused_but_timestamped(self):
+    def test_new_prompt_starts_unused_and_unstamped(self):
+        # Saving is not using: only record_prompt_use stamps last_used_at
         prompt = self.db.get_prompt_by_id(self._save("fresh"))
         self.assertEqual(prompt["run_count"], 0)
-        self.assertTrue(prompt["last_used_at"])
+        self.assertIsNone(prompt["last_used_at"])
+
+    def test_never_run_prompts_sort_after_run_ones(self):
+        ran = self._save("run once")
+        later = self._save("saved later, never run")
+        self.db.record_prompt_use(ran)
+        last = self._save("saved last, never run")
+
+        result = self.db.get_recent_prompts(limit=10, sort="last_used_desc")
+        # The run prompt leads; never-run prompts follow, newest first
+        self.assertEqual(self._ids(result["prompts"]), [ran, last, later])
+
+        searched = self.db.search_prompts(text="run", sort="last_used_desc")
+        self.assertEqual(self._ids(searched)[0], ran)
+
+    def test_most_used_sort_breaks_ties_with_unstamped_last(self):
+        a = self._save("a")
+        b = self._save("b")
+        self._set(a, run_count=2, last_used_at="2026-01-01T00:00:00.000+00:00")
+        self._set(b, run_count=2)  # same count, never stamped
+        result = self.db.get_recent_prompts(limit=10, sort="run_count_desc")
+        self.assertEqual(self._ids(result["prompts"]), [a, b])
 
     def test_record_use_increments_and_touches_last_used(self):
         pid = self._save("used")
@@ -139,17 +172,20 @@ class TestUsageMigration(unittest.TestCase):
     def setUp(self):
         fd, self.path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
-        db = PromptDatabase(self.path)
+        self.dbs = []
+        db = self._open()
         self.with_images = db.save_prompt(text="has images", prompt_hash="h1")
         self.no_images = db.save_prompt(text="no images", prompt_hash="h2")
-        with sqlite3.connect(self.path) as conn:
+        db.close_all()
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute(
                 "UPDATE prompts SET created_at = '2026-01-01T10:00:00.000000+00:00'"
             )
             # generated_images uses SQLite's space-separated CURRENT_TIMESTAMP format
             for i, ts in enumerate(("2026-03-05 08:00:00", "2026-02-01 09:00:00")):
                 conn.execute(
-                    "INSERT INTO generated_images (prompt_id, image_path, filename, generation_time)"
+                    "INSERT INTO generated_images"
+                    " (prompt_id, image_path, filename, generation_time)"
                     " VALUES (?, ?, ?, ?)",
                     (self.with_images, f"/out/{i}.png", f"{i}.png", ts),
                 )
@@ -158,14 +194,27 @@ class TestUsageMigration(unittest.TestCase):
                 conn.execute(f"DROP INDEX IF EXISTS {index}")
             conn.execute("ALTER TABLE prompts DROP COLUMN last_used_at")
             conn.execute("ALTER TABLE prompts DROP COLUMN run_count")
+        # Schema init runs once per process per path; the next PromptDatabase()
+        # must look at the file again to see the downgraded schema.
+        PromptModel.reset_schema_cache()
+
+    def _open(self):
+        """Open the database under test and close it again in tearDown."""
+        db = PromptDatabase(self.path)
+        self.dbs.append(db)
+        return db
 
     def tearDown(self):
+        for db in self.dbs:
+            db.close_all()
+        PromptModel.close_all_instances()
+        assert_closed(self, self.path)
         for suffix in ("", "-wal", "-shm"):
             if os.path.exists(self.path + suffix):
                 os.unlink(self.path + suffix)
 
     def test_backfill_estimates_usage_from_linked_images(self):
-        db = PromptDatabase(self.path)
+        db = self._open()
         used = db.get_prompt_by_id(self.with_images)
         unused = db.get_prompt_by_id(self.no_images)
 
@@ -174,10 +223,12 @@ class TestUsageMigration(unittest.TestCase):
         self.assertEqual(unused["run_count"], 1)
         self.assertTrue(unused["last_used_at"].startswith("2026-01-01T10:00:00"))
 
-    def test_rows_written_while_downgraded_are_healed_on_next_start(self):
-        db = PromptDatabase(self.path)
-        # 3.2.3 does not know the columns: its inserts leave last_used_at NULL
-        with sqlite3.connect(self.path) as conn:
+    def test_backfill_runs_only_when_the_columns_are_added(self):
+        db = self._open()
+        # A row whose usage is unknown (e.g. written by 3.2.3 after a downgrade)
+        # stays "never run": a restart must not invent a run for it, otherwise
+        # Recently Used could never tell saved-but-unused prompts from run ones.
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute(
                 "INSERT INTO prompts (text, hash, created_at)"
                 " VALUES ('from 3.2.3', 'h3', '2026-04-01T00:00:00.000000+00:00')"
@@ -187,14 +238,15 @@ class TestUsageMigration(unittest.TestCase):
             ).fetchone()[0]
         self.assertIsNone(db.get_prompt_by_id(legacy_id)["last_used_at"])
 
-        healed = PromptDatabase(self.path).get_prompt_by_id(legacy_id)
-        self.assertTrue(healed["last_used_at"].startswith("2026-04-01T00:00:00"))
-        self.assertEqual(healed["run_count"], 1)
+        PromptModel.reset_schema_cache()
+        later = self._open().get_prompt_by_id(legacy_id)
+        self.assertIsNone(later["last_used_at"])
+        self.assertEqual(later["run_count"], 0)
 
     def test_migration_runs_once(self):
-        db = PromptDatabase(self.path)
+        db = self._open()
         db.record_prompt_use(self.no_images)
-        reopened = PromptDatabase(self.path)
+        reopened = self._open()
         self.assertEqual(reopened.get_prompt_by_id(self.no_images)["run_count"], 2)
 
 

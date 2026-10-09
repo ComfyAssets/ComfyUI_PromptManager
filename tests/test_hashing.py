@@ -1,7 +1,7 @@
 """
 Tests for hashing utilities.
 
-Tests generate_content_hash and is_duplicate_prompt which are
+Tests is_duplicate_prompt and generate_prompt_hash, which are
 currently untested. generate_prompt_hash is covered in test_basic.py
 but we add edge cases here.
 """
@@ -14,83 +14,52 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.hashing import (
     generate_prompt_hash,
-    generate_content_hash,
     is_duplicate_prompt,
 )
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-class TestGenerateContentHash(unittest.TestCase):
-    """Test generate_content_hash function."""
 
-    def test_basic_content(self):
-        content = {
-            "text": "A prompt",
-            "category": "nature",
-            "tags": ["sky"],
-            "workflow_name": "wf1",
-        }
-        h = generate_content_hash(content)
-        self.assertEqual(len(h), 64)  # SHA256 hex digest
+class TestSingleHashImplementation(unittest.TestCase):
+    """generate_prompt_hash is the only prompt hash; nothing re-implements it."""
 
-    def test_normalization_case_insensitive(self):
-        c1 = {"text": "Hello World", "category": "Test"}
-        c2 = {"text": "hello world", "category": "test"}
-        self.assertEqual(generate_content_hash(c1), generate_content_hash(c2))
+    def test_node_base_delegates_to_generate_prompt_hash(self):
+        from prompt_manager_base import PromptManagerBase
 
-    def test_normalization_strips_whitespace(self):
-        c1 = {"text": "  hello  ", "category": "  test  "}
-        c2 = {"text": "hello", "category": "test"}
-        self.assertEqual(generate_content_hash(c1), generate_content_hash(c2))
+        node = PromptManagerBase.__new__(PromptManagerBase)
+        self.assertEqual(node._generate_hash("  A  "), generate_prompt_hash("  A  "))
+        self.assertEqual(node._generate_hash("  A  "), generate_prompt_hash("a"))
 
-    def test_tag_order_independent(self):
-        c1 = {"text": "prompt", "tags": ["beta", "alpha"]}
-        c2 = {"text": "prompt", "tags": ["alpha", "beta"]}
-        self.assertEqual(generate_content_hash(c1), generate_content_hash(c2))
+    def test_tracker_and_monitor_use_generate_prompt_hash(self):
+        for relative in (
+            os.path.join("utils", "prompt_tracker.py"),
+            os.path.join("utils", "image_monitor.py"),
+            "prompt_manager_base.py",
+        ):
+            with open(os.path.join(ROOT, relative), encoding="utf-8") as f:
+                source = f.read()
+            self.assertFalse("hashlib.sha256" in source, f"inline hash in {relative}")
+            self.assertTrue("generate_prompt_hash" in source, relative)
 
-    def test_different_text_different_hash(self):
-        c1 = {"text": "prompt A"}
-        c2 = {"text": "prompt B"}
-        self.assertNotEqual(generate_content_hash(c1), generate_content_hash(c2))
+    def test_tracker_finds_an_existing_prompt_by_the_shared_hash(self):
+        import unittest.mock as mock
 
-    def test_different_category_different_hash(self):
-        c1 = {"text": "same", "category": "cat1"}
-        c2 = {"text": "same", "category": "cat2"}
-        self.assertNotEqual(generate_content_hash(c1), generate_content_hash(c2))
+        from utils.prompt_tracker import PromptTracker
 
-    def test_different_tags_different_hash(self):
-        c1 = {"text": "same", "tags": ["tag1"]}
-        c2 = {"text": "same", "tags": ["tag2"]}
-        self.assertNotEqual(generate_content_hash(c1), generate_content_hash(c2))
+        db = mock.Mock()
+        db.get_prompt_by_hash.return_value = {"id": 42}
+        tracker = PromptTracker(db)
+        tracker.set_current_prompt("  Hello World  ")
+        db.get_prompt_by_hash.assert_called_once_with(
+            generate_prompt_hash("  Hello World  ")
+        )
+        self.assertEqual(tracker.get_current_prompt()["id"], 42)
 
-    def test_empty_dict(self):
-        h = generate_content_hash({})
-        self.assertEqual(len(h), 64)
+    def test_node_base_has_no_browser_opener(self):
+        from prompt_manager_base import PromptManagerBase
 
-    def test_missing_fields_use_defaults(self):
-        c1 = {"text": "hello"}
-        c2 = {"text": "hello", "category": None, "tags": [], "workflow_name": None}
-        self.assertEqual(generate_content_hash(c1), generate_content_hash(c2))
-
-    def test_none_category_same_as_empty(self):
-        c1 = {"text": "test", "category": None}
-        c2 = {"text": "test", "category": ""}
-        self.assertEqual(generate_content_hash(c1), generate_content_hash(c2))
-
-    def test_none_workflow_same_as_empty(self):
-        c1 = {"text": "test", "workflow_name": None}
-        c2 = {"text": "test", "workflow_name": ""}
-        self.assertEqual(generate_content_hash(c1), generate_content_hash(c2))
-
-    def test_empty_tags_filtered(self):
-        c1 = {"text": "test", "tags": ["valid", "", "  "]}
-        c2 = {"text": "test", "tags": ["valid"]}
-        self.assertEqual(generate_content_hash(c1), generate_content_hash(c2))
-
-    def test_deterministic(self):
-        content = {"text": "stable", "tags": ["a", "b"]}
-        h1 = generate_content_hash(content)
-        h2 = generate_content_hash(content)
-        self.assertEqual(h1, h2)
+        self.assertFalse(hasattr(PromptManagerBase, "_open_web_interface"))
+        self.assertFalse(os.path.exists(os.path.join(ROOT, "restart_gallery.py")))
 
 
 class TestIsDuplicatePrompt(unittest.TestCase):

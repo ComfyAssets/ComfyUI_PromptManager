@@ -1,9 +1,9 @@
 """Prompt tracking system for linking generated images to prompts.
 
-This module provides thread-safe tracking of active prompt executions to enable automatic
-association of generated images with their source prompts. The system maintains prompt
-context across different execution threads and provides fallback mechanisms for reliable
-image-prompt linking.
+This module provides thread-safe tracking of active prompt executions to enable
+automatic association of generated images with their source prompts. The system
+maintains prompt context across different execution threads and provides fallback
+mechanisms for reliable image-prompt linking.
 
 Key features:
 - Thread-safe prompt tracking using threading.local and locks
@@ -28,12 +28,11 @@ Or using the context manager:
 import threading
 import time
 import uuid
-import hashlib
 from typing import Optional, Dict, Any
-from datetime import datetime, timezone
 
 # Import logging system
 try:
+    from .hashing import generate_prompt_hash
     from .logging_config import get_logger
 except ImportError:
     import sys
@@ -41,6 +40,7 @@ except ImportError:
 
     current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     sys.path.insert(0, current_dir)
+    from utils.hashing import generate_prompt_hash
     from utils.logging_config import get_logger
 
 
@@ -115,7 +115,8 @@ class PromptTracker:
 
         Args:
             prompt_text: The prompt text being executed
-            additional_data: Additional prompt metadata, should include prompt_id from PromptManager
+            additional_data: Additional prompt metadata, should include prompt_id
+                from PromptManager
             push_to_queue: Also push onto the FIFO batch queue. Only batch items whose
                 text comes from another node need it; typed prompts are linked from
                 the image's own metadata instead.
@@ -132,20 +133,16 @@ class PromptTracker:
         if not prompt_id:
             # Fallback: try to find existing prompt using consistent hash calculation
             try:
-                # Use consistent hash calculation (same as PromptManager)
-                import hashlib
-
-                normalized_text = prompt_text.strip().lower()
-                prompt_hash = hashlib.sha256(
-                    normalized_text.encode("utf-8")
-                ).hexdigest()
+                # Same hash as the nodes, so the lookup finds their saved prompt
+                prompt_hash = generate_prompt_hash(prompt_text)
                 existing_prompt = self.db_manager.get_prompt_by_hash(prompt_hash)
 
                 if existing_prompt:
                     prompt_id = existing_prompt["id"]
                     self.logger.debug(f"Found existing prompt ID: {prompt_id}")
                 else:
-                    # Generate a temporary ID for tracking (prompt should be saved by PromptManager)
+                    # Generate a temporary ID for tracking (prompt should be saved
+                    # by PromptManager)
                     prompt_id = f"temp_{int(time.time())}"
                     self.logger.debug(f"Using temporary ID for tracking: {prompt_id}")
             except Exception as e:
@@ -174,11 +171,13 @@ class PromptTracker:
             with self._queue_lock:
                 self._prompt_queue.append(execution_context)
                 self.logger.debug(
-                    f"Queue size: {len(self._prompt_queue)} after push for prompt {prompt_id}"
+                    f"Queue size: {len(self._prompt_queue)} after push "
+                    f"for prompt {prompt_id}"
                 )
 
         self.logger.debug(
-            f"Set current prompt: {execution_id} -> {prompt_text[:50]}... (thread: {threading.current_thread().ident})"
+            f"Set current prompt: {execution_id} -> {prompt_text[:50]}... "
+            f"(thread: {threading.current_thread().ident})"
         )
         self.logger.debug(f"Active prompts count: {len(self.active_prompts)}")
         return execution_id
@@ -216,7 +215,8 @@ class PromptTracker:
         recent_prompt = self._find_recent_prompt()
         if recent_prompt:
             self.logger.debug(
-                f"Using recent prompt from global tracking: {recent_prompt['execution_id']}"
+                "Using recent prompt from global tracking: "
+                f"{recent_prompt['execution_id']}"
             )
             return recent_prompt
 
@@ -264,14 +264,16 @@ class PromptTracker:
         with self.lock:
             current_time = time.time()
             self.logger.debug(
-                f"Searching for recent prompt among {len(self.active_prompts)} active prompts"
+                f"Searching for recent prompt among {len(self.active_prompts)} "
+                "active prompts"
             )
 
             recent_prompts = []
             for exec_id, prompt in self.active_prompts.items():
                 age_seconds = current_time - prompt["timestamp"]
                 self.logger.debug(
-                    f"Prompt {exec_id}: age={age_seconds:.1f}s, timeout={self.prompt_timeout}s"
+                    f"Prompt {exec_id}: age={age_seconds:.1f}s, "
+                    f"timeout={self.prompt_timeout}s"
                 )
 
                 if age_seconds < self.prompt_timeout:
@@ -285,7 +287,7 @@ class PromptTracker:
                 self.logger.debug(f"Found recent prompt: {most_recent['execution_id']}")
                 return most_recent
             else:
-                self.logger.debug(f"No recent prompts found")
+                self.logger.debug("No recent prompts found")
 
         return None
 
@@ -300,7 +302,8 @@ class PromptTracker:
         if current:
             execution_id = current["execution_id"]
             self.logger.debug(
-                f"Clearing current prompt: {execution_id} (thread: {threading.current_thread().ident})"
+                f"Clearing current prompt: {execution_id} "
+                f"(thread: {threading.current_thread().ident})"
             )
 
             # Clear from thread-local storage
@@ -322,7 +325,8 @@ class PromptTracker:
                     )
         else:
             self.logger.debug(
-                f"No current prompt to clear (thread: {threading.current_thread().ident})"
+                "No current prompt to clear "
+                f"(thread: {threading.current_thread().ident})"
             )
 
     def extend_prompt_timeout(self, execution_id: str, additional_seconds: int = 60):
@@ -436,7 +440,8 @@ class PromptTracker:
             Dictionary containing:
             - active_prompts_count: Number of currently active prompts
             - current_prompt_id: ID of current prompt in this thread (if any)
-            - current_execution_id: Execution ID of current prompt in this thread (if any)
+            - current_execution_id: Execution ID of current prompt in this thread
+              (if any)
             - thread_id: Current thread identifier
             - prompt_timeout: Configured prompt timeout in seconds
             - cleanup_interval: Configured cleanup interval in seconds

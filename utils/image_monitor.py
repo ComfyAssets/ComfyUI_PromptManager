@@ -1,9 +1,9 @@
 """Image monitoring system for ComfyUI generated images.
 
-This module provides real-time monitoring of ComfyUI output directories to automatically
-detect newly generated images and associate them with their corresponding prompts. The system
-uses filesystem watchers to detect image creation events and extract metadata from the images
-to maintain a gallery system.
+This module provides real-time monitoring of ComfyUI output directories to
+automatically detect newly generated images and associate them with their
+corresponding prompts. The system uses filesystem watchers to detect image creation
+events and extract metadata from the images to maintain a gallery system.
 
 The main components are:
 - ImageGenerationHandler: Handles filesystem events for new image creation
@@ -24,17 +24,23 @@ The system automatically:
 """
 
 import os
+import queue
 import time
 import threading
-import json
-from pathlib import Path
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Tuple
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+from .hashing import generate_prompt_hash
 from .metadata_extractor import ComfyUIMetadataExtractor
 from .logging_config import get_logger
 from .prompt_graph import resolve_text, run_prompt_nodes
+
+# Upper bound on images waiting to be processed (a burst beyond this is skipped)
+MAX_PENDING_IMAGES = 1000
+# A file counts as fully written once its size is unchanged across two reads
+SETTLE_INTERVAL_SECONDS = 0.1
+SETTLE_ATTEMPTS = 20
 
 
 class ImageGenerationHandler(FileSystemEventHandler):
@@ -74,6 +80,21 @@ class ImageGenerationHandler(FileSystemEventHandler):
             self.processing_delay = 2.0
             self.supported_extensions = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 
+        # Settle check: the file size must be unchanged across two reads
+        self.settle_interval = SETTLE_INTERVAL_SECONDS
+        self.settle_attempts = SETTLE_ATTEMPTS
+
+        # Images scheduled but not yet processed: path -> (prompt snapshot, due time).
+        # One daemon worker processes them in order, so batch images pop the
+        # prompt queue in creation order.
+        self._pending: Dict[str, Tuple[Any, float]] = {}
+        self._pending_lock = threading.Lock()
+        # Each worker owns its queue and stop event (replaced on shutdown),
+        # so a worker that is still draining never swallows a later image.
+        self._work: "queue.Queue[Optional[str]]" = queue.Queue()
+        self._stop = threading.Event()
+        self._worker: Optional[threading.Thread] = None
+
     def on_created(self, event):
         """Handle filesystem creation events.
 
@@ -87,21 +108,130 @@ class ImageGenerationHandler(FileSystemEventHandler):
         Args:
             event: FileSystemEvent object containing event details
         """
-        if not event.is_directory and self.is_image_file(event.src_path):
-            self.logger.info(f"New image detected: {event.src_path}")
-            # Snapshot prompt context NOW before the delay — in batch workflows
-            # the tracker advances to the next prompt before images are processed.
-            prompt_snapshot = self.prompt_tracker.get_current_prompt()
-            if prompt_snapshot:
-                self.logger.debug(
-                    f"Snapshot prompt {prompt_snapshot.get('id', '?')} for {os.path.basename(event.src_path)}"
+        if event.is_directory or not self.is_image_file(event.src_path):
+            return
+        self.logger.info(f"New image detected: {event.src_path}")
+        # Snapshot prompt context NOW before the delay — in batch workflows
+        # the tracker advances to the next prompt before images are processed.
+        prompt_snapshot = self.prompt_tracker.get_current_prompt()
+        if prompt_snapshot:
+            self.logger.debug(
+                f"Snapshot prompt {prompt_snapshot.get('id', '?')} for "
+                f"{os.path.basename(event.src_path)}"
+            )
+        self.schedule(event.src_path, prompt_snapshot)
+
+    def schedule(self, image_path: str, prompt_snapshot=None) -> bool:
+        """Queue an image for processing on the worker thread, once per path.
+
+        Images are processed in the order they were scheduled (batch images must
+        pop the prompt queue in creation order), each after ``processing_delay``
+        and once its size has stopped changing.
+
+        Returns:
+            False when the path is already pending or the pending set is full
+        """
+        with self._pending_lock:
+            if image_path in self._pending:
+                self.logger.debug(f"Already pending, not rescheduled: {image_path}")
+                return False
+            if len(self._pending) >= MAX_PENDING_IMAGES:
+                self.logger.warning(
+                    f"Too many images pending ({len(self._pending)}), "
+                    f"skipping: {image_path}"
                 )
-            threading.Timer(
-                self.processing_delay,
-                self.process_new_image,
-                args=[event.src_path],
-                kwargs={"prompt_snapshot": prompt_snapshot},
-            ).start()
+                return False
+            due = time.monotonic() + self.processing_delay
+            self._pending[image_path] = (prompt_snapshot, due)
+            self._ensure_worker()
+            self._work.put(image_path)
+        return True
+
+    def pending_count(self) -> int:
+        """Number of images scheduled but not yet processed."""
+        with self._pending_lock:
+            return len(self._pending)
+
+    def shutdown(self) -> None:
+        """Stop the worker thread and drop every image still waiting.
+
+        The worker wakes from any delay or settle wait, finishes nothing more
+        and exits; the next ``schedule`` starts a fresh worker with its own
+        queue. Safe to call repeatedly and before anything was scheduled.
+        """
+        with self._pending_lock:
+            self._pending.clear()
+            worker, self._worker = self._worker, None
+            work, self._work = self._work, queue.Queue()
+            stop, self._stop = self._stop, threading.Event()
+        stop.set()
+        if worker is not None and worker.is_alive():
+            work.put(None)  # sentinel: wake a worker idle on an empty queue
+
+    def _ensure_worker(self) -> None:
+        """Start the single daemon worker thread if it isn't running.
+
+        Called with ``_pending_lock`` held.
+        """
+        if self._worker is None or not self._worker.is_alive():
+            self._worker = threading.Thread(
+                target=self._run_worker,
+                args=(self._work, self._stop),
+                name="PromptManagerImageWorker",
+                daemon=True,
+            )
+            self._worker.start()
+
+    def _run_worker(self, work: "queue.Queue[Optional[str]]", stop) -> None:
+        while not stop.is_set():
+            image_path = work.get()
+            try:
+                if image_path is None or stop.is_set():
+                    break
+                self._process_pending(image_path, stop)
+            except Exception as e:
+                self.logger.error(f"Image worker failed on {image_path}: {e}")
+            finally:
+                work.task_done()
+
+    def _process_pending(self, image_path: str, stop=None) -> None:
+        """Process one scheduled image; the pending entry is always cleared."""
+        stop = stop if stop is not None else self._stop
+        try:
+            with self._pending_lock:
+                prompt_snapshot, due = self._pending.get(image_path, (None, 0.0))
+            remaining = due - time.monotonic()
+            if remaining > 0 and stop.wait(remaining):
+                return
+            if not self.wait_until_settled(image_path, stop):
+                if not stop.is_set():
+                    self.logger.warning(
+                        f"Image never settled or vanished, skipping: {image_path}"
+                    )
+                return
+            self.process_new_image(image_path, prompt_snapshot=prompt_snapshot)
+        finally:
+            with self._pending_lock:
+                self._pending.pop(image_path, None)
+
+    def wait_until_settled(self, image_path: str, stop=None) -> bool:
+        """True once the file's size is non-zero and unchanged across two reads.
+
+        Returns False as soon as ``stop`` (an Event) is set.
+        """
+        stop = stop if stop is not None else self._stop
+        previous = None
+        for _ in range(self.settle_attempts):
+            try:
+                size = os.path.getsize(image_path)
+            except OSError:
+                return False
+            if previous is not None and size == previous and size > 0:
+                return True
+            previous = size
+            if stop.wait(self.settle_interval):
+                return False
+        return False
 
     def is_image_file(self, filepath: str) -> bool:
         """Check if file is a supported image format and not a thumbnail.
@@ -113,7 +243,8 @@ class ImageGenerationHandler(FileSystemEventHandler):
             True if the file has a supported image extension and is not
             inside a thumbnails directory, False otherwise
         """
-        # Skip files in thumbnails directory - those are derivatives, not generated images
+        # Skip files in thumbnails directory - those are derivatives, not
+        # generated images
         if "/thumbnails/" in filepath or "\\thumbnails\\" in filepath:
             return False
         return filepath.lower().endswith(self.supported_extensions)
@@ -150,7 +281,14 @@ class ImageGenerationHandler(FileSystemEventHandler):
             # Strategy 1: The image's own metadata. It records the positive prompt
             # that produced this image, independent of node caching and of any
             # negative-prompt PromptManager nodes in the workflow.
-            current_prompt = self._find_prompt_from_metadata(metadata)
+            state, current_prompt = self._find_prompt_from_metadata(metadata)
+            if state == "foreign":
+                # Another workflow saved this image: it belongs to no prompt of
+                # ours, and must not consume a batch queue entry.
+                self.logger.info(
+                    f"No PromptManager prompt in workflow, skipping image: {image_path}"
+                )
+                return
             if current_prompt:
                 self.logger.info(
                     f"Metadata match: prompt {current_prompt['id']} for "
@@ -220,40 +358,55 @@ class ImageGenerationHandler(FileSystemEventHandler):
 
             self.logger.error(traceback.format_exc())
 
-    def _find_prompt_from_metadata(self, metadata):
-        """Extract prompt text from image metadata and look up the matching DB prompt.
+    def _find_prompt_from_metadata(self, metadata) -> Tuple[str, Optional[Dict]]:
+        """Identify the prompt that produced an image from its embedded metadata.
 
-        Parses the ComfyUI workflow/prompt data embedded in the image to find
-        PromptManager node inputs, then matches against the database by hash.
+        Parses the ComfyUI workflow/prompt data embedded in the image to find the
+        PromptManager node feeding the positive input, then matches its text
+        against the database by hash.
 
         Args:
             metadata: Extracted metadata dict from the image, or None
 
         Returns:
-            Prompt context dict with 'id' and 'text', or None if not found
+            ``("linked", prompt)`` with a context dict holding 'id' and 'text';
+            ``("foreign", None)`` when the workflow has no positive PromptManager
+            node, so the image belongs to no prompt of ours;
+            ``("unknown", None)`` when metadata can't decide (missing, a batch
+            item whose text came from another node, or a lookup failure) and the
+            caller's queue and tracker fallbacks apply.
         """
         if not metadata:
-            return None
+            return "unknown", None
 
         prompt_text = None
 
         # The executed graph: use the PromptManager node feeding the positive input
         prompt_data = metadata.get("prompt")
         if isinstance(prompt_data, dict):
-            for node_id in run_prompt_nodes(prompt_data):
+            run_nodes = run_prompt_nodes(prompt_data)
+            if not run_nodes:
+                return "foreign", None
+            for node_id in run_nodes:
                 prompt_text = resolve_text(prompt_data, node_id)
                 if prompt_text:
                     break
             if not prompt_text:
                 # Positive text can't be known from the graph (batch item or unknown
                 # node): leave it to the queue rather than guess from workflow widgets
-                return None
+                return "unknown", None
 
-        # Fallback (no executed graph): check text_encoder_nodes from workflow, but only if
-        # the text input is NOT connected (connected inputs override widget values,
-        # so the widget value would be stale in batch workflows).
+        # Fallback (no executed graph): check text_encoder_nodes from workflow, but
+        # only if the text input is NOT connected (connected inputs override widget
+        # values, so the widget value would be stale in batch workflows).
         if not prompt_text:
             text_nodes = metadata.get("text_encoder_nodes", [])
+            if text_nodes and not any(
+                "PromptManager" in (n.get("type") or n.get("class_type") or "")
+                for n in text_nodes
+                if isinstance(n, dict)
+            ):
+                return "foreign", None
             for node in text_nodes:
                 node_type = node.get("type") or node.get("class_type") or ""
                 if "PromptManager" in node_type:
@@ -276,20 +429,18 @@ class ImageGenerationHandler(FileSystemEventHandler):
                         break
 
         if not prompt_text:
-            return None
+            return "unknown", None
 
         # Look up by hash in database
         try:
-            import hashlib
-
-            normalized = prompt_text.strip().lower()
-            prompt_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-            existing = self.db_manager.get_prompt_by_hash(prompt_hash)
+            existing = self.db_manager.get_prompt_by_hash(
+                generate_prompt_hash(prompt_text)
+            )
             if existing:
                 self.logger.debug(
                     f"Found DB prompt {existing['id']} from metadata text"
                 )
-                return {
+                return "linked", {
                     "id": existing["id"],
                     "text": existing["text"],
                     "from_metadata": True,
@@ -297,7 +448,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
         except Exception as e:
             self.logger.warning(f"Metadata-based prompt lookup failed: {e}")
 
-        return None
+        return "unknown", None
 
     def get_basic_file_info(self, image_path: str) -> Dict[str, Any]:
         """Get basic file information when metadata extraction fails.
@@ -345,7 +496,11 @@ class ImageGenerationHandler(FileSystemEventHandler):
             or None if no recent prompt is available
         """
         try:
-            recent_prompts = self.db_manager.get_recent_prompts(limit=1)
+            recent = self.db_manager.get_recent_prompts(limit=1)
+            # Paginated dict ({"prompts": [...]}) or a plain list
+            recent_prompts = (
+                recent.get("prompts") if isinstance(recent, dict) else recent
+            )
             if recent_prompts:
                 prompt = recent_prompts[0]
                 return {
@@ -363,13 +518,15 @@ class ImageGenerationHandler(FileSystemEventHandler):
     ):
         """Link an image to a prompt in the database.
 
-        Creates a database record associating the generated image with its source prompt,
-        including any extracted metadata from the image file.
+        Creates a database record associating the generated image with its source
+        prompt, including any extracted metadata from the image file.
 
         Args:
             image_path: Full path to the image file
-            prompt_context: Dictionary containing prompt information including ID and text
-            metadata: Extracted metadata from the image file (workflow, parameters, etc.)
+            prompt_context: Dictionary containing prompt information including ID
+                and text
+            metadata: Extracted metadata from the image file (workflow, parameters,
+                etc.)
         """
         try:
             image_id = self.db_manager.link_image_to_prompt(
@@ -377,7 +534,8 @@ class ImageGenerationHandler(FileSystemEventHandler):
             )
             fallback_note = " (fallback)" if prompt_context.get("fallback") else ""
             self.logger.debug(
-                f"Successfully linked image {image_id} to prompt {prompt_context['id']}{fallback_note}"
+                f"Successfully linked image {image_id} to prompt "
+                f"{prompt_context['id']}{fallback_note}"
             )
         except Exception as e:
             self.logger.error(f"Failed to link image to prompt: {e}")
@@ -421,79 +579,121 @@ class ImageMonitor:
         All monitoring is done recursively to catch images in subdirectories.
 
         Args:
-            output_directories: List of directory paths to monitor. If None, uses config or auto-detection.
+            output_directories: List of directory paths to monitor. If None, uses
+                config or auto-detection.
         """
         if self.observer:
             self.logger.warning("Image monitoring already running")
             return
 
         # Check config for monitoring settings
-        try:
-            from ..py.config import GalleryConfig
-
-            if not GalleryConfig.MONITORING_ENABLED:
+        config = self._gallery_config()
+        if config is not None:
+            if not config.MONITORING_ENABLED:
                 self.logger.info("Image monitoring disabled in config")
                 return
-
             # Use configured directories if set
-            if not output_directories and GalleryConfig.MONITORING_DIRECTORIES:
-                output_directories = GalleryConfig.MONITORING_DIRECTORIES
+            if not output_directories and config.MONITORING_DIRECTORIES:
+                output_directories = config.MONITORING_DIRECTORIES
                 self.logger.info(
                     f"Using configured monitoring directories: {output_directories}"
                 )
-        except Exception:
-            pass
 
         # Auto-detect ComfyUI output directory if still none
         if not output_directories:
             output_directories = self.detect_comfyui_output_dirs()
 
-        if not output_directories:
-            self.logger.warning("No output directories found to monitor")
+        valid_directories = []
+        for output_dir in output_directories or []:
+            if not os.path.isdir(output_dir):
+                self.logger.warning(f"Directory does not exist: {output_dir}")
+                continue
+            # Same containment rule as the settings endpoint, so a root
+            # hand-edited into config.json is never watched (and its files
+            # never linked) when it lies outside ComfyUI's directories.
+            validate = getattr(config, "validate_gallery_root", None)
+            if callable(validate):
+                ok, reason = validate(output_dir)
+                if not ok:
+                    self.logger.warning(f"Not watching {output_dir}: {reason}")
+                    continue
+            valid_directories.append(output_dir)
+        if not valid_directories:
+            self.logger.warning("No valid directories to monitor")
             return
 
-        # Create event handler
-        self.handler = ImageGenerationHandler(self.db_manager, self.prompt_tracker)
-
-        # Start observer
-        self.observer = Observer()
-
-        for output_dir in output_directories:
-            if os.path.exists(output_dir):
-                self.observer.schedule(self.handler, output_dir, recursive=True)
-                self.monitored_directories.append(output_dir)
+        # Only a started observer becomes self.observer, so a failed start never
+        # leaves the monitor stuck "already running" with nothing to stop.
+        handler = ImageGenerationHandler(self.db_manager, self.prompt_tracker)
+        observer = Observer()
+        scheduled = []
+        for output_dir in valid_directories:
+            try:
+                observer.schedule(handler, output_dir, recursive=True)
+                scheduled.append(output_dir)
                 self.logger.info(f"Monitoring directory (recursive): {output_dir}")
-            else:
-                self.logger.warning(f"Directory does not exist: {output_dir}")
+            except Exception as e:
+                self.logger.warning(f"Cannot watch {output_dir}: {e}")
+        if not scheduled:
+            self.logger.warning("No directory could be watched")
+            return
+        try:
+            observer.start()
+        except Exception as e:
+            self.logger.error(f"Image monitoring could not start: {e}")
+            return
 
-        if self.monitored_directories:
-            self.observer.start()
-            self.logger.info(
-                f"Image monitoring started for {len(self.monitored_directories)} directories"
-            )
-        else:
-            self.logger.warning("No valid directories to monitor")
+        self.handler = handler
+        self.observer = observer
+        self.monitored_directories = scheduled
+        self.logger.info(f"Image monitoring started for {len(scheduled)} directories")
+
+    @staticmethod
+    def _gallery_config():
+        """GalleryConfig when the package's config is importable, else None."""
+        try:
+            from ..py.config import GalleryConfig
+
+            return GalleryConfig
+        except Exception:
+            return None
+
+    @property
+    def is_monitoring(self) -> bool:
+        """Whether a filesystem observer is running."""
+        return self.observer is not None
 
     def stop_monitoring(self):
         """Stop the image monitoring system.
 
         Cleanly shuts down the filesystem watcher and clears all monitoring state.
         This method should be called before program exit to ensure proper cleanup.
+        Safe to call when monitoring never started.
         """
-        if self.observer:
-            self.observer.stop()
-            self.observer.join()
-            self.observer = None
-            self.handler = None
-            self.monitored_directories = []
-            self.logger.debug("Image monitoring stopped")
+        observer, self.observer = self.observer, None
+        handler, self.handler = self.handler, None
+        self.monitored_directories = []
+        if observer is None:
+            return
+        try:
+            observer.stop()
+            observer.join()
+        except Exception as e:
+            self.logger.warning(f"Error while stopping image monitoring: {e}")
+        if handler is not None:
+            try:
+                handler.shutdown()
+            except Exception as e:
+                self.logger.warning(f"Error while stopping the image worker: {e}")
+        self.logger.debug("Image monitoring stopped")
 
     def detect_comfyui_output_dirs(self) -> list:
         """Auto-detect ComfyUI output directories.
 
         Attempts to locate ComfyUI output directories using multiple strategies:
         1. Import ComfyUI's folder_paths module to get the configured output directory
-        2. Search common relative paths where ComfyUI output directories are typically located
+        2. Search common relative paths where ComfyUI output directories are
+           typically located
         3. Verify that detected directories actually exist
 
         Returns:

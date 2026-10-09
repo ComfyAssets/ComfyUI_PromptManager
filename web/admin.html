@@ -5,6 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PromptManager - Admin Dashboard</title>
     <script src="/prompt_manager/js/theme-bridge.js"></script>
+    <script src="/prompt_manager/js/html-escape.js"></script>
+    <script src="/prompt_manager/js/image-helpers.js"></script>
+    <script src="/prompt_manager/js/api-client.js"></script>
+    <script src="/prompt_manager/js/png-metadata.js"></script>
+    <script src="/prompt_manager/js/list-state.js"></script>
+    <script src="/prompt_manager/js/tag-autocomplete.js"></script>
+    <script src="/prompt_manager/js/sse-stream.js"></script>
+    <script src="/prompt_manager/js/scan-progress.js"></script>
+    <script src="/prompt_manager/js/data-actions.js"></script>
     <link rel="stylesheet" href="lib/tailwind/comfyui-theme.css">
     <link rel="stylesheet" href="lib/tailwind/styles.css">
     <link rel="stylesheet" href="lib/viewerjs/viewer.min.css">
@@ -98,10 +107,13 @@
                                 <option value="">All Folders</option>
                             </select>
                         </div>
-                        <div>
+                        <div class="relative">
                             <label class="block text-xs font-medium text-pm-secondary mb-1 uppercase tracking-wide">Tags</label>
-                            <input type="text" id="searchTags" placeholder="tag1, tag2..."
+                            <input type="text" id="searchTags" placeholder="tag1, tag2..." autocomplete="off"
                                    class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] placeholder:text-pm-muted focus:outline-none">
+                            <!-- Autocomplete: tags that co-occur with the ones already typed -->
+                            <div id="searchTagSuggestions" role="listbox"
+                                 class="absolute left-0 right-0 top-full mt-1 bg-pm-surface border border-pm rounded-pm-md shadow-pm hidden z-20 max-h-56 overflow-y-auto"></div>
                         </div>
                         <div>
                             <label class="block text-xs font-medium text-pm-secondary mb-1 uppercase tracking-wide">Sort By</label>
@@ -215,6 +227,11 @@
                                 </select>
                                 <span class="text-xs text-pm-secondary">per page</span>
                             </div>
+                            <!-- Session-only toggle; the saved default lives in Settings -->
+                            <label class="flex items-center gap-1.5 text-xs text-pm-secondary cursor-pointer" title="Load the next page as you scroll (this session)">
+                                <input type="checkbox" id="infiniteScrollSession" class="w-3.5 h-3.5 rounded border-pm bg-pm-input text-pm-accent focus:ring-pm-accent">
+                                Infinite scroll
+                            </label>
                         </div>
                         <span class="text-xs font-medium text-pm-secondary bg-pm-input px-2 py-0.5 rounded-full" id="resultsCount">Loading...</span>
                     </div>
@@ -401,6 +418,29 @@
                         </select>
                         <p class="text-xs text-pm-muted mt-1">Choose how the Web UI opens from ComfyUI nodes.</p>
                     </div>
+
+                    <div class="mt-3 flex items-center justify-between">
+                        <div>
+                            <label for="infiniteScrollDefault" class="block text-xs font-medium text-pm-secondary">Infinite Scrolling</label>
+                            <p class="text-xs text-pm-muted">Load the next page of prompts as you scroll. The checkbox in the list header overrides this for the current session.</p>
+                        </div>
+                        <input type="checkbox" id="infiniteScrollDefault" class="w-4 h-4 rounded border-pm bg-pm-input text-pm-accent focus:ring-pm-accent ml-3">
+                    </div>
+                </div>
+
+                <!-- Performance Section -->
+                <div class="border-b border-pm pb-3">
+                    <h4 class="text-xs font-semibold text-pm-secondary mb-3 uppercase tracking-wide">Performance</h4>
+
+                    <div>
+                        <div class="flex items-center justify-between mb-1.5">
+                            <label for="workerThreads" class="text-xs font-medium text-pm-secondary">Worker threads</label>
+                            <span id="workerThreadsValue" class="text-pm-accent text-xs font-mono">1 / 1 cores</span>
+                        </div>
+                        <input type="range" id="workerThreads" min="1" max="1" step="1" value="1"
+                            class="w-full h-1.5 bg-pm-primary rounded-lg appearance-none cursor-pointer accent-[var(--pm-accent)]">
+                        <p class="text-xs text-pm-muted mt-1">Threads used by the image rescan and thumbnail generation. More threads finish sooner; fewer leave CPU for ComfyUI while it generates.</p>
+                    </div>
                 </div>
 
                 <!-- Integrations Section -->
@@ -441,6 +481,11 @@
                                        class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] placeholder:text-pm-muted focus:outline-none">
                                 <p class="text-xs text-pm-muted mt-1">Get your key from <a href="https://civitai.com/user/account" target="_blank" class="text-pm-accent hover:underline">civitai.com/user/account</a></p>
                             </div>
+
+                            <label class="mt-1 flex items-center gap-1.5 text-xs text-pm-secondary cursor-pointer">
+                                <input type="checkbox" id="clearCivitaiKey" class="w-3.5 h-3.5 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
+                                <span>Clear the stored key on save</span>
+                            </label>
 
                             <button id="loraImportBtn" type="button"
                                     class="mt-1 flex items-center gap-1 text-xs text-pm-accent hover:text-pm-accent-hover">
@@ -811,6 +856,12 @@
         </div>
     </div>
 
+    <!-- Minimized scan progress: shown while a scan runs with its modal hidden -->
+    <button id="scanPill" type="button" title="Show scan progress"
+            class="hidden fixed bottom-4 right-4 z-40 px-3 py-1.5 bg-pm-surface border border-pm shadow-pm rounded-pm-md text-xs text-pm hover:bg-pm-hover transition-colors">
+        <span class="inline-block w-1.5 h-1.5 rounded-full bg-pm-accent mr-1.5 align-middle animate-pulse"></span><span id="scanPillText" class="align-middle">Scanning...</span>
+    </button>
+
     <!-- Logs Modal -->
     <div id="logsModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
         <div class="bg-pm-surface rounded-pm-lg max-w-6xl w-full max-h-[90vh] overflow-hidden mx-4 border border-pm shadow-pm">
@@ -1032,7 +1083,7 @@
         <div class="bg-pm-surface rounded-pm-lg p-4 max-w-lg w-full mx-4 border border-pm shadow-pm">
             <div class="flex items-center justify-between mb-4">
                 <h3 class="text-sm font-semibold text-pm">Auto Tag Images</h3>
-                <button onclick="hideModal('autoTagModal')" class="p-1 rounded-pm-sm hover:bg-pm-hover transition-colors">
+                <button onclick="window.admin.hideModal('autoTagModal')" class="p-1 rounded-pm-sm hover:bg-pm-hover transition-colors">
                     <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                     </svg>
@@ -1146,7 +1197,7 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
 
             <!-- Action Buttons -->
             <div class="flex justify-end gap-2">
-                <button onclick="hideModal('autoTagModal')"
+                <button onclick="window.admin.hideModal('autoTagModal')"
                         class="px-3 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Cancel
                 </button>
@@ -1388,7 +1439,8 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
 
     <script src="/prompt_manager/js/comfy-metadata.js"></script>
     <script src="/prompt_manager/js/prompt-list-sort.js"></script>
-    <script src="/prompt_manager/js/admin.js"></script>
+    <script src="/prompt_manager/js/view-router.js"></script>
     <script src="/prompt_manager/js/tags-page.js"></script>
+    <script src="/prompt_manager/js/admin.js"></script>
 </body>
 </html>

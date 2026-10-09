@@ -53,7 +53,8 @@ class TestPromptManagerTextEmptyInput(unittest.TestCase):
     def test_empty_text_with_prepend_append(
         self, mock_db, mock_integ, mock_tracker, mock_monitor
     ):
-        """Empty main text with prepend/append should produce single space, not double."""
+        """Empty main text with prepend/append should produce single space, not
+        double."""
         node = self._make_node(mock_db, mock_integ, mock_tracker, mock_monitor)
         result = node.process_text(text="", prepend_text="before", append_text="after")
         self.assertIsInstance(result, tuple)
@@ -128,7 +129,8 @@ class TestPromptManagerEmptyInput(unittest.TestCase):
     def test_empty_text_with_prepend_append(
         self, mock_db, mock_integ, mock_tracker, mock_monitor
     ):
-        """Empty main text with prepend/append should produce single space, not double."""
+        """Empty main text with prepend/append should produce single space, not
+        double."""
         node, clip = self._make_node_and_clip(
             mock_db, mock_integ, mock_tracker, mock_monitor
         )

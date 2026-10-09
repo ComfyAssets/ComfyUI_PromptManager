@@ -65,54 +65,6 @@ def generate_prompt_hash(text: str) -> str:
     return hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
 
 
-def generate_content_hash(content: dict) -> str:
-    """
-    Generate a hash for prompt content including metadata.
-
-    Creates a comprehensive hash that includes not just the prompt text
-    but also associated metadata like category, tags, and workflow name.
-    This enables detection of prompts that are identical in all aspects.
-
-    Args:
-        content: Dictionary containing prompt data with optional keys:
-                - text: The prompt text
-                - category: Prompt category
-                - tags: List of tags
-                - workflow_name: Associated workflow name
-
-    Returns:
-        SHA256 hexadecimal digest of the normalized content structure
-
-    Note:
-        The hash is generated from a normalized JSON representation with
-        sorted keys and normalized text fields to ensure consistency.
-    """
-    import json
-
-    # Create a normalized representation of the content
-    normalized = {
-        "text": content.get("text", "").strip().lower(),
-        "category": (
-            content.get("category", "").strip().lower()
-            if content.get("category")
-            else ""
-        ),
-        "tags": sorted(
-            [tag.strip().lower() for tag in content.get("tags", []) if tag.strip()]
-        ),
-        "workflow_name": (
-            content.get("workflow_name", "").strip().lower()
-            if content.get("workflow_name")
-            else ""
-        ),
-    }
-
-    # Convert to JSON string for consistent hashing
-    content_str = json.dumps(normalized, sort_keys=True)
-
-    return hashlib.sha256(content_str.encode("utf-8")).hexdigest()
-
-
 def is_duplicate_prompt(text1: str, text2: str, threshold: float = 0.95) -> bool:
     """
     Check if two prompts are likely duplicates using hash comparison.

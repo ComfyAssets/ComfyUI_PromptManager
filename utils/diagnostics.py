@@ -32,8 +32,9 @@ The diagnostics provide:
 
 import os
 import sqlite3
+from contextlib import closing
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 from .logging_config import get_logger
 
@@ -83,7 +84,7 @@ class GalleryDiagnostics:
             db_path = "prompts.db"
 
         if not os.path.isabs(db_path):
-            db_path = os.path.join(extension_root, db_path)
+            db_path = os.path.normpath(os.path.join(extension_root, db_path))
         return db_path
 
     def run_full_diagnostic(self) -> Dict[str, Any]:
@@ -147,7 +148,7 @@ class GalleryDiagnostics:
                     "message": f"Database file not found: {self.db_path}",
                 }
 
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 conn.row_factory = sqlite3.Row
 
                 # Check prompts table
@@ -157,7 +158,7 @@ class GalleryDiagnostics:
 
                 # Check if generated_images table exists
                 cursor = conn.execute("""
-                    SELECT name FROM sqlite_master 
+                    SELECT name FROM sqlite_master
                     WHERE type='table' AND name='generated_images'
                 """)
 
@@ -189,19 +190,22 @@ class GalleryDiagnostics:
         self.logger.info("\n[IMG]  Checking Images Table...")
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 conn.row_factory = sqlite3.Row
 
                 # Check if table exists
                 cursor = conn.execute("""
-                    SELECT name FROM sqlite_master 
+                    SELECT name FROM sqlite_master
                     WHERE type='table' AND name='generated_images'
                 """)
 
                 if not cursor.fetchone():
                     return {
                         "status": "error",
-                        "message": "generated_images table does not exist - run the updated code to create it",
+                        "message": (
+                            "generated_images table does not exist - "
+                            "run the updated code to create it"
+                        ),
                     }
 
                 # Check image records
@@ -211,10 +215,10 @@ class GalleryDiagnostics:
 
                 # Get recent images
                 cursor = conn.execute("""
-                    SELECT gi.*, p.text 
-                    FROM generated_images gi 
-                    LEFT JOIN prompts p ON gi.prompt_id = p.id 
-                    ORDER BY gi.generation_time DESC 
+                    SELECT gi.*, p.text
+                    FROM generated_images gi
+                    LEFT JOIN prompts p ON gi.prompt_id = p.id
+                    ORDER BY gi.generation_time DESC
                     LIMIT 5
                 """)
                 recent_images = [dict(row) for row in cursor.fetchall()]
@@ -361,16 +365,17 @@ class GalleryDiagnostics:
             import watchdog
 
             dependencies["watchdog"] = True
-            self.logger.info(f"   [PASS] watchdog: {watchdog.__version__}")
+            version = getattr(watchdog, "__version__", "unknown version")
+            self.logger.info(f"   [PASS] watchdog: {version}")
         except ImportError:
             self.logger.error("   [FAIL] watchdog: NOT INSTALLED")
 
         # Check PIL
         try:
-            from PIL import Image
+            from PIL import Image  # noqa: F401 - availability probe
 
             dependencies["PIL"] = True
-            self.logger.info(f"   [PASS] PIL (Pillow): Available")
+            self.logger.info("   [PASS] PIL (Pillow): Available")
         except ImportError:
             self.logger.error("   [FAIL] PIL (Pillow): NOT AVAILABLE")
 

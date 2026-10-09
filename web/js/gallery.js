@@ -9,16 +9,69 @@
                 this.currentSubfolder = '';
                 this.expandedFolders = new Set();
                 this.thumbSize = 'md'; // sm, md, lg
+                this.infiniteScroll = false;
+                this.loadingMore = false;
+                // Duplicate scan: a server-side job the modal follows (see scanDuplicates)
+                this.dupScan = ScanProgress.initialState();
+                this.dupSource = null;
+                this.dupResults = null;
+
+                this.api = ApiClient.createApiClient();
+                // Only the newest page request may update the grid
+                this.imagesRequest = ApiClient.latestOnly();
+
+                // Elements rendered with data-action="..." are dispatched here instead of through
+                // inline onclick handlers, so file names and URLs never land inside JavaScript source.
+                this.actionHandlers = {
+                    "open-url": ({ url }) => window.open(url, '_blank'),
+                    "copy-url": ({ url, label }, el) => this.copyUrlWithFeedback(el, url, label),
+                    "select-suggestion": ({ tag }) => this.selectSuggestion(tag),
+                    "remove-tag": ({ index }) => this.removeTag(index),
+                    "remove-review-tag": ({ index }) => this.removeReviewTag(index),
+                };
 
                 this.initializeEventListeners();
+                this.applySettings(this.getSettings());
                 this.loadFolderTree();
                 this.loadImages();
+                this.resumeDuplicateScan();
 
                 // Check thumbnails at startup if enabled
                 this.checkThumbnailsAtStartup();
             }
 
+            handleActionClick(e) {
+                const target = e.target.closest('[data-action]');
+                if (target) DataActions.dispatch(target.dataset, this.actionHandlers, target);
+            }
+
+            copyUrlWithFeedback(el, url, label) {
+                navigator.clipboard.writeText(url).then(() => {
+                    el.textContent = '✓ Copied!';
+                    setTimeout(() => { el.textContent = label; }, 1000);
+                });
+            }
+
+            handleMediaError(img) {
+                if (!img || img.tagName !== 'IMG' || !img.dataset || img.dataset.original === undefined) return;
+                const next = ImageHelpers.fallbackImageSource(img.getAttribute('src'), img.dataset);
+                if (next) {
+                    // The thumbnail failed (stale cache, half-written file): show the original instead
+                    img.dataset.fellBack = '1';
+                    img.src = next;
+                    return;
+                }
+                img.style.display = 'none';
+                const fallback = img.nextElementSibling;
+                if (fallback && fallback.dataset && fallback.dataset.mediaFallback !== undefined) {
+                    fallback.style.display = 'flex';
+                }
+            }
+
             initializeEventListeners() {
+                document.addEventListener('click', (e) => this.handleActionClick(e));
+                // Image load failures do not bubble; capture them once for every card
+                document.addEventListener('error', (e) => this.handleMediaError(e.target), true);
                 document.getElementById('refreshBtn').addEventListener('click', () => this.loadImages());
                 document.getElementById('limitSelector').addEventListener('change', (e) => this.changeLimit(parseInt(e.target.value)));
                 document.getElementById('gridViewBtn').addEventListener('click', () => this.setViewMode('grid'));
@@ -44,6 +97,8 @@
                 document.getElementById('clearCacheBtn').addEventListener('click', () => this.clearCache());
                 document.getElementById('rescanFolderBtn').addEventListener('click', () => this.rescanFolder());
                 document.getElementById('scanDuplicatesBtn').addEventListener('click', () => this.scanDuplicates());
+                document.getElementById('dupScanPill').addEventListener('click', () => this.openDuplicatesModal());
+                document.getElementById('galleryScroll').addEventListener('scroll', () => this.maybeLoadMore(), { passive: true });
                 
                 // Duplicates modal event listeners
                 document.getElementById('closeDuplicatesBtn').addEventListener('click', () => this.hideDuplicatesModal());
@@ -118,9 +173,8 @@
                 // Folder tree events
                 document.getElementById('clearFolderFilterBtn').addEventListener('click', () => {
                     this.currentSubfolder = '';
-                    this.currentPage = 1;
                     this.renderFolderTree();
-                    this.loadImages();
+                    this.loadImages(1);
                 });
 
                 // Resize handle for folder panel
@@ -221,9 +275,8 @@
                         // Click to filter
                         row.addEventListener('click', () => {
                             this.currentSubfolder = fullPath;
-                            this.currentPage = 1;
                             this.renderFolderTree();
-                            this.loadImages();
+                            this.loadImages(1);
                         });
 
                         container.appendChild(row);
@@ -242,9 +295,8 @@
                 allRow.innerHTML = '<span class="inline-block w-4 mr-1"></span><span>All Images</span>';
                 allRow.addEventListener('click', () => {
                     this.currentSubfolder = '';
-                    this.currentPage = 1;
                     this.renderFolderTree();
-                    this.loadImages();
+                    this.loadImages(1);
                 });
                 container.appendChild(allRow);
 
@@ -260,6 +312,7 @@
                     lg: { cols: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '12px' },
                 };
                 const s = sizes[size] || sizes.md;
+                grid.classList.remove('gallery-columns-custom'); // an explicit size wins over the column setting
                 grid.style.gridTemplateColumns = s.cols;
                 grid.style.gap = s.gap;
                 // Update button states
@@ -275,37 +328,65 @@
                 });
             }
 
-            async loadImages() {
-                this.showLoading();
+            /**
+             * Load one page of images. `page` is committed to this.currentPage only after the
+             * server answered, and a newer request supersedes an older one still in flight.
+             */
+            async loadImages(page = this.currentPage, { append = false } = {}) {
+                if (!append) this.showLoading();
+                else document.getElementById('loadingStatus').textContent = 'Loading more...';
+
+                const offset = (page - 1) * this.limit;
+                let url = `/prompt_manager/images/output?limit=${this.limit}&offset=${offset}`;
+                if (this.currentSubfolder) {
+                    url += `&subfolder=${encodeURIComponent(this.currentSubfolder)}`;
+                }
 
                 try {
-                    const offset = (this.currentPage - 1) * this.limit;
-                    let url = `/prompt_manager/images/output?limit=${this.limit}&offset=${offset}`;
-                    if (this.currentSubfolder) {
-                        url += `&subfolder=${encodeURIComponent(this.currentSubfolder)}`;
-                    }
-                    const response = await fetch(url);
-                    
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                    }
-                    
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        this.images = data.images;
-                        this.total = data.total;
-                        this.updateStats();
-                        this.renderGallery();
-                        this.updatePagination();
-                        document.getElementById('loadingStatus').textContent = 'Loaded';
-                    } else {
-                        throw new Error(data.error || 'Failed to load images');
-                    }
-                    
+                    const data = await this.imagesRequest((signal) => this.api.get(url, { signal }));
+                    if (data === ApiClient.STALE) return;
+
+                    const next = ListState.nextPageState(
+                        { page: this.currentPage, limit: this.limit, total: this.total },
+                        { page, total: data.total },
+                    );
+                    this.currentPage = next.page;
+                    this.total = next.total;
+                    this.images = append ? this.images.concat(data.images) : data.images;
+                    this.updateStats();
+                    this.renderGallery();
+                    this.updatePagination();
+                    document.getElementById('loadingStatus').textContent = 'Loaded';
+                    this.maybeLoadMore(); // a short page may not fill the viewport
                 } catch (error) {
                     console.error('Error loading images:', error);
                     this.showError(error.message);
+                }
+            }
+
+            maybeLoadMore() {
+                const el = document.getElementById('galleryScroll');
+                if (!el) return;
+                const wanted = ListState.shouldLoadMore({
+                    infiniteScroll: this.infiniteScroll,
+                    loading: this.loadingMore,
+                    page: this.currentPage,
+                    limit: this.limit,
+                    total: this.total,
+                    scrollTop: el.scrollTop,
+                    clientHeight: el.clientHeight,
+                    scrollHeight: el.scrollHeight,
+                });
+                if (wanted) this.loadMoreImages();
+            }
+
+            async loadMoreImages() {
+                if (this.loadingMore) return;
+                this.loadingMore = true;
+                try {
+                    await this.loadImages(this.currentPage + 1, { append: true });
+                } finally {
+                    this.loadingMore = false;
                 }
             }
 
@@ -329,8 +410,8 @@
             }
 
             updateStats() {
-                const start = (this.currentPage - 1) * this.limit + 1;
-                const end = Math.min(this.currentPage * this.limit, this.total);
+                const start = this.infiniteScroll ? 1 : (this.currentPage - 1) * this.limit + 1;
+                const end = this.infiniteScroll ? this.images.length : Math.min(this.currentPage * this.limit, this.total);
                 
                 document.getElementById('showingStart').textContent = this.images.length > 0 ? start : 0;
                 document.getElementById('showingEnd').textContent = end;
@@ -384,6 +465,7 @@
             renderGridView() {
                 const grid = document.getElementById('galleryGrid');
                 const list = document.getElementById('galleryList');
+                const showInfo = this.getSettings().showImageInfo;
                 
                 list.classList.add('hidden');
                 grid.classList.remove('hidden');
@@ -398,18 +480,18 @@
                     return `
                     <div class="image-item bg-pm-surface rounded-pm-md overflow-hidden border border-pm hover:border-pm cursor-pointer group">
                         <div class="aspect-square bg-pm-primary overflow-hidden relative">
-                            <img src="${displayUrl}"
-                                 alt="${this.escapeHtml(image.filename)}"
+                            <img src="${escapeHtml(displayUrl)}"
+                                 alt="${escapeHtml(image.filename)}"
                                  class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                                  loading="lazy"
-                                 data-original="${image.url}"
-                                 data-thumbnail="${image.thumbnail_url || ''}"
-                                 data-caption="${this.escapeHtml(this.formatImageCaption(image))}"
-                                 data-media-type="${mediaType}"
+                                 data-original="${escapeHtml(image.url)}"
+                                 data-thumbnail="${escapeHtml(image.thumbnail_url || '')}"
+                                 data-caption="${escapeHtml(this.formatImageCaption(image))}"
+                                 data-media-type="${escapeHtml(mediaType)}"
                                  data-is-video="${isVideo}"
-                                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'">
+>
                             <!-- Fallback for failed thumbnails -->
-                            <div class="hidden absolute inset-0 bg-pm-surface text-pm-secondary flex items-center justify-center">
+                            <div data-media-fallback class="hidden absolute inset-0 bg-pm-surface text-pm-secondary flex items-center justify-center">
                                 <div class="text-center">
                                     <div class="text-lg mb-1">${isVideo ? '🎬' : '🖼️'}</div>
                                     <div class="text-xs">Failed to load</div>
@@ -432,8 +514,8 @@
                             ${isVideo ? '<div class="absolute top-2 left-2 px-2 py-1 bg-pm-error text-pm text-xs rounded" title="Video file">VIDEO</div>' : ''}
                         </div>
                         <div class="p-2">
-                            <div class="text-xs text-pm-secondary truncate" title="${this.escapeHtml(image.filename)}">${this.escapeHtml(image.filename)}</div>
-                            <div class="text-xs text-pm-muted">${this.formatFileSize(image.size)}${hasThumb ? ' • Fast' : ''}${isVideo ? ' • Video' : ''}</div>
+                            <div class="text-xs text-pm-secondary truncate" title="${escapeHtml(image.filename)}">${escapeHtml(image.filename)}</div>
+                            ${showInfo ? `<div class="text-xs text-pm-muted">${this.formatFileSize(image.size)}${hasThumb ? ' • Fast' : ''}${isVideo ? ' • Video' : ''}</div>` : ''}
                         </div>
                     </div>
                 `;
@@ -443,6 +525,7 @@
             renderListView() {
                 const grid = document.getElementById('galleryGrid');
                 const list = document.getElementById('galleryList');
+                const showInfo = this.getSettings().showImageInfo;
                 
                 grid.classList.add('hidden');
                 list.classList.remove('hidden');
@@ -457,23 +540,22 @@
                     return `
                     <div class="image-item bg-pm-surface rounded-pm-md border border-pm hover:border-pm cursor-pointer group flex items-center p-4">
                         <div class="w-16 h-16 bg-pm-primary rounded-pm-md overflow-hidden flex-shrink-0 mr-4 relative">
-                            <img src="${displayUrl}"
-                                 alt="${this.escapeHtml(image.filename)}"
+                            <img src="${escapeHtml(displayUrl)}"
+                                 alt="${escapeHtml(image.filename)}"
                                  class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                                  loading="lazy"
-                                 data-original="${image.url}"
-                                 data-thumbnail="${image.thumbnail_url || ''}"
-                                 data-caption="${this.escapeHtml(this.formatImageCaption(image))}"
-                                 data-media-type="${mediaType}"
-                                 data-is-video="${isVideo}"
-                                 onerror="this.style.display='none'">
+                                 data-original="${escapeHtml(image.url)}"
+                                 data-thumbnail="${escapeHtml(image.thumbnail_url || '')}"
+                                 data-caption="${escapeHtml(this.formatImageCaption(image))}"
+                                 data-media-type="${escapeHtml(mediaType)}"
+                                 data-is-video="${isVideo}">
                             ${hasThumb ? '<div class="absolute top-1 right-1 w-2 h-2 bg-pm-success rounded-full" title="Thumbnail available"></div>' : ''}
                             ${isVideo ? '<div class="absolute top-1 left-1 w-4 h-3 bg-pm-error text-pm text-xs flex items-center justify-center rounded" title="Video">▶</div>' : ''}
                         </div>
                         <div class="flex-1 min-w-0">
-                            <div class="text-sm font-medium text-pm truncate">${this.escapeHtml(image.filename)}${isVideo ? ' 🎬' : ''}</div>
-                            <div class="text-xs text-pm-secondary">${this.formatFileSize(image.size)} • ${new Date(image.modified_time * 1000).toLocaleDateString()}${hasThumb ? ' • Fast' : ''}${isVideo ? ' • Video' : ''}</div>
-                            <div class="text-xs text-pm-muted truncate">${image.relative_path}</div>
+                            <div class="text-sm font-medium text-pm truncate">${escapeHtml(image.filename)}${isVideo ? ' 🎬' : ''}</div>
+                            ${showInfo ? `<div class="text-xs text-pm-secondary">${this.formatFileSize(image.size)} • ${new Date(image.modified_time * 1000).toLocaleDateString()}${hasThumb ? ' • Fast' : ''}${isVideo ? ' • Video' : ''}</div>` : ''}
+                            <div class="text-xs text-pm-muted truncate">${escapeHtml(image.relative_path)}</div>
                         </div>
                         <div class="flex-shrink-0 ml-4">
                             ${isVideo ? `
@@ -534,17 +616,14 @@
                     className: '',
                     title: [1, (image, imageData) => `${imageData.alt} (${this.images.length} images) - Original Image`],
                     viewed: (event) => {
-                        console.log('ViewerJS opened original image for metadata');
                         // Add metadata sidebar when ViewerJS opens
                         // Use the original image URL from data-original attribute
                         const originalImg = event.detail.originalImage;
                         setTimeout(() => this.addMetadataSidebar(originalImg), 100);
                     },
                     show: function() {
-                        console.log('Viewer shown - displaying original image');
                     },
                     shown: function() {
-                        console.log('ViewerJS initialization complete - ready for metadata');
                     },
                     hide: function() {
                         // Remove sidebar when viewer closes
@@ -605,7 +684,6 @@
 
                 // Load metadata for the current image (ALWAYS use original for metadata)
                 const originalImageUrl = originalImage.dataset.original || originalImage.src;
-                console.log('Loading metadata from original image:', originalImageUrl);
                 this.loadImageMetadata(originalImageUrl, sidebar.querySelector('#metadata-content'));
 
                 // Listen for ViewerJS view changes to update metadata
@@ -660,7 +738,6 @@
                             const isVideo = img.dataset.isVideo === 'true';
                             const mediaType = img.dataset.mediaType || 'image';
                             
-                            console.log('Opening original media for viewing:', originalMediaUrl, 'Type:', mediaType);
                             
                             if (isVideo) {
                                 // For videos, use our custom video modal
@@ -705,7 +782,7 @@
                         </button>
                         
                         <!-- Main image -->
-                        <img src="${imageUrl}" alt="${caption}" class="max-w-full max-h-full object-contain" id="modalImage">
+                        <img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(caption)}" class="max-w-full max-h-full object-contain" id="modalImage">
                     </div>
                     
                     <!-- Metadata sidebar (matching the screenshot) -->
@@ -748,14 +825,18 @@
                     }
                 });
                 
-                // Close on Escape key
+                // Close on Escape key; the listener is dropped once the modal leaves the
+                // document, whichever way it was closed
                 const escapeHandler = (e) => {
-                    if (e.key === 'Escape') {
-                        modal.remove();
-                        document.removeEventListener('keydown', escapeHandler);
-                    }
+                    if (e.key === 'Escape') modal.remove();
                 };
                 document.addEventListener('keydown', escapeHandler);
+                const closeObserver = new MutationObserver(() => {
+                    if (modal.isConnected) return;
+                    document.removeEventListener('keydown', escapeHandler);
+                    closeObserver.disconnect();
+                });
+                closeObserver.observe(document.body, { childList: true });
                 
                 document.body.appendChild(modal);
                 
@@ -806,7 +887,7 @@
                         
                         <!-- Main video -->
                         <video id="modalVideo" 
-                               src="${videoUrl}" 
+                               src="${escapeHtml(videoUrl)}" 
                                class="max-w-full max-h-full object-contain"
                                controls
                                ${settings.videoAutoplay ? 'autoplay' : ''}
@@ -833,7 +914,7 @@
                                 </svg>
                                 <h1 class="text-sm font-semibold text-pm">Video Info</h1>
                             </div>
-                            <button class="text-xs text-pm-accent hover:text-pm-accent transition-colors" onclick="navigator.clipboard.writeText('${videoUrl}').then(() => this.textContent = '✓ Copied!'); setTimeout(() => this.textContent = '📋 COPY URL', 1000)">
+                            <button class="text-xs text-pm-accent hover:text-pm-accent transition-colors" data-action="copy-url" data-url="${escapeHtml(videoUrl)}" data-label="📋 COPY URL">
                                 📋 COPY URL
                             </button>
                         </div>
@@ -852,14 +933,18 @@
                     }
                 });
                 
-                // Close on Escape key
+                // Close on Escape key; the listener is dropped once the modal leaves the
+                // document, whichever way it was closed
                 const escapeHandler = (e) => {
-                    if (e.key === 'Escape') {
-                        modal.remove();
-                        document.removeEventListener('keydown', escapeHandler);
-                    }
+                    if (e.key === 'Escape') modal.remove();
                 };
                 document.addEventListener('keydown', escapeHandler);
+                const closeObserver = new MutationObserver(() => {
+                    if (modal.isConnected) return;
+                    document.removeEventListener('keydown', escapeHandler);
+                    closeObserver.disconnect();
+                });
+                closeObserver.observe(document.body, { childList: true });
                 
                 document.body.appendChild(modal);
                 
@@ -986,12 +1071,12 @@
                         <div class="space-y-2">
                             <h2 class="text-sm font-medium text-pm-secondary">File Info</h2>
                             <div class="text-xs text-pm-secondary font-mono bg-pm-surface p-2 rounded break-all cursor-pointer hover:bg-pm-hover"
-                                 onclick="navigator.clipboard.writeText('${videoUrl}').then(() => this.textContent = 'Copied!'); setTimeout(() => this.textContent = '${fileName}', 1000)"
+                                 data-action="copy-url" data-url="${escapeHtml(videoUrl)}" data-label="${escapeHtml(fileName)}"
                                  title="Click to copy path">
-                                ${fileName}
+                                ${escapeHtml(fileName)}
                             </div>
                             <div class="text-xs text-pm-muted">
-                                Type: ${fileExt} Video
+                                Type: ${escapeHtml(fileExt)} Video
                             </div>
                         </div>
 
@@ -1067,7 +1152,7 @@
                     container.innerHTML = `
                         <div class="bg-pm-error-tint border border-pm-error rounded-pm-md p-4">
                             <h4 class="text-pm-error font-medium mb-2">❌ Video Info Error</h4>
-                            <p class="text-pm-secondary text-sm">${error.message}</p>
+                            <p class="text-pm-secondary text-sm">${escapeHtml(error.message)}</p>
                         </div>
                     `;
                 }
@@ -1161,7 +1246,7 @@
                     container.innerHTML = `
                         <div class="bg-pm-error-tint border border-pm-error rounded-pm-md p-4">
                             <h4 class="text-pm-error font-medium mb-2">❌ Metadata Error</h4>
-                            <p class="text-pm-secondary text-sm">${error.message}</p>
+                            <p class="text-pm-secondary text-sm">${escapeHtml(error.message)}</p>
                         </div>
                     `;
                 }
@@ -1185,7 +1270,7 @@
                     <div class="space-y-2">
                         <h2 class="text-sm font-medium text-pm-secondary">File Path</h2>
                         <div class="text-xs text-pm-secondary font-mono bg-pm-surface p-2 rounded break-all cursor-pointer hover:bg-pm-hover" data-copy-path title="Click to copy">
-                            ${metadata.imagePath || 'Unknown'}
+                            ${escapeHtml(metadata.imagePath || 'Unknown')}
                         </div>
                     </div>
 
@@ -1195,7 +1280,7 @@
                         <div class="space-y-2 text-xs">
                             <div class="flex justify-between">
                                 <span class="text-pm-secondary">Model:</span>
-                                <span class="text-pm">${metadata.checkpoint || 'Unknown'}</span>
+                                <span class="text-pm">${escapeHtml(metadata.checkpoint || 'Unknown')}</span>
                             </div>
                         </div>
                     </div>
@@ -1237,19 +1322,19 @@
                         <div class="space-y-2 text-xs">
                             <div class="flex justify-between">
                                 <span class="text-pm-secondary">CFG SCALE:</span>
-                                <span class="text-pm px-2 py-1 bg-pm-surface rounded text-xs">${metadata.cfgScale || 'Unknown'}</span>
+                                <span class="text-pm px-2 py-1 bg-pm-surface rounded text-xs">${escapeHtml(metadata.cfgScale || 'Unknown')}</span>
                             </div>
                             <div class="flex justify-between">
                                 <span class="text-pm-secondary">STEPS:</span>
-                                <span class="text-pm px-2 py-1 bg-pm-surface rounded text-xs">${metadata.steps || 'Unknown'}</span>
+                                <span class="text-pm px-2 py-1 bg-pm-surface rounded text-xs">${escapeHtml(metadata.steps || 'Unknown')}</span>
                             </div>
                             <div class="flex justify-between">
                                 <span class="text-pm-secondary">SAMPLER:</span>
-                                <span class="text-pm px-2 py-1 bg-pm-surface rounded text-xs">${metadata.sampler || 'Unknown'}</span>
+                                <span class="text-pm px-2 py-1 bg-pm-surface rounded text-xs">${escapeHtml(metadata.sampler || 'Unknown')}</span>
                             </div>
                             <div class="flex justify-between">
                                 <span class="text-pm-secondary">SEED:</span>
-                                <span class="text-pm font-mono px-2 py-1 bg-pm-surface rounded text-xs">${metadata.seed || 'Unknown'}</span>
+                                <span class="text-pm font-mono px-2 py-1 bg-pm-surface rounded text-xs">${escapeHtml(metadata.seed || 'Unknown')}</span>
                             </div>
                         </div>
                     </div>
@@ -1340,10 +1425,13 @@
                 };
                 document.addEventListener('keydown', keyHandler);
                 
-                // Clean up on modal close
-                modal.addEventListener('remove', () => {
+                // 'remove' is not a DOM event; watch for the modal leaving the document instead
+                const navObserver = new MutationObserver(() => {
+                    if (modal.isConnected) return;
                     document.removeEventListener('keydown', keyHandler);
+                    navObserver.disconnect();
                 });
+                navObserver.observe(document.body, { childList: true });
                 
                 // Initial button state
                 updateImage(this.currentImageIndex);
@@ -1406,7 +1494,7 @@
             showFullPrompt(type) {
                 if (this.currentMetadata) {
                     const prompt = type === 'positive' ? this.currentMetadata.positivePrompt : this.currentMetadata.negativePrompt;
-                    const safeType = this.escapeHtml(type.charAt(0).toUpperCase() + type.slice(1));
+                    const safeType = escapeHtml(type.charAt(0).toUpperCase() + type.slice(1));
                     const newWindow = window.open('', '_blank');
                     const doc = newWindow.document;
                     doc.open();
@@ -1431,15 +1519,12 @@
             showWorkflowData() {
                 if (this.currentMetadata && this.currentMetadata.workflow) {
                     const newWindow = window.open('', '_blank');
-                    newWindow.document.write(`
-                        <html>
-                            <head><title>ComfyUI Workflow Data</title></head>
-                            <body style="background: #111; color: #fff; font-family: monospace; padding: 20px;">
-                                <h2>ComfyUI Workflow JSON</h2>
-                                <pre style="background: #222; padding: 15px; border-radius: 5px; overflow: auto;">${JSON.stringify(this.currentMetadata.workflow, null, 2)}</pre>
-                            </body>
-                        </html>
-                    `);
+                    if (!newWindow) {
+                        this.showNotification('Popup blocked: allow popups to view the workflow', 'warning');
+                        return;
+                    }
+                    newWindow.document.write(ImageHelpers.workflowDocumentHtml(this.currentMetadata.workflow));
+                    newWindow.document.close();
                 }
             }
 
@@ -1487,46 +1572,13 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 if (!text || text === 'No prompt found' || text === 'No negative prompt found') {
                     return `<span class="text-pm-muted italic">${text || 'No prompt found'}</span>`;
                 }
-                return this.escapeHtml(text);
-            }
-
-            escapeHtml(text) {
-                const div = document.createElement('div');
-                div.textContent = text;
-                return div.innerHTML;
+                return escapeHtml(text);
             }
 
             unescapeHtml(text) {
                 const div = document.createElement('div');
                 div.innerHTML = text;
                 return div.textContent;
-            }
-
-            showNotification(message, type = 'info') {
-                const notification = document.createElement('div');
-                notification.className = `fixed top-4 right-4 px-4 py-2 rounded-pm-md shadow-pm text-sm z-[20000] transition-all duration-300 transform translate-x-full`;
-
-                const colors = {
-                    success: "bg-pm-success text-pm",
-                    error: "bg-pm-error text-pm",
-                    warning: "bg-pm-warning text-pm",
-                    info: "bg-pm-accent text-pm"
-                };
-
-                notification.className += ` ${colors[type] || colors.info}`;
-                notification.textContent = message;
-
-                document.body.appendChild(notification);
-
-                setTimeout(() => notification.classList.remove("translate-x-full"), 100);
-                setTimeout(() => {
-                    notification.classList.add("translate-x-full");
-                    setTimeout(() => {
-                        if (notification.parentNode) {
-                            document.body.removeChild(notification);
-                        }
-                    }, 300);
-                }, 3000);
             }
 
             formatImageCaption(image) {
@@ -1551,47 +1603,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }
             }
 
-            async parsePNGMetadata(arrayBuffer) {
-                const dataView = new DataView(arrayBuffer);
-                let offset = 8; // Skip PNG signature
-                const metadata = {};
-
-                while (offset < arrayBuffer.byteLength - 8) {
-                    const length = dataView.getUint32(offset);
-                    const type = new TextDecoder().decode(arrayBuffer.slice(offset + 4, offset + 8));
-                    
-                    if (type === 'tEXt' || type === 'iTXt' || type === 'zTXt') {
-                        const chunkData = arrayBuffer.slice(offset + 8, offset + 8 + length);
-                        let text;
-                        
-                        if (type === 'tEXt') {
-                            text = new TextDecoder().decode(chunkData);
-                        } else if (type === 'iTXt') {
-                            // iTXt format: keyword\0compression\0language\0translated_keyword\0text
-                            const textData = new TextDecoder().decode(chunkData);
-                            const parts = textData.split('\0');
-                            if (parts.length >= 5) {
-                                metadata[parts[0]] = parts[4];
-                            }
-                            text = textData;
-                        } else if (type === 'zTXt') {
-                            // zTXt is compressed - basic parsing (might need proper decompression)
-                            text = new TextDecoder().decode(chunkData);
-                        }
-                        
-                        // Parse the text chunk for key-value pairs
-                        const nullIndex = text.indexOf('\0');
-                        if (nullIndex !== -1) {
-                            const key = text.substring(0, nullIndex);
-                            const value = text.substring(nullIndex + 1);
-                            metadata[key] = value;
-                        }
-                    }
-                    
-                    offset += 8 + length + 4; // Move to next chunk (8 = length + type, 4 = CRC)
-                }
-
-                return metadata;
+            parsePNGMetadata(arrayBuffer) {
+                return PngMetadata.parsePngTextChunks(arrayBuffer);
             }
 
             extractComfyUIData(metadata) {
@@ -1613,7 +1626,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             workflowData = JSON.parse(cleanedJson);
                             break;
                         } catch (e) {
-                            console.log('Failed to parse workflow field:', field);
+                            console.warn('Failed to parse workflow field:', field);
                         }
                     }
                 }
@@ -1629,7 +1642,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             promptData = JSON.parse(cleanedJson);
                             break;
                         } catch (e) {
-                            console.log('Failed to parse prompt field:', field);
+                            console.warn('Failed to parse prompt field:', field);
                         }
                     }
                 }
@@ -1679,6 +1692,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 document.getElementById('cacheMetadataToggle').checked = settings.cacheMetadata;
                 document.getElementById('showFilePathsToggle').checked = settings.showFilePaths;
                 document.getElementById('sidebarCollapsedByDefaultToggle').checked = settings.sidebarCollapsedByDefault;
+                document.getElementById('infiniteScrollToggle').checked = settings.infiniteScroll;
                 document.getElementById('showImageInfoToggle').checked = settings.showImageInfo;
                 document.getElementById('debugModeToggle').checked = settings.debugMode;
                 document.getElementById('checkThumbnailsAtStartup').checked = settings.checkThumbnailsAtStartup;
@@ -1702,37 +1716,14 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
 
             getSettings() {
-                const defaultSettings = {
-                    lazyLoading: true,
-                    imageQuality: 'medium',
-                    defaultViewMode: 'grid',
-                    defaultLimit: 100,
-                    gridColumns: 8,
-                    showImageInfo: true,
-                    autoLoadMetadata: true,
-                    cacheMetadata: true,
-                    showFilePaths: true,
-                    sidebarCollapsedByDefault: false,
-                    debugMode: false,
-                    apiTimeout: 30,
-                    thumbnailsGenerated: false,
-                    checkThumbnailsAtStartup: true,
-                    // Video settings
-                    videoAutoplay: false,
-                    videoMute: true,
-                    videoLoop: true
-                };
-
+                let stored = null;
                 try {
-                    const stored = localStorage.getItem('gallerySettings');
-                    if (stored) {
-                        return { ...defaultSettings, ...JSON.parse(stored) };
-                    }
+                    const raw = localStorage.getItem('gallerySettings');
+                    if (raw) stored = JSON.parse(raw);
                 } catch (e) {
                     console.warn('Failed to load settings from localStorage:', e);
                 }
-
-                return defaultSettings;
+                return GallerySettings.normalizeGallerySettings(stored);
             }
 
             saveSettings() {
@@ -1747,6 +1738,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     cacheMetadata: document.getElementById('cacheMetadataToggle').checked,
                     showFilePaths: document.getElementById('showFilePathsToggle').checked,
                     sidebarCollapsedByDefault: document.getElementById('sidebarCollapsedByDefaultToggle').checked,
+                    infiniteScroll: document.getElementById('infiniteScrollToggle').checked,
                     debugMode: document.getElementById('debugModeToggle').checked,
                     apiTimeout: parseInt(document.getElementById('apiTimeoutInput').value),
                     thumbnailsGenerated: this.getSettings().thumbnailsGenerated, // Preserve this
@@ -1779,29 +1771,34 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
 
             applySettings(settings) {
-                // Apply grid columns
+                // Runs at startup and after Save, so every display setting takes effect
+                // without a reload. Settings that change what is rendered re-render.
+                const loaded = this.images.length > 0;
                 this.updateGridColumns(settings.gridColumns);
-                
-                // Apply default view mode if different
+
+                const limitChanged = this.limit !== settings.defaultLimit;
+                this.limit = settings.defaultLimit;
+                const scrollChanged = this.infiniteScroll !== settings.infiniteScroll;
+                this.infiniteScroll = settings.infiniteScroll;
+                const limitSelector = document.getElementById('limitSelector');
+                if (limitSelector) limitSelector.value = String(settings.defaultLimit);
+
                 if (this.viewMode !== settings.defaultViewMode) {
                     this.setViewMode(settings.defaultViewMode);
+                } else if (loaded && !limitChanged) {
+                    this.renderGallery(); // e.g. "Show Media Info" toggled
                 }
-                
-                // Apply default limit if different
-                if (this.limit !== settings.defaultLimit) {
-                    this.limit = settings.defaultLimit;
-                    document.getElementById('limitSelector').value = settings.defaultLimit;
-                }
+                if (loaded && (limitChanged || scrollChanged)) this.loadImages(1);
             }
 
             updateGridColumns(columns) {
                 const gridContainer = document.getElementById('galleryGrid');
-                if (gridContainer) {
-                    // Remove existing column classes
-                    gridContainer.className = gridContainer.className.replace(/xl:grid-cols-\d+/g, '');
-                    // Add new column class
-                    gridContainer.classList.add(`xl:grid-cols-${columns}`);
-                }
+                if (!gridContainer) return;
+                // The Tailwind column classes are compiled for a fixed set of values and a
+                // wider breakpoint overrides them; an explicit template wins on desktop widths.
+                gridContainer.style.removeProperty('grid-template-columns'); // undo a thumb-size override
+                gridContainer.style.setProperty('--gallery-columns', GallerySettings.gridColumnsStyle(columns));
+                gridContainer.classList.add('gallery-columns-custom');
             }
 
             async generateThumbnails() {
@@ -1841,7 +1838,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     progressText.textContent = 'Completed!';
                     progressDetails.textContent = `Generated ${result.count} new, skipped ${result.skipped || 0} existing (${result.total_images} total) in ${result.elapsed_time}s`;
                     
-                    this.showNotification('Thumbnails generated successfully!', 'success');
+                    this.notifyThumbnailsDone(result);
                     
                     // Hide progress after a delay
                     setTimeout(() => {
@@ -1883,13 +1880,12 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     // Show cancel button
                     cancelBtn.classList.remove('hidden');
                     
-                    console.log(`Starting thumbnail generation with quality: ${options.quality}`);
                     
                     // Set up Server-Sent Events
-                    const eventSource = new EventSource(`/prompt_manager/images/generate-thumbnails/progress?quality=${options.quality}`);
+                    // The progress route is POST (it generates files), so read it with SseStream like the autotag streams
+                    const eventSource = SseStream.connect(`/prompt_manager/images/generate-thumbnails/progress?quality=${encodeURIComponent(options.quality)}`, { method: 'POST' });
                     
                     // Log connection
-                    console.log('EventSource connected for thumbnail generation progress');
                     
                     let cancelled = false;
                     let resultData = null;
@@ -1918,7 +1914,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         
                         // Log status updates
                         if (this.getSettings().debugMode) {
-                            console.log(`Thumbnail generation status: ${data.phase} - ${data.message}`);
                         }
                     });
                     
@@ -1938,7 +1933,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         
                         // Log start event
                         if (this.getSettings().debugMode) {
-                            console.log(`Thumbnail generation started: ${data.total_images} files to process`);
                         }
                     });
                     
@@ -1958,7 +1952,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         
                         // More detailed progress information
                         const elapsedText = data.elapsed ? ` | Time: ${Math.floor(data.elapsed)}s` : '';
-                        progressDetails.textContent = `Generated: ${data.generated}, Skipped: ${data.skipped} | Rate: ${data.rate} img/s${elapsedText}`;
+                        const failedText = data.error_count ? `, Failed: ${data.error_count}` : '';
+                        progressDetails.textContent = `Generated: ${data.generated}, Skipped: ${data.skipped}${failedText} | Rate: ${data.rate} img/s${elapsedText}`;
                         
                         // Update ETA
                         if (data.eta > 0 && data.eta < 3600) {
@@ -1970,7 +1965,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         
                         // Log to console for debugging if debug mode is enabled
                         if (this.getSettings().debugMode) {
-                            console.log(`Thumbnail generation progress: ${data.processed}/${data.total_images} - ${data.current_file}`);
                         }
                     });
                     
@@ -1998,7 +1992,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         
                         // Log completion details
                         if (this.getSettings().debugMode) {
-                            console.log('Thumbnail generation completed:', resultData);
                             if (resultData.errors && resultData.errors.length > 0) {
                                 console.warn('Thumbnail generation errors:', resultData.errors);
                             }
@@ -2012,6 +2005,17 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         resolve(resultData);
                     });
                     
+                    // Per-file failures: count them, keep listening
+                    eventSource.addEventListener('file_error', (event) => {
+                        if (cancelled) return;
+                        try {
+                            const data = JSON.parse(event.data);
+                            console.warn('Thumbnail failed:', data.current_file || data.file || '', data.error || '');
+                        } catch (e) {
+                            console.warn('Thumbnail failed (unparseable event)');
+                        }
+                    });
+
                     // Handle errors
                     eventSource.addEventListener('error', (event) => {
                         if (cancelled) return;
@@ -2032,8 +2036,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         console.error('EventSource readyState:', eventSource.readyState);
                         
                         // Check if connection is closing normally
-                        if (eventSource.readyState === EventSource.CLOSED) {
-                            console.log('EventSource connection closed');
+                        if (eventSource.readyState === eventSource.CLOSED) {
                         } else {
                             console.error('EventSource connection failed');
                         }
@@ -2047,6 +2050,14 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         if (!resultData) {
                             reject(new Error('Connection to server lost during thumbnail generation'));
                         }
+                    };
+
+                    // Stream ended without a complete/error frame (close() does not trigger this)
+                    eventSource.onclose = () => {
+                        if (cancelled || resultData) return;
+                        cancelBtn.removeEventListener('click', cancelHandler);
+                        cancelBtn.classList.add('hidden');
+                        reject(new Error('Connection to server closed before thumbnail generation finished'));
                     };
                 });
             }
@@ -2086,7 +2097,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             
                             if (response.ok) {
                                 const data = await response.json();
-                                console.log('Server thumbnails cleared:', data);
                             }
                         } catch (e) {
                             console.warn('Could not clear server thumbnails:', e);
@@ -2113,9 +2123,12 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 btn.textContent = 'Scanning...';
                 
                 try {
-                    // Force reload images
-                    await this.loadImages();
-                    this.showNotification('Folder rescanned successfully!', 'success');
+                    // The listing is cached on the server; ask it to rewalk the folders first
+                    const result = await this.api.post('/prompt_manager/gallery/rescan', {});
+                    this.hideSettings();
+                    await Promise.all([this.loadFolderTree(), this.loadImages(1)]);
+                    const where = result.roots === 1 ? 'the output folder' : `${result.roots} folders`;
+                    this.showNotification(`Rescanned ${where}: ${result.total} files`, 'success');
                 } catch (error) {
                     console.error('Rescan error:', error);
                     this.showNotification('Failed to rescan folder', 'error');
@@ -2125,48 +2138,149 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }
             }
 
-            async scanDuplicates() {
-                this.showDuplicatesModal();
-                
-                const btn = document.getElementById('scanDuplicatesBtn');
-                btn.disabled = true;
-                btn.textContent = 'Scanning...';
-                
-                try {
-                    const response = await fetch('/prompt_manager/scan_duplicates');
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        this.displayDuplicates(data.duplicates || []);
-                        this.showNotification(`Found ${data.duplicates?.length || 0} duplicate image groups`, 'info');
-                    } else {
-                        throw new Error(data.error || 'Failed to scan for duplicate images');
+            // ── Duplicate scan ──────────────────────────────────────────────
+            // The scan runs on the server (POST /scan_duplicates/stream starts or attaches).
+            // Closing the modal only hides it: a pill shows progress and reopens it, and a
+            // reload re-attaches to a scan that is still running.
+            scanDuplicates() {
+                if (this.dupScan.status === ScanProgress.RUNNING) {
+                    this.openDuplicatesModal();
+                    return;
+                }
+                this.dupResults = null;
+                this.dupScan = ScanProgress.reduceScanEvent(ScanProgress.initialState(), {
+                    type: 'progress', progress: 0, status: 'Starting...', processed: 0, found: 0,
+                });
+                this.setDuplicateButton(true);
+                this.openDuplicatesModal();
+                this.attachDuplicateStream();
+            }
+
+            attachDuplicateStream() {
+                if (this.dupSource) this.dupSource.close();
+                const source = SseStream.connect('/prompt_manager/scan_duplicates/stream', { method: 'POST', body: '{}' });
+                this.dupSource = source;
+                source.onmessage = (e) => {
+                    let data;
+                    try {
+                        data = JSON.parse(e.data);
+                    } catch (_) {
+                        return;
                     }
-                } catch (error) {
-                    console.error('Duplicate scan error:', error);
-                    this.showNotification('Failed to scan for duplicate images', 'error');
+                    this.applyDuplicateEvent(data);
+                };
+                source.onerror = () => {
+                    if (this.dupSource !== source || this.dupScan.status !== ScanProgress.RUNNING) return;
+                    setTimeout(() => this.resumeDuplicateScan(), 2000);
+                };
+                source.onclose = () => {
+                    if (this.dupSource === source && this.dupScan.status === ScanProgress.RUNNING) this.resumeDuplicateScan();
+                };
+            }
+
+            async resumeDuplicateScan() {
+                let status;
+                try {
+                    const response = await fetch('/prompt_manager/scan_duplicates/status');
+                    if (!response.ok) return;
+                    status = await response.json();
+                } catch (_) {
+                    return;
+                }
+                const state = ScanProgress.fromStatus(status);
+                if (state.status !== ScanProgress.RUNNING) {
+                    if (this.dupScan.status === ScanProgress.RUNNING) {
+                        // The scan we were following ended while we were away
+                        const last = status.last_event;
+                        const terminal = last && (last.type === 'complete' || last.type === 'error');
+                        this.applyDuplicateEvent(terminal ? last : { type: 'error', message: 'the server no longer reports a running scan' });
+                    }
+                    return;
+                }
+                this.dupScan = state;
+                this.setDuplicateButton(true);
+                this.renderDuplicateProgress();
+                if (document.getElementById('duplicatesModal').classList.contains('hidden')) this.showDuplicatePill();
+                this.attachDuplicateStream();
+            }
+
+            applyDuplicateEvent(data) {
+                const next = ScanProgress.reduceScanEvent(this.dupScan, data);
+                if (next === this.dupScan) return;
+                this.dupScan = next;
+                this.renderDuplicateProgress();
+                if (next.status === ScanProgress.DONE) {
+                    this.dupResults = Array.isArray(data.duplicates) ? data.duplicates : [];
+                    this.setDuplicateButton(false);
+                    const modalOpen = !document.getElementById('duplicatesModal').classList.contains('hidden');
+                    if (modalOpen) {
+                        this.hideDuplicatePill();
+                        this.displayDuplicates(this.dupResults);
+                    } else {
+                        this.showDuplicatePill(`Duplicate scan done: ${this.dupResults.length} groups · click to view`);
+                    }
+                    this.showNotification(`Found ${this.dupResults.length} duplicate image groups`, 'info');
+                } else if (next.status === ScanProgress.FAILED) {
+                    this.setDuplicateButton(false);
+                    this.hideDuplicatePill();
                     this.hideDuplicatesModal();
-                } finally {
-                    btn.disabled = false;
-                    btn.textContent = 'Scan';
+                    this.showNotification(`Duplicate scan failed: ${next.message}`, 'error');
                 }
             }
 
-            showDuplicatesModal() {
+            renderDuplicateProgress() {
+                const state = this.dupScan;
+                const bar = document.getElementById('dupProgressBar');
+                const text = document.getElementById('dupProgressText');
+                if (bar) bar.style.width = `${state.progress}%`;
+                if (text) text.textContent = state.status === ScanProgress.RUNNING ? `${state.progress}% · ${state.processed} files hashed` : state.statusText;
+                const pill = document.getElementById('dupScanPillText');
+                if (pill && state.status === ScanProgress.RUNNING) pill.textContent = `Finding duplicates ${state.progress}% · ${state.processed} files`;
+            }
+
+            setDuplicateButton(running) {
+                const btn = document.getElementById('scanDuplicatesBtn');
+                if (!btn) return;
+                btn.disabled = running;
+                btn.textContent = running ? 'Scanning...' : 'Scan';
+            }
+
+            showDuplicatePill(label) {
+                const pill = document.getElementById('dupScanPill');
+                if (label) document.getElementById('dupScanPillText').textContent = label;
+                pill.classList.remove('hidden');
+            }
+
+            hideDuplicatePill() {
+                document.getElementById('dupScanPill').classList.add('hidden');
+            }
+
+            /** Show the modal in whatever state the scan is in: progress, or results. */
+            openDuplicatesModal() {
+                this.hideDuplicatePill();
                 document.getElementById('duplicatesModal').classList.remove('hidden');
                 document.getElementById('duplicatesModal').classList.add('flex');
                 document.body.style.overflow = 'hidden';
-                
-                // Reset modal state
+                if (this.dupScan.status === ScanProgress.DONE && this.dupResults) {
+                    this.displayDuplicates(this.dupResults);
+                    return;
+                }
                 document.getElementById('duplicatesScanStatus').classList.remove('hidden');
                 document.getElementById('duplicatesContent').classList.add('hidden');
                 document.getElementById('duplicatesFooter').classList.add('hidden');
+                this.renderDuplicateProgress();
+            }
+
+            showDuplicatesModal() {
+                this.openDuplicatesModal();
             }
 
             hideDuplicatesModal() {
                 document.getElementById('duplicatesModal').classList.add('hidden');
                 document.getElementById('duplicatesModal').classList.remove('flex');
                 document.body.style.overflow = '';
+                // Minimize rather than abandon: the scan keeps running on the server
+                if (this.dupScan.status === ScanProgress.RUNNING) this.showDuplicatePill();
             }
 
             displayDuplicates(duplicates) {
@@ -2193,10 +2307,10 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     
                     groupEl.innerHTML = `
                         <div class="mb-3 text-sm font-medium text-pm-secondary">
-                            Duplicate Group ${groupIndex + 1} (${group.images.length} identical ${group.images[0].media_type}s)
+                            Duplicate Group ${groupIndex + 1} (${group.images.length} identical ${escapeHtml(group.images[0].media_type)}s)
                         </div>
                         <div class="mb-3 p-3 bg-pm-primary rounded text-sm text-pm-secondary">
-                            <strong>Content Hash:</strong> ${group.hash.substring(0, 16)}...
+                            <strong>Content Hash:</strong> ${escapeHtml(String(group.hash || '').substring(0, 16))}...
                         </div>
                         <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
                             ${group.images.map((image, imageIndex) => `
@@ -2205,7 +2319,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                                         ${image.media_type === 'video' ? `
                                             <div class="w-20 h-20 bg-pm-input rounded flex items-center justify-center relative">
                                                 ${image.thumbnail_url ? `
-                                                    <img src="${image.thumbnail_url}" alt="Video thumbnail" class="w-full h-full object-cover rounded">
+                                                    <img src="${escapeHtml(image.thumbnail_url)}" alt="Video thumbnail" class="w-full h-full object-cover rounded">
                                                 ` : `
                                                     <svg class="w-8 h-8 text-pm-secondary" fill="currentColor" viewBox="0 0 20 20">
                                                         <path d="M2 6a2 2 0 012-2h6l2 2h6a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z"/>
@@ -2214,26 +2328,26 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                                                 <div class="absolute bottom-0 right-0 bg-black/75 text-pm text-xs px-1 rounded">VIDEO</div>
                                             </div>
                                         ` : `
-                                            <img src="${image.thumbnail_url || image.url}" alt="${this.escapeHtml(image.filename)}"
+                                            <img src="${escapeHtml(image.thumbnail_url || image.url)}" alt="${escapeHtml(image.filename)}"
                                                  class="w-20 h-20 object-cover rounded cursor-pointer hover:opacity-80"
                                                  onclick="this.parentElement.parentElement.querySelector('.image-preview').click()">
                                         `}
                                     </div>
                                     <div class="flex-1 min-w-0">
                                         <div class="text-sm text-pm-secondary mb-2">
-                                            <div class="font-medium truncate" title="${this.escapeHtml(image.filename)}">${this.escapeHtml(image.filename)}</div>
+                                            <div class="font-medium truncate" title="${escapeHtml(image.filename)}">${escapeHtml(image.filename)}</div>
                                             <div class="text-xs text-pm-secondary mt-1">
                                                 <span class="font-medium">Size:</span> ${this.formatFileSize(image.size)} •
                                                 <span class="font-medium">Modified:</span> ${new Date(image.modified_time * 1000).toLocaleDateString()}
                                             </div>
-                                            <div class="text-xs text-pm-muted mt-1 truncate" title="${image.relative_path}">
-                                                ${image.relative_path}
+                                            <div class="text-xs text-pm-muted mt-1 truncate" title="${escapeHtml(image.relative_path)}">
+                                                ${escapeHtml(image.relative_path)}
                                             </div>
                                         </div>
                                         <div class="flex items-center justify-between">
                                             <div class="flex items-center space-x-2">
                                                 <button class="image-preview text-xs bg-pm-accent hover:bg-pm-accent-hover text-pm px-2 py-1 rounded"
-                                                        onclick="window.open('${image.url}', '_blank')">
+                                                        data-action="open-url" data-url="${escapeHtml(image.url)}">
                                                     View Full
                                                 </button>
                                             </div>
@@ -2242,7 +2356,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                                                     <span class="px-3 py-1 bg-pm-success text-pm text-xs rounded">KEEP (Oldest)</span>
                                                 ` : `
                                                     <label class="flex items-center">
-                                                        <input type="checkbox" class="duplicate-checkbox" data-group="${groupIndex}" data-image-path="${image.path}"
+                                                        <input type="checkbox" class="duplicate-checkbox" data-group="${groupIndex}" data-image-path="${escapeHtml(image.path)}"
                                                                class="w-4 h-4 text-pm-error bg-pm-input border-pm rounded focus:ring-pm-error">
                                                         <span class="ml-2 text-sm text-pm-error">Delete</span>
                                                     </label>
@@ -2329,8 +2443,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
             changeLimit(newLimit) {
                 this.limit = newLimit;
-                this.currentPage = 1;
-                this.loadImages();
+                this.loadImages(1);
             }
 
             updatePagination() {
@@ -2346,7 +2459,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 pageInput.value = this.currentPage;
                 pageInput.max = totalPages;
 
-                if (totalPages > 1) {
+                if (totalPages > 1 && !this.infiniteScroll) {
                     document.getElementById('paginationControls').classList.remove('hidden');
                 } else {
                     document.getElementById('paginationControls').classList.add('hidden');
@@ -2354,18 +2467,12 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
 
             previousPage() {
-                if (this.currentPage > 1) {
-                    this.currentPage--;
-                    this.loadImages();
-                }
+                if (this.currentPage > 1) this.loadImages(this.currentPage - 1);
             }
 
             nextPage() {
                 const totalPages = Math.ceil(this.total / this.limit);
-                if (this.currentPage < totalPages) {
-                    this.currentPage++;
-                    this.loadImages();
-                }
+                if (this.currentPage < totalPages) this.loadImages(this.currentPage + 1);
             }
 
             goToPage(page) {
@@ -2376,10 +2483,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     return;
                 }
                 
-                if (page !== this.currentPage) {
-                    this.currentPage = page;
-                    this.loadImages();
-                }
+                if (page !== this.currentPage) this.loadImages(page);
             }
 
             async checkThumbnailsAtStartup() {
@@ -2573,7 +2677,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     addStatusMessage('Connecting to thumbnail generation service...');
                     
                     // Start thumbnail generation with progress monitoring
-                    await this.generateThumbnailsWithProgressInModal({
+                    const thumbResult = await this.generateThumbnailsWithProgressInModal({
                         progressText,
                         progressPercent,
                         progressBar,
@@ -2596,7 +2700,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         localStorage.setItem('gallerySettings', JSON.stringify(settings));
                         
                         // Show notification
-                        this.showNotification('Thumbnails generated successfully!', 'success');
+                        this.notifyThumbnailsDone(thumbResult);
                     }
                     
                 } catch (error) {
@@ -2629,10 +2733,10 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     // Get quality setting
                     const quality = this.getSettings().imageQuality || 'medium';
                     
-                    console.log(`Starting modal thumbnail generation with quality: ${quality}`);
                     
                     // Set up Server-Sent Events (same as the settings modal)
-                    const eventSource = new EventSource(`/prompt_manager/images/generate-thumbnails/progress?quality=${quality}`);
+                    // The progress route is POST (it generates files), so read it with SseStream like the autotag streams
+                    const eventSource = SseStream.connect(`/prompt_manager/images/generate-thumbnails/progress?quality=${encodeURIComponent(quality)}`, { method: 'POST' });
                     
                     let resultData = null;
                     
@@ -2698,7 +2802,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         
                         // Update details
                         const elapsedText = data.elapsed ? ` | Time: ${Math.floor(data.elapsed)}s` : '';
-                        progressDetails.textContent = `Generated: ${data.generated}, Skipped: ${data.skipped} | Rate: ${data.rate} img/s${elapsedText}`;
+                        const failedText = data.error_count ? `, Failed: ${data.error_count}` : '';
+                        progressDetails.textContent = `Generated: ${data.generated}, Skipped: ${data.skipped}${failedText} | Rate: ${data.rate} img/s${elapsedText}`;
                         
                         // Update ETA
                         if (data.eta > 0 && data.eta < 3600) {
@@ -2747,13 +2852,25 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             addStatusMessage(`Successfully generated ${resultData.count} new thumbnails, skipped ${resultData.skipped} existing`, 'success');
                         }
                         
-                        console.log('Modal thumbnail generation completed:', resultData);
                         
                         // Clean up
                         eventSource.close();
                         resolve(resultData);
                     });
                     
+                    // Per-file failures: report them, keep listening
+                    eventSource.addEventListener('file_error', (event) => {
+                        if (isCancelled()) return;
+                        let detail = 'Thumbnail failed';
+                        try {
+                            const data = JSON.parse(event.data);
+                            detail = `Thumbnail failed: ${data.current_file || data.file || ''} ${data.error || ''}`.trim();
+                        } catch (e) {
+                            // non-JSON frame; keep the generic message
+                        }
+                        addStatusMessage(detail, 'error');
+                    });
+
                     // Handle errors
                     eventSource.addEventListener('error', (event) => {
                         if (isCancelled()) {
@@ -2789,8 +2906,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         console.error('EventSource connection error in modal:', error);
                         
                         // Check if connection is closing normally (after complete event)
-                        if (eventSource.readyState === EventSource.CLOSED && resultData) {
-                            console.log('EventSource connection closed normally after completion');
+                        if (eventSource.readyState === eventSource.CLOSED && resultData) {
                             return;
                         }
                         
@@ -2804,6 +2920,13 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         if (!resultData) {
                             reject(new Error('Connection to server lost during thumbnail generation'));
                         }
+                    };
+
+                    // Stream ended without a complete/error frame (close() does not trigger this)
+                    eventSource.onclose = () => {
+                        if (isCancelled() || resultData) return;
+                        addStatusMessage('Connection to server closed before thumbnail generation finished', 'error');
+                        reject(new Error('Connection to server closed before thumbnail generation finished'));
                     };
                 });
             }
@@ -2874,7 +2997,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             populateCategoryDatalist() {
                 const datalist = document.getElementById('categoryList');
                 datalist.innerHTML = this.addPromptState.allCategories
-                    .map(cat => `<option value="${this.escapeHtml(cat)}">`)
+                    .map(cat => `<option value="${escapeHtml(cat)}">`)
                     .join('');
             }
 
@@ -2931,8 +3054,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     .map((tag, index) => `
                         <div class="px-3 py-2 hover:bg-pm-hover cursor-pointer text-pm text-sm suggestion-item"
                              data-index="${index}"
-                             onclick="window.gallery.selectSuggestion('${this.escapeHtml(tag)}')">
-                            ${this.escapeHtml(tag)}
+                             data-action="select-suggestion" data-tag="${escapeHtml(tag)}">
+                            ${escapeHtml(tag)}
                         </div>
                     `)
                     .join('');
@@ -2994,8 +3117,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     const chip = document.createElement('span');
                     chip.className = 'tag-chip';
                     chip.innerHTML = `
-                        ${this.escapeHtml(tag)}
-                        <span class="tag-remove" onclick="window.gallery.removeTag(${index})">×</span>
+                        ${escapeHtml(tag)}
+                        <span class="tag-remove" data-action="remove-tag" data-index="${index}">×</span>
                     `;
                     container.insertBefore(chip, input);
                 });
@@ -3207,7 +3330,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 this.showModal("autoTagDownloadModal");
 
                 try {
-                    this.autoTagState.downloadEventSource = new EventSource(`/prompt_manager/autotag/download/${modelType}`);
+                    this.autoTagState.downloadEventSource = SseStream.connect(`/prompt_manager/autotag/download/${modelType}`, { method: 'POST' });
 
                     this.autoTagState.downloadEventSource.onmessage = (event) => {
                         const data = JSON.parse(event.data);
@@ -3319,7 +3442,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         formData.append('prompt', prompt);
                     }
 
-                    this.autoTagState.eventSource = new EventSource(`/prompt_manager/autotag/start?${formData.toString()}`);
+                    this.autoTagState.eventSource = SseStream.connect(`/prompt_manager/autotag/start?${formData.toString()}`, { method: 'POST' });
 
                     this.autoTagState.eventSource.onmessage = (event) => {
                         const data = JSON.parse(event.data);
@@ -3420,16 +3543,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 document.getElementById('reviewTagsContainer').innerHTML = '<div class="text-pm-secondary">Generating tags...</div>';
 
                 try {
-                    const requestBody = {
-                        image_path: image.path,
-                        model_type: this.autoTagState.modelType,
-                    };
-                    if (this.autoTagState.modelType.startsWith('wd14')) {
-                        requestBody.general_threshold = this.autoTagState.generalThreshold;
-                        requestBody.character_threshold = this.autoTagState.characterThreshold;
-                    } else {
-                        requestBody.prompt = this.autoTagState.prompt;
-                    }
+                    // Gallery entries come from /images/output: id is a path digest, so address by path
+                    const requestBody = ImageHelpers.autotagSingleBody(image, this.autoTagState);
 
                     const response = await fetch('/prompt_manager/autotag/single', {
                         method: 'POST',
@@ -3444,7 +3559,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         this.renderReviewTags();
                     } else {
                         document.getElementById('reviewTagsContainer').innerHTML =
-                            `<div class="text-pm-error">Error: ${data.error}</div>`;
+                            `<div class="text-pm-error">Error: ${escapeHtml(data.error)}</div>`;
                     }
                 } catch (error) {
                     console.error('Error generating tags:', error);
@@ -3462,16 +3577,10 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                 container.innerHTML = this.autoTagState.currentTags.map((tag, index) => `
                     <span class="tag-chip">
-                        ${this.escapeHtml(tag)}
-                        <span class="tag-remove" onclick="window.gallery.removeReviewTag(${index})">×</span>
+                        ${escapeHtml(tag)}
+                        <span class="tag-remove" data-action="remove-review-tag" data-index="${index}">×</span>
                     </span>
                 `).join('');
-            }
-
-            escapeHtml(text) {
-                const div = document.createElement('div');
-                div.textContent = text;
-                return div.innerHTML;
             }
 
             removeReviewTag(index) {
@@ -3523,6 +3632,19 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 this.autoTagState.reviewIndex = 0;
                 this.autoTagState.currentTags = [];
                 this.hideModal("autoTagReviewModal");
+            }
+
+            notifyThumbnailsDone(result) {
+                // A run stops at the server's per-run cap; say so instead of claiming it is finished.
+                const remaining = Number(result && result.remaining) || 0;
+                if (remaining > 0) {
+                    this.showNotification(
+                        `${remaining} thumbnails still pending. Run "Generate Thumbnails" again to continue.`,
+                        'warning'
+                    );
+                    return;
+                }
+                this.showNotification('Thumbnails generated successfully!', 'success');
             }
 
             showNotification(message, type = 'info') {

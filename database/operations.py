@@ -6,9 +6,9 @@ import sqlite3
 import json
 import datetime
 import os
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any
 
-from .models import PromptModel, utc_now_iso
+from .models import PromptModel, normalize_image_path, utc_now_iso
 
 # Import logging system
 try:
@@ -30,11 +30,15 @@ TAG_SUBQUERY = (
 
 # Server-side sort orders, keyed by the value the UI sends. Only these strings ever
 # reach ORDER BY; unknown keys fall back to DEFAULT_SORT.
+# last_used_at is NULL until the prompt has run, so "IS NULL" first keeps
+# never-run prompts after every run one (SQLite sorts NULL first in DESC).
 SORT_ORDERS = {
-    "last_used_desc": "last_used_at DESC, id DESC",
+    "last_used_desc": "last_used_at IS NULL, last_used_at DESC, id DESC",
     "created_desc": "created_at DESC, id DESC",
     "created_asc": "created_at ASC, id ASC",
-    "run_count_desc": "run_count DESC, last_used_at DESC, id DESC",
+    "run_count_desc": (
+        "run_count DESC, last_used_at IS NULL, last_used_at DESC, id DESC"
+    ),
     "rating_desc": "rating IS NULL, rating DESC, id DESC",
     "rating_asc": "rating IS NULL, rating ASC, id DESC",
     "text_asc": "text COLLATE NOCASE ASC, id ASC",
@@ -46,6 +50,18 @@ DEFAULT_SORT = "created_desc"
 def order_by_clause(sort: Optional[str]) -> str:
     """Return a whitelisted ORDER BY expression for a UI sort key."""
     return SORT_ORDERS.get(sort or DEFAULT_SORT, SORT_ORDERS[DEFAULT_SORT])
+
+
+LIKE_ESCAPE = "\\"
+
+
+def escape_like(term: str) -> str:
+    """Escape LIKE wildcards in user text; use with ``LIKE ? ESCAPE '\\'``."""
+    return (
+        term.replace(LIKE_ESCAPE, LIKE_ESCAPE + LIKE_ESCAPE)
+        .replace("%", LIKE_ESCAPE + "%")
+        .replace("_", LIKE_ESCAPE + "_")
+    )
 
 
 def _resolve_db_path(db_path: Optional[str] = None) -> str:
@@ -73,7 +89,7 @@ def _resolve_db_path(db_path: Optional[str] = None) -> str:
             db_path = "prompts.db"
 
     if not os.path.isabs(db_path):
-        db_path = os.path.join(extension_root, db_path)
+        db_path = os.path.normpath(os.path.join(extension_root, db_path))
 
     # Ensure parent directory exists for custom paths
     parent = os.path.dirname(db_path)
@@ -81,6 +97,51 @@ def _resolve_db_path(db_path: Optional[str] = None) -> str:
         os.makedirs(parent, exist_ok=True)
 
     return db_path
+
+
+# Bounds for the file_info a link request may attach to an image. Anything
+# outside them (or of the wrong type) is stored as NULL instead of being
+# trusted into an INTEGER or TEXT column and echoed back to the gallery.
+MAX_IMAGE_FILE_SIZE = 10**12
+MAX_IMAGE_DIMENSION = 65535
+IMAGE_FORMATS = frozenset(
+    {"PNG", "JPEG", "JPG", "WEBP", "GIF", "BMP", "TIFF", "MP4", "WEBM", "MOV"}
+)
+
+
+def _bounded_int(value: Any, upper: int) -> Optional[int]:
+    """``value`` as an int within ``[0, upper]``; None for anything else."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if 0 <= number <= upper else None
+
+
+def _known_image_format(value: Any) -> Optional[str]:
+    """Upper-cased *value* when it names a supported media format, else None."""
+    if not isinstance(value, str):
+        return None
+    name = value.strip().upper()
+    return name if name in IMAGE_FORMATS else None
+
+
+def _coerce_file_info(metadata: Any) -> tuple:
+    """``(size, width, height, format)`` from request metadata, each validated."""
+    file_info = metadata.get("file_info") if isinstance(metadata, dict) else None
+    if not isinstance(file_info, dict):
+        return None, None, None, None
+    dimensions = file_info.get("dimensions")
+    if not isinstance(dimensions, (list, tuple)) or len(dimensions) < 2:
+        dimensions = (None, None)
+    return (
+        _bounded_int(file_info.get("size"), MAX_IMAGE_FILE_SIZE),
+        _bounded_int(dimensions[0], MAX_IMAGE_DIMENSION),
+        _bounded_int(dimensions[1], MAX_IMAGE_DIMENSION),
+        _known_image_format(file_info.get("format")),
+    )
 
 
 class PromptDatabase:
@@ -99,6 +160,19 @@ class PromptDatabase:
         self.logger.debug(f"Initializing database operations with path: {db_path}")
         self.model = PromptModel(db_path)
         self.logger.debug("Database operations initialized successfully")
+
+    def close(self) -> None:
+        """Close the calling thread's database connection (see PromptModel.close)."""
+        self.model.close()
+
+    @staticmethod
+    def close_all_instances() -> None:
+        """Close the connections of every PromptDatabase/PromptModel in the process."""
+        PromptModel.close_all_instances()
+
+    def close_all(self) -> None:
+        """Close every thread's connection (see PromptModel.close_all)."""
+        self.model.close_all()
 
     def save_prompt(
         self,
@@ -134,34 +208,46 @@ class PromptDatabase:
             raise ValueError("Rating must be between 1 and 5")
 
         self.logger.debug(
-            f"Saving prompt: text_length={len(text)}, category={category}, tags={tags}, rating={rating}"
+            f"Saving prompt: text_length={len(text)}, category={category}, "
+            f"tags={tags}, rating={rating}"
         )
 
-        with self.model.get_connection() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO prompts (
-                    text, category, tags, rating, notes, hash, created_at, updated_at,
-                    last_used_at
-                ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    text.strip(),
-                    category,
-                    rating,
-                    notes,
-                    prompt_hash,
-                    datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    utc_now_iso(),
-                ),
+        try:
+            with self.model.get_connection() as conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO prompts (
+                        text, category, tags, rating, notes, hash, created_at,
+                        updated_at
+                    ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        text.strip(),
+                        category,
+                        rating,
+                        notes,
+                        prompt_hash,
+                        datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    ),
+                )
+                prompt_id = cursor.lastrowid
+                if tags:
+                    self._sync_prompt_tags(conn, prompt_id, tags)
+                conn.commit()
+                self.logger.debug(f"Successfully saved prompt with ID: {prompt_id}")
+                return prompt_id
+        except sqlite3.IntegrityError:
+            # Another caller inserted the same hash between the caller's
+            # duplicate check and this INSERT (the with-block rolled back).
+            existing = self.get_prompt_by_hash(prompt_hash) if prompt_hash else None
+            if existing is None:
+                raise
+            self.logger.debug(
+                f"Prompt with hash {prompt_hash} was saved concurrently; "
+                f"returning existing ID {existing['id']}"
             )
-            prompt_id = cursor.lastrowid
-            if tags:
-                self._sync_prompt_tags(conn, prompt_id, tags)
-            conn.commit()
-            self.logger.debug(f"Successfully saved prompt with ID: {prompt_id}")
-            return prompt_id
+            return existing["id"]
 
     def record_prompt_use(self, prompt_id: int, times: int = 1) -> bool:
         """
@@ -258,8 +344,8 @@ class PromptDatabase:
         params = []
 
         if text:
-            query_parts.append("AND text LIKE ?")
-            params.append(f"%{text}%")
+            query_parts.append("AND text LIKE ? ESCAPE '\\'")
+            params.append(f"%{escape_like(text)}%")
 
         if category:
             query_parts.append("AND category = ?")
@@ -271,9 +357,10 @@ class PromptDatabase:
                     query_parts.append(
                         "AND prompts.id IN ("
                         "  SELECT pt.prompt_id FROM prompt_tags pt"
-                        "  JOIN tags t ON pt.tag_id = t.id WHERE t.name LIKE ?)"
+                        "  JOIN tags t ON pt.tag_id = t.id"
+                        "  WHERE t.name LIKE ? ESCAPE '\\')"
                     )
-                    params.append(f"%{tag}%")
+                    params.append(f"%{escape_like(tag)}%")
                 else:
                     query_parts.append(
                         "AND prompts.id IN ("
@@ -392,7 +479,8 @@ class PromptDatabase:
         """
         with self.model.get_connection() as conn:
             cursor = conn.execute(
-                f"SELECT prompts.*, {TAG_SUBQUERY} FROM prompts WHERE category = ? ORDER BY created_at DESC LIMIT ?",
+                f"SELECT prompts.*, {TAG_SUBQUERY} FROM prompts WHERE category = ? "
+                "ORDER BY created_at DESC LIMIT ?",
                 (category, limit),
             )
             rows = cursor.fetchall()
@@ -468,7 +556,7 @@ class PromptDatabase:
                 params.append(datetime.datetime.now(datetime.timezone.utc).isoformat())
                 params.append(prompt_id)
                 query = f"UPDATE prompts SET {', '.join(updates)} WHERE id = ?"
-                cursor = conn.execute(query, params)
+                conn.execute(query, params)
             if tags is not None:
                 self._sync_prompt_tags(conn, prompt_id, tags)
                 conn.execute(
@@ -542,7 +630,8 @@ class PromptDatabase:
         """
         with self.model.get_connection() as conn:
             cursor = conn.execute(
-                "SELECT DISTINCT TRIM(category) as category FROM prompts WHERE category IS NOT NULL AND TRIM(category) != '' ORDER BY category"
+                "SELECT DISTINCT TRIM(category) as category FROM prompts WHERE "
+                "category IS NOT NULL AND TRIM(category) != '' ORDER BY category"
             )
             return [row["category"] for row in cursor.fetchall()]
 
@@ -583,7 +672,8 @@ class PromptDatabase:
                             rel = os.path.relpath(parent, root)
                             if not rel.startswith(".."):
                                 if rel != ".":
-                                    folders.add(rel)
+                                    # Clients split and filter on "/" whatever the OS
+                                    folders.add(rel.replace(os.sep, "/"))
                                 made_relative = True
                                 break
                         except ValueError:
@@ -593,7 +683,7 @@ class PromptDatabase:
                     # Preserve full relative-style path instead of collapsing
                     # to just the basename, which loses hierarchy and creates
                     # ambiguity (e.g. foo/bar and baz/bar both become "bar").
-                    folders.add(parent)
+                    folders.add(parent.replace(os.sep, "/"))
 
         if include_ancestors:
             ancestors = set()
@@ -643,8 +733,8 @@ class PromptDatabase:
         search_clause = ""
         params: list = []
         if search:
-            search_clause = "HAVING t.name LIKE ?"
-            params.append(f"%{search}%")
+            search_clause = "HAVING t.name LIKE ? ESCAPE '\\'"
+            params.append(f"%{escape_like(search)}%")
 
         sort_map = {
             "alpha_desc": "tag COLLATE NOCASE DESC",
@@ -684,6 +774,53 @@ class PromptDatabase:
             "offset": offset,
             "has_more": (offset + limit) < total,
         }
+
+    def suggest_tags(
+        self, prefix: str, with_tags: List[str], limit: int = 15
+    ) -> List[Dict[str, Any]]:
+        """Tag autocomplete narrowed by co-occurrence.
+
+        Returns tags whose name starts with ``prefix`` (case-insensitive),
+        counted over the prompts that carry every tag in ``with_tags``; the
+        context tags themselves are left out. Ordered by count, then name.
+        """
+        seen = set()
+        context = []
+        for raw in with_tags or []:
+            name = str(raw).strip()
+            if name and name.lower() not in seen:
+                seen.add(name.lower())
+                context.append(name)
+
+        where = ["t.name LIKE ? ESCAPE '\\'"]
+        params: list = [f"{escape_like(prefix or '')}%"]
+        if context:
+            placeholders = ",".join("?" * len(context))
+            where.append(
+                "pt.prompt_id IN ("
+                " SELECT pt2.prompt_id FROM prompt_tags pt2"
+                " JOIN tags t2 ON t2.id = pt2.tag_id"
+                f" WHERE t2.name COLLATE NOCASE IN ({placeholders})"
+                " GROUP BY pt2.prompt_id"
+                " HAVING COUNT(DISTINCT lower(t2.name)) = ?)"
+            )
+            params.extend(context)
+            params.append(len(context))
+            where.append(f"t.name COLLATE NOCASE NOT IN ({placeholders})")
+            params.extend(context)
+        params.append(max(1, int(limit)))
+
+        sql = (
+            "SELECT t.name AS name, COUNT(*) AS count"
+            " FROM prompt_tags pt JOIN tags t ON t.id = pt.tag_id"
+            f" WHERE {' AND '.join(where)}"
+            " GROUP BY t.id"
+            " ORDER BY count DESC, t.name COLLATE NOCASE ASC"
+            " LIMIT ?"
+        )
+        with self.model.get_connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [{"name": row["name"], "count": row["count"]} for row in rows]
 
     def get_prompts_by_tags(
         self, tags: List[str], mode: str = "and", limit: int = 20, offset: int = 0
@@ -917,7 +1054,8 @@ class PromptDatabase:
             conn.commit()
 
         self.logger.info(
-            f"Merged {tags_merged} tags into '{target_tag}', affected {affected} prompts"
+            f"Merged {tags_merged} tags into '{target_tag}', affected {affected} "
+            "prompts"
         )
         return {
             "success": True,
@@ -936,7 +1074,8 @@ class PromptDatabase:
         with self.model.get_connection() as conn:
             cursor = conn.execute(
                 "SELECT COUNT(*) as total FROM prompts "
-                "WHERE NOT EXISTS (SELECT 1 FROM prompt_tags WHERE prompt_id = prompts.id)"
+                "WHERE NOT EXISTS (SELECT 1 FROM prompt_tags WHERE prompt_id = "
+                "prompts.id)"
             )
             return cursor.fetchone()["total"]
 
@@ -1049,7 +1188,8 @@ class PromptDatabase:
                 tag_id = tag_map.get(tag_name)
                 if tag_id:
                     conn.execute(
-                        "INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)",
+                        "INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) "
+                        "VALUES (?, ?)",
                         (prompt_id, tag_id),
                     )
 
@@ -1138,79 +1278,6 @@ class PromptDatabase:
             self.logger.error(f"Error exporting prompts: {e}")
             return False
 
-    def find_duplicates(self) -> List[Dict[str, Any]]:
-        """
-        Find duplicate prompts based on text content without removing them.
-
-        Returns:
-            List of duplicate groups, each containing:
-            - text: The duplicate text content
-            - prompts: List of prompt records with same text
-        """
-        self.logger.info("Scanning for duplicate prompts")
-        try:
-            with self.model.get_connection() as conn:
-                # Find duplicates by text content (case-insensitive)
-                # Note: Removed ORDER BY from GROUP_CONCAT for SQLite compatibility
-                # We'll sort the IDs manually after fetching
-                cursor = conn.execute("""
-                    SELECT LOWER(TRIM(text)) as normalized_text, COUNT(*) as count,
-                           GROUP_CONCAT(id) as ids,
-                           GROUP_CONCAT(created_at) as created_dates
-                    FROM prompts
-                    GROUP BY LOWER(TRIM(text))
-                    HAVING COUNT(*) > 1
-                """)
-
-                duplicate_groups = cursor.fetchall()
-                self.logger.debug(
-                    f"Found {len(duplicate_groups)} groups of duplicate prompts"
-                )
-
-                result = []
-
-                for group in duplicate_groups:
-                    ids = group["ids"].split(",")
-                    created_dates = group["created_dates"].split(",")
-
-                    # Sort IDs by created_at date
-                    id_date_pairs = list(zip(ids, created_dates))
-                    id_date_pairs.sort(key=lambda x: x[1])  # Sort by date
-                    ids = [pair[0] for pair in id_date_pairs]
-
-                    # Get full details for all prompts in this duplicate group
-                    prompts = []
-                    for prompt_id in ids:
-                        cursor = conn.execute(
-                            "SELECT id, text, category, rating, created_at, updated_at "
-                            "FROM prompts WHERE id = ?",
-                            (int(prompt_id),),
-                        )
-                        prompt_data = cursor.fetchone()
-                        if prompt_data:
-                            prompt_dict = dict(prompt_data)
-                            prompt_dict["tags"] = self._get_prompt_tags(
-                                conn, int(prompt_id)
-                            )
-                            prompts.append(prompt_dict)
-
-                    if prompts:
-                        result.append(
-                            {
-                                "text": prompts[0][
-                                    "text"
-                                ],  # Use the actual text (not normalized)
-                                "prompts": prompts,
-                            }
-                        )
-
-                self.logger.info(f"Found {len(result)} groups with duplicates")
-                return result
-
-        except Exception as e:
-            self.logger.error(f"Error finding duplicates: {e}")
-            return []
-
     def cleanup_duplicates(self) -> int:
         """
         Remove duplicate prompts based on text content, preserving all image links.
@@ -1255,7 +1322,8 @@ class PromptDatabase:
                     duplicate_ids = sorted_ids[1:]
 
                     self.logger.debug(
-                        f"Merging duplicates: keeping {primary_id}, removing {duplicate_ids}"
+                        f"Merging duplicates: keeping {primary_id}, removing "
+                        f"{duplicate_ids}"
                     )
 
                     # Get primary prompt details
@@ -1295,7 +1363,8 @@ class PromptDatabase:
 
                 if total_removed > 0:
                     self.logger.info(
-                        f"Removed {total_removed} duplicate prompts, transferred {total_images_transferred} images"
+                        f"Removed {total_removed} duplicate prompts, transferred "
+                        f"{total_images_transferred} images"
                     )
                 else:
                     self.logger.info("No duplicate prompts found")
@@ -1348,48 +1417,46 @@ class PromptDatabase:
                 )
                 if not cursor.fetchone():
                     self.logger.warning(
-                        f"Prompt ID {prompt_id_int} not found in database, skipping image linking"
+                        f"Prompt ID {prompt_id_int} not found in database, skipping "
+                        "image linking"
                     )
                     return 0
 
                 # Proceed with linking
+                if not isinstance(metadata, dict):
+                    metadata = {}
                 filename = os.path.basename(image_path)
-                file_info = metadata.get("file_info", {}) if metadata else {}
+                file_path = normalize_image_path(image_path)
+                file_size, width, height, image_format = _coerce_file_info(metadata)
 
-                # Use INSERT OR IGNORE to skip duplicates (same prompt_id + filename)
+                # INSERT OR IGNORE skips a file already linked to this prompt
+                # (same prompt_id + normalised full path)
                 cursor = conn.execute(
                     """
                     INSERT OR IGNORE INTO generated_images
-                    (prompt_id, image_path, filename, file_size, width, height, format,
-                     workflow_data, prompt_metadata, parameters)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (prompt_id, image_path, filename, file_path, file_size, width,
+                     height, format, workflow_data, prompt_metadata, parameters)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         prompt_id_int,
                         image_path,
                         filename,
-                        file_info.get("size"),
-                        (
-                            file_info.get("dimensions", [None, None])[0]
-                            if file_info.get("dimensions")
-                            else None
-                        ),
-                        (
-                            file_info.get("dimensions", [None, None])[1]
-                            if file_info.get("dimensions")
-                            else None
-                        ),
-                        file_info.get("format"),
-                        json.dumps(metadata.get("workflow", {}) if metadata else {}),
-                        json.dumps(metadata.get("prompt", {}) if metadata else {}),
-                        json.dumps(metadata.get("parameters", {}) if metadata else {}),
+                        file_path,
+                        file_size,
+                        width,
+                        height,
+                        image_format,
+                        json.dumps(metadata.get("workflow", {})),
+                        json.dumps(metadata.get("prompt", {})),
+                        json.dumps(metadata.get("parameters", {})),
                     ),
                 )
                 conn.commit()
 
-                if cursor.lastrowid == 0:
+                if cursor.rowcount == 0:
                     self.logger.debug(
-                        f"Image {filename} already linked to prompt {prompt_id_int}"
+                        f"Image {file_path} already linked to prompt {prompt_id_int}"
                     )
                     return 0
 
@@ -1420,12 +1487,15 @@ class PromptDatabase:
             )
             return [self._image_row_to_dict(row) for row in cursor.fetchall()]
 
-    def get_recent_images(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_recent_images(
+        self, limit: int = 50, offset: int = 0
+    ) -> List[Dict[str, Any]]:
         """
-        Get recently generated images across all prompts.
+        Get recently generated images across all prompts, newest first.
 
         Args:
             limit: Maximum number of images to return
+            offset: Number of newest images to skip (paging)
 
         Returns:
             List of image records with prompt text
@@ -1437,9 +1507,9 @@ class PromptDatabase:
                 FROM generated_images gi
                 LEFT JOIN prompts p ON gi.prompt_id = p.id
                 ORDER BY gi.generation_time DESC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (limit,),
+                (int(limit), max(0, int(offset))),
             )
             return [self._image_row_to_dict(row) for row in cursor.fetchall()]
 
@@ -1461,7 +1531,8 @@ class PromptDatabase:
         sql = (
             "SELECT gi.*, p.text as prompt_text, "
             "(SELECT GROUP_CONCAT(t.name, '|||') FROM prompt_tags pt "
-            "JOIN tags t ON pt.tag_id = t.id WHERE pt.prompt_id = p.id) AS _prompt_tags_list "
+            "JOIN tags t ON pt.tag_id = t.id WHERE pt.prompt_id = p.id) AS "
+            "_prompt_tags_list "
             "FROM generated_images gi "
             "INNER JOIN prompts p ON gi.prompt_id = p.id "
             "WHERE gi.image_path IS NOT NULL AND gi.image_path != '' "
@@ -1485,12 +1556,16 @@ class PromptDatabase:
                 result.append(data)
             return result
 
-    def search_images_by_prompt(self, search_term: str) -> List[Dict[str, Any]]:
+    def search_images_by_prompt(
+        self, search_term: str, limit: Optional[int] = None, offset: int = 0
+    ) -> List[Dict[str, Any]]:
         """
-        Search images by prompt text.
+        Search images by prompt text, newest first.
 
         Args:
             search_term: Text to search for in prompt content
+            limit: Maximum number of images to return (None for no limit)
+            offset: Number of newest matches to skip (paging)
 
         Returns:
             List of image records with prompt text
@@ -1501,10 +1576,15 @@ class PromptDatabase:
                 SELECT gi.*, p.text as prompt_text
                 FROM generated_images gi
                 JOIN prompts p ON gi.prompt_id = p.id
-                WHERE p.text LIKE ?
+                WHERE p.text LIKE ? ESCAPE '\\'
                 ORDER BY gi.generation_time DESC
+                LIMIT ? OFFSET ?
                 """,
-                (f"%{search_term}%",),
+                (
+                    f"%{escape_like(search_term)}%",
+                    -1 if limit is None else int(limit),
+                    max(0, int(offset)),
+                ),
             )
             return [self._image_row_to_dict(row) for row in cursor.fetchall()]
 
@@ -1675,7 +1755,8 @@ class PromptDatabase:
 
                 if cursor.rowcount > 0:
                     self.logger.debug(
-                        f"Transferred {cursor.rowcount} images from prompt {dup_id} to {primary_id}"
+                        f"Transferred {cursor.rowcount} images from prompt {dup_id} "
+                        f"to {primary_id}"
                     )
 
             return transferred_count
@@ -1853,7 +1934,8 @@ class PromptDatabase:
                     tag_id = tag_map.get(tag_name)
                     if tag_id:
                         cursor = conn.execute(
-                            "INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)",
+                            "INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) "
+                            "VALUES (?, ?)",
                             (pid, tag_id),
                         )
                         if cursor.rowcount > 0:
@@ -1897,8 +1979,13 @@ class PromptDatabase:
                           gi.workflow_data, gi.prompt_metadata, gi.generation_time
                    FROM generated_images gi
                    JOIN prompts p ON gi.prompt_id = p.id
-                   WHERE gi.image_path = ? OR gi.image_path LIKE ?""",
-                (image_path, f"%{os.path.basename(image_path)}"),
+                   WHERE gi.image_path = ? OR gi.file_path = ?
+                      OR gi.image_path LIKE ? ESCAPE '\\'""",
+                (
+                    image_path,
+                    normalize_image_path(image_path),
+                    f"%{escape_like(os.path.basename(image_path))}",
+                ),
             )
             row = cursor.fetchone()
             if not row:
@@ -1928,8 +2015,9 @@ class PromptDatabase:
         """Return the prompt_id linked to an image, or None."""
         with self.model.get_connection() as conn:
             cursor = conn.execute(
-                "SELECT prompt_id FROM generated_images WHERE image_path = ?",
-                (image_path,),
+                "SELECT prompt_id FROM generated_images"
+                " WHERE image_path = ? OR file_path = ?",
+                (image_path, normalize_image_path(image_path)),
             )
             row = cursor.fetchone()
             return row[0] if row else None
@@ -1984,7 +2072,8 @@ class PromptDatabase:
             """)
             for ref in cursor.fetchall():
                 issues.append(
-                    f"prompt_tags entry references non-existent prompt {ref['prompt_id']}"
+                    "prompt_tags entry references non-existent prompt "
+                    f"{ref['prompt_id']}"
                 )
 
             # Check for orphaned image entries
@@ -1995,7 +2084,8 @@ class PromptDatabase:
             """)
             for ref in cursor.fetchall():
                 issues.append(
-                    f"Image {ref['id']} references non-existent prompt {ref['prompt_id']}"
+                    f"Image {ref['id']} references non-existent prompt "
+                    f"{ref['prompt_id']}"
                 )
         return issues
 

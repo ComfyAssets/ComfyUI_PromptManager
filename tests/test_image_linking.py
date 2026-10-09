@@ -51,6 +51,7 @@ class LinkingTestCase(unittest.TestCase):
         )
 
     def tearDown(self):
+        self.db.close_all()  # Windows cannot unlink an open database file
         for path in (
             self.image,
             self.db_path,
@@ -118,8 +119,12 @@ class TestMetadataLinking(LinkingTestCase):
                 {"type": "PromptManager", "inputs": [], "widgets_values": ["blurry"]}
             ],
         }
-        self.assertIsNone(self.handler._find_prompt_from_metadata(metadata))
-        self.assertNotEqual(self._process(metadata), negative)
+        self.assertEqual(
+            self.handler._find_prompt_from_metadata(metadata), ("unknown", None)
+        )
+        latest = self._save("most recent prompt")  # recency fallback picks this
+        self.assertEqual(self._process(metadata), latest)
+        self.assertNotEqual(latest, negative)
 
     def test_workflow_fallback_still_used_without_an_api_graph(self):
         positive = self._save("from workflow only")
@@ -132,9 +137,111 @@ class TestMetadataLinking(LinkingTestCase):
                 }
             ]
         }
+        state, prompt = self.handler._find_prompt_from_metadata(metadata)
+        self.assertEqual(state, "linked")
+        self.assertEqual(prompt["id"], positive)
+
+
+def foreign_graph():
+    """A workflow with no PromptManager node at all."""
+    return {
+        "9": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": "a cat", "clip": ["20", 1]},
+        },
+        "5": {
+            "class_type": "KSampler",
+            "inputs": {"positive": ["9", 0], "negative": ["9", 0], "model": ["20", 0]},
+        },
+        "20": LOADER,
+    }
+
+
+class TestForeignWorkflows(LinkingTestCase):
+    """Images from workflows without a positive PromptManager node are not ours."""
+
+    def _queue_batch_item(self, text):
+        prompt_id = self._save(text)
+        self.tracker.set_current_prompt(text, {"prompt_id": prompt_id})
+        return prompt_id
+
+    def test_foreign_image_leaves_the_batch_queue_aligned(self):
+        first = self._queue_batch_item("item one")
+        self.assertIsNone(self._process({"prompt": foreign_graph()}))
+        self.assertEqual(self.linked, [])
+        self.assertEqual(self.tracker.pop_next_prompt()["id"], first)
+        self.assertIsNone(self.tracker.pop_next_prompt())
+
+    def test_foreign_image_is_not_linked_by_the_later_fallbacks_either(self):
+        self._queue_batch_item("item one")  # live tracker and recent prompt exist
+        self.assertIsNone(self._process({"prompt": foreign_graph()}))
+        self.assertEqual(self.linked, [])
+
+    def test_negative_only_workflow_is_foreign(self):
+        self._save("blurry")
+        negative_only = foreign_graph()
+        negative_only["176"] = {
+            "class_type": "PromptManager",
+            "inputs": {"text": "blurry"},
+        }
+        negative_only["5"]["inputs"]["negative"] = ["176", 0]
         self.assertEqual(
-            self.handler._find_prompt_from_metadata(metadata)["id"], positive
+            self.handler._find_prompt_from_metadata({"prompt": negative_only}),
+            ("foreign", None),
         )
+
+    def test_workflow_only_metadata_without_prompt_manager_is_foreign(self):
+        metadata = {
+            "text_encoder_nodes": [
+                {"type": "CLIPTextEncode", "inputs": [], "widgets_values": ["a cat"]}
+            ]
+        }
+        self.assertEqual(
+            self.handler._find_prompt_from_metadata(metadata), ("foreign", None)
+        )
+
+    def test_missing_metadata_is_unknown_and_uses_the_queue(self):
+        first = self._queue_batch_item("item one")
+        self.assertEqual(
+            self.handler._find_prompt_from_metadata(None), ("unknown", None)
+        )
+        self.assertEqual(self._process(None), first)
+
+    def test_tri_state_for_linked_unknown_and_foreign(self):
+        positive = self._save("a cat")
+        state, prompt = self.handler._find_prompt_from_metadata({"prompt": graph()})
+        self.assertEqual((state, prompt["id"]), ("linked", positive))
+        self.assertEqual(
+            self.handler._find_prompt_from_metadata({"prompt": foreign_graph()}),
+            ("foreign", None),
+        )
+        self.assertEqual(
+            self.handler._find_prompt_from_metadata({"workflow": {}}),
+            ("unknown", None),
+        )
+        self.assertEqual(
+            self.handler._find_prompt_from_metadata({"prompt": graph("not saved")}),
+            ("unknown", None),
+        )
+
+    def test_unknown_image_without_any_context_falls_back_to_the_latest_prompt(self):
+        self._save("older")
+        latest = self._save("latest")
+        self.assertEqual(self._process(None), latest)
+
+    def test_recent_prompt_fallback_handles_an_empty_database(self):
+        self.assertIsNone(self.handler._get_fallback_prompt())
+        self.assertIsNone(self._process(None))
+
+    def test_metadata_lookup_errors_are_unknown(self):
+        self._save("a cat")
+        with mock.patch.object(
+            self.db, "get_prompt_by_hash", side_effect=RuntimeError("locked")
+        ):
+            self.assertEqual(
+                self.handler._find_prompt_from_metadata({"prompt": graph()}),
+                ("unknown", None),
+            )
 
 
 if __name__ == "__main__":

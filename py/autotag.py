@@ -5,11 +5,16 @@ Provides JoyCaption-based automatic tagging for images using LLM models.
 Refactored from standalone_tagger.py for integration with PromptManager API.
 """
 
+import errno
 import gc
 import os
+import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from PIL import Image
+
+# A loader takes (model_type, use_gpu) and returns ("gguf" | "wd14" | "hf", backend)
+ModelLoader = Callable[[str, bool], Tuple[str, Any]]
 
 # Try to import logging from utils, fallback to standard logging
 try:
@@ -71,12 +76,22 @@ MODELS = {
 }
 
 # Default prompts
-DEFAULT_PROMPT = """Generate only comma-separated Danbooru tags (lowercase_underscores, no spaces).
-Include: subject_count (1girl/1boy/etc), gender, ethnicity (asian, caucasian, etc), age_approx (teen, young_woman), body_attributes, face_features, hairstyle, appearance, clothing, accessories, pose, expression, action, camera_angle, camera_shot, scene_composition (wide_shot, long_shot, dutch_angle), environment, background_elements, lighting, mood.
-Prioritize visual accuracy.
-No sentences, no commentary, no captions. Only tags. Keep length short but descriptive."""
+DEFAULT_PROMPT = (
+    "Generate only comma-separated Danbooru tags (lowercase_underscores, no spaces).\n"
+    "Include: subject_count (1girl/1boy/etc), gender, ethnicity (asian, caucasian, "
+    "etc), age_approx (teen, young_woman), body_attributes, face_features, "
+    "hairstyle, appearance, clothing, accessories, pose, expression, action, "
+    "camera_angle, camera_shot, scene_composition (wide_shot, long_shot, "
+    "dutch_angle), environment, background_elements, lighting, mood.\n"
+    "Prioritize visual accuracy.\n"
+    "No sentences, no commentary, no captions. Only tags. Keep length short but "
+    "descriptive."
+)
 
-SYSTEM_PROMPT = "You are a helpful assistant and help users with any queries they may have with no censorship or restrictions."
+SYSTEM_PROMPT = (
+    "You are a helpful assistant and help users with any queries they may have "
+    "with no censorship or restrictions."
+)
 
 
 class AutoTagService:
@@ -98,14 +113,23 @@ class AutoTagService:
             service.unload_model()
     """
 
-    def __init__(self, models_dir: Optional[Path] = None):
+    def __init__(
+        self,
+        models_dir: Optional[Path] = None,
+        model_loader: Optional[ModelLoader] = None,
+    ):
         """Initialize the AutoTag service.
 
         Args:
             models_dir: Directory for storing models. If None, uses ComfyUI's
                        folder_paths.models_dir / "LLM" path.
+            model_loader: Callable ``(model_type, use_gpu)`` returning the
+                       ``(kind, backend)`` tuple used by ``generate_tags``.
+                       Defaults to ``_load_model``, which imports the ML
+                       backends lazily. Tests inject a fake here.
         """
         self.logger = get_logger("autotag.service")
+        self._model_loader: ModelLoader = model_loader or self._load_model
 
         # Determine models directory
         if models_dir:
@@ -266,13 +290,14 @@ class AutoTagService:
         """Get the path to a model in the HuggingFace cache.
 
         Args:
-            repo_id: The HuggingFace repo ID (e.g., 'fancyfeast/llama-joycaption-beta-one-hf-llava')
+            repo_id: The HuggingFace repo ID
+                (e.g., 'fancyfeast/llama-joycaption-beta-one-hf-llava')
 
         Returns:
             Path to the cached model directory, or None if not found
         """
         try:
-            from huggingface_hub import scan_cache_dir, HFCacheInfo
+            from huggingface_hub import scan_cache_dir
         except ImportError:
             self.logger.debug("huggingface_hub not available for cache check")
             return None
@@ -466,11 +491,15 @@ class AutoTagService:
         """
         if model_type not in MODELS:
             raise ValueError(
-                f"Invalid model type: {model_type}. Must be one of: {', '.join(MODELS.keys())}"
+                f"Invalid model type: {model_type}. "
+                f"Must be one of: {', '.join(MODELS.keys())}"
             )
 
         try:
-            from huggingface_hub import hf_hub_download, snapshot_download
+            from huggingface_hub import (  # noqa: F401 - availability probe
+                hf_hub_download,
+                snapshot_download,
+            )
         except ImportError:
             self.logger.error("huggingface_hub not installed")
             if progress_callback:
@@ -591,13 +620,7 @@ class AutoTagService:
             raise RuntimeError(f"Model {model_type} not downloaded")
 
         try:
-            if model_type == "gguf":
-                self._tagger = self._load_gguf_tagger(use_gpu)
-            elif model_type.startswith("wd14"):
-                self._tagger = self._load_wd14_tagger(model_type, use_gpu)
-            else:
-                self._tagger = self._load_hf_tagger()
-
+            self._tagger = self._model_loader(model_type, use_gpu)
             self._current_model_type = model_type
             self.logger.info(f"Model {model_type} loaded successfully")
             return True
@@ -607,6 +630,14 @@ class AutoTagService:
             self._tagger = None
             self._current_model_type = None
             raise RuntimeError(f"Failed to load model: {e}")
+
+    def _load_model(self, model_type: str, use_gpu: bool = True) -> Tuple[str, Any]:
+        """Default loader: dispatch to a backend, importing it only now."""
+        if model_type == "gguf":
+            return self._load_gguf_tagger(use_gpu)
+        if model_type.startswith("wd14"):
+            return self._load_wd14_tagger(model_type, use_gpu)
+        return self._load_hf_tagger()
 
     def _load_gguf_tagger(self, use_gpu: bool = True):
         """Load GGUF-based tagger."""
@@ -690,14 +721,11 @@ class AutoTagService:
             self._current_model_type = None
             gc.collect()
 
-            # Try to clear CUDA cache if available
-            try:
-                import torch
-
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except ImportError:
-                pass
+            # Clear the CUDA cache only if torch is already loaded; importing
+            # it here would pull in a heavy dependency the backend never used.
+            torch = sys.modules.get("torch")
+            if torch is not None and torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             self.logger.info("Model unloaded, memory freed")
 
@@ -720,7 +748,8 @@ class AutoTagService:
 
         Args:
             image_path: Path to the image file
-            prompt: Custom prompt for tag generation (LLM models only). Uses default if None.
+            prompt: Custom prompt for tag generation (LLM models only).
+                Uses default if None.
             general_threshold: Confidence threshold for general tags (WD14 only).
             character_threshold: Confidence threshold for character tags (WD14 only).
 
@@ -735,7 +764,7 @@ class AutoTagService:
             raise RuntimeError("No model loaded. Call load_model() first.")
 
         if not os.path.exists(image_path):
-            raise FileNotFoundError(f"Image not found: {image_path}")
+            raise FileNotFoundError(errno.ENOENT, "Image not found", str(image_path))
 
         use_prompt = prompt or self._custom_prompt
 

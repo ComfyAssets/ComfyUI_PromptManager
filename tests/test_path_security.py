@@ -1,6 +1,5 @@
 """Tests for path traversal and symlink security in image serving."""
 
-import os
 import tempfile
 import unittest
 from pathlib import Path
