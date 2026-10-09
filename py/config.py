@@ -499,6 +499,7 @@ class PromptManagerConfig:
     RESULT_TIMEOUT = 5  # Seconds to auto-hide results in ComfyUI node
     SHOW_TEST_BUTTON = False  # Show API test button in node UI
     WEBUI_DISPLAY_MODE = "newtab"  # 'popup' or 'newtab'
+    INFINITE_SCROLL = False  # Dashboard list: load the next page on scroll by default
 
     # Performance settings
     MAX_SEARCH_RESULTS = 100
@@ -555,6 +556,7 @@ class PromptManagerConfig:
                 "result_timeout": cls.RESULT_TIMEOUT,
                 "show_test_button": cls.SHOW_TEST_BUTTON,
                 "webui_display_mode": cls.WEBUI_DISPLAY_MODE,
+                "infinite_scroll": cls.INFINITE_SCROLL,
             },
             "performance": {
                 "max_search_results": cls.MAX_SEARCH_RESULTS,
@@ -681,6 +683,8 @@ class PromptManagerConfig:
             cls.SHOW_TEST_BUTTON = web_ui["show_test_button"]
         if "webui_display_mode" in web_ui:
             cls.WEBUI_DISPLAY_MODE = web_ui["webui_display_mode"]
+        if isinstance(web_ui.get("infinite_scroll"), bool):
+            cls.INFINITE_SCROLL = web_ui["infinite_scroll"]
 
         performance = new_config.get("performance", {})
         if "max_search_results" in performance:

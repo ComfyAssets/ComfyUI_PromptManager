@@ -8,6 +8,7 @@
                     webuiDisplayMode: 'popup',
                     workerThreads: 1,
                     cpuCount: 1,
+                    infiniteScroll: false,
                 };
                 this.categories = [];
                 this.tags = [];
@@ -26,6 +27,9 @@
                 this.api = ApiClient.createApiClient();
                 // Search and page loads share one guard: whichever list request is newest wins
                 this.listRequest = ApiClient.latestOnly();
+                this.infiniteScroll = false; // session value; seeded from settings, toggled in the header
+                this.infiniteScrollChosen = false;
+                this.loadingMore = false;
                 // The prompt currently edited in place, if any: { promptId, element, originalText }
                 this.activeEdit = null;
 
@@ -135,6 +139,8 @@
 
                 // Pagination controls
                 document.getElementById("limitSelector").addEventListener("change", (e) => this.changeLimit(parseInt(e.target.value)));
+                document.getElementById("infiniteScrollSession").addEventListener("change", (e) => this.setInfiniteScroll(e.target.checked, { session: true }));
+                document.getElementById("resultsList").addEventListener("scroll", () => this.maybeLoadMorePrompts(), { passive: true });
                 document.getElementById("firstPageBtn").addEventListener("click", () => this.goToPage(1));
                 document.getElementById("prevPageBtn").addEventListener("click", () => this.goToPage(this.pagination.currentPage - 1));
                 document.getElementById("nextPageBtn").addEventListener("click", () => this.goToPage(this.pagination.currentPage + 1));
@@ -293,6 +299,9 @@
                         if (data.success && data.settings) {
                             this.settings.resultTimeout = data.settings.result_timeout ?? 5;
                             this.settings.webuiDisplayMode = data.settings.webui_display_mode || 'popup';
+                            this.settings.infiniteScroll = data.settings.infinite_scroll === true;
+                            // The saved default seeds the session until the header checkbox is used
+                            if (!this.infiniteScrollChosen) this.setInfiniteScroll(this.settings.infiniteScroll, { session: false });
                             this.settings.cpuCount = Math.max(1, parseInt(data.settings.cpu_count, 10) || 1);
                             this.settings.workerThreads = Math.min(
                                 this.settings.cpuCount, Math.max(1, parseInt(data.settings.worker_threads, 10) || 1)
@@ -419,7 +428,7 @@
              * Load one page of recent prompts. The page is committed to this.pagination only
              * after the server answered; a newer list request supersedes one still in flight.
              */
-            async loadRecentPrompts(page = 1) {
+            async loadRecentPrompts(page = 1, { append = false } = {}) {
                 this.listMode = "recent";
                 const url = PromptListSort.buildRecentUrl({
                     page,
@@ -434,17 +443,18 @@
                         { page: this.pagination.currentPage, limit: this.pagination.limit, total: this.pagination.total },
                         { page: data.pagination.page, total: data.pagination.total },
                     );
-                    this.prompts = data.results;
+                    this.prompts = append ? this.prompts.concat(data.results) : data.results;
                     this.pagination = { ...this.pagination, currentPage: next.page, total: next.total, totalPages: next.totalPages };
                     this.renderPrompts();
                     this.updatePaginationControls();
                     document.getElementById("resultsTitle").textContent = "Recent Prompts";
+                    this.maybeLoadMorePrompts(); // a short page may not fill the list
                 } catch (error) {
                     console.error("Recent prompts error:", error);
                     this.showNotification("Failed to load prompts", "error");
                 }
                 this.showListLoaded();
-                document.getElementById("paginationControls").classList.remove("hidden");
+                this.updatePaginationVisibility();
             }
 
             showListLoaded() {
@@ -560,13 +570,15 @@
                 this.scheduleTagSuggestions(0); // offer the next tag, narrowed by this one
             }
 
-            async search(page = 1) {
+            async search(page = 1, { append = false } = {}) {
                 const searchText = document.getElementById("searchText").value;
                 const category = document.getElementById("searchCategory").value;
                 const tags = document.getElementById("searchTags").value;
 
-                document.getElementById("loadingState").classList.remove("hidden");
-                document.getElementById("resultsList").classList.add("hidden");
+                if (!append) {
+                    document.getElementById("loadingState").classList.remove("hidden");
+                    document.getElementById("resultsList").classList.add("hidden");
+                }
 
                 try {
                     const params = new URLSearchParams();
@@ -590,17 +602,18 @@
                         { page: this.pagination.currentPage, limit, total: this.pagination.total },
                         { page: reported.page ?? page, total: reported.total ?? data.results.length },
                     );
-                    this.prompts = data.results;
+                    this.prompts = append ? this.prompts.concat(data.results) : data.results;
                     this.pagination = { ...this.pagination, currentPage: next.page, total: next.total, totalPages: next.totalPages };
                     this.renderPrompts();
                     this.updatePaginationControls();
                     document.getElementById("resultsTitle").textContent = "Search Results";
+                    this.maybeLoadMorePrompts();
                 } catch (error) {
                     this.showNotification("Search failed", "error");
                     console.error("Search error:", error);
                 }
                 this.showListLoaded();
-                document.getElementById("paginationControls").classList.remove("hidden");
+                this.updatePaginationVisibility();
             }
 
             currentSort() {
@@ -614,8 +627,49 @@
 
             /** Re-fetch the page currently shown, e.g. after a prompt was edited, tagged or deleted. */
             refreshList() {
-                const page = this.pagination.currentPage;
+                // With infinite scroll the list holds several pages; re-fetch from the top.
+                const page = this.infiniteScroll ? 1 : this.pagination.currentPage;
                 return this.listMode === "search" ? this.search(page) : this.loadRecentPrompts(page);
+            }
+
+            // ── Infinite scrolling ───────────────────────────────────────────
+            setInfiniteScroll(enabled, { session }) {
+                if (session) this.infiniteScrollChosen = true;
+                const changed = this.infiniteScroll !== !!enabled;
+                this.infiniteScroll = !!enabled;
+                document.getElementById("infiniteScrollSession").checked = this.infiniteScroll;
+                this.updatePaginationVisibility();
+                if (changed && this.prompts.length) this.reloadPrompts();
+            }
+
+            updatePaginationVisibility() {
+                document.getElementById("paginationControls").classList.toggle("hidden", this.infiniteScroll);
+            }
+
+            maybeLoadMorePrompts() {
+                const el = document.getElementById("resultsList");
+                const wanted = ListState.shouldLoadMore({
+                    infiniteScroll: this.infiniteScroll,
+                    loading: this.loadingMore,
+                    page: this.pagination.currentPage,
+                    limit: this.pagination.limit,
+                    total: this.pagination.total,
+                    scrollTop: el.scrollTop,
+                    clientHeight: el.clientHeight,
+                    scrollHeight: el.scrollHeight,
+                });
+                if (wanted) this.loadMorePrompts();
+            }
+
+            async loadMorePrompts() {
+                if (this.loadingMore) return;
+                this.loadingMore = true;
+                try {
+                    const page = this.pagination.currentPage + 1;
+                    await (this.listMode === "search" ? this.search(page, { append: true }) : this.loadRecentPrompts(page, { append: true }));
+                } finally {
+                    this.loadingMore = false;
+                }
             }
 
             handleActionClick(e) {
@@ -911,6 +965,7 @@
             showSettingsModal() {
                 document.getElementById("resultTimeout").value = this.settings.resultTimeout;
                 document.getElementById("webuiDisplayMode").value = this.settings.webuiDisplayMode;
+                document.getElementById("infiniteScrollDefault").checked = this.settings.infiniteScroll;
                 const threads = document.getElementById("workerThreads");
                 threads.max = this.settings.cpuCount;
                 threads.value = this.settings.workerThreads;
@@ -1110,11 +1165,13 @@
                 const timeout = parseInt(document.getElementById("resultTimeout").value);
                 const displayMode = document.getElementById("webuiDisplayMode").value;
                 const workerThreads = parseInt(document.getElementById("workerThreads").value, 10) || 1;
+                const infiniteScroll = document.getElementById("infiniteScrollDefault").checked;
                 const galleryPaths = this._collectScanPaths().filter(p => p !== '');
 
                 this.settings.resultTimeout = timeout;
                 this.settings.webuiDisplayMode = displayMode;
                 this.settings.workerThreads = workerThreads;
+                this.settings.infiniteScroll = infiniteScroll;
                 this.settings.galleryRootPaths = galleryPaths;
 
                 try {
@@ -1125,6 +1182,7 @@
                             result_timeout: timeout,
                             webui_display_mode: displayMode,
                             worker_threads: workerThreads,
+                            infinite_scroll: infiniteScroll,
                             gallery_root_paths: galleryPaths
                         }),
                     });
@@ -1134,6 +1192,8 @@
 
                         // Save LoRA integration settings (fire-and-forget)
                         await this.saveLoraSettings();
+
+                        this.setInfiniteScroll(infiniteScroll, { session: false });
 
                         if (data.restart_required) {
                             this.showNotification("Settings saved. Restart ComfyUI for gallery path changes to take effect.", "warning");

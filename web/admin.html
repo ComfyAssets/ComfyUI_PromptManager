@@ -227,6 +227,11 @@
                                 </select>
                                 <span class="text-xs text-pm-secondary">per page</span>
                             </div>
+                            <!-- Session-only toggle; the saved default lives in Settings -->
+                            <label class="flex items-center gap-1.5 text-xs text-pm-secondary cursor-pointer" title="Load the next page as you scroll (this session)">
+                                <input type="checkbox" id="infiniteScrollSession" class="w-3.5 h-3.5 rounded border-pm bg-pm-input text-pm-accent focus:ring-pm-accent">
+                                Infinite scroll
+                            </label>
                         </div>
                         <span class="text-xs font-medium text-pm-secondary bg-pm-input px-2 py-0.5 rounded-full" id="resultsCount">Loading...</span>
                     </div>
@@ -412,6 +417,14 @@
                             <option value="newtab">New Tab</option>
                         </select>
                         <p class="text-xs text-pm-muted mt-1">Choose how the Web UI opens from ComfyUI nodes.</p>
+                    </div>
+
+                    <div class="mt-3 flex items-center justify-between">
+                        <div>
+                            <label for="infiniteScrollDefault" class="block text-xs font-medium text-pm-secondary">Infinite Scrolling</label>
+                            <p class="text-xs text-pm-muted">Load the next page of prompts as you scroll. The checkbox in the list header overrides this for the current session.</p>
+                        </div>
+                        <input type="checkbox" id="infiniteScrollDefault" class="w-4 h-4 rounded border-pm bg-pm-input text-pm-accent focus:ring-pm-accent ml-3">
                     </div>
                 </div>
 

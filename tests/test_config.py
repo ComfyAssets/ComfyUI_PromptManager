@@ -136,6 +136,15 @@ class TestPromptManagerConfig(unittest.TestCase):
         PromptManagerConfig.update_config({"performance": {"max_search_results": 50}})
         self.assertEqual(PromptManagerConfig.MAX_SEARCH_RESULTS, 50)
 
+    def test_infinite_scroll_default_off_and_only_booleans_apply(self):
+        self.assertIn("infinite_scroll", PromptManagerConfig.get_config()["web_ui"])
+        PromptManagerConfig.update_config({"web_ui": {"infinite_scroll": True}})
+        self.assertTrue(PromptManagerConfig.INFINITE_SCROLL)
+        PromptManagerConfig.update_config({"web_ui": {"infinite_scroll": "yes"}})
+        self.assertTrue(PromptManagerConfig.INFINITE_SCROLL)
+        PromptManagerConfig.update_config({"web_ui": {"infinite_scroll": False}})
+        self.assertFalse(PromptManagerConfig.INFINITE_SCROLL)
+
     def test_worker_threads_default_is_half_the_cores_and_current_is_in_range(self):
         # The current value may come from config.json (loaded at import), so the
         # rule is checked on the constant and only the range on the live value.

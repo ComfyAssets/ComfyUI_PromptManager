@@ -713,6 +713,7 @@ class AdminRoutesMixin:
                     "settings": {
                         "result_timeout": PromptManagerConfig.RESULT_TIMEOUT,
                         "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE,
+                        "infinite_scroll": PromptManagerConfig.INFINITE_SCROLL,
                         "worker_threads": PromptManagerConfig.WORKER_THREADS,
                         "cpu_count": PromptManagerConfig.max_worker_threads(),
                         "gallery_root_paths": root_paths,
@@ -759,6 +760,16 @@ class AdminRoutesMixin:
                     )
             if "webui_display_mode" in data:
                 PromptManagerConfig.WEBUI_DISPLAY_MODE = data["webui_display_mode"]
+            if "infinite_scroll" in data:
+                if not isinstance(data["infinite_scroll"], bool):
+                    return web.json_response(
+                        {
+                            "success": False,
+                            "error": "infinite_scroll must be true or false",
+                        },
+                        status=400,
+                    )
+                PromptManagerConfig.INFINITE_SCROLL = data["infinite_scroll"]
             if "worker_threads" in data:
                 try:
                     PromptManagerConfig.WORKER_THREADS = validate_worker_threads(
@@ -857,6 +868,7 @@ class AdminRoutesMixin:
         web_ui = dict(existing.get("web_ui") or {})
         web_ui["result_timeout"] = PromptManagerConfig.RESULT_TIMEOUT
         web_ui["webui_display_mode"] = PromptManagerConfig.WEBUI_DISPLAY_MODE
+        web_ui["infinite_scroll"] = PromptManagerConfig.INFINITE_SCROLL
         gallery = dict(existing.get("gallery") or {})
         monitoring = dict(gallery.get("monitoring") or {})
         monitoring["directories"] = list(GalleryConfig.MONITORING_DIRECTORIES)

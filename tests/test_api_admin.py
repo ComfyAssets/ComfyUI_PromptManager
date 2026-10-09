@@ -928,6 +928,29 @@ class TestDuplicateJobsAreSingleFlight(AdminAPITestCase):
 
 class TestSettingsMisc(AdminAPITestCase):
 
+    async def test_infinite_scroll_default_is_reported_saved_and_validated(self):
+        data = await (
+            await self.client.request("GET", "/prompt_manager/settings")
+        ).json()
+        self.assertIs(data["settings"]["infinite_scroll"], False)
+
+        resp = await self.client.request(
+            "POST", "/prompt_manager/settings", json={"infinite_scroll": True}
+        )
+        self.assertEqual(resp.status, 200)
+        self.assertTrue(PromptManagerConfig.INFINITE_SCROLL)
+        self.assertIs(self._read_config()["web_ui"]["infinite_scroll"], True)
+        data = await (
+            await self.client.request("GET", "/prompt_manager/settings")
+        ).json()
+        self.assertIs(data["settings"]["infinite_scroll"], True)
+
+        resp = await self.client.request(
+            "POST", "/prompt_manager/settings", json={"infinite_scroll": "on"}
+        )
+        self.assertEqual(resp.status, 400)
+        self.assertTrue(PromptManagerConfig.INFINITE_SCROLL)
+
     async def test_result_timeout_and_display_mode_saved(self):
         resp = await self.client.request(
             "POST",
