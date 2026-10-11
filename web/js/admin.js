@@ -391,7 +391,7 @@
 
             async loadSubfolders() {
                 try {
-                    const response = await fetch("/prompt_manager/subfolders?include_ancestors=true");
+                    const response = await fetch(ApiClient.resolveUrl("/prompt_manager/subfolders?include_ancestors=true"));
                     if (response.ok) {
                         const data = await response.json();
                         if (data.success) {

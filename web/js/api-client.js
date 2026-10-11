@@ -25,6 +25,13 @@
     /** Result of a latestOnly() call that was superseded by a newer one. */
     const STALE = Symbol("stale response");
 
+    /** Keep Prompt Manager requests under the prefix that serves its page. */
+    function resolveUrl(url, pathname = root.location && root.location.pathname) {
+        if (typeof url !== "string" || !url.startsWith("/prompt_manager/")) return url;
+        const match = (pathname || "").match(/^(.*)\/prompt_manager(?:\/|$)/);
+        return match && match[1] ? match[1] + url : url;
+    }
+
     /**
      * @param {typeof fetch} [fetchImpl] - defaults to the global fetch (bound to globalThis)
      */
@@ -39,7 +46,7 @@
             }
             if (signal) init.signal = signal;
 
-            const response = await doFetch(url, init);
+            const response = await doFetch(resolveUrl(url), init);
             let data = null;
             let parsed = true;
             try {
@@ -87,7 +94,7 @@
         };
     }
 
-    const api = { createApiClient, latestOnly, ApiError, STALE };
+    const api = { createApiClient, latestOnly, resolveUrl, ApiError, STALE };
     if (typeof module !== "undefined" && module.exports) module.exports = api;
     else root.ApiClient = api;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -205,7 +205,7 @@
 
             async loadFolderTree() {
                 try {
-                    const response = await fetch('/prompt_manager/gallery/subfolders?include_ancestors=true');
+                    const response = await fetch(ApiClient.resolveUrl('/prompt_manager/gallery/subfolders?include_ancestors=true'));
                     if (!response.ok) return;
                     const data = await response.json();
                     if (data.success && data.subfolders.length > 0) {

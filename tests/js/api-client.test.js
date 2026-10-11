@@ -1,7 +1,16 @@
 // Run with: node --test tests/js/
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createApiClient, ApiError, latestOnly, STALE } = require("../../web/js/api-client.js");
+const { createApiClient, resolveUrl, ApiError, latestOnly, STALE } = require("../../web/js/api-client.js");
+
+test("Prompt Manager URLs follow the page's proxy mount without losing query strings", () => {
+    const url = "/prompt_manager/images/output?limit=100&subfolder=2025%2F04%2F02";
+    assert.equal(resolveUrl(url, "/ComfyBackendDirect/prompt_manager/gallery"),
+        "/ComfyBackendDirect" + url);
+    assert.equal(resolveUrl(url, "/prompt_manager/gallery"), url);
+    assert.equal(resolveUrl(url, "/nested/proxy/prompt_manager/admin"), "/nested/proxy" + url);
+    assert.equal(resolveUrl("/other/api?x=1", "/ComfyBackendDirect/prompt_manager/gallery"), "/other/api?x=1");
+});
 
 /** A fetch stand-in whose responses the test resolves by hand, in any order. */
 function fakeFetch() {
