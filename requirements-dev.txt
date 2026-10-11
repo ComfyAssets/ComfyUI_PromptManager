@@ -15,4 +15,4 @@ flake8>=7.0.0
 bandit[toml]>=1.7.0
 
 # Pre-commit hooks
-pre-commit>=4.0.0
+pre-commit>=4.6.2
