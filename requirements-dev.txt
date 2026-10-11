@@ -12,7 +12,7 @@ black>=26.10.0
 flake8>=7.0.0
 
 # Security scanning
-bandit[toml]>=1.7.0
+bandit[toml]>=1.9.4
 
 # Pre-commit hooks
 pre-commit>=4.0.0
