@@ -1,4 +1,4 @@
 # Runtime dependencies for PromptManager.
 # aiohttp, numpy and torch come from ComfyUI itself and are not listed here.
 watchdog>=2.1.0              # Output directory monitoring
-Pillow>=8.0.0                # Image metadata extraction and thumbnails
+Pillow>=12.3.0                # Image metadata extraction and thumbnails
