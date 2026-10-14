@@ -55,7 +55,7 @@
 
     <script>
         // Redirect to admin interface immediately
-        window.location.href = '/prompt_manager/admin';
+        window.location.href = window.location.pathname.replace(/\/(?:web|index\.html)\/?$/, '/admin');
     </script>
 </body>
 </html>

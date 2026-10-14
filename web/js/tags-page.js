@@ -1107,7 +1107,7 @@ class TagsPageManager {
     // ── Helpers ───────────────────────────────────────────────
 
     async fetchJson(url, options = {}) {
-        const resp = await fetch(url, options);
+        const resp = await ApiClient.fetchUrl(url, options);
         if (!resp.ok) {
             let errorMsg;
             try { errorMsg = (await resp.json()).error; } catch { errorMsg = resp.statusText; }
@@ -1117,9 +1117,9 @@ class TagsPageManager {
     }
 
     getThumbnailUrl(image) {
-        if (image.thumbnail_url) return image.thumbnail_url;
-        if (image.url) return image.url;
-        if (image.id) return `/prompt_manager/images/${image.id}/file`;
+        if (image.thumbnail_url) return ApiClient.resolveUrl(image.thumbnail_url);
+        if (image.url) return ApiClient.resolveUrl(image.url);
+        if (image.id) return ApiClient.resolveUrl(`/prompt_manager/images/${image.id}/file`);
         return '';
     }
 }

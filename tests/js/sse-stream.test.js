@@ -64,6 +64,28 @@ test("connect POSTs and delivers each event to onmessage, then onclose", async (
     assert.equal(source.readyState, source.CLOSED);
 });
 
+test("connect keeps streaming requests under the current proxy mount", async () => {
+    const previousApiClient = globalThis.ApiClient;
+    const previousLocation = globalThis.location;
+    globalThis.ApiClient = require("../../web/js/api-client.js");
+    globalThis.location = { pathname: "/ComfyBackendDirect/prompt_manager/gallery" };
+    let requestedUrl;
+    try {
+        const source = connect("/prompt_manager/images/generate-thumbnails/progress?quality=80", {
+            method: "POST",
+            fetchImpl: async (url) => {
+                requestedUrl = url;
+                return new Response(streamOf([]), { status: 200 });
+            },
+        });
+        await until(() => source.readyState === source.CLOSED);
+        assert.equal(requestedUrl, "/ComfyBackendDirect/prompt_manager/images/generate-thumbnails/progress?quality=80");
+    } finally {
+        globalThis.ApiClient = previousApiClient;
+        globalThis.location = previousLocation;
+    }
+});
+
 test("connect reports a non-2xx response through onerror and never onmessage", async () => {
     let error = null;
     const fetchImpl = async () => new Response("nope", { status: 405 });

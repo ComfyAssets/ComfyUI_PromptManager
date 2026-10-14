@@ -119,7 +119,7 @@ function addPMTopBarButton() {
       transition: "background 0.2s",
     },
     onclick: () => {
-      window.open("/prompt_manager/admin", "_blank");
+      window.open(api.fileURL("/prompt_manager/admin"), "_blank");
     },
     onmouseenter: (e) => { e.target.style.background = "#0d9488"; },
     onmouseleave: (e) => { e.target.style.background = "#14b8a6"; },
@@ -175,7 +175,7 @@ function addPMTopBarButtonLegacy() {
   btn.onmouseleave = () => btn.style.background = "#14b8a6";
 
   btn.onclick = () => {
-    window.open("/prompt_manager/admin", "_blank");
+    window.open(api.fileURL("/prompt_manager/admin"), "_blank");
   };
 
   topBar.appendChild(btn);
@@ -686,7 +686,7 @@ app.registerExtension({
       // Method to load settings from API
       nodeType.prototype.loadSettings = async function () {
         try {
-          const response = await fetch("/prompt_manager/settings");
+          const response = await fetch(api.fileURL("/prompt_manager/settings"));
           if (response.ok) {
             const data = await response.json();
             if (data.success && data.settings) {
@@ -983,7 +983,7 @@ app.registerExtension({
             throw new Error(`Unknown method: ${method}`);
           }
 
-          const response = await fetch(url, options);
+          const response = await fetch(api.fileURL(url), options);
 
           if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -1008,7 +1008,7 @@ app.registerExtension({
       // Method to save a prompt via API
       nodeType.prototype.savePromptToDatabase = async function (promptData) {
         try {
-          const response = await fetch("/prompt_manager/save", {
+          const response = await fetch(api.fileURL("/prompt_manager/save"), {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -1036,7 +1036,7 @@ app.registerExtension({
       // Method to delete a prompt via API
       nodeType.prototype.deletePrompt = async function (promptId) {
         try {
-          const response = await fetch(`/prompt_manager/delete/${promptId}`, {
+          const response = await fetch(api.fileURL(`/prompt_manager/delete/${promptId}`), {
             method: "DELETE",
           });
 
@@ -1063,7 +1063,7 @@ app.registerExtension({
           this.resultsSection.innerHTML =
             '<div style="color: #999; text-align: center;">🔧 Testing API connection...</div>';
 
-          const response = await fetch("/prompt_manager/test");
+          const response = await fetch(api.fileURL("/prompt_manager/test"));
 
           if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
