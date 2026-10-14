@@ -293,7 +293,7 @@
 
             async loadSettings() {
                 try {
-                    const response = await fetch("/prompt_manager/settings");
+                    const response = await ApiClient.fetchUrl("/prompt_manager/settings");
                     if (response.ok) {
                         const data = await response.json();
                         if (data.success && data.settings) {
@@ -321,7 +321,7 @@
 
             async loadStatistics() {
                 try {
-                    const response = await fetch("/prompt_manager/stats");
+                    const response = await ApiClient.fetchUrl("/prompt_manager/stats");
                     if (response.ok) {
                         const data = await response.json();
                         
@@ -351,7 +351,7 @@
 
             async loadCategories() {
                 try {
-                    const response = await fetch("/prompt_manager/categories");
+                    const response = await ApiClient.fetchUrl("/prompt_manager/categories");
                     if (response.ok) {
                         const data = await response.json();
                         if (data.success) {
@@ -366,7 +366,7 @@
 
             async loadTags() {
                 try {
-                    const response = await fetch("/prompt_manager/tags");
+                    const response = await ApiClient.fetchUrl("/prompt_manager/tags");
                     if (response.ok) {
                         const data = await response.json();
                         if (data.success) {
@@ -391,7 +391,7 @@
 
             async loadSubfolders() {
                 try {
-                    const response = await fetch(ApiClient.resolveUrl("/prompt_manager/subfolders?include_ancestors=true"));
+                    const response = await ApiClient.fetchUrl("/prompt_manager/subfolders?include_ancestors=true");
                     if (response.ok) {
                         const data = await response.json();
                         if (data.success) {
@@ -979,7 +979,7 @@
             async updateMonitoringStatus() {
                 const statusEl = document.getElementById("monitoringStatus");
                 try {
-                    const response = await fetch("/prompt_manager/settings");
+                    const response = await ApiClient.fetchUrl("/prompt_manager/settings");
                     if (response.ok) {
                         const data = await response.json();
                         const dirs = data.settings?.monitored_directories || [];
@@ -1003,7 +1003,7 @@
 
                 try {
                     // First check current status
-                    const statusRes = await fetch("/prompt_manager/lora/status");
+                    const statusRes = await ApiClient.fetchUrl("/prompt_manager/lora/status");
                     if (statusRes.ok) {
                         const status = await statusRes.json();
                         if (status.success && status.enabled) {
@@ -1027,7 +1027,7 @@
                     }
 
                     // Try auto-detection
-                    const detectRes = await fetch("/prompt_manager/lora/detect");
+                    const detectRes = await ApiClient.fetchUrl("/prompt_manager/lora/detect");
                     if (!detectRes.ok) return;
                     const data = await detectRes.json();
 
@@ -1084,7 +1084,7 @@
                 else if (civitaiKey) payload.civitai_api_key = civitaiKey;
 
                 try {
-                    const res = await fetch("/prompt_manager/lora/enable", {
+                    const res = await ApiClient.fetchUrl("/prompt_manager/lora/enable", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify(payload),
@@ -1115,7 +1115,7 @@
                 this.showModal("loraImportModal");
 
                 try {
-                    const res = await fetch("/prompt_manager/lora/scan", { method: "POST" });
+                    const res = await ApiClient.fetchUrl("/prompt_manager/lora/scan", { method: "POST" });
                     const reader = res.body.getReader();
                     const decoder = new TextDecoder();
                     let buffer = "";
@@ -1175,7 +1175,7 @@
                 this.settings.galleryRootPaths = galleryPaths;
 
                 try {
-                    const response = await fetch("/prompt_manager/settings", {
+                    const response = await ApiClient.fetchUrl("/prompt_manager/settings", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
@@ -1291,7 +1291,7 @@
                 }
 
                 try {
-                    const response = await fetch(`/prompt_manager/prompts/${promptId}/rating`, {
+                    const response = await ApiClient.fetchUrl(`/prompt_manager/prompts/${promptId}/rating`, {
                         method: "PUT",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ rating }),
@@ -1348,7 +1348,7 @@
                 if (tags.length === 0) return;
 
                 try {
-                    const response = await fetch("/prompt_manager/prompts/tags", {
+                    const response = await ApiClient.fetchUrl("/prompt_manager/prompts/tags", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
@@ -1371,7 +1371,7 @@
 
             async removeTag(promptId, tag) {
                 try {
-                    const response = await fetch(`/prompt_manager/prompts/${promptId}/tags`, {
+                    const response = await ApiClient.fetchUrl(`/prompt_manager/prompts/${promptId}/tags`, {
                         method: "DELETE",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ tag }),
@@ -1473,7 +1473,7 @@
                 if (tags.length === 0) return;
 
                 try {
-                    const response = await fetch("/prompt_manager/bulk/tags", {
+                    const response = await ApiClient.fetchUrl("/prompt_manager/bulk/tags", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
@@ -1499,7 +1499,7 @@
                 if (!category) return;
 
                 try {
-                    const response = await fetch("/prompt_manager/bulk/category", {
+                    const response = await ApiClient.fetchUrl("/prompt_manager/bulk/category", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
@@ -1524,7 +1524,7 @@
                 if (!confirm(`Are you sure you want to delete ${this.selectedPrompts.size} prompts?`)) return;
 
                 try {
-                    const response = await fetch("/prompt_manager/bulk/delete", {
+                    const response = await ApiClient.fetchUrl("/prompt_manager/bulk/delete", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
@@ -1545,7 +1545,7 @@
 
             async exportPrompts() {
                 try {
-                    const response = await fetch("/prompt_manager/export");
+                    const response = await ApiClient.fetchUrl("/prompt_manager/export");
                     if (response.ok) {
                         const blob = await response.blob();
                         const url = window.URL.createObjectURL(blob);
@@ -1578,7 +1578,7 @@
                 document.getElementById("galleryEmpty").classList.add("hidden");
                 
                 try {
-                    const response = await fetch(`/prompt_manager/prompts/${promptId}/images`);
+                    const response = await ApiClient.fetchUrl(`/prompt_manager/prompts/${promptId}/images`);
                     if (response.ok) {
                         const data = await response.json();
                         if (data.success) {
@@ -1620,7 +1620,7 @@
                 content.innerHTML = images.map((image, index) => {
                     const generated = new Date(image.generation_time);
                     const when = escapeHtml(`${generated.toLocaleDateString()} ${generated.toLocaleTimeString()}`);
-                    const fileUrl = `/prompt_manager/images/${escapeHtml(image.id)}/file`;
+                    const fileUrl = ApiClient.resolveUrl(`/prompt_manager/images/${escapeHtml(image.id)}/file`);
                     const caption = ImageHelpers.formatImageCaption(image, { formatFileSize });
                     const details = ImageHelpers.formatImageCaption(image, { formatFileSize, separator: ' • ' });
                     return `
@@ -1787,7 +1787,7 @@
                 `;
                 
                 try {
-                    const response = await fetch('/prompt_manager/maintenance', {
+                    const response = await ApiClient.fetchUrl('/prompt_manager/maintenance', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ operations: selectedOps })
@@ -1920,7 +1920,7 @@
                 `;
 
                 try {
-                    const response = await fetch('/prompt_manager/diagnostics');
+                    const response = await ApiClient.fetchUrl('/prompt_manager/diagnostics');
                     if (response.ok) {
                         const data = await response.json();
                         if (data.success) {
@@ -2037,7 +2037,7 @@
                 const testPrompt = this.prompts[0];
                 
                 try {
-                    const response = await fetch('/prompt_manager/diagnostics/test-link', {
+                    const response = await ApiClient.fetchUrl('/prompt_manager/diagnostics/test-link', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -2067,7 +2067,7 @@
             // Database backup and restore functionality
             async backupDatabase() {
                 try {
-                    const response = await fetch('/prompt_manager/backup');
+                    const response = await ApiClient.fetchUrl('/prompt_manager/backup');
                     
                     if (response.ok) {
                         // Get the filename from the Content-Disposition header
@@ -2144,7 +2144,7 @@
                     const formData = new FormData();
                     formData.append('database_file', file);
                     
-                    const response = await fetch('/prompt_manager/restore', {
+                    const response = await ApiClient.fetchUrl('/prompt_manager/restore', {
                         method: 'POST',
                         body: formData
                     });
@@ -2334,7 +2334,7 @@
             async resumeRunningScan() {
                 let status;
                 try {
-                    const response = await fetch("/prompt_manager/scan/status");
+                    const response = await ApiClient.fetchUrl("/prompt_manager/scan/status");
                     if (!response.ok) return;
                     status = await response.json();
                 } catch (_) {
@@ -2382,7 +2382,7 @@
 
             async quickBackup() {
                 try {
-                    const response = await fetch("/prompt_manager/backup");
+                    const response = await ApiClient.fetchUrl("/prompt_manager/backup");
                     if (response.ok) {
                         const blob = await response.blob();
                         const url = window.URL.createObjectURL(blob);
@@ -2445,7 +2445,7 @@
 
             async loadLogStats() {
                 try {
-                    const response = await fetch('/prompt_manager/logs/stats');
+                    const response = await ApiClient.fetchUrl('/prompt_manager/logs/stats');
                     const data = await response.json();
                     
                     if (data.success) {
@@ -2463,7 +2463,7 @@
 
             async loadLogConfig() {
                 try {
-                    const response = await fetch('/prompt_manager/logs/config');
+                    const response = await ApiClient.fetchUrl('/prompt_manager/logs/config');
                     const data = await response.json();
                     
                     if (data.success) {
@@ -2478,7 +2478,7 @@
 
             async loadLogFiles() {
                 try {
-                    const response = await fetch('/prompt_manager/logs/files');
+                    const response = await ApiClient.fetchUrl('/prompt_manager/logs/files');
                     const data = await response.json();
                     
                     if (data.success) {
@@ -2515,11 +2515,11 @@
                 const limit = parseInt(document.getElementById("logLimit").value);
                 
                 try {
-                    const url = new URL('/prompt_manager/logs', window.location.origin);
+                    const url = new URL(ApiClient.resolveUrl('/prompt_manager/logs'), window.location.origin);
                     if (level) url.searchParams.set('level', level);
                     url.searchParams.set('limit', limit.toString());
                     
-                    const response = await fetch(url);
+                    const response = await ApiClient.fetchUrl(url);
                     const data = await response.json();
                     
                     if (data.success) {
@@ -2578,11 +2578,11 @@
                 const limit = parseInt(document.getElementById("logLimit").value);
                 
                 try {
-                    const url = new URL('/prompt_manager/logs', window.location.origin);
+                    const url = new URL(ApiClient.resolveUrl('/prompt_manager/logs'), window.location.origin);
                     if (level) url.searchParams.set('level', level);
                     url.searchParams.set('limit', limit.toString());
                     
-                    const response = await fetch(url);
+                    const response = await ApiClient.fetchUrl(url);
                     const data = await response.json();
                     
                     if (data.success) {
@@ -2612,7 +2612,7 @@
 
             async downloadLogFile(filename) {
                 try {
-                    const response = await fetch(`/prompt_manager/logs/download/${encodeURIComponent(filename)}`);
+                    const response = await ApiClient.fetchUrl(`/prompt_manager/logs/download/${encodeURIComponent(filename)}`);
                     
                     if (response.ok) {
                         const blob = await response.blob();
@@ -2641,7 +2641,7 @@
                 }
                 
                 try {
-                    const response = await fetch('/prompt_manager/logs/truncate', {
+                    const response = await ApiClient.fetchUrl('/prompt_manager/logs/truncate', {
                         method: 'POST'
                     });
                     const data = await response.json();
@@ -2665,7 +2665,7 @@
                 const consoleLogging = document.getElementById("consoleLogging").checked;
                 
                 try {
-                    const response = await fetch('/prompt_manager/logs/config', {
+                    const response = await ApiClient.fetchUrl('/prompt_manager/logs/config', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
@@ -2739,12 +2739,12 @@
 
             // Metadata functionality
             openMetadataViewer() {
-                window.open('/prompt_manager/gallery.html', '_blank');
+                window.open(ApiClient.resolveUrl('/prompt_manager/gallery.html'), '_blank');
             }
 
             // Gallery functionality
             openGallery() {
-                window.open('/prompt_manager/gallery', '_blank');
+                window.open(ApiClient.resolveUrl('/prompt_manager/gallery'), '_blank');
             }
 
 
@@ -2809,7 +2809,7 @@
             async extractImageMetadata(imageUrl) {
                 try {
                     // Fetch the image as an array buffer
-                    const response = await fetch(imageUrl);
+                    const response = await ApiClient.fetchUrl(imageUrl);
                     const arrayBuffer = await response.arrayBuffer();
                     
                     // Parse PNG metadata
@@ -3307,7 +3307,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }
 
                 try {
-                    const response = await fetch('/prompt_manager/save', {
+                    const response = await ApiClient.fetchUrl('/prompt_manager/save', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -3345,7 +3345,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
             getImageUrl(image) {
                 // If the image already has a url property, use it
-                if (image.url) return image.url;
+                if (image.url) return ApiClient.resolveUrl(image.url);
 
                 // Otherwise construct from image_path
                 if (image.image_path) {
@@ -3356,17 +3356,17 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     const filename = image.filename || path.split(/[/\\]/).pop();
                     // Use the image ID if available, otherwise use the path-based serve endpoint
                     if (image.id) {
-                        return `/prompt_manager/images/${image.id}/file`;
+                        return ApiClient.resolveUrl(`/prompt_manager/images/${image.id}/file`);
                     }
                     // Fallback: serve by path (encode the path)
-                    return `/prompt_manager/images/serve/${encodeURIComponent(path)}`;
+                    return ApiClient.resolveUrl(`/prompt_manager/images/serve/${encodeURIComponent(path)}`);
                 }
                 return null;
             }
 
             getThumbnailUrl(image) {
                 // If thumbnail_url already exists, use it
-                if (image.thumbnail_url) return image.thumbnail_url;
+                if (image.thumbnail_url) return ApiClient.resolveUrl(image.thumbnail_url);
 
                 // Try to construct thumbnail URL from filename and relative_path
                 // Thumbnails are stored as: thumbnails/{parent_dir}/{stem}_thumb{ext}
@@ -3389,7 +3389,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         
                         // URL encode the path components (but preserve slashes)
                         const encodedParentDir = parentDir.split('/').map(p => encodeURIComponent(p)).join('/');
-                        return `/prompt_manager/images/serve/thumbnails/${encodedParentDir}${encodeURIComponent(stem)}_thumb${ext}`;
+                        return ApiClient.resolveUrl(`/prompt_manager/images/serve/thumbnails/${encodedParentDir}${encodeURIComponent(stem)}_thumb${ext}`);
                     }
                 }
 
@@ -3399,7 +3399,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
             async loadFilmStripImages(promptId) {
                 try {
-                    const response = await fetch(`/prompt_manager/prompts/${promptId}/images`);
+                    const response = await ApiClient.fetchUrl(`/prompt_manager/prompts/${promptId}/images`);
                     if (response.ok) {
                         const data = await response.json();
                         if (data.success && data.images) {
@@ -3572,7 +3572,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 statusEls.forEach(el => { el.textContent = 'Checking...'; el.className = 'flex items-center gap-1.5'; });
 
                 try {
-                    const response = await fetch('/prompt_manager/autotag/models');
+                    const response = await ApiClient.fetchUrl('/prompt_manager/autotag/models');
                     const data = await response.json();
 
                     if (data.success) {
@@ -3671,7 +3671,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 const skipTagged = document.querySelector('input[name="autoTagMode"]:checked').value === 'skip';
 
                 // Check if model is downloaded
-                const response = await fetch('/prompt_manager/autotag/models');
+                const response = await ApiClient.fetchUrl('/prompt_manager/autotag/models');
                 const data = await response.json();
 
                 if (data.success && !data.models[modelType].downloaded) {
@@ -3762,7 +3762,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 const modelType = document.querySelector('input[name="autoTagModel"]:checked').value;
 
                 // Check if model is downloaded
-                const response = await fetch('/prompt_manager/autotag/models');
+                const response = await ApiClient.fetchUrl('/prompt_manager/autotag/models');
                 const data = await response.json();
 
                 if (data.success && !data.models[modelType].downloaded) {
@@ -3904,7 +3904,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     // Review rows come from /images/all (database ids), so this resolves to image_id
                     const requestBody = ImageHelpers.autotagSingleBody(image, this.autoTagState);
 
-                    const response = await fetch('/prompt_manager/autotag/single', {
+                    const response = await ApiClient.fetchUrl('/prompt_manager/autotag/single', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(requestBody)
@@ -4058,7 +4058,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }
 
                 try {
-                    const response = await fetch('/prompt_manager/autotag/apply', {
+                    const response = await ApiClient.fetchUrl('/prompt_manager/autotag/apply', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({

@@ -101,7 +101,8 @@
             try {
                 const init = { method, headers: { Accept: "text/event-stream" }, signal: controller.signal };
                 if (body !== undefined) init.body = body;
-                const response = await doFetch(url, init);
+                const requestUrl = root.ApiClient ? root.ApiClient.resolveUrl(url) : url;
+                const response = await doFetch(requestUrl, init);
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 if (source.readyState === CLOSED) return;
                 source.readyState = OPEN;

@@ -32,6 +32,11 @@
         return match && match[1] ? match[1] + url : url;
     }
 
+    /** Like fetch(), but keep Prompt Manager URLs under the page's proxy mount. */
+    function fetchUrl(url, init) {
+        return globalThis.fetch(resolveUrl(url), init);
+    }
+
     /**
      * @param {typeof fetch} [fetchImpl] - defaults to the global fetch (bound to globalThis)
      */
@@ -94,7 +99,7 @@
         };
     }
 
-    const api = { createApiClient, latestOnly, resolveUrl, ApiError, STALE };
+    const api = { createApiClient, latestOnly, resolveUrl, fetchUrl, ApiError, STALE };
     if (typeof module !== "undefined" && module.exports) module.exports = api;
     else root.ApiClient = api;
 })(typeof window !== "undefined" ? window : globalThis);

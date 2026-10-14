@@ -205,7 +205,7 @@
 
             async loadFolderTree() {
                 try {
-                    const response = await fetch(ApiClient.resolveUrl('/prompt_manager/gallery/subfolders?include_ancestors=true'));
+                    const response = await ApiClient.fetchUrl('/prompt_manager/gallery/subfolders?include_ancestors=true');
                     if (!response.ok) return;
                     const data = await response.json();
                     if (data.success && data.subfolders.length > 0) {
@@ -352,7 +352,12 @@
                     );
                     this.currentPage = next.page;
                     this.total = next.total;
-                    this.images = append ? this.images.concat(data.images) : data.images;
+                    const images = data.images.map(image => ({
+                        ...image,
+                        url: ApiClient.resolveUrl(image.url),
+                        thumbnail_url: ApiClient.resolveUrl(image.thumbnail_url),
+                    }));
+                    this.images = append ? this.images.concat(images) : images;
                     this.updateStats();
                     this.renderGallery();
                     this.updatePagination();
@@ -1181,7 +1186,7 @@
                         const urlParts = imageUrl.split('/prompt_manager/images/serve/');
                         if (urlParts.length > 1) {
                             const relativePath = urlParts[1];
-                            const response = await fetch(`/prompt_manager/images/prompt/${encodeURIComponent(relativePath)}`);
+                            const response = await ApiClient.fetchUrl(`/prompt_manager/images/prompt/${encodeURIComponent(relativePath)}`);
                             if (response.ok) {
                                 const data = await response.json();
                                 if (data.success && data.prompt) {
@@ -1589,7 +1594,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             async extractImageMetadata(imageUrl) {
                 try {
                     // Fetch the image as an array buffer
-                    const response = await fetch(imageUrl);
+                    const response = await ApiClient.fetchUrl(imageUrl);
                     const arrayBuffer = await response.arrayBuffer();
                     
                     // Parse PNG metadata
@@ -2090,7 +2095,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         
                         // Call backend to clear server-side thumbnails (only our generated thumbnails)
                         try {
-                            const response = await fetch('/prompt_manager/images/clear-thumbnails', {
+                            const response = await ApiClient.fetchUrl('/prompt_manager/images/clear-thumbnails', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' }
                             });
@@ -2181,7 +2186,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             async resumeDuplicateScan() {
                 let status;
                 try {
-                    const response = await fetch('/prompt_manager/scan_duplicates/status');
+                    const response = await ApiClient.fetchUrl('/prompt_manager/scan_duplicates/status');
                     if (!response.ok) return;
                     status = await response.json();
                 } catch (_) {
@@ -2319,7 +2324,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                                         ${image.media_type === 'video' ? `
                                             <div class="w-20 h-20 bg-pm-input rounded flex items-center justify-center relative">
                                                 ${image.thumbnail_url ? `
-                                                    <img src="${escapeHtml(image.thumbnail_url)}" alt="Video thumbnail" class="w-full h-full object-cover rounded">
+                                                    <img src="${escapeHtml(ApiClient.resolveUrl(image.thumbnail_url))}" alt="Video thumbnail" class="w-full h-full object-cover rounded">
                                                 ` : `
                                                     <svg class="w-8 h-8 text-pm-secondary" fill="currentColor" viewBox="0 0 20 20">
                                                         <path d="M2 6a2 2 0 012-2h6l2 2h6a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z"/>
@@ -2328,7 +2333,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                                                 <div class="absolute bottom-0 right-0 bg-black/75 text-pm text-xs px-1 rounded">VIDEO</div>
                                             </div>
                                         ` : `
-                                            <img src="${escapeHtml(image.thumbnail_url || image.url)}" alt="${escapeHtml(image.filename)}"
+                                            <img src="${escapeHtml(ApiClient.resolveUrl(image.thumbnail_url || image.url))}" alt="${escapeHtml(image.filename)}"
                                                  class="w-20 h-20 object-cover rounded cursor-pointer hover:opacity-80"
                                                  onclick="this.parentElement.parentElement.querySelector('.image-preview').click()">
                                         `}
@@ -2347,7 +2352,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                                         <div class="flex items-center justify-between">
                                             <div class="flex items-center space-x-2">
                                                 <button class="image-preview text-xs bg-pm-accent hover:bg-pm-accent-hover text-pm px-2 py-1 rounded"
-                                                        data-action="open-url" data-url="${escapeHtml(image.url)}">
+                                                        data-action="open-url" data-url="${escapeHtml(ApiClient.resolveUrl(image.url))}">
                                                     View Full
                                                 </button>
                                             </div>
@@ -2407,7 +2412,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 try {
                     const imagePaths = Array.from(checkboxes).map(cb => cb.dataset.imagePath);
                     
-                    const response = await fetch('/prompt_manager/delete_duplicate_images', {
+                    const response = await ApiClient.fetchUrl('/prompt_manager/delete_duplicate_images', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
@@ -2499,7 +2504,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     
                     try {
                         // Check a sample of images to see if any are missing thumbnails
-                        const response = await fetch('/prompt_manager/images/output?limit=50&offset=0');
+                        const response = await ApiClient.fetchUrl('/prompt_manager/images/output?limit=50&offset=0');
                         const data = await response.json();
                         
                         console.debug('Checking images for missing thumbnails:', data);
@@ -2975,7 +2980,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             async loadTagsAndCategories() {
                 try {
                     // Load tags
-                    const tagsResponse = await fetch('/prompt_manager/tags');
+                    const tagsResponse = await ApiClient.fetchUrl('/prompt_manager/tags');
                     const tagsData = await tagsResponse.json();
                     if (tagsData.success) {
                         // Filter out the __protected__ tag from suggestions
@@ -2983,7 +2988,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     }
 
                     // Load categories
-                    const categoriesResponse = await fetch('/prompt_manager/categories');
+                    const categoriesResponse = await ApiClient.fetchUrl('/prompt_manager/categories');
                     const categoriesData = await categoriesResponse.json();
                     if (categoriesData.success) {
                         this.addPromptState.allCategories = categoriesData.categories;
@@ -3177,7 +3182,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 saveBtn.textContent = 'Saving...';
 
                 try {
-                    const response = await fetch('/prompt_manager/save', {
+                    const response = await ApiClient.fetchUrl('/prompt_manager/save', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -3274,7 +3279,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 statusEls.forEach(el => { el.textContent = 'Checking...'; });
 
                 try {
-                    const response = await fetch('/prompt_manager/autotag/models');
+                    const response = await ApiClient.fetchUrl('/prompt_manager/autotag/models');
                     const data = await response.json();
 
                     if (data.success) {
@@ -3383,7 +3388,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 unloadBtn.textContent = 'Unloading...';
 
                 try {
-                    const response = await fetch('/prompt_manager/autotag/unload', {
+                    const response = await ApiClient.fetchUrl('/prompt_manager/autotag/unload', {
                         method: 'POST'
                     });
                     const data = await response.json();
@@ -3409,7 +3414,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 const keepInMemory = document.getElementById('keepModelInMemory').checked;
 
                 // Check if model is downloaded
-                const response = await fetch('/prompt_manager/autotag/models');
+                const response = await ApiClient.fetchUrl('/prompt_manager/autotag/models');
                 const data = await response.json();
 
                 if (data.success && !data.models[modelType].downloaded) {
@@ -3499,7 +3504,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 const modelType = document.querySelector('input[name="autoTagModel"]:checked').value;
 
                 // Check if model is downloaded
-                const response = await fetch('/prompt_manager/autotag/models');
+                const response = await ApiClient.fetchUrl('/prompt_manager/autotag/models');
                 const data = await response.json();
 
                 if (data.success && !data.models[modelType].downloaded) {
@@ -3538,7 +3543,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                 const image = this.autoTagState.reviewImages[this.autoTagState.reviewIndex];
                 document.getElementById('reviewCurrentIndex').textContent = this.autoTagState.reviewIndex + 1;
-                document.getElementById('reviewImage').src = image.thumbnail_url || image.url;
+                document.getElementById('reviewImage').src = ApiClient.resolveUrl(image.thumbnail_url || image.url);
                 document.getElementById('reviewImageName').textContent = image.filename || 'Unknown';
                 document.getElementById('reviewTagsContainer').innerHTML = '<div class="text-pm-secondary">Generating tags...</div>';
 
@@ -3546,7 +3551,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     // Gallery entries come from /images/output: id is a path digest, so address by path
                     const requestBody = ImageHelpers.autotagSingleBody(image, this.autoTagState);
 
-                    const response = await fetch('/prompt_manager/autotag/single', {
+                    const response = await ApiClient.fetchUrl('/prompt_manager/autotag/single', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(requestBody)
@@ -3602,7 +3607,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 const image = this.autoTagState.reviewImages[this.autoTagState.reviewIndex];
 
                 try {
-                    const response = await fetch('/prompt_manager/autotag/apply', {
+                    const response = await ApiClient.fetchUrl('/prompt_manager/autotag/apply', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({

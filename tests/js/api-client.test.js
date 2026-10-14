@@ -1,7 +1,7 @@
 // Run with: node --test tests/js/
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createApiClient, resolveUrl, ApiError, latestOnly, STALE } = require("../../web/js/api-client.js");
+const { createApiClient, resolveUrl, fetchUrl, ApiError, latestOnly, STALE } = require("../../web/js/api-client.js");
 
 test("Prompt Manager URLs follow the page's proxy mount without losing query strings", () => {
     const url = "/prompt_manager/images/output?limit=100&subfolder=2025%2F04%2F02";
@@ -10,6 +10,28 @@ test("Prompt Manager URLs follow the page's proxy mount without losing query str
     assert.equal(resolveUrl(url, "/prompt_manager/gallery"), url);
     assert.equal(resolveUrl(url, "/nested/proxy/prompt_manager/admin"), "/nested/proxy" + url);
     assert.equal(resolveUrl("/other/api?x=1", "/ComfyBackendDirect/prompt_manager/gallery"), "/other/api?x=1");
+    assert.equal(resolveUrl("/ComfyBackendDirect/prompt_manager/images/serve/a.png", "/ComfyBackendDirect/prompt_manager/gallery"),
+        "/ComfyBackendDirect/prompt_manager/images/serve/a.png");
+    assert.equal(resolveUrl("/prompt_manager/images/serve/a.png?root=1", "/ComfyBackendDirect/prompt_manager/gallery"),
+        "/ComfyBackendDirect/prompt_manager/images/serve/a.png?root=1");
+});
+
+test("fetchUrl sends Prompt Manager requests under the current proxy mount", async () => {
+    const previousFetch = globalThis.fetch;
+    const previousLocation = globalThis.location;
+    const calls = [];
+    globalThis.location = { pathname: "/ComfyBackendDirect/prompt_manager/admin" };
+    globalThis.fetch = async (url, init) => {
+        calls.push([url, init]);
+        return { ok: true };
+    };
+    try {
+        await fetchUrl("/prompt_manager/settings?show=all", { method: "GET" });
+        assert.deepEqual(calls, [["/ComfyBackendDirect/prompt_manager/settings?show=all", { method: "GET" }]]);
+    } finally {
+        globalThis.fetch = previousFetch;
+        globalThis.location = previousLocation;
+    }
 });
 
 /** A fetch stand-in whose responses the test resolves by hand, in any order. */

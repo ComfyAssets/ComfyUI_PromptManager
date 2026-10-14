@@ -14,7 +14,8 @@
 
   async function detectPalette() {
     try {
-      const res = await fetch('/api/settings/Comfy.ColorPalette');
+      const prefix = window.location.pathname.match(/^(.*)\/prompt_manager(?:\/|$)/)?.[1] || '';
+      const res = await fetch(`${prefix}/api/settings/Comfy.ColorPalette`);
       if (!res.ok) return 'dark';
       const data = await res.json();
       // data is the palette name string, or an object with value
