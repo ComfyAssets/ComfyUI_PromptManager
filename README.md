@@ -915,6 +915,11 @@ MIT License - see LICENSE file for details.
 
 ## Changelog
 
+### v3.3.1 (Proxy Routing Fix)
+
+- **🌐 Proxy support**: the dashboard, gallery, tag page and metadata viewer now work when ComfyUI is reached through a proxy mount such as SwarmUI's `/ComfyBackendDirect/`. Scripts, images, API calls, progress streams and gallery folder filters stay under the mount, and the canvas node's buttons use ComfyUI's `fileURL()`. Direct ComfyUI URLs are unchanged. Thanks to @ghosttigerllc-bit ([#164](https://github.com/ComfyAssets/ComfyUI_PromptManager/pull/164))
+- **📦 Dependencies**: the runtime minimums stay at `Pillow>=8.0.0` and `watchdog>=2.1.0`, so updating Prompt Manager never forces upgrades in the shared ComfyUI environment
+
 ### v3.3.0 (Hardening, Background Jobs & Worker Threads)
 
 - **🔒 Security**: gallery roots restricted to ComfyUI directories and validated wherever they are read; media-only, fail-closed image serving; Windows path escape in static routes closed; quote-safe HTML escaping with inline handlers moved to data attributes; the CivitAI key is never returned and only sent to HTTPS CivitAI hosts; auto-tag paths contained; side-effect routes are POST-only; backups include the WAL and restores are size-capped, integrity-checked and applied through SQLite's online backup API
