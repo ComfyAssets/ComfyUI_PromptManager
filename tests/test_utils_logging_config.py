@@ -263,5 +263,35 @@ class TestConfiguration(IsolatedLoggerTestCase):
         self.manager.update_config({"console_logging": False})
 
 
+class TestConsoleNoise(IsolatedLoggerTestCase):
+    """ComfyUI's console only sees warnings unless the level is DEBUG."""
+
+    def _console_handler(self) -> logging.StreamHandler:
+        return next(
+            h
+            for h in logging.getLogger("prompt_manager").handlers
+            if type(h) is logging.StreamHandler
+        )
+
+    def test_records_do_not_propagate_to_comfyui_root_logger(self) -> None:
+        self.assertFalse(logging.getLogger("prompt_manager").propagate)
+
+    def test_console_hides_info_at_the_default_level(self) -> None:
+        self.manager.update_config({"console_logging": True})
+        self.assertEqual(self._console_handler().level, logging.WARNING)
+        self.logger.info("startup chatter")
+        self.assertEqual(self.manager.get_recent_logs(limit=1)[0]["level"], "INFO")
+        log_file = pathlib.Path(self.log_dir) / "prompt_manager.log"
+        self.assertIn("startup chatter", log_file.read_text())
+        self.manager.update_config({"console_logging": False})
+
+    def test_debug_level_opens_the_console(self) -> None:
+        self.manager.update_config({"console_logging": True, "level": "DEBUG"})
+        self.assertEqual(self._console_handler().level, logging.DEBUG)
+        self.manager.update_config({"level": "INFO"})
+        self.assertEqual(self._console_handler().level, logging.WARNING)
+        self.manager.update_config({"console_logging": False})
+
+
 if __name__ == "__main__":
     unittest.main()

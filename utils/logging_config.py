@@ -85,6 +85,8 @@ class PromptManagerLogger:
         # Main logger
         self.logger = logging.getLogger("prompt_manager")
         self.logger.setLevel(getattr(logging, self.config["level"]))
+        # ComfyUI's root handler would print every record a second time.
+        self.logger.propagate = False
 
         # Clear existing handlers
         for handler in self.logger.handlers[:]:
@@ -100,6 +102,7 @@ class PromptManagerLogger:
         # Console handler
         if self.config["console_logging"]:
             console_handler = logging.StreamHandler()
+            console_handler.setLevel(self._console_level())
             console_handler.setFormatter(formatter)
             self.logger.addHandler(console_handler)
 
@@ -123,6 +126,15 @@ class PromptManagerLogger:
 
         # Component-specific loggers
         self._setup_component_loggers()
+
+    def _console_level(self) -> int:
+        """Console threshold: everything at DEBUG, otherwise warnings only.
+
+        INFO still reaches the log file and the web log viewer.
+        """
+        if str(self.config["level"]).upper() == "DEBUG":
+            return logging.DEBUG
+        return logging.WARNING
 
     def _setup_component_loggers(self):
         """Set up loggers for specific components.
@@ -362,6 +374,10 @@ class PromptManagerLogger:
                 if logger_name.startswith("prompt_manager"):
                     logger = logging.getLogger(logger_name)
                     logger.setLevel(level)
+
+            for handler in self.logger.handlers:
+                if type(handler) is logging.StreamHandler:
+                    handler.setLevel(self._console_level())
 
         # Re-setup loggers if handlers changed
         if any(
