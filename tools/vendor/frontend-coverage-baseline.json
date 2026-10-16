@@ -1,9 +1,9 @@
 {
   "admin.js": {
-    "lines": 24,
-    "branches": 53,
-    "functions": 20,
-    "statements": 24
+    "lines": 28,
+    "branches": 58,
+    "functions": 23,
+    "statements": 28
   },
   "api-client.js": {
     "lines": 98,
