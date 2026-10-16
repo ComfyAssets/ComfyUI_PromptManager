@@ -13,7 +13,7 @@ function deferred() {
 function fixture() {
     const context = vm.createContext({ document: { addEventListener() {}, getElementById() {} },
         window: {}, console: { error() {} }, escapeHtml: value => value });
-    const Manager = vm.runInContext(fs.readFileSync(path.join(__dirname, '../../web/js/gallery.js'), 'utf8') + '\nGalleryManager;', context);
+    const Manager = vm.runInContext(fs.readFileSync(path.join(__dirname, '../../web/js/gallery.js'), 'utf8') + '\nGalleryManager;', context, { filename: path.join(__dirname, '../../web/js/gallery.js') });
     const manager = Object.create(Manager.prototype);
     const requests = new Map();
     manager.extractImageMetadata = url => {

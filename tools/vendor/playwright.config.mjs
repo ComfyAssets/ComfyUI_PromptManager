@@ -2,6 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
     testDir: './tests',
+    outputDir: './test-results/viewer',
     testMatch: '*.spec.mjs',
     fullyParallel: true,
     workers: 2,

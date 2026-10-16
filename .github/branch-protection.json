@@ -1,0 +1,25 @@
+{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": [
+      "py3.10 on ubuntu-latest",
+      "py3.11 on ubuntu-latest",
+      "py3.12 on ubuntu-latest",
+      "py3.10 on windows-latest",
+      "py3.11 on windows-latest",
+      "py3.12 on windows-latest",
+      "py3.10 on macos-latest",
+      "py3.11 on macos-latest",
+      "py3.12 on macos-latest",
+      "coverage gate (85%)",
+      "black and flake8",
+      "frontend modules",
+      "viewerjs"
+    ]
+  },
+  "enforce_admins": true,
+  "required_pull_request_reviews": null,
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}

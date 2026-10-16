@@ -13,7 +13,7 @@ test('gallery metadata requests retain root identity without including cache par
             return { ok: true, json: async () => ({ success: true, prompt: { text: url } }) };
         } },
     });
-    const Manager = vm.runInContext(fs.readFileSync(path.join(__dirname, '../../web/js/gallery.js'), 'utf8') + '\nGalleryManager;', context);
+    const Manager = vm.runInContext(fs.readFileSync(path.join(__dirname, '../../web/js/gallery.js'), 'utf8') + '\nGalleryManager;', context, { filename: path.join(__dirname, '../../web/js/gallery.js') });
     const manager = Object.create(Manager.prototype);
     manager.extractImageMetadata = async () => null;
     manager.displayMetadata = (metadata, panel) => { panel.prompt = metadata.positivePrompt; };

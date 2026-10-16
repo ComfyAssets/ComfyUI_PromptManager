@@ -10,7 +10,7 @@ function fixture() {
         requestAnimationFrame() {}, document: { getElementById: id => id === 'tagPromptsGrid' ? grid : null,
             querySelector: () => null, createElement: () => ({ appendChild() {} }) },
     });
-    const Manager = vm.runInContext(fs.readFileSync(path.join(__dirname, '../../web/js/tags-page.js'), 'utf8') + '\nTagsPageManager;', context);
+    const Manager = vm.runInContext(fs.readFileSync(path.join(__dirname, '../../web/js/tags-page.js'), 'utf8') + '\nTagsPageManager;', context, { filename: path.join(__dirname, '../../web/js/tags-page.js') });
     const manager = Object.create(Manager.prototype);
     Object.assign(manager, { selectedTags: ['cats'], filterMode: 'and', promptLimit: 20,
         promptOffset: 0, isLoadingPrompts: false, prompts: [], hasMorePrompts: false,
