@@ -486,7 +486,7 @@ class TestThumbnailProgressStream(ThumbnailTestCase):
         # PIL work ran in the executor in batches (never on the loop), plus the scan.
         self.assertGreaterEqual(calls.count("_generate_batch"), 1)
         self.assertNotIn("_generate_one", calls)
-        self.assertIn("_plan_thumbnails", calls)
+        self.assertIn("_plan_gallery_thumbnails", calls)
 
     async def test_capped_run_reports_remaining_and_the_next_run_finishes(self):
         for name in ("a", "b", "c"):
@@ -573,7 +573,7 @@ class TestThumbnailProgressStream(ThumbnailTestCase):
         self.assertEqual(events[-1][1]["total_images"], 0)
 
     async def test_missing_output_dir_sends_error_event(self):
-        self.api._find_comfyui_output_dir = lambda: None
+        self.api._get_all_output_dirs = lambda: []
 
         resp = await self.client.request("POST", self.PROGRESS_URL)
 
@@ -616,7 +616,7 @@ class TestGenerateThumbnailsPost(ThumbnailTestCase):
         self.assertEqual(data2["count"], 0)
 
     async def test_missing_output_dir_is_404(self):
-        self.api._find_comfyui_output_dir = lambda: None
+        self.api._get_all_output_dirs = lambda: []
 
         resp = await self.client.request(
             "POST", "/prompt_manager/images/generate-thumbnails", json={}
@@ -1420,7 +1420,7 @@ class TestThumbnailUnits(ImageRouteCoverageCase):
         self.assertEqual(events[-1][0], "error")
 
     async def test_post_generate_reports_internal_failure(self):
-        self.api._find_comfyui_output_dir = _raise
+        self.api._get_all_output_dirs = _raise
         status, _ = await self._json(
             "POST", "/prompt_manager/images/generate-thumbnails", json={}
         )
@@ -1536,7 +1536,7 @@ class TestClearThumbnails(ImageRouteCoverageCase):
     URL = "/prompt_manager/images/clear-thumbnails"
 
     async def test_missing_output_dir_is_404(self):
-        self.api._find_comfyui_output_dir = lambda: None
+        self.api._get_all_output_dirs = lambda: []
         status, _ = await self._json("POST", self.URL)
         self.assertEqual(status, 404)
 
@@ -1569,7 +1569,7 @@ class TestClearThumbnails(ImageRouteCoverageCase):
         self.assertEqual(data["cleared_files"], 0)
 
     async def test_internal_failure_is_500(self):
-        self.api._find_comfyui_output_dir = _raise
+        self.api._get_all_output_dirs = _raise
         status, _ = await self._json("POST", self.URL)
         self.assertEqual(status, 500)
 
@@ -1581,13 +1581,86 @@ class TestClearThumbnails(ImageRouteCoverageCase):
         out.mkdir()
         sibling = make_png(self.comfy_dir / "out2" / "thumbnails" / "a_thumb.png")
         self._make_symlink(sibling.parent, out / "thumbnails")
-        self.api._find_comfyui_output_dir = lambda: str(out)
+        self.api._get_all_output_dirs = lambda: [out]
 
         status, data = await self._json("POST", self.URL)
 
         self.assertEqual(status, 400)
         self.assertFalse(data["success"])
         self.assertTrue(sibling.is_file())
+
+    async def test_clears_all_roots_and_combines_counts_without_touching_originals(
+        self,
+    ):
+        second = self.comfy_dir / "extra-output"
+        roots = [self.output_dir, second]
+        self.api._get_all_output_dirs = lambda: roots
+        expected_size = 0
+        for root in roots:
+            make_png(root / "original_thumb.png")
+            thumb = make_png(root / "thumbnails" / "sub" / "generated_thumb.png")
+            expected_size += thumb.stat().st_size
+            (root / "thumbnails" / "notes.txt").write_text("keep")
+        status, data = await self._json("POST", self.URL)
+        self.assertEqual(status, 200)
+        self.assertEqual(data["cleared_files"], 2)
+        self.assertEqual(data["cleared_size"], expected_size)
+        self.assertNotIn("{format_size", data["message"])
+        for root in roots:
+            self.assertTrue((root / "original_thumb.png").is_file())
+            self.assertTrue((root / "thumbnails" / "notes.txt").is_file())
+            self.assertFalse((root / "thumbnails" / "sub").exists())
+
+    async def test_missing_thumbnails_in_first_root_does_not_skip_later_roots(self):
+        second = self.comfy_dir / "extra-output"
+        thumb = make_png(second / "thumbnails" / "a_thumb.png")
+        self.api._get_all_output_dirs = lambda: [self.output_dir, second]
+        status, data = await self._json("POST", self.URL)
+        self.assertEqual(status, 200)
+        self.assertEqual(data["cleared_files"], 1)
+        self.assertFalse(thumb.exists())
+
+    async def test_invalid_later_root_is_rejected_before_deleting_any_files(self):
+        first_thumb = make_png(self.output_dir / "thumbnails" / "a_thumb.png")
+        second = self.comfy_dir / "extra-output"
+        second.mkdir()
+        outside = make_png(self.comfy_dir / "elsewhere" / "a_thumb.png")
+        self._make_symlink(outside.parent, second / "thumbnails")
+        self.api._get_all_output_dirs = lambda: [self.output_dir, second]
+        status, data = await self._json("POST", self.URL)
+        self.assertEqual(status, 400)
+        self.assertFalse(data["success"])
+        self.assertTrue(first_thumb.is_file())
+        self.assertTrue(outside.is_file())
+
+    async def test_thumbnail_symlink_back_to_root_cannot_delete_originals(self):
+        original = make_png(self.output_dir / "original_thumb.png")
+        self._make_symlink(self.output_dir, self.output_dir / "thumbnails")
+        status, data = await self._json("POST", self.URL)
+        self.assertEqual(status, 400)
+        self.assertFalse(data["success"])
+        self.assertTrue(original.is_file())
+
+    async def test_cleanup_runs_off_loop_and_invalidates_gallery_cache(self):
+        import threading
+
+        make_png(self.output_dir / "thumbnails" / "a_thumb.png")
+        loop_thread = threading.get_ident()
+        deletion_threads = []
+        original_unlink = Path.unlink
+
+        def unlink(path, *args, **kwargs):
+            deletion_threads.append(threading.get_ident())
+            return original_unlink(path, *args, **kwargs)
+
+        self.api._gallery_cache = {"previous": object()}
+        with patch.object(Path, "unlink", unlink):
+            status, data = await self._json("POST", self.URL)
+        self.assertEqual(status, 200)
+        self.assertEqual(data["cleared_files"], 1)
+        self.assertTrue(deletion_threads)
+        self.assertNotIn(loop_thread, deletion_threads)
+        self.assertEqual(self.api._gallery_cache, {})
 
 
 class TestImagePromptLookup(ImageRouteCoverageCase):
@@ -1819,3 +1892,88 @@ class TestOutputScanHelpers(ImageAPITestCase):
         targets = [(Path(f"/x/{i}.png"), Path(f"/x/t{i}.jpg"), False) for i in range(3)]
         await self.api._stream_thumbnails(GoneResponse(), targets, (256, 256))
         self.assertEqual(generated, [])
+
+
+class TestThumbnailStartupStatus(ThumbnailTestCase):
+    """Startup counts and generation cover the same configured collection."""
+
+    STATUS_URL = "/prompt_manager/images/thumbnails/status"
+
+    async def test_status_reports_exact_pending_count_without_generating(self):
+        for name in ("ready", "missing", "outdated"):
+            make_png(self.output_dir / f"{name}.png")
+        thumbs = self.output_dir / "thumbnails"
+        ready = make_png(thumbs / "ready_thumb.png")
+        outdated = make_png(thumbs / "outdated_thumb.png")
+        source_time = (self.output_dir / "ready.png").stat().st_mtime
+        os.utime(ready, (source_time + 10, source_time + 10))
+        os.utime(outdated, (source_time - 10, source_time - 10))
+        calls = self._spy_executor()
+
+        response = await self.client.get(self.STATUS_URL)
+
+        self.assertEqual(response.status, 200)
+        data = await response.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["total_images"], 3)
+        self.assertEqual(data["pending"], 2)
+        self.assertEqual(data["ready"], 1)
+        self.assertTrue(data["collection_id"])
+        self.assertIn("_plan_gallery_thumbnails", calls)
+        self.assertFalse((thumbs / "missing_thumb.png").exists())
+
+    async def test_both_generation_routes_cover_all_gallery_roots(self):
+        second = self.comfy_dir / "another-output"
+        make_png(self.output_dir / "a.png")
+        make_png(second / "b.png")
+        self.api._get_all_output_dirs = lambda: [self.output_dir, second]
+        for route in (
+            "/prompt_manager/images/generate-thumbnails",
+            self.PROGRESS_URL,
+        ):
+            with self.subTest(route=route):
+                for root in (self.output_dir, second):
+                    for thumb in (root / "thumbnails").glob("*_thumb.png"):
+                        thumb.unlink()
+                response = await self.client.post(route, json={})
+                if route == self.PROGRESS_URL:
+                    data = dict(parse_sse(await response.text()))["complete"]
+                else:
+                    data = await response.json()
+                self.assertEqual(data["count"], 2)
+                self.assertTrue((second / "thumbnails" / "b_thumb.png").exists())
+                status = await (await self.client.get(self.STATUS_URL)).json()
+                self.assertEqual(status["pending"], 0)
+                self.assertEqual(status["total_images"], 2)
+
+    async def test_pending_count_includes_files_beyond_the_generation_cap(self):
+        for name in ("a", "b", "c"):
+            make_png(self.output_dir / f"{name}.png")
+        with patch.object(images_module, "MAX_THUMBNAIL_FILES", 1):
+            response = await self.client.get(self.STATUS_URL)
+            self.assertEqual(response.status, 200)
+            data = await response.json()
+        self.assertEqual(data["pending"], 3)
+
+    async def test_generation_cap_is_shared_across_roots(self):
+        second = self.comfy_dir / "another-output"
+        make_png(self.output_dir / "a.png")
+        make_png(second / "b.png")
+        self.api._get_all_output_dirs = lambda: [self.output_dir, second]
+        with patch.object(images_module, "MAX_THUMBNAIL_FILES", 1):
+            response = await self.client.post(self.PROGRESS_URL)
+            data = dict(parse_sse(await response.text()))["complete"]
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["remaining"], 1)
+        self.assertEqual(data["total_images"], 2)
+
+    async def test_equal_timestamps_do_not_regenerate_existing_thumbnails(self):
+        source = make_png(self.output_dir / "ready.png")
+        thumb = make_png(self.output_dir / "thumbnails" / "ready_thumb.png")
+        timestamp = int(source.stat().st_mtime)
+        os.utime(source, (timestamp, timestamp))
+        os.utime(thumb, (timestamp, timestamp))
+        response = await self.client.post(self.PROGRESS_URL)
+        data = dict(parse_sse(await response.text()))["complete"]
+        self.assertEqual(data["count"], 0)
+        self.assertEqual(data["skipped"], 1)

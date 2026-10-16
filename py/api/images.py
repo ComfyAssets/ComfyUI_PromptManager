@@ -214,9 +214,9 @@ def _thumbnail_complete_payload(total, stats, start, remaining=0, processed=None
 
 
 def _thumbnail_is_fresh(src, dst):
-    """True when ``dst`` exists and is newer than ``src`` (blocking stat)."""
+    """True when ``dst`` exists and is at least as new as ``src`` (blocking stat)."""
     try:
-        return dst.stat().st_mtime > src.stat().st_mtime
+        return dst.stat().st_mtime >= src.stat().st_mtime
     except OSError:
         return False
 
@@ -381,6 +381,10 @@ class ImageRoutesMixin:
         @routes.delete("/prompt_manager/images/{image_id}")
         async def delete_image_route(request):
             return await self.delete_image(request)
+
+        @routes.get("/prompt_manager/images/thumbnails/status")
+        async def thumbnail_status_route(request):
+            return await self.get_thumbnail_status(request)
 
         @routes.post("/prompt_manager/images/generate-thumbnails")
         async def generate_thumbnails_route(request):
@@ -815,19 +819,15 @@ class ImageRoutesMixin:
                 return error
             thumbnail_size = self._thumbnail_size(data.get("quality", "medium"))
 
-            output_dir = self._find_comfyui_output_dir()
-            if not output_dir:
+            output_dirs = self._get_all_output_dirs()
+            if not output_dirs:
                 return web.json_response(
                     {"success": False, "error": "ComfyUI output directory not found"},
                     status=404,
                 )
 
-            output_path = Path(output_dir)
             result = await self._run_in_executor(
-                self._generate_thumbnails_sync,
-                output_path,
-                output_path / "thumbnails",
-                thumbnail_size,
+                self._generate_gallery_thumbnails_sync, output_dirs, thumbnail_size
             )
             self.invalidate_gallery_cache()
             return web.json_response(result)
@@ -842,6 +842,22 @@ class ImageRoutesMixin:
         """Blocking thumbnail generation loop (run in executor)."""
         start = _time.monotonic()
         plan = self._plan_thumbnails(output_path, thumbnails_dir)
+        payload = self._execute_thumbnail_plan(plan, thumbnail_size, start)
+        payload["thumbnails_path"] = _public_path(thumbnails_dir)
+        return payload
+
+    def _generate_gallery_thumbnails_sync(
+        self, output_dirs: list[Path], thumbnail_size: tuple[int, int]
+    ) -> dict:
+        start = _time.monotonic()
+        plan = self._plan_gallery_thumbnails(output_dirs)
+        payload = self._execute_thumbnail_plan(plan, thumbnail_size, start)
+        payload["thumbnails_path"] = _public_path(output_dirs[0] / "thumbnails")
+        return payload
+
+    def _execute_thumbnail_plan(
+        self, plan: dict, thumbnail_size: tuple[int, int], start: float
+    ) -> dict:
         targets = plan["targets"]
         stats = _new_thumbnail_stats()
         stats["skipped"] = plan["skipped"]
@@ -855,9 +871,49 @@ class ImageRoutesMixin:
             processed=len(targets),
         )
         payload["success"] = True
-        payload["thumbnails_path"] = _public_path(thumbnails_dir)
         self.logger.info(payload["message"])
         return payload
+
+    def _plan_gallery_thumbnails(self, output_dirs: list[Path]) -> dict:
+        """Plan every gallery root with one shared per-run generation cap."""
+        combined = {"targets": [], "skipped": 0, "remaining": 0}
+        for root in output_dirs:
+            root = Path(root)
+            plan = self._plan_thumbnails(root, root / "thumbnails")
+            available = max(0, MAX_THUMBNAIL_FILES - len(combined["targets"]))
+            combined["targets"].extend(plan["targets"][:available])
+            combined["skipped"] += plan["skipped"]
+            combined["remaining"] += plan["remaining"] + max(
+                0, len(plan["targets"]) - available
+            )
+        return combined
+
+    async def get_thumbnail_status(self, request: web.Request) -> web.Response:
+        """Count pending thumbnails off-loop without generating files."""
+        try:
+            output_dirs = self._get_all_output_dirs()
+            plan = await self._run_in_executor(
+                self._plan_gallery_thumbnails, output_dirs
+            )
+            pending = len(plan["targets"]) + plan["remaining"]
+            collection = json.dumps(sorted(str(_canonical(p)) for p in output_dirs))
+            return web.json_response(
+                {
+                    "success": True,
+                    "total_images": pending + plan["skipped"],
+                    "pending": pending,
+                    "ready": plan["skipped"],
+                    "collection_id": hashlib.sha256(collection.encode()).hexdigest()[
+                        :16
+                    ],
+                },
+                headers={"Cache-Control": "no-store"},
+            )
+        except Exception as exc:
+            self.logger.exception("Thumbnail status failed")
+            return web.json_response(
+                {"success": False, "error": _safe_error(exc)}, status=500
+            )
 
     def _plan_thumbnails(self, output_path, thumbnails_dir):
         """Decide which media files need a thumbnail (blocking walk).
@@ -923,7 +979,7 @@ class ImageRoutesMixin:
         try:
             if not src.is_file():
                 return {**result, "action": "error", "error": "File no longer exists"}
-            if dst.exists() and dst.stat().st_mtime > src.stat().st_mtime:
+            if _thumbnail_is_fresh(src, dst):
                 return {**result, "action": "skipped"}
             dst.parent.mkdir(parents=True, exist_ok=True)
             if is_video:
@@ -957,21 +1013,20 @@ class ImageRoutesMixin:
         )
         await response.prepare(request)
         try:
-            output_dir = self._find_comfyui_output_dir()
-            if not output_dir:
+            output_dirs = self._get_all_output_dirs()
+            if not output_dirs:
                 await self._emit_sse(
                     response, "error", {"error": "ComfyUI output directory not found"}
                 )
                 return response
 
-            output_path = Path(output_dir)
             await self._emit_sse(
                 response,
                 "status",
                 {"phase": "scanning", "message": "Scanning for images and videos..."},
             )
             plan = await self._run_in_executor(
-                self._plan_thumbnails, output_path, output_path / "thumbnails"
+                self._plan_gallery_thumbnails, output_dirs
             )
             await self._stream_thumbnails(
                 response,
@@ -1196,119 +1251,109 @@ class ImageRoutesMixin:
             )
             return False
 
-    async def clear_thumbnails(self, request):
-        """Safely clear only our generated thumbnails, never touch original images."""
-        try:
+    async def clear_thumbnails(self, request: web.Request) -> web.Response:
+        """Clear generated thumbnails across gallery roots, preserving originals.
 
-            # Find ComfyUI output directory
-            output_dir = self._find_comfyui_output_dir()
-            if not output_dir:
+        Invalid thumbnail directories return 400; unavailable gallery roots
+        return 404, and unexpected filesystem failures return 500.
+        """
+        try:
+            output_dirs = self._get_all_output_dirs()
+            if not output_dirs:
                 return web.json_response(
                     {"success": False, "error": "ComfyUI output directory not found"},
                     status=404,
                 )
-
-            output_path = Path(output_dir)
-            thumbnails_dir = output_path / "thumbnails"
-
-            if not thumbnails_dir.exists():
-                return web.json_response(
-                    {
-                        "success": True,
-                        "message": "No thumbnails directory found - nothing to clear",
-                        "cleared_files": 0,
-                    }
-                )
-
-            # Verify this is actually our thumbnails directory: a real child
-            # of the output root (symlinks resolved), not merely a path that
-            # shares its prefix such as "<root>2/thumbnails".
-            try:
-                if (
-                    not _is_within(thumbnails_dir, output_path)
-                    or thumbnails_dir.name != "thumbnails"
-                ):
-                    self.logger.error(
-                        "Safety check failed: thumbnails directory path invalid: "
-                        f"{thumbnails_dir}"
-                    )
-                    return web.json_response(
-                        {
-                            "success": False,
-                            "error": "Safety check failed: invalid thumbnails "
-                            "directory path",
-                        },
-                        status=400,
-                    )
-
-            except Exception as e:
-                self.logger.error(f"Path validation failed: {e}")
-                return web.json_response(
-                    {"success": False, "error": "Path validation failed"}, status=500
-                )
-
-            # Count files before deletion
-            cleared_count = 0
-            cleared_size = 0
-
-            for root, dirs, files in os.walk(thumbnails_dir):
-                for file in files:
-                    file_path = Path(root) / file
-
-                    if "_thumb" in file.lower() and any(
-                        file.lower().endswith(ext)
-                        for ext in [".png", ".jpg", ".jpeg", ".webp", ".gif"]
-                    ):
-                        try:
-                            file_size = file_path.stat().st_size
-                            file_path.unlink()
-                            cleared_count += 1
-                            cleared_size += file_size
-                            self.logger.debug(f"Cleared thumbnail: {file_path}")
-                        except Exception as e:
-                            self.logger.warning(
-                                f"Failed to delete thumbnail {file_path}: {e}"
-                            )
-
-            # Remove empty directories within thumbnails folder
-            try:
-                for root, dirs, files in os.walk(thumbnails_dir, topdown=False):
-                    if root != str(thumbnails_dir):
-                        try:
-                            Path(root).rmdir()
-                        except OSError:
-                            pass
-            except Exception as e:
-                self.logger.debug(f"Directory cleanup info: {e}")
-
-            def format_size(bytes_size):
-                for unit in ["B", "KB", "MB", "GB"]:
-                    if bytes_size < 1024.0:
-                        return f"{bytes_size:.1f} {unit}"
-                    bytes_size /= 1024.0
-                return f"{bytes_size:.1f} TB"
-
-            self.logger.info(
-                f"Thumbnail cleanup: cleared {cleared_count} files "
-                f"({format_size(cleared_size)})"
+            cleared_count, cleared_size = await self._run_in_executor(
+                self._clear_gallery_thumbnails_sync, output_dirs
             )
+            self.invalidate_gallery_cache()
 
+            def format_size(bytes_size: int) -> str:
+                size = float(bytes_size)
+                for unit in ["B", "KB", "MB", "GB"]:
+                    if size < 1024.0:
+                        return f"{size:.1f} {unit}"
+                    size /= 1024.0
+                return f"{size:.1f} TB"
+
+            size_formatted = format_size(cleared_size)
+            self.logger.info(
+                f"Thumbnail cleanup: cleared {cleared_count} files ({size_formatted})"
+            )
             return web.json_response(
                 {
                     "success": True,
                     "cleared_files": cleared_count,
                     "cleared_size": cleared_size,
-                    "cleared_size_formatted": format_size(cleared_size),
+                    "cleared_size_formatted": size_formatted,
                     "message": f"Cleared {cleared_count} thumbnail files "
-                    "({format_size(cleared_size)})",
+                    f"({size_formatted})",
                 }
             )
-
-        except Exception as e:
-            self.logger.error(f"Clear thumbnails error: {e}")
+        except ValueError as exc:
+            self.logger.error(f"Thumbnail path validation failed: {exc}")
             return web.json_response(
-                {"success": False, "error": _safe_error(e)}, status=500
+                {"success": False, "error": _safe_error(exc)}, status=400
             )
+        except Exception as exc:
+            self.logger.error(f"Clear thumbnails error: {exc}")
+            return web.json_response(
+                {"success": False, "error": _safe_error(exc)}, status=500
+            )
+
+    def _clear_gallery_thumbnails_sync(
+        self, output_dirs: list[Path]
+    ) -> tuple[int, int]:
+        """Validate all thumbnail directories before deleting generated files.
+
+        Raises ValueError for symlinked or out-of-root thumbnail directories.
+        Filesystem errors during path validation propagate to the route.
+        """
+        directories = []
+        for output_path in output_dirs:
+            output_path = Path(output_path)
+            thumbnails_dir = output_path / "thumbnails"
+            if not thumbnails_dir.exists() and not thumbnails_dir.is_symlink():
+                continue
+            if (
+                thumbnails_dir.is_symlink()
+                or not _is_within(thumbnails_dir, output_path)
+                or _canonical(thumbnails_dir) == _canonical(output_path)
+            ):
+                raise ValueError(
+                    "Safety check failed: invalid thumbnails directory path"
+                )
+            directories.append(thumbnails_dir)
+
+        cleared_count = 0
+        cleared_size = 0
+        for thumbnails_dir in directories:
+            for root, _dirs, files in os.walk(thumbnails_dir):
+                for name in files:
+                    path = Path(root) / name
+                    if (
+                        "_thumb" not in name.lower()
+                        or path.suffix.lower() not in GALLERY_IMAGE_EXTENSIONS
+                        or path.is_symlink()
+                    ):
+                        continue
+                    try:
+                        size = path.stat().st_size
+                        path.unlink()
+                        cleared_count += 1
+                        cleared_size += size
+                    except OSError as exc:
+                        self.logger.warning(f"Failed to delete thumbnail {path}: {exc}")
+            for root, _dirs, _files in os.walk(thumbnails_dir, topdown=False):
+                if Path(root) != thumbnails_dir:
+                    try:
+                        Path(root).rmdir()
+                    except OSError as exc:
+                        self.logger.debug(
+                            "Keeping thumbnail directory %s: %s", root, exc
+                        )
+        return cleared_count, cleared_size
 
     @staticmethod
     def _resolve_client_media_path(raw_path, allowed_dirs):
