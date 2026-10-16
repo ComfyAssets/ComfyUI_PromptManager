@@ -3542,6 +3542,10 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
 
             async loadNextReviewImage() {
+                const request = {};
+                this.reviewRequest = request;
+                this.autoTagState.currentTags = [];
+                this.autoTagState.reviewPromptId = null;
                 if (this.autoTagState.reviewIndex >= this.autoTagState.reviewImages.length) {
                     this.hideModal("autoTagReviewModal");
                     this.showNotification('Review complete!', 'success');
@@ -3567,7 +3571,9 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                     const data = await response.json();
 
+                    if (this.reviewRequest !== request) return;
                     if (data.success) {
+                        this.autoTagState.reviewPromptId = data.prompt_id ?? null;
                         this.autoTagState.currentTags = data.tags;
                         this.renderReviewTags();
                     } else {
@@ -3575,6 +3581,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                             `<div class="text-pm-error">Error: ${escapeHtml(data.error)}</div>`;
                     }
                 } catch (error) {
+                    if (this.reviewRequest !== request) return;
                     console.error('Error generating tags:', error);
                     document.getElementById('reviewTagsContainer').innerHTML =
                         '<div class="text-pm-error">Failed to generate tags</div>';
@@ -3612,28 +3619,41 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     return;
                 }
 
-                const image = this.autoTagState.reviewImages[this.autoTagState.reviewIndex];
+                const promptId = this.autoTagState.reviewPromptId;
+                if (!promptId) {
+                    this.showNotification('This image has no linked prompt. Scan the output folder first.', 'warning');
+                    return;
+                }
+                const request = this.reviewRequest;
+                if (this.reviewApplying === request) return;
+                this.reviewApplying = request;
 
                 try {
                     const response = await ApiClient.fetchUrl('/prompt_manager/autotag/apply', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                            image_path: image.path,
+                            prompt_id: promptId,
                             tags: this.autoTagState.currentTags
                         })
                     });
 
                     const data = await response.json();
 
+                    if (this.reviewRequest !== request) return;
                     if (data.success) {
                         this.showNotification(`Applied ${this.autoTagState.currentTags.length} tags`, 'success');
                     } else {
                         this.showNotification(data.error || 'Failed to apply tags', 'warning');
+                        return;
                     }
                 } catch (error) {
+                    if (this.reviewRequest !== request) return;
                     console.error('Error applying tags:', error);
                     this.showNotification('Failed to apply tags', 'error');
+                    return;
+                } finally {
+                    if (this.reviewApplying === request) this.reviewApplying = null;
                 }
 
                 this.autoTagState.reviewIndex++;
@@ -3641,6 +3661,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
 
             cancelReview() {
+                this.reviewRequest = null;
+                this.autoTagState.reviewPromptId = null;
                 this.autoTagState.reviewImages = [];
                 this.autoTagState.reviewIndex = 0;
                 this.autoTagState.currentTags = [];

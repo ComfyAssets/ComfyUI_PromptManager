@@ -484,6 +484,22 @@ class AutotagRoutesMixin:
         if not raw_path or not isinstance(raw_path, str):
             return None, None, self._bad_request("image_id or path is required")
 
+        if "root_index" in data:
+            root_index = data["root_index"]
+            if isinstance(root_index, bool) or not isinstance(root_index, int):
+                return None, None, self._bad_request("root_index must be an integer")
+            roots = self._get_all_output_dirs()
+            if not 0 <= root_index < len(roots):
+                return None, None, self._forbidden(raw_path)
+            root = roots[root_index]
+            if Path(raw_path).is_absolute() or ".." in raw_path.replace(
+                "\\", "/"
+            ).split("/"):
+                return None, None, self._forbidden(raw_path)
+            raw_path = str(Path(root) / raw_path)
+            if not path_is_within(raw_path, root):
+                return None, None, self._forbidden(raw_path)
+
         resolved = self._resolve_allowed_image_path(raw_path)
         if resolved is None:
             return None, None, self._forbidden(raw_path)
