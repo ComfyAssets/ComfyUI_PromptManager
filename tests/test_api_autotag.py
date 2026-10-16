@@ -1069,7 +1069,9 @@ class TestGalleryReviewContract(AutotagAPITestCase):
             self.assertEqual(response.status, 200)
             data = await response.json()
             self.assertEqual(data["prompt_id"], pid)
-            self.assertEqual(self.service.generate_calls[-1][0], str(root / "same.png"))
+            self.assertEqual(
+                self.service.generate_calls[-1][0], str((root / "same.png").resolve())
+            )
             response = await self._post_json(
                 "/prompt_manager/autotag/apply",
                 {"prompt_id": data["prompt_id"], "tags": data["tags"]},
