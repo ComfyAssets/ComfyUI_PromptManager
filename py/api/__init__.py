@@ -703,18 +703,43 @@ class PromptManagerAPI(
             "negative_prompt": None,
         }
 
-        # Check for A1111 style parameters first (like parse-metadata.py)
+        # Check for A1111/Forge style parameters first.
+        # The chunk is one block: a possibly multi-line positive prompt, then a
+        # "Negative prompt:" section, then a trailing "Steps: ..." settings line.
+        # Taking lines[0] as the positive prompt truncates any multi-line prompt
+        # to one line, so split on the settings line instead.
         if "parameters" in metadata:
+            import re as _re
+
             params = metadata["parameters"]
-            lines = params.splitlines()
-            if lines:
-                result["positive_prompt"] = lines[0].strip()
-            for line in lines:
-                if line.lower().startswith("negative prompt:"):
-                    result["negative_prompt"] = line.split(":", 1)[1].strip()
-                    break
+            body = params
+            settings = ""
+            _sm = _re.search(r"\nSteps:\s", body)
+            if _sm:
+                settings = body[_sm.start() + 1 :].strip()
+                body = body[: _sm.start()]
+            negative = None
+            _nm = _re.search(r"(?im)^\s*negative prompt:\s*", body)
+            if _nm:
+                negative = body[_nm.end() :].strip()
+                body = body[: _nm.start()]
+            elif body.lower().lstrip().startswith("negative prompt:"):
+                negative = body.lower().lstrip()[len("negative prompt:") :].strip()
+                body = ""
+            result["positive_prompt"] = body.strip() or None
+            if negative:
+                result["negative_prompt"] = negative
             # Store raw parameters too
             result["parameters"]["parameters"] = params
+            if settings:
+                for _f in ("Steps", "Sampler", "Schedule type", "CFG scale", "Seed"):
+                    _fm = _re.search(
+                        r"(?i)(?:^|,\s*)" + _re.escape(_f) + r":\s*([^,]+)", settings
+                    )
+                    if _fm:
+                        result["parameters"][_f.lower().replace(" ", "_")] = _fm.group(
+                            1
+                        ).strip()
 
         # If no A1111 format found, proceed with ComfyUI parsing
         if result["positive_prompt"] is None:

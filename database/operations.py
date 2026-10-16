@@ -1971,12 +1971,13 @@ class PromptDatabase:
         """Look up prompt + image metadata for a given image path.
 
         Returns a dict with prompt_id, text, category, tags, rating, notes,
-        workflow_data, prompt_metadata, generation_time — or None.
+        workflow_data, prompt_metadata, generation_time, parameters — or None.
         """
         with self.model.get_connection() as conn:
             cursor = conn.execute(
                 """SELECT gi.prompt_id, p.text, p.category, p.rating, p.notes,
-                          gi.workflow_data, gi.prompt_metadata, gi.generation_time
+                          gi.workflow_data, gi.prompt_metadata, gi.generation_time,
+                          gi.parameters
                    FROM generated_images gi
                    JOIN prompts p ON gi.prompt_id = p.id
                    WHERE gi.image_path = ? OR gi.file_path = ?
@@ -2009,6 +2010,7 @@ class PromptDatabase:
                 "workflow_data": workflow,
                 "prompt_metadata": prompt_meta,
                 "generation_time": row[7],
+                "parameters": row[8] if len(row) > 8 else None,
             }
 
     def get_prompt_id_for_image(self, image_path: str) -> Optional[int]:
