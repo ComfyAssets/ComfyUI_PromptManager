@@ -583,6 +583,8 @@
             }
 
             destroyViewer({ keepSlideshow = false } = {}) {
+                this.metadataRequest = null;
+                this.currentMetadata = null;
                 if (!keepSlideshow) this.stopViewerSlideshow();
                 if (this.viewer) {
                     this.viewer.clearEnforceFocus();
@@ -647,6 +649,8 @@
                         }
                     },
                     hide: () => {
+                        this.metadataRequest = null;
+                        this.currentMetadata = null;
                         this.viewer?.clearEnforceFocus();
                         this.stopViewerSlideshow();
                         const sidebar = document.getElementById('metadata-sidebar');
@@ -1189,15 +1193,18 @@
             }
 
             async loadImageMetadata(imageUrl, container) {
+                const request = {};
+                this.metadataRequest = request;
+                this.currentMetadata = null;
+                container.textContent = 'Loading metadata...';
+                const isCurrent = () => this.metadataRequest === request && container.isConnected !== false;
                 try {
                     // First try to get linked prompt from database
                     let databasePrompt = null;
                     try {
-                        // Extract relative path from the URL for the API call
-                        const urlParts = imageUrl.split('/prompt_manager/images/serve/');
-                        if (urlParts.length > 1) {
-                            const relativePath = urlParts[1];
-                            const response = await ApiClient.fetchUrl(`/prompt_manager/images/prompt/${encodeURIComponent(relativePath)}`);
+                        const metadataUrl = ImageHelpers.metadataLookupUrl(imageUrl);
+                        if (metadataUrl) {
+                            const response = await ApiClient.fetchUrl(metadataUrl);
                             if (response.ok) {
                                 const data = await response.json();
                                 if (data.success && data.prompt) {
@@ -1256,8 +1263,9 @@
                         }
                     }
                     
-                    this.displayMetadata(metadata, container);
+                    if (isCurrent()) this.displayMetadata(metadata, container);
                 } catch (error) {
+                    if (!isCurrent()) return;
                     console.error('Error loading metadata:', error);
                     container.innerHTML = `
                         <div class="bg-pm-error-tint border border-pm-error rounded-pm-md p-4">

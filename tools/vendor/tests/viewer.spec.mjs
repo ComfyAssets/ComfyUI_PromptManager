@@ -181,3 +181,28 @@ test('touch pinch zoom and rotation remain usable', async ({ page, isMobile }) =
     await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     await expect.poll(() => page.evaluate(() => Math.abs(gallery.viewer.imageData.rotate))).toBe(90);
 });
+
+test('metadata follows the selected image when responses finish out of order', async ({ page }) => {
+    await loadGallery(page);
+    await page.evaluate(() => {
+        delete gallery.loadImageMetadata;
+        window.metadataRequests = new Map();
+        gallery.extractImageMetadata = url => new Promise(resolve => metadataRequests.set(url, resolve));
+        gallery.openViewer(0);
+    });
+    await expect.poll(() => page.evaluate(() => metadataRequests.has('http://viewer.test/original/0.svg'))).toBe(true);
+    await page.evaluate(() => gallery.viewer.next());
+    await expect.poll(() => page.evaluate(() => metadataRequests.has('http://viewer.test/original/1.svg'))).toBe(true);
+    await page.evaluate(() => metadataRequests.get('http://viewer.test/original/1.svg')({ positivePrompt: 'Selected prompt' }));
+    await expect(page.locator('#metadata-content')).toContainText('Selected prompt');
+    await page.evaluate(() => metadataRequests.get('http://viewer.test/original/0.svg')({ positivePrompt: 'Stale prompt' }));
+    await expect(page.locator('#metadata-content')).toContainText('Selected prompt');
+    await expect(page.locator('#metadata-content')).not.toContainText('Stale prompt');
+    expect(await page.evaluate(() => gallery.currentMetadata.positivePrompt)).toBe('Selected prompt');
+    await page.evaluate(() => gallery.viewer.next());
+    await expect.poll(() => page.evaluate(() => metadataRequests.has('http://viewer.test/original/2.svg'))).toBe(true);
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#metadata-sidebar')).toHaveCount(0);
+    await page.evaluate(() => metadataRequests.get('http://viewer.test/original/2.svg')({ positivePrompt: 'Closed prompt' }));
+    expect(await page.evaluate(() => gallery.currentMetadata)).toBeNull();
+});
