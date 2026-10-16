@@ -139,6 +139,9 @@ The comprehensive gallery system provides complete management of all ComfyUI out
 
 _Powered by [ViewerJS](https://github.com/fengyuanchen/viewerjs) for professional image viewing capabilities._
 
+Viewer.js is vendored locally. See [Viewer.js maintenance](tools/vendor/README.md)
+for reproducible updates, verification, and automated update PRs.
+
 ### 🔬 ComfyUI Workflow Analysis
 
 - **PNG Metadata Parsing**: Advanced PNG chunk analysis to extract embedded ComfyUI data

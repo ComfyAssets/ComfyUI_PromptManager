@@ -46,3 +46,15 @@ updates:
         update-types:
           - "minor"
           - "patch"
+
+  # Maintainer browser test dependencies; Viewer.js itself has an asset-aware updater.
+  - package-ecosystem: "npm"
+    directory: "/tools/vendor"
+    schedule:
+      interval: "weekly"
+    allow:
+      - dependency-name: "@playwright/test"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps(vendor-tools)"

@@ -200,3 +200,8 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Maintainer-only JavaScript tooling and browser test artifacts
+node_modules/
+test-results/
+playwright-report/

@@ -1,0 +1,83 @@
+name: Update vendored Viewer.js
+
+on:
+  schedule:
+    - cron: '30 7 * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Stable version to vendor; leave blank for the latest npm release'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: viewerjs-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tools/vendor/package-lock.json
+      - run: npm ci --prefix tools/vendor --ignore-scripts
+      - name: Update the dependency and regenerate assets
+        env:
+          VIEWER_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$VIEWER_VERSION" ]; then
+            npm run --prefix tools/vendor update -- --version "$VIEWER_VERSION"
+          else
+            npm run --prefix tools/vendor update
+          fi
+      - name: Detect changes
+        id: changes
+        run: |
+          if git diff --quiet -- tools/vendor/package.json tools/vendor/package-lock.json web/lib/viewerjs; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.changes.outputs.changed == 'true'
+        run: |
+          npm run --prefix tools/vendor check
+          npm run --prefix tools/vendor test
+          node --test tests/js/*.test.js
+          npx --prefix tools/vendor playwright install --with-deps chromium
+          npm run --prefix tools/vendor test:browser
+      - name: Open the update PR
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          version=$(node -p "require('./web/lib/viewerjs/provenance.json').version")
+          branch="deps/viewerjs-$version"
+          existing=$(gh pr list --repo "$GITHUB_REPOSITORY" --state all --head "$branch" --json number --jq 'length')
+          if [ "$existing" != '0' ]; then
+            echo "A PR already exists for Viewer.js $version; leaving it for review."
+            exit 0
+          fi
+          remote=$(git ls-remote origin "refs/heads/$branch")
+          if [ -z "$remote" ]; then
+            git switch -c "$branch"
+            git add tools/vendor/package.json tools/vendor/package-lock.json web/lib/viewerjs
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "deps: update vendored Viewer.js to $version"
+            git push origin "HEAD:refs/heads/$branch"
+          fi
+          gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE_BRANCH" --head "$branch" --title "deps: update vendored Viewer.js to $version" --body-file tools/vendor/update-pr.md
+          gh workflow run viewerjs-check.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"

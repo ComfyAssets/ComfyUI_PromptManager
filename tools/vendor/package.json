@@ -1,0 +1,17 @@
+{
+  "name": "promptmanager-vendor-tools",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Maintainer-only tools for reproducible browser dependencies",
+  "scripts": {
+    "sync": "node vendor-viewerjs.mjs",
+    "check": "node vendor-viewerjs.mjs --check",
+    "update": "node update-viewerjs.mjs",
+    "test": "node --test ../../tests/vendor/*.test.mjs",
+    "test:browser": "playwright test --config playwright.config.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "viewerjs": "1.15.2"
+  }
+}
