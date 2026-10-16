@@ -1867,7 +1867,7 @@ class TestScanReadsVideos(AdminAPITestCase):
         (self.output_dir / "bad.png").write_bytes(b"\x89PNG not really")
         GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
 
-        with self.assertLogs(level="WARNING") as cm:
+        with self.assertLogs("prompt_manager", level="WARNING") as cm:
             body = await (
                 await self.client.request("POST", "/prompt_manager/scan")
             ).text()
