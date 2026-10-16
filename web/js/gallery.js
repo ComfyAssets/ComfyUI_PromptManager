@@ -583,6 +583,8 @@
             }
 
             destroyViewer({ keepSlideshow = false } = {}) {
+                this.metadataRequest = null;
+                this.currentMetadata = null;
                 if (!keepSlideshow) this.stopViewerSlideshow();
                 if (this.viewer) {
                     this.viewer.clearEnforceFocus();
@@ -647,6 +649,8 @@
                         }
                     },
                     hide: () => {
+                        this.metadataRequest = null;
+                        this.currentMetadata = null;
                         this.viewer?.clearEnforceFocus();
                         this.stopViewerSlideshow();
                         const sidebar = document.getElementById('metadata-sidebar');
@@ -1189,6 +1193,11 @@
             }
 
             async loadImageMetadata(imageUrl, container) {
+                const request = {};
+                this.metadataRequest = request;
+                this.currentMetadata = null;
+                container.textContent = 'Loading metadata...';
+                const isCurrent = () => this.metadataRequest === request && container.isConnected !== false;
                 try {
                     // First try to get linked prompt from database
                     let databasePrompt = null;
@@ -1254,8 +1263,9 @@
                         }
                     }
                     
-                    this.displayMetadata(metadata, container);
+                    if (isCurrent()) this.displayMetadata(metadata, container);
                 } catch (error) {
+                    if (!isCurrent()) return;
                     console.error('Error loading metadata:', error);
                     container.innerHTML = `
                         <div class="bg-pm-error-tint border border-pm-error rounded-pm-md p-4">
