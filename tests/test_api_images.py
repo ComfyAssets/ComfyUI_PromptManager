@@ -2015,18 +2015,28 @@ class TestGalleryRootIdentity(ThumbnailTestCase):
     async def test_special_characters_in_paths_survive_serving_and_prompt_lookup(self):
         from urllib.parse import quote
 
-        filename = "space #?%20 café.png"
-        original = make_png(self.output_dir / filename)
-        self._link_image(original, text="special path")
-        data = await (await self.client.get("/prompt_manager/images/output")).json()
-        response = await self.client.get(data["images"][0]["url"])
-        self.assertEqual(response.status, 200)
-        self.assertEqual(await response.read(), original.read_bytes())
-        response = await self.client.get(
-            f"/prompt_manager/images/prompt/{quote(filename, safe='')}?root=0"
-        )
-        data = await response.json()
-        self.assertEqual(data["prompt"]["text"], "special path")
+        filenames = ["space #%20 café.png"]
+        if os.name != "nt":
+            filenames.append("space #?%20 café.png")
+        for filename in filenames:
+            self._link_image(make_png(self.output_dir / filename), text="special path")
+        for filename in filenames:
+            with self.subTest(filename=filename):
+                original = self.output_dir / filename
+                data = await (
+                    await self.client.get("/prompt_manager/images/output")
+                ).json()
+                entry = next(
+                    image for image in data["images"] if image["filename"] == filename
+                )
+                response = await self.client.get(entry["url"])
+                self.assertEqual(response.status, 200)
+                self.assertEqual(await response.read(), original.read_bytes())
+                response = await self.client.get(
+                    f"/prompt_manager/images/prompt/{quote(filename, safe='')}?root=0"
+                )
+                data = await response.json()
+                self.assertEqual(data["prompt"]["text"], "special path")
 
     async def test_invalid_explicit_roots_never_fall_back_to_another_image(self):
         self._link_image(make_png(self.output_dir / "same.png"), text="first root")
