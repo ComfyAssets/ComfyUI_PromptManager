@@ -710,20 +710,21 @@ class PromptManagerAPI(
         # to one line, so split on the settings line instead.
         if "parameters" in metadata:
             import re as _re
+
             params = metadata["parameters"]
             body = params
             settings = ""
             _sm = _re.search(r"\nSteps:\s", body)
             if _sm:
-                settings = body[_sm.start() + 1:].strip()
+                settings = body[_sm.start() + 1 :].strip()
                 body = body[: _sm.start()]
             negative = None
             _nm = _re.search(r"(?im)^\s*negative prompt:\s*", body)
             if _nm:
-                negative = body[_nm.end():].strip()
+                negative = body[_nm.end() :].strip()
                 body = body[: _nm.start()]
             elif body.lower().lstrip().startswith("negative prompt:"):
-                negative = body.lower().lstrip()[len("negative prompt:"):].strip()
+                negative = body.lower().lstrip()[len("negative prompt:") :].strip()
                 body = ""
             result["positive_prompt"] = body.strip() or None
             if negative:
@@ -732,9 +733,13 @@ class PromptManagerAPI(
             result["parameters"]["parameters"] = params
             if settings:
                 for _f in ("Steps", "Sampler", "Schedule type", "CFG scale", "Seed"):
-                    _fm = _re.search(r"(?i)(?:^|,\s*)" + _re.escape(_f) + r":\s*([^,]+)", settings)
+                    _fm = _re.search(
+                        r"(?i)(?:^|,\s*)" + _re.escape(_f) + r":\s*([^,]+)", settings
+                    )
                     if _fm:
-                        result["parameters"][_f.lower().replace(" ", "_")] = _fm.group(1).strip()
+                        result["parameters"][_f.lower().replace(" ", "_")] = _fm.group(
+                            1
+                        ).strip()
 
         # If no A1111 format found, proceed with ComfyUI parsing
         if result["positive_prompt"] is None:
