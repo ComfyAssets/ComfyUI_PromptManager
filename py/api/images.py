@@ -1349,8 +1349,10 @@ class ImageRoutesMixin:
                 if Path(root) != thumbnails_dir:
                     try:
                         Path(root).rmdir()
-                    except OSError:
-                        pass
+                    except OSError as exc:
+                        self.logger.debug(
+                            "Keeping thumbnail directory %s: %s", root, exc
+                        )
         return cleared_count, cleared_size
 
     @staticmethod
