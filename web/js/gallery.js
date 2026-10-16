@@ -357,9 +357,10 @@
                         url: ApiClient.resolveUrl(image.url),
                         thumbnail_url: ApiClient.resolveUrl(image.thumbnail_url),
                     }));
+                    const from = append ? this.images.length : 0;
                     this.images = append ? this.images.concat(images) : images;
                     this.updateStats();
-                    this.renderGallery();
+                    this.renderGallery({ from });
                     this.updatePagination();
                     document.getElementById('loadingStatus').textContent = 'Loaded';
                     this.maybeLoadMore(); // a short page may not fill the viewport
@@ -445,7 +446,8 @@
                 this.renderGallery();
             }
 
-            renderGallery() {
+            renderGallery({ from = 0 } = {}) {
+                if (from === 0) this.destroyViewer();
                 if (this.images.length === 0) {
                     this.showError('No images found in the output folder');
                     return;
@@ -455,19 +457,15 @@
                 document.getElementById('errorState').classList.add('hidden');
 
                 if (this.viewMode === 'grid') {
-                    this.renderGridView();
+                    this.renderGridView({ from });
                 } else {
-                    this.renderListView();
+                    this.renderListView({ from });
                 }
 
-                // Initialize ViewerJS after rendering
-                setTimeout(() => this.initializeViewer(), 100);
-                
-                // Add simple fallback click handlers
                 this.addFallbackClickHandlers();
             }
 
-            renderGridView() {
+            renderGridView({ from = 0 } = {}) {
                 const grid = document.getElementById('galleryGrid');
                 const list = document.getElementById('galleryList');
                 const showInfo = this.getSettings().showImageInfo;
@@ -475,7 +473,8 @@
                 list.classList.add('hidden');
                 grid.classList.remove('hidden');
 
-                grid.innerHTML = this.images.map((image, index) => {
+                const html = this.images.slice(from).map((image, offset) => {
+                    const index = from + offset;
                     // Use thumbnail for display if available, fallback to original
                     const displayUrl = image.thumbnail_url || image.url;
                     const hasThumb = !!image.thumbnail_url;
@@ -483,7 +482,7 @@
                     const mediaType = image.media_type || 'image';
                     
                     return `
-                    <div class="image-item bg-pm-surface rounded-pm-md overflow-hidden border border-pm hover:border-pm cursor-pointer group">
+                    <div data-image-index="${index}" class="image-item bg-pm-surface rounded-pm-md overflow-hidden border border-pm hover:border-pm cursor-pointer group">
                         <div class="aspect-square bg-pm-primary overflow-hidden relative">
                             <img src="${escapeHtml(displayUrl)}"
                                  alt="${escapeHtml(image.filename)}"
@@ -525,9 +524,11 @@
                     </div>
                 `;
                 }).join('');
+                if (from === 0) grid.innerHTML = html;
+                else grid.insertAdjacentHTML('beforeend', html);
             }
 
-            renderListView() {
+            renderListView({ from = 0 } = {}) {
                 const grid = document.getElementById('galleryGrid');
                 const list = document.getElementById('galleryList');
                 const showInfo = this.getSettings().showImageInfo;
@@ -535,7 +536,8 @@
                 grid.classList.add('hidden');
                 list.classList.remove('hidden');
 
-                list.innerHTML = this.images.map((image, index) => {
+                const html = this.images.slice(from).map((image, offset) => {
+                    const index = from + offset;
                     // Use thumbnail for display if available, fallback to original
                     const displayUrl = image.thumbnail_url || image.url;
                     const hasThumb = !!image.thumbnail_url;
@@ -543,7 +545,7 @@
                     const mediaType = image.media_type || 'image';
                     
                     return `
-                    <div class="image-item bg-pm-surface rounded-pm-md border border-pm hover:border-pm cursor-pointer group flex items-center p-4">
+                    <div data-image-index="${index}" class="image-item bg-pm-surface rounded-pm-md border border-pm hover:border-pm cursor-pointer group flex items-center p-4">
                         <div class="w-16 h-16 bg-pm-primary rounded-pm-md overflow-hidden flex-shrink-0 mr-4 relative">
                             <img src="${escapeHtml(displayUrl)}"
                                  alt="${escapeHtml(image.filename)}"
@@ -576,26 +578,35 @@
                     </div>
                 `;
                 }).join('');
+                if (from === 0) list.innerHTML = html;
+                else list.insertAdjacentHTML('beforeend', html);
             }
 
-            initializeViewer() {
-                // Destroy existing viewer if it exists
+            destroyViewer({ keepSlideshow = false } = {}) {
+                if (!keepSlideshow) this.stopViewerSlideshow();
                 if (this.viewer) {
+                    this.viewer.clearEnforceFocus();
                     this.viewer.destroy();
                 }
+                this.viewer = null;
+                document.getElementById('metadata-sidebar')?.remove();
+            }
 
-                const container = this.viewMode === 'grid' ? document.getElementById('galleryGrid') : document.getElementById('galleryList');
-                
-                // Find all images in the container
-                const images = container.querySelectorAll('img[data-original]');
-                
-                if (images.length === 0) {
-                    console.warn('No images found for viewer initialization');
-                    return;
-                }
+            openViewer(index, { keepSlideshow = false } = {}) {
+                if (!Number.isInteger(index) || index < 0 || index >= this.images.length) return;
+                this.destroyViewer({ keepSlideshow });
+                const size = 100;
+                const start = Math.max(0, Math.min(index - size / 2, this.images.length - size));
+                const container = document.createElement('div');
+                container.innerHTML = this.images.slice(start, start + size).map(image =>
+                    `<img src="${escapeHtml(image.thumbnail_url || image.url)}"
+                          data-original="${escapeHtml(image.url)}"
+                          alt="${escapeHtml(image.filename)}">`
+                ).join('');
 
                 this.viewer = new Viewer(container, {
                     inline: false,
+                    initialViewIndex: index - start,
                     button: true,
                     backdrop: true,
                     navbar: true,
@@ -624,14 +635,20 @@
                         // Add metadata sidebar when ViewerJS opens
                         // Use the original image URL from data-original attribute
                         const originalImg = event.detail.originalImage;
-                        setTimeout(() => this.addMetadataSidebar(originalImg), 100);
+                        this.addMetadataSidebar(originalImg);
                     },
-                    show: function() {
+                    play: (event) => {
+                        event.preventDefault();
+                        if (this.slideshowPlaying) this.stopViewerSlideshow();
+                        else {
+                            this.slideshowPlaying = true;
+                            if (this.viewer.options.fullscreen) this.viewer.requestFullscreen();
+                            this.scheduleViewerSlide();
+                        }
                     },
-                    shown: function() {
-                    },
-                    hide: function() {
-                        // Remove sidebar when viewer closes
+                    hide: () => {
+                        this.viewer?.clearEnforceFocus();
+                        this.stopViewerSlideshow();
                         const sidebar = document.getElementById('metadata-sidebar');
                         if (sidebar) {
                             sidebar.remove();
@@ -639,12 +656,50 @@
                     }
                 });
 
-                // Don't add click handlers here - let ViewerJS handle them
+                const viewer = this.viewer;
+                const navigate = (direction, loop = false) => {
+                    if (viewer !== this.viewer || viewer.hiding || viewer.played) return viewer;
+                    let target = start + viewer.index + direction;
+                    if (loop) target = (target + this.images.length) % this.images.length;
+                    else target = Math.max(0, Math.min(target, this.images.length - 1));
+                    if (target >= start && target < start + viewer.length) {
+                        viewer.view(target - start);
+                    } else {
+                        this.openViewer(target, { keepSlideshow: true });
+                    }
+                    return this.viewer;
+                };
+                viewer.prev = (loop) => navigate(-1, loop);
+                viewer.next = (loop) => navigate(1, loop);
+                viewer.show();
+            }
+
+            stopViewerSlideshow() {
+                clearTimeout(this.slideshowTimer);
+                this.slideshowTimer = null;
+                if (this.slideshowPlaying) this.viewer?.exitFullscreen();
+                this.slideshowPlaying = false;
+            }
+
+            scheduleViewerSlide() {
+                // Native Viewer.js slideshows preload every original and loop within the filmstrip.
+                this.slideshowTimer = setTimeout(() => {
+                    this.slideshowTimer = null;
+                    if (!this.slideshowPlaying || !this.viewer) return;
+                    this.viewer.next(true);
+                    if (this.slideshowPlaying) this.scheduleViewerSlide();
+                }, 5000);
             }
 
             addMetadataSidebar(originalImage) {
                 const viewerContainer = document.querySelector('.viewer-container');
-                if (!viewerContainer || document.getElementById('metadata-sidebar')) return;
+                if (!viewerContainer) return;
+                const existing = document.getElementById('metadata-sidebar');
+                if (existing) {
+                    this.loadImageMetadata(originalImage.dataset.original || originalImage.src,
+                        existing.querySelector('#metadata-content'));
+                    return;
+                }
 
                 const sidebar = document.createElement('div');
                 sidebar.id = 'metadata-sidebar';
@@ -690,79 +745,35 @@
                 // Load metadata for the current image (ALWAYS use original for metadata)
                 const originalImageUrl = originalImage.dataset.original || originalImage.src;
                 this.loadImageMetadata(originalImageUrl, sidebar.querySelector('#metadata-content'));
-
-                // Listen for ViewerJS view changes to update metadata
-                this.setupViewerMetadataUpdates(sidebar);
-            }
-
-            setupViewerMetadataUpdates(sidebar) {
-                // Listen for ViewerJS navigation events
-                const viewerContainer = document.querySelector('.viewer-container');
-                if (!viewerContainer) return;
-
-                // Override ViewerJS navigation to update metadata
-                const observer = new MutationObserver((mutations) => {
-                    mutations.forEach((mutation) => {
-                        if (mutation.type === 'attributes' && mutation.attributeName === 'src') {
-                            const img = mutation.target;
-                            if (img.tagName === 'IMG' && img.closest('.viewer-canvas')) {
-                                // Find the corresponding original image
-                                const imageUrl = img.src;
-                                this.loadImageMetadata(imageUrl, sidebar.querySelector('#metadata-content'));
-                            }
-                        }
-                    });
-                });
-
-                const canvas = viewerContainer.querySelector('.viewer-canvas');
-                if (canvas) {
-                    observer.observe(canvas, {
-                        childList: true,
-                        subtree: true,
-                        attributes: true,
-                        attributeFilter: ['src']
-                    });
-                }
             }
 
             addFallbackClickHandlers() {
-                // Add simple click handlers that work even if ViewerJS fails
-                const container = this.viewMode === 'grid' ? document.getElementById('galleryGrid') : document.getElementById('galleryList');
-                const imageItems = container.querySelectorAll('.image-item');
-                
-                imageItems.forEach((item, index) => {
-                    item.addEventListener('click', (e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        
+                for (const id of ['galleryGrid', 'galleryList']) {
+                    const container = document.getElementById(id);
+                    if (container.dataset.mediaClicksBound) continue;
+                    container.dataset.mediaClicksBound = '1';
+                    container.addEventListener('click', (event) => {
+                        const item = event.target.closest('.image-item');
+                        if (!item) return;
                         const img = item.querySelector('img[data-original]');
-                        if (img) {
-                            // ALWAYS use the original media URL for viewing
-                            const originalMediaUrl = img.dataset.original;
-                            const caption = img.dataset.caption;
-                            const isVideo = img.dataset.isVideo === 'true';
-                            const mediaType = img.dataset.mediaType || 'image';
-                            
-                            
-                            if (isVideo) {
-                                // For videos, use our custom video modal
-                                this.showVideoModal(originalMediaUrl, caption, index);
-                            } else {
-                                // For images, try ViewerJS first, fallback to simple modal
-                                if (this.viewer) {
-                                    try {
-                                        this.viewer.view(index);
-                                    } catch (e) {
-                                        console.warn('ViewerJS failed, using fallback:', e);
-                                        this.showSimpleImageModal(originalMediaUrl, caption);
-                                    }
-                                } else {
-                                    this.showSimpleImageModal(originalMediaUrl, caption);
-                                }
+                        if (!img) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const index = Number(item.dataset.imageIndex);
+                        const { original, caption, isVideo } = img.dataset;
+                        if (isVideo === 'true') {
+                            this.showVideoModal(original, caption, index);
+                        } else {
+                            try {
+                                this.openViewer(index);
+                            } catch (error) {
+                                console.warn('ViewerJS failed, using fallback:', error);
+                                this.destroyViewer();
+                                this.showSimpleImageModal(original, caption);
                             }
                         }
                     });
-                });
+                }
             }
 
             async showSimpleImageModal(imageUrl, caption) {
