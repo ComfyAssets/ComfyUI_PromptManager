@@ -10,7 +10,7 @@ function fixture() {
         getElementById: id => id === 'metadata-content' ? panel : null },
         window: {}, console: { error() {} },
     });
-    const Admin = vm.runInContext(fs.readFileSync(path.join(__dirname, '../../web/js/admin.js'), 'utf8') + '\nPromptAdmin;', context);
+    const Admin = vm.runInContext(fs.readFileSync(path.join(__dirname, '../../web/js/admin.js'), 'utf8') + '\nPromptAdmin;', context, { filename: path.join(__dirname, '../../web/js/admin.js') });
     const manager = Object.create(Admin.prototype);
     manager.extractImageMetadata = url => new Promise((resolve, reject) => requests.set(url, { resolve, reject }));
     manager.updateMetadataSidebar = metadata => { panel.innerHTML = metadata?.imagePath || 'No metadata'; };

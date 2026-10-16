@@ -28,6 +28,10 @@ version banners must agree. The lockfile records npm's archive integrity;
 `provenance.json` records the upstream source, package integrity, and SHA-256 of
 each copied file. A normal `npm ci --ignore-scripts` verifies archive integrity.
 
+Full-page workflows, frontend coverage gates, and required merge checks are
+documented in [TESTING.md](../../TESTING.md). The `viewerjs` CI check runs both
+the fixture tests above and the real-page workflows on every PR.
+
 ## Update
 
 ```sh

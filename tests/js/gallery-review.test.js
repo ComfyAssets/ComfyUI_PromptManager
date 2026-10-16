@@ -24,7 +24,7 @@ function fixture() {
             return request.promise;
         } },
     });
-    const Manager = vm.runInContext(fs.readFileSync(path.join(__dirname, '../../web/js/gallery.js'), 'utf8') + '\nGalleryManager;', context);
+    const Manager = vm.runInContext(fs.readFileSync(path.join(__dirname, '../../web/js/gallery.js'), 'utf8') + '\nGalleryManager;', context, { filename: path.join(__dirname, '../../web/js/gallery.js') });
     const manager = Object.create(Manager.prototype);
     const notifications = [];
     Object.assign(manager, { autoTagState: { reviewImages: [

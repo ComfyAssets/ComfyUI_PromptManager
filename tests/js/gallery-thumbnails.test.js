@@ -23,7 +23,7 @@ function fixture(status, settings = {}) {
             total: 10000, images: Array.from({ length: 50 }, () => ({ thumbnail_url: null })),
         }) }) },
     });
-    const Manager = vm.runInContext(fs.readFileSync(path.join(__dirname, '../../web/js/gallery.js'), 'utf8') + '\nGalleryManager;', context);
+    const Manager = vm.runInContext(fs.readFileSync(path.join(__dirname, '../../web/js/gallery.js'), 'utf8') + '\nGalleryManager;', context, { filename: path.join(__dirname, '../../web/js/gallery.js') });
     const manager = Object.create(Manager.prototype);
     Object.assign(manager, { getSettings: () => ({ checkThumbnailsAtStartup: true, ...settings }),
         api: { get: async url => { requests.push(url); return status; } },

@@ -47,7 +47,7 @@ function fixture(count = 2000) {
         ListState: { nextPageState: (state, next) => ({ ...state, ...next }) },
     });
     const source = fs.readFileSync(path.join(__dirname, '../../web/js/gallery.js'), 'utf8');
-    const Manager = vm.runInContext(source + '\nGalleryManager;', context);
+    const Manager = vm.runInContext(source + '\nGalleryManager;', context, { filename: path.join(__dirname, '../../web/js/gallery.js') });
     const manager = Object.create(Manager.prototype);
     Object.assign(manager, { images: Array.from({ length: count }, (_, i) => ({
         filename: `${i}.png`, url: `/original/${i}.png`, thumbnail_url: `/thumb/${i}.jpg`,
