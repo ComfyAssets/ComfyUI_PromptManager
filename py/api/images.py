@@ -1251,119 +1251,107 @@ class ImageRoutesMixin:
             )
             return False
 
-    async def clear_thumbnails(self, request):
-        """Safely clear only our generated thumbnails, never touch original images."""
-        try:
+    async def clear_thumbnails(self, request: web.Request) -> web.Response:
+        """Clear generated thumbnails across gallery roots, preserving originals.
 
-            # Find ComfyUI output directory
-            output_dir = self._find_comfyui_output_dir()
-            if not output_dir:
+        Invalid thumbnail directories return 400; unavailable gallery roots
+        return 404, and unexpected filesystem failures return 500.
+        """
+        try:
+            output_dirs = self._get_all_output_dirs()
+            if not output_dirs:
                 return web.json_response(
                     {"success": False, "error": "ComfyUI output directory not found"},
                     status=404,
                 )
-
-            output_path = Path(output_dir)
-            thumbnails_dir = output_path / "thumbnails"
-
-            if not thumbnails_dir.exists():
-                return web.json_response(
-                    {
-                        "success": True,
-                        "message": "No thumbnails directory found - nothing to clear",
-                        "cleared_files": 0,
-                    }
-                )
-
-            # Verify this is actually our thumbnails directory: a real child
-            # of the output root (symlinks resolved), not merely a path that
-            # shares its prefix such as "<root>2/thumbnails".
-            try:
-                if (
-                    not _is_within(thumbnails_dir, output_path)
-                    or thumbnails_dir.name != "thumbnails"
-                ):
-                    self.logger.error(
-                        "Safety check failed: thumbnails directory path invalid: "
-                        f"{thumbnails_dir}"
-                    )
-                    return web.json_response(
-                        {
-                            "success": False,
-                            "error": "Safety check failed: invalid thumbnails "
-                            "directory path",
-                        },
-                        status=400,
-                    )
-
-            except Exception as e:
-                self.logger.error(f"Path validation failed: {e}")
-                return web.json_response(
-                    {"success": False, "error": "Path validation failed"}, status=500
-                )
-
-            # Count files before deletion
-            cleared_count = 0
-            cleared_size = 0
-
-            for root, dirs, files in os.walk(thumbnails_dir):
-                for file in files:
-                    file_path = Path(root) / file
-
-                    if "_thumb" in file.lower() and any(
-                        file.lower().endswith(ext)
-                        for ext in [".png", ".jpg", ".jpeg", ".webp", ".gif"]
-                    ):
-                        try:
-                            file_size = file_path.stat().st_size
-                            file_path.unlink()
-                            cleared_count += 1
-                            cleared_size += file_size
-                            self.logger.debug(f"Cleared thumbnail: {file_path}")
-                        except Exception as e:
-                            self.logger.warning(
-                                f"Failed to delete thumbnail {file_path}: {e}"
-                            )
-
-            # Remove empty directories within thumbnails folder
-            try:
-                for root, dirs, files in os.walk(thumbnails_dir, topdown=False):
-                    if root != str(thumbnails_dir):
-                        try:
-                            Path(root).rmdir()
-                        except OSError:
-                            pass
-            except Exception as e:
-                self.logger.debug(f"Directory cleanup info: {e}")
-
-            def format_size(bytes_size):
-                for unit in ["B", "KB", "MB", "GB"]:
-                    if bytes_size < 1024.0:
-                        return f"{bytes_size:.1f} {unit}"
-                    bytes_size /= 1024.0
-                return f"{bytes_size:.1f} TB"
-
-            self.logger.info(
-                f"Thumbnail cleanup: cleared {cleared_count} files "
-                f"({format_size(cleared_size)})"
+            cleared_count, cleared_size = await self._run_in_executor(
+                self._clear_gallery_thumbnails_sync, output_dirs
             )
+            self.invalidate_gallery_cache()
 
+            def format_size(bytes_size: int) -> str:
+                size = float(bytes_size)
+                for unit in ["B", "KB", "MB", "GB"]:
+                    if size < 1024.0:
+                        return f"{size:.1f} {unit}"
+                    size /= 1024.0
+                return f"{size:.1f} TB"
+
+            size_formatted = format_size(cleared_size)
+            self.logger.info(
+                f"Thumbnail cleanup: cleared {cleared_count} files ({size_formatted})"
+            )
             return web.json_response(
                 {
                     "success": True,
                     "cleared_files": cleared_count,
                     "cleared_size": cleared_size,
-                    "cleared_size_formatted": format_size(cleared_size),
+                    "cleared_size_formatted": size_formatted,
                     "message": f"Cleared {cleared_count} thumbnail files "
-                    "({format_size(cleared_size)})",
+                    f"({size_formatted})",
                 }
             )
-
-        except Exception as e:
-            self.logger.error(f"Clear thumbnails error: {e}")
+        except ValueError as exc:
+            self.logger.error(f"Thumbnail path validation failed: {exc}")
             return web.json_response(
-                {"success": False, "error": _safe_error(e)}, status=500
+                {"success": False, "error": _safe_error(exc)}, status=400
             )
+        except Exception as exc:
+            self.logger.error(f"Clear thumbnails error: {exc}")
+            return web.json_response(
+                {"success": False, "error": _safe_error(exc)}, status=500
+            )
+
+    def _clear_gallery_thumbnails_sync(
+        self, output_dirs: list[Path]
+    ) -> tuple[int, int]:
+        """Validate all thumbnail directories before deleting generated files.
+
+        Raises ValueError for symlinked or out-of-root thumbnail directories.
+        Filesystem errors during path validation propagate to the route.
+        """
+        directories = []
+        for output_path in output_dirs:
+            output_path = Path(output_path)
+            thumbnails_dir = output_path / "thumbnails"
+            if not thumbnails_dir.exists() and not thumbnails_dir.is_symlink():
+                continue
+            if (
+                thumbnails_dir.is_symlink()
+                or not _is_within(thumbnails_dir, output_path)
+                or _canonical(thumbnails_dir) == _canonical(output_path)
+            ):
+                raise ValueError(
+                    "Safety check failed: invalid thumbnails directory path"
+                )
+            directories.append(thumbnails_dir)
+
+        cleared_count = 0
+        cleared_size = 0
+        for thumbnails_dir in directories:
+            for root, _dirs, files in os.walk(thumbnails_dir):
+                for name in files:
+                    path = Path(root) / name
+                    if (
+                        "_thumb" not in name.lower()
+                        or path.suffix.lower() not in GALLERY_IMAGE_EXTENSIONS
+                        or path.is_symlink()
+                    ):
+                        continue
+                    try:
+                        size = path.stat().st_size
+                        path.unlink()
+                        cleared_count += 1
+                        cleared_size += size
+                    except OSError as exc:
+                        self.logger.warning(f"Failed to delete thumbnail {path}: {exc}")
+            for root, _dirs, _files in os.walk(thumbnails_dir, topdown=False):
+                if Path(root) != thumbnails_dir:
+                    try:
+                        Path(root).rmdir()
+                    except OSError:
+                        pass
+        return cleared_count, cleared_size
 
     @staticmethod
     def _resolve_client_media_path(raw_path, allowed_dirs):

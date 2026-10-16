@@ -1536,7 +1536,7 @@ class TestClearThumbnails(ImageRouteCoverageCase):
     URL = "/prompt_manager/images/clear-thumbnails"
 
     async def test_missing_output_dir_is_404(self):
-        self.api._find_comfyui_output_dir = lambda: None
+        self.api._get_all_output_dirs = lambda: []
         status, _ = await self._json("POST", self.URL)
         self.assertEqual(status, 404)
 
@@ -1569,7 +1569,7 @@ class TestClearThumbnails(ImageRouteCoverageCase):
         self.assertEqual(data["cleared_files"], 0)
 
     async def test_internal_failure_is_500(self):
-        self.api._find_comfyui_output_dir = _raise
+        self.api._get_all_output_dirs = _raise
         status, _ = await self._json("POST", self.URL)
         self.assertEqual(status, 500)
 
@@ -1581,13 +1581,86 @@ class TestClearThumbnails(ImageRouteCoverageCase):
         out.mkdir()
         sibling = make_png(self.comfy_dir / "out2" / "thumbnails" / "a_thumb.png")
         self._make_symlink(sibling.parent, out / "thumbnails")
-        self.api._find_comfyui_output_dir = lambda: str(out)
+        self.api._get_all_output_dirs = lambda: [out]
 
         status, data = await self._json("POST", self.URL)
 
         self.assertEqual(status, 400)
         self.assertFalse(data["success"])
         self.assertTrue(sibling.is_file())
+
+    async def test_clears_all_roots_and_combines_counts_without_touching_originals(
+        self,
+    ):
+        second = self.comfy_dir / "extra-output"
+        roots = [self.output_dir, second]
+        self.api._get_all_output_dirs = lambda: roots
+        expected_size = 0
+        for root in roots:
+            make_png(root / "original_thumb.png")
+            thumb = make_png(root / "thumbnails" / "sub" / "generated_thumb.png")
+            expected_size += thumb.stat().st_size
+            (root / "thumbnails" / "notes.txt").write_text("keep")
+        status, data = await self._json("POST", self.URL)
+        self.assertEqual(status, 200)
+        self.assertEqual(data["cleared_files"], 2)
+        self.assertEqual(data["cleared_size"], expected_size)
+        self.assertNotIn("{format_size", data["message"])
+        for root in roots:
+            self.assertTrue((root / "original_thumb.png").is_file())
+            self.assertTrue((root / "thumbnails" / "notes.txt").is_file())
+            self.assertFalse((root / "thumbnails" / "sub").exists())
+
+    async def test_missing_thumbnails_in_first_root_does_not_skip_later_roots(self):
+        second = self.comfy_dir / "extra-output"
+        thumb = make_png(second / "thumbnails" / "a_thumb.png")
+        self.api._get_all_output_dirs = lambda: [self.output_dir, second]
+        status, data = await self._json("POST", self.URL)
+        self.assertEqual(status, 200)
+        self.assertEqual(data["cleared_files"], 1)
+        self.assertFalse(thumb.exists())
+
+    async def test_invalid_later_root_is_rejected_before_deleting_any_files(self):
+        first_thumb = make_png(self.output_dir / "thumbnails" / "a_thumb.png")
+        second = self.comfy_dir / "extra-output"
+        second.mkdir()
+        outside = make_png(self.comfy_dir / "elsewhere" / "a_thumb.png")
+        self._make_symlink(outside.parent, second / "thumbnails")
+        self.api._get_all_output_dirs = lambda: [self.output_dir, second]
+        status, data = await self._json("POST", self.URL)
+        self.assertEqual(status, 400)
+        self.assertFalse(data["success"])
+        self.assertTrue(first_thumb.is_file())
+        self.assertTrue(outside.is_file())
+
+    async def test_thumbnail_symlink_back_to_root_cannot_delete_originals(self):
+        original = make_png(self.output_dir / "original_thumb.png")
+        self._make_symlink(self.output_dir, self.output_dir / "thumbnails")
+        status, data = await self._json("POST", self.URL)
+        self.assertEqual(status, 400)
+        self.assertFalse(data["success"])
+        self.assertTrue(original.is_file())
+
+    async def test_cleanup_runs_off_loop_and_invalidates_gallery_cache(self):
+        import threading
+
+        make_png(self.output_dir / "thumbnails" / "a_thumb.png")
+        loop_thread = threading.get_ident()
+        deletion_threads = []
+        original_unlink = Path.unlink
+
+        def unlink(path, *args, **kwargs):
+            deletion_threads.append(threading.get_ident())
+            return original_unlink(path, *args, **kwargs)
+
+        self.api._gallery_cache = {"previous": object()}
+        with patch.object(Path, "unlink", unlink):
+            status, data = await self._json("POST", self.URL)
+        self.assertEqual(status, 200)
+        self.assertEqual(data["cleared_files"], 1)
+        self.assertTrue(deletion_threads)
+        self.assertNotIn(loop_thread, deletion_threads)
+        self.assertEqual(self.api._gallery_cache, {})
 
 
 class TestImagePromptLookup(ImageRouteCoverageCase):
