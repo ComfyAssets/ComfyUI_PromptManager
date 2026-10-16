@@ -214,9 +214,9 @@ def _thumbnail_complete_payload(total, stats, start, remaining=0, processed=None
 
 
 def _thumbnail_is_fresh(src, dst):
-    """True when ``dst`` exists and is newer than ``src`` (blocking stat)."""
+    """True when ``dst`` exists and is at least as new as ``src`` (blocking stat)."""
     try:
-        return dst.stat().st_mtime > src.stat().st_mtime
+        return dst.stat().st_mtime >= src.stat().st_mtime
     except OSError:
         return False
 
@@ -381,6 +381,10 @@ class ImageRoutesMixin:
         @routes.delete("/prompt_manager/images/{image_id}")
         async def delete_image_route(request):
             return await self.delete_image(request)
+
+        @routes.get("/prompt_manager/images/thumbnails/status")
+        async def thumbnail_status_route(request):
+            return await self.get_thumbnail_status(request)
 
         @routes.post("/prompt_manager/images/generate-thumbnails")
         async def generate_thumbnails_route(request):
@@ -815,19 +819,15 @@ class ImageRoutesMixin:
                 return error
             thumbnail_size = self._thumbnail_size(data.get("quality", "medium"))
 
-            output_dir = self._find_comfyui_output_dir()
-            if not output_dir:
+            output_dirs = self._get_all_output_dirs()
+            if not output_dirs:
                 return web.json_response(
                     {"success": False, "error": "ComfyUI output directory not found"},
                     status=404,
                 )
 
-            output_path = Path(output_dir)
             result = await self._run_in_executor(
-                self._generate_thumbnails_sync,
-                output_path,
-                output_path / "thumbnails",
-                thumbnail_size,
+                self._generate_gallery_thumbnails_sync, output_dirs, thumbnail_size
             )
             self.invalidate_gallery_cache()
             return web.json_response(result)
@@ -842,6 +842,22 @@ class ImageRoutesMixin:
         """Blocking thumbnail generation loop (run in executor)."""
         start = _time.monotonic()
         plan = self._plan_thumbnails(output_path, thumbnails_dir)
+        payload = self._execute_thumbnail_plan(plan, thumbnail_size, start)
+        payload["thumbnails_path"] = _public_path(thumbnails_dir)
+        return payload
+
+    def _generate_gallery_thumbnails_sync(
+        self, output_dirs: list[Path], thumbnail_size: tuple[int, int]
+    ) -> dict:
+        start = _time.monotonic()
+        plan = self._plan_gallery_thumbnails(output_dirs)
+        payload = self._execute_thumbnail_plan(plan, thumbnail_size, start)
+        payload["thumbnails_path"] = _public_path(output_dirs[0] / "thumbnails")
+        return payload
+
+    def _execute_thumbnail_plan(
+        self, plan: dict, thumbnail_size: tuple[int, int], start: float
+    ) -> dict:
         targets = plan["targets"]
         stats = _new_thumbnail_stats()
         stats["skipped"] = plan["skipped"]
@@ -855,9 +871,49 @@ class ImageRoutesMixin:
             processed=len(targets),
         )
         payload["success"] = True
-        payload["thumbnails_path"] = _public_path(thumbnails_dir)
         self.logger.info(payload["message"])
         return payload
+
+    def _plan_gallery_thumbnails(self, output_dirs: list[Path]) -> dict:
+        """Plan every gallery root with one shared per-run generation cap."""
+        combined = {"targets": [], "skipped": 0, "remaining": 0}
+        for root in output_dirs:
+            root = Path(root)
+            plan = self._plan_thumbnails(root, root / "thumbnails")
+            available = max(0, MAX_THUMBNAIL_FILES - len(combined["targets"]))
+            combined["targets"].extend(plan["targets"][:available])
+            combined["skipped"] += plan["skipped"]
+            combined["remaining"] += plan["remaining"] + max(
+                0, len(plan["targets"]) - available
+            )
+        return combined
+
+    async def get_thumbnail_status(self, request: web.Request) -> web.Response:
+        """Count pending thumbnails off-loop without generating files."""
+        try:
+            output_dirs = self._get_all_output_dirs()
+            plan = await self._run_in_executor(
+                self._plan_gallery_thumbnails, output_dirs
+            )
+            pending = len(plan["targets"]) + plan["remaining"]
+            collection = json.dumps(sorted(str(_canonical(p)) for p in output_dirs))
+            return web.json_response(
+                {
+                    "success": True,
+                    "total_images": pending + plan["skipped"],
+                    "pending": pending,
+                    "ready": plan["skipped"],
+                    "collection_id": hashlib.sha256(collection.encode()).hexdigest()[
+                        :16
+                    ],
+                },
+                headers={"Cache-Control": "no-store"},
+            )
+        except Exception as exc:
+            self.logger.exception("Thumbnail status failed")
+            return web.json_response(
+                {"success": False, "error": _safe_error(exc)}, status=500
+            )
 
     def _plan_thumbnails(self, output_path, thumbnails_dir):
         """Decide which media files need a thumbnail (blocking walk).
@@ -923,7 +979,7 @@ class ImageRoutesMixin:
         try:
             if not src.is_file():
                 return {**result, "action": "error", "error": "File no longer exists"}
-            if dst.exists() and dst.stat().st_mtime > src.stat().st_mtime:
+            if _thumbnail_is_fresh(src, dst):
                 return {**result, "action": "skipped"}
             dst.parent.mkdir(parents=True, exist_ok=True)
             if is_video:
@@ -957,21 +1013,20 @@ class ImageRoutesMixin:
         )
         await response.prepare(request)
         try:
-            output_dir = self._find_comfyui_output_dir()
-            if not output_dir:
+            output_dirs = self._get_all_output_dirs()
+            if not output_dirs:
                 await self._emit_sse(
                     response, "error", {"error": "ComfyUI output directory not found"}
                 )
                 return response
 
-            output_path = Path(output_dir)
             await self._emit_sse(
                 response,
                 "status",
                 {"phase": "scanning", "message": "Scanning for images and videos..."},
             )
             plan = await self._run_in_executor(
-                self._plan_thumbnails, output_path, output_path / "thumbnails"
+                self._plan_gallery_thumbnails, output_dirs
             )
             await self._stream_thumbnails(
                 response,

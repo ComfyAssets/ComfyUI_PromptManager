@@ -1747,6 +1747,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     debugMode: document.getElementById('debugModeToggle').checked,
                     apiTimeout: parseInt(document.getElementById('apiTimeoutInput').value),
                     thumbnailsGenerated: this.getSettings().thumbnailsGenerated, // Preserve this
+                    thumbnailPromptDismissed: this.getSettings().thumbnailPromptDismissed,
                     checkThumbnailsAtStartup: document.getElementById('checkThumbnailsAtStartup').checked,
                     // Video settings
                     videoAutoplay: document.getElementById('videoAutoplayToggle').checked,
@@ -2503,37 +2504,16 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     }
                     
                     try {
-                        // Check a sample of images to see if any are missing thumbnails
-                        const response = await ApiClient.fetchUrl('/prompt_manager/images/output?limit=50&offset=0');
-                        const data = await response.json();
-                        
-                        console.debug('Checking images for missing thumbnails:', data);
-                        
-                        if (data.success && data.images && data.images.length > 0) {
-                            // Count images missing thumbnails
-                            let missingThumbnails = 0;
-                            for (const image of data.images) {
-                                if (!image.thumbnail_url) {
-                                    missingThumbnails++;
-                                }
-                            }
-                            
-                            console.debug(`Found ${missingThumbnails} images without thumbnails in sample of ${data.images.length}`);
-                            
-                            // If more than 10% of sampled images are missing thumbnails, show prompt
-                            const missingPercentage = (missingThumbnails / data.images.length) * 100;
-                            if (missingThumbnails > 0 && missingPercentage > 10) {
-                                // Estimate total missing based on sample
-                                const estimatedMissing = Math.round((missingThumbnails / data.images.length) * data.total);
-                                console.debug(`Estimated ${estimatedMissing} total images missing thumbnails (${missingPercentage.toFixed(1)}% of sample)`);
-                                this.showThumbnailGenerationPrompt(data.total, estimatedMissing);
-                            } else if (missingThumbnails > 0) {
-                                console.debug(`Only ${missingPercentage.toFixed(1)}% of images missing thumbnails, not showing prompt`);
-                            } else {
-                                console.debug('All sampled images have thumbnails');
-                            }
-                        } else {
-                            console.debug('No images found or failed to fetch images');
+                        const data = await this.api.get('/prompt_manager/images/thumbnails/status');
+                        const total = data.total_images;
+                        const pending = data.pending;
+                        if (!data.success || !Number.isSafeInteger(total) ||
+                            !Number.isSafeInteger(pending) || total <= 0 ||
+                            pending <= 0 || pending > total) return;
+                        const signature = JSON.stringify([data.collection_id, total, pending]);
+                        if (settings.thumbnailPromptDismissed === signature) return;
+                        if (pending / total > 0.1) {
+                            this.showThumbnailGenerationPrompt(total, pending, signature);
                         }
                     } catch (error) {
                         console.debug('Could not check for missing thumbnails at startup:', error);
@@ -2541,7 +2521,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }, 1000); // Wait 1 second for page to settle
             }
 
-            showThumbnailGenerationPrompt(imageCount, missingCount = imageCount) {
+            showThumbnailGenerationPrompt(imageCount, missingCount = imageCount, signature = null) {
                 const modal = document.createElement('div');
                 modal.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-50';
                 modal.innerHTML = `
@@ -2552,10 +2532,10 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                                 Generate Thumbnails?
                             </h3>
                             <p class="text-pm-secondary mb-4">
-                                Found ${missingCount} images without thumbnails (${imageCount} total images). Would you like to generate thumbnails for faster loading?
+                                ${missingCount} images need new or updated thumbnails (${imageCount} total images). Generate them for faster loading?
                             </p>
                             <p class="text-sm text-pm-muted mb-3">
-                                💡 Thumbnails speed up gallery loading significantly. You can change this setting in Gallery Settings.
+                                Only missing or outdated thumbnails will be generated. Existing current thumbnails will be kept. You can change startup checks in Gallery Settings.
                             </p>
                             <div class="flex space-x-3">
                                 <button id="thumbnailPromptNo" class="flex-1 px-4 py-2 bg-pm-input hover:bg-pm-hover text-pm rounded-pm-md transition-colors">
@@ -2571,11 +2551,20 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 
                 document.body.appendChild(modal);
                 
-                // Handle button clicks
-                document.getElementById('thumbnailPromptNo').addEventListener('click', () => {
+                const dismiss = () => {
+                    if (signature) {
+                        try {
+                            const settings = this.getSettings();
+                            settings.thumbnailPromptDismissed = signature;
+                            localStorage.setItem('gallerySettings', JSON.stringify(settings));
+                        } catch (error) {
+                            console.warn('Could not save thumbnail prompt dismissal:', error);
+                        }
+                    }
                     document.body.removeChild(modal);
-                });
-                
+                };
+                document.getElementById('thumbnailPromptNo').addEventListener('click', dismiss);
+
                 document.getElementById('thumbnailPromptYes').addEventListener('click', () => {
                     // Don't remove modal yet - transform it to show progress
                     this.startThumbnailGenerationInModal(modal, imageCount, missingCount);
@@ -2584,7 +2573,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 // Close on outside click
                 modal.addEventListener('click', (e) => {
                     if (e.target === modal) {
-                        document.body.removeChild(modal);
+                        dismiss();
                     }
                 });
             }
