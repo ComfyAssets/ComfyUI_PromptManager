@@ -1,0 +1,21 @@
+{
+  "name": "viewerjs",
+  "version": "1.15.2",
+  "source": "https://github.com/fengyuanchen/viewerjs/tree/v1.15.2",
+  "resolved": "https://registry.npmjs.org/viewerjs/-/viewerjs-1.15.2.tgz",
+  "integrity": "sha512-CYEqSFfPUSnmn1PjrhYxXOScaUC7n8+NpSqI+MrOSM8wcKPe35MlwQYwksuD5rjFkYv/ePmY5NsUa51uRNN2jA==",
+  "files": {
+    "viewer.min.js": {
+      "source": "dist/viewer.min.js",
+      "sha256": "490580be4988dff2e05cd9c81c4161b82ce0c3715d268fadf8f7193853f40031"
+    },
+    "viewer.min.css": {
+      "source": "dist/viewer.min.css",
+      "sha256": "24a43eb0b188c824bb5b32e4d95c08b6162ec01eaa709ca8f0823d9512d0913d"
+    },
+    "LICENSE": {
+      "source": "LICENSE",
+      "sha256": "eb917650781dcf06a60b97cba9b05bf583931ec2d311d8a5548a8dca90a57e0f"
+    }
+  }
+}

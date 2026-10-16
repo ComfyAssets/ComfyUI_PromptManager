@@ -1,0 +1,41 @@
+name: Viewer.js vendor and compatibility
+
+on:
+  pull_request:
+    paths:
+      - 'tools/vendor/**'
+      - 'tests/vendor/**'
+      - 'tests/js/**'
+      - 'web/js/**'
+      - 'web/lib/**'
+      - '.github/workflows/viewerjs-*.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tools/vendor/**'
+      - 'tests/vendor/**'
+      - 'tests/js/**'
+      - 'web/js/**'
+      - 'web/lib/**'
+      - '.github/workflows/viewerjs-*.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  viewerjs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tools/vendor/package-lock.json
+      - run: npm ci --prefix tools/vendor --ignore-scripts
+      - run: npm run --prefix tools/vendor check
+      - run: npm run --prefix tools/vendor test
+      - run: node --test tests/js/*.test.js
+      - run: npx --prefix tools/vendor playwright install --with-deps chromium
+      - run: npm run --prefix tools/vendor test:browser
