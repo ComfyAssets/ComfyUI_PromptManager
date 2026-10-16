@@ -206,3 +206,65 @@ test('metadata follows the selected image when responses finish out of order', a
     await page.evaluate(() => metadataRequests.get('http://viewer.test/original/2.svg')({ positivePrompt: 'Closed prompt' }));
     expect(await page.evaluate(() => gallery.currentMetadata)).toBeNull();
 });
+
+for (const mode of ['gallery', 'filmstrip']) {
+    test(`admin ${mode} metadata ignores stale responses and clears copy state on close`, async ({ page }) => {
+        const urlFor = index => mode === 'gallery' ? `http://viewer.test/prompt_manager/images/${index}/file` : `http://viewer.test/original/${index}.svg`;
+        const adminSource = source('web/js/admin.js');
+        await page.addScriptTag({ content: adminSource.slice(0, adminSource.indexOf('        function startAdmin()')) + '\nwindow.TestAdmin = PromptAdmin;' });
+        await page.evaluate(async mode => {
+            const admin = window.admin = Object.create(TestAdmin.prototype);
+            const images = Array.from({ length: 3 }, (_, i) => ({ id: i, filename: `${i}.svg`, url: `http://viewer.test/original/${i}.svg`, size: 100, created_at: 1 }));
+            window.pendingMetadata = new Map();
+            Object.assign(admin, { prompts: [{ id: 1, text: 'test' }],
+                getImageUrl: image => image.url, loadFilmStripImages: async () => images,
+                extractImageMetadata: url => new Promise(resolve => pendingMetadata.set(url, resolve)),
+            });
+            if (mode === 'gallery') {
+                admin.renderGallery(images, 1);
+            } else {
+                await admin.openFilmStripViewer(1, 0);
+            }
+        }, mode);
+        if (mode === 'gallery') {
+            await expect.poll(() => page.evaluate(() => Boolean(admin.galleryViewer))).toBe(true);
+            await page.evaluate(() => admin.galleryViewer.show());
+        }
+        await expect.poll(() => page.evaluate(url => pendingMetadata.has(url), urlFor(0))).toBe(true);
+        await page.keyboard.press('ArrowRight');
+        await expect.poll(() => page.evaluate(url => pendingMetadata.has(url), urlFor(1))).toBe(true);
+        await page.evaluate(url => pendingMetadata.get(url)({ positivePrompt: 'Selected prompt', negativePrompt: '', imagePath: '1.svg' }), urlFor(1));
+        await expect(page.locator('#metadata-content')).toContainText('Selected prompt');
+        await page.evaluate(url => pendingMetadata.get(url)({ positivePrompt: 'Stale prompt', negativePrompt: '', imagePath: '0.svg' }), urlFor(0));
+        await expect(page.locator('#metadata-content')).not.toContainText('Stale prompt');
+        expect(await page.evaluate(() => admin.currentMetadata.imagePath)).toBe('1.svg');
+        await page.keyboard.press('ArrowRight');
+        await expect.poll(() => page.evaluate(url => pendingMetadata.has(url), urlFor(2))).toBe(true);
+        await page.keyboard.press('Escape');
+        await expect(page.locator('#metadata-sidebar')).toHaveCount(0);
+        await page.evaluate(url => pendingMetadata.get(url)({ positivePrompt: 'Closed prompt', negativePrompt: '', imagePath: '2.svg' }), urlFor(2));
+        expect(await page.evaluate(() => admin.currentMetadata)).toBeNull();
+    });
+}
+
+test('Tags selection stays current during a delayed prompt response', async ({ page }) => {
+    await page.addScriptTag({ path: join(root, 'web/js/tags-page.js') });
+    await page.evaluate(() => {
+        const grid = document.createElement('div'); grid.id = 'tagPromptsGrid'; document.body.append(grid);
+        const manager = window.tagsManager = Object.create(TagsPageManager.prototype);
+        window.pendingTagPrompts = [];
+        Object.assign(manager, { selectedTags: ['cats'], filterMode: 'and', promptLimit: 20, prompts: [],
+            fetchJson: url => new Promise(resolve => pendingTagPrompts.push({ url, resolve })),
+            renderTagPrompts() { grid.textContent = this.prompts.map(prompt => prompt.text).join(','); },
+            updatePromptCountBadge() {}, updateLoadMoreButton() {}, refreshPromptObserver() {},
+        });
+        manager.loadTagPrompts();
+        manager.selectedTags = ['dogs'];
+        manager.loadTagPrompts();
+    });
+    expect(await page.evaluate(() => pendingTagPrompts.length)).toBe(2);
+    await page.evaluate(() => pendingTagPrompts[1].resolve({ success: true, prompts: [{ text: 'dog prompt' }], pagination: { total: 1, has_more: false } }));
+    await expect(page.locator('#tagPromptsGrid')).toHaveText('dog prompt');
+    await page.evaluate(() => pendingTagPrompts[0].resolve({ success: true, prompts: [{ text: 'cat prompt' }], pagination: { total: 1, has_more: false } }));
+    await expect(page.locator('#tagPromptsGrid')).toHaveText('dog prompt');
+});

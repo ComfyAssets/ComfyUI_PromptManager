@@ -1656,6 +1656,7 @@
                 // Initialize ViewerJS for the gallery after DOM is updated
                 setTimeout(() => {
                     if (this.galleryViewer) {
+                        this.invalidateMetadataRequest();
                         this.galleryViewer.destroy();
                     }
                     
@@ -1699,6 +1700,7 @@
                         viewed: (event) => {
                             this.loadMetadataForImage(event.detail.image);
                         },
+                        hide: () => this.invalidateMetadataRequest(),
                         hidden: () => {
                             const sidebar = document.getElementById('metadata-sidebar');
                             if (sidebar) sidebar.remove();
@@ -1711,7 +1713,13 @@
 
 
 
+            invalidateMetadataRequest() {
+                this.metadataRequest = null;
+                this.currentMetadata = null;
+            }
+
             closeGallery() {
+                this.invalidateMetadataRequest();
                 this.hideModal("galleryModal");
             }
 
@@ -2896,6 +2904,11 @@
                 const metadataContent = document.getElementById('metadata-content');
                 if (!metadataContent) return;
 
+                const request = {};
+                this.metadataRequest = request;
+                this.currentMetadata = null;
+                const isCurrent = () => this.metadataRequest === request && metadataContent.isConnected !== false;
+
                 // Show loading state
                 metadataContent.innerHTML = `
                     <div class="metadata-loading">
@@ -2911,9 +2924,11 @@
 
                 try {
                     const metadata = await this.extractImageMetadata(imageUrl);
+                    if (!isCurrent()) return;
                     this.currentMetadata = metadata;
                     this.updateMetadataSidebar(metadata);
                 } catch (error) {
+                    if (!isCurrent()) return;
                     console.error('Failed to load metadata:', error);
                     metadataContent.innerHTML = `
                         <div class="text-center text-pm-error py-8">
@@ -3515,6 +3530,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     viewed: (event) => {
                         this.loadMetadataForImage(event.detail.image);
                     },
+                    hide: () => this.invalidateMetadataRequest(),
                     hidden: () => {
                         const sidebar = document.getElementById('metadata-sidebar');
                         if (sidebar) sidebar.remove();
