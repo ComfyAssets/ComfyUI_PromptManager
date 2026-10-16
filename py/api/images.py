@@ -316,6 +316,9 @@ def _output_image_entry(media_path, output_path, root_index, public_root=None):
         f"{'.jpg' if is_video else extension}"
     )
     thumbnail_url = thumbnail_url_for(thumb_rel, output_path / thumb_rel)
+    if thumbnail_url is not None:
+        thumbnail_url += f"&root={root_index}"
+    encoded_path = urllib.parse.quote(rel_path.as_posix(), safe="/")
 
     return {
         "id": hashlib.sha1(str(media_path).encode("utf-8")).hexdigest()[:16],
@@ -324,7 +327,7 @@ def _output_image_entry(media_path, output_path, root_index, public_root=None):
         "relative_path": str(rel_path),
         "root_dir": public_root,
         "root_index": root_index,
-        "url": f"/prompt_manager/images/serve/{rel_path.as_posix()}",
+        "url": f"/prompt_manager/images/serve/{encoded_path}?root={root_index}",
         "thumbnail_url": thumbnail_url,
         "size": stat.st_size,
         "modified_time": stat.st_mtime,
@@ -703,10 +706,10 @@ class ImageRoutesMixin:
         try:
             idx = int(root_param)
         except ValueError:
-            return output_dirs
+            return []
         if 0 <= idx < len(output_dirs):
             return [output_dirs[idx]]
-        return output_dirs
+        return []
 
     async def serve_output_image(self, request):
         """Serve a media file from the ComfyUI output folder(s)."""
@@ -1434,7 +1437,7 @@ class ImageRoutesMixin:
         try:
             # Get the image path from URL
             raw_image_path = request.match_info.get("image_path", "")
-            image_path = urllib.parse.unquote(raw_image_path)
+            image_path = raw_image_path
 
             if not image_path:
                 return web.json_response(
@@ -1442,15 +1445,26 @@ class ImageRoutesMixin:
                 )
 
             # Convert relative path to absolute if needed
-            if not os.path.isabs(image_path):
+            if "root" in request.query:
+                roots = self._select_root(
+                    self._get_all_output_dirs(), request.query["root"]
+                )
+                if not roots:
+                    return _forbidden()
+                if not os.path.isabs(image_path):
+                    image_path = str(Path(roots[0]) / image_path)
+                if not _is_within(image_path, roots[0]):
+                    return _forbidden()
+            elif not os.path.isabs(image_path):
                 output_dir = self._find_comfyui_output_dir()
                 if output_dir:
                     image_path = str(Path(output_dir) / image_path)
 
             # Look up the image in generated_images table
             try:
+                args = (image_path, False) if "root" in request.query else (image_path,)
                 prompt_data = await self._run_in_executor(
-                    self.db.get_image_prompt_info, image_path
+                    self.db.get_image_prompt_info, *args
                 )
                 if prompt_data:
                     prompt_data["image_path"] = _public_path(image_path)

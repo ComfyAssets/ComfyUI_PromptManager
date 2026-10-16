@@ -103,7 +103,23 @@
         return original;
     }
 
-    const api = { formatImageCaption, workflowDocumentHtml, autotagSingleBody, fallbackImageSource };
+    function metadataLookupUrl(imageUrl) {
+        try {
+            const url = new URL(imageUrl, 'http://prompt-manager.invalid');
+            const marker = '/prompt_manager/images/serve/';
+            const index = url.pathname.indexOf(marker);
+            if (index < 0) return null;
+            const relativePath = decodeURIComponent(url.pathname.slice(index + marker.length));
+            const query = new URLSearchParams();
+            if (url.searchParams.has('root')) query.set('root', url.searchParams.get('root'));
+            const suffix = query.size ? `?${query}` : '';
+            return `/prompt_manager/images/prompt/${encodeURIComponent(relativePath)}${suffix}`;
+        } catch {
+            return null;
+        }
+    }
+
+    const api = { formatImageCaption, workflowDocumentHtml, autotagSingleBody, fallbackImageSource, metadataLookupUrl };
     if (typeof module !== "undefined" && module.exports) module.exports = api;
     else root.ImageHelpers = api;
 })(typeof window !== "undefined" ? window : globalThis);

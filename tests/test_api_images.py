@@ -224,7 +224,7 @@ class TestServeOutputImage(ImageAPITestCase):
 
             self.assertEqual(hit.status, 200)
             self.assertEqual(miss.status, 404)
-            self.assertEqual(bad_index.status, 200)
+            self.assertEqual(bad_index.status, 403)
             for resp in (hit, miss, bad_index):
                 await resp.read()  # release the served file before the directory goes
 
@@ -849,7 +849,7 @@ class TestThumbnailFilesAreNeverSeenHalfWritten(ThumbnailTestCase):
         )
         self.assertRegex(
             entry["thumbnail_url"],
-            r"^/prompt_manager/images/serve/thumbnails/a_thumb\.png\?v=\d+$",
+            r"^/prompt_manager/images/serve/thumbnails/a_thumb\.png\?v=\d+&root=0$",
         )
         first = int(re.search(r"v=(\d+)", entry["thumbnail_url"]).group(1))
         self.assertEqual(first, int(thumb.stat().st_mtime))
@@ -1189,12 +1189,12 @@ class TestServeErrorBranches(ImageRouteCoverageCase):
         status, _ = await self._json("GET", "/prompt_manager/images/serve/x.png")
         self.assertEqual(status, 500)
 
-    async def test_out_of_range_root_index_searches_all_roots(self):
+    async def test_out_of_range_root_index_is_rejected(self):
         make_png(self.output_dir / "r.png")
         resp = await self.client.request(
             "GET", "/prompt_manager/images/serve/r.png?root=7"
         )
-        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.status, 403)
 
     async def test_directory_named_like_media_is_404(self):
         (self.output_dir / "dir.png").mkdir()
@@ -1977,3 +1977,84 @@ class TestThumbnailStartupStatus(ThumbnailTestCase):
         data = dict(parse_sse(await response.text()))["complete"]
         self.assertEqual(data["count"], 0)
         self.assertEqual(data["skipped"], 1)
+
+
+class TestGalleryRootIdentity(ThumbnailTestCase):
+    async def test_colliding_original_and_thumbnail_urls_serve_their_own_roots(self):
+        roots = [self.output_dir, self.comfy_dir / "second-output"]
+        for index, root in enumerate(roots):
+            make_png(root / "same.png", color=(index * 255, 0, 255 - index * 255))
+        self.api._get_all_output_dirs = lambda: roots
+        await self.client.post("/prompt_manager/images/generate-thumbnails", json={})
+        data = await (await self.client.get("/prompt_manager/images/output")).json()
+        self.assertEqual(len({image["url"] for image in data["images"]}), 2)
+        self.assertEqual(len({image["thumbnail_url"] for image in data["images"]}), 2)
+        for image in data["images"]:
+            root = roots[image["root_index"]]
+            for key, path in (
+                ("url", root / "same.png"),
+                ("thumbnail_url", root / "thumbnails" / "same_thumb.png"),
+            ):
+                response = await self.client.get(image[key])
+                self.assertEqual(response.status, 200)
+                self.assertEqual(await response.read(), path.read_bytes())
+
+    async def test_root_scoped_prompt_lookup_uses_the_matching_database_image(self):
+        roots = [self.output_dir, self.comfy_dir / "second-output"]
+        for index, root in enumerate(roots):
+            self._link_image(make_png(root / "same.png"), text=f"root {index} prompt")
+        self.api._get_all_output_dirs = lambda: roots
+        for index in range(2):
+            response = await self.client.get(
+                f"/prompt_manager/images/prompt/same.png?root={index}"
+            )
+            self.assertEqual(response.status, 200)
+            data = await response.json()
+            self.assertEqual(data["prompt"]["text"], f"root {index} prompt")
+
+    async def test_special_characters_in_paths_survive_serving_and_prompt_lookup(self):
+        from urllib.parse import quote
+
+        filename = "space #?%20 café.png"
+        original = make_png(self.output_dir / filename)
+        self._link_image(original, text="special path")
+        data = await (await self.client.get("/prompt_manager/images/output")).json()
+        response = await self.client.get(data["images"][0]["url"])
+        self.assertEqual(response.status, 200)
+        self.assertEqual(await response.read(), original.read_bytes())
+        response = await self.client.get(
+            f"/prompt_manager/images/prompt/{quote(filename, safe='')}?root=0"
+        )
+        data = await response.json()
+        self.assertEqual(data["prompt"]["text"], "special path")
+
+    async def test_invalid_explicit_roots_never_fall_back_to_another_image(self):
+        self._link_image(make_png(self.output_dir / "same.png"), text="first root")
+        for root in ("bad", "-1", "7", ""):
+            for route in ("serve", "prompt"):
+                with self.subTest(root=root, route=route):
+                    response = await self.client.get(
+                        f"/prompt_manager/images/{route}/same.png?root={root}"
+                    )
+                    self.assertEqual(response.status, 403)
+
+    async def test_explicit_root_prompt_lookup_rejects_paths_outside_that_root(self):
+        from urllib.parse import quote
+
+        outside = make_png(self.comfy_dir / "outside.png")
+        self._link_image(outside, text="outside")
+        response = await self.client.get(
+            f"/prompt_manager/images/prompt/{quote(str(outside), safe='')}?root=0"
+        )
+        self.assertEqual(response.status, 403)
+
+    async def test_unlinked_image_does_not_inherit_a_prompt_from_another_root(self):
+        second = self.comfy_dir / "second-output"
+        self._link_image(make_png(self.output_dir / "same.png"), text="first root")
+        make_png(second / "same.png")
+        self.api._get_all_output_dirs = lambda: [self.output_dir, second]
+        response = await self.client.get(
+            "/prompt_manager/images/prompt/same.png?root=1"
+        )
+        self.assertEqual(response.status, 200)
+        self.assertFalse((await response.json())["success"])

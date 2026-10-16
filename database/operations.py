@@ -1967,7 +1967,9 @@ class PromptDatabase:
             conn.commit()
         return count
 
-    def get_image_prompt_info(self, image_path: str) -> Optional[Dict[str, Any]]:
+    def get_image_prompt_info(
+        self, image_path: str, allow_filename_fallback: bool = True
+    ) -> Optional[Dict[str, Any]]:
         """Look up prompt + image metadata for a given image path.
 
         Returns a dict with prompt_id, text, category, tags, rating, notes,
@@ -1981,10 +1983,11 @@ class PromptDatabase:
                    FROM generated_images gi
                    JOIN prompts p ON gi.prompt_id = p.id
                    WHERE gi.image_path = ? OR gi.file_path = ?
-                      OR gi.image_path LIKE ? ESCAPE '\\'""",
+                      OR (? AND gi.image_path LIKE ? ESCAPE '\\')""",
                 (
                     image_path,
                     normalize_image_path(image_path),
+                    allow_filename_fallback,
                     f"%{escape_like(os.path.basename(image_path))}",
                 ),
             )

@@ -1193,11 +1193,9 @@
                     // First try to get linked prompt from database
                     let databasePrompt = null;
                     try {
-                        // Extract relative path from the URL for the API call
-                        const urlParts = imageUrl.split('/prompt_manager/images/serve/');
-                        if (urlParts.length > 1) {
-                            const relativePath = urlParts[1];
-                            const response = await ApiClient.fetchUrl(`/prompt_manager/images/prompt/${encodeURIComponent(relativePath)}`);
+                        const metadataUrl = ImageHelpers.metadataLookupUrl(imageUrl);
+                        if (metadataUrl) {
+                            const response = await ApiClient.fetchUrl(metadataUrl);
                             if (response.ok) {
                                 const data = await response.json();
                                 if (data.success && data.prompt) {

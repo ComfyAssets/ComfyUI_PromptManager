@@ -108,3 +108,16 @@ test("fallbackImageSource gives up when the original itself failed or was alread
     assert.equal(fallbackImageSource("/serve/t.png", {}), null);
     assert.equal(fallbackImageSource("/serve/t.png", undefined), null);
 });
+
+const { metadataLookupUrl } = require('../../web/js/image-helpers.js');
+
+test('metadata lookup keeps root identity and strips thumbnail cache query parameters', () => {
+    assert.equal(metadataLookupUrl('/prompt_manager/images/serve/sub/a.png?root=1&v=123'), '/prompt_manager/images/prompt/sub%2Fa.png?root=1');
+    assert.equal(metadataLookupUrl('/prompt_manager/images/serve/a.png?root=0'), '/prompt_manager/images/prompt/a.png?root=0');
+});
+
+test('metadata lookup preserves encoded filename characters and works behind a proxy', () => {
+    assert.equal(metadataLookupUrl('https://example.test/ComfyBackendDirect/prompt_manager/images/serve/space%20%23%3F%2520%20caf%C3%A9.png?root=1'), '/prompt_manager/images/prompt/space%20%23%3F%2520%20caf%C3%A9.png?root=1');
+    assert.equal(metadataLookupUrl('/prompt_manager/images/serve/a.png?v=123'), '/prompt_manager/images/prompt/a.png');
+    assert.equal(metadataLookupUrl('/elsewhere/a.png'), null);
+});
