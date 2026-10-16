@@ -13,12 +13,14 @@ from .models import PromptModel, normalize_image_path, utc_now_iso
 # Import logging system
 try:
     from ..utils.logging_config import get_logger
+    from ..utils.hashing import generate_prompt_hash
 except ImportError:
     import sys
 
     current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     sys.path.insert(0, current_dir)
     from utils.logging_config import get_logger
+    from utils.hashing import generate_prompt_hash
 
 
 # Subquery to fetch tags from junction table, embedded in SELECT statements
@@ -1854,16 +1856,20 @@ class PromptDatabase:
             }
 
     def update_prompt_text(self, prompt_id: int, new_text: str) -> bool:
-        """Update only the text of a prompt.
+        """Update prompt text and its deduplication hash atomically.
 
         Returns:
             True if a row was updated.
+
+        Raises:
+            sqlite3.IntegrityError: Another prompt already has the new hash.
         """
         with self.model.get_connection() as conn:
             cursor = conn.execute(
-                "UPDATE prompts SET text = ?, updated_at = ? WHERE id = ?",
+                "UPDATE prompts SET text = ?, hash = ?, updated_at = ? WHERE id = ?",
                 (
                     new_text,
+                    generate_prompt_hash(new_text),
                     datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     prompt_id,
                 ),

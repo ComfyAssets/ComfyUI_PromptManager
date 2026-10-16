@@ -3,6 +3,7 @@
 import datetime
 import json
 import os
+import sqlite3
 
 from aiohttp import web
 from urllib.parse import quote
@@ -839,6 +840,11 @@ class PromptRoutesMixin:
                     {"success": False, "error": "Prompt not found"}, status=404
                 )
 
+        except sqlite3.IntegrityError:
+            return web.json_response(
+                {"success": False, "error": "Another prompt already has this text"},
+                status=409,
+            )
         except ValueError:
             return web.json_response(
                 {"success": False, "error": "Invalid prompt ID"}, status=400
