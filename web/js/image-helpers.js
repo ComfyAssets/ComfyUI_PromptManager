@@ -79,6 +79,9 @@
             typeof entry.path === "string" && entry.path && !Number.isInteger(entry.id)
                 ? { path: entry.path }
                 : { image_id: entry.id };
+        if ("path" in target && Number.isInteger(entry.root_index)) {
+            target.root_index = entry.root_index;
+        }
         const modelType = String(settings.modelType || "");
         const params = modelType.startsWith("wd14")
             ? {

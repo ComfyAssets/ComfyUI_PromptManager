@@ -1049,3 +1049,72 @@ class TestScanOutputDir(AutotagAPITestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGalleryReviewContract(AutotagAPITestCase):
+    async def test_root_relative_gallery_targets_generate_and_apply_to_their_prompt(
+        self,
+    ):
+        second = self.tmp_root / "second-output"
+        second.mkdir()
+        roots = [self.output_dir, second]
+        self.api._get_all_output_dirs = lambda: roots
+        for index, root in enumerate(roots):
+            pid = self._save_prompt(f"root {index}")
+            self._link_image(pid, self._make_image(root, "same.png"))
+            response = await self._post_json(
+                "/prompt_manager/autotag/single",
+                {"path": "same.png", "root_index": index, "model_type": "gguf"},
+            )
+            self.assertEqual(response.status, 200)
+            data = await response.json()
+            self.assertEqual(data["prompt_id"], pid)
+            self.assertEqual(
+                self.service.generate_calls[-1][0], str((root / "same.png").resolve())
+            )
+            response = await self._post_json(
+                "/prompt_manager/autotag/apply",
+                {"prompt_id": data["prompt_id"], "tags": data["tags"]},
+            )
+            self.assertEqual(response.status, 200)
+            self.assertEqual(
+                set(self.api.db.get_prompt_by_id(pid)["tags"]), set(data["tags"])
+            )
+
+    async def test_gallery_unlinked_image_returns_no_prompt_id(self):
+        self._make_image(self.output_dir)
+        response = await self._post_json(
+            "/prompt_manager/autotag/single", {"path": "img.png", "root_index": 0}
+        )
+        self.assertEqual(response.status, 200)
+        self.assertIsNone((await response.json())["prompt_id"])
+
+    async def test_gallery_root_selection_rejects_invalid_roots_and_escapes(self):
+        self._make_image(self.output_dir)
+        for root, path, expected in [
+            (9, "img.png", 403),
+            (-1, "img.png", 403),
+            (True, "img.png", 400),
+            ([], "img.png", 400),
+            (0, "../secret/img.png", 403),
+            (0, str(self.secret_dir / "img.png"), 403),
+        ]:
+            with self.subTest(root=root, path=path):
+                response = await self._post_json(
+                    "/prompt_manager/autotag/single", {"path": path, "root_index": root}
+                )
+                self.assertEqual(response.status, expected)
+
+    async def test_gallery_root_selection_rejects_symlink_into_another_root(self):
+        second = self.tmp_root / "second-output"
+        second.mkdir()
+        target = self._make_image(second)
+        try:
+            (self.output_dir / "link.png").symlink_to(target)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        self.api._get_all_output_dirs = lambda: [self.output_dir, second]
+        response = await self._post_json(
+            "/prompt_manager/autotag/single", {"path": "link.png", "root_index": 0}
+        )
+        self.assertEqual(response.status, 403)

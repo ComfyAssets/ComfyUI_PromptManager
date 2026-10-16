@@ -894,3 +894,49 @@ class TestBulkRoutes(RouteCoverageCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPromptEditHash(PromptAPITestCase):
+    async def test_edit_moves_the_hash_and_original_text_can_be_saved_again(self):
+        original_id = self._save_prompt("Original landscape")
+        response = await self.client.put(
+            f"/prompt_manager/prompts/{original_id}", json={"text": "Edited portrait"}
+        )
+        self.assertEqual(response.status, 200)
+        row = self.api.db.get_prompt_by_id(original_id)
+        self.assertEqual(row["hash"], generate_prompt_hash("Edited portrait"))
+        self.assertIsNone(
+            self.api.db.get_prompt_by_hash(generate_prompt_hash("Original landscape"))
+        )
+        response = await self.client.post(
+            "/prompt_manager/save", json={"text": "Original landscape"}
+        )
+        self.assertEqual(response.status, 200)
+        self.assertNotEqual((await response.json())["prompt_id"], original_id)
+        response = await self.client.post(
+            "/prompt_manager/save", json={"text": "Edited portrait"}
+        )
+        self.assertEqual((await response.json())["prompt_id"], original_id)
+
+    async def test_duplicate_edit_returns_conflict_without_changing_either_prompt(self):
+        first = self._save_prompt("Original landscape", tags=["landscape"])
+        second = self._save_prompt("Existing portrait", tags=["portrait"])
+        before = [self.api.db.get_prompt_by_id(pid) for pid in (first, second)]
+        response = await self.client.put(
+            f"/prompt_manager/prompts/{first}", json={"text": "  EXISTING PORTRAIT  "}
+        )
+        self.assertEqual(response.status, 409)
+        self.assertFalse((await response.json())["success"])
+        self.assertEqual(
+            [self.api.db.get_prompt_by_id(pid) for pid in (first, second)], before
+        )
+
+    async def test_edit_with_same_normalized_hash_keeps_its_identity(self):
+        pid = self._save_prompt("Original landscape")
+        response = await self.client.put(
+            f"/prompt_manager/prompts/{pid}", json={"text": "ORIGINAL LANDSCAPE"}
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            self.api.db.get_prompt_by_id(pid)["text"], "ORIGINAL LANDSCAPE"
+        )
