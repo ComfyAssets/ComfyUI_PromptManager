@@ -15,6 +15,11 @@ reviewed. Add a regression test for each bug; prove it fails before the fix.
 Page workflows cover save/edit/reload, duplicate-edit rejection, gallery image
 identity, Tags selection and viewer cleanup, delayed responses, auto-tag review
 and persistence, and infinite scrolling without replacing existing cards.
+Data safety workflows download and upload actual SQLite backups, verify restored
+prompts/tags/image links, reject corrupt uploads without changing live data, and
+exercise cancellation and network-failure recovery for restores and deletion.
+Duplicate cleanup verifies only the selected file disappears; prompt deletion
+verifies the other prompt and original image files survive.
 They run in Chromium, Firefox, WebKit, and Chromium touch emulation. No GPU,
 model downloads, running ComfyUI instance, or personal configuration is required.
 The server binds to localhost and creates disposable directories and a database;
