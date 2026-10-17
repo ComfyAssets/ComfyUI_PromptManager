@@ -924,6 +924,8 @@ class PromptDatabase(PairOperations):
 
         old_name = old_name.strip()
         new_name = new_name.strip()
+        if old_name == new_name:
+            return {"success": True, "affected_count": 0, "skipped_count": 0}
 
         with self.model.get_connection() as conn:
             cursor = conn.execute("SELECT id FROM tags WHERE name = ?", (old_name,))
@@ -945,12 +947,14 @@ class PromptDatabase(PairOperations):
             if existing_new:
                 # Target tag exists — merge: move links, handle conflicts, delete old
                 new_tag_id = existing_new["id"]
-                conn.execute(
-                    "UPDATE OR IGNORE prompt_tags SET tag_id = ? WHERE tag_id = ?",
-                    (new_tag_id, old_tag_id),
-                )
-                # Delete remaining links (conflicts = prompt already had the target tag)
-                conn.execute("DELETE FROM prompt_tags WHERE tag_id = ?", (old_tag_id,))
+                for junction in ("prompt_tags", "prompt_pair_tags"):
+                    conn.execute(
+                        f"UPDATE OR IGNORE {junction} SET tag_id = ? WHERE tag_id = ?",
+                        (new_tag_id, old_tag_id),
+                    )
+                    conn.execute(
+                        f"DELETE FROM {junction} WHERE tag_id = ?", (old_tag_id,)
+                    )
                 conn.execute("DELETE FROM tags WHERE id = ?", (old_tag_id,))
             else:
                 # Simple rename
@@ -969,7 +973,7 @@ class PromptDatabase(PairOperations):
         """
         Remove a tag from all prompts that use it.
 
-        With junction tables, deleting from the tags table cascades to prompt_tags.
+        Deleting from tags cascades to standalone and pair tag relationships.
 
         Args:
             tag_name: Tag name to remove
@@ -1036,20 +1040,27 @@ class PromptDatabase(PairOperations):
                 if not src_row:
                     continue
                 src_id = src_row["id"]
+                if src_id == target_id:
+                    continue
 
                 cursor = conn.execute(
                     "SELECT COUNT(*) as c FROM prompt_tags WHERE tag_id = ?", (src_id,)
                 )
                 src_count = cursor.fetchone()["c"]
 
-                if src_count > 0:
-                    # Move links from source to target (ignore conflicts)
-                    conn.execute(
-                        "UPDATE OR IGNORE prompt_tags SET tag_id = ? WHERE tag_id = ?",
-                        (target_id, src_id),
-                    )
-                    # Delete remaining (conflicts = prompt already had target tag)
-                    conn.execute("DELETE FROM prompt_tags WHERE tag_id = ?", (src_id,))
+                pair_count = conn.execute(
+                    "SELECT COUNT(*) FROM prompt_pair_tags WHERE tag_id = ?", (src_id,)
+                ).fetchone()[0]
+                if src_count or pair_count:
+                    for junction in ("prompt_tags", "prompt_pair_tags"):
+                        conn.execute(
+                            f"UPDATE OR IGNORE {junction} "
+                            "SET tag_id = ? WHERE tag_id = ?",
+                            (target_id, src_id),
+                        )
+                        conn.execute(
+                            f"DELETE FROM {junction} WHERE tag_id = ?", (src_id,)
+                        )
                     tags_merged += 1
                     affected += src_count
 
