@@ -208,3 +208,6 @@ playwright-report/
 
 # Combined frontend coverage reports
 coverage/
+
+# Disposable upstream checkout for real-host CI
+.ci-comfyui/

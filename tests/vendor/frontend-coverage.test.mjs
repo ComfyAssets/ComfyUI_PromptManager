@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const sourceRoot = join(process.cwd(), 'web/js');
-import { checkCoverage } from '../../tools/vendor/frontend-coverage.mjs';
+import { checkCoverage, discoverSources } from '../../tools/vendor/frontend-coverage.mjs';
 const metrics = value => Object.fromEntries(['lines', 'branches', 'functions', 'statements'].map(key => [key, { pct: value }]));
 const summary = { total: metrics(90), [join(sourceRoot, 'a.js')]: metrics(85) };
 const baseline = { 'a.js': { lines: 80, branches: 80, functions: 80, statements: 80 } };
@@ -19,4 +21,13 @@ test('coverage gate rejects absent source files and unreviewed new files', () =>
 test('coverage gate rejects invalid baselines and missing metrics', () => {
     assert.throws(() => checkCoverage(summary, { 'a.js': { lines: -1 } }, sourceRoot, ['a.js']), /baseline/i);
     assert.match(checkCoverage({ total: metrics(100), [join(sourceRoot, 'a.js')]: {} }, baseline, sourceRoot, ['a.js']).join('\n'), /lines/);
+});
+
+test('coverage discovers nested JS and MJS while excluding non-source files', t => {
+    const root = mkdtempSync(join(tmpdir(), 'pm-coverage-'));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, 'shared/controls'), { recursive: true });
+    for (const file of ['entry.js', 'shared/core.mjs', 'shared/controls/button.js', 'shared/theme.css', 'shared/notes.txt']) writeFileSync(join(root, file), '');
+    assert.deepEqual(discoverSources(root), ['entry.js', 'shared/controls/button.js', 'shared/core.mjs']);
+    assert.match(checkCoverage({}, {}, root, discoverSources(root)).join('\n'), /baseline.*shared\/controls\/button.js/i);
 });

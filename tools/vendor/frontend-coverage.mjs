@@ -4,25 +4,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { repositoryRoot } from './vendor-viewerjs.mjs';
 
+import { discoverSources, checkCoverage } from '@comfyassets/toolkit/testing/coverage';
+export { discoverSources, checkCoverage };
 const metrics = ['lines', 'branches', 'functions', 'statements'];
-export function checkCoverage(summary, baseline, sourceRoot, files) {
-    const failures = [];
-    for (const file of files) {
-        const floor = baseline[file];
-        if (!floor) { failures.push(`Missing baseline for ${file}`); continue; }
-        const measured = summary[join(sourceRoot, file)];
-        if (!measured) { failures.push(`Missing coverage for ${file}`); continue; }
-        for (const metric of metrics) {
-            if (!Number.isFinite(floor[metric]) || floor[metric] < 0 || floor[metric] > 100) {
-                throw new Error(`Invalid baseline for ${file}: ${metric}`);
-            }
-            if (!Number.isFinite(measured[metric]?.pct) || measured[metric].pct < floor[metric]) {
-                failures.push(`${file} ${metric}: ${measured[metric]?.pct ?? 'missing'} < ${floor[metric]}`);
-            }
-        }
-    }
-    return failures;
-}
 
 function run(args, env = {}) {
     const result = spawnSync(process.execPath, args, { cwd: repositoryRoot, stdio: 'inherit',
@@ -35,7 +19,7 @@ async function main() {
     const reportRoot = join(repositoryRoot, 'coverage/js');
     const raw = join(reportRoot, 'raw');
     const sourceRoot = join(repositoryRoot, 'web/js');
-    const files = readdirSync(sourceRoot).filter(file => file.endsWith('.js')).sort();
+    const files = discoverSources(sourceRoot);
     rmSync(reportRoot, { recursive: true, force: true });
     mkdirSync(raw, { recursive: true });
     const tests = readdirSync(join(repositoryRoot, 'tests/js')).filter(file => file.endsWith('.test.js')).map(file => `tests/js/${file}`);
@@ -45,7 +29,7 @@ async function main() {
     run([playwright, 'test', '--config', join(tools, 'playwright.workflows.config.mjs'),
         '--project', 'chromium', '--project', 'touch'], { PM_JS_COVERAGE: raw });
     run([join(tools, 'node_modules/c8/bin/c8.js'), 'report', '--all', '--src', sourceRoot,
-        '--include', 'web/js/*.js', '--temp-directory', raw, '--reports-dir', reportRoot,
+        '--include', 'web/js/**/*.js', '--include', 'web/js/**/*.mjs', '--temp-directory', raw, '--reports-dir', reportRoot,
         '--reporter', 'text', '--reporter', 'json-summary', '--reporter', 'html']);
     const summary = JSON.parse(readFileSync(join(reportRoot, 'coverage-summary.json'), 'utf8'));
     const baselinePath = join(tools, 'frontend-coverage-baseline.json');

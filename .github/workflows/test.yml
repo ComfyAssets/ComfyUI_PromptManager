@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v7
@@ -36,6 +36,62 @@ jobs:
 
       - name: Run tests
         run: python -m unittest discover -s tests -v
+
+  comfyui:
+    name: real ComfyUI compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: tools/vendor/package-lock.json
+      - name: Read the reviewed runtime pins
+        id: runtime
+        run: |
+          node --input-type=module <<'JS' >> "$GITHUB_OUTPUT"
+          import runtime from './tools/vendor/comfyui-runtime.json' with { type: 'json' };
+          for (const [key, value] of Object.entries(runtime)) console.log(`${key}=${value}`);
+          JS
+      - name: Check out pinned ComfyUI
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.runtime.outputs.repository }}
+          ref: ${{ steps.runtime.outputs.revision }}
+          path: .ci-comfyui
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ steps.runtime.outputs.pythonVersion }}
+          cache: pip
+          cache-dependency-path: |
+            requirements-dev.txt
+            .ci-comfyui/requirements.txt
+            tools/vendor/comfyui-runtime.json
+      - name: Install CPU runtime and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "torch==${{ steps.runtime.outputs.torchVersion }}" "torchvision==${{ steps.runtime.outputs.torchvisionVersion }}" --index-url https://download.pytorch.org/whl/cpu
+          pip install -r .ci-comfyui/requirements.txt -r requirements-dev.txt "torch==${{ steps.runtime.outputs.torchVersion }}" "torchvision==${{ steps.runtime.outputs.torchvisionVersion }}"
+      - run: npm ci --prefix tools/vendor --ignore-scripts
+      - run: npx --prefix tools/vendor playwright install --with-deps chromium
+      - name: Classic and Nodes 2.0 startup and compatibility
+        env:
+          PM_COMFY_ROOT: ${{ github.workspace }}/.ci-comfyui
+          PM_TEST_PYTHON: python
+        run: npm run --prefix tools/vendor test:comfyui
+      - name: Upload real-host reports and startup logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: real-comfyui-reports
+          path: tools/vendor/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
 
   coverage:
     name: coverage gate (85%)
@@ -78,6 +134,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Pure-JS frontend modules, tested with the runner's preinstalled Node
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Check shipped extension and page modules parse
+        run: |
+          shopt -s globstar nullglob
+          for f in web/comfy/**/*.js web/comfy/**/*.mjs web/js/**/*.js web/js/**/*.mjs; do
+            node --input-type=module --check < "$f" || exit 1
+          done
+
       - name: Run JS tests
         run: node --test tests/js/*.test.js

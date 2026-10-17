@@ -10,6 +10,7 @@ reviewed. Add a regression test for each bug; prove it fails before the fix.
 | Python tests | Domain logic, SQLite, API handlers, filesystem checks | ComfyUI host and ML runtimes where needed |
 | JavaScript tests | Frontend modules and controller methods | DOM/network fixtures for focused edge cases |
 | Viewer checks | Production Viewer.js and frontend methods in Chromium desktop/touch | Controlled images and page fixtures |
+| Real ComfyUI | Pinned CPU host, actual extension, node definitions, widgets, routes and SQLite | Inference is not queued; browser startup settings and host preference writes are isolated |
 | Page workflows | Production HTML, startup, click handlers, HTTP routes, SQLite, PNG files, thumbnails | ComfyUI host services and the tagging model |
 
 Page workflows cover save/edit/reload, duplicate-edit rejection, gallery image
@@ -44,11 +45,49 @@ or the port is occupied. Test servers are never reused. On unsupported Linux
 distributions, browser system dependencies may need manual installation; CI uses
 Ubuntu. For a quick browser run, use `test:workflows -- --project chromium`.
 
+## Managed real ComfyUI
+
+The shared engine comes from an exact commit of
+[ComfyAssets Toolkit](https://github.com/ComfyAssets/ComfyAssets-Toolkit), recorded
+in `tools/vendor/package.json` and its integrity-checked lockfile. The local
+adapter sets PromptManager's database/configuration and monitoring policy;
+source discovery, coverage mapping/gates and process lifecycle are shared code.
+KikoTools remains the reference and is unchanged by this integration.
+
+Use a **dedicated disposable** ComfyUI checkout at the revision in
+`tools/vendor/comfyui-runtime.json`. With a separate Python environment, install
+that checkout's requirements, this repo's `requirements-dev.txt`, and the exact
+CPU torch/torchvision pins from the JSON (using PyTorch's CPU wheel index).
+Install Chromium using the Playwright command above, then run:
+
+```sh
+PM_COMFY_ROOT=/path/to/disposable/ComfyUI \
+PM_TEST_PYTHON=/path/to/cpu-env/bin/python \
+npm run --prefix tools/vendor test:comfyui
+```
+
+CI performs this setup automatically. `PM_COMFY_URL` can select another
+`http://127.0.0.1:PORT/` address (default port 8189). This is an owned managed
+server: a running host is never reused. Do not point it at your live checkout.
+The launcher verifies the upstream SHA and clean tracked files, snapshots only
+tracked PromptManager files, and creates temporary user/input/output/database/
+configuration/log directories. Personal untracked files are excluded. It runs
+CPU/offline with only PromptManager enabled and removes owned state on shutdown.
+The upstream checkout must also be disposable: ComfyUI may initialize local
+runtime files there. Browser host-settings writes are intercepted; actual
+PromptManager routes use the disposable host and database.
+
+`real-comfyui-reports` retains startup logs, version attachments, screenshots and
+traces for 14 days. Update upstream/frontend/CPU pins together after reviewing
+and running both startup projects; never replace the SHA with a moving branch.
+Update the toolkit via an exact reviewed commit archive and commit both npm
+manifest and lockfile. No toolkit or npm installation is needed by end users.
+
 ## Coverage and failures
 
 Python CI enforces 85% combined statement/branch coverage. Frontend coverage merges
 Node V8 unit coverage with Chromium page-workflow coverage through c8. Every
-`web/js/*.js` file appears, including untouched files at zero coverage. The
+`web/js/**/*.js` and `web/js/**/*.mjs` file appears, including untouched files at zero coverage. The
 controller tests provide V8 filenames so their executed code is counted too.
 
 `tools/vendor/frontend-coverage-baseline.json` holds a floor for every file and
@@ -64,14 +103,17 @@ The `viewerjs` check runs on every PR, including backend-only changes. GitHub
 artifacts named `frontend-test-reports` contain HTML coverage, a JSON summary,
 and failure screenshots/traces. Open traces with Playwright's `show-trace` tool.
 
-Live checks remain useful for ComfyUI host compatibility, real inference/GPU or
-model dependency changes, and visual design changes. The automated fixtures do
-not certify those environments or every existing product feature.
+The real-host suite covers both Classic and Nodes 2.0 startup, switching both
+ways, actual database prompt selection, execution-text serialization, workflow
+reload, widget/style cleanup, node schemas and standalone-page opening. It does
+not queue inference or certify every existing feature, arbitrary host versions,
+GPU/model changes, cross-pack installation or visual design changes. Those still
+need targeted validation.
 
 ## Required merge checks
 
-`.github/branch-protection.json` records the required checks: all nine Python/OS
-combinations, Python coverage, formatting, frontend modules, and `viewerjs`.
+`.github/branch-protection.json` records the required checks: all twelve Python/OS
+combinations, Python coverage, formatting, frontend modules, `viewerjs`, and `real ComfyUI compatibility`.
 The branch must be current with main, and administrators follow the same checks.
 It does not require an additional human approval.
 

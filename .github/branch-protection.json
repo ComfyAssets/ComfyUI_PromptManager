@@ -5,16 +5,20 @@
       "py3.10 on ubuntu-latest",
       "py3.11 on ubuntu-latest",
       "py3.12 on ubuntu-latest",
+      "py3.13 on ubuntu-latest",
       "py3.10 on windows-latest",
       "py3.11 on windows-latest",
       "py3.12 on windows-latest",
+      "py3.13 on windows-latest",
       "py3.10 on macos-latest",
       "py3.11 on macos-latest",
       "py3.12 on macos-latest",
+      "py3.13 on macos-latest",
       "coverage gate (85%)",
       "black and flake8",
       "frontend modules",
-      "viewerjs"
+      "viewerjs",
+      "real ComfyUI compatibility"
     ]
   },
   "enforce_admins": true,
