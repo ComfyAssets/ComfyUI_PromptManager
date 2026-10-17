@@ -72,3 +72,12 @@ test('paired library filters search both texts, persist on reload and keep edito
     await page.evaluate(async id=>{const {app}=await import('/scripts/app.js');const node=app.graph.getNodeById(id);node.setSize([560,1000]);app.canvas.centerOnNode(node);},id);
     const [p,n]=await Promise.all(['Positive prompt','Negative prompt'].map(name=>root.getByRole('textbox',{name,exact:true}).boundingBox()));expect(n.y).toBeGreaterThan(p.y+p.height-1);expect(Math.abs(p.width-n.width)).toBeLessThan(1);await page.screenshot({path:testInfo.outputPath('pair-narrow.png')});
 });
+
+for(const field of ['category','tags'])test(`manual Save pair guards real connected ${field} and resumes after disconnect`,async({page},testInfo)=>{
+    const id=await addPair(page);const root=page.locator('.pm-pair');await root.getByRole('textbox',{name:'Positive prompt',exact:true}).fill(`Metadata link ${field} ${testInfo.project.name}`);
+    let saves=0;await page.route('**/prompt_manager/pairs',async route=>{if(route.request().method()==='POST')saves++;await route.continue();});
+    const link=await page.evaluate(async({id,field})=>{const {app}=await import('/scripts/app.js');const {convertToInput}=await import('/extensions/core/widgetInputs.js');const target=app.graph.getNodeById(id);convertToInput(target,target.widgets.find(widget=>widget.name===field));const source=LiteGraph.createNode('PrimitiveString');app.graph.add(source);source.widgets.find(widget=>widget.name==='value').value='Connected metadata';source.connect(0,target,target.inputs.findIndex(input=>input.name===field));app.canvas.centerOnNode(target);return [String(source.id),0];},{id,field});
+    const save=root.getByRole('button',{name:'Save pair',exact:true});await expect(save).toBeDisabled();await expect(root.getByRole('status').filter({hasText:'Run the node to save connected values.'})).toBeVisible();await save.evaluate(button=>button.dispatchEvent(new Event('click',{bubbles:true})));expect(saves).toBe(0);
+    const input=await page.evaluate(async({id,field})=>{const {app}=await import('/scripts/app.js');return(await app.graphToPrompt()).output[String(id)].inputs[field];},{id,field});expect(input).toEqual(link);
+    await page.evaluate(async({id,field})=>{const {app}=await import('/scripts/app.js');const target=app.graph.getNodeById(id);target.disconnectInput(target.inputs.findIndex(input=>input.name===field));},{id,field});await expect(save).toBeEnabled();await save.click();await expect(root.getByRole('status').filter({hasText:'Pair saved.'})).toBeVisible();expect(saves).toBe(1);
+});

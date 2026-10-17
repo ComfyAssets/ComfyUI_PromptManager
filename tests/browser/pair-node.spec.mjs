@@ -163,3 +163,24 @@ test('actual pair saves coexist with resetting the disposable browser fixture',a
     const reset=await request.post('/__test__/reset');expect(reset.ok()).toBe(true);
     const after=await request.get('/prompt_manager/pairs?text=Actual%20browser%20pair');expect((await after.json()).pairs).toHaveLength(0);
 });
+
+for(const field of ['category','tags'])test(`manual pair save waits for execution when ${field} comes from an upstream link`,async({page})=>{
+    let requests=0;await page.route('**/prompt_manager/pairs',route=>{requests++;return route.fulfill({json:{success:true,pair}});});await draft(page);
+    await page.evaluate(field=>{node.inputs.push({name:field,link:19});node.onConnectionsChange();},field);
+    const save=page.getByRole('button',{name:'Save pair',exact:true});await expect(save).toBeDisabled();await expect(page.getByRole('status').filter({hasText:'Run the node to save connected values.'})).toBeVisible();
+    await save.evaluate(button=>button.dispatchEvent(new Event('click',{bubbles:true})));expect(requests).toBe(0);
+    await page.evaluate(()=>{node.inputs=node.inputs.filter(input=>input.link!==19);node.onConnectionsChange();});await expect(save).toBeEnabled();await save.click();await expect.poll(()=>requests).toBe(1);
+});
+
+for(const field of ['positive','negative','category','tags'])test(`save completion identifies an earlier draft after editing ${field}`,async({page})=>{
+    let release;await page.route('**/prompt_manager/pairs',async route=>{await new Promise(resolve=>release=resolve);await route.fulfill({json:{success:true,pair}});});await draft(page);
+    await page.getByText('Metadata · category / tags',{exact:true}).click();await page.getByRole('button',{name:'Save pair',exact:true}).click();await expect.poll(()=>Boolean(release)).toBe(true);
+    const input=field==='positive'?page.getByRole('textbox',{name:'Positive prompt',exact:true}):field==='negative'?page.getByRole('textbox',{name:'Negative prompt',exact:true}):page.getByRole('combobox',{name:field==='category'?'Category':'Tags',exact:true});
+    await input.fill(`Changed ${field}`);release();await expect(page.getByRole('status').filter({hasText:'Earlier draft saved. Current changes are not saved yet.'})).toBeVisible();await expect(input).toHaveValue(`Changed ${field}`);
+});
+
+test('pair library rows distinguish negative variants and explicitly show empty negatives as text',async({page})=>{
+    const longNegative='Variant one '+ 'x'.repeat(200);
+    await page.route('**/prompt_manager/pairs?**',route=>route.fulfill({json:{success:true,pairs:[{...pair,negative_text:longNegative},{...pair,id:5,negative_text:'Variant two'},{...pair,id:6,negative_text:''},{...pair,id:7,negative_text:'<img src=x onerror=alert(1)>'}]}}));
+    await page.getByRole('button',{name:'Recent',exact:true}).click();const rows=page.locator('.pm-editor-result');await expect(rows).toHaveCount(4);await expect(rows.nth(0)).toContainText('Negative: Variant one');await expect(rows.nth(1)).toContainText('Negative: Variant two');await expect(rows.nth(2)).toContainText('Negative: (empty)');await expect(rows.nth(3)).toContainText('Negative: <img src=x onerror=alert(1)>');await expect(rows.locator('img')).toHaveCount(0);await expect(rows.nth(0)).not.toContainText('x'.repeat(180));await expect(rows.nth(0).locator('span').nth(1)).toHaveAttribute('title',longNegative);
+});

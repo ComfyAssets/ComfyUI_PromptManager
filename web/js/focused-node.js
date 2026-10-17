@@ -125,6 +125,13 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
         const composed = disclosure('preview','Composed text preview');
         const preview = document.createElement('p'); preview.className = 'pm-editor-preview'; preview.dataset.composedPreview = ''; composed.append(preview);
         const footer = document.createElement('p'); footer.className = 'pm-editor-status'; footer.setAttribute('role','status'); footer.textContent = pair ? 'The prompt pair is saved when this node runs, or use Save pair.' : 'Main prompt is saved when this node runs.';
+        const saveConnectionNotice = pair ? document.createElement('p') : null;
+        if (saveConnectionNotice) {
+            saveConnectionNotice.className = 'pm-editor-status'; saveConnectionNotice.setAttribute('role','status');
+            saveConnectionNotice.textContent = 'Run the node to save connected values.'; element.append(saveConnectionNotice);
+        }
+        function hasConnectedPairValues() { return ['text','negative_text','category','tags'].some(isConnected); }
+        function pairPayload() { return {positive_text:value('text'),negative_text:value('negative_text'),category:value('category').trim(),tags:value('tags').split(',').map(tag => tag.trim()).filter(Boolean)}; }
         function isConnected(name) { return thisNode.inputs?.some(input => input.name === name && input.link != null); }
         function value(name) { return String(widgets.get(name)?.value ?? ''); }
         function write(name, text) {
@@ -139,7 +146,7 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
         function render() {
             mainField.hidden = Boolean(isConnected('text')); connected.hidden = !isConnected('text');
             if (negative) { negative.field.hidden = Boolean(isConnected('negative_text')); negative.note.hidden = !isConnected('negative_text'); }
-            if (save) save.disabled = saving || isConnected('text') || isConnected('negative_text');
+            if (save) { save.disabled = saving || hasConnectedPairValues(); saveConnectionNotice.hidden = !hasConnectedPairValues(); }
             controls.forEach((input,name) => {
                 input.value = value(name);
                 if (name !== 'text' && name !== 'negative_text') {
@@ -179,21 +186,22 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
             this.properties[uiKey] = snapshot(); if (!library.element.hidden) library.focus();
         });
         if (save) scope.listen(save,'click',async () => {
-            if (saving || isConnected('text') || isConnected('negative_text')) return;
+            if (saving || hasConnectedPairValues()) return;
             if (!value('text').trim()) {
                 footer.setAttribute('role','alert'); footer.textContent = 'Enter a positive prompt before saving the pair.';
                 main.focus(); return;
             }
+            const savedDraft = JSON.stringify(pairPayload());
             saving = true; render(); footer.setAttribute('role','status'); footer.textContent = 'Saving pair…';
             try {
                 const response = await fetch(api.fileURL('/prompt_manager/pairs'), {
                     method:'POST',headers:{'Content-Type':'application/json'},signal:scope.signal,
-                    body:JSON.stringify({positive_text:value('text'),negative_text:value('negative_text'),category:value('category').trim(),tags:value('tags').split(',').map(tag => tag.trim()).filter(Boolean)}),
+                    body:savedDraft,
                 });
                 const data = await response.json();
                 if (scope.signal.aborted) return;
                 if (!response.ok || !data.success) throw new Error(data.error || `HTTP ${response.status}`);
-                footer.setAttribute('role','status'); footer.textContent = 'Pair saved.';
+                footer.setAttribute('role','status'); footer.textContent = !hasConnectedPairValues() && JSON.stringify(pairPayload()) === savedDraft ? 'Pair saved.' : 'Earlier draft saved. Current changes are not saved yet.';
             } catch (error) {
                 if (!scope.signal.aborted) { footer.setAttribute('role','alert'); footer.textContent = `Could not save pair: ${error.message}`; }
             } finally {

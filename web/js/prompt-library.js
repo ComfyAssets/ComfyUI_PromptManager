@@ -76,7 +76,14 @@ export function createPromptLibrary({scope, api, settings, parseQuery, onUse, is
                 const text = document.createElement('span'); text.textContent = pairs ? item.title || item.positive_text : item.text;
                 const metadata = document.createElement('span'); metadata.className = 'pm-editor-result-meta';
                 metadata.textContent = [item.category, Array.isArray(item.tags) ? item.tags.join(', ') : item.tags, item.rating ? `${item.rating}/5` : ''].filter(Boolean).join(' · ');
-                button.append(text, metadata);
+                button.append(text);
+                if (pairs) {
+                    const negative = document.createElement('span'); negative.className = 'pm-editor-result-meta';
+                    const summary = item.negative_text || '(empty)';
+                    negative.textContent = `Negative: ${summary.length > 160 ? `${summary.slice(0,160)}…` : summary}`;
+                    negative.title = summary; button.append(negative);
+                }
+                button.append(metadata);
                 rows.listen(button, 'click', () => {
                     selected = item; previewText.textContent = pairs ? `Positive: ${item.positive_text}` : item.text; if (pairs) previewNegative.textContent = `Negative: ${item.negative_text || '(empty)'}`; preview.hidden = false;
                     results.querySelectorAll('button').forEach(row => row.setAttribute('aria-pressed', String(row === button)));
