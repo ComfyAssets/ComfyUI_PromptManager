@@ -125,7 +125,7 @@ class ExecutionHistoryOperations:
                 "(run_id,session_id,queue_item_id,job_id,storage_epoch,record_version,"
                 "observed_dequeue_at,outcome,diagnostics_omitted) "
                 "VALUES(?,?,?,?,?,1,?,'observed',0) "
-                "ON CONFLICT DO NOTHING",
+                "ON CONFLICT(session_id,queue_item_id) DO NOTHING",
                 (
                     command.run_id,
                     command.session_id,

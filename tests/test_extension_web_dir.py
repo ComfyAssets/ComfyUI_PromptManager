@@ -14,7 +14,7 @@ ROOT = os.path.dirname(TESTS_DIR)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, TESTS_DIR)
 
-from test_init_package import close_every_database, load_package  # noqa: E402
+from test_init_package import load_package  # noqa: E402
 
 
 class TestExtensionWebDir(unittest.TestCase):
@@ -23,20 +23,14 @@ class TestExtensionWebDir(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.tmp.cleanup)
         output_dir = os.path.join(cls.tmp.name, "output")
         os.makedirs(output_dir)
-        cls.package, _ = load_package(
-            cls.package_name, os.path.join(cls.tmp.name, "prompts.db"), output_dir
+        cls.package, _ = cls.enterClassContext(
+            load_package(
+                cls.package_name, os.path.join(cls.tmp.name, "prompts.db"), output_dir
+            )
         )
-
-    @classmethod
-    def tearDownClass(cls):
-        monitor = getattr(cls.package, "_global_image_monitor", None)
-        if monitor is not None:
-            monitor.stop_monitoring()
-        sys.modules.pop(cls.package_name, None)
-        close_every_database()  # the package's database must not hold the temp dir open
-        cls.tmp.cleanup()
 
     def test_web_directory_is_the_canvas_extension_folder(self):
         self.assertEqual(self.package.WEB_DIRECTORY, "web/comfy")

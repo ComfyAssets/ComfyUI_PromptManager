@@ -120,13 +120,11 @@ class HistoryHooksTests(unittest.TestCase):
     def test_package_history_initializes_when_monitor_and_usage_setup_fail(self):
         try:
             from tests.test_init_package import (
-                close_every_database,
                 fake_server_module,
                 load_package,
             )
         except ImportError:
             from test_init_package import (
-                close_every_database,
                 fake_server_module,
                 load_package,
             )
@@ -148,19 +146,20 @@ class HistoryHooksTests(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()),
             self.assertLogs("prompt_manager.init", level="ERROR"),
         ):
-            package, _ = load_package(name, self.db.model.db_path, output, server)
-        self.addCleanup(sys.modules.pop, name, None)
-        self.addCleanup(close_every_database)
-        registration = getattr(package, "_history_registration", None)
-        self.assertIsNotNone(registration, "history setup depended on another hook")
-        self.registrations.append(registration)
-        self.addCleanup(registration.dispose)
-        self.assertIsNone(package._global_db)
-        self.wait_for(lambda: registration.writer.status().accepting)
-        self.dequeue(0)
-        self.queue.task_done(0, {}, status())
-        self.drain(registration)
-        self.assertEqual(self.rows()[0]["outcome"], "succeeded")
+            with load_package(name, self.db.model.db_path, output, server) as (
+                package,
+                _,
+            ):
+                registration = getattr(package, "_history_registration", None)
+                self.assertIsNotNone(
+                    registration, "history setup depended on another hook"
+                )
+                self.assertIsNone(package._global_db)
+                self.wait_for(lambda: registration.writer.status().accepting)
+                self.dequeue(0)
+                self.queue.task_done(0, {}, status())
+                self.drain(registration)
+                self.assertEqual(self.rows()[0]["outcome"], "succeeded")
 
     def test_distinct_actual_attempts_for_reused_job_and_cached_rerun(self):
         registration = self.register()

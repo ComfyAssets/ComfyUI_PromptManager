@@ -155,6 +155,69 @@ class HistoryRestoreTests(unittest.TestCase):
         self.assertEqual(db.get_execution_epoch(), epoch)
         self.assertEqual(notices, [])
 
+    def test_extra_unique_constraints_reject_restore_without_touching_live_or_backup(
+        self,
+    ):
+        from database.execution_history import subscribe_history_restore
+
+        db = self.database()
+        start = self.start(db)
+        db.write_execution_start(start)
+        row = db.get_execution_run(start.run_id)
+        with db.model.get_connection() as conn:
+            conn.execute("INSERT INTO prompts(text) VALUES('live library')")
+        notices = []
+        self.addCleanup(
+            subscribe_history_restore(self.path, lambda: notices.append(True))
+        )
+        for table_constraint in (False, True):
+            with self.subTest(table_constraint=table_constraint):
+                source = str(
+                    Path(self.temp.name) / f"unique-backup-{table_constraint}.db"
+                )
+                self.assertTrue(db.model.backup_database(source))
+                with closing(sqlite3.connect(source)) as conn, conn:
+                    if table_constraint:
+                        sql = conn.execute(
+                            "SELECT sql FROM sqlite_master "
+                            "WHERE name='execution_runs'"
+                        ).fetchone()[0]
+                        conn.execute("ALTER TABLE execution_runs RENAME TO old_runs")
+                        conn.execute(sql[:-1] + ", UNIQUE(job_id))")
+                        conn.execute(
+                            "INSERT INTO execution_runs SELECT * FROM old_runs"
+                        )
+                        conn.execute("DROP TABLE old_runs")
+                        conn.execute(
+                            "CREATE UNIQUE INDEX idx_execution_runs_identity "
+                            "ON execution_runs(session_id, queue_item_id)"
+                        )
+                        conn.execute(
+                            "CREATE INDEX idx_execution_runs_observed "
+                            "ON execution_runs(observed_dequeue_at, run_id)"
+                        )
+                    else:
+                        conn.execute(
+                            "CREATE UNIQUE INDEX unexpected_job_uniqueness "
+                            "ON execution_runs(job_id)"
+                        )
+                original = Path(source).read_bytes()
+                with self.assertRaisesRegex(ValueError, "uniqu"):
+                    db.model.restore_from_file(source)
+                self.assertEqual(db.get_execution_epoch(), start.storage_epoch)
+                self.assertEqual(db.get_execution_run(start.run_id), row)
+                self.assertEqual(self.count(db), 1)
+                self.assertEqual(
+                    db.model.get_connection()
+                    .execute("SELECT text FROM prompts")
+                    .fetchone()[0],
+                    "live library",
+                )
+                self.assertEqual(Path(source).read_bytes(), original)
+                self.assertEqual(notices, [])
+        self.assertTrue(db.write_execution_start(self.start(db, item=1)))
+        self.assertEqual(self.count(db), 2)
+
     def test_observer_failure_does_not_change_completed_restore(self):
         from database.execution_history import subscribe_history_restore
 

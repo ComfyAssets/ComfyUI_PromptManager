@@ -133,6 +133,23 @@ def history_schema_error(
             return f"{table} has invalid execution history checks"
         if conn.execute(f"PRAGMA foreign_key_list({table})").fetchone():
             return f"{table} has unexpected execution history foreign keys"
+        for index in conn.execute(f"PRAGMA index_list({table})"):
+            if not index[2]:
+                continue
+            if table == "execution_runs" and index[1] == "idx_execution_runs_identity":
+                continue
+            name = index[1].replace('"', '""')
+            keys = tuple(
+                row for row in conn.execute(f'PRAGMA index_xinfo("{name}")') if row[5]
+            )
+            primary = tuple(column[0] for column in expected if column[3])
+            if (
+                index[3] != "pk"
+                or index[4]
+                or tuple(key[2] for key in keys) != primary
+                or any(key[3] or key[4] != "BINARY" for key in keys)
+            ):
+                return f"{table} has unexpected execution history uniqueness"
         predicate = " AND ".join(f"({check})" for check in checks)
         if conn.execute(
             f"SELECT 1 FROM {table} WHERE NOT ({predicate}) LIMIT 1"

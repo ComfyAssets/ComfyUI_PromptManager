@@ -247,9 +247,9 @@ files first because snapshots use `git ls-files`. Never reset the implementation
 checkout or point this harness at a live ComfyUI checkout.
 
 The package-qualified config import also corrects #211: the configured database
-path is honored when PromptManager runs as a ComfyUI custom node. Existing files
-are not moved automatically; deployments that previously used the fallback path
-should set the intended database path before restarting.
+path is honored when PromptManager runs as a ComfyUI custom node. Follow the
+[database path compatibility and safe backup sequence](README.md#database-path-compatibility-211)
+before restarting an existing deployment.
 
 The ledger records only new dequeued jobs and observed outcomes. Existing
 counters, prompts, pairs and image links are preserved, with no reconstructed old

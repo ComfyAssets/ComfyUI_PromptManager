@@ -531,7 +531,7 @@ Keep your database optimized with built-in maintenance tools:
 
 ### Database Location
 
-By default, the database is saved as `example_prompts.db` in the node directory. This file contains all your prompts and linked images and can be backed up or shared.
+By default, the database is saved as `prompts.db` in the extension directory. It contains your prompt library and image links. See the [database path compatibility note](#database-path-compatibility-211) before upgrading a deployment with a custom path.
 
 ### Searching Prompts
 
@@ -773,6 +773,32 @@ Relative paths are resolved against the extension directory. Absolute paths are 
 }
 ```
 
+### Database Path Compatibility (#211)
+
+PromptManager now honors the `database.default_path` setting in `config.json`
+when loaded as a ComfyUI custom node. Relative paths resolve against the extension
+directory, not ComfyUI's working directory; absolute paths are used as-is. Earlier
+versions could ignore this setting and use `<extension>/prompts.db` instead.
+Honoring a different configured path can therefore show an empty or different
+library. PromptManager does not automatically move or merge database files.
+
+Before upgrading or changing this setting:
+
+1. Identify the database your current installation actually uses and confirm its
+   library contents. Check both the configured path and the prior fallback
+   `<extension>/prompts.db`; keep track of which existing file you intend to use.
+2. Preserve a consistent backup of the active database with the dashboard's
+   Backup/Restore backup action or SQLite's online backup API. Do not copy only
+   the main file of a live SQLite database: committed data may still be in its
+   `-wal` file. For a filesystem copy, stop ComfyUI cleanly first and preserve any
+   remaining `-wal` file together with the main database.
+3. Set `database.default_path` to the existing intended database file. An absolute
+   path makes the selection explicit; do not move or overwrite either database
+   while choosing the path.
+4. Restart ComfyUI, then verify that the expected library appears and the active
+   database path resolves to the file you selected. Keep the backup until both
+   checks succeed.
+
 ### Gallery & Monitoring Settings
 
 Configure the automatic image detection and gallery system:
@@ -844,7 +870,7 @@ print(f"Average rating: {info['average_rating']}")
 # Create backup
 db.model.backup_database("backup_prompts.db")
 
-# The database file can be copied directly for backup
+# The online backup includes committed data still in the WAL.
 ```
 
 ## Development

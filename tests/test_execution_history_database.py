@@ -172,6 +172,84 @@ class HistoryDatabaseTests(unittest.TestCase):
         self.assertEqual(self.count(db), 2)
         self.assertEqual(db.get_execution_run(command.run_id)["outcome"], "observed")
 
+    def test_unrelated_unique_conflicts_are_not_acknowledged_as_recorded(self):
+        db = self.database()
+        first = self.start(db)
+        db.write_execution_start(first)
+        with db.model.get_connection() as conn:
+            conn.execute("CREATE UNIQUE INDEX unexpected_job ON execution_runs(job_id)")
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.write_execution_start(self.start(db, item=1))
+        self.assertEqual(self.count(db), 1)
+        self.assertEqual(db.get_execution_run(first.run_id)["observed_dequeue_at"], 100)
+
+    def test_primary_key_collision_for_another_attempt_is_not_a_replay(self):
+        db = self.database()
+        first = self.start(db)
+        db.write_execution_start(first)
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.write_execution_start(
+                replace(self.start(db, item=1), run_id=first.run_id)
+            )
+        self.assertEqual(self.count(db), 1)
+
+    def test_schema_rejects_extra_uniqueness_and_allows_nonunique_indexes(self):
+        from database.execution_history_schema import history_schema_error
+
+        for table, constraint in (
+            ("execution_runs", "job_id"),
+            ("execution_runs", "session_id, queue_item_id"),
+            ("execution_history_metadata", "storage_epoch"),
+        ):
+            for table_constraint in (False, True):
+                with self.subTest(
+                    table=table,
+                    table_constraint=table_constraint,
+                    constraint=constraint,
+                ):
+                    path = str(
+                        Path(self.temp.name) / f"unique-{len(self.databases)}.db"
+                    )
+                    db = self.database(path)
+                    conn = db.model.get_connection()
+                    with conn:
+                        if table_constraint:
+                            epoch = db.get_execution_epoch()
+                            sql = conn.execute(
+                                "SELECT sql FROM sqlite_master WHERE name=?", (table,)
+                            ).fetchone()[0]
+                            conn.execute(f"DROP TABLE {table}")
+                            conn.execute(sql[:-1] + f", UNIQUE({constraint}))")
+                            if table == "execution_runs":
+                                conn.execute(
+                                    "CREATE UNIQUE INDEX idx_execution_runs_identity "
+                                    "ON execution_runs(session_id, queue_item_id)"
+                                )
+                                conn.execute(
+                                    "CREATE INDEX idx_execution_runs_observed "
+                                    "ON execution_runs(observed_dequeue_at, run_id)"
+                                )
+                            else:
+                                conn.execute(
+                                    "INSERT INTO execution_history_metadata "
+                                    "VALUES(1,1,?)",
+                                    (epoch,),
+                                )
+                        else:
+                            conn.execute(
+                                f"CREATE UNIQUE INDEX unexpected_unique "
+                                f"ON {table}({constraint})"
+                            )
+                    self.assertIsNotNone(history_schema_error(conn))
+        db = self.database()
+        with db.model.get_connection() as conn:
+            conn.execute('CREATE INDEX "extra job lookup" ON execution_runs(job_id)')
+            conn.execute(
+                "CREATE INDEX extra_epoch_lookup "
+                "ON execution_history_metadata(storage_epoch)"
+            )
+        self.assertIsNone(history_schema_error(conn))
+
     def test_absent_finish_never_fabricates_a_start(self):
         db = self.database()
         self.assertFalse(db.write_execution_finish(self.finish(self.start(db))))
