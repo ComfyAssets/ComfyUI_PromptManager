@@ -128,3 +128,25 @@ gh api repos/ComfyAssets/ComfyUI_PromptManager/branches/main/protection/required
 
 Update the manifest whenever required job names change. Keep the frontend check
 free of path filters so a required check is never silently skipped.
+
+## Unified workspace shell
+
+The opt-in `/prompt_manager/workspace` page uses the shipped toolkit and real
+`/prompt_manager/stats` API. Existing admin, gallery and metadata URLs remain
+available while replacement workspaces are developed. Browser smoke tests in
+`tests/browser/workspace.spec.mjs` cover navigation/history, keyboard skip links,
+mobile layout, theme persistence/fallback, loading/retry and stale responses.
+They run automatically in the existing four-browser-project workflow and frontend
+coverage job. `tests/comfyui/workspace.spec.mjs` verifies the page against the
+managed host with both renderer startup configurations.
+
+Run the focused page checks with:
+
+```sh
+npm run --prefix tools/vendor test:workflows -- workspace.spec.mjs
+node --test tests/js/workspace-*.test.js
+```
+
+Use the disposable fixture and managed-host prerequisites above. A maintainer
+live check needs a ComfyUI restart after adding the Python route, then opening
+`/prompt_manager/workspace`; the mockup preview server is a separate design tool.

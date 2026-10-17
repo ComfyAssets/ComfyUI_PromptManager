@@ -1,6 +1,7 @@
 # Prompt Manager application redesign concept
 
-Status: interactive proposal for maintainer review, 2026-10-17.
+Status: visual concept approved by the maintainer, 2026-10-17. Production
+implementation is pending; see the [development plan](../../application-redesign.md).
 
 ## Review the mockup
 
