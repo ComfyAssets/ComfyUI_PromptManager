@@ -183,3 +183,17 @@ The compatibility runner reserves loopback ports 8193–8195; `PM_COMPAT_PORT`
 selects another consecutive unprivileged range. Never run automated tests against
 the maintainer's running ComfyUI. This JavaScript host extension needs a full
 browser refresh after deployment; its first slice adds no gallery send controls.
+
+### Workspace prompt inspection and sending
+
+`tests/test_api_prompt_inspector.py` covers rooted physical-file identity,
+execution/graph/parameter evidence, saved associations, ambiguity, empty negatives,
+read-only behavior, bounded PNG/video metadata and corrupt inputs. Run it with
+`python -m unittest discover -s tests -p test_api_prompt_inspector.py` in a disposable
+checkout. `tests/js/prompt-inspector.test.js` and `prompt-sender.test.js` cover
+request races, explicit destination selection, preview tickets and uncertain
+acknowledgements. Browser workflows exercise the same controls in Images and
+Viewer, including nested modal focus, mobile layouts and per-role sending.
+`tests/comfyui/prompt-sender.spec.mjs` sends through the actual workspace UI into
+real Classic and Nodes 2.0 widgets and verifies workflow serialization without
+loading a workflow or queueing generation.

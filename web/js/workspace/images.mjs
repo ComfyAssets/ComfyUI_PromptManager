@@ -1,6 +1,8 @@
 import { createScope, createButton, createField, createSelect } from '../shared/toolkit/core.js';
 import { createImageStream, imageKey } from './images-state.mjs';
 import { layoutImages, visibleImages } from './image-layout.mjs';
+import { mountPromptInspector } from './prompt-inspector.mjs';
+import { createPromptSender } from './prompt-sender.mjs';
 
 function el(tag, text, className) {
     const element = document.createElement(tag);
@@ -19,6 +21,9 @@ export function mountImages(main, api, parentScope) {
     const scope = createScope();
     parentScope.cleanup(() => scope.dispose());
     const { resolveUrl } = window.ApiClient;
+    const sender = createPromptSender({scope});
+    let detailInspector, previewInspector;
+    scope.cleanup(() => { detailInspector?.dispose(); previewInspector?.dispose(); });
     const visit = lastVisit;
     let layout = visit?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer, viewer;
     let state, geometry = { positions: [], height: 0, maxHeight: 0 }, optionsRequest;
@@ -107,11 +112,17 @@ export function mountImages(main, api, parentScope) {
     const close = createButton('Close preview');
     dialogHeader.append(previewTitle, close);
     const stage = el('div', undefined, 'image-preview-stage');
-    dialog.append(dialogHeader, stage);
+    const previewBody = el('div', undefined, 'image-preview-body');
+    const previewDetails = el('aside', undefined, 'image-preview-details');
+    previewDetails.setAttribute('aria-label', 'Preview prompt details');
+    previewBody.append(stage, previewDetails);
+    dialog.append(dialogHeader, previewBody);
     main.append(dialog);
     scope.listen(close, 'click', () => dialog.close());
     scope.listen(dialog, 'close', () => { destroyPreview(); scheduleLoad(); });
     function destroyPreview() {
+        previewInspector?.dispose(); previewInspector = null;
+        previewDetails.replaceChildren();
         viewer?.destroy(); viewer = null;
         for (const video of stage.querySelectorAll('video')) releaseVideo(video);
         stage.replaceChildren();
@@ -130,6 +141,7 @@ export function mountImages(main, api, parentScope) {
         video.pause(); video.removeAttribute('src'); video.load();
     }
     function inspect(image) {
+        detailInspector?.dispose();
         selection = imageKey(image);
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
         const thumbnail = mediaElement(image);
@@ -145,8 +157,10 @@ export function mountImages(main, api, parentScope) {
         preview.dataset.previewKey = selection;
         const download = el('a', 'Download original', 'workspace-link');
         download.href = resolveUrl(image.url); download.download = image.filename;
-        const legacy = el('p', 'Open Current gallery for prompt details and tagging.', 'muted');
-        details.replaceChildren(el('p', 'SELECTED IMAGE', 'eyebrow'), el('h2', image.filename), thumbnail, metadata, preview, download, legacy);
+        const prompts = el('div');
+        const legacy = el('p', 'Open Current gallery for tagging.', 'muted');
+        details.replaceChildren(el('p', 'SELECTED IMAGE', 'eyebrow'), el('h2', image.filename), thumbnail, preview, download, prompts, metadata, legacy);
+        detailInspector = mountPromptInspector(prompts, {api, image, sender, parentScope:scope});
         for (const [key, card] of rendered) {
             card.classList.toggle('selected', key === selection);
             card.querySelector('.image-open').setAttribute('aria-pressed', String(key === selection));
@@ -161,6 +175,7 @@ export function mountImages(main, api, parentScope) {
         if (selection !== imageKey(image)) inspect(image);
         destroyPreview();
         previewTitle.textContent = image.filename;
+        previewInspector = mountPromptInspector(previewDetails, {api, image, sender, parentScope:scope});
         if (!dialog.open) dialog.showModal();
         if (image.is_video) {
             const video = el('video'); video.controls = true; video.src = resolveUrl(image.url); video.preload = 'metadata';
@@ -315,6 +330,7 @@ export function mountImages(main, api, parentScope) {
         observer.observe(continuation);
     }
     function reset() {
+        detailInspector?.dispose(); detailInspector = null;
         selection = null;
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
         details.replaceChildren(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));

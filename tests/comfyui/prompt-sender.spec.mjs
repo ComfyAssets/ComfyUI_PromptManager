@@ -1,0 +1,68 @@
+import {execFileSync} from 'node:child_process';
+import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import {installHostHooks} from './host-fixture.mjs';
+
+installHostHooks(test,['PromptManagerPair']);
+
+test('native image inspector previews and sends a pair into real visible widgets without loading or queueing',async({page,context,request},testInfo)=>{
+    const positive=`Inspector host positive ${testInfo.project.name}`;const negative='host negative, watermark';
+    const image=execFileSync(process.env.PM_TEST_PYTHON||'python',['-c',[
+        'import io,sys',
+        'from PIL import Image',
+        'from PIL.PngImagePlugin import PngInfo',
+        'info=PngInfo()',
+        'info.add_text("parameters",sys.argv[1]+"\\nNegative prompt: "+sys.argv[2]+"\\nSteps: 20, Sampler: Euler")',
+        'buffer=io.BytesIO()',
+        'Image.new("RGB",(64,64),(30,80,140)).save(buffer,format="PNG",pnginfo=info)',
+        'sys.stdout.buffer.write(buffer.getvalue())',
+    ].join('\n'),positive,negative]);
+    const filename=`sender-${testInfo.project.name}.png`;
+    const upload=await request.post('/upload/image',{multipart:{image:{name:filename,mimeType:'image/png',buffer:image},type:'output',subfolder:'prompt-sender',overwrite:'true'}});
+    expect(upload.ok()).toBe(true);
+    const id=await page.evaluate(async()=>{
+        const {app}=await import('/scripts/app.js');const node=LiteGraph.createNode('PromptManagerPair');app.graph.add(node);
+        node.setSize([700,1000]);app.canvas.ds.scale=.8;app.canvas.centerOnNode(node);
+        return node.id;
+    });
+    const nodeRoot=page.locator('.pm-pair');
+    await nodeRoot.getByRole('textbox',{name:'Positive prompt',exact:true}).fill('Before positive');
+    await nodeRoot.getByRole('textbox',{name:'Negative prompt',exact:true}).fill('Before negative');
+    await nodeRoot.getByText('Composition · prepend / append',{exact:true}).click();
+    await nodeRoot.getByRole('textbox',{name:'Prepend',exact:true}).fill('LoRA trigger');
+    await nodeRoot.getByRole('textbox',{name:'Append',exact:true}).fill('fine detail');
+    await page.evaluate(async()=>{
+        const {app}=await import('/scripts/app.js');window.senderEffects={queue:0,load:0};
+        for(const [method,key]of [['queuePrompt','queue'],['loadGraphData','load']]){
+            const original=app[method];app[method]=function(...args){window.senderEffects[key]++;return original.apply(this,args);};
+        }
+    });
+    const workspace=await context.newPage();const errors=[];workspace.on('pageerror',error=>errors.push(error.message));
+    try {
+        await workspace.goto('/prompt_manager/workspace#/images');
+        await workspace.getByRole('button',{name:'Refresh',exact:true}).click();
+        const card=workspace.locator('article[data-image-key]').filter({has:workspace.getByRole('button',{name:`Open ${filename}`,exact:true})});
+        await card.getByRole('button',{name:`Open ${filename}`,exact:true}).click();
+        const inspector=workspace.getByRole('region',{name:'Image details',exact:true});
+        await expect(inspector.getByRole('region',{name:'Positive prompt',exact:true})).toContainText(positive);
+        await inspector.getByRole('button',{name:'Send prompt pair',exact:true}).click();
+        const sender=workspace.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
+        const hosts=sender.getByRole('combobox',{name:'ComfyUI window',exact:true});
+        await expect(hosts.locator('option')).toHaveCount(2);
+        await hosts.selectOption({index:1});
+        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({index:1});
+        await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
+        for(const text of ['Before positive','Before negative',positive,negative,`LoRA trigger ${positive} fine detail`])await expect(sender).toContainText(text);
+        await expect(nodeRoot.getByRole('textbox',{name:'Positive prompt',exact:true})).toHaveValue('Before positive');
+        await sender.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();
+        await expect(sender).toContainText('Sent to ComfyUI.');
+        await expect(nodeRoot.getByRole('textbox',{name:'Positive prompt',exact:true})).toHaveValue(positive);
+        await expect(nodeRoot.getByRole('textbox',{name:'Negative prompt',exact:true})).toHaveValue(negative);
+        const state=await page.evaluate(async id=>{
+            const {app}=await import('/scripts/app.js');const node=app.graph.getNodeById(id);const serialized=node.serialize();
+            return{inputs:(await app.graphToPrompt()).output[String(id)].inputs,
+                serialized:Object.fromEntries(node.widgets.map((widget,index)=>[widget.name,serialized.widgets_values[index]])),effects:window.senderEffects};
+        },id);
+        for(const name of ['inputs','serialized'])expect(state[name]).toMatchObject({text:positive,negative_text:negative,prepend_text:'LoRA trigger',append_text:'fine detail'});
+        expect(state.effects).toEqual({queue:0,load:0});expect(errors).toEqual([]);
+    } finally {await workspace.close();}
+});

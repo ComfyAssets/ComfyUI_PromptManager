@@ -22,8 +22,18 @@ from .prompts import safe_error_message as _safe_error
 
 try:
     from ...utils.parallel import map_parallel
+    from ...utils.prompt_inspector import (
+        MetadataReadError,
+        inspect_prompt_roles,
+        read_inspection_metadata,
+    )
 except ImportError:
     from utils.parallel import map_parallel
+    from utils.prompt_inspector import (
+        MetadataReadError,
+        inspect_prompt_roles,
+        read_inspection_metadata,
+    )
 
 # Only these file types are ever served by the image routes, regardless of
 # what sits inside an allowed directory (defence in depth for the gallery).
@@ -447,6 +457,10 @@ class ImageRoutesMixin:
         @routes.get("/prompt_manager/images/prompt/{image_path:.*}")
         async def get_image_prompt_route(request):
             return await self.get_image_prompt(request)
+
+        @routes.get("/prompt_manager/images/inspect/{image_path:.*}")
+        async def inspect_image_route(request):
+            return await self.inspect_image(request)
 
         @routes.delete("/prompt_manager/images/{image_id}")
         async def delete_image_route(request):
@@ -1626,6 +1640,65 @@ class ImageRoutesMixin:
             self.logger.error(f"Link image error: {e}")
             return web.json_response(
                 {"success": False, "error": _safe_error(e)}, status=500
+            )
+
+    async def inspect_image(self, request):
+        """Read prompt evidence for one explicitly rooted physical media file."""
+        roots = list(self._get_all_output_dirs())
+        try:
+            index = _workspace_root(request.query, roots)
+            if index is None:
+                raise ValueError("Gallery root is required")
+        except ValueError as error:
+            return bad_request(str(error))
+        relative = request.match_info.get("image_path", "")
+        if (
+            _has_traversal(relative)
+            or "\0" in relative
+            or re.match(r"^[a-zA-Z]:", relative)
+        ):
+            return _forbidden()
+        path = Path(roots[index]) / relative
+        denied = _media_access_error(path, [roots[index]])
+        if denied is not None:
+            return denied
+        if not path.is_file():
+            return web.json_response(
+                {"success": False, "error": "Image file not found"}, status=404
+            )
+        try:
+
+            def inspect() -> dict:
+                try:
+                    metadata = read_inspection_metadata(path)
+                except MetadataReadError:
+                    return {
+                        role: {"status": "unresolved", "text": None, "source": None}
+                        for role in ("positive", "negative")
+                    }
+                saved = (
+                    self.db.get_image_prompt_info(str(path), False)
+                    if not metadata
+                    else None
+                )
+                return inspect_prompt_roles(metadata, saved)
+
+            prompts = await self._run_in_executor(inspect)
+            return web.json_response(
+                {
+                    "success": True,
+                    "image": {
+                        "root_index": index,
+                        "path": Path(relative).as_posix(),
+                        "filename": path.name,
+                    },
+                    "prompts": prompts,
+                }
+            )
+        except Exception:
+            self.logger.exception("Prompt inspection failed")
+            return web.json_response(
+                {"success": False, "error": "Prompt inspection failed"}, status=500
             )
 
     async def get_image_prompt(self, request):

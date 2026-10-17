@@ -78,7 +78,11 @@ def create_app(root: Path) -> web.Application:
     api = PromptManagerAPI()
     api.add_routes(routes)
 
-    def seed(extra_images: int = 0, include_video: bool = False) -> None:
+    def seed(
+        extra_images: int = 0,
+        include_video: bool = False,
+        prompt_inspector: bool = False,
+    ) -> None:
         with api.db.model.get_connection() as conn:
             for table in (
                 "image_prompt_pairs",
@@ -107,6 +111,25 @@ def create_app(root: Path) -> web.Application:
             )
             with Image.new("RGB", (64, 64), (index * 255, 64, 128)) as image:
                 image.save(image_path, pnginfo=info)
+            if prompt_inspector:
+                graph = {
+                    "1": {"class_type": "CLIPTextEncode", "inputs": {"text": text}},
+                    "2": {
+                        "class_type": "CLIPTextEncode",
+                        "inputs": {
+                            "text": "blurry, watermark" if index == 0 else "low quality"
+                        },
+                    },
+                    "3": {
+                        "class_type": "KSampler",
+                        "inputs": {"positive": ["1", 0], "negative": ["2", 0]},
+                    },
+                    "4": {"class_type": "SaveImage", "inputs": {"images": ["3", 0]}},
+                }
+                info = PngInfo()
+                info.add_text("prompt", json.dumps(graph))
+                with Image.new("RGB", (64, 64), (index * 255, 64, 128)) as image:
+                    image.save(image_path, pnginfo=info)
             stamp = time.time() - index * 10
             os.utime(image_path, (stamp, stamp))
             pid = api.db.save_prompt(
@@ -120,6 +143,21 @@ def create_app(root: Path) -> web.Application:
                     extra.parent.mkdir(exist_ok=True)
                     shutil.copyfile(image_path, extra)
                     api.db.link_image_to_prompt(pid, str(extra))
+        if prompt_inspector:
+            for name, parameters in (
+                (
+                    "empty-negative.png",
+                    "Explicit empty negative\nNegative prompt: \n"
+                    "Steps: 20, Sampler: Euler",
+                ),
+                ("uncertain.png", None),
+            ):
+                info = PngInfo()
+                if parameters:
+                    info.add_text("parameters", parameters)
+                with Image.new("RGB", (64, 64), (100, 80, 120)) as image:
+                    image.save(root / "output" / name, pnginfo=info)
+                os.utime(root / "output" / name, (time.time() - 100, time.time() - 100))
         api._generate_gallery_thumbnails_sync(api._get_all_output_dirs(), (150, 150))
         if include_video:
             # Seed after thumbnail generation to exercise a real unthumbnailed video.
@@ -135,14 +173,16 @@ def create_app(root: Path) -> web.Application:
         data = await request.json() if request.can_read_body else {}
         extra = data.get("extra_images", 0)
         include_video = data.get("include_video", False)
+        prompt_inspector = data.get("prompt_inspector", False)
         if (
             isinstance(extra, bool)
             or not isinstance(extra, int)
             or not 0 <= extra <= 200
             or not isinstance(include_video, bool)
+            or not isinstance(prompt_inspector, bool)
         ):
             raise web.HTTPBadRequest()
-        await api._run_in_executor(seed, extra, include_video)
+        await api._run_in_executor(seed, extra, include_video, prompt_inspector)
         return web.json_response({"success": True})
 
     @routes.post("/__test__/add-nested-image")

@@ -190,5 +190,17 @@
     "branches": 93,
     "functions": 98,
     "statements": 98
+  },
+  "workspace/prompt-inspector.mjs": {
+    "lines": 97,
+    "branches": 92,
+    "functions": 98,
+    "statements": 97
+  },
+  "workspace/prompt-sender.mjs": {
+    "lines": 98,
+    "branches": 89,
+    "functions": 98,
+    "statements": 98
   }
 }
