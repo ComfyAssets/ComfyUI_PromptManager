@@ -19,7 +19,6 @@ Text from known pure string nodes is resolved at queue time too. Anything else
 (PromptSearchList batches, unknown nodes) is counted by the node as it executes.
 """
 
-import functools
 import threading
 import time
 import uuid
@@ -32,6 +31,7 @@ try:
     from .prompt_graph import intrinsic_pair_nodes, resolve_text, run_prompt_components
     from .prompt_pair_resolver import resolve_text_input
     from .pair_execution import clear_pair_execution
+    from .queue_observers import subscribe_dequeue
 except ImportError:
     from utils.hashing import generate_prompt_hash
     from utils.logging_config import get_logger
@@ -42,6 +42,7 @@ except ImportError:
     )
     from utils.prompt_pair_resolver import resolve_text_input
     from utils.pair_execution import clear_pair_execution
+    from utils.queue_observers import subscribe_dequeue
 
 logger = get_logger("prompt_manager.usage_tracking")
 
@@ -294,21 +295,20 @@ def _wrap_queue_get(prompt_queue: Any, on_dequeued: Callable[[str], None]) -> bo
     original = getattr(prompt_queue, "get", None)
     if not callable(original):
         return False
-    if getattr(original, _WRAPPED_MARKER, False):
+    if getattr(prompt_queue, _WRAPPED_MARKER, False) or getattr(
+        original, _WRAPPED_MARKER, False
+    ):
         return False
 
-    @functools.wraps(original)
-    def get(*args, **kwargs):
-        result = original(*args, **kwargs)
-        if result is not None:
-            try:
-                on_dequeued(str(result[0][1]))
-            except Exception as e:
-                logger.warning(f"Dequeue hook failed: {e}")
-        return result
+    def report(result: object) -> None:
+        try:
+            on_dequeued(str(result[0][1]))
+        except Exception as e:
+            logger.warning(f"Dequeue hook failed: {e}")
 
-    setattr(get, _WRAPPED_MARKER, True)
-    prompt_queue.get = get
+    subscribe_dequeue(prompt_queue, "usage_tracking", report)
+    setattr(prompt_queue.get, _WRAPPED_MARKER, True)
+    setattr(prompt_queue, _WRAPPED_MARKER, True)
     return True
 
 

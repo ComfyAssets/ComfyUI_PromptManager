@@ -467,6 +467,20 @@ class HistoryWriterTests(unittest.TestCase):
         self.assertFalse(writer.status().alive)
         self.assertFalse(writer.submit(self.start_command()))
 
+    def test_external_capture_gaps_are_nonblocking_and_saturate_all_rejections(self):
+        writer = HistoryWriter(lambda: self.fail("producer accessed database"))
+        self.assertTrue(callable(getattr(writer, "record_gap", None)))
+        writer.record_gap()
+        self.assertEqual(writer.status().recording_gaps, 1)
+        with writer._lock:
+            writer._gaps = 2**63 - 2
+        writer.record_gap()
+        writer.record_gap()
+        writer.submit(self.start_command())
+        writer.submit(object())
+        self.assertEqual(writer.status().recording_gaps, 2**63 - 1)
+        self.assertTrue(writer.close())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,6 +26,7 @@ from .logging_config import get_logger
 _logger = get_logger("prompt_manager.execution_history_writer")
 _MAX_PENDING = 1024
 _PROBE_INTERVAL = 5.0
+_MAX_GAPS = 2**63 - 1
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,7 @@ class HistoryWriter:
             encode_command(command)
         except ValueError:
             with self._lock:
-                self._gaps += 1
+                self._record_gap_locked()
             self._wake.set()
             return False
         with self._lock:
@@ -84,7 +85,7 @@ class HistoryWriter:
                 or command.storage_epoch != self._epoch
                 or self._pending >= _MAX_PENDING
             ):
-                self._gaps += 1
+                self._record_gap_locked()
                 accepted = False
             else:
                 self._queue.put_nowait(command)
@@ -92,6 +93,15 @@ class HistoryWriter:
                 accepted = True
         self._wake.set()
         return accepted
+
+    def _record_gap_locked(self) -> None:
+        self._gaps = min(_MAX_GAPS, self._gaps + 1)
+
+    def record_gap(self) -> None:
+        """Account for unavailable capture without constructing a fake command."""
+        with self._lock:
+            self._record_gap_locked()
+        self._wake.set()
 
     def invalidate(self) -> None:
         with self._lock:
@@ -134,7 +144,7 @@ class HistoryWriter:
             except queue.Empty:
                 return
             self._pending -= 1
-            self._gaps += 1
+            self._record_gap_locked()
 
     def _run(self) -> None:
         db: PromptDatabase | None = None
@@ -187,7 +197,7 @@ class HistoryWriter:
                         if db is not None:
                             db.model.close()
                         with self._lock:
-                            self._gaps += 1
+                            self._record_gap_locked()
                 if command is not None:
                     failed = False
                     try:
@@ -206,7 +216,7 @@ class HistoryWriter:
                     with self._lock:
                         self._pending -= 1
                         if failed:
-                            self._gaps += 1
+                            self._record_gap_locked()
                             self._accepting = False
                             self._epoch = None
                             self._generation += 1
