@@ -14,7 +14,8 @@
       "coverage gate (85%)",
       "black and flake8",
       "frontend modules",
-      "viewerjs"
+      "viewerjs",
+      "real ComfyUI compatibility"
     ]
   },
   "enforce_admins": true,

@@ -1,0 +1,9 @@
+{
+  "repository": "Comfy-Org/ComfyUI",
+  "revision": "e8665ca8e4089ab917567cdb491308e1397663d4",
+  "serverVersion": "0.39.0",
+  "frontendVersion": "1.55.14",
+  "pythonVersion": "3.12",
+  "torchVersion": "2.11.0",
+  "torchvisionVersion": "0.26.0"
+}

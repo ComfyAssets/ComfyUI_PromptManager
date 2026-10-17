@@ -78,3 +78,12 @@ windowing is not a replacement for bounding the supplied image list: native
 slideshow playback can still preload every supplied original. Review new
 preloading defaults, gesture behavior, CSS changes, and any adapter use of
 Viewer.js internal methods before adopting another release.
+
+## Shared ComfyAssets test tooling
+
+The exact toolkit commit archive in `package.json` / `package-lock.json` supplies
+host orchestration and coverage helpers. `comfyui-host.mjs` is PromptManager's
+configuration adapter; keep reusable lifecycle changes in the toolkit source.
+The existing npm scripts remain the public maintainer entry points. See
+[TESTING.md](../../TESTING.md) for the managed real-host matrix and update policy.
+This first integration does not yet ship toolkit UI assets to end users.
