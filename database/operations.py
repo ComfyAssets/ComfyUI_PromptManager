@@ -1995,7 +1995,7 @@ class PromptDatabase(PairOperations):
             cursor = conn.execute(
                 """SELECT gi.prompt_id, p.text, p.category, p.rating, p.notes,
                           gi.workflow_data, gi.prompt_metadata, gi.generation_time,
-                          gi.parameters
+                          gi.parameters, gi.id, gi.image_path, gi.file_path
                    FROM generated_images gi
                    JOIN prompts p ON gi.prompt_id = p.id
                    WHERE gi.image_path = ? OR gi.file_path = ?
@@ -2007,9 +2007,35 @@ class PromptDatabase(PairOperations):
                     f"%{escape_like(os.path.basename(image_path))}",
                 ),
             )
-            row = cursor.fetchone()
-            if not row:
+            rows = cursor.fetchall()
+            exact = [
+                row
+                for row in rows
+                if row[10] == image_path or row[11] == normalize_image_path(image_path)
+            ]
+            matches = exact or rows
+            if len(matches) != 1:
                 return None
+            row = matches[0]
+            associations = self.get_image_prompt_pairs(row[9])
+            pair_ids = {item["pair_id"] for item in associations}
+            pair = (
+                self.get_prompt_pair(next(iter(pair_ids)))
+                if len(pair_ids) == 1
+                else None
+            )
+            contexts = {
+                (
+                    item["provenance"].get("positive", {}).get("text"),
+                    item["provenance"].get("negative", {}).get("text"),
+                )
+                for item in associations
+            }
+            context = None
+            if len(contexts) == 1:
+                positive, negative = next(iter(contexts))
+                if isinstance(positive, str) and isinstance(negative, str):
+                    context = {"positive_text": positive, "negative_text": negative}
             tags = self._get_prompt_tags(conn, row[0])
             try:
                 workflow = json.loads(row[5]) if row[5] else None
@@ -2020,6 +2046,8 @@ class PromptDatabase(PairOperations):
             except (json.JSONDecodeError, TypeError):
                 prompt_meta = None
             return {
+                "pair": pair,
+                "pair_context": context,
                 "prompt_id": row[0],
                 "text": row[1],
                 "category": row[2],

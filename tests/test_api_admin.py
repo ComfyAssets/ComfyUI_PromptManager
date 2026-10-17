@@ -476,10 +476,13 @@ class TestScansRunOffTheEventLoop(AdminAPITestCase):
         ).text()
 
         self.assertIn('"added": 1', first)
-        self.assertIn('"linked": 1', second)
+        self.assertIn('"unchanged": 1', second)
         self.assertIn('"added": 0', second)
         prompts = self.api.db.get_recent_prompts(limit=10)["prompts"]
-        self.assertEqual([p["text"] for p in prompts], ["a red square"])
+        self.assertEqual({p["text"] for p in prompts}, {"a red square", "bad"})
+        pairs = self.api.db.list_prompt_pairs()["pairs"]
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0]["negative_text"], "bad")
 
     async def test_output_scan_without_directories_reports_error(self):
         GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.outside_dir)]
@@ -1556,7 +1559,7 @@ class TestOutputScanInternals(AdminAPITestCase):
             "found",
         )
         self.assertEqual(self.api._ingest_scanned_file(f, meta), "added")
-        self.assertEqual(self.api._ingest_scanned_file(f, meta), "linked")
+        self.assertEqual(self.api._ingest_scanned_file(f, meta), "unchanged")
 
     def test_ingest_link_failures_are_tolerated(self):
         f = Path("gen.png")
@@ -1589,7 +1592,23 @@ class TestOutputScanInternals(AdminAPITestCase):
         counts = self.api._ingest_scan_batch_sync(
             [(Path("a.png"), meta), (Path("b.png"), {})]
         )
-        self.assertEqual(counts, {"processed": 2, "found": 0, "added": 0, "linked": 0})
+        self.assertEqual(
+            counts,
+            {
+                "processed": 2,
+                "found": 0,
+                "added": 0,
+                "linked": 0,
+                "enriched": 0,
+                "unchanged": 0,
+                "ambiguous": 0,
+                "unresolved": 0,
+                "conflict": 0,
+                "failed": 1,
+                "pairs_added": 0,
+                "pair_links_added": 0,
+            },
+        )
 
     async def test_scan_internal_error_streams_error_event(self):
         GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
@@ -1637,7 +1656,10 @@ class TestOutputScanIsABackgroundJob(AdminAPITestCase):
             await asyncio.wait_for(self.api._scan_job.task, 10)
 
         prompts = self.api.db.get_recent_prompts(limit=10)["prompts"]
-        self.assertEqual([p["text"] for p in prompts], ["a red square"])
+        self.assertEqual({p["text"] for p in prompts}, {"a red square", "bad"})
+        pairs = self.api.db.list_prompt_pairs()["pairs"]
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0]["negative_text"], "bad")
         self.assertEqual(self.api._scan_job.last_event["type"], "complete")
         self.assertFalse(self.api._scan_job.running)
 
@@ -1704,7 +1726,7 @@ class TestOutputScanIsABackgroundJob(AdminAPITestCase):
         body = await (await self.client.request("POST", "/prompt_manager/scan")).text()
 
         self.assertEqual(len(calls), 2)
-        self.assertIn('"linked": 1', body)
+        self.assertIn('"unchanged": 1', body)
 
     async def test_failed_scan_is_not_left_running(self):
         GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]

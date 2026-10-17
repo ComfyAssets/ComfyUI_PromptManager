@@ -26,8 +26,12 @@ except ImportError:
 
 try:
     from ...database.operations import PromptDatabase
+    from ...database.pair_ingestion import ingest_resolved_pair
+    from ...utils.prompt_pair_resolver import resolve_prompt_pair
 except ImportError:
     from database.operations import PromptDatabase
+    from database.pair_ingestion import ingest_resolved_pair
+    from utils.prompt_pair_resolver import resolve_prompt_pair
 
 
 try:
@@ -40,6 +44,20 @@ VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".wmv")
 SCAN_BATCH_SIZE = 50  # Files per executor call during the output scan
 MAX_SAFETY_BACKUPS = 10  # '<db>.backup_*' files kept next to the live database
 MAX_SCAN_FILES = 50_000  # Upper bound on media files one scan will look at
+SCAN_COUNT_KEYS = (
+    "processed",
+    "found",
+    "added",
+    "linked",
+    "enriched",
+    "unchanged",
+    "ambiguous",
+    "unresolved",
+    "conflict",
+    "failed",
+    "pairs_added",
+    "pair_links_added",
+)
 MAX_SCAN_DEPTH = 12  # Directory levels below an output root that are scanned
 # Files the duplicate cleaner may delete: everything the scan reports, plus
 # the common single-f TIFF spelling. Anything else inside the output
@@ -1351,7 +1369,7 @@ class AdminRoutesMixin:
             media_files = await self._run_in_executor(
                 self._collect_output_media_sync, output_dirs
             )
-            counts = {"processed": 0, "found": 0, "added": 0, "linked": 0}
+            counts = dict.fromkeys(SCAN_COUNT_KEYS, 0)
             if media_files:
                 yield self._scan_progress(
                     5, f"Found {len(media_files)} media files to process...", counts
@@ -1405,7 +1423,7 @@ class AdminRoutesMixin:
             "progress": progress,
             "status": status,
             "processed": counts.get("processed", 0),
-            "found": counts.get("found", 0),
+            **{key: counts.get(key, 0) for key in SCAN_COUNT_KEYS},
         }
 
     def _collect_output_media_sync(self, output_dirs):
@@ -1431,25 +1449,49 @@ class AdminRoutesMixin:
 
     def _ingest_scan_batch_sync(self, batch_results):
         """Store the prompts found in a metadata batch (blocking DB work)."""
-        counts = {"processed": 0, "found": 0, "added": 0, "linked": 0}
+        counts = dict.fromkeys(SCAN_COUNT_KEYS, 0)
         for media_file, metadata in batch_results:
             counts["processed"] += 1
             try:
-                outcome = self._ingest_scanned_file(media_file, metadata)
+                outcome = self._ingest_scanned_file(media_file, metadata, detailed=True)
             except Exception as e:
                 self.logger.error(f"Error processing {media_file.name}: {e}")
+                counts["failed"] += 1
                 continue
             if outcome is None:
                 continue
             counts["found"] += 1
-            if outcome in ("added", "linked"):
-                counts[outcome] += 1
+            status = outcome["status"] if isinstance(outcome, dict) else outcome
+            if status in counts:
+                counts[status] += 1
+            if isinstance(outcome, dict):
+                counts["pairs_added"] += outcome.get("pairs_added", 0)
+                counts["pair_links_added"] += outcome.get("links_added", 0)
         return counts
 
-    def _ingest_scanned_file(self, media_file, metadata):
-        """Save or link one scanned file; returns 'added', 'linked', 'found' or None."""
+    def _ingest_scanned_file(self, media_file, metadata, detailed=False):
+        """Enrich exact pairs; retain legacy positive-only import for absent pairs."""
         if not metadata:
             return None
+        canonical = dict(metadata)
+        if isinstance(canonical.get("prompt"), str):
+            try:
+                canonical["prompt"] = json.loads(canonical["prompt"])
+            except (ValueError, TypeError):
+                pass
+        if not canonical.get("prompt") and not canonical.get("parameters"):
+            return None
+        resolution = resolve_prompt_pair(canonical)
+        if resolution["state"] == "resolved":
+            result = ingest_resolved_pair(
+                self.db, str(media_file), canonical, resolution
+            )
+            return result if detailed else result["status"]
+        if resolution["state"] in ("ambiguous", "unresolved"):
+            if canonical.get("prompt") or not isinstance(
+                canonical.get("parameters"), str
+            ):
+                return resolution["state"]
         parsed = self._parse_comfyui_prompt(metadata)
         if not (parsed.get("prompt") or parsed.get("parameters")):
             return None
@@ -1465,13 +1507,15 @@ class AdminRoutesMixin:
         existing = self.db.get_prompt_by_hash(prompt_hash)
         if existing:
             try:
-                self.db.link_image_to_prompt(existing["id"], str(media_file))
+                image_id = self.db.link_image_to_prompt(
+                    existing["id"], str(media_file), metadata=canonical
+                )
             except Exception as e:
                 self.logger.error(
                     f"Failed to link {media_file.name} to existing prompt: {e}"
                 )
                 return "found"
-            return "linked"
+            return "linked" if image_id else "unchanged"
 
         prompt_id = self.db.save_prompt(
             prompt_text,
@@ -1484,7 +1528,7 @@ class AdminRoutesMixin:
         if not prompt_id:
             return "found"
         try:
-            self.db.link_image_to_prompt(prompt_id, str(media_file))
+            self.db.link_image_to_prompt(prompt_id, str(media_file), metadata=canonical)
         except Exception as e:
             self.logger.error(f"Failed to link {media_file.name} to new prompt: {e}")
         return "added"

@@ -63,7 +63,7 @@
         const widgets = new Map();
         for (const n of workflowNodes(workflow)) {
             const text = widgetsOf(n)[0];
-            if (/promptmanager/i.test(n.type || "") && typeof text === "string") {
+            if (n.type !== "PromptManagerPair" && /promptmanager/i.test(n.type || "") && typeof text === "string") {
                 widgets.set(String(n.id), text);
             }
         }
@@ -94,8 +94,9 @@
         if (!isLink(link) || seen.size >= MAX_VISITS) return [];
         const id = String(link[0]);
         const node = ctx.graph[id];
-        if (!node || !node.inputs || seen.has(id)) return [];
-        seen.add(id);
+        const key = `${id}:${link[1]}`;
+        if (!node || !node.inputs || seen.has(key)) return [];
+        seen.add(key);
         return [id, node];
     }
 
@@ -132,6 +133,10 @@
         if (typeof value === "string") return value;
         const [id, node] = enter(ctx, value, seen);
         if (!node) return "";
+        if (node.class_type === "PromptManagerPair") {
+            if (value[1] === 3) return resolveString(ctx, node.inputs.negative_text, seen);
+            return value[1] === 2 ? composeNodeText(ctx, id, node, seen) : "";
+        }
         if ("text" in node.inputs) return composeNodeText(ctx, id, node, seen);
         const delimiter = typeof node.inputs.delimiter === "string" ? node.inputs.delimiter : " ";
         return Object.entries(node.inputs)
@@ -165,6 +170,10 @@
     function traceConditioning(ctx, link, role, seen = new Set()) {
         const [id, node] = enter(ctx, link, seen);
         if (!node) return "";
+        if (node.class_type === "PromptManagerPair") {
+            if (link[1] === 1) return resolveString(ctx, node.inputs.negative_text, seen);
+            return link[1] === 0 ? composeNodeText(ctx, id, node, seen) : "";
+        }
         if ("text" in node.inputs) return composeNodeText(ctx, id, node, seen);
         // Pass-through nodes (ControlNet apply, conditioning combine/set area, ...)
         const { inputs } = node;
@@ -237,6 +246,7 @@
         PromptManagerText: PROMPT_MANAGER_WIDGETS,
         PromptManagerFocused: PROMPT_MANAGER_WIDGETS,
         PromptManagerSplit: PROMPT_MANAGER_WIDGETS,
+        PromptManagerPair: ["text", "negative_text", "category", "tags", "search_text", "prepend_text", "append_text"],
         CheckpointLoader: ["config_name", "ckpt_name"],
         UNETLoader: ["unet_name", "weight_dtype"],
     };

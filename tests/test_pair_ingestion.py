@@ -121,3 +121,22 @@ class TestPairIngestion(unittest.TestCase):
         self.assertEqual(
             association["provenance"]["positive"]["text"], "prefix cat suffix"
         )
+
+    def test_image_lookup_exposes_its_recorded_pair_not_latest_negative(self):
+        value = resolved("trigger cat", "blur")
+        value["positive"]["storage_text"] = "cat"
+        first = ingest_resolved_pair(self.db, self.path, {}, value)
+        ingest_resolved_pair(self.db, self.path + "2", {}, resolved("cat", "noise"))
+        info = self.db.get_image_prompt_info(self.path)
+        self.assertEqual(info["pair"]["id"], first["pair_id"])
+        self.assertEqual(info["pair"]["negative_text"], "blur")
+        self.assertEqual(info["pair_context"]["positive_text"], "trigger cat")
+        self.assertEqual(info["pair_context"]["negative_text"], "blur")
+
+    def test_overwritten_file_with_different_negative_reports_conflict(self):
+        ingest_resolved_pair(self.db, self.path, {}, resolved())
+        result = ingest_resolved_pair(
+            self.db, self.path, {}, resolved(negative="noise")
+        )
+        self.assertEqual(result["status"], "conflict")
+        self.assertEqual(self.db.list_prompt_pairs()["total"], 1)
