@@ -5,6 +5,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+try:
+    from tests.open_handles import assert_closed
+except ImportError:  # discovered with tests/ as the top-level directory
+    from open_handles import assert_closed
+
 from database.operations import PromptDatabase
 from utils.hashing import generate_prompt_hash
 from utils.image_monitor import ImageGenerationHandler
@@ -35,6 +40,7 @@ class TestPairImageLinking(unittest.TestCase):
 
     def tearDown(self):
         self.db.close_all()
+        assert_closed(self, self.temp.name)
         self.temp.cleanup()
 
     def test_exact_metadata_creates_pair_link_without_counting_a_run(self):

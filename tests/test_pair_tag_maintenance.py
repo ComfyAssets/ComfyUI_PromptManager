@@ -5,6 +5,11 @@ import sqlite3
 import tempfile
 import unittest
 
+try:
+    from tests.open_handles import assert_closed
+except ImportError:  # discovered with tests/ as the top-level directory
+    from open_handles import assert_closed
+
 from database.operations import PromptDatabase
 
 
@@ -12,6 +17,7 @@ class TestPairTagMaintenance(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
+        self.addCleanup(assert_closed, self, directory.name)
         self.db = PromptDatabase(os.path.join(directory.name, "pair-tags.db"))
         self.addCleanup(self.db.close_all)
 

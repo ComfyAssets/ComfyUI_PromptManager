@@ -8,6 +8,11 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
+try:
+    from tests.open_handles import assert_closed
+except ImportError:  # discovered with tests/ as the top-level directory
+    from open_handles import assert_closed
+
 from database.models import PromptModel
 
 
@@ -15,6 +20,7 @@ class PairSchemaTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
+        self.addCleanup(assert_closed, self, self.temp.name)
         self.addCleanup(PromptModel.reset_schema_cache)
         self.models = []
         self.addCleanup(self.close_models)

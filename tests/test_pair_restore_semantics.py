@@ -5,6 +5,11 @@ import os
 import tempfile
 import unittest.mock
 
+try:
+    from tests.open_handles import assert_closed
+except ImportError:  # discovered with tests/ as the top-level directory
+    from open_handles import assert_closed
+
 from database.models import PromptModel
 from database.operations import PromptDatabase
 
@@ -13,6 +18,7 @@ class TestPairRestoreSemantics(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
+        self.addCleanup(assert_closed, self, directory.name)
         self.path = os.path.join(directory.name, "restore.db")
         self.db = PromptDatabase(self.path)
         self.addCleanup(self.db.close_all)

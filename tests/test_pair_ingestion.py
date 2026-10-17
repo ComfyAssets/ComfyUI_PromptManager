@@ -5,6 +5,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+try:
+    from tests.open_handles import assert_closed
+except ImportError:  # discovered with tests/ as the top-level directory
+    from open_handles import assert_closed
+
 from database.operations import PromptDatabase
 from database.pair_ingestion import ingest_resolved_pair
 from utils.hashing import generate_prompt_hash
@@ -26,6 +31,7 @@ class TestPairIngestion(unittest.TestCase):
 
     def tearDown(self):
         self.db.close_all()
+        assert_closed(self, self.temp.name)
         self.temp.cleanup()
 
     def test_first_scan_repeat_and_negative_variants_reuse_components(self):

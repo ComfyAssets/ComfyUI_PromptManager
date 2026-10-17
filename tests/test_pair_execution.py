@@ -10,6 +10,11 @@ from unittest.mock import Mock
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
+try:
+    from tests.open_handles import assert_closed
+except ImportError:  # discovered with tests/ as the top-level directory
+    from open_handles import assert_closed
+
 from database.operations import PromptDatabase
 from prompt_manager_pair import PromptManagerPair
 from utils.metadata_extractor import ComfyUIMetadataExtractor
@@ -35,6 +40,7 @@ class TestPairExecution(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(assert_closed, self, self.tmp.name)
         self.db = PromptDatabase(str(Path(self.tmp.name) / "test.db"))
         self.addCleanup(self.db.close_all)
         self.node = PromptManagerPair.__new__(PromptManagerPair)

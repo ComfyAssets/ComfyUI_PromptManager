@@ -7,6 +7,11 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
+try:
+    from tests.open_handles import assert_closed
+except ImportError:  # discovered with tests/ as the top-level directory
+    from open_handles import assert_closed
+
 from database.operations import PromptDatabase
 from utils.hashing import generate_prompt_hash
 
@@ -15,6 +20,7 @@ class TestPromptPairs(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(assert_closed, self, self.tmp.name)
         self.db = PromptDatabase(os.path.join(self.tmp.name, "pairs.db"))
         self.addCleanup(self.db.close_all)
 
