@@ -287,9 +287,19 @@ export function mountImages(main, api, parentScope) {
         grid.style.height = `${geometry.height}px`;
         renderVisible();
     }
-    const resize = new ResizeObserver(updateLayout); resize.observe(grid);
+    let resizeFrame = 0, observedWidth;
+    const resize = new ResizeObserver(entries => {
+        const width = entries[0].contentRect.width;
+        if (width === observedWidth) return;
+        observedWidth = width;
+        if (!resizeFrame) resizeFrame = requestAnimationFrame(() => {
+            resizeFrame = 0;
+            updateLayout();
+        });
+    });
+    resize.observe(grid);
     scope.listen(window, 'scroll', scheduleVisible);
-    scope.cleanup(() => { resize.disconnect(); observer?.disconnect(); cancelAnimationFrame(frame); cancelAnimationFrame(loadFrame); });
+    scope.cleanup(() => { resize.disconnect(); observer?.disconnect(); cancelAnimationFrame(resizeFrame); cancelAnimationFrame(frame); cancelAnimationFrame(loadFrame); });
     function renderState(next) {
         const changed = state?.items !== next.items;
         if (changed) {

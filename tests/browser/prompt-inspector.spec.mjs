@@ -172,3 +172,24 @@ test('filtering away a selected image aborts its pending metadata request',async
         await expect.poll(()=>page.evaluate(()=>window.inspectionAborts),{timeout:1500}).toBeGreaterThan(baseline);
     } finally {release();}
 });
+
+test('responsive gallery defers observed size writes and still fits the new viewport',async({page})=>{
+    await page.addInitScript(()=>{
+        const Native=window.ResizeObserver;window.inlineResizeWrites=0;
+        window.ResizeObserver=class extends Native {
+            constructor(callback){super((entries,observer)=>{
+                const sizes=entries.map(entry=>entry.target.style.height);
+                callback(entries,observer);
+                entries.forEach((entry,index)=>{
+                    if(entry.target.classList.contains('image-grid')&&entry.target.style.height!==sizes[index])window.inlineResizeWrites++;
+                });
+            });}
+        };
+    });
+    await page.setViewportSize({width:1280,height:900});await page.goto(workspace);
+    await expect(page.locator('.image-card')).toHaveCount(4);
+    await page.setViewportSize({width:390,height:844});
+    await expect.poll(()=>page.locator('.image-card').first().evaluate(node=>node.getBoundingClientRect().width)).toBeLessThan(390);
+    await expect.poll(()=>page.locator('.image-grid').evaluate(node=>Number.parseFloat(node.style.height))).toBeGreaterThan(900);
+    expect(await page.evaluate(()=>window.inlineResizeWrites)).toBe(0);
+});
