@@ -87,7 +87,10 @@ def _resolve_db_path(db_path: Optional[str] = None) -> str:
 
     if db_path is None:
         try:
-            from py.config import PromptManagerConfig
+            try:
+                from ..py.config import PromptManagerConfig
+            except ImportError:
+                from py.config import PromptManagerConfig
 
             db_path = PromptManagerConfig.DEFAULT_DB_PATH
         except Exception:

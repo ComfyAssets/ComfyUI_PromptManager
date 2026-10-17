@@ -5,6 +5,7 @@ imports) with ComfyUI's ``server`` and ``folder_paths`` modules stubbed.
 """
 
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -65,7 +66,13 @@ def load_package(name, db_path, output_dir, server=None):
     try:
         from py.config import PromptManagerConfig
 
-        with mock.patch.object(PromptManagerConfig, "DEFAULT_DB_PATH", db_path):
+        config_path = os.path.join(output_dir, "promptmanager-test-config.json")
+        with open(config_path, "w", encoding="utf-8") as config:
+            json.dump({"database": {"default_path": db_path}}, config)
+        with (
+            mock.patch.object(PromptManagerConfig, "DEFAULT_DB_PATH", db_path),
+            mock.patch.dict(os.environ, {"PROMPT_MANAGER_CONFIG_PATH": config_path}),
+        ):
             spec = importlib.util.spec_from_file_location(
                 name,
                 os.path.join(ROOT, "__init__.py"),
