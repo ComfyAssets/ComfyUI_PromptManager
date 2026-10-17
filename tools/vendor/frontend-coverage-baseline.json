@@ -112,5 +112,17 @@
     "branches": 96,
     "functions": 98,
     "statements": 98
+  },
+  "focused-node.js": {
+    "lines": 95,
+    "branches": 73,
+    "functions": 87,
+    "statements": 95
+  },
+  "prompt-library.js": {
+    "lines": 98,
+    "branches": 86,
+    "functions": 98,
+    "statements": 98
   }
 }

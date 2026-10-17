@@ -150,6 +150,14 @@ node identifier and sockets. The reusable architecture is inspired by
 [Pixaroma](https://github.com/pixaroma/ComfyUI-Pixaroma); no implementation or assets
 were copied. See the [toolkit maintenance notes](tools/vendor/README.md#shared-comfyassets-browser-controls).
 
+**Prompt Manager (Focused)** adds an editor-first layout with collapsible
+composition and metadata fields. Open **Browse library** to search saved prompts,
+preview a selection, then choose **Use prompt**; **Load metadata** controls whether
+category and tags come with it. Prepend and append STRING sockets remain visible
+when the fields are collapsed, so LoRA trigger outputs can connect directly.
+Encoding, storage, and CONDITIONING/text outputs match Classic. Both layouts
+support ComfyUI Classic and Nodes 2.0.
+
 ### 🔬 ComfyUI Workflow Analysis
 
 - **PNG Metadata Parsing**: Advanced PNG chunk analysis to extract embedded ComfyUI data

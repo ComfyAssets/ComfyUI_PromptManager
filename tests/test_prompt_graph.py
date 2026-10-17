@@ -54,6 +54,19 @@ class TestPositivePromptNodes(unittest.TestCase):
         }
         self.assertEqual(positive_prompt_nodes(graph), ["134"])
 
+    def test_focused_nodes_preserve_positive_roles_and_samplerless_fallback(self):
+        graph = {
+            "1": {"class_type": "PromptManagerFocused", "inputs": {"text": "cat"}},
+            "2": {"class_type": "PromptManagerFocused", "inputs": {"text": "blur"}},
+            "5": ksampler("1", "2"),
+        }
+        self.assertEqual(positive_prompt_nodes(graph), ["1"])
+        self.assertEqual(run_prompt_nodes(graph), ["1"])
+        graph["1"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "cat"}}
+        self.assertEqual(run_prompt_nodes(graph), [])
+        del graph["5"]
+        self.assertEqual(run_prompt_nodes(graph), ["2"])
+
     def test_negative_only_prompt_manager_is_never_positive(self):
         graph = {
             "176": pm("blurry"),

@@ -281,3 +281,18 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
 
         combined = f"{text}|{prepend_text}|{append_text}|{category}|{tags}"
         return hashlib.sha256(combined.encode()).hexdigest()
+
+
+class PromptManagerFocused(PromptManager):
+    """The editor-first UI uses the existing encoding and storage contract."""
+
+    @classmethod
+    def INPUT_TYPES(cls) -> InputTypeDict:
+        inputs = super().INPUT_TYPES()
+        for name in ("prepend_text", "append_text"):
+            kind, options = inputs["optional"][name]
+            inputs["optional"][name] = (
+                kind,
+                {**options, "default": "", "forceInput": True},
+            )
+        return inputs

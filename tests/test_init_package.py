@@ -135,7 +135,12 @@ class TestPackageWiring(PackageTestCase):
     def test_nodes_are_registered(self):
         self.assertEqual(
             sorted(self.package.NODE_CLASS_MAPPINGS),
-            ["PromptManager", "PromptManagerText", "PromptSearchList"],
+            [
+                "PromptManager",
+                "PromptManagerFocused",
+                "PromptManagerText",
+                "PromptSearchList",
+            ],
         )
 
     def test_db_factory_returns_the_shared_database(self):
