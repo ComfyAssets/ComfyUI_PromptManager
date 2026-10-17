@@ -29,7 +29,7 @@ class TestFindComfyuiOutputDir(unittest.TestCase):
         roots = patch.object(
             GalleryConfig,
             "allowed_gallery_parents",
-            return_value=[tempfile.gettempdir()],
+            return_value=[os.path.normcase(os.path.realpath(tempfile.gettempdir()))],
         )
         roots.start()
         self.addCleanup(roots.stop)
@@ -119,6 +119,23 @@ class TestFindComfyuiOutputDir(unittest.TestCase):
             result = self.api._find_comfyui_output_dir()
 
             self.assertEqual(result, str(Path(tmpdir).resolve()))
+
+
+class TestOutputDirectoryFixturePortability(unittest.TestCase):
+    def test_aliased_temporary_parent_uses_the_real_gallery_allowlist(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            (parent / "alias").mkdir()
+            (parent / "actual").mkdir()
+            aliased = str(parent / "alias" / ".." / "actual")
+            with patch("tempfile.gettempdir", return_value=aliased):
+                case = TestFindComfyuiOutputDir(
+                    "test_configured_directory_takes_priority"
+                )
+                result = unittest.TestResult()
+                case.run(result)
+            self.assertEqual(result.errors, [])
+            self.assertEqual(result.failures, [])
 
 
 if __name__ == "__main__":
