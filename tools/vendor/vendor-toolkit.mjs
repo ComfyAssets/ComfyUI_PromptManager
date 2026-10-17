@@ -15,7 +15,7 @@ export function syncToolkit({ root = repositoryRoot, check = false } = {}) {
     if (locked?.resolved !== pin || !locked.integrity || locked.version !== info.version || info.name !== '@comfyassets/toolkit' || info.license !== 'MIT') throw new Error('Toolkit package identity or lock mismatch; run npm ci --ignore-scripts');
     const output = new Map();
     const files = {};
-    for (const [name, source] of Object.entries({ 'core.js': 'ui/core.js', 'suggestions.js': 'ui/suggestions.js', 'controls.css': 'ui/controls.css', LICENSE: 'LICENSE', 'SOURCE.md': 'SOURCE.md' })) {
+    for (const [name, source] of Object.entries({ 'core.js': 'ui/core.js', 'suggestions.js': 'ui/suggestions.js', 'prompt-bridge.js': 'ui/prompt-bridge.js', 'controls.css': 'ui/controls.css', LICENSE: 'LICENSE', 'SOURCE.md': 'SOURCE.md' })) {
         const content = readFileSync(join(installed, source));
         output.set(name, content);
         files[name] = { source, sha256: createHash('sha256').update(content).digest('hex') };

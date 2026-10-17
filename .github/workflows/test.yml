@@ -59,6 +59,9 @@ jobs:
           node --input-type=module <<'JS' >> "$GITHUB_OUTPUT"
           import runtime from './tools/vendor/comfyui-runtime.json' with { type: 'json' };
           for (const [key, value] of Object.entries(runtime)) console.log(`${key}=${value}`);
+          import crossPack from './tools/vendor/cross-pack-runtime.json' with { type: 'json' };
+          console.log(`kikoRepository=${crossPack.repository}`);
+          console.log(`kikoRevision=${crossPack.revision}`);
           JS
       - name: Check out pinned ComfyUI
         uses: actions/checkout@v7
@@ -66,6 +69,13 @@ jobs:
           repository: ${{ steps.runtime.outputs.repository }}
           ref: ${{ steps.runtime.outputs.revision }}
           path: .ci-comfyui
+          persist-credentials: false
+      - name: Check out pinned KikoTools for compatibility
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.runtime.outputs.kikoRepository }}
+          ref: ${{ steps.runtime.outputs.kikoRevision }}
+          path: .ci-kikotools
           persist-credentials: false
       - uses: actions/setup-python@v7
         with:
@@ -87,6 +97,12 @@ jobs:
           PM_COMFY_ROOT: ${{ github.workspace }}/.ci-comfyui
           PM_TEST_PYTHON: python
         run: npm run --prefix tools/vendor test:comfyui
+      - name: Independent and combined pack compatibility
+        env:
+          PM_COMFY_ROOT: ${{ github.workspace }}/.ci-comfyui
+          PM_KIKO_ROOT: ${{ github.workspace }}/.ci-kikotools
+          PM_TEST_PYTHON: python
+        run: npm run --prefix tools/vendor test:compat
       - name: Upload real-host reports and startup logs
         if: always()
         uses: actions/upload-artifact@v7

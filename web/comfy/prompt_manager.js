@@ -4,6 +4,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 const { installClassicControls } = await import(api.fileURL('/prompt_manager/js/classic-node.js'));
 const { installFocusedNode, installSplitNode, installPairNode } = await import(api.fileURL('/prompt_manager/js/focused-node.js'));
+const { installPromptBridge } = await import(api.fileURL('/prompt_manager/js/prompt-bridge-host.js'));
 const promptManagerTypes = new Set(['PromptManager', 'PromptManagerText', 'PromptManagerFocused', 'PromptManagerSplit', 'PromptManagerPair']);
 
 // ============================================================================
@@ -235,6 +236,7 @@ app.registerExtension({
   name: "PromptManager.UI",
 
   async setup() {
+    installPromptBridge(app, { baseUrl: api.fileURL('/prompt_manager/') });
     // Add the top bar button after a short delay to ensure UI is ready
     setTimeout(() => {
       addPMTopBarButton();
