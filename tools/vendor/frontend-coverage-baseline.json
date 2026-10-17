@@ -100,5 +100,17 @@
     "branches": 98,
     "functions": 98,
     "statements": 98
+  },
+  "classic-node.js": {
+    "lines": 98,
+    "branches": 79,
+    "functions": 98,
+    "statements": 98
+  },
+  "shared/toolkit/core.js": {
+    "lines": 98,
+    "branches": 96,
+    "functions": 98,
+    "statements": 98
   }
 }

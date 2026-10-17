@@ -5,7 +5,8 @@
   "description": "Maintainer-only tools for reproducible browser dependencies",
   "scripts": {
     "sync": "node vendor-viewerjs.mjs",
-    "check": "node vendor-viewerjs.mjs --check",
+    "check": "node vendor-viewerjs.mjs --check && node vendor-toolkit.mjs --check",
+    "sync:toolkit": "node vendor-toolkit.mjs",
     "update": "node update-viewerjs.mjs",
     "test": "node --test ../../tests/vendor/*.test.mjs",
     "test:browser": "playwright test --config playwright.config.mjs",
