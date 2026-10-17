@@ -45,3 +45,18 @@ test('toolkit sync rejects moving pins, identity mismatches and missing sources 
     assert.throws(() => syncToolkit({ root: third.root }), /ENOENT/);
     assert.throws(() => readFileSync(join(third.destination, 'core.js')), /ENOENT/);
 });
+
+test('toolkit sync rejects lookalike download hosts and archive paths before writing', t => {
+    for (const prefix of [
+        'https://codeloadXgithub.com/ComfyAssets/ComfyAssets-Toolkit/tar.gz/',
+        'https://codeload.githubXcom/ComfyAssets/ComfyAssets-Toolkit/tar.gz/',
+        'https://codeload.github.com/ComfyAssets/ComfyAssets-Toolkit/tarXgz/',
+    ]) {
+        const f = fixture(t);
+        const resolved = prefix + 'a'.repeat(40);
+        writeFileSync(join(f.tooling, 'package.json'), JSON.stringify({ devDependencies: { '@comfyassets/toolkit': resolved } }));
+        writeFileSync(join(f.tooling, 'package-lock.json'), JSON.stringify({ packages: { 'node_modules/@comfyassets/toolkit': { version: '0.1.0', resolved, integrity: 'sha512-fixture' } } }));
+        assert.throws(() => syncToolkit({ root: f.root }), /immutable commit pin/);
+        assert.throws(() => readFileSync(join(f.destination, 'core.js')), /ENOENT/);
+    }
+});

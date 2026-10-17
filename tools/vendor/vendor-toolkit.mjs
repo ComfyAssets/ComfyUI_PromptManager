@@ -8,7 +8,7 @@ export function syncToolkit({ root = repositoryRoot, check = false } = {}) {
     const tooling = join(root, 'tools/vendor');
     const readJson = path => JSON.parse(readFileSync(path, 'utf8'));
     const pin = readJson(join(tooling, 'package.json')).devDependencies['@comfyassets/toolkit'];
-    if (!/^https:\/\/codeload.github.com\/ComfyAssets\/ComfyAssets-Toolkit\/tar.gz\/[a-f0-9]{40}$/.test(pin)) throw new Error('Toolkit needs an immutable commit pin');
+    if (!/^https:\/\/codeload\.github\.com\/ComfyAssets\/ComfyAssets-Toolkit\/tar\.gz\/[a-f0-9]{40}$/.test(pin)) throw new Error('Toolkit needs an immutable commit pin');
     const locked = readJson(join(tooling, 'package-lock.json')).packages['node_modules/@comfyassets/toolkit'];
     const installed = join(tooling, 'node_modules/@comfyassets/toolkit');
     const info = readJson(join(installed, 'package.json'));
