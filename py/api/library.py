@@ -6,6 +6,9 @@ import hashlib
 import hmac
 import json
 import os
+import time
+from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
 
 from aiohttp import web
@@ -16,16 +19,73 @@ from .pairs import pair_response
 _SECRET = os.urandom(32)
 
 
+class _NameCursorStore:
+    """Full lexical keys stay off URLs, bounded by age, count and UTF-8 bytes."""
+
+    def __init__(
+        self,
+        ttl: int = 3600,
+        max_entries: int = 128,
+        max_bytes: int = 8 * 1024 * 1024,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.clock = clock
+        self.ttl = ttl
+        self.max_entries = max_entries
+        self.max_bytes = max_bytes
+        self.entries = OrderedDict()
+        self.size = 0
+
+    def _remove(self, reference: str) -> None:
+        _expires, _scope, raw = self.entries.pop(reference)
+        self.size -= len(raw)
+
+    def _prune(self) -> None:
+        now = self.clock()
+        for reference, (expires, _scope, _raw) in list(self.entries.items()):
+            if expires <= now:
+                self._remove(reference)
+
+    def put(self, key: object, scope: str) -> str:
+        raw = json.dumps(key, ensure_ascii=False, allow_nan=False).encode()
+        if len(raw) > min(512 * 1024, self.max_bytes):
+            raise ValueError("Prompt name exceeds the cursor limit")
+        self._prune()
+        while self.entries and (
+            len(self.entries) >= self.max_entries
+            or self.size + len(raw) > self.max_bytes
+        ):
+            self._remove(next(iter(self.entries)))
+        reference = base64.urlsafe_b64encode(os.urandom(24)).decode()
+        self.entries[reference] = (self.clock() + self.ttl, scope, raw)
+        self.size += len(raw)
+        return reference
+
+    def get(self, reference: str, scope: str) -> object:
+        self._prune()
+        entry = self.entries.get(reference)
+        if entry is None or entry[1] != scope:
+            raise ValueError("Name cursor expired; refresh the library")
+        self.entries.move_to_end(reference)
+        return json.loads(entry[2])
+
+
+_NAME_CURSORS = _NameCursorStore()
+
+
 def _scope(value: dict) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-def _encode(key: object, scope: str) -> str | None:
+def _encode(key: object, scope: str, *, name: bool = False) -> str | None:
     if key is None:
         return None
-    payload = json.dumps(
-        {"scope": scope, "key": key}, separators=(",", ":"), allow_nan=False
-    ).encode()
+    value = (
+        {"scope": scope, "reference": _NAME_CURSORS.put(key, scope)}
+        if name
+        else {"scope": scope, "key": key}
+    )
+    payload = json.dumps(value, separators=(",", ":"), allow_nan=False).encode()
     signature = hmac.new(_SECRET, payload, hashlib.sha256).digest()
     return base64.urlsafe_b64encode(signature + payload).decode().rstrip("=")
 
@@ -45,8 +105,13 @@ def _decode(token: str | None, scope: str) -> object:
         ):
             raise ValueError
         value = json.loads(payload)
-        if set(value) != {"scope", "key"} or value["scope"] != scope:
+        if (
+            set(value) not in ({"scope", "key"}, {"scope", "reference"})
+            or value["scope"] != scope
+        ):
             raise ValueError
+        if "reference" in value:
+            return _NAME_CURSORS.get(value["reference"], scope)
         return value["key"]
     except (ValueError, TypeError, binascii.Error, UnicodeError):
         raise ValueError("Invalid library cursor; refresh the library") from None
@@ -124,12 +189,16 @@ class LibraryRoutesMixin:
         roots = list(self._get_all_output_dirs())
 
         def previews() -> None:
+            records = self.db.get_library_previews(
+                [parent["id"] for parent in result["items"]]
+            )
             for parent in result["items"]:
-                images = self.db.list_library_images(parent["id"], limit=2)
-                parent["previews"] = self._library_media(images["images"], roots)
+                parent["previews"] = self._library_media(records[parent["id"]], roots)
 
         await self._run_in_executor(previews)
-        result["next_cursor"] = _encode(result.pop("next_key"), scope)
+        result["next_cursor"] = _encode(
+            result.pop("next_key"), scope, name=options["sort"] == "name"
+        )
         return web.json_response({"success": True, **result})
 
     @pair_response

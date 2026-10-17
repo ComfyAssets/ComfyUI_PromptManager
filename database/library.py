@@ -6,7 +6,7 @@ _ELIGIBLE = """(EXISTS(SELECT 1 FROM prompt_pairs ep WHERE ep.positive_prompt_id
 _ORDERS = {
     "newest": ("COALESCE(julianday(p.created_at),0)", "DESC"),
     "oldest": ("COALESCE(julianday(p.created_at),0)", "ASC"),
-    "name": ("LOWER(SUBSTR(p.text,1,160))", "ASC"),
+    "name": ("LOWER(p.text)", "ASC"),
     "rating": ("COALESCE(p.rating,0)", "DESC"),
 }
 
@@ -248,6 +248,30 @@ class LibraryOperations:
             .fetchall()
         )
         return {"categories": [row["category"] for row in rows]}
+
+    def get_library_previews(self, positive_ids: list[int]) -> dict[int, list[dict]]:
+        """Read at most two links per parent in one bounded page query."""
+        if (
+            not isinstance(positive_ids, list)
+            or len(positive_ids) > 200
+            or any(type(value) is not int or value <= 0 for value in positive_ids)
+        ):
+            raise ValueError("Invalid preview parent IDs")
+        if not positive_ids:
+            return {}
+        result = {value: [] for value in positive_ids}
+        marks = ",".join("?" for _ in positive_ids)
+        rows = self.model.get_connection().execute(
+            "WITH ranked AS (SELECT id,prompt_id,image_path,ROW_NUMBER() OVER "
+            "(PARTITION BY prompt_id ORDER BY id DESC) AS position "
+            f"FROM generated_images WHERE prompt_id IN ({marks})) "
+            "SELECT id,prompt_id,image_path FROM ranked WHERE position<=2 "
+            "ORDER BY prompt_id,id DESC",
+            positive_ids,
+        )
+        for row in rows:
+            result[row["prompt_id"]].append(dict(row))
+        return result
 
     def list_library_images(
         self,

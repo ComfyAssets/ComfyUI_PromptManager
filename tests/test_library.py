@@ -173,6 +173,7 @@ class TestLibrary(unittest.TestCase):
             self.db.list_library()
             self.db.get_library_positive(b)
             self.db.get_library_options()
+            self.db.get_library_previews([b])
             self.db.list_library_images(b)
         finally:
             connection.set_authorizer(None)
@@ -244,3 +245,55 @@ class TestLibrary(unittest.TestCase):
         self.assertTrue(
             all(self.db.list_library(category=value)["total"] == 1 for value in options)
         )
+
+    def test_name_sort_uses_full_long_text_and_keeps_deleted_anchor_key(self):
+        prefix = "shared prefix " * 30
+        self.save(prefix + "Zulu")
+        alpha = self.save(prefix + "Alpha")
+        self.save(prefix + "Middle")
+        first = self.db.list_library(sort="name", limit=1)
+        self.assertEqual(first["items"][0]["id"], alpha)
+        self.assertEqual(first["next_key"]["value"], (prefix + "Alpha").lower())
+        with self.db.model.get_connection() as connection:
+            connection.execute("DELETE FROM prompts WHERE id=?", (alpha,))
+        rest = self.db.list_library(sort="name", after=first["next_key"])
+        self.assertEqual(
+            [item["text"] for item in rest["items"]],
+            [prefix + "Middle", prefix + "Zulu"],
+        )
+
+    def test_batch_previews_return_two_newest_links_per_parent_in_one_select(self):
+        parents = [self.save(f"Parent {index}") for index in range(200)]
+        expected = {}
+        for parent in parents[:3]:
+            ids = [
+                self.db.link_image_to_prompt(
+                    parent, str(Path(self.temp.name) / f"{parent}-{index}.png")
+                )
+                for index in range(3)
+            ]
+            expected[parent] = ids[-1:0:-1]
+        connection = self.db.model.get_connection()
+        statements = []
+        connection.set_trace_callback(statements.append)
+        try:
+            previews = self.db.get_library_previews(parents)
+        finally:
+            connection.set_trace_callback(None)
+        selects = [
+            query
+            for query in statements
+            if query.lstrip().upper().startswith(("SELECT", "WITH"))
+        ]
+        self.assertEqual(len(selects), 1)
+        self.assertEqual(
+            {
+                parent: [image["id"] for image in images]
+                for parent, images in previews.items()
+                if images
+            },
+            expected,
+        )
+        self.assertEqual(self.db.get_library_previews([]), {})
+        with self.assertRaises(ValueError):
+            self.db.get_library_previews(parents + [9999])

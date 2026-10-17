@@ -1,6 +1,7 @@
 """Native library endpoints use bounded cursors and rooted media identities."""
 
 import json
+import unittest
 from unittest.mock import patch
 
 try:
@@ -178,3 +179,106 @@ class TestLibraryAPI(ImageAPITestCase):
         self.assertEqual(
             [item["text"] for item in literal["items"]], ["literal % and _"]
         )
+
+    async def test_maximum_parent_page_uses_bounded_sql_queries_for_previews(self):
+        for index in range(200):
+            self._save_prompt(f"Parent {index}")
+        statements = []
+        original = self.api.db.model.get_connection
+
+        def trace_connection():
+            connection = original()
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(
+            self.api.db.model, "get_connection", side_effect=trace_connection
+        ):
+            response, result = await self.get(limit=200)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(len(result["items"]), 200)
+        selects = [
+            query
+            for query in statements
+            if query.lstrip().upper().startswith(("SELECT", "WITH"))
+        ]
+        self.assertLessEqual(len(selects), 5)
+
+    async def test_long_name_cursor_stays_small_and_preserves_full_sorting(self):
+        prefix = "猫" * 10_000
+        self._save_prompt(prefix + "Z")
+        alpha = self._save_prompt(prefix + "A")
+        _, first = await self.get(sort="name", limit=1)
+        self.assertEqual(first["items"][0]["id"], alpha)
+        self.assertLess(len(first["next_cursor"]), 512)
+        with self.api.db.model.get_connection() as connection:
+            connection.execute("DELETE FROM prompts WHERE id=?", (alpha,))
+        _, second = await self.get(sort="name", cursor=first["next_cursor"])
+        self.assertEqual([item["text"] for item in second["items"]], [prefix + "Z"])
+
+    async def test_name_cursor_expiry_and_eviction_require_refresh_without_large_urls(
+        self,
+    ):
+        from py.api import library as module
+
+        for text in ("Alpha", "Beta", "Gamma"):
+            self._save_prompt(text)
+        now = [100]
+        store = module._NameCursorStore(max_entries=1, clock=lambda: now[0])
+        with patch.object(module, "_NAME_CURSORS", store):
+            _, first = await self.get(sort="name", limit=1)
+            now[0] = 3699
+            response, _ = await self.get(sort="name", cursor=first["next_cursor"])
+            self.assertEqual(response.status, 200)
+            now[0] = 3700
+            response, result = await self.get(sort="name", cursor=first["next_cursor"])
+            self.assertEqual(response.status, 400)
+            self.assertIn("refresh", result["error"])
+            response, fresh = await self.get(sort="name", limit=1)
+            self.assertEqual(response.status, 200)
+            _, replacement = await self.get(sort="name", limit=1)
+            self.assertNotEqual(fresh["next_cursor"], replacement["next_cursor"])
+            response, result = await self.get(sort="name", cursor=fresh["next_cursor"])
+            self.assertEqual(response.status, 400)
+            self.assertIn("refresh", result["error"])
+            response, _ = await self.get(
+                sort="name", cursor=replacement["next_cursor"], text="Alpha"
+            )
+            self.assertEqual(response.status, 400)
+
+    async def test_batch_preview_hydration_keeps_two_real_images_per_parent(self):
+        for parent_index in range(2):
+            positive = self._save_prompt(f"Parent {parent_index}")
+            for index in range(3):
+                path = make_png(self.output_dir / f"{parent_index}-{index}.png")
+                self.api.db.link_image_to_prompt(positive, str(path))
+        _, result = await self.get()
+        self.assertEqual(len(result["items"]), 2)
+        for item in result["items"]:
+            self.assertEqual(len(item["previews"]), 2)
+            self.assertTrue(item["previews"][0]["path"].endswith("-2.png"))
+            self.assertTrue(item["previews"][1]["path"].endswith("-1.png"))
+            self.assertTrue(all(image["root_index"] == 0 for image in item["previews"]))
+
+
+class TestNameCursorBudget(unittest.TestCase):
+    def test_lru_byte_budget_scope_and_oversize_keys_are_bounded(self):
+        from py.api.library import _NameCursorStore
+
+        store = _NameCursorStore(max_entries=2, max_bytes=40)
+        one = store.put("one", "scope")
+        two = store.put("two", "scope")
+        self.assertEqual(store.get(one, "scope"), "one")
+        three = store.put("three", "scope")
+        with self.assertRaises(ValueError):
+            store.get(two, "scope")
+        self.assertEqual(store.get(three, "scope"), "three")
+        with self.assertRaises(ValueError):
+            store.get(one, "other")
+        self.assertLessEqual(store.size, store.max_bytes)
+        larger = store.put("x" * 35, "scope")
+        self.assertEqual(len(store.entries), 1)
+        self.assertEqual(store.get(larger, "scope"), "x" * 35)
+        with self.assertRaises(ValueError):
+            store.put("x" * 41, "scope")
+        self.assertEqual(len(store.entries), 1)
