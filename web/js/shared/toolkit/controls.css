@@ -1,0 +1,69 @@
+.ca-tools {
+    color-scheme: dark;
+    --ca-surface: #2b2b2e;
+    --ca-field: #202023;
+    --ca-control: #37373b;
+    --ca-hover: #45454b;
+    --ca-text: #eeeef1;
+    --ca-muted: #b5b5bd;
+    --ca-line: #48484f;
+    --ca-border: #7d7d87;
+    --ca-accent: #0877bb;
+    --ca-focus: #5bc2ff;
+    --ca-error: #d52430;
+    --ca-error-text: #ffadb3;
+    --ca-error-bg: #391d23;
+    font: 13px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+    background: var(--ca-surface);
+    color: var(--ca-text);
+}
+.ca-tools[data-ca-theme="light"] {
+    color-scheme: light;
+    --ca-surface: #ffffff;
+    --ca-field: #f5f5f7;
+    --ca-control: #eeeef1;
+    --ca-hover: #e2e2e8;
+    --ca-text: #23232b;
+    --ca-muted: #5c5c68;
+    --ca-line: #d4d4dc;
+    --ca-border: #85858f;
+    --ca-focus: #0066a6;
+    --ca-error-text: #a20d20;
+    --ca-error-bg: #fff0f1;
+}
+.ca-tools :where(div, span, label, input, textarea, button, select, fieldset) { box-sizing: border-box; }
+.ca-tools :where(button, input, select, textarea) { font: inherit; color: inherit; accent-color: var(--ca-accent); }
+.ca-tools :where(button, select, input:not([type="radio"], [role="switch"]), textarea) { border: 1px solid var(--ca-border); border-radius: 5px; min-block-size: 30px; }
+.ca-tools button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 4px 10px; background: var(--ca-control); cursor: pointer; white-space: nowrap; }
+.ca-tools button:hover:not(:disabled) { background: var(--ca-hover); }
+.ca-tools button:disabled { opacity: .42; cursor: default; }
+.ca-tools :where(input:not([type="radio"], [role="switch"]), select, textarea) { background: var(--ca-field); min-inline-size: 0; padding: 4px 8px; }
+.ca-tools :where(button, input, select, textarea):focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 2px; }
+.ca-tools :where(input, textarea)::placeholder { color: var(--ca-muted); opacity: 1; }
+.ca-tools .ca-primary, .ca-tools button[aria-current="page"] { background: var(--ca-accent); border-color: var(--ca-accent); color: #fff; }
+.ca-tools .ca-primary:hover:not(:disabled) { background: #096ba6; }
+.ca-tools .ca-danger { background: var(--ca-error); border-color: var(--ca-error); color: #fff; }
+.ca-tools .ca-danger:hover:not(:disabled) { background: #b51c28; }
+.ca-tools .ca-icon-button { min-inline-size: 30px; padding-inline: 6px; }
+.ca-tools .ca-field-label { display: block; font-size: 11px; color: var(--ca-muted); }
+.ca-tools .ca-field { display: inline-flex; align-items: center; gap: 6px; min-inline-size: 0; }
+.ca-tools .ca-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; min-block-size: 30px; font-size: 12px; }
+.ca-tools .ca-switch input { appearance: none; position: relative; inline-size: 36px; min-block-size: 24px; border: 1px solid var(--ca-border); border-radius: 20px; background: var(--ca-control); margin: 0; cursor: pointer; flex-shrink: 0; }
+.ca-tools .ca-switch input::before { content: ""; position: absolute; inline-size: 16px; block-size: 16px; background: var(--ca-muted); inset-block-start: 3px; inset-inline-start: 3px; border-radius: 50%; }
+.ca-tools .ca-switch input:checked { background: var(--ca-accent); border-color: var(--ca-accent); }
+.ca-tools .ca-switch input:checked::before { background: #fff; inset-inline-start: 15px; }
+.ca-tools .ca-segments { border: 0; padding: 0; margin: 0; display: inline-flex; gap: 2px; min-inline-size: 0; }
+.ca-tools .ca-segments label { position: relative; display: inline-flex; min-inline-size: 24px; min-block-size: 30px; cursor: pointer; }
+.ca-tools .ca-segments input { position: absolute; inset: 0; margin: 0; opacity: 0; inline-size: 100%; block-size: 100%; cursor: pointer; }
+.ca-tools .ca-segments label > span { padding: 4px 12px; background: var(--ca-field); border: 1px solid var(--ca-border); border-radius: 4px; color: var(--ca-text); font-size: 13px; }
+.ca-tools .ca-segments input:checked + span { background: var(--ca-accent); border-color: var(--ca-accent); color: #fff; }
+.ca-tools .ca-segments input:focus-visible + span { outline: 2px solid var(--ca-focus); outline-offset: 2px; }
+.ca-tools .ca-visually-hidden { position: absolute; inline-size: 1px; block-size: 1px; clip-path: inset(50%); overflow: hidden; white-space: nowrap; }
+.ca-tools .ca-range { display: flex; align-items: center; gap: 10px; flex-shrink: 0; color: var(--ca-muted); font-size: 11px; }
+.ca-tools .ca-range input[type="range"] { flex: 1; inline-size: 60px; min-inline-size: 0; margin: 0; padding: 0; border: 0; min-block-size: 30px; cursor: pointer; }
+.ca-tools .ca-range output { min-inline-size: 44px; font-variant-numeric: tabular-nums; }
+@media (pointer: coarse) { .ca-tools :where(button, select), .ca-tools .ca-segments label > span, .ca-tools .ca-switch { min-block-size: 40px; } }
+@media (forced-colors: active) {
+    .ca-tools { --ca-accent: Highlight; --ca-focus: Highlight; --ca-border: ButtonText; --ca-line: CanvasText; }
+    .ca-tools .ca-switch input:checked::before { background: HighlightText; }
+}

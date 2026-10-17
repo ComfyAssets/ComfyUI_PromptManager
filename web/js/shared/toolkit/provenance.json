@@ -1,0 +1,24 @@
+{
+  "name": "@comfyassets/toolkit",
+  "version": "0.1.0",
+  "resolved": "https://codeload.github.com/ComfyAssets/ComfyAssets-Toolkit/tar.gz/66644f5620e10efeaba090dca2d5be54baa2ee14",
+  "integrity": "sha512-jvDj3iYJHjRCH7nZimoF4KNLwEVdzKVQIOZrMfoLg9aLnHm98R8YvBUOvnlJ+JNrM8/LnD2m30u3ggSTnR0/sw==",
+  "files": {
+    "core.js": {
+      "source": "ui/core.js",
+      "sha256": "cd10b700441a607cb1d56051cf0a430c0b36f901c0c351d8f4dae067090d8838"
+    },
+    "controls.css": {
+      "source": "ui/controls.css",
+      "sha256": "3ae1ca39077ffc3621b86ae7ef77202841fa27061b0e4623f2bb0413b27ecd7b"
+    },
+    "LICENSE": {
+      "source": "LICENSE",
+      "sha256": "0c865294d0c580dbe365d9ff5ccd655bd2d3716ca3282cc485b5cf789ec8ea6f"
+    },
+    "SOURCE.md": {
+      "source": "SOURCE.md",
+      "sha256": "46c226483f1d0c01524b1363435ccb3b1e67c2b0f6ed9161f7f087e49e8ed5a9"
+    }
+  }
+}

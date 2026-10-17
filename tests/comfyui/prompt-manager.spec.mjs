@@ -55,6 +55,10 @@ for (const type of ['PromptManager', 'PromptManagerText']) {
         }, type);
         const recent = page.getByRole('button', { name: '📋 Recent', exact: true });
         await expect(recent).toBeVisible();
+        if (type === 'PromptManager') {
+            await expect(page.locator('.pm-classic')).toBeVisible();
+            await expect(page.getByRole('button', { name: '🔍 Search', exact: true })).toHaveCSS('background-color', 'rgb(8, 119, 187)');
+        }
         await recent.click();
         await page.getByText(text, { exact: true }).click();
         const state = () => page.evaluate(async id => {
@@ -100,6 +104,7 @@ for (const type of ['PromptManager', 'PromptManagerText']) {
 
 test('all node schemas and extension entrypoints load from the real host', async ({ page, request }) => {
     const definitions = await (await request.get('/object_info')).json();
+    expect(definitions.PromptManager.display_name).toBe('Prompt Manager (Classic)');
     for (const name of ['PromptManager', 'PromptManagerText', 'PromptSearchList']) expect(definitions[name]?.name).toBe(name);
     const extensions = await (await request.get('/extensions')).json();
     expect(extensions.filter(path => path.startsWith('/extensions/promptmanager/'))).toEqual(['/extensions/promptmanager/prompt_manager.js']);
@@ -114,20 +119,41 @@ test('all node schemas and extension entrypoints load from the real host', async
     expect(result).toEqual({ type: 'PromptSearchList', extension: true });
 });
 
-test('node Web UI button opens actual standalone pages', async ({ page }) => {
+for (const type of ['PromptManager', 'PromptManagerText']) {
+    test(`${type} Web UI button opens actual standalone pages`, async ({ page }) => {
+        await page.evaluate(async type => {
+            const { app } = await import('/scripts/app.js');
+            const node = LiteGraph.createNode(type);
+            app.graph.add(node);
+            app.canvas.centerOnNode(node);
+        }, type);
+        const popupPromise = page.waitForEvent('popup');
+        await page.getByRole('button', { name: '🌐 Web UI', exact: true }).click();
+        const popup = await popupPromise;
+        await popup.waitForLoadState('domcontentloaded');
+        await expect(popup).toHaveURL(/\/prompt_manager\/(web|admin)/);
+        await expect(popup.locator('body')).toContainText('Prompt');
+        await popup.goto(new URL('/prompt_manager/gallery', page.url()).href);
+        await expect(popup.locator('#addPromptBtn')).toBeVisible();
+        await popup.close();
+    });
+}
+
+test('Classic controls follow actual ComfyUI light and dark palettes', async ({ page }, testInfo) => {
     await page.evaluate(async () => {
         const { app } = await import('/scripts/app.js');
-        const node = LiteGraph.createNode('PromptManagerText');
+        const node = LiteGraph.createNode('PromptManager');
         app.graph.add(node);
+        node.setSize([650, 800]);
         app.canvas.centerOnNode(node);
     });
-    const popupPromise = page.waitForEvent('popup');
-    await page.getByRole('button', { name: '🌐 Web UI', exact: true }).click();
-    const popup = await popupPromise;
-    await popup.waitForLoadState('domcontentloaded');
-    await expect(popup).toHaveURL(/\/prompt_manager\/(web|admin)/);
-    await expect(popup.locator('body')).toContainText('Prompt');
-    await popup.goto(new URL('/prompt_manager/gallery', page.url()).href);
-    await expect(popup.locator('#addPromptBtn')).toBeVisible();
-    await popup.close();
+    for (const palette of ['light', 'dark']) {
+        await page.evaluate(async palette => {
+            const { app } = await import('/scripts/app.js');
+            await app.ui.settings.setSettingValue('Comfy.ColorPalette', palette);
+        }, palette);
+        await expect(page.locator('.pm-classic')).toHaveAttribute('data-ca-theme', palette);
+        await expect(page.getByRole('button', { name: '🔍 Search', exact: true })).toHaveCSS('background-color', 'rgb(8, 119, 187)');
+        await page.screenshot({ path: testInfo.outputPath(`classic-${palette}.png`) });
+    }
 });

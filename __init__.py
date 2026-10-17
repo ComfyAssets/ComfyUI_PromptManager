@@ -49,7 +49,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "PromptManager": "Prompt Manager",
+    "PromptManager": "Prompt Manager (Classic)",
     "PromptManagerText": "Prompt Manager Text",
     "PromptSearchList": "Prompt Search List",
 }

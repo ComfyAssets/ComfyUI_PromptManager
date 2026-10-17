@@ -1,0 +1,14 @@
+.pm-classic .pm-classic-workspace { min-block-size: 0; }
+.pm-classic .pm-classic-toolbar { display: flex; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
+.pm-classic-toolbar > button { flex: 1; }
+.pm-classic .pm-classic-results { flex: 1; min-block-size: 100px; overflow: auto; padding: 8px; border: 1px solid var(--ca-line); border-radius: 5px; background: var(--ca-field); }
+.pm-classic-message { color: var(--ca-muted); text-align: center; padding: 12px; margin: 0; overflow-wrap: anywhere; }
+.pm-classic-error { color: var(--ca-error-text); background: var(--ca-error-bg); }
+.pm-classic-count { color: var(--ca-text); text-align: center; margin: 0 0 10px; }
+.pm-classic button.pm-classic-result { display: flex; flex-direction: column; align-items: stretch; text-align: start; inline-size: 100%; white-space: normal; margin-block-end: 5px; }
+.pm-classic-result[aria-pressed="true"] { border-color: var(--ca-accent); box-shadow: inset 3px 0 var(--ca-accent); }
+.pm-classic-preview { overflow-wrap: anywhere; }
+.pm-classic-metadata { color: var(--ca-muted); font-size: 11px; overflow-wrap: anywhere; }
+.pm-classic-restore { white-space: normal !important; }
+.pm-classic-notification { position: fixed; inset-block-start: 20px; inset-inline-end: 20px; padding: 10px 15px; border: 1px solid var(--ca-border); border-radius: 5px; z-index: 10000; max-inline-size: min(300px, calc(100vw - 40px)); overflow-wrap: anywhere; }
+.pm-classic-notification[data-kind="error"] { color: var(--ca-error-text); background: var(--ca-error-bg); border-color: var(--ca-error); }

@@ -2,6 +2,7 @@
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+const { installClassicControls } = await import(api.fileURL('/prompt_manager/js/classic-node.js'));
 
 // ============================================================================
 // Top Bar Button Integration (similar to rgthree-comfy approach)
@@ -302,7 +303,8 @@ app.registerExtension({
         // CRITICAL FIX: Ensure text widget always returns current value during serialization
         // This fixes the issue where graphToPrompt reads stale cached values
         const self = this;
-        setTimeout(() => {
+        this._textSyncTimer = setTimeout(() => {
+          if (self._classicScope?.signal.aborted) return;
           const textWidget = self.widgets?.find((w) => w.name === "text");
           if (textWidget) {
             // Store reference to the widget for the closure
@@ -334,13 +336,16 @@ app.registerExtension({
               };
 
               // Sync on every keystroke
-              textWidget.inputEl.addEventListener('input', syncValue);
+              const listen = self._classicScope
+                ? (event) => self._classicScope.listen(textWidget.inputEl, event, syncValue)
+                : (event) => textWidget.inputEl.addEventListener(event, syncValue);
+              listen('input');
               // Sync on change (for paste, autocomplete, etc.)
-              textWidget.inputEl.addEventListener('change', syncValue);
+              listen('change');
               // Sync when focus leaves the field
-              textWidget.inputEl.addEventListener('blur', syncValue);
+              listen('blur');
               // Sync on keyup as backup
-              textWidget.inputEl.addEventListener('keyup', syncValue);
+              listen('keyup');
 
               // Initial sync
               syncValue();
@@ -377,7 +382,7 @@ app.registerExtension({
             width: 100%;
             height: 100%;
             padding: 8px;
-            background-color: #2a2a2a;
+            background-color: ${nodeData.name === 'PromptManager' ? 'var(--ca-surface)' : '#2a2a2a'};
             border-radius: 4px;
             box-sizing: border-box;
             display: flex;
@@ -983,6 +988,7 @@ app.registerExtension({
             throw new Error(`Unknown method: ${method}`);
           }
 
+          if (this._classicScope) options.signal = this._classicScope.signal;
           const response = await fetch(api.fileURL(url), options);
 
           if (!response.ok) {
@@ -997,10 +1003,12 @@ app.registerExtension({
 
           return { results: data.results || [] };
         } catch (error) {
-          console.error(
-            `[PromptManager] API call failed for ${method}:`,
-            error,
-          );
+          if (!this._classicScope?.signal.aborted) {
+            console.error(
+              `[PromptManager] API call failed for ${method}:`,
+              error,
+            );
+          }
           throw error;
         }
       };
@@ -1174,6 +1182,7 @@ app.registerExtension({
           document.body.removeChild(notification);
         }, 3000);
       };
+      if (nodeData.name === 'PromptManager') installClassicControls(nodeType, app, parseSearchQuery, api);
     }
   },
 });

@@ -86,4 +86,23 @@ host orchestration and coverage helpers. `comfyui-host.mjs` is PromptManager's
 configuration adapter; keep reusable lifecycle changes in the toolkit source.
 The existing npm scripts remain the public maintainer entry points. See
 [TESTING.md](../../TESTING.md) for the managed real-host matrix and update policy.
-This first integration does not yet ship toolkit UI assets to end users.
+
+## Shared ComfyAssets browser controls
+
+Prompt Manager (Classic) consumes the same pinned toolkit's browser controls.
+The node identifier remains `PromptManager`; existing workflows, sockets, and
+immediate result selection are preserved. PromptManager Text is unchanged.
+
+Committed assets in `web/js/shared/toolkit/` work without npm or KikoTools installed.
+Maintain common controls in [ComfyAssets Toolkit](https://github.com/ComfyAssets/ComfyAssets-Toolkit),
+then update the exact archive pin and lockfile here. Regenerate using
+`npm run --prefix tools/vendor sync:toolkit`; `npm run --prefix tools/vendor check`
+verifies both Viewer.js and the toolkit without rewriting files. The toolkit
+distribution includes its license, source history, archive integrity and per-file
+hashes. Do not edit its copied files directly. Classic's controller and layout
+remain in `web/js/classic-node.js` and `web/js/classic-node.css`.
+
+Run the frontend coverage/browser suites and managed Classic/Nodes 2.0 matrix
+after updates. Shared modules participate in the frontend coverage gate.
+Pixaroma's reusable framework inspired this architecture; no Pixaroma code,
+styles or assets are included.

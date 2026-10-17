@@ -142,6 +142,14 @@ _Powered by [ViewerJS](https://github.com/fengyuanchen/viewerjs) for professiona
 Viewer.js is vendored locally. See [Viewer.js maintenance](tools/vendor/README.md)
 for reproducible updates, verification, and automated update PRs.
 
+Prompt Manager appears as **Prompt Manager (Classic)** in the Add Node menu.
+It keeps the existing layout and behavior while using shared
+[ComfyAssets Toolkit](https://github.com/ComfyAssets/ComfyAssets-Toolkit) controls
+that follow ComfyUI's light/dark theme. Existing workflows keep the same internal
+node identifier and sockets. The reusable architecture is inspired by
+[Pixaroma](https://github.com/pixaroma/ComfyUI-Pixaroma); no implementation or assets
+were copied. See the [toolkit maintenance notes](tools/vendor/README.md#shared-comfyassets-browser-controls).
+
 ### 🔬 ComfyUI Workflow Analysis
 
 - **PNG Metadata Parsing**: Advanced PNG chunk analysis to extract embedded ComfyUI data
