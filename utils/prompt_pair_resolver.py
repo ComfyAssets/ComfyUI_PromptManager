@@ -10,14 +10,17 @@ ambiguous sampler selection. Unknown conditioning semantics are never flattened.
 
 Future nodes can register declarative ``OutputAdapter`` entries by
 ``(class_type, output_slot)``. This does not prescribe a future paired-node schema.
-Effective text is reconstructed from recorded graph inputs; runtime-only trigger
-injection cannot be recovered unless it was recorded. The resolver has no
+Effective text uses a unique bounded execution record for traced paired nodes
+when available; cached graph-only results remain explicitly inferred.
+The resolver has no
 ComfyUI, database, configuration or filesystem dependencies.
 """
 
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Tuple
+
+from .pair_execution import ExecutionEvidenceError, read_pair_execution
 
 
 @dataclass(frozen=True)
@@ -101,6 +104,7 @@ class _GraphResolver:
         max_visits: int,
         max_depth: int,
         max_text_length: int,
+        metadata: Optional[dict] = None,
     ) -> None:
         self.graph = graph
         self.adapters = {**_DEFAULT_ADAPTERS, **adapters}
@@ -109,6 +113,8 @@ class _GraphResolver:
         self.max_text_length = max_text_length
         self.memo: dict = {}
         self.active: set = set()
+        self.metadata = metadata or {}
+        self.text_sources: dict = {}
 
     def node(self, node_id: str) -> Tuple[str, dict]:
         node = self.graph.get(node_id)
@@ -151,26 +157,43 @@ class _GraphResolver:
                 adapter = self.adapters[(name, slot)]
                 if not isinstance(adapter, OutputAdapter) or adapter.kind != kind:
                     raise _Unresolved("Output slot has an incompatible type")
-                text, path, storage_text = self.text(
-                    inputs.get(adapter.input_name), "string", depth + 1
+                evidence = (
+                    self.execution_record(node_id, inputs)
+                    if name == "PromptManagerPair"
+                    else None
                 )
-                if adapter.compose or adapter.storage_input:
-                    storage_text = text
-                if adapter.compose:
-                    before, before_path, _ = self.text(
-                        inputs.get("prepend_text", ""), "string", depth + 1
-                    )
-                    after, after_path, _ = self.text(
-                        inputs.get("append_text", ""), "string", depth + 1
-                    )
-                    text = self.bounded(
-                        " ".join(
-                            part
-                            for part in (before.strip(), text, after.strip())
-                            if part
+                if evidence is not None:
+                    text = evidence[
+                        (
+                            "positive_text"
+                            if adapter.input_name == "text"
+                            else "negative_effective_text"
                         )
+                    ]
+                    storage_text = evidence[adapter.input_name]
+                    path = []
+                    self.text_sources[(node_id, slot)] = "execution"
+                else:
+                    text, path, storage_text = self.text(
+                        inputs.get(adapter.input_name), "string", depth + 1
                     )
-                    path = before_path + path + after_path
+                    if adapter.compose or adapter.storage_input:
+                        storage_text = text
+                    if adapter.compose:
+                        before, before_path, _ = self.text(
+                            inputs.get("prepend_text", ""), "string", depth + 1
+                        )
+                        after, after_path, _ = self.text(
+                            inputs.get("append_text", ""), "string", depth + 1
+                        )
+                        text = self.bounded(
+                            " ".join(
+                                part
+                                for part in (before.strip(), text, after.strip())
+                                if part
+                            )
+                        )
+                        path = before_path + path + after_path
             elif (
                 name in ("StringConcatenate", "Text Concatenate")
                 and slot == 0
@@ -216,6 +239,44 @@ class _GraphResolver:
         finally:
             self.active.discard(key)
 
+    def execution_record(self, node_id: str, inputs: dict) -> Optional[dict]:
+        try:
+            record = read_pair_execution(self.metadata, node_id)
+        except ExecutionEvidenceError as error:
+            raise _Unresolved(str(error)) from error
+        if record is None:
+            return None
+        for name in ("text", "negative_text", "prepend_text", "append_text"):
+            try:
+                expected = self.text(inputs.get(name, ""), "string")[0]
+            except _Unresolved as error:
+                if str(error) == "Unsupported node semantics or output slot":
+                    value = inputs.get(name)
+                    if _link(value):
+                        source_name, _ = self.node(str(value[0]))
+                        known_slots = {
+                            slot
+                            for (kind, slot) in self.adapters
+                            if kind == source_name
+                        }
+                        if known_slots and value[1] not in known_slots:
+                            raise
+                        if (
+                            source_name
+                            in ("StringConcatenate", "Text Concatenate", "Reroute")
+                            and value[1] != 0
+                        ):
+                            raise
+                    continue
+                raise
+            if name in ("prepend_text", "append_text"):
+                expected = expected.strip()
+            if expected != record[name]:
+                raise _Unresolved(
+                    "Execution evidence does not match recorded node inputs"
+                )
+        return record
+
     def side(self, value: Any, sampler_id: str) -> dict:
         text, path, storage_text = self.text(value, "conditioning")
         origin = path[0]
@@ -227,6 +288,9 @@ class _GraphResolver:
                 "sampler_id": sampler_id,
                 **origin,
                 "path": path,
+                "text_source": self.text_sources.get(
+                    (origin["node_id"], origin["output_slot"]), "graph-inferred"
+                ),
             },
         }
 
@@ -310,7 +374,11 @@ def _parameters(value: Any, max_text_length: int) -> dict:
     positive = positive.strip()
     if not positive:
         return _result("unresolved", reason="Positive prompt is empty")
-    provenance = {"format": "a1111", "field": "parameters"}
+    provenance = {
+        "format": "a1111",
+        "field": "parameters",
+        "text_source": "embedded-parameters",
+    }
     positive_side = {
         "text": positive,
         "storage_text": positive,
@@ -359,7 +427,12 @@ def resolve_prompt_pair(
     if len(normalized) != len(graph):
         return _result("unresolved", reason="Graph node IDs are not unique")
     resolver = _GraphResolver(
-        normalized, adapters or {}, max_visits, max_depth, max_text_length
+        normalized,
+        adapters or {},
+        max_visits,
+        max_depth,
+        max_text_length,
+        metadata if "prompt" in metadata else None,
     )
     if output_node_id is not None:
         try:

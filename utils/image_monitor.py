@@ -386,6 +386,29 @@ class ImageGenerationHandler(FileSystemEventHandler):
             return "unknown", None
 
         prompt_text = None
+        resolution = resolve_prompt_pair(metadata)
+        graph = metadata.get("prompt")
+        if resolution["state"] == "resolved" and isinstance(graph, dict):
+            positive = resolution["positive"]
+            path = positive["provenance"].get("path", [])
+            paired_source = any(
+                isinstance(graph.get(item.get("node_id")), dict)
+                and graph[item["node_id"]].get("class_type") == "PromptManagerPair"
+                for item in path
+            )
+            if paired_source:
+                try:
+                    existing = self.db_manager.get_prompt_by_hash(
+                        generate_prompt_hash(positive["storage_text"])
+                    )
+                    if existing:
+                        return "linked", {
+                            "id": existing["id"],
+                            "text": existing["text"],
+                            "from_metadata": True,
+                        }
+                except Exception as error:
+                    self.logger.warning(f"Paired metadata lookup failed: {error}")
 
         # The executed graph: use the PromptManager node feeding the positive input
         prompt_data = metadata.get("prompt")

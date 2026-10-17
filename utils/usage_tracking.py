@@ -31,11 +31,13 @@ try:
     from .logging_config import get_logger
     from .prompt_graph import intrinsic_pair_nodes, resolve_text, run_prompt_nodes
     from .prompt_pair_resolver import resolve_text_input
+    from .pair_execution import clear_pair_execution
 except ImportError:
     from utils.hashing import generate_prompt_hash
     from utils.logging_config import get_logger
     from utils.prompt_graph import intrinsic_pair_nodes, resolve_text, run_prompt_nodes
     from utils.prompt_pair_resolver import resolve_text_input
+    from utils.pair_execution import clear_pair_execution
 
 logger = get_logger("prompt_manager.usage_tracking")
 
@@ -217,6 +219,7 @@ def handle_queued_prompt(
     the request has not been validated yet.
     """
     try:
+        clear_pair_execution(json_data)
         graph = json_data.get("prompt") if isinstance(json_data, dict) else None
         runs = queued_prompt_runs(graph)
         pair_runs = queued_pair_runs(graph)
@@ -262,6 +265,7 @@ def count_queued_prompt(
 ) -> Any:
     """Legacy on-prompt handler body: count at submit time (no prompt_queue)."""
     try:
+        clear_pair_execution(json_data)
         graph = json_data.get("prompt") if isinstance(json_data, dict) else None
         runs = queued_prompt_runs(graph)
         pair_runs = queued_pair_runs(graph)

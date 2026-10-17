@@ -116,6 +116,7 @@ class ComfyUIMetadataExtractor:
 
                     # Extract other common metadata fields
                     metadata_fields = [
+                        "comfyassets_prompt_pairs",
                         "parameters",
                         "model",
                         "sampler",

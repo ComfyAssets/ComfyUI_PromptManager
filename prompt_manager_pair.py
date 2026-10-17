@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional, Tuple
 try:
     from .prompt_manager import IO, InputTypeDict, PromptManagerFocused
     from .utils.hashing import generate_prompt_hash
+    from .utils.pair_execution import record_pair_execution
     from .utils.prompt_graph import intrinsic_pair_nodes, run_prompt_nodes
     from .utils.prompt_pair_resolver import resolve_text_input
     from .utils.usage_tracking import (
@@ -18,6 +19,7 @@ try:
 except ImportError:
     from prompt_manager import IO, InputTypeDict, PromptManagerFocused
     from utils.hashing import generate_prompt_hash
+    from utils.pair_execution import record_pair_execution
     from utils.prompt_graph import intrinsic_pair_nodes, run_prompt_nodes
     from utils.prompt_pair_resolver import resolve_text_input
     from utils.usage_tracking import (
@@ -41,6 +43,7 @@ class PromptManagerPair(PromptManagerFocused):
             ),
             "clip": inputs["required"]["clip"],
         }
+        inputs["hidden"]["extra_pnginfo"] = "EXTRA_PNGINFO"
         return inputs
 
     RETURN_TYPES = (IO.CONDITIONING, IO.CONDITIONING, IO.STRING, IO.STRING)
@@ -65,6 +68,7 @@ class PromptManagerPair(PromptManagerFocused):
         append_text: str = "",
         prompt: Optional[Dict[str, Any]] = None,
         unique_id: Optional[str] = None,
+        extra_pnginfo: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Any, Any, str, str]:
         """Encode both sides once; database and tracking failures never block CLIP."""
         if clip is None:
@@ -83,6 +87,16 @@ class PromptManagerPair(PromptManagerFocused):
         )
         negative_conditioning = clip.encode_from_tokens_scheduled(
             clip.tokenize(negative_text)
+        )
+        record_pair_execution(
+            extra_pnginfo,
+            unique_id,
+            text=text,
+            negative_text=negative_text,
+            positive_text=positive,
+            negative_effective_text=negative_text,
+            prepend_text=prepend_text.strip(),
+            append_text=append_text.strip(),
         )
         pair_id = prompt_id = None
         known = isinstance(prompt, dict) and unique_id is not None
