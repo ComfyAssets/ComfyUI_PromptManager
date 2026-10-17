@@ -191,7 +191,9 @@ class PackageTestCase(unittest.TestCase):
         cls.output_dir = os.path.join(cls.tmp.name, "output")
         os.makedirs(cls.output_dir)
         cls.db_path = cls.make_db_path(cls.tmp.name)
-        cls.package, cls.server = cls.enterClassContext(
+        package_context = contextlib.ExitStack()
+        cls.addClassCleanup(package_context.close)
+        cls.package, cls.server = package_context.enter_context(
             load_package(
                 cls.package_name, cls.db_path, cls.output_dir, server=cls.make_server()
             )
@@ -350,8 +352,10 @@ class TestConsoleBanner(unittest.TestCase):
         name = "prompt_manager_pkg_cp1252"
         stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
 
+        package_context = contextlib.ExitStack()
+        self.addCleanup(package_context.close)
         with contextlib.redirect_stdout(stream):
-            package, _ = self.enterContext(
+            package, _ = package_context.enter_context(
                 load_package(name, os.path.join(tmp.name, "p.db"), output_dir)
             )
         self.addCleanup(sys.modules.pop, name, None)

@@ -4,6 +4,7 @@ ComfyUI serves every .js file under WEB_DIRECTORY into the canvas page, so the
 directory must hold nothing but the node extension.
 """
 
+import contextlib
 import os
 import sys
 import tempfile
@@ -26,7 +27,9 @@ class TestExtensionWebDir(unittest.TestCase):
         cls.addClassCleanup(cls.tmp.cleanup)
         output_dir = os.path.join(cls.tmp.name, "output")
         os.makedirs(output_dir)
-        cls.package, _ = cls.enterClassContext(
+        package_context = contextlib.ExitStack()
+        cls.addClassCleanup(package_context.close)
+        cls.package, _ = package_context.enter_context(
             load_package(
                 cls.package_name, os.path.join(cls.tmp.name, "prompts.db"), output_dir
             )
