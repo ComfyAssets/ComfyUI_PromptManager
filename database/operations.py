@@ -11,6 +11,7 @@ from typing import Optional, List, Dict, Any
 from .models import PromptModel, normalize_image_path, utc_now_iso
 from .pairs import PairDependencyError, PairOperations
 from .library import LibraryOperations
+from .execution_history import ExecutionHistoryOperations
 
 # Import logging system
 try:
@@ -86,7 +87,10 @@ def _resolve_db_path(db_path: Optional[str] = None) -> str:
 
     if db_path is None:
         try:
-            from py.config import PromptManagerConfig
+            try:
+                from ..py.config import PromptManagerConfig
+            except ImportError:
+                from py.config import PromptManagerConfig
 
             db_path = PromptManagerConfig.DEFAULT_DB_PATH
         except Exception:
@@ -148,7 +152,7 @@ def _coerce_file_info(metadata: Any) -> tuple:
     )
 
 
-class PromptDatabase(PairOperations, LibraryOperations):
+class PromptDatabase(PairOperations, LibraryOperations, ExecutionHistoryOperations):
     """Database operations class for managing prompts."""
 
     def __init__(self, db_path: Optional[str] = None):

@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, writeFile, mkdir, readFile, realpath, rm, access } from 'node:fs/promises';
+import { mkdtemp, writeFile, mkdir, readFile, realpath, rm, access, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
+import { createServer } from 'node:net';
 import { launchComfyHost } from '../../tools/vendor/comfyui-host.mjs';
 
 async function fixture(t, program) {
@@ -59,3 +60,71 @@ test('PromptManager adapter isolates database, configuration and monitored direc
     await access(join(options.repository, '__init__.py'));
 });
 
+
+test('execution host adds only the tracked fixture pack and removes all owned state', async t => {
+    const { launchExecutionHost } = await import('../comfyui/execution-host.mjs');
+    const options = await fixture(t, idle);
+    const execution = await launchExecutionHost({ ...options, port: 8196 });
+    t.after(() => execution.dispose());
+    await once(execution.host.child.stdout, 'data');
+    const args = execution.host.child.spawnargs;
+    assert.deepEqual(args.slice(args.indexOf('--whitelist-custom-nodes') + 1), ['promptmanager', 'pm_execution_fixture']);
+    assert.equal(execution.databasePath, join(execution.host.stateDirectory, 'prompts.db'));
+    const installed = join(execution.host.stateDirectory, 'custom_nodes/pm_execution_fixture');
+    assert.match(await readFile(join(installed, '__init__.py'), 'utf8'), /PMHistoryCached/);
+    assert.deepEqual(await readdir(installed), ['__init__.py']);
+    const source = execution.fixtureDirectory;
+    assert.notEqual(await realpath(source), await realpath(options.repository));
+    await execution.dispose();
+    await assert.rejects(access(execution.host.stateDirectory), { code: 'ENOENT' });
+    await assert.rejects(access(source), { code: 'ENOENT' });
+    await access(join(options.repository, '__init__.py'));
+});
+
+test('read-only ledger helper distinguishes absent schema from missing, corrupt and oversized data', async t => {
+    const { readExecutionRuns } = await import('../comfyui/execution-fixture.mjs');
+    const directory = await mkdtemp(join(tmpdir(), 'pm-ledger-read-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const database = join(directory, 'prompts.db');
+    const python = process.env.PM_TEST_PYTHON || 'python';
+    const job = '10000000-0000-4000-8000-000000000001';
+    const session = '20000000-0000-4000-8000-000000000001';
+    execFileSync(python, ['-c', 'import sqlite3,sys; sqlite3.connect(sys.argv[1]).close()', database]);
+    assert.deepEqual(await readExecutionRuns(database, job), { schemaAvailable: false, rows: [] });
+    execFileSync(python, ['-c', `import sqlite3,sys
+c=sqlite3.connect(sys.argv[1])
+c.execute('CREATE TABLE execution_runs (run_id TEXT, job_id TEXT, session_id TEXT, outcome TEXT)')
+c.executemany('INSERT INTO execution_runs VALUES (?,?,?,?)', [('first',sys.argv[2],sys.argv[3],'succeeded'),('other','30000000-0000-4000-8000-000000000001',sys.argv[3],'failed')])
+c.commit()`, database, job, session]);
+    const before = await readFile(database);
+    assert.deepEqual(await readExecutionRuns(database, job, session), { schemaAvailable: true, rows: [
+        { run_id: 'first', job_id: job, session_id: session, outcome: 'succeeded' },
+    ] });
+    assert.deepEqual((await readExecutionRuns(database, job, '40000000-0000-4000-8000-000000000001')).rows, []);
+    assert.deepEqual(await readFile(database), before);
+    await assert.rejects(readExecutionRuns(database, "' OR 1=1 --"));
+    execFileSync(python, ['-c', `import sqlite3,sys
+c=sqlite3.connect(sys.argv[1])
+c.executemany('INSERT INTO execution_runs VALUES (?,?,?,?)', [(str(i),sys.argv[2],sys.argv[3],'succeeded') for i in range(256)])
+c.commit()`, database, job, session]);
+    await assert.rejects(readExecutionRuns(database, job), /bound|256/);
+    await assert.rejects(readExecutionRuns(join(directory, 'missing.db'), job));
+    await writeFile(database, 'corrupt database');
+    await assert.rejects(readExecutionRuns(database, job));
+});
+
+
+test('execution launcher refuses an occupied port without touching an existing server', async t => {
+    const { launchExecutionHost } = await import('../comfyui/execution-host.mjs');
+    const options = await fixture(t, idle);
+    const server = createServer();
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(8196, '127.0.0.1', resolve); });
+    let execution;
+    try {
+        await assert.rejects(async () => { execution = await launchExecutionHost({ ...options, port: 8196 }); }, /already in use/);
+        assert.equal(server.listening, true);
+    } finally {
+        await execution?.dispose();
+        await new Promise(resolve => server.close(resolve));
+    }
+});

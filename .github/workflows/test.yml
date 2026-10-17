@@ -97,6 +97,11 @@ jobs:
           PM_COMFY_ROOT: ${{ github.workspace }}/.ci-comfyui
           PM_TEST_PYTHON: python
         run: npm run --prefix tools/vendor test:comfyui
+      - name: Real cached and headless execution history
+        env:
+          PM_COMFY_ROOT: ${{ github.workspace }}/.ci-comfyui
+          PM_TEST_PYTHON: python
+        run: npm run --prefix tools/vendor test:executions
       - name: Independent and combined pack compatibility
         env:
           PM_COMFY_ROOT: ${{ github.workspace }}/.ci-comfyui

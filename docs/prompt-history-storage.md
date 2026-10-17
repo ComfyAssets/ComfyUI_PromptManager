@@ -1,46 +1,62 @@
 # Durable Prompt History
 
-Status: future proposal tracked in [#209](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues/209); the native library does not migrate execution storage.
+Status: the durable job ledger is implemented as the first slice of
+[#209](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues/209). Prompt
+contexts, output associations and the chronological timeline remain pending;
+#209 stays open.
 
-## What the current database proves
+## Recorded jobs
 
-- `prompts.run_count` and `prompt_pairs.run_count` are aggregate usage counters.
-  `utils/usage_tracking.py` counts known recipes when ComfyUI dequeues a job,
-  including cached node executions. Dequeue does not establish successful completion.
-- `last_used_at` records the latest aggregate update. The legacy prompt migration
-  estimated usage from linked images, with a minimum of one; no flag distinguishes
-  those estimates from newer recorded uses (`database/models.py`).
-- `generated_images` identifies linked files; distinct image IDs are image counts,
-  never run counts. Its default `generation_time` is database insertion time.
-- `image_prompt_pairs` stores immutable association provenance. More than one
-  provenance row can describe the same image and recipe. Its `created_at` is the
-  association time, potentially an old-image scan.
-- `prompt_pairs.created_at` is the saved recipe date. Execution PNG evidence in
-  `utils/pair_execution.py` records distinct text/composition values without a
-  durable job ID or timestamp. `PromptTracker` execution IDs remain process-local.
+New jobs observed at the ComfyUI queue's dequeue boundary receive an immutable
+run identity and a host-session/queue-item identity. The public ComfyUI job UUID
+is a correlation field: submitting it twice records two attempts. Rejected graphs
+and jobs removed from the queue before dequeue create no execution rows. Cached
+jobs are recorded even when no PromptManager node runs, and headless jobs do not
+require a browser or WebSocket client.
 
-The current UI can show saved negative variants, linked images and aggregate uses
-with an estimate caveat. It cannot honestly show chronological execution dots,
-repeat-run branches or completed-run counts.
+The additive `execution_runs` table stores dequeue time, observed callback time,
+optional executor event times and an explicit outcome: `observed`, `succeeded`,
+`failed`, `interrupted` or `unknown`. Matching stored terminal events determine
+outcomes. Missing or conflicting terminal evidence remains unknown; a process
+crash can leave an observed row without an invented completion time. Bounded
+safe diagnostics retain node ID/type and exception type, never graph text,
+arbitrary extra data, credentials, exception messages, traceback, inputs or
+output payloads. A bounded background writer keeps storage failures from
+changing host execution and reports capture gaps rather than inventing rows.
 
-## Smallest useful future migration
+Existing databases begin with zero execution rows. Migration and backup restore
+preserve prompts, pairs, image links and aggregate counters; storage epochs keep
+stale queued writes from being replayed into restored data. There is no
+historical backfill from counters, scan dates, image timestamps or saved recipes.
 
-Add a durable `run_events` table using a stable host-session and ComfyUI job ID
-plus recipe identity. Create started events at dequeue, rather than node encoding,
-so cached executions remain visible. Retain nullable recipe references and immutable
-raw/effective positive, negative and composition snapshots. Record completion,
-failure and interruption only when observed; otherwise retain unknown status.
+[Testing](../TESTING.md#durable-execution-ledger) describes the real CPU host
+matrix, historical failure proof, privacy checks and cleanup. Python deployment
+requires restarting ComfyUI.
 
-Add a deduplicated `run_images(run_id, image_id)` relationship. Multiple output
-images can belong to one run, and one physical file must not manufacture multiple
-runs through repeated metadata evidence. Preserve aggregate counters and existing
-image provenance. Do not manufacture historical events from counters, file dates
-or scans.
+## What the existing UI proves
 
-## Required migration and integration tests
+`prompts.run_count` and `prompt_pairs.run_count` remain aggregate usage counters,
+not completed-run counts. `last_used_at` is the latest aggregate update; legacy
+migration may have estimated counts from linked images. `generated_images`
+identifies linked files; image counts and insertion times are not run counts or
+execution times. Image/pair association creation time can reflect an old-image
+scan. A saved pair's creation time is its recipe date.
 
-Verify old databases upgrade transactionally and idempotently, with rollback on
-failure; unchanged counters and associations; cached repeat executions; failed or
-cancelled jobs; batched outputs; duplicate callbacks; process restart; unknown
-connected inputs; and metadata rescans that create no execution events. Cover real
-Classic and Nodes 2.0 hosts before exposing run chronology.
+The native Prompt Library shows saved negative variants, linked images and
+aggregate uses. It does not expose the ledger as chronological dots or repeat-run
+branches. `PromptTracker` identities and PNG recipe evidence remain separate
+from durable host job identity.
+
+## Remaining history work
+
+Design bounded execution contexts with nullable recipe references, immutable
+raw/effective positive, negative and composition snapshots and explicit
+inferred/recorded/unknown provenance. Cached nodes must not inherit unrelated
+recent prompt evidence. Define deletion and restore behavior before connecting
+saved recipes to historical snapshots.
+
+Add exact output references and a deduplicated run/image relationship without
+claiming cached outputs were newly created. Preserve existing image provenance
+and same-path replacement protection. Only after those semantics are tested can
+the timeline honestly show prompt-level execution chronology, batched outputs
+and repeat-run branches.

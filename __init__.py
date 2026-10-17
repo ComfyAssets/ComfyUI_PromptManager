@@ -158,6 +158,34 @@ except Exception as e:
             f"Failed to register usage hook: {e}"
         )
 
+
+def _history_db_factory() -> "PromptDatabase":
+    """Initialize history on its worker even if monitoring initialization failed."""
+    if _global_db is not None:
+        return _global_db
+    from .database.operations import PromptDatabase
+
+    return PromptDatabase()
+
+
+_history_registration = None
+try:
+    from .py.config import server_instance
+    from .utils.execution_history import register_history_hook
+
+    _history_registration = register_history_hook(server_instance, _history_db_factory)
+except Exception:
+    try:
+        from .utils.logging_config import get_logger
+
+        get_logger("prompt_manager.init").error("Failed to register execution history")
+    except Exception:
+        import logging
+
+        logging.getLogger("prompt_manager.init").error(
+            "Failed to register execution history"
+        )
+
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
 # Print startup message with loaded tools

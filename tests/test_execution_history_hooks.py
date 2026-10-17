@@ -1,0 +1,450 @@
+"""Actual dequeue and completion capture through the owned SQLite worker."""
+
+from collections import namedtuple
+import logging
+import gc
+import contextlib
+import io
+import os
+import tempfile
+import threading
+import time
+import sys
+import types
+import weakref
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+from database import PromptDatabase
+from utils import usage_tracking
+from utils.execution_history_writer import HistoryWriter
+
+try:
+    from utils.execution_history import register_history_hook
+except ImportError:
+    register_history_hook = None
+
+Status = namedtuple("ExecutionStatus", "status_str completed messages")
+JOB = "a0c26da3-eb26-405c-b143-c662a84c3112"
+
+
+class HostQueue:
+    def __init__(self):
+        self.results = []
+        self.done_result = object()
+        self.done_calls = []
+
+    def get(self, *args, **kwargs):
+        return self.results.pop(0) if self.results else None
+
+    def task_done(self, *args, **kwargs):
+        self.done_calls.append((args, kwargs))
+        return self.done_result
+
+
+def item(item_id, job=JOB, graph=None, extra=None, sensitive=None):
+    return ((0, job, graph or {}, extra or {}, [], sensitive or {}), item_id)
+
+
+def status(kind="execution_success", job=JOB):
+    return Status("success", True, [(kind, {"prompt_id": job, "timestamp": 20})])
+
+
+class HistoryHooksTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.db = PromptDatabase(os.path.join(self.directory.name, "history.db"))
+        self.addCleanup(self.db.model.reset_schema_cache)
+        self.addCleanup(self.db.model.close_all)
+        self.queue = HostQueue()
+        self.server = SimpleNamespace(prompt_queue=self.queue)
+        self.registrations, self.releases = [], []
+        self.addCleanup(self.cleanup_registrations)
+        for name in ("execution_history_writer", "execution_history"):
+            logger = logging.getLogger("prompt_manager." + name)
+            previous = logger.handlers, logger.propagate, logger.level
+            logger.handlers, logger.propagate, logger.level = (
+                [logging.NullHandler()],
+                False,
+                logging.WARNING,
+            )
+            self.addCleanup(self.restore_logger, logger, previous)
+
+    def restore_logger(self, logger, previous):
+        logger.handlers, logger.propagate, logger.level = previous
+
+    def cleanup_registrations(self):
+        for release in self.releases:
+            release.set()
+        for registration in self.registrations:
+            self.assertTrue(registration.dispose(3), "owned worker leaked")
+
+    def wait_for(self, predicate):
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            threading.Event().wait(0.005)
+        self.fail("finite deadline expired waiting for recorded history")
+
+    def register(self, factory=None, ready=True):
+        self.assertTrue(
+            callable(register_history_hook), "history registration is absent"
+        )
+        registration = register_history_hook(self.server, factory or (lambda: self.db))
+        self.assertIsNotNone(registration)
+        self.registrations.append(registration)
+        if ready:
+            self.wait_for(lambda: registration.writer.status().accepting)
+        return registration
+
+    def dequeue(self, item_id=0, **kwargs):
+        result = item(item_id, **kwargs)
+        self.queue.results.append(result)
+        self.assertIs(self.queue.get(), result)
+        return result
+
+    def rows(self):
+        return [
+            dict(row)
+            for row in self.db.model.get_connection()
+            .execute("SELECT * FROM execution_runs ORDER BY queue_item_id")
+            .fetchall()
+        ]
+
+    def drain(self, registration):
+        self.wait_for(lambda: registration.writer.status().pending == 0)
+
+    def test_package_history_initializes_when_monitor_and_usage_setup_fail(self):
+        try:
+            from tests.test_init_package import (
+                fake_server_module,
+                load_package,
+            )
+        except ImportError:
+            from test_init_package import (
+                fake_server_module,
+                load_package,
+            )
+        name = "prompt_manager_pkg_history_independent"
+        server = fake_server_module()
+        server.PromptServer.instance.prompt_queue = self.queue
+        server.PromptServer.instance.app = SimpleNamespace(middlewares=[])
+
+        def reject_usage(_):
+            raise RuntimeError("usage registration unavailable")
+
+        server.PromptServer.instance.add_on_prompt_handler = reject_usage
+        output = os.path.join(self.directory.name, "output")
+        os.makedirs(output)
+        monitor_module = types.ModuleType(name + ".utils.image_monitor")
+        # Missing monitor import fails before shared database initialization.
+        with (
+            patch.dict(sys.modules, {monitor_module.__name__: monitor_module}),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertLogs("prompt_manager.init", level="ERROR"),
+        ):
+            with load_package(name, self.db.model.db_path, output, server) as (
+                package,
+                _,
+            ):
+                registration = getattr(package, "_history_registration", None)
+                self.assertIsNotNone(
+                    registration, "history setup depended on another hook"
+                )
+                self.assertIsNone(package._global_db)
+                self.wait_for(lambda: registration.writer.status().accepting)
+                self.dequeue(0)
+                self.queue.task_done(0, {}, status())
+                self.drain(registration)
+                self.assertEqual(self.rows()[0]["outcome"], "succeeded")
+
+    def test_distinct_actual_attempts_for_reused_job_and_cached_rerun(self):
+        registration = self.register()
+        self.dequeue(0)
+        self.queue.task_done(0, {"outputs": {}}, status("execution_error"))
+        self.dequeue(1)
+        self.queue.task_done(item_id=1, history_result={}, status=status())
+        self.drain(registration)
+        rows = self.rows()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([r["job_id"] for r in rows], [JOB, JOB])
+        self.assertEqual([r["outcome"] for r in rows], ["failed", "succeeded"])
+        self.assertNotEqual(rows[0]["run_id"], rows[1]["run_id"])
+
+    def test_later_conflicting_completion_resolves_completed_stored_identity(self):
+        registration = self.register()
+        self.dequeue(0)
+        self.queue.task_done(0, {}, status())
+        self.drain(registration)
+        self.queue.task_done(0, {}, status("execution_error"))
+        self.drain(registration)
+        self.assertEqual(self.rows()[0]["outcome"], "unknown")
+        self.assertEqual(self.rows()[0]["reason"], "conflicting_terminal")
+
+    def test_repeated_registration_cleanup_and_reregistration_keep_session_and_wrappers(
+        self,
+    ):
+        before = self.queue.get
+        calls = []
+
+        def unrelated_before(*a, **k):
+            calls.append("before")
+            return before(*a, **k)
+
+        self.queue.get = unrelated_before
+        first = self.register()
+        self.assertIs(register_history_hook(self.server, lambda: self.db), first)
+        observed = self.queue.get
+
+        def unrelated_after(*a, **k):
+            calls.append("after")
+            return observed(*a, **k)
+
+        self.queue.get = unrelated_after
+        self.dequeue(0)
+        self.queue.task_done(0, {}, status())
+        self.assertTrue(first.dispose())
+        self.assertTrue(first.dispose())
+        self.assertIs(self.queue.get, unrelated_after)
+        second = self.register()
+        self.dequeue(1)
+        self.queue.task_done(1, {}, status())
+        self.drain(second)
+        self.assertEqual(len(self.rows()), 2)
+        self.assertEqual(self.rows()[0]["session_id"], self.rows()[1]["session_id"])
+        self.assertEqual(calls, ["after", "before"] * 2)
+
+    def test_concurrent_handle_capacity_never_reassigns_active_attempts(self):
+        registration = self.register()
+        self.queue.results.extend(item(index) for index in range(129))
+        ready = threading.Barrier(130)
+        errors = []
+
+        def dequeue():
+            try:
+                ready.wait(3)
+                self.queue.get()
+            except Exception as error:
+                errors.append(error)
+
+        threads = [threading.Thread(target=dequeue) for _ in range(129)]
+        for thread in threads:
+            thread.start()
+        ready.wait(3)
+        for thread in threads:
+            thread.join(3)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.drain(registration)
+        rows = self.rows()
+        admitted = {row["queue_item_id"] for row in rows}
+        self.assertEqual(len(rows), 128)
+        missing = (set(range(129)) - admitted).pop()
+        oldest = min(admitted)
+        self.queue.task_done(oldest, {}, status())
+        self.queue.task_done(missing, {}, status())
+        self.drain(registration)
+        by_item = {row["queue_item_id"]: row for row in self.rows()}
+        self.assertEqual(by_item[oldest]["outcome"], "succeeded")
+        self.assertNotIn(missing, by_item)
+        self.assertGreater(registration.writer.status().recording_gaps, 0)
+        self.dequeue(129)
+        self.queue.task_done(129, {}, status())
+        self.drain(registration)
+        self.assertEqual(self.rows()[-1]["queue_item_id"], 129)
+
+    def test_active_handles_do_not_retain_graph_extra_or_sensitive_envelopes(self):
+        class Envelope(dict):
+            pass
+
+        registration = self.register()
+        graph, extra, sensitive = (
+            Envelope({"g": object()}),
+            Envelope({"e": object()}),
+            Envelope({"s": object()}),
+        )
+        references = [weakref.ref(value) for value in (graph, extra, sensitive)]
+        self.dequeue(0, graph=graph, extra=extra, sensitive=sensitive)
+        self.drain(registration)
+        del graph, extra, sensitive
+        gc.collect()
+        self.assertEqual([reference() for reference in references], [None, None, None])
+        self.queue.task_done(0, {}, status())
+        self.drain(registration)
+        self.assertEqual(self.rows()[0]["outcome"], "succeeded")
+
+    def test_capture_uses_no_database_methods_on_the_host_thread(self):
+        registration = self.register()
+        host_thread = threading.get_ident()
+        original = self.db.model.get_connection
+
+        def connection():
+            if threading.get_ident() == host_thread:
+                self.fail("history queried SQLite on the host thread")
+            return original()
+
+        with patch.object(self.db.model, "get_connection", connection):
+            self.dequeue(0)
+            self.queue.task_done(0, {}, status())
+            self.drain(registration)
+        self.assertEqual(self.rows()[0]["outcome"], "succeeded")
+
+    def test_capture_never_copies_or_serializes_sensitive_objects(self):
+        class Sensitive:
+            def __deepcopy__(self, memo):
+                raise AssertionError("sensitive copy")
+
+            def __repr__(self):
+                raise AssertionError("sensitive serialization")
+
+        registration = self.register()
+        secret = Sensitive()
+        graph, extra, sensitive = {"graph": secret}, {"extra": secret}, {"auth": secret}
+        result = self.dequeue(0, graph=graph, extra=extra, sensitive=sensitive)
+        payload = {"outputs": secret, "meta": secret}
+        completion = status()
+        completion.messages[0][1].update(
+            {"traceback": secret, "current_inputs": secret}
+        )
+        self.assertIs(
+            self.queue.task_done(0, payload, completion), self.queue.done_result
+        )
+        self.drain(registration)
+        self.assertIs(result[0][2], graph)
+        self.assertIs(result[0][3], extra)
+        self.assertIs(result[0][5], sensitive)
+        self.assertEqual(len(self.rows()), 1)
+        self.assertEqual(self.rows()[0]["outcome"], "succeeded")
+        self.assertEqual(
+            set(completion.messages[0][1]),
+            {"prompt_id", "timestamp", "traceback", "current_inputs"},
+        )
+
+    def test_callbacks_return_while_writer_blocked_and_disposal_is_bounded(self):
+        entered, release = threading.Event(), threading.Event()
+        self.releases.append(release)
+        original = self.db.write_execution_start
+
+        def blocked(command):
+            entered.set()
+            release.wait(5)
+            return original(command)
+
+        with patch.object(self.db, "write_execution_start", blocked):
+            registration = self.register()
+            self.dequeue(0)
+            self.assertTrue(entered.wait(1))
+            began = time.monotonic()
+            self.queue.task_done(0, {}, status())
+            self.dequeue(1)
+            self.assertLess(time.monotonic() - began, 0.2)
+            began = time.monotonic()
+            self.assertFalse(registration.dispose())
+            self.assertGreaterEqual(time.monotonic() - began, 1.8)
+            self.assertLess(time.monotonic() - began, 2.3)
+            release.set()
+            self.assertTrue(registration.dispose(2))
+
+    def test_restore_disables_capture_and_clears_handles_before_fresh_epoch(self):
+        try:
+            from tests.test_execution_history_writer import ManualClock
+        except ImportError:
+            from test_execution_history_writer import ManualClock
+        clock = ManualClock()
+        with patch(
+            "utils.execution_history.HistoryWriter",
+            lambda factory: HistoryWriter(factory, clock=clock),
+        ):
+            registration = self.register()
+        for index in range(128):
+            self.dequeue(index)
+        self.drain(registration)
+        old_epoch = registration.writer.status().epoch
+        backup = os.path.join(self.directory.name, "backup.db")
+        self.assertTrue(self.db.model.backup_database(backup))
+        self.db.model.restore_from_file(backup)
+        self.assertFalse(registration.writer.status().accepting)
+        self.assertIsNone(registration.writer.status().epoch)
+        self.queue.task_done(0, {}, status())
+        self.dequeue(128)
+        self.assertGreater(registration.writer.status().recording_gaps, 0)
+        clock.advance(5)
+        self.wait_for(lambda: registration.writer.status().accepting)
+        self.assertNotEqual(registration.writer.status().epoch, old_epoch)
+        # A late final descriptor cannot complete rows from the restored epoch.
+        self.queue.task_done(0, {}, status())
+        self.dequeue(129)
+        self.queue.task_done(129, {}, status())
+        self.drain(registration)
+        rows = self.rows()
+        self.assertEqual(len(rows), 129)
+        self.assertEqual(rows[0]["outcome"], "observed")
+        self.assertEqual(rows[-1]["queue_item_id"], 129)
+        self.assertEqual(rows[-1]["outcome"], "succeeded")
+
+    def test_unavailable_database_and_invalid_identity_never_escape_host(self):
+        entered = threading.Event()
+
+        def broken():
+            entered.set()
+            raise RuntimeError("secret unavailable database")
+
+        registration = self.register(broken, ready=False)
+        self.assertTrue(entered.wait(1))
+        result = self.dequeue(0)
+        self.assertEqual(result[1], 0)
+        self.queue.task_done(0, {}, status())
+        self.assertEqual(self.rows(), [])
+        self.assertGreater(registration.writer.status().recording_gaps, 0)
+        self.assertTrue(registration.dispose())
+        registration = self.register()
+        self.dequeue(0, job="invalid id")
+        self.queue.task_done(True, {}, object())
+        self.drain(registration)
+        self.assertEqual(self.rows(), [])
+        self.assertGreater(registration.writer.status().recording_gaps, 0)
+
+    def test_invalid_evidence_is_recorded_unknown_and_raising_status_is_isolated(self):
+        registration = self.register()
+        self.dequeue(0)
+        self.queue.task_done(0, {}, object())
+        self.drain(registration)
+        self.assertEqual(self.rows()[0]["outcome"], "unknown")
+        self.assertEqual(self.rows()[0]["reason"], "invalid_evidence")
+
+        class BrokenStatus:
+            @property
+            def messages(self):
+                raise RuntimeError("secret failure")
+
+        self.dequeue(1)
+        self.queue.task_done(1, {}, BrokenStatus())
+        self.drain(registration)
+        self.assertEqual(self.rows()[1]["outcome"], "observed")
+        self.assertGreater(registration.writer.status().recording_gaps, 0)
+
+    def test_unsupported_queue_does_not_create_writer_or_submit_fallback(self):
+        self.assertTrue(
+            callable(register_history_hook), "history registration is absent"
+        )
+        for host in (
+            object(),
+            SimpleNamespace(prompt_queue=SimpleNamespace(get=lambda: None)),
+        ):
+            self.assertIsNone(
+                register_history_hook(host, lambda: self.fail("DB touched"))
+            )
+
+    def test_existing_usage_callback_counts_once_alongside_history(self):
+        registration = self.register()
+        seen = []
+        self.assertTrue(usage_tracking._wrap_queue_get(self.queue, seen.append))
+        self.assertFalse(usage_tracking._wrap_queue_get(self.queue, seen.append))
+        self.dequeue(0)
+        self.queue.task_done(0, {}, status())
+        self.drain(registration)
+        self.assertEqual(seen, [JOB])
+        self.assertEqual(len(self.rows()), 1)

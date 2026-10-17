@@ -4,7 +4,11 @@ The package is loaded the way ComfyUI loads it (``__init__`` with relative
 imports) with ComfyUI's ``server`` and ``folder_paths`` modules stubbed.
 """
 
+import contextlib
 import importlib.util
+import io
+import logging
+import json
 import os
 import sys
 import tempfile
@@ -16,6 +20,10 @@ from aiohttp import web
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+
+from utils.logging_config import get_logger_manager  # noqa: E402
+
+get_logger_manager()
 
 try:
     from tests.open_handles import open_handles_under  # noqa: E402
@@ -37,6 +45,7 @@ def fake_server_module():
         routes=web.RouteTableDef(),
         prompt_queue=FakePromptQueue(),
         handlers=[],
+        app=types.SimpleNamespace(middlewares=[]),
     )
     instance.add_on_prompt_handler = instance.handlers.append
     module = types.ModuleType("server")
@@ -53,10 +62,10 @@ def fake_folder_paths_module(output_dir):
     return module
 
 
-def load_package(name, db_path, output_dir, server=None):
+def _import_package(name, db_path, output_dir, server=None):
     """Import ROOT/__init__.py as package ``name`` with ComfyUI stubbed.
 
-    Returns (package, server instance). The caller stops the image monitor.
+    Returns (package, server instance) to the scoped fixture.
     """
     saved = {key: sys.modules.get(key) for key in ("server", "folder_paths")}
     server = server or fake_server_module()
@@ -65,7 +74,13 @@ def load_package(name, db_path, output_dir, server=None):
     try:
         from py.config import PromptManagerConfig
 
-        with mock.patch.object(PromptManagerConfig, "DEFAULT_DB_PATH", db_path):
+        config_path = os.path.join(output_dir, "promptmanager-test-config.json")
+        with open(config_path, "w", encoding="utf-8") as config:
+            json.dump({"database": {"default_path": db_path}}, config)
+        with (
+            mock.patch.object(PromptManagerConfig, "DEFAULT_DB_PATH", db_path),
+            mock.patch.dict(os.environ, {"PROMPT_MANAGER_CONFIG_PATH": config_path}),
+        ):
             spec = importlib.util.spec_from_file_location(
                 name,
                 os.path.join(ROOT, "__init__.py"),
@@ -76,7 +91,7 @@ def load_package(name, db_path, output_dir, server=None):
             try:
                 spec.loader.exec_module(package)
             except BaseException:
-                sys.modules.pop(name, None)
+                cleanup_package(package)
                 raise
     finally:
         for key, module in saved.items():
@@ -85,6 +100,73 @@ def load_package(name, db_path, output_dir, server=None):
             else:
                 sys.modules[key] = module
     return package, server.PromptServer.instance
+
+
+def cleanup_package(package):
+    """Stop fixture-owned workers before releasing its other resources."""
+    registration = getattr(package, "_history_registration", None)
+    if registration is not None:
+        assert registration.dispose(3), "package history worker leaked"
+    monitor = getattr(package, "_global_image_monitor", None)
+    if monitor is not None:
+        monitor.stop_monitoring()
+    close_every_database()
+    sys.modules.pop(package.__name__, None)
+
+
+@contextlib.contextmanager
+def load_package(name, db_path, output_dir, server=None):
+    """Dispose package workers before closing its isolated logging handlers."""
+    root_logger = logging.getLogger("prompt_manager")
+    loggers = [root_logger] + [
+        logger
+        for key, logger in list(logging.Logger.manager.loggerDict.items())
+        if key.startswith("prompt_manager.") and isinstance(logger, logging.Logger)
+    ]
+    previous = {
+        logger: (
+            logger.handlers[:],
+            logger.level,
+            logger.propagate,
+            logger.disabled,
+            logger.filters[:],
+        )
+        for logger in loggers
+    }
+    prior_handlers = {handler for state in previous.values() for handler in state[0]}
+    root_logger.handlers = []
+    try:
+        package, instance = _import_package(name, db_path, output_dir, server)
+        # A previously imported package may reuse its existing logger singleton.
+        if not root_logger.handlers:
+            root_logger.handlers = previous[root_logger][0][:]
+        try:
+            yield package, instance
+        finally:
+            cleanup_package(package)
+    finally:
+        current_loggers = [root_logger] + [
+            logger
+            for key, logger in list(logging.Logger.manager.loggerDict.items())
+            if key.startswith("prompt_manager.") and isinstance(logger, logging.Logger)
+        ]
+        created_handlers = {
+            handler
+            for logger in current_loggers
+            for handler in logger.handlers
+            if handler not in prior_handlers
+        }
+        for logger in current_loggers:
+            (
+                logger.handlers,
+                level,
+                logger.propagate,
+                logger.disabled,
+                logger.filters,
+            ) = previous.get(logger, ([], logging.NOTSET, True, False, []))
+            logger.setLevel(level)
+        for handler in created_handlers:
+            handler.close()
 
 
 def close_every_database():
@@ -104,11 +186,17 @@ class PackageTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.tmp.cleanup)
+        cls.addClassCleanup(cls.assert_no_open_handles)
         cls.output_dir = os.path.join(cls.tmp.name, "output")
         os.makedirs(cls.output_dir)
         cls.db_path = cls.make_db_path(cls.tmp.name)
-        cls.package, cls.server = load_package(
-            cls.package_name, cls.db_path, cls.output_dir, server=cls.make_server()
+        package_context = contextlib.ExitStack()
+        cls.addClassCleanup(package_context.close)
+        cls.package, cls.server = package_context.enter_context(
+            load_package(
+                cls.package_name, cls.db_path, cls.output_dir, server=cls.make_server()
+            )
         )
 
     @classmethod
@@ -120,14 +208,8 @@ class PackageTestCase(unittest.TestCase):
         return fake_server_module()
 
     @classmethod
-    def tearDownClass(cls):
-        monitor = getattr(cls.package, "_global_image_monitor", None)
-        if monitor is not None:
-            monitor.stop_monitoring()
-        sys.modules.pop(cls.package_name, None)
-        close_every_database()
+    def assert_no_open_handles(cls):
         hits = open_handles_under(cls.tmp.name)
-        cls.tmp.cleanup()
         assert not hits, f"files still open before temp dir cleanup: {hits}"
 
 
@@ -262,9 +344,6 @@ class TestConsoleBanner(unittest.TestCase):
     """Loading the node must not depend on the console being able to print emoji."""
 
     def test_package_loads_with_a_cp1252_console(self):
-        import contextlib
-        import io
-
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.addCleanup(close_every_database)
@@ -273,8 +352,12 @@ class TestConsoleBanner(unittest.TestCase):
         name = "prompt_manager_pkg_cp1252"
         stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
 
+        package_context = contextlib.ExitStack()
+        self.addCleanup(package_context.close)
         with contextlib.redirect_stdout(stream):
-            package, _ = load_package(name, os.path.join(tmp.name, "p.db"), output_dir)
+            package, _ = package_context.enter_context(
+                load_package(name, os.path.join(tmp.name, "p.db"), output_dir)
+            )
         self.addCleanup(sys.modules.pop, name, None)
         monitor = getattr(package, "_global_image_monitor", None)
         if monitor is not None:
@@ -283,3 +366,126 @@ class TestConsoleBanner(unittest.TestCase):
         stream.flush()
         banner = stream.buffer.getvalue().decode("cp1252")
         self.assertIn("Loaded:", banner)
+
+
+class TestPackageLoggerIsolation(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.logger = logging.getLogger("prompt_manager")
+        self.previous = (
+            self.logger.handlers[:],
+            self.logger.level,
+            self.logger.propagate,
+            self.logger.disabled,
+        )
+        self.addCleanup(self.restore_logging)
+        self.path = os.path.join(self.tmp.name, "prior.log")
+        self.handler = logging.FileHandler(self.path)
+        self.logger.handlers = [self.handler]
+        self.logger.setLevel(logging.DEBUG)
+        self.logger.propagate = True
+        self.logger.disabled = True
+        self.child = logging.getLogger("prompt_manager.database")
+        self.child_previous = self.child.level
+        self.addCleanup(self.child.setLevel, self.child_previous)
+        self.child.setLevel(logging.ERROR)
+        self.saved_modules = {
+            key: sys.modules.get(key) for key in ("server", "folder_paths")
+        }
+        self.saved_config = os.environ.get("PROMPT_MANAGER_CONFIG_PATH")
+        self.server = fake_server_module()
+        self.server.PromptServer.instance.prompt_queue.task_done = lambda *a, **k: None
+
+    def restore_logging(self):
+        for handler in self.logger.handlers:
+            if handler not in self.previous[0]:
+                handler.close()
+        self.handler.close()
+        (
+            self.logger.handlers,
+            self.logger.level,
+            self.logger.propagate,
+            self.logger.disabled,
+        ) = self.previous
+
+    def assert_logging_restored(self, handlers, registration):
+        for key, module in self.saved_modules.items():
+            self.assertIs(sys.modules.get(key), module)
+        self.assertEqual(
+            os.environ.get("PROMPT_MANAGER_CONFIG_PATH"), self.saved_config
+        )
+        self.assertEqual(self.logger.handlers, [self.handler])
+        self.assertEqual(self.logger.level, logging.DEBUG)
+        self.assertTrue(self.logger.propagate)
+        self.assertTrue(self.logger.disabled)
+        self.assertEqual(self.child.level, logging.ERROR)
+        self.assertFalse(self.handler.stream.closed)
+        self.assertTrue(all(handler.stream is None for handler in handlers))
+        self.assertFalse(registration.writer.status().alive)
+        self.logger.disabled = False
+        self.logger.warning("prior logging still works")
+        self.logger.disabled = True
+        self.handler.flush()
+        with open(self.path, encoding="utf-8") as log:
+            self.assertIn("prior logging still works", log.read())
+
+    def test_package_scope_closes_its_handlers_after_worker_disposal(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            with load_package(
+                "prompt_manager_pkg_logger_scope",
+                os.path.join(self.tmp.name, "p.db"),
+                self.tmp.name,
+                self.server,
+            ) as (package, _):
+                handlers = [
+                    h
+                    for h in self.logger.handlers
+                    if isinstance(h, logging.FileHandler)
+                ]
+                self.assertTrue(handlers)
+                registration = package._history_registration
+                original_dispose = registration.dispose
+                open_at_disposal = []
+
+                def dispose(timeout=2):
+                    open_at_disposal.append(all(h.stream is not None for h in handlers))
+                    return original_dispose(timeout)
+
+                registration.dispose = dispose
+        self.assertEqual(open_at_disposal, [True])
+        self.assert_logging_restored(handlers, registration)
+
+    def test_failed_package_import_closes_handlers_and_restores_logging(self):
+        name = "prompt_manager_pkg_logger_failure"
+        captured = {}
+        original_print = print
+
+        def fail_banner(*args, **kwargs):
+            if any("Total:" in str(arg) for arg in args):
+                captured["package"] = sys.modules[name]
+                captured["handlers"] = [
+                    h
+                    for h in self.logger.handlers
+                    if isinstance(h, logging.FileHandler)
+                ]
+                raise RuntimeError("injected banner failure")
+            return original_print(*args, **kwargs)
+
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            mock.patch("builtins.print", side_effect=fail_banner),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "injected banner failure"):
+                with load_package(
+                    name,
+                    os.path.join(self.tmp.name, "p.db"),
+                    self.tmp.name,
+                    self.server,
+                ):
+                    self.fail("failed import yielded a package")
+        self.assertNotIn(name, sys.modules)
+        self.assertTrue(captured["handlers"])
+        self.assert_logging_restored(
+            captured["handlers"], captured["package"]._history_registration
+        )

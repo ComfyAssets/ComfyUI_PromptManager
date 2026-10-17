@@ -373,6 +373,22 @@ class TestCountAtDequeue(DbTestCase):
         self.assertEqual(self._runs(positive), 1)
         self.assertEqual(calls, [])
 
+    def test_usage_subscription_remains_once_after_an_unrelated_wrapper(self):
+        positive = self._save("a cat")
+        prompt_queue = self.server.prompt_queue
+        original = prompt_queue.get
+
+        def unrelated(*args, **kwargs):
+            return original(*args, **kwargs)
+
+        prompt_queue.get = unrelated
+        self.assertFalse(
+            _wrap_queue_get(prompt_queue, lambda _: self.fail("duplicate"))
+        )
+        self.assertIs(prompt_queue.get, unrelated)
+        self._dequeue(self._submit(workflow()))
+        self.assertEqual(self._runs(positive), 1)
+
     def test_wrap_rejects_queues_without_a_callable_get(self):
         self.assertFalse(_wrap_queue_get(object(), lambda prompt_id: None))
         self.assertFalse(_wrap_queue_get(None, lambda prompt_id: None))

@@ -12,6 +12,7 @@
     "test:browser": "playwright test --config playwright.config.mjs",
     "test:workflows": "playwright test --config playwright.workflows.config.mjs",
     "test:comfyui": "playwright test --config comfyui.config.mjs",
+    "test:executions": "playwright test --config playwright.execution.config.mjs",
     "test:coverage": "node frontend-coverage.mjs",
     "coverage:update": "node frontend-coverage.mjs --update-baseline",
     "test:compat": "playwright test --config pack-compat.config.mjs"

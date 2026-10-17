@@ -4,6 +4,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { launchComfyHost as launchSharedHost } from '@comfyassets/toolkit/testing/host';
 import runtime from './comfyui-runtime.json' with { type: 'json' };
 
+export { launchSharedHost };
+
 const repositoryRoot = fileURLToPath(new URL('../../', import.meta.url));
 
 export async function preparePromptManagerPlugin({ installed, stateDirectory }) {

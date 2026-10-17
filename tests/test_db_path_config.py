@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import database.operations as operations
 from database.operations import _resolve_db_path
 
 EXTENSION_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -21,6 +22,37 @@ EXTENSION_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 class TestResolveDbPath(unittest.TestCase):
     """Test _resolve_db_path() database path resolution."""
+
+    def test_package_qualified_config_precedes_unrelated_standalone_config(
+        self,
+    ) -> None:
+        """A custom-node package must use its own configured disposable database."""
+        with tempfile.TemporaryDirectory() as directory:
+            configured = os.path.join(directory, "owned", "prompts.db")
+            package_config = types.ModuleType("owned_promptmanager.py.config")
+            package_config.PromptManagerConfig = types.SimpleNamespace(
+                DEFAULT_DB_PATH=configured
+            )
+            standalone_config = types.ModuleType("py.config")
+            standalone_config.PromptManagerConfig = types.SimpleNamespace(
+                DEFAULT_DB_PATH=os.path.join(directory, "unrelated.db")
+            )
+            with (
+                patch.dict(
+                    operations.__dict__,
+                    {"__package__": "owned_promptmanager.database", "__spec__": None},
+                ),
+                patch.dict(
+                    sys.modules,
+                    {
+                        "owned_promptmanager.py.config": package_config,
+                        "py.config": standalone_config,
+                    },
+                ),
+            ):
+                resolved = _resolve_db_path(None)
+            self.assertEqual(resolved, configured)
+            self.assertTrue(os.path.isdir(os.path.dirname(configured)))
 
     def test_explicit_absolute_path_used_as_is(self):
         """An explicit absolute path should be returned unchanged."""
