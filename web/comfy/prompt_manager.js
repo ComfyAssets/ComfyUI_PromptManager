@@ -3,8 +3,8 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 const { installClassicControls } = await import(api.fileURL('/prompt_manager/js/classic-node.js'));
-const { installFocusedNode } = await import(api.fileURL('/prompt_manager/js/focused-node.js'));
-const promptManagerTypes = new Set(['PromptManager', 'PromptManagerText', 'PromptManagerFocused']);
+const { installFocusedNode, installSplitNode } = await import(api.fileURL('/prompt_manager/js/focused-node.js'));
+const promptManagerTypes = new Set(['PromptManager', 'PromptManagerText', 'PromptManagerFocused', 'PromptManagerSplit']);
 
 // ============================================================================
 // Top Bar Button Integration (similar to rgthree-comfy approach)
@@ -292,8 +292,9 @@ app.registerExtension({
   },
 
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
-    if (nodeData.name === 'PromptManagerFocused') {
-      installFocusedNode(nodeType, app, api, parseSearchQuery);
+    if (nodeData.name === 'PromptManagerFocused' || nodeData.name === 'PromptManagerSplit') {
+      const install = nodeData.name === 'PromptManagerSplit' ? installSplitNode : installFocusedNode;
+      install(nodeType, app, api, parseSearchQuery);
       return;
     }
     if (nodeData.name === "PromptManager" || nodeData.name === "PromptManagerText") {

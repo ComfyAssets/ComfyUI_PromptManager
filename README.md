@@ -162,6 +162,12 @@ when the fields are collapsed, so LoRA trigger outputs can connect directly.
 Encoding, storage, and CONDITIONING/text outputs match Classic. Both layouts
 support ComfyUI Classic and Nodes 2.0.
 
+**Prompt Manager (Split)** keeps the same editor and library visible together.
+Wide nodes place the library beside the editor; narrow nodes stack the panels.
+It shares Focused's category/tag autocomplete, search filters, preview-before-use,
+workflow persistence, and connectable prepend/append inputs. Encoding and storage
+match Classic and Focused.
+
 ### 🔬 ComfyUI Workflow Analysis
 
 - **PNG Metadata Parsing**: Advanced PNG chunk analysis to extract embedded ComfyUI data

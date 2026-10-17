@@ -2,6 +2,17 @@ import {readFileSync} from 'node:fs';
 import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
 
+for (const variant of ['Focused', 'Split']) {
+test.describe(variant, () => {
+const isSplit = variant === 'Split';
+const uiProperty = isSplit ? 'splitUI' : 'focusedUI';
+async function openLibrary(page) {
+    if (isSplit) {
+        await expect(page.locator('.pm-editor-library')).toBeVisible();
+        await expect(page.getByRole('button',{name:'Browse library',exact:true})).toHaveCount(0);
+    } else await page.getByRole('button',{name:'Browse library',exact:true}).click();
+}
+
 test.beforeEach(async({page,browserName})=>{
     await page.addInitScript(()=>Object.defineProperty(Crypto.prototype,'randomUUID',{value:undefined,configurable:true}));
     await startCoverage(page,browserName);
@@ -10,26 +21,26 @@ test.beforeEach(async({page,browserName})=>{
     await page.route('**/scripts/api.js',route=>route.fulfill({contentType:'text/javascript',body:'export const api={fileURL:path=>path,queuePrompt:async(...args)=>args};'}));
     await page.route('**/extensions/promptmanager/prompt_manager.js',route=>route.fulfill({contentType:'text/javascript',body:readFileSync(new URL('../../web/comfy/prompt_manager.js',import.meta.url),'utf8')}));
     await page.goto('/prompt_manager/test');
-    await page.evaluate(async()=>{
+    await page.evaluate(async variant=>{
         document.body.replaceChildren();document.body.style.setProperty('--bg-color','#222');
         window.fixtureApp={registerExtension(extension){this.extension=extension;},ui:{settings:new EventTarget()},graph:{setDirtyCanvas(){}},canvas:{}};
         await import('/extensions/promptmanager/prompt_manager.js');
         class Node {
             constructor(){this.widgets=['text','category','tags','search_text'].map(name=>({name,type:'text',value:'',options:{},inputEl:document.createElement('textarea')}));this.inputs=['clip','prepend_text','append_text'].map(name=>({name,link:null}));this.properties={};this.size=[550,700];}
             addWidget(type,name,value,callback,options){const widget={type,name,value,callback,options};this.widgets.push(widget);return widget;}
-            addDOMWidget(name,type,element){document.body.append(element);return {element};}
+            addDOMWidget(name,type,element){const host=document.createElement('div');host.style.height='650px';host.className='fixture-dom-widget';host.append(element);document.body.append(host);return {element};}
             setSize(size){this.size=size;}setDirtyCanvas(){}
             serialize(){return {widgets_values:this.widgets.map(widget=>widget.value),properties:{...this.properties}};}
             configure(data){this.widgets.forEach((widget,index)=>{widget.value=data.widgets_values[index];});this.properties={...data.properties};}
         }
-        await fixtureApp.extension.beforeRegisterNodeDef(Node,{name:'PromptManagerFocused'},fixtureApp);
+        await fixtureApp.extension.beforeRegisterNodeDef(Node,{name:`PromptManager${variant}`},fixtureApp);
         window.node=new Node();node.onNodeCreated();
-    });
+    },variant);
     await expect(page.locator('.pm-focused')).toBeVisible();
 });
 test.afterEach(async({page,browserName})=>{await saveCoverage(page,browserName);expect(page.focusedErrors).toEqual([]);});
 
-test('Focused library autocompletes filters and searches without changing editor metadata', async ({page}) => {
+test(`${variant} library autocompletes filters and searches without changing editor metadata`, async ({page}) => {
     const requests=[];
     await page.route('**/prompt_manager/categories',route=>route.fulfill({json:{success:true,categories:['Portrait']}}));
     await page.route('**/prompt_manager/tags/suggest?**',route=>route.fulfill({json:{success:true,suggestions:[{name:'studio'}]}}));
@@ -38,7 +49,7 @@ test('Focused library autocompletes filters and searches without changing editor
         return route.fulfill({json:{success:true,results:[{text:'Filtered portrait',category:'Portrait',tags:['studio']}]}});
     });
     await page.getByLabel('Main prompt',{exact:true}).fill('My draft');
-    await page.getByRole('button',{name:'Browse library',exact:true}).click();
+    await openLibrary(page);
     const category=page.getByLabel('Filter category',{exact:true});
     await category.fill('por');
     await expect(page.getByRole('option',{name:'Portrait',exact:true})).toBeVisible();
@@ -60,7 +71,7 @@ test('Focused library autocompletes filters and searches without changing editor
     await category.fill('Landscape');
     await expect(page.locator('.pm-editor-selection button')).toBeDisabled();
     const saved=await page.evaluate(()=>{const saved=node.serialize();node.configure(saved);return saved;});
-    expect(saved.properties.focusedUI.libraryFilters).toEqual({category:'Landscape',tags:'studio, '});
+    expect(saved.properties[uiProperty].libraryFilters).toEqual({category:'Landscape',tags:'studio, '});
     await expect(category).toHaveValue('Landscape');
     await expect(tags).toHaveValue('studio, ');
     let recentRequest;
@@ -69,14 +80,15 @@ test('Focused library autocompletes filters and searches without changing editor
     await expect.poll(()=>Boolean(recentRequest)).toBe(true);
     expect(recentRequest.searchParams.has('category')).toBe(false);
     expect(recentRequest.searchParams.has('tags')).toBe(false);
-    await page.getByRole('button',{name:'Hide library',exact:true}).click();
+    if (isSplit) await page.getByRole('searchbox',{name:'Search saved prompts'}).focus();
+    else await page.getByRole('button',{name:'Hide library',exact:true}).click();
     await expect(page.getByRole('listbox')).toBeHidden();
 });
 
-test('Focused library can search by filters alone and Enter searches after autocomplete closes', async ({page}) => {
+test(`${variant} library can search by filters alone and Enter searches after autocomplete closes`, async ({page}) => {
     const requests=[];
     await page.route('**/prompt_manager/search?**',route=>{requests.push(new URL(route.request().url()));return route.fulfill({json:{success:true,results:[]}});});
-    await page.getByRole('button',{name:'Browse library',exact:true}).click();
+    await openLibrary(page);
     await page.getByLabel('Filter category',{exact:true}).fill('New category');
     await page.getByLabel('Filter category',{exact:true}).press('Enter');
     await expect.poll(()=>requests.length).toBe(1);
@@ -88,7 +100,7 @@ test('Focused library can search by filters alone and Enter searches after autoc
     expect(requests[1].searchParams.get('tags')).toBe('custom');
 });
 
-test('Focused completes saved tags with keyboard and pointer and appends commas', async ({page}) => {
+test(`${variant} completes saved tags with keyboard and pointer and appends commas`, async ({page}) => {
     await page.route('**/prompt_manager/tags/suggest?**', route => {
         const q = new URL(route.request().url()).searchParams.get('q');
         return route.fulfill({json:{success:true,suggestions:(q === 'bl' ? ['blue eyes','blue sky'] : ['portrait','blue eyes']).map(name => ({name}))}});
@@ -118,7 +130,7 @@ test('Focused completes saved tags with keyboard and pointer and appends commas'
     await expect(tags).toHaveValue('A brand new tag');
 });
 
-test('Focused metadata autocomplete ignores stale responses, recovers from errors and cleans up', async ({page}) => {
+test(`${variant} metadata autocomplete ignores stale responses, recovers from errors and cleans up`, async ({page}) => {
     let release;
     let mode='delayed';
     await page.route('**/prompt_manager/tags/suggest?**', async route => {
@@ -146,7 +158,7 @@ test('Focused metadata autocomplete ignores stale responses, recovers from error
     await expect(page.getByRole('listbox')).toHaveCount(0);
 });
 
-test('Focused completes one category, allows new values and dismisses suggestions on blur', async ({page}) => {
+test(`${variant} completes one category, allows new values and dismisses suggestions on blur`, async ({page}) => {
     await page.route('**/prompt_manager/categories',route=>route.fulfill({json:{success:true,categories:['Portrait','Landscape','Portrait studio']}}));
     await page.getByText('Metadata · category / tags',{exact:true}).click();
     const category=page.getByLabel('Category',{exact:true});
@@ -168,7 +180,7 @@ test('Focused completes one category, allows new values and dismisses suggestion
     await expect(category).toHaveValue('New category');
 });
 
-test('Focused shares suggestion controls safely with another bundled toolkit copy', async ({page}) => {
+test(`${variant} shares suggestion controls safely with another bundled toolkit copy`, async ({page}) => {
     await page.evaluate(async()=>{
         const {createScope}=await import('/prompt_manager/js/shared/toolkit/core.js');
         const first=await import('/prompt_manager/js/shared/toolkit/suggestions.js?pack=first');
@@ -196,10 +208,10 @@ test('Focused shares suggestion controls safely with another bundled toolkit cop
     await expect(lists).toHaveCount(0);
 });
 
-test('Focused previews before loading, keeps metadata optional and composes text',async({page})=>{
+test(`${variant} previews before loading, keeps metadata optional and composes text`,async({page})=>{
     await page.route('**/prompt_manager/recent?**',route=>route.fulfill({json:{success:true,results:[{id:1,text:'Library portrait',category:'Portrait',tags:['studio']}]}}));
     await page.getByRole('textbox',{name:'Main prompt',exact:true}).fill('My draft');
-    await page.getByRole('button',{name:'Browse library',exact:true}).click();
+    await openLibrary(page);
     await page.getByRole('button',{name:'Recent',exact:true}).click();
     await page.getByRole('button',{name:/Library portrait/}).click();
     await expect(page.getByRole('textbox',{name:'Main prompt',exact:true})).toHaveValue('My draft');
@@ -214,7 +226,7 @@ test('Focused previews before loading, keeps metadata optional and composes text
     expect(await page.evaluate(()=>node.serialize().widgets_values.slice(0,6))).toEqual(['Library portrait','','','','trigger','detailed']);
 });
 
-test('Focused restores workflow values and disclosures and protects connected text',async({page})=>{
+test(`${variant} restores workflow values and disclosures and protects connected text`,async({page})=>{
     await page.getByRole('textbox',{name:'Main prompt',exact:true}).fill('Saved draft');
     await page.getByText('Metadata · category / tags',{exact:true}).click();
     await page.getByLabel('Category',{exact:true}).fill('Saved category');
@@ -228,14 +240,14 @@ test('Focused restores workflow values and disclosures and protects connected te
     await expect(page.getByRole('textbox',{name:'Main prompt',exact:true})).toHaveValue('Saved draft');
 });
 
-test('Focused searches quoted tags with Enter and explicitly loads metadata', async ({page}) => {
+test(`${variant} searches quoted tags with Enter and explicitly loads metadata`, async ({page}) => {
     let requested;
     await page.route('**/prompt_manager/search?**', async route => {
         requested = new URL(route.request().url());
         await route.fulfill({json:{success:true,results:[{id:7,text:'Selected fox',category:'Animals',tags:['film grain','fox']}]}});
     });
     await page.getByRole('textbox',{name:'Main prompt',exact:true}).fill('Preserved draft');
-    await page.getByRole('button',{name:'Browse library',exact:true}).click();
+    await openLibrary(page);
     const query=page.getByRole('searchbox',{name:'Search saved prompts'});
     await query.fill('fox tag:"film grain"');
     await query.press('Enter');
@@ -250,7 +262,7 @@ test('Focused searches quoted tags with Enter and explicitly loads metadata', as
     expect(await page.evaluate(()=>node.serialize().widgets_values.slice(0,4))).toEqual(['Selected fox','Animals','film grain, fox','fox tag:"film grain"']);
 });
 
-test('Focused reports empty queries, no results, and safely renders backend and HTTP errors', async ({page}) => {
+test(`${variant} reports empty queries, no results, and safely renders backend and HTTP errors`, async ({page}) => {
     let requests=0;
     let mode='empty';
     const malicious='<img src=x onerror="window.focusedInjected=true">';
@@ -259,7 +271,7 @@ test('Focused reports empty queries, no results, and safely renders backend and 
         if(mode==='http') return route.fulfill({status:503,body:'Unavailable'});
         await route.fulfill({json:mode==='error'?{success:false,error:malicious}:{success:true,results:[]}});
     });
-    await page.getByRole('button',{name:'Browse library',exact:true}).click();
+    await openLibrary(page);
     const search=page.getByRole('button',{name:'Search',exact:true});
     await search.click();
     await expect(page.locator('.pm-editor-library [role="status"]')).toHaveText('Enter search text, a category or tags.');
@@ -287,10 +299,10 @@ test('Focused reports empty queries, no results, and safely renders backend and 
     await expect(page.locator('.pm-editor-library [role="status"]')).toHaveText('No matching prompts.');
 });
 
-test('Focused treats saved prompt content and metadata as text', async ({page}) => {
+test(`${variant} treats saved prompt content and metadata as text`, async ({page}) => {
     const malicious='<img src=x onerror="window.focusedInjected=true">';
     await page.route('**/prompt_manager/recent?**',route=>route.fulfill({json:{success:true,results:[{id:8,text:malicious,category:'<script>bad()</script>',tags:['<svg onload=bad()>']}]}}));
-    await page.getByRole('button',{name:'Browse library',exact:true}).click();
+    await openLibrary(page);
     await page.getByRole('button',{name:'Recent',exact:true}).click();
     await page.locator('.pm-editor-result').click();
     await expect(page.locator('.pm-editor-selection .pm-editor-preview')).toHaveText(malicious);
@@ -312,9 +324,9 @@ async function deferLibraryRequests(page) {
     });
 }
 
-test('Focused keeps the latest result when searches and recent requests overlap', async ({page}) => {
+test(`${variant} keeps the latest result when searches and recent requests overlap`, async ({page}) => {
     await deferLibraryRequests(page);
-    await page.getByRole('button',{name:'Browse library',exact:true}).click();
+    await openLibrary(page);
     await page.getByRole('searchbox',{name:'Search saved prompts'}).fill('older search');
     await page.getByRole('button',{name:'Search',exact:true}).click();
     await page.getByRole('button',{name:'Recent',exact:true}).click();
@@ -333,9 +345,9 @@ test('Focused keeps the latest result when searches and recent requests overlap'
     await expect(page.locator('.pm-editor-result')).toHaveText('Latest search');
 });
 
-test('Focused removal aborts work and stops theme and control listeners', async ({page}) => {
+test(`${variant} removal aborts work and stops theme and control listeners`, async ({page}) => {
     await deferLibraryRequests(page);
-    await page.getByRole('button',{name:'Browse library',exact:true}).click();
+    await openLibrary(page);
     await page.getByRole('button',{name:'Recent',exact:true}).click();
     await expect(page.locator('.pm-focused')).toHaveAttribute('data-ca-theme','dark');
     const removed=await page.evaluate(()=>{
@@ -348,11 +360,18 @@ test('Focused removal aborts work and stops theme and control listeners', async 
     await page.evaluate(()=>completeLibraryRequest(0,'Late result after removal'));
     await expect(page.locator('.pm-editor-result')).toHaveCount(0);
     await expect(page.locator('.pm-focused')).toHaveAttribute('data-ca-theme','dark');
-    await page.getByRole('button',{name:'Hide library',exact:true}).click();
-    await expect(page.getByRole('button',{name:'Hide library',exact:true})).toBeVisible();
+    if (isSplit) {
+        const count=await page.evaluate(()=>libraryRequests.length);
+        await page.getByRole('button',{name:'Recent',exact:true}).click();
+        expect(await page.evaluate(()=>libraryRequests.length)).toBe(count);
+        await expect(page.locator('.pm-editor-library')).toBeVisible();
+    } else {
+        await page.getByRole('button',{name:'Hide library',exact:true}).click();
+        await expect(page.getByRole('button',{name:'Hide library',exact:true})).toBeVisible();
+    }
 });
 
-test('Focused fields reflow with node width and follow live host themes', async ({page}) => {
+test(`${variant} fields reflow with node width and follow live host themes`, async ({page}) => {
     await page.setViewportSize({width:1000,height:1000});
     await page.getByText('Composition · prepend / append',{exact:true}).click();
     await page.evaluate(()=>{node._focusedView.element.style.width='700px';node._focusedView.element.style.height='850px';});
@@ -373,7 +392,7 @@ test('Focused fields reflow with node width and follow live host themes', async 
     await expect.poll(()=>prepend.evaluate(element=>getComputedStyle(element).backgroundColor)).toBe(dark);
 });
 
-test('Focused composed preview preserves main prompt whitespace like queued execution', async ({page}) => {
+test(`${variant} composed preview preserves main prompt whitespace like queued execution`, async ({page}) => {
     await page.getByRole('textbox',{name:'Main prompt',exact:true}).fill('  draft  ');
     await page.getByText('Composition · prepend / append',{exact:true}).click();
     await page.getByLabel('Prepend',{exact:true}).fill(' trigger ');
@@ -382,17 +401,17 @@ test('Focused composed preview preserves main prompt whitespace like queued exec
     expect(await page.locator('[data-composed-preview]').textContent()).toBe('trigger   draft   detail');
 });
 
-test('Focused exposes the visible text element for autocomplete and host extension listeners', async ({page}) => {
+test(`${variant} exposes the visible text element for autocomplete and host extension listeners`, async ({page}) => {
     expect(await page.evaluate(()=>node.widgets.find(widget=>widget.name==='text').inputEl===document.querySelector('.pm-focused textarea'))).toBe(true);
 });
 
-test('Focused expands its main editor when the node gets taller',async({page})=>{
-    await page.locator('.pm-focused').evaluate(element=>{element.style.width='550px';element.style.height='800px';});
+test(`${variant} expands its main editor when the node gets taller`,async({page})=>{
+    await page.locator('.pm-focused').evaluate((element,isSplit)=>{element.style.width=isSplit?'900px':'550px';element.style.height='800px';},isSplit);
     const editor=await page.getByRole('textbox',{name:'Main prompt',exact:true}).boundingBox();
     expect(editor.height).toBeGreaterThan(400);
 });
 
-test('Focused respects the existing Web UI display preference',async({page})=>{
+test(`${variant} respects the existing Web UI display preference`,async({page})=>{
     await page.route('**/prompt_manager/settings',route=>route.fulfill({json:{success:true,settings:{webui_display_mode:'newtab'}}}));
     await page.evaluate(()=>{
         const Node=node.constructor;node.onRemoved();node._focusedView.element.remove();node=new Node();node.onNodeCreated();
@@ -403,9 +422,68 @@ test('Focused respects the existing Web UI display preference',async({page})=>{
     expect(await page.evaluate(()=>window.openArgs)).toEqual(['/prompt_manager/web','_blank']);
 });
 
-test('Focused reports blocked Web UI popups without leaving the workflow',async({page})=>{
+test(`${variant} reports blocked Web UI popups without leaving the workflow`,async({page})=>{
     await page.evaluate(()=>{window.open=()=>null;});
     await page.getByRole('button',{name:'Web UI ↗',exact:true}).click();
     await expect(page.locator('.pm-focused [role="alert"]')).toContainText('Allow popups');
     await expect(page.locator('.pm-focused')).toBeVisible();
 });
+
+if (isSplit) test('Split keeps the library beside the editor when wide and stacks it when narrow', async ({page}) => {
+    await page.setViewportSize({width:1200,height:1000});
+    const root=page.locator('.pm-split');
+    await expect(root).toHaveAttribute('aria-label','Split prompt editor');
+    await expect(page.getByRole('button',{name:'Hide library',exact:true})).toHaveCount(0);
+    await root.evaluate(element=>{element.style.width='900px';element.style.height='800px';});
+    const compose=root.locator('.pm-editor-workspace > .pm-editor-compose');
+    const library=root.locator('.pm-editor-workspace > .pm-editor-library');
+    await expect(compose.locator('.pm-editor-main')).toBeVisible();
+    let a=await compose.boundingBox(),b=await library.boundingBox();
+    expect(Math.abs(a.y-b.y)).toBeLessThan(2);
+    expect(b.x).toBeGreaterThanOrEqual(a.x+a.width);
+    await page.route('**/prompt_manager/recent?**',route=>route.fulfill({json:{success:true,results:[{text:'Library example'}]}}));
+    await page.getByRole('button',{name:'Recent',exact:true}).click();
+    await expect(page.locator('.pm-editor-result')).toContainText('Library example');
+    await page.getByRole('textbox',{name:'Main prompt',exact:true}).fill('Editing beside the library');
+    await expect(library).toBeVisible();
+    await expect(page.locator('.pm-editor-result')).toContainText('Library example');
+    expect(await page.evaluate(()=>node.serialize().widgets_values[0])).toBe('Editing beside the library');
+    await root.evaluate(element=>{element.style.width='340px';});
+    await expect.poll(async()=>{const a=await compose.boundingBox(),b=await library.boundingBox();return b.y>=a.y+a.height;}).toBe(true);
+    expect(await root.evaluate(element=>element.scrollWidth<=element.clientWidth+1)).toBe(true);
+    await expect(page.getByRole('textbox',{name:'Main prompt',exact:true})).toHaveValue('Editing beside the library');
+    await expect(library).toBeVisible();
+});
+if (isSplit) test('Split bounds long recent results and selected previews at the default node size', async ({page}) => {
+    await page.setViewportSize({width:1200,height:1000});
+    const root=page.locator('.pm-split');
+    await root.evaluate(element=>{element.style.width='900px';element.style.height='650px';});
+    const longPrompt='Long saved prompt '+('detailed portrait in a studio with natural light '.repeat(110));
+    const prompts=Array.from({length:20},(_,index)=>({id:index+1,text:index===0?longPrompt:`Saved prompt ${index+1}`,category:'Portrait',tags:['studio']}));
+    await page.route('**/prompt_manager/recent?**',route=>route.fulfill({json:{success:true,results:prompts}}));
+    await page.getByRole('button',{name:'Recent',exact:true}).click();
+    const results=root.locator('.pm-editor-results');
+    await expect(results.locator('.pm-editor-result')).toHaveCount(20);
+    const rowHeights=await results.locator('.pm-editor-result > span:first-child').evaluateAll(elements=>elements.map(element=>element.getBoundingClientRect().height));
+    expect(rowHeights.every(height=>height>0)).toBe(true);
+    const resultSize=await results.evaluate(element=>({height:element.getBoundingClientRect().height,scroll:element.scrollHeight,client:element.clientHeight}));
+    expect.soft(resultSize.height).toBeLessThanOrEqual(300);
+    expect(resultSize.scroll).toBeGreaterThan(resultSize.client);
+    await results.locator('.pm-editor-result').first().click();
+    const preview=root.locator('.pm-editor-selection > .pm-editor-preview');
+    await expect(preview).toHaveText(longPrompt);
+    const previewSize=await preview.evaluate(element=>({height:element.getBoundingClientRect().height,scroll:element.scrollHeight,client:element.clientHeight}));
+    expect.soft(previewSize.height).toBeLessThanOrEqual(180);
+    expect.soft(previewSize.scroll).toBeGreaterThan(previewSize.client);
+    await page.getByRole('button',{name:'Use prompt',exact:true}).click();
+    await expect(page.getByRole('textbox',{name:'Main prompt',exact:true})).toHaveValue(longPrompt);
+    const bounds=await root.boundingBox();
+    for (const selector of ['.pm-editor-compose','.pm-editor-library']) {
+        const pane=await root.locator(selector).boundingBox();
+        expect(pane.y).toBeGreaterThanOrEqual(bounds.y);
+        expect(pane.y+pane.height).toBeLessThanOrEqual(bounds.y+bounds.height);
+    }
+    expect(await root.evaluate(element=>element.scrollWidth<=element.clientWidth+1)).toBe(true);
+});
+});
+}

@@ -6,6 +6,7 @@ gallery system.
 This module provides prompt node types:
 - PromptManager: CLIP encoding node that outputs CONDITIONING
 - PromptManagerFocused: Editor-first layout using the same encoding contract
+- PromptManagerSplit: Side-by-side editor and library using the same contract
 - PromptManagerText: Text-only node that outputs STRING with prepend/append
   functionality
 
@@ -39,13 +40,18 @@ def get_version():
     return "unknown"
 
 
-from .prompt_manager import PromptManager, PromptManagerFocused  # noqa: E402
+from .prompt_manager import (  # noqa: E402
+    PromptManager,
+    PromptManagerFocused,
+    PromptManagerSplit,
+)
 from .prompt_manager_text import PromptManagerText  # noqa: E402
 from .prompt_search_list import PromptSearchList  # noqa: E402
 
 NODE_CLASS_MAPPINGS = {
     "PromptManager": PromptManager,
     "PromptManagerFocused": PromptManagerFocused,
+    "PromptManagerSplit": PromptManagerSplit,
     "PromptManagerText": PromptManagerText,
     "PromptSearchList": PromptSearchList,
 }
@@ -53,6 +59,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptManager": "Prompt Manager (Classic)",
     "PromptManagerFocused": "Prompt Manager (Focused)",
+    "PromptManagerSplit": "Prompt Manager (Split)",
     "PromptManagerText": "Prompt Manager Text",
     "PromptSearchList": "Prompt Search List",
 }

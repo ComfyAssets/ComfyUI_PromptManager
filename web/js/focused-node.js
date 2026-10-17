@@ -11,7 +11,13 @@ function loadStyles() {
     const link = document.createElement('link'); Object.assign(link, {rel:'stylesheet', href}); document.head.append(link);
 }
 
-export function installFocusedNode(nodeType, app, api, parseQuery) {
+export function installSplitNode(nodeType, app, api, parseQuery) {
+    installFocusedNode(nodeType, app, api, parseQuery, {layout:'split'});
+}
+
+export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'focused'} = {}) {
+    const split = layout === 'split';
+    const uiKey = split ? 'splitUI' : 'focusedUI';
     const prototype = nodeType.prototype;
     const created = prototype.onNodeCreated;
     const removed = prototype.onRemoved;
@@ -30,13 +36,18 @@ export function installFocusedNode(nodeType, app, api, parseQuery) {
             widget.hidden = true; widget.type = 'hidden'; widget.computeSize = () => [0, -4];
             widgets.set(name, widget);
         }
-        const element = document.createElement('div'); element.className = 'ca-tools pm-focused';
-        element.setAttribute('aria-label','Focused prompt editor');
+        const element = document.createElement('div'); element.className = `ca-tools pm-focused${split ? ' pm-split' : ''}`;
+        element.setAttribute('aria-label',split ? 'Split prompt editor' : 'Focused prompt editor');
         loadStyles(); mountTheme(element, app.ui?.settings, scope);
         const toolbar = document.createElement('div'); toolbar.className = 'pm-editor-row pm-editor-toolbar';
         const title = document.createElement('strong'); title.textContent = 'Prompt Manager';
         const browse = createButton('Browse library','ca-primary'); browse.setAttribute('aria-expanded','false');
-        const web = createButton('Web UI ↗'); toolbar.append(title, browse, web);
+        const web = createButton('Web UI ↗'); toolbar.append(title);
+        if (!split) toolbar.append(browse);
+        toolbar.append(web);
+        const workspace = document.createElement('div'); workspace.className = 'pm-editor-workspace';
+        const editor = document.createElement('div'); editor.className = 'pm-editor-compose';
+        workspace.append(editor);
         let webDisplayMode = 'popup';
         this._focusedSettingsReady = fetch(api.fileURL('/prompt_manager/settings'),{signal:scope.signal})
             .then(response => response.ok ? response.json() : null)
@@ -55,17 +66,19 @@ export function installFocusedNode(nodeType, app, api, parseQuery) {
             else delete textWidget.inputEl;
         });
         const mainField = createField('Main prompt', main, `${editorId}-text`);
+        mainField.classList.add('pm-editor-main');
         const connected = document.createElement('p'); connected.className = 'pm-editor-status'; connected.textContent = 'Text is supplied by an upstream connection.';
         const controls = new Map([['text', main]]);
         const details = new Map();
         const completions = new Map();
-        element.append(toolbar, mainField, connected);
+        element.append(toolbar, workspace);
+        editor.append(mainField, connected);
         function disclosure(key, label) {
             const section = document.createElement('details'); section.className = 'pm-editor-details';
-            const summary = document.createElement('summary'); summary.textContent = label; section.append(summary); element.append(section); details.set(key,section);
+            const summary = document.createElement('summary'); summary.textContent = label; section.append(summary); editor.append(section); details.set(key,section);
             scope.listen(section, 'toggle', () => {
                 if (!section.open) completions.forEach(completion => completion.close());
-                if (!scope.signal.aborted) thisNode.properties.focusedUI = snapshot();
+                if (!scope.signal.aborted) thisNode.properties[uiKey] = snapshot();
             });
             return section;
         }
@@ -112,7 +125,7 @@ export function installFocusedNode(nodeType, app, api, parseQuery) {
             preview.textContent = ['prepend_text','text','append_text'].map(name => isConnected(name) ? `[${name} supplied by connection]` : name === 'text' ? value(name) : value(name).trim()).filter(Boolean).join(' ');
             library.refreshAvailability();
         }
-        const library = createPromptLibrary({scope,api,settings:app.ui?.settings,parseQuery,isConnected:() => isConnected('text'), onQuery:text => write('search_text',text), onFilters:() => {this.properties.focusedUI = snapshot();}, onUse:(prompt,includeMetadata) => {
+        const library = createPromptLibrary({scope,api,settings:app.ui?.settings,parseQuery,isConnected:() => isConnected('text'), onQuery:text => write('search_text',text), onFilters:() => {this.properties[uiKey] = snapshot();}, onUse:(prompt,includeMetadata) => {
             if (isConnected('text')) return;
             write('text',prompt.text);
             if (includeMetadata) {
@@ -121,14 +134,14 @@ export function installFocusedNode(nodeType, app, api, parseQuery) {
             }
             render(); footer.setAttribute('role','status'); footer.textContent = 'Loaded prompt. Saved when this node runs.'; main.focus();
         }});
-        element.append(library.element,footer);
+        workspace.append(library.element); element.append(footer);
         function snapshot() {
             return {libraryOpen:!library.element.hidden,libraryFilters:library.filters(),...Object.fromEntries([...details].map(([name,section]) => [name,section.open]))};
         }
         function restore() {
-            const state = thisNode.properties.focusedUI || {};
+            const state = thisNode.properties[uiKey] || {};
             details.forEach((section,name) => {section.open = Boolean(state[name]);});
-            library.element.hidden = !state.libraryOpen; browse.textContent = state.libraryOpen ? 'Hide library' : 'Browse library'; browse.setAttribute('aria-expanded', String(Boolean(state.libraryOpen)));
+            library.element.hidden = !split && !state.libraryOpen; browse.textContent = state.libraryOpen ? 'Hide library' : 'Browse library'; browse.setAttribute('aria-expanded', String(Boolean(state.libraryOpen)));
             library.setQuery(value('search_text')); library.restoreFilters(state.libraryFilters); render();
         }
         controls.forEach((input,name) => scope.listen(input,'input',() => {write(name,input.value);render();footer.setAttribute('role','status');footer.textContent='Main prompt is saved when this node runs.';}));
@@ -136,7 +149,7 @@ export function installFocusedNode(nodeType, app, api, parseQuery) {
             library.element.hidden = !library.element.hidden;
             library.closeCompletions();
             browse.textContent = library.element.hidden ? 'Browse library' : 'Hide library'; browse.setAttribute('aria-expanded',String(!library.element.hidden));
-            this.properties.focusedUI = snapshot(); if (!library.element.hidden) library.focus();
+            this.properties[uiKey] = snapshot(); if (!library.element.hidden) library.focus();
         });
         scope.listen(web,'click',() => {
             const url = api.fileURL('/prompt_manager/web');
@@ -146,11 +159,11 @@ export function installFocusedNode(nodeType, app, api, parseQuery) {
         });
         this._focusedView = {element,render,restore,snapshot};
         this.addDOMWidget('prompt_manager_focused_ui','div',element,{serialize:false, hideOnZoom:false, getMinHeight:() => 360});
-        this.size = [550,650]; this.setSize(this.size); restore();
+        this.size = [split ? 900 : 550,650]; this.setSize(this.size); restore();
     };
     prototype.configure = function (...args) { const result = configure?.apply(this,args); this._focusedView?.restore(); return result; };
     prototype.serialize = function (...args) {
-        if (this._focusedView) this.properties.focusedUI = this._focusedView.snapshot();
+        if (this._focusedView) this.properties[uiKey] = this._focusedView.snapshot();
         return serialize?.apply(this,args);
     };
     prototype.onConnectionsChange = function (...args) { const result = connections?.apply(this,args); this._focusedView?.render(); return result; };

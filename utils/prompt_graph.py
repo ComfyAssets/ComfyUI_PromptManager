@@ -12,7 +12,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 PROMPT_MANAGER_TYPES = frozenset(
-    {"PromptManager", "PromptManagerText", "PromptManagerFocused"}
+    {"PromptManager", "PromptManagerText", "PromptManagerFocused", "PromptManagerSplit"}
 )
 
 # Upper bound on nodes expanded per graph; queued and embedded graphs are untrusted

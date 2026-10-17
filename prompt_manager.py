@@ -296,3 +296,7 @@ class PromptManagerFocused(PromptManager):
                 {**options, "default": "", "forceInput": True},
             )
         return inputs
+
+
+class PromptManagerSplit(PromptManagerFocused):
+    """The persistent library layout shares Focused encoding and storage."""

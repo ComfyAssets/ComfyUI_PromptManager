@@ -136,6 +136,16 @@ class TestQueueHook(DbTestCase):
         self.assertEqual(self._runs(positive), 2)
         self.assertEqual(self._runs(negative), 0)
 
+    def test_split_queued_runs_count_only_positive_even_when_cached(self):
+        positive, negative = self._save("a cat"), self._save("blurry")
+        graph = workflow()
+        for node_id in ("134", "176"):
+            graph[node_id]["class_type"] = "PromptManagerSplit"
+        self._queue(graph)
+        self._queue(graph)
+        self.assertEqual(self._runs(positive), 2)
+        self.assertEqual(self._runs(negative), 0)
+
     def test_requeue_counts_again_even_when_comfyui_skips_the_cached_node(self):
         positive = self._save("a cat")
         self._queue(workflow())

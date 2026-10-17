@@ -138,10 +138,21 @@ class TestPackageWiring(PackageTestCase):
             [
                 "PromptManager",
                 "PromptManagerFocused",
+                "PromptManagerSplit",
                 "PromptManagerText",
                 "PromptSearchList",
             ],
         )
+
+    def test_split_display_name_and_execution_contract_are_registered(self):
+        node = self.package.NODE_CLASS_MAPPINGS["PromptManagerSplit"]
+        self.assertEqual(
+            self.package.NODE_DISPLAY_NAME_MAPPINGS["PromptManagerSplit"],
+            "Prompt Manager (Split)",
+        )
+        focused = self.package.NODE_CLASS_MAPPINGS["PromptManagerFocused"]
+        self.assertTrue(issubclass(node, focused))
+        self.assertEqual(node.INPUT_TYPES(), focused.INPUT_TYPES())
 
     def test_db_factory_returns_the_shared_database(self):
         self.assertIsNotNone(self.package._global_db)

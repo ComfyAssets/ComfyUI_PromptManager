@@ -1,19 +1,21 @@
+import { writeFile } from 'node:fs/promises';
 import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 import { installHostHooks } from './host-fixture.mjs';
 
 installHostHooks(test, ['PromptManager', 'PromptManagerText', 'PromptSearchList', 'PromptManagerFocused']);
 
-async function addFocused(page) {
-    return page.evaluate(async () => {
+async function addEditor(page, type) {
+    await page.waitForFunction(type => Boolean(globalThis.LiteGraph?.registered_node_types?.[type]), type);
+    return page.evaluate(async type => {
         const { app } = await import('/scripts/app.js');
-        const node = LiteGraph.createNode('PromptManagerFocused');
-        if (!node) throw new Error('PromptManagerFocused must be registered by the real host');
+        const node = LiteGraph.createNode(type);
+        if (!node) throw new Error(`${type} must be registered by the real host`);
         app.graph.add(node);
-        node.setSize([680, 1050]);
+        node.setSize([type === 'PromptManagerSplit' ? 1100 : 680, 1050]);
         app.canvas.ds.scale = .8;
         app.canvas.centerOnNode(node);
         return node.id;
-    });
+    }, type);
 }
 
 async function model(page, id) {
@@ -29,19 +31,26 @@ async function seed(request, text, category = 'Focused host tests', tags = ['foc
     expect((await response.json()).success).toBe(true);
 }
 
+async function showLibrary(page) {
+    const button = page.locator('.pm-focused').getByRole('button', { name: 'Browse library', exact: true });
+    if (await button.count()) await button.click();
+}
+
 async function browse(page, text) {
     const root = page.locator('.pm-focused');
-    await root.getByRole('button', { name: 'Browse library', exact: true }).click();
+    await showLibrary(page);
     await root.getByRole('button', { name: 'Recent', exact: true }).click();
     await root.locator('.pm-editor-results').getByRole('button').filter({ has: page.getByText(text, { exact: true }) }).click();
     return root;
 }
 
-test('Focused definition preserves Classic encoding and exposes composition STRING sockets', async ({ request }) => {
+for (const [label, type] of [['Focused', 'PromptManagerFocused'], ['Split', 'PromptManagerSplit']]) {
+test.describe(label, () => {
+test(`${label} definition preserves Classic encoding and exposes composition STRING sockets`, async ({ request }) => {
     const definitions = await (await request.get('/object_info')).json();
-    const focused = definitions.PromptManagerFocused;
+    const focused = definitions[type];
     expect(focused).toBeDefined();
-    expect(focused.display_name).toBe('Prompt Manager (Focused)');
+    expect(focused.display_name).toBe(`Prompt Manager (${label})`);
     expect(focused.output).toEqual(definitions.PromptManager.output);
     expect(focused.input.required).toEqual(definitions.PromptManager.input.required);
     for (const name of ['prepend_text', 'append_text']) {
@@ -50,10 +59,10 @@ test('Focused definition preserves Classic encoding and exposes composition STRI
     }
 });
 
-test('Focused preview, explicit load, composition, renderer changes and workflow reload preserve state', async ({ page, request }, testInfo) => {
+test(`${label} preview, explicit load, composition, renderer changes and workflow reload preserve state`, async ({ page, request }, testInfo) => {
     const text = `Focused selected ${testInfo.project.name}`;
     await seed(request, text);
-    const id = await addFocused(page);
+    const id = await addEditor(page, type);
     const root = page.locator('.pm-focused');
     const editor = root.getByRole('textbox', { name: 'Main prompt', exact: true });
     await expect(root).toBeVisible();
@@ -92,20 +101,20 @@ test('Focused preview, explicit load, composition, renderer changes and workflow
     expect(queued).toMatchObject({ text, category: 'Focused host tests', tags: 'focused-host', prepend_text: 'LoRA trigger', append_text: 'high detail' });
     await expect(editor).toHaveValue(text);
     await expect.poll(() => model(page, id)).toMatchObject({ text, prepend_text: 'LoRA trigger', append_text: 'high detail' });
-    await page.screenshot({ path: testInfo.outputPath('focused-reloaded.png') });
+    await page.screenshot({ path: testInfo.outputPath(`${label.toLowerCase()}-reloaded.png`) });
     await page.evaluate(async id => { const { app } = await import('/scripts/app.js'); app.graph.remove(app.graph.getNodeById(id)); }, id);
     await expect(root).toHaveCount(0);
 });
 
-test('Focused search preview respects metadata opt-out', async ({ page, request }, testInfo) => {
+test(`${label} search preview respects metadata opt-out`, async ({ page, request }, testInfo) => {
     const text = `Focused search ${testInfo.project.name}`;
     await seed(request, text, 'Incoming category', ['incoming-tag']);
-    const id = await addFocused(page);
+    const id = await addEditor(page, type);
     const root = page.locator('.pm-focused');
     await root.getByText('Metadata · category / tags', { exact: true }).click();
     await root.getByRole('combobox', { name: 'Category', exact: true }).fill('Keep category');
     await root.getByRole('combobox', { name: 'Tags', exact: true }).fill('keep-tag');
-    await root.getByRole('button', { name: 'Browse library', exact: true }).click();
+    await showLibrary(page);
     await root.getByRole('searchbox', { name: 'Search saved prompts', exact: true }).fill(text);
     await root.getByRole('button', { name: 'Search', exact: true }).click();
     await root.locator('.pm-editor-results').getByRole('button').filter({ has: page.getByText(text, { exact: true }) }).click();
@@ -114,10 +123,10 @@ test('Focused search preview respects metadata opt-out', async ({ page, request 
     await expect.poll(() => model(page, id)).toMatchObject({ text, category: 'Keep category', tags: 'keep-tag' });
 });
 
-test('Focused connected STRING inputs remain linked through UI actions and reload', async ({ page, request }, testInfo) => {
+test(`${label} connected STRING inputs remain linked through UI actions and reload`, async ({ page, request }, testInfo) => {
     const text = `Connected library ${testInfo.project.name}`;
     await seed(request, text);
-    const id = await addFocused(page);
+    const id = await addEditor(page, type);
     const root = page.locator('.pm-focused');
     await root.getByRole('textbox', { name: 'Main prompt', exact: true }).fill('Local main');
     await root.getByText('Composition · prepend / append', { exact: true }).click();
@@ -179,11 +188,11 @@ test('Focused connected STRING inputs remain linked through UI actions and reloa
         await expect(input).toBeEditable();
         await expect(input).toHaveValue(value);
     }
-    await page.screenshot({ path: testInfo.outputPath('focused-disconnected.png') });
+    await page.screenshot({ path: testInfo.outputPath(`${label.toLowerCase()}-disconnected.png`) });
 });
 
-test('Focused follows actual ComfyUI light and dark palettes', async ({ page }, testInfo) => {
-    await addFocused(page);
+test(`${label} follows actual ComfyUI light and dark palettes`, async ({ page }, testInfo) => {
+    await addEditor(page, type);
     for (const palette of ['light', 'dark']) {
         await page.evaluate(async palette => {
             const { app } = await import('/scripts/app.js');
@@ -191,30 +200,35 @@ test('Focused follows actual ComfyUI light and dark palettes', async ({ page }, 
         }, palette);
         const root = page.locator('.pm-focused');
         await expect(root).toHaveAttribute('data-ca-theme', palette);
-        await expect(root.getByRole('button', { name: 'Browse library', exact: true })).toHaveCSS('background-color', 'rgb(8, 119, 187)');
-        await page.screenshot({ path: testInfo.outputPath(`focused-${palette}.png`) });
+        if (label === 'Split') {
+            await expect(root.getByRole('button', { name: /^(Browse|Hide) library$/ })).toHaveCount(0);
+            await expect(root.getByRole('button', { name: 'Search', exact: true })).toHaveCSS('background-color', 'rgb(8, 119, 187)');
+        } else {
+            await expect(root.getByRole('button', { name: 'Browse library', exact: true })).toHaveCSS('background-color', 'rgb(8, 119, 187)');
+        }
+        await page.screenshot({ path: testInfo.outputPath(`${label.toLowerCase()}-${palette}.png`) });
     }
 });
 
-test('Focused Web UI button opens actual standalone pages', async ({ page }) => {
-    await addFocused(page);
+test(`${label} Web UI button opens actual standalone pages`, async ({ page }) => {
+    await addEditor(page, type);
     const popupPromise = page.waitForEvent('popup');
     await page.locator('.pm-focused').getByRole('button', { name: 'Web UI ↗', exact: true }).click();
     const popup = await popupPromise;
     await popup.waitForLoadState('domcontentloaded');
     await expect(popup).toHaveURL(/\/prompt_manager\/(web|admin)/);
     await expect(popup.locator('body')).toContainText('Prompt');
-    await expect(page.locator('.pm-focused').getByRole('status')).toHaveText('Web UI opened.');
+    await expect(page.locator('.pm-focused').getByRole('status').filter({ hasText: 'Web UI opened.' })).toHaveText('Web UI opened.');
     await popup.goto(new URL('/prompt_manager/gallery', page.url()).href);
     await expect(popup.locator('#addPromptBtn')).toBeVisible();
     await popup.close();
 });
 
-test('Focused metadata completion uses saved categories and tags across renderers and reload', async ({ page, request }, testInfo) => {
+test(`${label} metadata completion uses saved categories and tags across renderers and reload`, async ({ page, request }, testInfo) => {
     const category = `Host completion category ${testInfo.project.name}`;
     const tag = `host-completion-${testInfo.project.name}`;
     await seed(request, `Saved autocomplete ${testInfo.project.name}`, category, [tag]);
-    const id = await addFocused(page);
+    const id = await addEditor(page, type);
     const root = page.locator('.pm-focused');
     await root.getByRole('textbox', { name: 'Main prompt', exact: true }).fill('Autocomplete workflow');
     await root.getByText('Metadata · category / tags', { exact: true }).click();
@@ -244,7 +258,7 @@ test('Focused metadata completion uses saved categories and tags across renderer
         expect(bounds.y).toBeGreaterThanOrEqual(0);
         expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
         expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
-        await page.screenshot({ path: testInfo.outputPath(`focused-metadata-${palette}.png`) });
+        await page.screenshot({ path: testInfo.outputPath(`${label.toLowerCase()}-metadata-${palette}.png`) });
         await option.click();
         await expect(tagInput).toHaveValue(`keep, ${tag}, `);
     }
@@ -279,20 +293,20 @@ test('Focused metadata completion uses saved categories and tags across renderer
     await expect(page.getByRole('listbox', { name: 'Saved tags', includeHidden: true })).toHaveCount(0);
 });
 
-test('Focused library autocomplete filters saved prompts without editing draft metadata', async ({ page, request }, testInfo) => {
+test(`${label} library autocomplete filters saved prompts without editing draft metadata`, async ({ page, request }, testInfo) => {
     const category = `Library category ${testInfo.project.name}`;
     const tag = `library-filter-${testInfo.project.name}`;
     const matchingText = `Matching library prompt ${testInfo.project.name}`;
     await seed(request, matchingText, category, [tag]);
     await seed(request, `Wrong category ${testInfo.project.name}`, `Other category ${testInfo.project.name}`, [tag]);
     await seed(request, `Wrong tag ${testInfo.project.name}`, category, [`other-filter-${testInfo.project.name}`]);
-    const id = await addFocused(page);
+    const id = await addEditor(page, type);
     const root = page.locator('.pm-focused');
     await root.getByRole('textbox', { name: 'Main prompt', exact: true }).fill('Keep my draft');
     await root.getByText('Metadata · category / tags', { exact: true }).click();
     await root.getByRole('combobox', { name: 'Category', exact: true }).fill('Draft category');
     await root.getByRole('combobox', { name: 'Tags', exact: true }).fill('draft-tag');
-    await root.getByRole('button', { name: 'Browse library', exact: true }).click();
+    await showLibrary(page);
     const filterCategory = root.getByRole('combobox', { name: 'Filter category', exact: true });
     const filterTags = root.getByRole('combobox', { name: 'Filter tags', exact: true });
     await filterCategory.fill(category.slice(0, -3));
@@ -308,7 +322,7 @@ test('Focused library autocomplete filters saved prompts without editing draft m
         await filterTags.fill(tag.slice(0, -3));
         const option = page.getByRole('listbox', { name: 'Saved tags', exact: true }).getByRole('option', { name: tag, exact: true });
         await expect(option).toBeVisible();
-        await page.screenshot({ path: testInfo.outputPath(`focused-library-filters-${palette}.png`) });
+        await page.screenshot({ path: testInfo.outputPath(`${label.toLowerCase()}-library-filters-${palette}.png`) });
         await option.click();
         await expect(filterTags).toHaveValue(`${tag}, `);
     }
@@ -344,3 +358,84 @@ test('Focused library autocomplete filters saved prompts without editing draft m
     await expect(results.first()).toContainText(matchingText);
     await expect.poll(() => model(page, id)).toMatchObject(draft);
 });
+
+if (label === 'Split') {
+    test('Split keeps its library visible beside the editor and stacks narrow nodes', async ({ page, request }, testInfo) => {
+        for (let index = 0; index < 21; index++) {
+            await seed(request, `Split layout recent ${testInfo.project.name} ${index}`);
+        }
+        const id = await addEditor(page, type);
+        const root = page.locator('.pm-split');
+        await page.evaluate(async id => {
+            const { app } = await import('/scripts/app.js');
+            const node = app.graph.getNodeById(id);
+            node.setSize([900, 650]);
+            app.canvas.centerOnNode(node);
+        }, id);
+        await expect(root).toHaveAttribute('aria-label', 'Split prompt editor');
+        const savedProperties = await page.evaluate(async id => {
+            const { app } = await import('/scripts/app.js');
+            return app.graph.getNodeById(id).serialize().properties;
+        }, id);
+        expect(savedProperties).toHaveProperty('splitUI');
+        expect(savedProperties).not.toHaveProperty('focusedUI');
+        await expect(root.getByRole('button', { name: /^(Browse|Hide) library$/ })).toHaveCount(0);
+        const editor = root.getByRole('textbox', { name: 'Main prompt', exact: true });
+        const library = root.getByRole('region', { name: 'Prompt library', exact: true });
+        await expect(library).toBeVisible();
+        const captureGeometry = async phase => {
+            const geometry = await page.evaluate(async id => {
+                const { app } = await import('/scripts/app.js');
+                const node = app.graph.getNodeById(id);
+                const root = node._focusedView.element;
+                const bounds = selector => root.querySelector(selector)?.getBoundingClientRect().toJSON();
+                const ancestors = [];
+                for (let element = root; element && element !== document.body; element = element.parentElement) {
+                    const style = getComputedStyle(element);
+                    ancestors.push({ tag: element.tagName, className: element.className, bounds: element.getBoundingClientRect().toJSON(), inlineStyle: element.style.cssText, computed: Object.fromEntries(['height', 'min-height', 'max-height', 'display', 'overflow', 'flex', 'contain', 'position'].map(name => [name, style.getPropertyValue(name)])) });
+                }
+                return { nodeSize: [...node.size], ancestors, root: root.getBoundingClientRect().toJSON(), library: bounds('.pm-editor-library'), results: bounds('.pm-editor-results'), use: bounds('.pm-editor-selection button'), footer: bounds(':scope > .pm-editor-status') };
+            }, id);
+            const path = testInfo.outputPath(`split-${phase}-geometry.json`);
+            await writeFile(path, JSON.stringify(geometry, null, 2));
+            await testInfo.attach(`split-${phase}-geometry.json`, { path, contentType: 'application/json' });
+            return geometry;
+        };
+        const beforeRecent = await captureGeometry('before-recent');
+        await root.getByRole('button', { name: 'Recent', exact: true }).click();
+        const results = library.locator('.pm-editor-results').getByRole('button');
+        await expect(results).toHaveCount(20);
+        const promptText = results.first().locator('span').first();
+        const selectedText = await promptText.innerText();
+        await results.first().click();
+        const use = root.getByRole('button', { name: 'Use prompt', exact: true });
+        const afterSelection = await captureGeometry('after-selection');
+        await page.screenshot({ path: testInfo.outputPath('split-default-selected.png') });
+        expect.soft((await promptText.boundingBox())?.height || 0).toBeGreaterThan(10);
+        expect.soft(afterSelection.root.height).toBeLessThanOrEqual(beforeRecent.root.height + 1);
+        await use.click();
+        await expect(editor).toHaveValue(selectedText);
+        await expect.poll(async () => {
+            const main = await editor.boundingBox();
+            const browser = await library.boundingBox();
+            return browser.x >= main.x + main.width;
+        }).toBe(true);
+        await page.screenshot({ path: testInfo.outputPath('split-wide.png') });
+        await page.evaluate(async id => {
+            const { app } = await import('/scripts/app.js');
+            const node = app.graph.getNodeById(id);
+            node.setSize([480, 1050]);
+            app.canvas.centerOnNode(node);
+        }, id);
+        await expect.poll(async () => {
+            const main = await editor.boundingBox();
+            const browser = await library.boundingBox();
+            return browser.y >= main.y + main.height;
+        }).toBe(true);
+        await expect(library).toBeVisible();
+        await page.screenshot({ path: testInfo.outputPath('split-narrow.png') });
+    });
+}
+
+});
+}
