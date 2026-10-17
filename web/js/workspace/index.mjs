@@ -3,6 +3,7 @@ import { createButton, createField, createScope, createSelect } from '../shared/
 import { routes, mountRouter, summarizeStats } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
 import { mountImages } from './images.mjs';
+import { mountLibrary } from './library.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
 
@@ -60,6 +61,10 @@ function mountWorkspace() {
         document.getElementById('workspace-breadcrumb').textContent = route.label;
         if (route.id === 'images') {
             mountImages(main, api, view);
+            return;
+        }
+        if (route.id === 'library') {
+            mountLibrary(main, api, view, {positiveId:route.positiveId});
             return;
         }
         if (route.id !== 'overview') {

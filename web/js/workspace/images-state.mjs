@@ -43,8 +43,10 @@ function validatePage(page, cursor) {
 }
 
 /** Keep metadata for backward scrolling; the view bounds rendered media independently. */
-export function createImageStream({ api, onChange = () => {}, batchSize = 40, restore }) {
-    if (typeof api?.get !== 'function') throw new TypeError('An API client is required');
+export function createImageStream({ api, onChange = () => {}, batchSize = 40, restore, fetchPage }) {
+    if (fetchPage !== undefined && typeof fetchPage !== 'function') throw new TypeError('Invalid image page adapter');
+    if (!fetchPage && typeof api?.get !== 'function') throw new TypeError('An API client is required');
+    const readPage = fetchPage || (({parameters, signal}) => api.get(`/prompt_manager/images/output?${parameters}`, {signal}));
     if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 200) {
         throw new TypeError('Invalid image batch size');
     }
@@ -86,7 +88,7 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         const parameters = new URLSearchParams(query);
         if (cursor !== null) parameters.set('cursor', cursor);
         try {
-            const page = await api.get(`/prompt_manager/images/output?${parameters}`, { signal: request.signal });
+            const page = await readPage({parameters, signal:request.signal});
             if (disposed || request !== controller) return 0;
             validatePage(page, cursor);
             const incoming = [];

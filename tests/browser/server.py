@@ -82,6 +82,9 @@ def create_app(root: Path) -> web.Application:
         extra_images: int = 0,
         include_video: bool = False,
         prompt_inspector: bool = False,
+        native_library: bool = False,
+        extra_prompts: int = 0,
+        extra_variants: int = 0,
     ) -> None:
         with api.db.model.get_connection() as conn:
             for table in (
@@ -98,7 +101,14 @@ def create_app(root: Path) -> web.Application:
             shutil.rmtree(root / name)
             (root / name).mkdir()
         for index, (directory, text, tag) in enumerate(
-            [("output", "Cat portrait", "cats"), ("input", "Dog landscape", "dogs")]
+            [
+                ("output", "Cat portrait", "cats"),
+                (
+                    "input",
+                    "Cat portrait" if native_library else "Dog landscape",
+                    "dogs",
+                ),
+            ]
         ):
             image_path = root / directory / "shared" / "same.png"
             image_path.parent.mkdir(exist_ok=True)
@@ -111,7 +121,7 @@ def create_app(root: Path) -> web.Application:
             )
             with Image.new("RGB", (64, 64), (index * 255, 64, 128)) as image:
                 image.save(image_path, pnginfo=info)
-            if prompt_inspector:
+            if prompt_inspector or native_library:
                 graph = {
                     "1": {"class_type": "CLIPTextEncode", "inputs": {"text": text}},
                     "2": {
@@ -143,6 +153,48 @@ def create_app(root: Path) -> web.Application:
                     extra.parent.mkdir(exist_ok=True)
                     shutil.copyfile(image_path, extra)
                     api.db.link_image_to_prompt(pid, str(extra))
+        if native_library:
+            positive = api.db.get_prompt_by_hash(generate_prompt_hash("Cat portrait"))
+            positive_id = positive["id"]
+            api.db.update_prompt_metadata(
+                positive_id, category="Animals", tags=["cats", "studio"]
+            )
+            variants = []
+            for index, negative in enumerate(
+                ["blurry, watermark", "low quality", "low contrast", ""]
+            ):
+                pair_id = api.db.save_prompt_pair(
+                    "Cat portrait",
+                    negative,
+                    title=f"Portrait variant {index + 1}",
+                    category="Portraits" if index == 0 else "Experiments",
+                    tags=["studio"] if index == 0 else ["outdoors"],
+                )
+                variants.append(pair_id)
+            with api.db.model.get_connection() as conn:
+                images = conn.execute(
+                    "SELECT id FROM generated_images WHERE prompt_id=? ORDER BY id",
+                    (positive_id,),
+                ).fetchall()
+            for index, image in enumerate(images[:2]):
+                api.db.link_image_to_pair(
+                    variants[index], image["id"], {"source": "fixture", "anchor": index}
+                )
+            api.db.link_image_to_pair(
+                variants[0], images[0]["id"], {"source": "fixture second evidence"}
+            )
+            api.db.record_prompt_pair_use(variants[0], times=3)
+            for number in range(extra_variants):
+                api.db.save_prompt_pair("Cat portrait", f"Negative extra {number:04}")
+            legacy = root / "output" / "legacy-unassigned.png"
+            shutil.copyfile(root / "output" / "shared" / "same.png", legacy)
+            api.db.link_image_to_prompt(positive_id, str(legacy))
+            api.db.save_prompt("Dog landscape", category="Animals", tags=["dogs"])
+            api.db.save_prompt_pair("Dual role portrait", "Cat portrait")
+            for number in range(extra_prompts):
+                api.db.save_prompt(
+                    f"Library extra {number:04}", category="Bulk", tags=["bulk"]
+                )
         if prompt_inspector:
             for name, parameters in (
                 (
@@ -174,15 +226,33 @@ def create_app(root: Path) -> web.Application:
         extra = data.get("extra_images", 0)
         include_video = data.get("include_video", False)
         prompt_inspector = data.get("prompt_inspector", False)
+        native_library = data.get("native_library", False)
+        extra_prompts = data.get("extra_prompts", 0)
+        extra_variants = data.get("extra_variants", 0)
         if (
             isinstance(extra, bool)
             or not isinstance(extra, int)
             or not 0 <= extra <= 200
             or not isinstance(include_video, bool)
             or not isinstance(prompt_inspector, bool)
+            or not isinstance(native_library, bool)
+            or isinstance(extra_prompts, bool)
+            or not isinstance(extra_prompts, int)
+            or not 0 <= extra_prompts <= 200
+            or isinstance(extra_variants, bool)
+            or not isinstance(extra_variants, int)
+            or not 0 <= extra_variants <= 200
         ):
             raise web.HTTPBadRequest()
-        await api._run_in_executor(seed, extra, include_video, prompt_inspector)
+        await api._run_in_executor(
+            seed,
+            extra,
+            include_video,
+            prompt_inspector,
+            native_library,
+            extra_prompts,
+            extra_variants,
+        )
         return web.json_response({"success": True})
 
     @routes.post("/__test__/add-nested-image")

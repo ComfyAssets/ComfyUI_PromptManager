@@ -17,26 +17,29 @@ function formatBytes(value) {
 
 let lastVisit = null;
 
-export function mountImages(main, api, parentScope) {
+export function mountImages(main, api, parentScope, {embedded = false, fetchPage} = {}) {
     const scope = createScope();
-    parentScope.cleanup(() => scope.dispose());
+    const dispose = () => scope.dispose();
+    parentScope.signal.addEventListener('abort', dispose, {once:true});
+    scope.cleanup(() => parentScope.signal.removeEventListener('abort', dispose));
+    if (parentScope.signal.aborted) { scope.dispose(); return {dispose}; }
     const { resolveUrl } = window.ApiClient;
     const sender = createPromptSender({scope});
     let detailInspector, previewInspector;
     scope.cleanup(() => { detailInspector?.dispose(); previewInspector?.dispose(); });
-    const visit = lastVisit;
+    const visit = embedded ? null : lastVisit;
     let layout = visit?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer, viewer;
     let state, geometry = { positions: [], height: 0, maxHeight: 0 }, optionsRequest;
     const rendered = new Map();
     const itemIndexes = new Map();
     const filters = { root: 'all', q: '', subfolder: '', media: 'all', sort: 'newest', ...visit?.filters };
     scope.cleanup(() => {
-        lastVisit = state ? { filters: {...filters}, state, layout, selection, scrollY: window.scrollY } : null;
+        if (!embedded) lastVisit = state ? { filters: {...filters}, state, layout, selection, scrollY: window.scrollY } : null;
         cancelAnimationFrame(restoreFrame);
     });
     main.classList.add('images-main');
     scope.cleanup(() => main.classList.remove('images-main'));
-    main.append(el('p', 'Browse your images, explore the details, keep your creative context.', 'intro'));
+    if (!embedded) main.append(el('p', 'Browse your images, explore the details, keep your creative context.', 'intro'));
     const filtersBar = el('div', undefined, 'image-filters');
     const search = el('input');
     search.value = filters.q;
@@ -50,7 +53,7 @@ export function mountImages(main, api, parentScope) {
         createField('Folder', folder, 'image-folder'), createField('Media', media, 'image-media'), createField('Sort', sort, 'image-sort'));
     const optionsStatus = el('p', '', 'options-status muted');
     optionsStatus.hidden = true; optionsStatus.setAttribute('role', 'alert');
-    main.append(filtersBar, optionsStatus);
+    if (!embedded) main.append(filtersBar, optionsStatus);
     const toolbar = el('div', undefined, 'image-toolbar');
     const count = el('p', 'Loading images…', 'muted');
     const layouts = el('div', undefined, 'image-layouts');
@@ -86,7 +89,8 @@ export function mountImages(main, api, parentScope) {
     });
     const currentGallery = el('a', 'Current gallery', 'workspace-link');
     currentGallery.href = resolveUrl('/prompt_manager/gallery');
-    toolbar.append(count, layouts, refresh, currentGallery);
+    toolbar.append(count, layouts);
+    if (!embedded) toolbar.append(refresh, currentGallery);
     main.append(toolbar);
     const body = el('div', undefined, 'image-workspace');
     const collection = el('section', undefined, 'image-collection');
@@ -159,6 +163,7 @@ export function mountImages(main, api, parentScope) {
         download.href = resolveUrl(image.url); download.download = image.filename;
         const prompts = el('div');
         const legacy = el('p', 'Open Current gallery for tagging.', 'muted');
+        legacy.hidden = embedded;
         details.replaceChildren(el('p', 'SELECTED IMAGE', 'eyebrow'), el('h2', image.filename), thumbnail, preview, download, prompts, metadata, legacy);
         detailInspector = mountPromptInspector(prompts, {api, image, sender, parentScope:scope});
         for (const [key, card] of rendered) {
@@ -307,18 +312,18 @@ export function mountImages(main, api, parentScope) {
             for (let index = state?.items.length || 0; index < next.items.length; index++) itemIndexes.set(imageKey(next.items[index]), index);
         }
         state = next;
-        count.textContent = `${next.loaded.toLocaleString()} of ${next.total.toLocaleString()} images`;
+        count.textContent = embedded ? `${next.loaded.toLocaleString()} loaded · ${next.total.toLocaleString()} linked images` : `${next.loaded.toLocaleString()} of ${next.total.toLocaleString()} images`;
         if (changed) updateLayout();
         message.textContent = next.error ? 'Images could not be loaded. Retry or refresh the collection.' : next.loading ? 'Loading images…' : '';
         if (next.error) message.setAttribute('role', 'alert'); else message.setAttribute('role', 'status');
         retry.hidden = !next.error;
         more.hidden = !next.hasMore || !!next.error;
         more.setAttribute('aria-disabled', String(next.loading));
-        end.textContent = !next.loading && !next.error && !next.hasMore ? (next.loaded ? 'You’re all caught up.' : 'No matching images or media. Try changing the filters.') : '';
+        end.textContent = !next.loading && !next.error && !next.hasMore ? (next.loaded ? 'You’re all caught up.' : embedded ? 'No linked media available for this selection.' : 'No matching images or media. Try changing the filters.') : '';
         if (!selection && next.items.length) inspect(next.items[0]);
         scheduleLoad();
     }
-    const stream = createImageStream({ api, onChange: renderState, restore: visit ? {filters, state:visit.state} : undefined });
+    const stream = createImageStream({ api, fetchPage, onChange: renderState, restore: visit ? {filters, state:visit.state} : undefined });
     scope.cleanup(() => {
         stream.dispose();
         for (const video of body.querySelectorAll('video')) releaseVideo(video);
@@ -374,7 +379,7 @@ export function mountImages(main, api, parentScope) {
             reset();
         });
     }
-    loadOptions();
+    if (!embedded) loadOptions();
     if (visit) {
         renderState(stream.state);
         const selected = stream.state.items.find(image => imageKey(image) === selection);
@@ -384,4 +389,5 @@ export function mountImages(main, api, parentScope) {
         });
         if (visit.state.loading || visit.state.error) stream.loadMore();
     } else reset();
+    return {dispose};
 }

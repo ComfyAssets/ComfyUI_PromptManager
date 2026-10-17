@@ -159,3 +159,11 @@ test('malformed restored state is rejected before making requests',async()=>{
         {filters:{root:-1},state:base}, {filters:null,state:base}];
     for(const restore of invalid) assert.throws(()=>createImageStream({api:{get(){assert.fail('unexpected request');}},restore}),TypeError);
 });
+
+test('custom collection pages reuse image-stream cancellation, cursors and identity checks',async()=>{
+    const {createImageStream}=await source;const calls=[];
+    const stream=createImageStream({fetchPage:async({parameters,signal})=>{calls.push({parameters,signal});return calls.length===1?page([image('linked.png')],2,'next'):page([image('other.png')],2);},batchSize:1});
+    assert.equal(await stream.reset(),1);assert.equal(calls[0].parameters.get('limit'),'1');assert.ok(calls[0].signal instanceof AbortSignal);
+    assert.equal(await stream.loadMore(),1);assert.equal(calls[1].parameters.get('cursor'),'next');assert.equal(stream.state.loaded,2);stream.dispose();
+    assert.throws(()=>createImageStream({api:{get:async()=>{}},fetchPage:'invalid'}),/page/i);
+});
