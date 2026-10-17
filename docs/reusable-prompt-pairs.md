@@ -91,3 +91,21 @@ pair. Changing text creates another combination. Null metadata updates preserve
 existing values; empty strings/lists clear supported fields. Archive a pair with
 `PATCH {"archived":true}`. GET `/export` provides versioned JSON containing both
 texts and pair metadata; this is an export format, not a JSON import endpoint.
+
+## Gallery redesign concept retained
+
+The maintainer approved the interactive
+[negative variant timeline concept](concepts/prompt-variant-timeline.html) on
+2026-10-17. Preserve it for the later gallery redesign; it is not production UI
+and does not expand the current node work.
+
+Keep one positive parent and one shared gallery, with red branches for reusable
+negative variants and smaller dots for repeat runs. Show the selected negative
+in full directly beneath the unchanged positive; selecting another variant or
+run updates that text and filters the shared gallery. Comparison shows both
+negatives. Distinguish explicitly empty negatives from an all-variants view and
+saved variants from executed runs. Production history needs persisted execution
+records; the prototype's timeline uses illustrative sample data.
+
+The Admin upgrade/scan notice remains a separate follow-up: explain automatic
+schema migration and offer an optional metadata enrichment scan or Later.
