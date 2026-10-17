@@ -122,3 +122,33 @@ class TestPairAPI(PromptAPITestCase):
         self.assertEqual((await response.json())["pairs"][0]["id"], first["id"])
         response = await self.client.get("/prompt_manager/pairs?sort=invalid")
         self.assertEqual(response.status, 400)
+
+    async def test_null_metadata_patch_is_noop_for_existing_pair(self):
+        pair = (await (await self._create(rating=4)).json())["pair"]
+        response = await self.client.patch(
+            f'/prompt_manager/pairs/{pair["id"]}', json={"rating": None}
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["pair"]["rating"], 4)
+        response = await self.client.patch(
+            "/prompt_manager/pairs/99999", json={"rating": None}
+        )
+        self.assertEqual(response.status, 404)
+
+    async def test_database_failures_are_generic_and_bad_json_is_rejected(self):
+        from unittest.mock import patch
+
+        with patch.object(
+            self.api.db,
+            "save_prompt_pair",
+            side_effect=RuntimeError("/private/db/path"),
+        ):
+            response = await self._create()
+        self.assertEqual(response.status, 500)
+        self.assertNotIn("/private", await response.text())
+        response = await self.client.post(
+            "/prompt_manager/pairs",
+            data="{",
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(response.status, 400)

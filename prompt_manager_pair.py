@@ -9,7 +9,7 @@ try:
     from .prompt_manager import IO, InputTypeDict, PromptManagerFocused
     from .utils.hashing import generate_prompt_hash
     from .utils.pair_execution import record_pair_execution
-    from .utils.prompt_graph import intrinsic_pair_nodes, run_prompt_nodes
+    from .utils.prompt_graph import intrinsic_pair_nodes, run_prompt_components
     from .utils.prompt_pair_resolver import resolve_text_input
     from .utils.usage_tracking import (
         PENDING_FIRST_USE,
@@ -20,7 +20,7 @@ except ImportError:
     from prompt_manager import IO, InputTypeDict, PromptManagerFocused
     from utils.hashing import generate_prompt_hash
     from utils.pair_execution import record_pair_execution
-    from utils.prompt_graph import intrinsic_pair_nodes, run_prompt_nodes
+    from utils.prompt_graph import intrinsic_pair_nodes, run_prompt_components
     from utils.prompt_pair_resolver import resolve_text_input
     from utils.usage_tracking import (
         PENDING_FIRST_USE,
@@ -101,7 +101,16 @@ class PromptManagerPair(PromptManagerFocused):
         pair_id = prompt_id = None
         known = isinstance(prompt, dict) and unique_id is not None
         node_id = str(unique_id)
-        is_positive = node_id in run_prompt_nodes(prompt) if known else True
+        used_fields = (
+            {
+                field
+                for source, field in run_prompt_components(prompt)
+                if source == node_id
+            }
+            if known
+            else {"text"}
+        )
+        is_positive = "text" in used_fields
         pair_used = node_id in intrinsic_pair_nodes(prompt) if known else True
         try:
             pair_id = self.db.save_prompt_pair(
@@ -131,12 +140,31 @@ class PromptManagerPair(PromptManagerFocused):
             pair_pending = getattr(
                 self, "pending_pair_first_use", PENDING_PAIR_FIRST_USE
             )
-            if is_positive:
-                runs = positive_pending.consume(generate_prompt_hash(text)) + int(
-                    not positive_seen
+            counted = set()
+            for field, component_text, resolved_text, component_id in (
+                ("text", text, resolved_positive, prompt_id),
+                (
+                    "negative_text",
+                    negative_text,
+                    resolved_negative,
+                    pair["negative_prompt_id"],
+                ),
+            ):
+                component_hash = generate_prompt_hash(component_text)
+                if (
+                    field not in used_fields
+                    or not component_id
+                    or component_hash in counted
+                ):
+                    continue
+                counted.add(component_hash)
+                seen_at_queue = (
+                    resolved_text is not None
+                    and generate_prompt_hash(resolved_text) == component_hash
                 )
+                runs = positive_pending.consume(component_hash) + int(not seen_at_queue)
                 if runs:
-                    self.db.record_prompt_use(prompt_id, times=runs)
+                    self.db.record_prompt_use(component_id, times=runs)
             if pair_used:
                 runs = pair_pending.consume(pair_run_key(text, negative_text)) + int(
                     not pair_seen

@@ -2041,18 +2041,54 @@ class PromptDatabase(PairOperations):
                 if len(pair_ids) == 1
                 else None
             )
-            contexts = {
-                (
-                    item["provenance"].get("positive", {}).get("text"),
-                    item["provenance"].get("negative", {}).get("text"),
+            candidates = []
+            for item in associations:
+                evidence = item["provenance"]
+                positive_side = evidence.get("positive")
+                negative_side = evidence.get("negative")
+                if not isinstance(positive_side, dict) or not isinstance(
+                    negative_side, dict
+                ):
+                    continue
+                positive, negative = positive_side.get("text"), negative_side.get(
+                    "text"
                 )
-                for item in associations
-            }
+                if not isinstance(positive, str) or not isinstance(negative, str):
+                    continue
+                sources = []
+                for side in (positive_side, negative_side):
+                    provenance = side.get("provenance")
+                    sources.append(
+                        provenance.get("text_source")
+                        if isinstance(provenance, dict)
+                        else None
+                    )
+                score = sources.count("execution")
+                source = (
+                    "execution"
+                    if score == 2
+                    else (
+                        "mixed"
+                        if score
+                        else (
+                            "embedded-parameters"
+                            if sources == ["embedded-parameters"] * 2
+                            else "graph-inferred"
+                        )
+                    )
+                )
+                candidates.append((score, positive, negative, source))
             context = None
-            if len(contexts) == 1:
-                positive, negative = next(iter(contexts))
-                if isinstance(positive, str) and isinstance(negative, str):
-                    context = {"positive_text": positive, "negative_text": negative}
+            if candidates and pair:
+                best_score = max(item[0] for item in candidates)
+                contexts = {item[1:] for item in candidates if item[0] == best_score}
+                if len(contexts) == 1:
+                    positive, negative, source = next(iter(contexts))
+                    context = {
+                        "positive_text": positive,
+                        "negative_text": negative,
+                        "text_source": source,
+                    }
             tags = self._get_prompt_tags(conn, row[0])
             try:
                 workflow = json.loads(row[5]) if row[5] else None

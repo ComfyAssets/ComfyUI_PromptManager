@@ -29,13 +29,17 @@ from typing import Any, Callable, List, Optional, Tuple
 try:
     from .hashing import generate_prompt_hash
     from .logging_config import get_logger
-    from .prompt_graph import intrinsic_pair_nodes, resolve_text, run_prompt_nodes
+    from .prompt_graph import intrinsic_pair_nodes, resolve_text, run_prompt_components
     from .prompt_pair_resolver import resolve_text_input
     from .pair_execution import clear_pair_execution
 except ImportError:
     from utils.hashing import generate_prompt_hash
     from utils.logging_config import get_logger
-    from utils.prompt_graph import intrinsic_pair_nodes, resolve_text, run_prompt_nodes
+    from utils.prompt_graph import (
+        intrinsic_pair_nodes,
+        resolve_text,
+        run_prompt_components,
+    )
     from utils.prompt_pair_resolver import resolve_text_input
     from utils.pair_execution import clear_pair_execution
 
@@ -123,10 +127,10 @@ def queued_prompt_runs(graph: Any) -> List[Run]:
     """
     runs: List[Run] = []
     seen = set()
-    for node_id in run_prompt_nodes(graph):
+    for node_id, field in run_prompt_components(graph):
         node = graph.get(node_id, {}) if isinstance(graph, dict) else {}
         text = (
-            resolve_text_input(graph, node_id, "text")
+            resolve_text_input(graph, node_id, field)
             if node.get("class_type") == "PromptManagerPair"
             else resolve_text(graph, node_id)
         )

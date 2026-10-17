@@ -9,7 +9,7 @@ link-tracing rules of web/js/comfy-metadata.js.
 """
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 PROMPT_MANAGER_TYPES = frozenset(
     {
@@ -99,15 +99,12 @@ def has_sampler(graph: Any) -> bool:
     return isinstance(graph, dict) and bool(_positive_roots(graph))
 
 
-def positive_prompt_nodes(graph: Any) -> List[str]:
-    """Ids of PromptManager family nodes that feed a positive input.
-
-    Ordered by discovery, each id once. Malformed graphs yield an empty list.
-    """
+def positive_prompt_components(graph: Any) -> List[Tuple[str, str]]:
+    """Node/input identities reaching actual sampler positive wires."""
     if not isinstance(graph, dict):
         return []
 
-    found: List[str] = []
+    found: List[Tuple[str, str]] = []
     seen = set()
     stack = list(reversed(_positive_roots(graph)))
     while stack and len(seen) < MAX_VISITS:
@@ -119,14 +116,46 @@ def positive_prompt_nodes(graph: Any) -> List[str]:
         node = graph.get(node_id)
         if not isinstance(node, dict):
             continue
-        if node.get("class_type") == "PromptManagerPair" and slot not in (0, 2):
-            continue
         if node.get("class_type") in PROMPT_MANAGER_TYPES:
-            if node_id not in found:
-                found.append(node_id)
+            field = "text"
+            if node.get("class_type") == "PromptManagerPair":
+                field = {
+                    0: "text",
+                    1: "negative_text",
+                    2: "text",
+                    3: "negative_text",
+                }.get(slot)
+                if field is None:
+                    continue
+            identity = (node_id, field)
+            if identity not in found:
+                found.append(identity)
             continue
         stack.extend(reversed(_upstream_links(_inputs(node))))
     return found
+
+
+def positive_prompt_nodes(graph: Any) -> List[str]:
+    """Nodes whose main editor reaches a sampler's positive input."""
+    return list(
+        dict.fromkeys(
+            node_id
+            for node_id, field in positive_prompt_components(graph)
+            if field == "text"
+        )
+    )
+
+
+def run_prompt_components(graph: Any) -> List[Tuple[str, str]]:
+    """Actual positive components, retaining standalone main-editor fallback."""
+    components = positive_prompt_components(graph)
+    if components or not isinstance(graph, dict) or has_sampler(graph):
+        return components
+    return [
+        (str(node_id), "text")
+        for node_id, node in graph.items()
+        if isinstance(node, dict) and node.get("class_type") in PROMPT_MANAGER_TYPES
+    ]
 
 
 def run_prompt_nodes(graph: Any) -> List[str]:

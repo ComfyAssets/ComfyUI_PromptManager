@@ -1221,6 +1221,7 @@
                     if (databasePrompt) {
                         // Create metadata object from database prompt
                         metadata = {
+                            textSource: databasePrompt.pair_context?.text_source,
                             positivePrompt: databasePrompt.pair_context?.positive_text ?? databasePrompt.text,
                             negativePrompt: databasePrompt.pair_context?.negative_text ?? databasePrompt.pair?.negative_text ?? 'No negative prompt found',
                             checkpoint: 'Unknown',
@@ -1289,6 +1290,12 @@
                     return;
                 }
 
+                const textSourceLabel = new Map([
+                    ['execution','Recorded during execution'],
+                    ['graph-inferred','Recovered from workflow metadata'],
+                    ['embedded-parameters','Read from embedded parameters'],
+                    ['mixed','Execution and workflow metadata'],
+                ]).get(metadata.textSource);
                 const html = `
                     <!-- File Path -->
                     <div class="space-y-2">
@@ -1308,6 +1315,8 @@
                             </div>
                         </div>
                     </div>
+
+                    ${textSourceLabel ? `<p class="text-xs text-pm-secondary">${escapeHtml(textSourceLabel)}</p>` : ''}
 
                     <!-- Prompt Section -->
                     <div class="space-y-3">

@@ -155,9 +155,9 @@ class PairRoutesMixin:
             updated = await self._run_in_executor(
                 self.db.update_prompt_pair_metadata, pair_id, **fields
             )
-        if not updated:
-            return missing_pair()
         pair = await self._run_in_executor(self.db.get_prompt_pair, pair_id)
+        if not updated and not pair:
+            return missing_pair()
         return web.json_response({"success": True, "pair": pair})
 
     @pair_response

@@ -47,3 +47,15 @@ test('recorded image pair overrides unrelated PNG fallback, including an empty n
         assert.equal(manager.last.negativePrompt,negative);
     }
 });
+
+test('gallery labels graph-inferred text separately from recorded execution text', () => {
+    const context=vm.createContext({document:{addEventListener(){}},window:{},console,escapeHtml:value=>String(value)});
+    const Manager=vm.runInContext(fs.readFileSync(path.join(__dirname,'../../web/js/gallery.js'),'utf8')+'\nGalleryManager;',context);
+    const manager=Object.create(Manager.prototype);
+    manager.formatPromptText=value=>String(value||'');manager.setupMetadataActions=()=>{};
+    for (const [source,label] of [['graph-inferred','Recovered from workflow metadata'],['execution','Recorded during execution'],['embedded-parameters','Read from embedded parameters'],['mixed','Execution and workflow metadata']]) {
+        const panel={};
+        manager.displayMetadata({positivePrompt:'cat',negativePrompt:'blur',textSource:source},panel);
+        assert.ok(panel.innerHTML.includes(label),source);
+    }
+});

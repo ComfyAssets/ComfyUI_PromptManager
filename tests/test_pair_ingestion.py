@@ -140,3 +140,17 @@ class TestPairIngestion(unittest.TestCase):
         )
         self.assertEqual(result["status"], "conflict")
         self.assertEqual(self.db.list_prompt_pairs()["total"], 1)
+
+    def test_execution_evidence_wins_over_a_prior_inferred_context(self):
+        inferred = resolved()
+        for side in ("positive", "negative"):
+            inferred[side]["provenance"]["text_source"] = "graph-inferred"
+        ingest_resolved_pair(self.db, self.path, {}, inferred)
+        execution = resolved("cat, lora_trigger", "blur")
+        execution["positive"]["storage_text"] = "cat"
+        for side in ("positive", "negative"):
+            execution[side]["provenance"]["text_source"] = "execution"
+        ingest_resolved_pair(self.db, self.path, {}, execution)
+        info = self.db.get_image_prompt_info(self.path)
+        self.assertEqual(info["pair_context"]["positive_text"], "cat, lora_trigger")
+        self.assertEqual(info["pair_context"]["text_source"], "execution")
