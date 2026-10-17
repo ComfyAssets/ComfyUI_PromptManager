@@ -154,5 +154,23 @@
     "branches": 93,
     "functions": 98,
     "statements": 98
+  },
+  "workspace/image-layout.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/images-state.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/images.mjs": {
+    "lines": 95,
+    "branches": 87,
+    "functions": 98,
+    "statements": 95
   }
 }

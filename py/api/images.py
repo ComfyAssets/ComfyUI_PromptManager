@@ -1,7 +1,10 @@
 """Image and gallery API routes for PromptManager."""
 
 import asyncio
+import base64
+import binascii
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -226,6 +229,70 @@ MAX_GALLERY_FILES = 50_000
 MAX_BULK_LIMIT = 5_000
 MAX_JSON_BODY_BYTES = 1024 * 1024
 _READ_CHUNK = 64 * 1024
+
+
+_WORKSPACE_CURSOR_SECRET = os.urandom(32)
+
+
+def _workspace_root(query: dict, roots: list[Path]) -> int | None:
+    value = query.get("root")
+    if value is None:
+        return None
+    try:
+        index = int(value)
+    except ValueError:
+        raise ValueError("Invalid gallery root") from None
+    if not 0 <= index < len(roots):
+        raise ValueError("Invalid gallery root")
+    return index
+
+
+def _workspace_key(entry: tuple, order: str) -> tuple:
+    path, mtime, root, index = entry
+    relative = path.relative_to(root).as_posix()
+    tie = hashlib.sha256(relative.encode("utf-8")).hexdigest()
+    name = path.name.casefold()
+    if order in ("name", "name-desc"):
+        return (name, tie, index, mtime)
+    return ((-mtime if order == "newest" else mtime), name, tie, index)
+
+
+def _workspace_cursor(key: tuple, scope: str) -> str:
+    payload = json.dumps(
+        {"v": 1, "scope": scope, "key": key}, separators=(",", ":"), ensure_ascii=False
+    ).encode()
+    signature = hmac.new(_WORKSPACE_CURSOR_SECRET, payload, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(signature + payload).decode().rstrip("=")
+
+
+def _workspace_cursor_key(token: str, scope: str, order: str) -> tuple:
+    try:
+        if len(token) > 4096:
+            raise ValueError()
+        raw = base64.b64decode(
+            token + "=" * (-len(token) % 4), altchars=b"-_", validate=True
+        )
+        signature, payload = raw[:32], raw[32:]
+        expected = hmac.new(_WORKSPACE_CURSOR_SECRET, payload, hashlib.sha256).digest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError()
+        data = json.loads(payload)
+        key = data["key"]
+        if data["v"] != 1 or data["scope"] != scope or not isinstance(key, list):
+            raise ValueError()
+        types = (
+            (str, str, int, (float, int))
+            if order in ("name", "name-desc")
+            else ((float, int), str, str, int)
+        )
+        if len(key) != len(types) or not all(
+            type(value) in (kind if isinstance(kind, tuple) else (kind,))
+            for value, kind in zip(key, types)
+        ):
+            raise ValueError()
+        return tuple(key)
+    except (ValueError, KeyError, TypeError, UnicodeError, binascii.Error):
+        raise ValueError("Invalid gallery cursor; refresh the gallery") from None
 
 
 class _BodyTooLarge(Exception):
@@ -594,6 +661,8 @@ class ImageRoutesMixin:
         """Get all images from ComfyUI output folder(s)."""
         try:
             output_dirs = self._get_all_output_dirs()
+            if request.query.get("mode") == "workspace":
+                return await self._get_workspace_images(request, list(output_dirs))
             if not output_dirs:
                 return web.json_response(
                     {
@@ -628,6 +697,119 @@ class ImageRoutesMixin:
             return web.json_response(
                 {"success": False, "error": _safe_error(e)}, status=500
             )
+
+    async def _get_workspace_images(
+        self, request, output_dirs: list[Path]
+    ) -> web.Response:
+        try:
+            limit, _offset = parse_page_params(request.query, default_limit=100)
+        except ValueError:
+            return bad_request("limit and offset must be integers")
+        try:
+            root_index = _workspace_root(request.query, output_dirs)
+            query = request.query.get("q", "").strip().casefold()
+            media = request.query.get("media", "all")
+            order = request.query.get("sort", "newest")
+            folder = request.query.get("subfolder", "").strip().replace("\\", "/")
+            if (
+                len(query) > 500
+                or media not in ("all", "image", "video")
+                or order not in ("newest", "oldest", "name", "name-desc")
+            ):
+                raise ValueError("Invalid gallery filters")
+            if folder and (_has_traversal(folder) or len(folder) > 1024):
+                raise ValueError("Invalid gallery folder")
+            scope = hashlib.sha256(
+                json.dumps(
+                    [
+                        query,
+                        media,
+                        order,
+                        folder,
+                        root_index,
+                        [str(root) for root in output_dirs],
+                    ]
+                ).encode()
+            ).hexdigest()
+            token = request.query.get("cursor")
+            after = _workspace_cursor_key(token, scope, order) if token else None
+        except ValueError as exc:
+            return bad_request(str(exc))
+
+        listings = [
+            (index, root, await self._get_gallery_files(root))
+            for index, root in enumerate(output_dirs)
+            if root_index is None or index == root_index
+        ]
+        page, total, has_more, next_cursor = await self._run_in_executor(
+            self._select_workspace_page,
+            listings,
+            folder,
+            query,
+            media,
+            order,
+            after,
+            limit,
+            scope,
+        )
+        images = await self._run_in_executor(self._format_workspace_page, page)
+        return web.json_response(
+            {
+                "success": True,
+                "images": images,
+                "total": total,
+                "limit": limit,
+                "has_more": has_more,
+                "next_cursor": next_cursor,
+            }
+        )
+
+    @staticmethod
+    def _select_workspace_page(
+        listings: list[tuple],
+        folder: str,
+        query: str,
+        media: str,
+        order: str,
+        after: tuple | None,
+        limit: int,
+        scope: str,
+    ) -> tuple:
+        entries = []
+        for index, root, files in listings:
+            for path, mtime in files:
+                relative = path.relative_to(root)
+                if folder and not _in_subfolder(
+                    str(relative.parent), folder.replace("/", os.sep)
+                ):
+                    continue
+                if query and query not in relative.as_posix().casefold():
+                    continue
+                kind = "video" if path.suffix.lower() in VIDEO_EXTENSIONS else "image"
+                if media != "all" and media != kind:
+                    continue
+                entries.append((path, mtime, root, index))
+        total = len(entries)
+        reverse = order == "name-desc"
+        entries.sort(key=lambda entry: _workspace_key(entry, order), reverse=reverse)
+        if after is not None:
+            entries = [
+                entry
+                for entry in entries
+                if (
+                    _workspace_key(entry, order) < after
+                    if reverse
+                    else _workspace_key(entry, order) > after
+                )
+            ]
+        page = entries[:limit]
+        has_more = len(entries) > limit
+        next_cursor = (
+            _workspace_cursor(_workspace_key(page[-1], order), scope)
+            if has_more
+            else None
+        )
+        return page, total, has_more, next_cursor
 
     async def serve_image(self, request):
         """Serve the actual image file using streamed FileResponse."""
@@ -775,7 +957,20 @@ class ImageRoutesMixin:
     async def get_gallery_subfolders(self, request):
         """Get distinct subfolders from gallery output directories."""
         try:
-            output_dirs = self._get_all_output_dirs()
+            output_dirs = list(self._get_all_output_dirs())
+            workspace = request.query.get("mode") == "workspace"
+            roots = None
+            if workspace:
+                try:
+                    selected = _workspace_root(request.query, output_dirs)
+                except ValueError as exc:
+                    return bad_request(str(exc))
+                roots = [
+                    {"index": index, "label": _public_path(root)}
+                    for index, root in enumerate(output_dirs)
+                ]
+                if selected is not None:
+                    output_dirs = [output_dirs[selected]]
             subfolders = set()
             for output_path in output_dirs:
                 files = await self._get_gallery_files(output_path)
@@ -795,9 +990,10 @@ class ImageRoutesMixin:
                         ancestors.add("/".join(parts[:i]))
                 subfolders.update(ancestors)
 
-            return web.json_response(
-                {"success": True, "subfolders": sorted(subfolders)}
-            )
+            payload = {"success": True, "subfolders": sorted(subfolders)}
+            if workspace:
+                payload["roots"] = roots
+            return web.json_response(payload)
         except Exception as e:
             self.logger.error(f"Subfolders error: {e}")
             return web.json_response(
@@ -1528,6 +1724,26 @@ class ImageRoutesMixin:
             for entry in merged
             if _in_subfolder(str(entry[0].relative_to(entry[2]).parent), subfolder)
         ]
+
+    def _format_workspace_page(self, page: list[tuple]) -> list[dict]:
+        images = self._format_output_page(page)
+        paths = {
+            (entry[3], entry[0].relative_to(entry[2]).as_posix()): entry[0]
+            for entry in page
+        }
+        for image in images:
+            image["width"] = None
+            image["height"] = None
+            if image["is_video"]:
+                continue
+            try:
+                with paths[(image["root_index"], image["path"])].open("rb") as stream:
+                    with Image.open(stream) as source:
+                        image["width"], image["height"] = source.size
+            except (OSError, ValueError, Image.DecompressionBombError):
+                # A corrupt or disappearing preview must not hide the listing.
+                continue
+        return images
 
     def _format_output_page(self, page):
         entries = []

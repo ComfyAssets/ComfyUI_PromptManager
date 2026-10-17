@@ -1,7 +1,9 @@
 # Prompt Manager application redesign concept
 
 Status: visual concept approved by the maintainer, 2026-10-17. Production
-implementation is pending; see the [development plan](../../application-redesign.md).
+implementation is progressing in tested slices; see the [development plan](../../application-redesign.md).
+The production workspace now has native Images browsing; this concept remains the
+approved target for the complete application.
 
 ## Review the mockup
 

@@ -13,16 +13,24 @@ test('workspace serves real library data beside either ComfyUI renderer', async 
     const errors = [];
     workspace.on('pageerror', error => errors.push(error.message));
     try {
-        await workspace.goto('/prompt_manager/workspace');
+        await workspace.goto('/prompt_manager/workspace#/overview');
         await expect(workspace.locator('#workspace-main h1')).toHaveText('Overview');
         await expect(workspace.locator('dt').filter({ hasText: /^Prompts$/ }).locator('+ dd'))
             .toHaveText(stats.total_prompts.toLocaleString());
         await workspace.getByRole('combobox', { name: 'Appearance' }).selectOption('light');
         await expect(workspace.locator('body')).toHaveAttribute('data-ca-theme', 'light');
+        const imageResponse = workspace.waitForResponse(response => {
+            const url = new URL(response.url());
+            return url.pathname === '/prompt_manager/images/output' && url.searchParams.get('mode') === 'workspace';
+        });
         await workspace.getByRole('navigation', { name: 'Workspace', exact: true })
             .getByRole('link', { name: 'Images', exact: true }).click();
         await expect(workspace.locator('#workspace-main h1')).toHaveText('Images');
-        await expect(workspace.locator('#workspace-main a')).toHaveAttribute('href', '/prompt_manager/gallery');
+        const images = await imageResponse;
+        expect(images.ok()).toBe(true);
+        expect((await images.json()).success).toBe(true);
+        await expect(workspace.getByRole('list', { name: 'Image collection', exact: true })).toBeVisible();
+        await expect(workspace.locator('#workspace-main a[href="/prompt_manager/gallery"]')).toHaveAttribute('href', '/prompt_manager/gallery');
         await workspace.reload();
         await expect(workspace.locator('#workspace-main h1')).toHaveText('Images');
         await expect(workspace.locator('body')).toHaveAttribute('data-ca-theme', 'light');

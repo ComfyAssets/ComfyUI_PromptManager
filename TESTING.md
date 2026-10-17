@@ -129,21 +129,26 @@ gh api repos/ComfyAssets/ComfyUI_PromptManager/branches/main/protection/required
 Update the manifest whenever required job names change. Keep the frontend check
 free of path filters so a required check is never silently skipped.
 
-## Unified workspace shell
+## Unified workspace
 
-The opt-in `/prompt_manager/workspace` page uses the shipped toolkit and real
-`/prompt_manager/stats` API. Existing admin, gallery and metadata URLs remain
+The opt-in `/prompt_manager/workspace` page opens the native Images workspace.
+Overview retains real `/prompt_manager/stats` counts. Both use the shipped toolkit. Existing admin, gallery and metadata URLs remain
 available while replacement workspaces are developed. Browser smoke tests in
 `tests/browser/workspace.spec.mjs` cover navigation/history, keyboard skip links,
 mobile layout, theme persistence/fallback, loading/retry and stale responses.
-They run automatically in the existing four-browser-project workflow and frontend
-coverage job. `tests/comfyui/workspace.spec.mjs` verifies the page against the
+The Images cases in `tests/browser/workspace-images.spec.mjs` additionally cover
+server-side filters, cursor append/retry, Grid/List/Masonry, bounded DOM, keyboard
+navigation, restored browsing context, Viewer.js cleanup and actual video playback.
+`tests/test_api_workspace_images.py` checks signed cursors, source identities,
+legacy compatibility and header-only dimensions. Frontend stream/layout units
+cover cancellation, malformed responses and bounded visibility lookup. These run
+automatically in the existing four-browser-project workflow and frontend coverage job. `tests/comfyui/workspace.spec.mjs` verifies the page against the
 managed host with both renderer startup configurations.
 
 Run the focused page checks with:
 
 ```sh
-npm run --prefix tools/vendor test:workflows -- workspace.spec.mjs
+npm run --prefix tools/vendor test:workflows -- workspace.spec.mjs workspace-images.spec.mjs
 node --test tests/js/workspace-*.test.js
 ```
 
