@@ -55,3 +55,29 @@ class TestPairScan(AdminAPITestCase):
         path = self.output_dir / "old.png"
         self.assertEqual(self.api._ingest_scanned_file(path, meta), "added")
         self.assertEqual(self.api._ingest_scanned_file(path, meta), "unchanged")
+
+    async def test_cancel_finishes_at_safe_boundary_and_restart_is_idempotent(self):
+        from py.api.scan_job import ScanJob
+
+        job = ScanJob()
+        self.api._scan_job = job
+        response = await self.client.post("/prompt_manager/scan/cancel")
+        self.assertEqual(response.status, 200)
+        self.assertTrue((await response.json())["cancellation_requested"])
+        counts = self.api._ingest_scan_batch_sync(
+            [(self.output_dir / "cancel.png", {"prompt": json.dumps(graph())})]
+        )
+        self.assertEqual(counts["processed"], 0)
+        self.assertEqual(self.api.db.list_prompt_pairs()["total"], 0)
+        job.finish()
+        self.api._scan_job = ScanJob()
+        first = self.api._ingest_scan_batch_sync(
+            [(self.output_dir / "cancel.png", {"prompt": json.dumps(graph())})]
+        )
+        self.assertEqual(first["pairs_added"], 1)
+        self.assertEqual(
+            self.api._ingest_scan_batch_sync(
+                [(self.output_dir / "cancel.png", {"prompt": json.dumps(graph())})]
+            )["unchanged"],
+            1,
+        )

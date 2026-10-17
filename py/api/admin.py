@@ -377,6 +377,10 @@ class AdminRoutesMixin:
         async def scan_images_route(request):
             return await self.scan_images(request)
 
+        @routes.post("/prompt_manager/scan/cancel")
+        async def cancel_scan_route(request):
+            return await self.cancel_scan(request)
+
         @routes.get("/prompt_manager/scan/status")
         async def scan_status_route(request):
             return await self.scan_status(request)
@@ -1298,6 +1302,14 @@ class AdminRoutesMixin:
             job = self._start_scan_job()
         return await self._stream_scan_job(request, job)
 
+    async def cancel_scan(self, request):
+        """Stop between file transactions; an in-flight extraction can finish."""
+        job = self._scan_job
+        requested = bool(job and job.running)
+        if requested:
+            job.cancelled = True
+        return web.json_response({"success": True, "cancellation_requested": requested})
+
     async def scan_status(self, request):
         """Whether an output scan is running, and its latest progress event."""
         job = self._scan_job
@@ -1382,7 +1394,9 @@ class AdminRoutesMixin:
                 f"found={counts['found']}, new_prompts_added={counts['added']}, "
                 f"images_linked_to_existing={counts['linked']}"
             )
-            yield {"type": "complete", **counts, "directories": dir_names}
+            job = self._scan_job
+            final_type = "cancelled" if job and job.cancelled else "complete"
+            yield {"type": final_type, **counts, "directories": dir_names}
 
         except Exception:
             self.logger.exception("Scan error")
@@ -1398,6 +1412,8 @@ class AdminRoutesMixin:
         """
         total = len(media_files)
         for batch_start in range(0, total, SCAN_BATCH_SIZE):
+            if self._scan_job and self._scan_job.cancelled:
+                return
             batch = media_files[batch_start : batch_start + SCAN_BATCH_SIZE]
             batch_results = await self._run_in_executor(
                 self._extract_batch_metadata_sync, batch
@@ -1451,6 +1467,8 @@ class AdminRoutesMixin:
         """Store the prompts found in a metadata batch (blocking DB work)."""
         counts = dict.fromkeys(SCAN_COUNT_KEYS, 0)
         for media_file, metadata in batch_results:
+            if self._scan_job and self._scan_job.cancelled:
+                break
             counts["processed"] += 1
             try:
                 outcome = self._ingest_scanned_file(media_file, metadata, detailed=True)

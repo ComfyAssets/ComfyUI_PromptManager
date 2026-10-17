@@ -35,6 +35,12 @@ from .hashing import generate_prompt_hash
 from .metadata_extractor import ComfyUIMetadataExtractor
 from .logging_config import get_logger
 from .prompt_graph import resolve_text, run_prompt_nodes
+from .prompt_pair_resolver import resolve_prompt_pair
+
+try:
+    from ..database.pair_ingestion import ingest_resolved_pair
+except ImportError:
+    from database.pair_ingestion import ingest_resolved_pair
 
 # Upper bound on images waiting to be processed (a burst beyond this is skipped)
 MAX_PENDING_IMAGES = 1000
@@ -529,6 +535,17 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 etc.)
         """
         try:
+            resolution = resolve_prompt_pair(metadata)
+            if resolution["state"] == "resolved":
+                positive = resolution["positive"]
+                expected = self.db_manager.get_prompt_by_hash(
+                    generate_prompt_hash(positive.get("storage_text", positive["text"]))
+                )
+                if expected and expected["id"] == prompt_context["id"]:
+                    ingest_resolved_pair(
+                        self.db_manager, image_path, metadata, resolution
+                    )
+                    return
             image_id = self.db_manager.link_image_to_prompt(
                 prompt_id=prompt_context["id"], image_path=image_path, metadata=metadata
             )

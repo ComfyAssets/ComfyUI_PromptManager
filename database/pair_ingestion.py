@@ -51,14 +51,21 @@ def ingest_resolved_pair(
             )
             if any(row["negative_hash"] != expected for row in prior):
                 return {"status": "conflict", "pairs_added": 0, "links_added": 0}
-        before = conn.execute("SELECT COUNT(*) FROM prompt_pairs").fetchone()[0]
+        prior_pair = conn.execute(
+            "SELECT pp.id FROM prompt_pairs pp "
+            "JOIN prompts p ON p.id=pp.positive_prompt_id "
+            "LEFT JOIN prompts n ON n.id=pp.negative_prompt_id "
+            "WHERE p.hash=? AND n.hash IS ?",
+            (
+                generate_prompt_hash(positive_text),
+                generate_prompt_hash(negative_text) if negative_text.strip() else None,
+            ),
+        ).fetchone()
         pair_id = db._save_pair(conn, positive_text, negative_text)
         pair = conn.execute(
             "SELECT * FROM prompt_pairs WHERE id=?", (pair_id,)
         ).fetchone()
-        pairs_added = (
-            conn.execute("SELECT COUNT(*) FROM prompt_pairs").fetchone()[0] - before
-        )
+        pairs_added = int(prior_pair is None)
         file_size, width, height, image_format = _coerce_file_info(metadata)
         snapshots = {
             column: json.dumps(metadata[key], sort_keys=True, allow_nan=False)
