@@ -112,7 +112,7 @@ export function installFocusedNode(nodeType, app, api, parseQuery) {
             preview.textContent = ['prepend_text','text','append_text'].map(name => isConnected(name) ? `[${name} supplied by connection]` : name === 'text' ? value(name) : value(name).trim()).filter(Boolean).join(' ');
             library.refreshAvailability();
         }
-        const library = createPromptLibrary({scope,api,parseQuery,isConnected:() => isConnected('text'), onQuery:text => write('search_text',text), onUse:(prompt,includeMetadata) => {
+        const library = createPromptLibrary({scope,api,settings:app.ui?.settings,parseQuery,isConnected:() => isConnected('text'), onQuery:text => write('search_text',text), onFilters:() => {this.properties.focusedUI = snapshot();}, onUse:(prompt,includeMetadata) => {
             if (isConnected('text')) return;
             write('text',prompt.text);
             if (includeMetadata) {
@@ -123,17 +123,18 @@ export function installFocusedNode(nodeType, app, api, parseQuery) {
         }});
         element.append(library.element,footer);
         function snapshot() {
-            return {libraryOpen:!library.element.hidden,...Object.fromEntries([...details].map(([name,section]) => [name,section.open]))};
+            return {libraryOpen:!library.element.hidden,libraryFilters:library.filters(),...Object.fromEntries([...details].map(([name,section]) => [name,section.open]))};
         }
         function restore() {
             const state = thisNode.properties.focusedUI || {};
             details.forEach((section,name) => {section.open = Boolean(state[name]);});
             library.element.hidden = !state.libraryOpen; browse.textContent = state.libraryOpen ? 'Hide library' : 'Browse library'; browse.setAttribute('aria-expanded', String(Boolean(state.libraryOpen)));
-            library.setQuery(value('search_text')); render();
+            library.setQuery(value('search_text')); library.restoreFilters(state.libraryFilters); render();
         }
         controls.forEach((input,name) => scope.listen(input,'input',() => {write(name,input.value);render();footer.setAttribute('role','status');footer.textContent='Main prompt is saved when this node runs.';}));
         scope.listen(browse,'click',() => {
             library.element.hidden = !library.element.hidden;
+            library.closeCompletions();
             browse.textContent = library.element.hidden ? 'Browse library' : 'Hide library'; browse.setAttribute('aria-expanded',String(!library.element.hidden));
             this.properties.focusedUI = snapshot(); if (!library.element.hidden) library.focus();
         });

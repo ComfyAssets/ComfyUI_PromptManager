@@ -278,3 +278,69 @@ test('Focused metadata completion uses saved categories and tags across renderer
     await expect(page.getByRole('listbox', { name: 'Saved categories', includeHidden: true })).toHaveCount(0);
     await expect(page.getByRole('listbox', { name: 'Saved tags', includeHidden: true })).toHaveCount(0);
 });
+
+test('Focused library autocomplete filters saved prompts without editing draft metadata', async ({ page, request }, testInfo) => {
+    const category = `Library category ${testInfo.project.name}`;
+    const tag = `library-filter-${testInfo.project.name}`;
+    const matchingText = `Matching library prompt ${testInfo.project.name}`;
+    await seed(request, matchingText, category, [tag]);
+    await seed(request, `Wrong category ${testInfo.project.name}`, `Other category ${testInfo.project.name}`, [tag]);
+    await seed(request, `Wrong tag ${testInfo.project.name}`, category, [`other-filter-${testInfo.project.name}`]);
+    const id = await addFocused(page);
+    const root = page.locator('.pm-focused');
+    await root.getByRole('textbox', { name: 'Main prompt', exact: true }).fill('Keep my draft');
+    await root.getByText('Metadata · category / tags', { exact: true }).click();
+    await root.getByRole('combobox', { name: 'Category', exact: true }).fill('Draft category');
+    await root.getByRole('combobox', { name: 'Tags', exact: true }).fill('draft-tag');
+    await root.getByRole('button', { name: 'Browse library', exact: true }).click();
+    const filterCategory = root.getByRole('combobox', { name: 'Filter category', exact: true });
+    const filterTags = root.getByRole('combobox', { name: 'Filter tags', exact: true });
+    await filterCategory.fill(category.slice(0, -3));
+    await expect(page.getByRole('listbox', { name: 'Saved categories', exact: true }).getByRole('option', { name: category, exact: true })).toBeVisible();
+    await filterCategory.press('ArrowDown');
+    await filterCategory.press('Enter');
+    await expect(filterCategory).toHaveValue(category);
+    for (const palette of ['light', 'dark']) {
+        await page.evaluate(async palette => {
+            const { app } = await import('/scripts/app.js');
+            await app.ui.settings.setSettingValue('Comfy.ColorPalette', palette);
+        }, palette);
+        await filterTags.fill(tag.slice(0, -3));
+        const option = page.getByRole('listbox', { name: 'Saved tags', exact: true }).getByRole('option', { name: tag, exact: true });
+        await expect(option).toBeVisible();
+        await page.screenshot({ path: testInfo.outputPath(`focused-library-filters-${palette}.png`) });
+        await option.click();
+        await expect(filterTags).toHaveValue(`${tag}, `);
+    }
+    const draft = { text: 'Keep my draft', category: 'Draft category', tags: 'draft-tag' };
+    await root.getByRole('button', { name: 'Search', exact: true }).click();
+    const results = root.locator('.pm-editor-results').getByRole('button');
+    await expect(results).toHaveCount(1);
+    await expect(results.first()).toContainText(matchingText);
+    await results.first().click();
+    await expect.poll(() => model(page, id)).toMatchObject(draft);
+    for (const renderer of [!testInfo.project.metadata.initialRenderer, testInfo.project.metadata.initialRenderer]) {
+        await page.evaluate(async renderer => {
+            const { app } = await import('/scripts/app.js');
+            await app.ui.settings.setSettingValue('Comfy.VueNodes.Enabled', renderer);
+            app.canvas.centerOnNode(app.graph._nodes[0]);
+        }, renderer);
+        await expect.poll(() => page.evaluate(() => LiteGraph.vueNodesMode)).toBe(renderer);
+        await expect(filterCategory).toHaveValue(category);
+        await expect(filterTags).toHaveValue(`${tag}, `);
+        await expect.poll(() => model(page, id)).toMatchObject(draft);
+    }
+    const queued = await page.evaluate(async id => {
+        const { app } = await import('/scripts/app.js');
+        const prompt = await app.graphToPrompt();
+        await app.loadGraphData(app.graph.serialize());
+        return prompt.output[String(id)].inputs;
+    }, id);
+    expect(queued).toMatchObject(draft);
+    await expect(filterCategory).toHaveValue(category);
+    await expect(filterTags).toHaveValue(`${tag}, `);
+    await root.getByRole('button', { name: 'Search', exact: true }).click();
+    await expect(results).toHaveCount(1);
+    await expect(results.first()).toContainText(matchingText);
+    await expect.poll(() => model(page, id)).toMatchObject(draft);
+});

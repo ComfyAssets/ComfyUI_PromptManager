@@ -29,6 +29,65 @@ test.beforeEach(async({page,browserName})=>{
 });
 test.afterEach(async({page,browserName})=>{await saveCoverage(page,browserName);expect(page.focusedErrors).toEqual([]);});
 
+test('Focused library autocompletes filters and searches without changing editor metadata', async ({page}) => {
+    const requests=[];
+    await page.route('**/prompt_manager/categories',route=>route.fulfill({json:{success:true,categories:['Portrait']}}));
+    await page.route('**/prompt_manager/tags/suggest?**',route=>route.fulfill({json:{success:true,suggestions:[{name:'studio'}]}}));
+    await page.route('**/prompt_manager/search?**',route=>{
+        requests.push(new URL(route.request().url()));
+        return route.fulfill({json:{success:true,results:[{text:'Filtered portrait',category:'Portrait',tags:['studio']}]}});
+    });
+    await page.getByLabel('Main prompt',{exact:true}).fill('My draft');
+    await page.getByRole('button',{name:'Browse library',exact:true}).click();
+    const category=page.getByLabel('Filter category',{exact:true});
+    await category.fill('por');
+    await expect(page.getByRole('option',{name:'Portrait',exact:true})).toBeVisible();
+    await category.press('ArrowDown');
+    await category.press('Enter');
+    expect(requests).toHaveLength(0);
+    const tags=page.getByLabel('Filter tags',{exact:true});
+    await tags.fill('stu');
+    await page.getByRole('option',{name:'studio',exact:true}).click();
+    await expect(tags).toHaveValue('studio, ');
+    await page.getByRole('searchbox',{name:'Search saved prompts'}).fill('portrait tag:studio tag:"film grain"');
+    await page.getByRole('button',{name:'Search',exact:true}).click();
+    await expect(page.locator('.pm-editor-result')).toContainText('Filtered portrait');
+    expect(requests[0].searchParams.get('text')).toBe('portrait');
+    expect(requests[0].searchParams.get('category')).toBe('Portrait');
+    expect(requests[0].searchParams.get('tags')).toBe('studio,film grain');
+    expect(await page.evaluate(()=>node.serialize().widgets_values.slice(0,3))).toEqual(['My draft','','']);
+    await page.locator('.pm-editor-result').click();
+    await category.fill('Landscape');
+    await expect(page.locator('.pm-editor-selection button')).toBeDisabled();
+    const saved=await page.evaluate(()=>{const saved=node.serialize();node.configure(saved);return saved;});
+    expect(saved.properties.focusedUI.libraryFilters).toEqual({category:'Landscape',tags:'studio, '});
+    await expect(category).toHaveValue('Landscape');
+    await expect(tags).toHaveValue('studio, ');
+    let recentRequest;
+    await page.route('**/prompt_manager/recent?**',route=>{recentRequest=new URL(route.request().url());return route.fulfill({json:{success:true,results:[]}});});
+    await page.getByRole('button',{name:'Recent',exact:true}).click();
+    await expect.poll(()=>Boolean(recentRequest)).toBe(true);
+    expect(recentRequest.searchParams.has('category')).toBe(false);
+    expect(recentRequest.searchParams.has('tags')).toBe(false);
+    await page.getByRole('button',{name:'Hide library',exact:true}).click();
+    await expect(page.getByRole('listbox')).toBeHidden();
+});
+
+test('Focused library can search by filters alone and Enter searches after autocomplete closes', async ({page}) => {
+    const requests=[];
+    await page.route('**/prompt_manager/search?**',route=>{requests.push(new URL(route.request().url()));return route.fulfill({json:{success:true,results:[]}});});
+    await page.getByRole('button',{name:'Browse library',exact:true}).click();
+    await page.getByLabel('Filter category',{exact:true}).fill('New category');
+    await page.getByLabel('Filter category',{exact:true}).press('Enter');
+    await expect.poll(()=>requests.length).toBe(1);
+    expect(requests[0].searchParams.get('category')).toBe('New category');
+    await page.getByLabel('Filter category',{exact:true}).fill('');
+    await page.getByLabel('Filter tags',{exact:true}).fill('custom, ');
+    await page.getByLabel('Filter tags',{exact:true}).press('Enter');
+    await expect.poll(()=>requests.length).toBe(2);
+    expect(requests[1].searchParams.get('tags')).toBe('custom');
+});
+
 test('Focused completes saved tags with keyboard and pointer and appends commas', async ({page}) => {
     await page.route('**/prompt_manager/tags/suggest?**', route => {
         const q = new URL(route.request().url()).searchParams.get('q');
@@ -203,7 +262,7 @@ test('Focused reports empty queries, no results, and safely renders backend and 
     await page.getByRole('button',{name:'Browse library',exact:true}).click();
     const search=page.getByRole('button',{name:'Search',exact:true});
     await search.click();
-    await expect(page.locator('.pm-editor-library [role="status"]')).toHaveText('Enter search text or tag:name.');
+    await expect(page.locator('.pm-editor-library [role="status"]')).toHaveText('Enter search text, a category or tags.');
     expect(requests).toBe(0);
     await page.getByRole('searchbox',{name:'Search saved prompts'}).fill('missing');
     await search.click();
@@ -220,7 +279,7 @@ test('Focused reports empty queries, no results, and safely renders backend and 
     await page.getByRole('searchbox',{name:'Search saved prompts'}).fill('');
     await search.click();
     await expect(page.getByRole('alert')).toHaveCount(0);
-    await expect(page.locator('.pm-editor-library [role="status"]')).toHaveText('Enter search text or tag:name.');
+    await expect(page.locator('.pm-editor-library [role="status"]')).toHaveText('Enter search text, a category or tags.');
     mode='empty';
     await page.getByRole('searchbox',{name:'Search saved prompts'}).fill('missing');
     await search.click();

@@ -152,7 +152,8 @@ were copied. See the [toolkit maintenance notes](tools/vendor/README.md#shared-c
 
 **Prompt Manager (Focused)** adds an editor-first layout with collapsible
 composition and metadata fields. Open **Browse library** to search saved prompts,
-preview a selection, then choose **Use prompt**; **Load metadata** controls whether
+filter by saved category and comma-separated tags, preview a selection, then choose
+**Use prompt**; **Load metadata** controls whether
 category and tags come with it. Metadata fields suggest saved categories and tags;
 choose with the mouse or arrow keys and Enter. Tag selections append `, ` for the
 next tag; category remains a single value. New values can still be typed freely.
