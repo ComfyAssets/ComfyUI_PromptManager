@@ -70,7 +70,11 @@ test('paired library filters search both texts, persist on reload and keep edito
     await page.screenshot({path:testInfo.outputPath('pair-library-preview.png')});
     await page.evaluate(async()=>{const {app}=await import('/scripts/app.js');await app.loadGraphData(app.graph.serialize());});await expect(root.getByLabel('Filter category',{exact:true})).toHaveValue('Paired host tests');await expect(root.getByLabel('Filter tags',{exact:true})).toHaveValue('pair-host, ');
     await page.evaluate(async id=>{const {app}=await import('/scripts/app.js');const node=app.graph.getNodeById(id);node.setSize([560,1000]);app.canvas.centerOnNode(node);},id);
-    const [p,n]=await Promise.all(['Positive prompt','Negative prompt'].map(name=>root.getByRole('textbox',{name,exact:true}).boundingBox()));expect(n.y).toBeGreaterThan(p.y+p.height-1);expect(Math.abs(p.width-n.width)).toBeLessThan(1);await page.screenshot({path:testInfo.outputPath('pair-narrow.png')});
+    await expect.poll(async()=>{
+        const [p,n]=await Promise.all(['Positive prompt','Negative prompt'].map(name=>root.getByRole('textbox',{name,exact:true}).boundingBox()));
+        return Boolean(p&&n&&p.width>0&&p.height>0&&n.height>0&&n.y>p.y+p.height-1&&Math.abs(p.width-n.width)<1);
+    },{message:'Narrow prompt editors stack with equal widths after canvas resize'}).toBe(true);
+    await page.screenshot({path:testInfo.outputPath('pair-narrow.png')});
 });
 
 for(const field of ['category','tags'])test(`manual Save pair guards real connected ${field} and resumes after disconnect`,async({page},testInfo)=>{
