@@ -16,6 +16,12 @@ from contextlib import closing
 from pathlib import Path
 from typing import Optional, Set, Tuple
 
+from .execution_history_schema import (
+    history_schema_error,
+    migrate_execution_history,
+    rotate_history_epoch,
+)
+
 # Import logging system
 try:
     from ..utils.logging_config import get_logger
@@ -274,6 +280,7 @@ class PromptModel:
         # Image uniqueness by full path instead of basename (3.2.4)
         self._migrate_image_uniqueness_by_path(conn)
         self._migrate_prompt_pairs(conn)
+        migrate_execution_history(conn)
 
     def _migrate_prompt_pairs(self, conn: sqlite3.Connection) -> None:
         conn.execute("SAVEPOINT prompt_pair_schema")
@@ -1037,6 +1044,9 @@ class PromptModel:
             pair_error = PromptModel._pair_schema_error(conn)
             if pair_error:
                 return False, pair_error
+            history_error = history_schema_error(conn)
+            if history_error:
+                return False, history_error
             return True, "ok"
         except sqlite3.Error as e:
             return False, f"Invalid SQLite database: {e}"
@@ -1112,6 +1122,7 @@ class PromptModel:
             staged = None
             try:
                 staged = PromptModel(staged_path)
+                rotate_history_epoch(staged.get_connection())
                 ok, reason = self.verify_database_file(staged_path)
                 if not ok:
                     raise ValueError(reason)
@@ -1127,6 +1138,9 @@ class PromptModel:
                 with PromptModel._init_lock:
                     PromptModel._initialized_paths.add(self._schema_key())
                 self.logger.info(f"Database restored from {src_path}")
+                from .execution_history import notify_history_restore
+
+                notify_history_restore(self.db_path)
                 return backup_path
             finally:
                 if staged is not None:
