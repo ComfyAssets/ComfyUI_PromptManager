@@ -4,6 +4,8 @@ Database schema and models for KikoTextEncode prompt storage.
 
 import contextlib
 import datetime
+import json
+import math
 import shutil
 import sqlite3
 import os
@@ -28,6 +30,41 @@ except ImportError:
 # writes milliseconds (SQLite's %f); live writes use microseconds so runs in the
 # same millisecond still order correctly. Both forms sort correctly together.
 ISO_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%f+00:00"
+
+
+MAX_PAIR_PROVENANCE_LENGTH = 4_000_000
+MAX_PAIR_PROVENANCE_DEPTH = 64
+
+
+def pair_provenance_error(encoded: object) -> Optional[str]:
+    """Validate the same bounded JSON object for live writes and restores."""
+    if not isinstance(encoded, str):
+        return "Pair provenance must be JSON text"
+    if len(encoded) > MAX_PAIR_PROVENANCE_LENGTH:
+        return "Pair provenance exceeds the size limit"
+    try:
+        value = json.loads(encoded)
+    except (ValueError, TypeError, RecursionError):
+        return "Pair provenance is not readable JSON"
+    if not isinstance(value, dict):
+        return "Pair provenance must be a JSON object"
+    pending = [(iter((value,)), 0)]
+    while pending:
+        children, depth = pending[-1]
+        try:
+            item = next(children)
+        except StopIteration:
+            pending.pop()
+            continue
+        if depth > MAX_PAIR_PROVENANCE_DEPTH:
+            return "Pair provenance exceeds the nesting limit"
+        if isinstance(item, float) and not math.isfinite(item):
+            return "Pair provenance contains nonfinite numbers"
+        if isinstance(item, dict):
+            pending.append((iter(item.values()), depth + 1))
+        elif isinstance(item, list):
+            pending.append((iter(item), depth + 1))
+    return None
 
 
 def utc_now_iso() -> str:
@@ -442,6 +479,17 @@ class PromptModel:
                             null_unique = True
                 if not null_unique:
                     return "prompt_pairs is missing empty-negative pair uniqueness"
+        if conn.execute(
+            "SELECT 1 FROM image_prompt_pairs ip "
+            "JOIN prompt_pairs pp ON pp.id=ip.pair_id "
+            "JOIN generated_images gi ON gi.id=ip.image_id "
+            "WHERE pp.positive_prompt_id IS NOT gi.prompt_id LIMIT 1"
+        ).fetchone():
+            return "Image pair association has a different positive prompt owner"
+        for row in conn.execute("SELECT provenance FROM image_prompt_pairs"):
+            error = pair_provenance_error(row[0])
+            if error:
+                return error
         return None
 
     def _create_indexes(self, conn: sqlite3.Connection) -> None:

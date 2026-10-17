@@ -5,7 +5,7 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
-from .models import utc_now_iso
+from .models import pair_provenance_error, utc_now_iso
 
 try:
     from ..utils.hashing import generate_prompt_hash
@@ -339,8 +339,11 @@ class PairOperations:
             encoded = json.dumps(
                 provenance, sort_keys=True, separators=(",", ":"), allow_nan=False
             )
-        except (TypeError, ValueError) as error:
+        except (TypeError, ValueError, RecursionError) as error:
             raise ValueError("provenance must contain JSON values") from error
+        error = pair_provenance_error(encoded)
+        if error:
+            raise ValueError(error)
         pair = conn.execute(
             "SELECT positive_prompt_id FROM prompt_pairs WHERE id=?", (pair_id,)
         ).fetchone()
