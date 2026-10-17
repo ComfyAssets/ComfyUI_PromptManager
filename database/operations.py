@@ -635,7 +635,9 @@ class PromptDatabase(PairOperations):
         """
         with self.model.get_connection() as conn:
             cursor = conn.execute(
-                "SELECT DISTINCT TRIM(category) as category FROM prompts WHERE "
+                "SELECT TRIM(category) AS category FROM prompts WHERE "
+                "category IS NOT NULL AND TRIM(category) != '' UNION "
+                "SELECT TRIM(category) AS category FROM prompt_pairs WHERE "
                 "category IS NOT NULL AND TRIM(category) != '' ORDER BY category"
             )
             return [row["category"] for row in cursor.fetchall()]
@@ -702,16 +704,16 @@ class PromptDatabase(PairOperations):
 
     def get_all_tags(self) -> List[str]:
         """
-        Get all unique tags that are in use (linked to at least one prompt).
+        Get all unique tags linked to a standalone prompt or reusable pair.
 
         Returns:
             Sorted list of tag names
         """
         with self.model.get_connection() as conn:
             cursor = conn.execute(
-                "SELECT DISTINCT t.name AS tag "
-                "FROM prompt_tags pt "
-                "JOIN tags t ON pt.tag_id = t.id "
+                "SELECT t.name AS tag FROM tags t WHERE "
+                "EXISTS(SELECT 1 FROM prompt_tags pt WHERE pt.tag_id=t.id) OR "
+                "EXISTS(SELECT 1 FROM prompt_pair_tags pp WHERE pp.tag_id=t.id) "
                 "ORDER BY t.name"
             )
             return [row["tag"] for row in cursor.fetchall()]
@@ -787,7 +789,8 @@ class PromptDatabase(PairOperations):
 
         Returns tags whose name starts with ``prefix`` (case-insensitive),
         counted over the prompts that carry every tag in ``with_tags``; the
-        context tags themselves are left out. Ordered by count, then name.
+        context tags themselves are left out. Counts include separate standalone
+        and pair references, with owner types kept distinct. Ordered by count/name.
         """
         seen = set()
         context = []
@@ -802,11 +805,11 @@ class PromptDatabase(PairOperations):
         if context:
             placeholders = ",".join("?" * len(context))
             where.append(
-                "pt.prompt_id IN ("
-                " SELECT pt2.prompt_id FROM prompt_tags pt2"
+                "(pt.kind,pt.owner_id) IN ("
+                " SELECT pt2.kind,pt2.owner_id FROM tag_refs pt2"
                 " JOIN tags t2 ON t2.id = pt2.tag_id"
                 f" WHERE t2.name COLLATE NOCASE IN ({placeholders})"
-                " GROUP BY pt2.prompt_id"
+                " GROUP BY pt2.kind,pt2.owner_id"
                 " HAVING COUNT(DISTINCT lower(t2.name)) = ?)"
             )
             params.extend(context)
@@ -816,8 +819,11 @@ class PromptDatabase(PairOperations):
         params.append(max(1, int(limit)))
 
         sql = (
+            "WITH tag_refs(kind,owner_id,tag_id) AS ("
+            "SELECT 'prompt',prompt_id,tag_id FROM prompt_tags UNION ALL "
+            "SELECT 'pair',pair_id,tag_id FROM prompt_pair_tags) "
             "SELECT t.name AS name, COUNT(*) AS count"
-            " FROM prompt_tags pt JOIN tags t ON t.id = pt.tag_id"
+            " FROM tag_refs pt JOIN tags t ON t.id = pt.tag_id"
             f" WHERE {' AND '.join(where)}"
             " GROUP BY t.id"
             " ORDER BY count DESC, t.name COLLATE NOCASE ASC"
