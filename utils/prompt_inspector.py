@@ -228,24 +228,19 @@ def _side(status: str, text: str | None = None, source: str | None = None) -> di
 def inspect_prompt_roles(metadata: dict, saved: dict | None = None) -> dict:
     """Keep uncertainty visible; a saved association never replaces file evidence."""
     if not metadata:
-        context = saved.get("pair_context") if saved else None
-        if isinstance(context, dict) and all(
-            isinstance(context.get(f"{role}_text"), str)
-            for role in ("positive", "negative")
-        ):
-            return {
-                role: _side("resolved", context[f"{role}_text"], "saved-association")
-                for role in ("positive", "negative")
-            }
-        positive = saved.get("text") if saved else None
-        return {
-            "positive": (
-                _side("resolved", positive, "saved-association")
-                if isinstance(positive, str)
-                else _side("absent")
-            ),
-            "negative": _side("absent"),
-        }
+        result = {role: _side("absent") for role in ("positive", "negative")}
+        if saved:
+            context = saved.get("pair_context")
+            paired = isinstance(saved.get("pair"), dict) or isinstance(context, dict)
+            for role in ("positive", "negative") if paired else ("positive",):
+                result[role] = {
+                    **_side("unresolved", source="saved-association"),
+                    "message": (
+                        "A saved library association exists, but it cannot be "
+                        "verified against this file."
+                    ),
+                }
+        return result
     canonical = dict(metadata)
     if "prompt" not in canonical and "parameters" not in canonical:
         return {role: _side("unresolved") for role in ("positive", "negative")}

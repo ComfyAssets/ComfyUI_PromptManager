@@ -193,3 +193,13 @@ test('responsive gallery defers observed size writes and still fits the new view
     await expect.poll(()=>page.locator('.image-grid').evaluate(node=>Number.parseFloat(node.style.height))).toBeGreaterThan(900);
     expect(await page.evaluate(()=>window.inlineResizeWrites)).toBe(0);
 });
+
+test('unverified saved associations explain uncertainty and cannot be sent',async({page})=>{
+    await page.route('**/images/inspect/uncertain.png?root=0',route=>route.fulfill({json:{success:true,prompts:{
+        positive:{status:'unresolved',text:null,source:'saved-association',message:'A saved library association exists, but it cannot be verified against this file.'},
+        negative:{status:'absent',text:null,source:null},
+    }}}));
+    await page.goto(workspace);await select(page,'0:uncertain.png');
+    await expect(role(details(page),'Positive')).toContainText('cannot be verified against this file');
+    await expect(details(page).getByRole('button',{name:/^Send /})).toHaveCount(0);
+});

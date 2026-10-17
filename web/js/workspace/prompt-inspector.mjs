@@ -111,7 +111,7 @@ export function mountPromptInspector(container, {api, image, sender, parentScope
                 actions.append(send, copy);
                 const status = el('p', '', 'prompt-copy-status muted'); status.setAttribute('role', 'status');
                 block.append(actions, status);
-            } else block.append(el('p', statuses[record?.status] || statuses.unresolved, 'muted'));
+            } else block.append(el('p', typeof record?.message === 'string' ? record.message : statuses[record?.status] || statuses.unresolved, 'muted'));
             container.append(block);
         }
         if (Object.hasOwn(roles, 'positive') && Object.hasOwn(roles, 'negative')) {

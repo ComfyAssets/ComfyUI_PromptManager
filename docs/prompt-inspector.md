@@ -5,8 +5,10 @@ and negative prompts in both Image details and the full-image preview. Existing
 gallery and metadata tools remain available during the application rebuild.
 
 Each prompt shows its evidence source: recorded execution, workflow inference,
-embedded generation parameters, or an exact saved-library association. Missing,
-ambiguous, and unreadable prompts remain visible as distinct states. An explicitly
+or embedded generation parameters. Path-only saved-library associations are
+marked unverified and cannot be sent: a filename alone cannot prove that an image
+has not been replaced. Missing, ambiguous, and unreadable prompts remain visible
+as distinct states. An explicitly
 empty negative is a resolved value and can clear a destination's negative field.
 
 Use the blue paper-plane action beside a prompt, or **Send prompt pair**. Keep a

@@ -193,13 +193,21 @@ class TestPromptInspector(ImageAPITestCase):
         _, result = await self.inspect()
         self.assertEqual(result["prompts"]["positive"]["status"], "unresolved")
 
-    async def test_saved_association_fallback_is_exact_and_uses_unique_context(self):
+    async def test_saved_associations_remain_unverified_without_file_evidence(self):
         path = make_png(self.output_dir / "image.png")
         self._link_image(path, "Saved positive")
         _, result = await self.inspect()
         self.assertEqual(
             result["prompts"]["positive"],
-            self.side("Saved positive", "saved-association"),
+            {
+                "status": "unresolved",
+                "text": None,
+                "source": "saved-association",
+                "message": (
+                    "A saved library association exists, but it cannot be "
+                    "verified against this file."
+                ),
+            },
         )
         self.assertEqual(result["prompts"]["negative"]["status"], "absent")
         other = make_png(self.output_dir / "paired.png")
@@ -209,11 +217,27 @@ class TestPromptInspector(ImageAPITestCase):
         _, result = await self.inspect("paired.png")
         self.assertEqual(
             result["prompts"]["positive"],
-            self.side("Effective positive", "saved-association"),
+            {
+                "status": "unresolved",
+                "text": None,
+                "source": "saved-association",
+                "message": (
+                    "A saved library association exists, but it cannot be "
+                    "verified against this file."
+                ),
+            },
         )
         self.assertEqual(
             result["prompts"]["negative"],
-            self.side("Recorded negative", "saved-association"),
+            {
+                "status": "unresolved",
+                "text": None,
+                "source": "saved-association",
+                "message": (
+                    "A saved library association exists, but it cannot be "
+                    "verified against this file."
+                ),
+            },
         )
 
     async def test_corrupt_malformed_and_no_metadata_do_not_invent_text(self):
@@ -536,7 +560,15 @@ class TestPromptInspector(ImageAPITestCase):
             _, result = await self.inspect("large.jpg")
         self.assertEqual(
             result["prompts"]["positive"],
-            self.side("Saved large JPEG", "saved-association"),
+            {
+                "status": "unresolved",
+                "text": None,
+                "source": "saved-association",
+                "message": (
+                    "A saved library association exists, but it cannot be "
+                    "verified against this file."
+                ),
+            },
         )
 
     async def test_invalid_or_execution_only_video_evidence_never_uses_saved_fallback(
@@ -579,3 +611,33 @@ class TestPromptInspector(ImageAPITestCase):
                 _, result = await self.inspect("clip.mp4")
             self.assertEqual(result["prompts"]["positive"]["status"], "unresolved")
             self.assertIsNone(result["prompts"]["positive"]["text"])
+
+    async def test_same_path_same_size_replacement_does_not_resolve_stale_saved_prompts(
+        self,
+    ):
+        import io
+
+        metadata = {"prompt": graph("Original portrait", "Original negative")}
+        path = png(self.output_dir / "image.png", **metadata)
+        ingest_resolved_pair(
+            self.api.db, str(path), metadata, resolve_prompt_pair(metadata)
+        )
+        _, original = await self.inspect()
+        self.assertEqual(
+            original["prompts"]["positive"], self.side("Original portrait")
+        )
+        size = path.stat().st_size
+        replacement = io.BytesIO()
+        with Image.new("RGB", (4, 4), (0, 0, 255)) as image:
+            image.save(replacement, "PNG")
+        content = replacement.getvalue()
+        self.assertLessEqual(len(content), size)
+        path.write_bytes(content.ljust(size, b"\0"))
+        self.assertEqual(path.stat().st_size, size)
+        _, replaced = await self.inspect()
+        for record in replaced["prompts"].values():
+            self.assertEqual(record["status"], "unresolved")
+            self.assertIsNone(record["text"])
+            self.assertEqual(record["source"], "saved-association")
+            self.assertIn("cannot be verified", record["message"])
+        self.assertNotIn("Original portrait", json.dumps(replaced))
