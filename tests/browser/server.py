@@ -80,7 +80,15 @@ def create_app(root: Path) -> web.Application:
 
     def seed(extra_images: int = 0) -> None:
         with api.db.model.get_connection() as conn:
-            for table in ("generated_images", "prompt_tags", "tags", "prompts"):
+            for table in (
+                "image_prompt_pairs",
+                "prompt_pair_tags",
+                "prompt_pairs",
+                "generated_images",
+                "prompt_tags",
+                "tags",
+                "prompts",
+            ):
                 conn.execute(f"DELETE FROM {table}")
         for name in ("output", "input"):
             shutil.rmtree(root / name)

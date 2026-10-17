@@ -38,3 +38,11 @@
     .pm-split .pm-editor-library { border-block-start: 0; border-inline-start: 1px solid var(--ca-line); padding-block-start: 0; padding-inline-start: 12px; }
     .pm-split .pm-editor-fields { grid-template-columns: minmax(0,1fr); }
 }
+
+.pm-pair-texts { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; flex: 1; min-block-size: 180px; min-inline-size: 0; }
+.pm-pair-text-slot { display: flex; flex-direction: column; min-inline-size: 0; min-block-size: 0; }
+.pm-pair-text-slot > .pm-editor-main { display: flex; flex-direction: column; align-items: stretch; gap: 5px; flex: 1; min-block-size: 180px; }
+.pm-pair .pm-editor-toolbar { flex-shrink: 0; }
+@container pm-editor (inline-size <= 720px) {
+    .pm-pair-texts { grid-template-columns: minmax(0,1fr); grid-template-rows: repeat(2,minmax(180px,1fr)); flex: none; }
+}
