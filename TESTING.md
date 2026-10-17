@@ -112,7 +112,7 @@ need targeted validation.
 
 ## Required merge checks
 
-`.github/branch-protection.json` records the required checks: all nine Python/OS
+`.github/branch-protection.json` records the required checks: all twelve Python/OS
 combinations, Python coverage, formatting, frontend modules, `viewerjs`, and `real ComfyUI compatibility`.
 The branch must be current with main, and administrators follow the same checks.
 It does not require an additional human approval.
