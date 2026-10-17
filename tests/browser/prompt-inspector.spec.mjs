@@ -81,9 +81,14 @@ test('sender requires explicit destination, previews full changes and acknowledg
         await chosen.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();await expect(chosen).toContainText('Sent to ComfyUI.');
         expect(await host.evaluate(()=>window.applied)).toEqual([{positive:'Cat portrait',negative:'blurry, watermark'}]);
         await chosen.getByRole('button',{name:'Close',exact:true}).click();
+        await page.evaluate(()=>scrollTo(0,0));
         await page.screenshot({path:testInfo.outputPath('inspector-dark.png'),fullPage:true});
         await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption('light');
         await page.screenshot({path:testInfo.outputPath('inspector-light.png'),fullPage:true});
+        await details(page).getByRole('button',{name:'Open full preview',exact:true}).click();
+        await expect(page.getByRole('dialog',{name:'Image preview',exact:true})).toBeVisible();
+        await page.screenshot({path:testInfo.outputPath('viewer-prompts.png')});
+        await page.getByRole('button',{name:'Close preview',exact:true}).click();
         await page.setViewportSize({width:390,height:844});await details(page).scrollIntoViewIfNeeded();
         await page.screenshot({path:testInfo.outputPath('inspector-mobile.png')});
     } finally {await host.evaluate(()=>window.fixtureHost.dispose());await host.close();}
