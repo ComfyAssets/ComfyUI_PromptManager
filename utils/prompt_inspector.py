@@ -134,6 +134,7 @@ def _video_metadata(path: Path) -> dict:
             try:
                 process.kill()
             except OSError:
+                # Timeout and final cleanup can race with the process exiting.
                 pass
 
     timer = threading.Timer(3, stop)
