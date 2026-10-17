@@ -9,8 +9,8 @@ code. This plan proposes implementation order and acceptance gates.
 - Foundation merged in [#198](https://github.com/ComfyAssets/ComfyUI_PromptManager/pull/198).
 - [#200](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues/200) delivers native Images browsing, physical-file details, infinite scroll, Grid/List/Masonry, Viewer.js and video playback. The workspace opens on Images; original application entry points remain available.
 - Shared role-aware sending and the physical-file prompt inspector merged in [#203](https://github.com/ComfyAssets/ComfyUI_PromptManager/pull/203) and [#206](https://github.com/ComfyAssets/ComfyUI_PromptManager/pull/206).
-- [#208](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues/208) adds the native Prompt Library: one positive parent, saved negative variants, full selected text and a shared filtered image gallery. It does not invent chronological runs from counters or scan dates. [Durable history storage](prompt-history-storage.md) must be designed and tested before the execution timeline.
-- Execution history, tagging/review and System consolidation remain subsequent slices under #196.
+- [#208](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues/208) adds the native Prompt Library: one positive parent, saved negative variants, full selected text and a shared filtered image gallery. It does not invent chronological runs from counters or scan dates. [Durable history storage](prompt-history-storage.md) now records new job outcomes; prompt contexts, output associations and the execution timeline remain pending under #209.
+- Prompt execution contexts and timeline, tagging/review and System consolidation remain subsequent slices under #196; #209 now records durable job-level outcomes.
 
 ## Scope and compatibility
 

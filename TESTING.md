@@ -10,7 +10,7 @@ reviewed. Add a regression test for each bug; prove it fails before the fix.
 | Python tests | Domain logic, SQLite, API handlers, filesystem checks | ComfyUI host and ML runtimes where needed |
 | JavaScript tests | Frontend modules and controller methods | DOM/network fixtures for focused edge cases |
 | Viewer checks | Production Viewer.js and frontend methods in Chromium desktop/touch | Controlled images and page fixtures |
-| Real ComfyUI | Pinned CPU host, actual extension, node definitions, widgets, routes and SQLite | Inference is not queued; browser startup settings and host preference writes are isolated |
+| Real ComfyUI | Pinned CPU host, actual extension, node definitions, widgets, routes, SQLite and real execution lifecycle | Stock UI cases isolate host writes; the execution suite queues deterministic test-only nodes without models |
 | Page workflows | Production HTML, startup, click handlers, HTTP routes, SQLite, PNG files, thumbnails | ComfyUI host services and the tagging model |
 
 Page workflows cover save/edit/reload, duplicate-edit rejection, gallery image
@@ -106,7 +106,7 @@ and failure screenshots/traces. Open traces with Playwright's `show-trace` tool.
 The real-host suite covers both Classic and Nodes 2.0 startup, switching both
 ways, actual database prompt selection, execution-text serialization, workflow
 reload, widget/style cleanup, node schemas and standalone-page opening. It does
-not queue inference or certify every existing feature, arbitrary host versions,
+not certify every existing feature, arbitrary host versions,
 GPU/model changes, cross-pack installation or visual design changes. Those still
 need targeted validation.
 
@@ -197,3 +197,61 @@ Viewer, including nested modal focus, mobile layouts and per-role sending.
 `tests/comfyui/prompt-sender.spec.mjs` sends through the actual workspace UI into
 real Classic and Nodes 2.0 widgets and verifies workflow serialization without
 loading a workflow or queueing generation.
+
+## Durable execution ledger
+
+`npm run --prefix tools/vendor test:executions` adds ten real execution cases
+(five each in Classic and Nodes 2.0) to the existing 78 stock host cases and six
+pack compatibility cases. Run these suites serially because they share report
+cleanup and owned host resources. Use the same pinned disposable `PM_COMFY_ROOT`,
+`PM_TEST_PYTHON` and Playwright browser installation as `test:comfyui`:
+
+```sh
+PM_COMFY_ROOT=/path/to/disposable/ComfyUI \
+PM_TEST_PYTHON=/path/to/cpu-env/bin/python \
+PLAYWRIGHT_BROWSERS_PATH=/path/to/playwright-browsers \
+npm run --prefix tools/vendor test:executions
+```
+
+This suite reserves `http://127.0.0.1:8196/` and never attaches to an existing
+server. Each renderer worker launches a CPU/offline host with independent
+configuration, database, user and output directories. The shared launcher installs
+tracked snapshots of PromptManager and a tiny temporary Git-tracked fixture pack.
+Only that owned test pack provides cached output, deliberate failure, an
+interruptible queue gate and gate-control routes; production has no test nodes or
+endpoints. Cleanup always releases the gate, stops the host and removes both
+owned directories. Logs and Playwright failures appear under
+`tools/vendor/test-results/executions/` and the existing CI artifact upload.
+
+The request-only case creates no browser or WebSocket client. Other cases verify
+real `execution_cached` node lists after a failed job, both renderer switches and
+workflow reload, repeated public UUIDs, interruption, graph rejection, and queued
+removal before dequeue. Actual host history is checked alongside finite polling
+of SQLite after the background writer. The read helper uses SQLite read-only
+mode, exact UUID job/session filters and a 256-row limit; absent ledger schema is
+explicit, while missing/corrupt databases and other read errors fail the suite.
+Sensitive sentinels in graph inputs, extra data and error messages must never
+appear in any stored row.
+
+For a meaningful historical failure, create a separate disposable detached
+checkout at `fdba6fd0126a8a40cbd6f3e50ed4c5de8991efd4` and pass its path to
+`launchExecutionHost({ repository })`. That base also predates the #211 config
+import fix: after confirming an actual headless job succeeded, use
+`readExecutionRuns` on its explicitly constructed owned path
+`host.stateDirectory/custom_nodes/promptmanager/prompts.db`. It reports
+`schemaAvailable: false` and empty rows, failing the expected succeeded-row
+assertion. This historical inspection stays outside the ordinary suite, which
+requires the configured database path. The launcher also accepts
+`PM_EXECUTION_REPOSITORY`; omit it for the implementation worktree. Stage new
+files first because snapshots use `git ls-files`. Never reset the implementation
+checkout or point this harness at a live ComfyUI checkout.
+
+The package-qualified config import also corrects #211: the configured database
+path is honored when PromptManager runs as a ComfyUI custom node. Existing files
+are not moved automatically; deployments that previously used the fallback path
+should set the intended database path before restarting.
+
+The ledger records only new dequeued jobs and observed outcomes. Existing
+counters, prompts, pairs and image links are preserved, with no reconstructed old
+runs. Prompt contexts, output associations and the chronological timeline remain
+future work under #209. Deploying the Python changes requires a ComfyUI restart.
