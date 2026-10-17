@@ -29,6 +29,114 @@ test.beforeEach(async({page,browserName})=>{
 });
 test.afterEach(async({page,browserName})=>{await saveCoverage(page,browserName);expect(page.focusedErrors).toEqual([]);});
 
+test('Focused completes saved tags with keyboard and pointer and appends commas', async ({page}) => {
+    await page.route('**/prompt_manager/tags/suggest?**', route => {
+        const q = new URL(route.request().url()).searchParams.get('q');
+        return route.fulfill({json:{success:true,suggestions:(q === 'bl' ? ['blue eyes','blue sky'] : ['portrait','blue eyes']).map(name => ({name}))}});
+    });
+    await page.getByText('Metadata · category / tags',{exact:true}).click();
+    const tags = page.getByLabel('Tags',{exact:true});
+    await tags.fill('portrait, bl');
+    await expect(page.getByRole('option',{name:'blue eyes',exact:true})).toBeVisible();
+    await tags.press('ArrowDown');
+    await tags.press('Enter');
+    await expect(tags).toHaveValue('portrait, blue eyes, ');
+    expect(await page.evaluate(()=>node.serialize().widgets_values[2])).toBe('portrait, blue eyes, ');
+    await tags.fill('bl');
+    await page.getByRole('option',{name:'blue sky',exact:true}).click();
+    await expect(tags).toHaveValue('blue sky, ');
+    await tags.fill('portrait, ');
+    await expect(page.getByRole('option',{name:'portrait',exact:true})).toHaveCount(0);
+    await expect(page.getByRole('option',{name:'blue eyes',exact:true})).toBeVisible();
+    await tags.press('Escape');
+    await expect(page.getByRole('listbox')).toBeHidden();
+    await tags.fill('bl');
+    await expect(page.getByRole('option',{name:'blue eyes',exact:true})).toBeVisible();
+    await page.locator('.pm-focused').dispatchEvent('scroll');
+    await expect(page.getByRole('listbox')).toBeHidden();
+    await tags.fill('A brand new tag');
+    await tags.press('Tab');
+    await expect(tags).toHaveValue('A brand new tag');
+});
+
+test('Focused metadata autocomplete ignores stale responses, recovers from errors and cleans up', async ({page}) => {
+    let release;
+    let mode='delayed';
+    await page.route('**/prompt_manager/tags/suggest?**', async route => {
+        const q = new URL(route.request().url()).searchParams.get('q');
+        if(q === 'old') await new Promise(resolve=>{release=resolve;});
+        if(mode === 'error') return route.fulfill({status:503,body:'Unavailable'});
+        await route.fulfill({json:{success:true,suggestions:[{name:q+' result'}]}}).catch(()=>{});
+    });
+    await page.getByText('Metadata · category / tags',{exact:true}).click();
+    const tags=page.getByLabel('Tags',{exact:true});
+    await tags.fill('old');
+    await expect.poll(()=>Boolean(release)).toBe(true);
+    await tags.fill('new');
+    await expect(page.getByRole('option',{name:'new result',exact:true})).toBeVisible();
+    release();
+    await expect(page.getByRole('option',{name:'old result',exact:true})).toHaveCount(0);
+    mode='error';
+    await tags.fill('unavailable');
+    await expect(page.getByRole('listbox')).toBeHidden();
+    await expect(tags).toHaveValue('unavailable');
+    mode='ok';
+    await tags.fill('retry');
+    await expect(page.getByRole('option',{name:'retry result',exact:true})).toBeVisible();
+    await page.evaluate(()=>node.onRemoved());
+    await expect(page.getByRole('listbox')).toHaveCount(0);
+});
+
+test('Focused completes one category, allows new values and dismisses suggestions on blur', async ({page}) => {
+    await page.route('**/prompt_manager/categories',route=>route.fulfill({json:{success:true,categories:['Portrait','Landscape','Portrait studio']}}));
+    await page.getByText('Metadata · category / tags',{exact:true}).click();
+    const category=page.getByLabel('Category',{exact:true});
+    await category.fill('por');
+    await expect(page.getByRole('listbox',{name:'Saved categories'})).toBeVisible();
+    await category.press('ArrowUp');
+    await expect(page.getByRole('option',{name:'Portrait studio',exact:true})).toHaveAttribute('aria-selected','true');
+    await category.press('Enter');
+    await expect(category).toHaveValue('Portrait studio');
+    expect(await page.evaluate(()=>node.serialize().widgets_values[1])).toBe('Portrait studio');
+    await category.fill('por');
+    await expect(page.getByRole('option',{name:'Portrait',exact:true})).toBeVisible();
+    await category.dispatchEvent('keydown',{key:'ArrowDown',isComposing:true});
+    await expect(category).not.toHaveAttribute('aria-activedescendant',/.+/);
+    await page.getByLabel('Tags',{exact:true}).focus();
+    await expect(page.getByRole('listbox',{name:'Saved categories'})).toBeHidden();
+    await category.fill('New category');
+    await expect(page.getByRole('listbox',{name:'Saved categories'})).toBeHidden();
+    await expect(category).toHaveValue('New category');
+});
+
+test('Focused shares suggestion controls safely with another bundled toolkit copy', async ({page}) => {
+    await page.evaluate(async()=>{
+        const {createScope}=await import('/prompt_manager/js/shared/toolkit/core.js');
+        const first=await import('/prompt_manager/js/shared/toolkit/suggestions.js?pack=first');
+        const second=await import('/prompt_manager/js/shared/toolkit/suggestions.js?pack=second');
+        window.completionFixture={scope:createScope(),selected:[],inserted:[]};
+        const one=first.createSuggestionView(completionFixture.scope,null);
+        const two=second.createSuggestionView(completionFixture.scope,null,{label:'Other pack'});
+        completionFixture.views=[one,two];
+        one.hide();
+        const items=[{name:'plain'},{name:'tag',type:'tag'},{name:'model',type:'lora'},{name:'nested',type:'embedding',fullPath:'folder/nested'},{name:'flat',type:'embedding',fullPath:'flat'}];
+        one.render(items,index=>{completionFixture.selected.push(index);one.select(index);},item=>completionFixture.inserted.push(item.name));
+        one.select(-1);
+        one.position({left:innerWidth-5,bottom:innerHeight,top:innerHeight-20});
+        two.render([{name:'Other pack suggestion'}],()=>{},()=>{});
+        two.position({left:0,bottom:5,top:0});
+    });
+    const lists=page.getByRole('listbox');
+    const ids=await lists.evaluateAll(elements=>elements.map(element=>element.id));
+    expect(new Set(ids).size).toBe(ids.length);
+    await page.getByRole('option',{name:'[LORA] model'}).hover();
+    await expect(page.getByRole('option',{name:'[LORA] model'})).toHaveAttribute('aria-selected','true');
+    await page.getByRole('option',{name:'[EMB] folder/nested'}).click();
+    expect(await page.evaluate(()=>completionFixture.inserted)).toEqual(['nested']);
+    await page.evaluate(()=>completionFixture.scope.dispose());
+    await expect(lists).toHaveCount(0);
+});
+
 test('Focused previews before loading, keeps metadata optional and composes text',async({page})=>{
     await page.route('**/prompt_manager/recent?**',route=>route.fulfill({json:{success:true,results:[{id:1,text:'Library portrait',category:'Portrait',tags:['studio']}]}}));
     await page.getByRole('textbox',{name:'Main prompt',exact:true}).fill('My draft');

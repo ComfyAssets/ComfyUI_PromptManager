@@ -103,8 +103,8 @@ test('Focused search preview respects metadata opt-out', async ({ page, request 
     const id = await addFocused(page);
     const root = page.locator('.pm-focused');
     await root.getByText('Metadata · category / tags', { exact: true }).click();
-    await root.getByRole('textbox', { name: 'Category', exact: true }).fill('Keep category');
-    await root.getByRole('textbox', { name: 'Tags', exact: true }).fill('keep-tag');
+    await root.getByRole('combobox', { name: 'Category', exact: true }).fill('Keep category');
+    await root.getByRole('combobox', { name: 'Tags', exact: true }).fill('keep-tag');
     await root.getByRole('button', { name: 'Browse library', exact: true }).click();
     await root.getByRole('searchbox', { name: 'Search saved prompts', exact: true }).fill(text);
     await root.getByRole('button', { name: 'Search', exact: true }).click();
@@ -208,4 +208,73 @@ test('Focused Web UI button opens actual standalone pages', async ({ page }) => 
     await popup.goto(new URL('/prompt_manager/gallery', page.url()).href);
     await expect(popup.locator('#addPromptBtn')).toBeVisible();
     await popup.close();
+});
+
+test('Focused metadata completion uses saved categories and tags across renderers and reload', async ({ page, request }, testInfo) => {
+    const category = `Host completion category ${testInfo.project.name}`;
+    const tag = `host-completion-${testInfo.project.name}`;
+    await seed(request, `Saved autocomplete ${testInfo.project.name}`, category, [tag]);
+    const id = await addFocused(page);
+    const root = page.locator('.pm-focused');
+    await root.getByRole('textbox', { name: 'Main prompt', exact: true }).fill('Autocomplete workflow');
+    await root.getByText('Metadata · category / tags', { exact: true }).click();
+    const categoryInput = root.getByRole('combobox', { name: 'Category', exact: true });
+    const tagInput = root.getByRole('combobox', { name: 'Tags', exact: true });
+    await categoryInput.fill(category.slice(0, -3));
+    const categories = page.getByRole('listbox', { name: 'Saved categories', exact: true });
+    await expect(categories.getByRole('option', { name: category, exact: true })).toBeVisible();
+    await categoryInput.press('ArrowDown');
+    await expect(categoryInput).toHaveAttribute('aria-activedescendant', /.+/);
+    await categoryInput.press('Enter');
+    await expect(categoryInput).toHaveValue(category);
+    await expect(categoryInput).toHaveAttribute('aria-expanded', 'false');
+    for (const palette of ['light', 'dark']) {
+        await page.evaluate(async palette => {
+            const { app } = await import('/scripts/app.js');
+            await app.ui.settings.setSettingValue('Comfy.ColorPalette', palette);
+        }, palette);
+        await tagInput.fill(`keep, ${tag.slice(0, -3)}`);
+        const tags = page.getByRole('listbox', { name: 'Saved tags', exact: true });
+        const option = tags.getByRole('option', { name: tag, exact: true });
+        await expect(option).toBeVisible();
+        await expect(tags).toHaveAttribute('data-ca-theme', palette);
+        const bounds = await tags.boundingBox();
+        const viewport = page.viewportSize();
+        expect(bounds.x).toBeGreaterThanOrEqual(0);
+        expect(bounds.y).toBeGreaterThanOrEqual(0);
+        expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
+        expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
+        await page.screenshot({ path: testInfo.outputPath(`focused-metadata-${palette}.png`) });
+        await option.click();
+        await expect(tagInput).toHaveValue(`keep, ${tag}, `);
+    }
+    const expected = { text: 'Autocomplete workflow', category, tags: `keep, ${tag}, ` };
+    await expect.poll(() => model(page, id)).toMatchObject(expected);
+    for (const renderer of [!testInfo.project.metadata.initialRenderer, testInfo.project.metadata.initialRenderer]) {
+        await page.evaluate(async renderer => {
+            const { app } = await import('/scripts/app.js');
+            await app.ui.settings.setSettingValue('Comfy.VueNodes.Enabled', renderer);
+            app.canvas.centerOnNode(app.graph._nodes[0]);
+        }, renderer);
+        await expect.poll(() => page.evaluate(() => LiteGraph.vueNodesMode)).toBe(renderer);
+        await expect(categoryInput).toHaveValue(category);
+        await expect(tagInput).toHaveValue(expected.tags);
+    }
+    const queued = await page.evaluate(async id => {
+        const { app } = await import('/scripts/app.js');
+        const prompt = await app.graphToPrompt();
+        await app.loadGraphData(app.graph.serialize());
+        return prompt.output[String(id)].inputs;
+    }, id);
+    expect(queued).toMatchObject(expected);
+    await expect(categoryInput).toHaveValue(category);
+    await expect(tagInput).toHaveValue(expected.tags);
+    await categoryInput.fill(category.slice(0, -3));
+    await expect(categories).toBeVisible();
+    await page.evaluate(async id => {
+        const { app } = await import('/scripts/app.js');
+        app.graph.remove(app.graph.getNodeById(id));
+    }, id);
+    await expect(page.getByRole('listbox', { name: 'Saved categories', includeHidden: true })).toHaveCount(0);
+    await expect(page.getByRole('listbox', { name: 'Saved tags', includeHidden: true })).toHaveCount(0);
 });

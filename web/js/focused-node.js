@@ -1,5 +1,6 @@
 import {createScope, createButton, createField, mountTheme} from './shared/toolkit/core.js';
 import {createPromptLibrary} from './prompt-library.js';
+import {attachMetadataAutocomplete} from './metadata-autocomplete.js';
 
 const names = ['text', 'category', 'tags', 'search_text', 'prepend_text', 'append_text'];
 let nextEditorId = 0;
@@ -57,11 +58,13 @@ export function installFocusedNode(nodeType, app, api, parseQuery) {
         const connected = document.createElement('p'); connected.className = 'pm-editor-status'; connected.textContent = 'Text is supplied by an upstream connection.';
         const controls = new Map([['text', main]]);
         const details = new Map();
+        const completions = new Map();
         element.append(toolbar, mainField, connected);
         function disclosure(key, label) {
             const section = document.createElement('details'); section.className = 'pm-editor-details';
             const summary = document.createElement('summary'); summary.textContent = label; section.append(summary); element.append(section); details.set(key,section);
             scope.listen(section, 'toggle', () => {
+                if (!section.open) completions.forEach(completion => completion.close());
                 if (!scope.signal.aborted) thisNode.properties.focusedUI = snapshot();
             });
             return section;
@@ -76,6 +79,9 @@ export function installFocusedNode(nodeType, app, api, parseQuery) {
                 const field = createField(label,input,`${editorId}-${name}`);
                 const note = document.createElement('span'); note.className = 'pm-editor-connection'; note.textContent = 'Supplied by an upstream connection.'; note.hidden = true;
                 field.append(note); input._connectionNote = note; grid.append(field);
+                if (name === 'category' || name === 'tags') completions.set(name, attachMetadataAutocomplete(input, {
+                    scope,api,settings:app.ui?.settings,multiple:name === 'tags',available:() => !isConnected(name) && input.getClientRects().length > 0,
+                }));
             }
             section.append(grid);
         }
@@ -98,6 +104,7 @@ export function installFocusedNode(nodeType, app, api, parseQuery) {
             controls.forEach((input,name) => {
                 input.value = value(name);
                 if (name !== 'text') {
+                    if (isConnected(name)) completions.get(name)?.close();
                     input.hidden = Boolean(isConnected(name));
                     input._connectionNote.hidden = !isConnected(name);
                 }

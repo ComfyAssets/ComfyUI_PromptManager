@@ -67,3 +67,13 @@
     .ca-tools { --ca-accent: Highlight; --ca-focus: Highlight; --ca-border: ButtonText; --ca-line: CanvasText; }
     .ca-tools .ca-switch input:checked::before { background: HighlightText; }
 }
+
+.ca-tools.ca-completions { position: fixed; z-index: 10000; min-inline-size: min(240px, calc(100dvw - 16px)); max-inline-size: min(420px, calc(100dvw - 16px)); max-block-size: min(240px, calc(100dvh - 16px)); overflow: auto; border: 1px solid var(--ca-border); border-radius: 6px; box-shadow: 0 6px 20px #0005; box-sizing: border-box; }
+.ca-tools.ca-completions[hidden] { display: none; }
+.ca-tools.ca-completions .ca-completion-option { display: flex; align-items: flex-start; gap: 8px; padding: 7px 10px; min-block-size: 32px; cursor: pointer; }
+.ca-completion-type { flex-shrink: 0; font-size: 11px; color: var(--ca-focus); min-inline-size: 44px; }
+.ca-completion-name { min-inline-size: 0; overflow-wrap: anywhere; }
+.ca-completion-directory { color: var(--ca-muted); }
+.ca-tools.ca-completions [aria-selected="true"] { background: var(--ca-accent); color: #fff; outline: 2px solid var(--ca-focus); outline-offset: -2px; }
+.ca-tools.ca-completions [aria-selected="true"] :where(.ca-completion-type, .ca-completion-directory) { color: inherit; }
+@media (pointer: coarse) { .ca-tools.ca-completions .ca-completion-option { min-block-size: 40px; } }

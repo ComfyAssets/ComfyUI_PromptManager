@@ -124,5 +124,17 @@
     "branches": 86,
     "functions": 98,
     "statements": 98
+  },
+  "metadata-autocomplete.js": {
+    "lines": 98,
+    "branches": 81,
+    "functions": 85,
+    "statements": 98
+  },
+  "shared/toolkit/suggestions.js": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
   }
 }
