@@ -1765,7 +1765,8 @@ function setTheme() {
 scope.listen($("theme"), "change", setTheme);
 scope.listen(matchMedia("(prefers-color-scheme: dark)"), "change", setTheme);
 scope.listen(window, "hashchange", navigate);
-scope.listen(window, "pagehide", () => {
+scope.listen(window, "pagehide", (event) => {
+  if (event.persisted) return;
   stopImageScroll();
   stopMasonry();
   viewer?.destroy();
