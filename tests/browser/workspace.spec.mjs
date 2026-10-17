@@ -193,3 +193,26 @@ test('leaving a loading overview prevents its delayed result from replacing the 
     await expect(page.locator('#workspace-main')).not.toContainText('999');
     await expect(page.locator('#workspace-main a[href="/prompt_manager/gallery"]')).toBeVisible();
 });
+
+test('cached-page restoration remounts one working shell and refreshes its data', async ({ page }) => {
+    let reads = 0;
+    page.on('request', request => {
+        if (new URL(request.url()).pathname === '/prompt_manager/stats') reads++;
+    });
+    await page.goto(workspace);
+    await expect(statistic(page, 'Prompts')).toHaveText('2');
+    for (let restore = 0; restore < 2; restore++) {
+        await page.evaluate(() => {
+            window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+            window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+        });
+        await expect(statistic(page, 'Prompts')).toHaveText('2');
+    }
+    expect(reads).toBe(3);
+    const navigation = page.getByRole('navigation', { name: 'Workspace', exact: true });
+    await expect(navigation.getByRole('link')).toHaveCount(routes.length);
+    await navigation.getByRole('link', { name: 'Images', exact: true }).click();
+    await expect(page.locator('#workspace-main h1')).toHaveText('Images');
+    await page.getByRole('combobox', { name: 'Appearance' }).selectOption('light');
+    await expect(page.locator('body')).toHaveAttribute('data-ca-theme', 'light');
+});
