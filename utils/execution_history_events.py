@@ -13,6 +13,7 @@ TERMINAL_KINDS = {
     "execution_interrupted": ("interrupted", "terminal_interrupted"),
 }
 EVENT_KINDS = frozenset((*TERMINAL_KINDS, "execution_start"))
+MAX_EVENT_KIND_LENGTH = max(map(len, EVENT_KINDS))
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,14 @@ class Completion:
 
 
 RunCommand = RunStart | RunFinish
+
+
+def _valid_event_kind(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) <= MAX_EVENT_KIND_LENGTH
+        and value in EVENT_KINDS
+    )
 
 
 def _valid_integer(value: object) -> bool:
@@ -159,7 +168,7 @@ def make_finish(
             if not malformed:
                 kind, data = message
                 malformed = not isinstance(kind, str)
-                if not malformed and kind not in EVENT_KINDS:
+                if not malformed and not _valid_event_kind(kind):
                     continue
                 malformed |= usable_job_id is None
             if not malformed:
@@ -302,8 +311,7 @@ def _valid_evidence(evidence: object) -> bool:
         if type(event) is not LifecycleEvent:
             return False
         if (
-            not isinstance(event.kind, str)
-            or event.kind not in EVENT_KINDS
+            not _valid_event_kind(event.kind)
             or not _valid_uuid(event.job_id)
             or (event.timestamp is not None and not _valid_integer(event.timestamp))
         ):

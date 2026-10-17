@@ -344,3 +344,36 @@ class ExecutionHistoryEventsTests(unittest.TestCase):
             classify_evidence(JOB, command.evidence).reason, "evidence_limit"
         )
         self.assertLessEqual(len(encode_command(command)), 2048)
+
+    def test_oversized_unknown_kind_is_ignored_without_hashing(self):
+        class OversizedKind(str):
+            def __hash__(self):
+                raise AssertionError("Oversized event kind must not be hashed")
+
+        command = finish(
+            [
+                message(OversizedKind("x" * 1_000_000)),
+                message("execution_success", timestamp=300),
+            ]
+        )
+        result = classify_evidence(JOB, command.evidence)
+        self.assertEqual(
+            (result.outcome, result.reason), ("succeeded", "terminal_success")
+        )
+        self.assertLessEqual(len(encode_command(command)), 2048)
+
+    def test_encoder_rejects_oversized_kind_without_hashing(self):
+        class OversizedKind(str):
+            def __hash__(self):
+                raise AssertionError("Oversized event kind must not be hashed")
+
+        command = finish([message("execution_success")])
+        event = LifecycleEvent(
+            OversizedKind("x" * 1_000_000), JOB, None, None, None, None
+        )
+        with self.assertRaises(ValueError):
+            encode_command(
+                replace(
+                    command, evidence=TerminalEvidence((event,), False, False, False)
+                )
+            )
