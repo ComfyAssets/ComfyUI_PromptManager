@@ -9,6 +9,7 @@ import os
 from typing import Optional, List, Dict, Any
 
 from .models import PromptModel, normalize_image_path, utc_now_iso
+from .pairs import PairDependencyError, PairOperations
 
 # Import logging system
 try:
@@ -146,7 +147,7 @@ def _coerce_file_info(metadata: Any) -> tuple:
     )
 
 
-class PromptDatabase:
+class PromptDatabase(PairOperations):
     """Database operations class for managing prompts."""
 
     def __init__(self, db_path: Optional[str] = None):
@@ -581,7 +582,8 @@ class PromptDatabase:
         Returns:
             bool: True if deletion was successful, False otherwise
         """
-        with self.model.get_connection() as conn:
+        with self._pair_transaction() as conn:
+            self._ensure_prompts_unpaired(conn, [prompt_id])
             # First delete related images to avoid foreign key constraint
             conn.execute(
                 "DELETE FROM generated_images WHERE prompt_id = ?", (prompt_id,)
@@ -597,7 +599,7 @@ class PromptDatabase:
         Returns:
             Number of prompts deleted.
         """
-        with self.model.get_connection() as conn:
+        with self._pair_transaction() as conn:
             # Get IDs first for cascade cleanup
             ids = [
                 r[0]
@@ -607,6 +609,7 @@ class PromptDatabase:
             ]
             if not ids:
                 return 0
+            self._ensure_prompts_unpaired(conn, ids)
             placeholders = ",".join("?" * len(ids))
             conn.execute(
                 f"DELETE FROM generated_images WHERE prompt_id IN ({placeholders})",
@@ -1290,7 +1293,7 @@ class PromptDatabase:
         """
         self.logger.info("Starting duplicate cleanup process with image preservation")
         try:
-            with self.model.get_connection() as conn:
+            with self._pair_transaction() as conn:
                 # Find duplicates by text content (case-insensitive)
                 # Note: Removed ORDER BY from GROUP_CONCAT for SQLite compatibility
                 # We'll sort the IDs manually after fetching
@@ -1318,6 +1321,11 @@ class PromptDatabase:
                     id_date_pairs = list(zip(ids, created_dates))
                     id_date_pairs.sort(key=lambda x: x[1])  # Sort by date
                     sorted_ids = [int(pair[0]) for pair in id_date_pairs]
+
+                    try:
+                        self._ensure_prompts_unpaired(conn, sorted_ids)
+                    except PairDependencyError:
+                        continue
 
                     # Keep the oldest one (first), merge and delete the rest
                     primary_id = sorted_ids[0]  # Keep the oldest
@@ -1864,7 +1872,8 @@ class PromptDatabase:
         Raises:
             sqlite3.IntegrityError: Another prompt already has the new hash.
         """
-        with self.model.get_connection() as conn:
+        with self._pair_transaction() as conn:
+            self._ensure_prompts_unpaired(conn, [prompt_id])
             cursor = conn.execute(
                 "UPDATE prompts SET text = ?, hash = ?, updated_at = ? WHERE id = ?",
                 (
@@ -1912,7 +1921,8 @@ class PromptDatabase:
             Number of prompts actually deleted.
         """
         count = 0
-        with self.model.get_connection() as conn:
+        with self._pair_transaction() as conn:
+            self._ensure_prompts_unpaired(conn, prompt_ids)
             for pid in prompt_ids:
                 conn.execute("DELETE FROM generated_images WHERE prompt_id = ?", (pid,))
                 cursor = conn.execute("DELETE FROM prompts WHERE id = ?", (pid,))
@@ -2050,11 +2060,15 @@ class PromptDatabase:
 
         Returns number of prompts removed.
         """
-        with self.model.get_connection() as conn:
+        with self._pair_transaction() as conn:
             cursor = conn.execute("""
                 SELECT p.id FROM prompts p
                 LEFT JOIN generated_images gi ON p.id = gi.prompt_id
                 WHERE gi.prompt_id IS NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM prompt_pairs pp
+                    WHERE pp.positive_prompt_id = p.id OR pp.negative_prompt_id = p.id
+                )
                 AND NOT EXISTS (
                     SELECT 1 FROM prompt_tags pt
                     JOIN tags t ON pt.tag_id = t.id
