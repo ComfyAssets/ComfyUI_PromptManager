@@ -1326,7 +1326,6 @@ progress {
   }
   .sidebar-label,
   .sidebar-bottom .connection,
-  #saved-nav,
   #collections-nav {
     display: none;
   }
@@ -1569,4 +1568,127 @@ progress {
 
 .spaced-15 {
   margin-top: 15px;
+}
+
+/* The same DOM order is kept across all three layouts. */
+.masonry-grid {
+  position: relative;
+  block-size: var(--masonry-height, auto);
+  align-items: start;
+}
+.masonry-grid > .media-card {
+  position: absolute;
+  inset-inline-start: var(--masonry-x, 0);
+  inset-block-start: var(--masonry-y, 0);
+  inline-size: var(--masonry-width);
+}
+.masonry-grid .image-open img {
+  aspect-ratio: var(--media-ratio);
+  object-fit: contain;
+}
+.image-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.media-info > .image-card-actions {
+  min-width: max-content;
+}
+.tag-image-heading {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 18px;
+}
+.tag-image-heading h3 {
+  font-size: 15px;
+  margin-bottom: 6px;
+}
+.tag-image-heading .chip {
+  margin-top: 8px;
+}
+.tag-image-preview {
+  inline-size: 112px;
+  block-size: 100px;
+  object-fit: cover;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.tag-model-panel {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--ca-field);
+  margin-top: 18px;
+}
+.tag-model-panel h3 {
+  font-size: 13px;
+}
+.tag-model-panel .field {
+  margin-block: 12px;
+}
+.tag-model-panel .field input,
+.tag-model-panel .field textarea,
+.tag-model-panel .field select {
+  background: var(--ca-surface);
+}
+.tag-suggestion-panel {
+  margin-top: 20px;
+}
+.tag-suggestion {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.tag-suggestion input {
+  accent-color: var(--ca-accent);
+  flex-shrink: 0;
+}
+.tag-suggestion:has(input:checked) {
+  border-color: var(--ca-accent);
+  background: var(--soft-blue);
+}
+.tag-confidence {
+  margin-inline-start: auto;
+  color: var(--ca-muted);
+  font-size: 11px;
+}
+#tag-generation-status {
+  margin-top: 10px;
+}
+.tag-scope-note {
+  padding: 10px 12px;
+  border-inline-start: 2px solid var(--ca-accent);
+  background: var(--ca-field);
+}
+@media (max-width: 700px) {
+  .image-card-actions {
+    gap: 3px;
+  }
+  .ca-tools .media-info .image-card-actions button {
+    min-width: 24px;
+    min-height: 28px;
+  }
+  .tag-image-preview {
+    inline-size: 86px;
+    block-size: 86px;
+  }
+}
+
+.tagging-modal .dialog-actions {
+  position: sticky;
+  inset-block-end: -24px;
+  margin: 18px -24px -24px;
+  padding: 15px 24px;
+  background: var(--ca-surface);
+  border-top: 1px solid var(--line);
+  z-index: 1;
 }

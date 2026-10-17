@@ -104,3 +104,17 @@ maintenance, backup/restore, paired metadata and correct send destinations.
 
 Screenshots in `screenshots/` record the reviewed starting point. The approved
 standalone timeline in `../prompt-variant-timeline.html` remains unchanged.
+
+## Review polish
+
+History actions use a shared branch icon. Images can switch among Grid, List and
+Masonry; Masonry preserves each image's proportions and keeps DOM order while
+packing cards with a responsive layout. It does not require experimental native
+masonry support. Resize observers are disconnected when leaving the view.
+
+Every image card includes a tagging action beside Info, including cards in Needs
+review. Choose WD14 SwinV2, WD14 ViT, Ollama or HuggingFace; adjust thresholds or
+instructions, generate sample suggestions, edit tags manually, and approve only
+the desired suggestions. Changes are staged until approval, apply to that image
+alone and do not resolve uncertain prompt associations. Changing models discards
+previous suggestions. Cancel preserves existing tags. All inference is simulated.

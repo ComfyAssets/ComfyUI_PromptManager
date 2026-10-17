@@ -5,6 +5,9 @@ import {
   mountTheme,
 } from "/toolkit/core.js";
 const scope = createScope();
+let masonryObserver = null,
+  masonryFrame = 0,
+  tagSession = null;
 mountTheme(document.body, null, scope);
 const $ = (id) => document.getElementById(id);
 const esc = (value) =>
@@ -24,6 +27,10 @@ const paths = {
   settings:
     "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2",
   search: "M10.5 3a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15Zm5.5 13 5 5",
+  branch:
+    "M6 3v12M18 9a9 9 0 0 1-9 9M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0M21 6a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
+  masonry: "M3 3h7v11H3zM14 3h7v6h-7zM3 18h7v3H3zM14 13h7v8h-7z",
+  tagImage: "M3 4h8l9 9-7 7L3 10V4ZM7 8h.01M18 2v5M15.5 4.5h5",
   grid: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
   list: "M9 5h12M9 12h12M9 19h12M3 5h.01M3 12h.01M3 19h.01",
   copy: "M8 8h13v13H8z M16 8V3H3v13h5",
@@ -176,7 +183,19 @@ const images = Array.from({ length: 4 }, (_, j) =>
     starred: j === 0 && i % 2 === 0,
     filename: `${p.id}_${String(j + 1).padStart(5, "0")}.png`,
   })),
-).flat();
+)
+  .flat()
+  .map((item, index) => {
+    const [width, height] = [
+      [1536, 1152],
+      [1024, 1536],
+      [1280, 1280],
+      [1600, 900],
+      [1152, 1536],
+      [1536, 1024],
+    ][index % 6];
+    return { ...item, width, height, tags: [...prompt(item.prompt).tags] };
+  });
 const state = {
   page: "images",
   system: "general",
@@ -191,6 +210,7 @@ const state = {
   prompt: "alpine",
   variant: 0,
   compare: false,
+  reviewImage: images[0].id,
   activity: [
     {
       title: "Library metadata enriched",
@@ -220,7 +240,7 @@ function prompt(id) {
 function image(id) {
   return images.find((i) => i.id === id) || images[0];
 }
-function art(p, n = 0) {
+function art(p, n = 0, dimensions = { width: 1536, height: 1152 }) {
   const [a, b, c] = p.color;
   const shift = n * 13;
   let shape = "";
@@ -249,7 +269,7 @@ function art(p, n = 0) {
     shape = `<circle cx="${540 - shift}" cy="130" r="85" fill="${c}" opacity=".9"/><path d="M0 350Q160 240 350 335T800 300V600H0" fill="${b}"/><path d="M0 455Q180 320 500 430T800 390V600H0" fill="${c}"/><path d="M315 350h170v82H315Z" fill="#405b69"/><path d="M300 350a100 65 0 0 1 200 0Z" fill="#b5c4c8"/><path d="M340 367h120v25H340Z" fill="#c8a884"/><path d="M480 320v-95m-30 0h60" stroke="#4d6374" stroke-width="5"/><path d="m100 600 230-150m-120 150 170-130" stroke="#81969c" opacity=".6" stroke-width="7"/>`;
   if (p.scene === "coast")
     shape = `<path d="M0 340Q400 310 800 340V600H0" fill="#76a4ae"/><path d="M0 420 300 300 500 360 410 480 300 600H0" fill="#607b74"/><path d="M300 300 500 360 410 480 300 600H150l170-170Z" fill="#405b60"/><path d="M350 192h46l12 139h-70Z" fill="${c}"/><path d="M340 180h65v25h-65Z" fill="#b48d79"/><path d="m333 180 40-34 39 34Z" fill="#405b69"/><path d="M350 160h46v20h-46Z" fill="#e8cd8c"/><path d="M480 430q90-25 160 0m-140 35q120-20 250 0M400 520q110-30 260 0" fill="none" stroke="${c}" opacity=".55" stroke-width="3"/>`;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="1152" viewBox="0 0 800 600"><defs><linearGradient id="sky" x2=".4" y2="1"><stop stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient><linearGradient id="rock" x2=".7" y2="1"><stop stop-color="${c}"/><stop offset="1" stop-color="${a}"/></linearGradient><radialGradient id="glow"><stop stop-color="${c}" stop-opacity=".25"/><stop offset="1" stop-color="${c}" stop-opacity="0"/></radialGradient></defs><rect width="800" height="600" fill="url(#sky)"/><ellipse cx="${550 - shift}" cy="160" rx="350" ry="250" fill="url(#glow)"/>${shape}<path d="M0 520Q200 485 500 520T800 500V600H0" fill="${b}" opacity=".13"/></svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${dimensions.width}" height="${dimensions.height}" viewBox="0 0 800 600" preserveAspectRatio="xMidYMid slice"><defs><linearGradient id="sky" x2=".4" y2="1"><stop stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient><linearGradient id="rock" x2=".7" y2="1"><stop stop-color="${c}"/><stop offset="1" stop-color="${a}"/></linearGradient><radialGradient id="glow"><stop stop-color="${c}" stop-opacity=".25"/><stop offset="1" stop-color="${c}" stop-opacity="0"/></radialGradient></defs><rect width="800" height="600" fill="url(#sky)"/><ellipse cx="${550 - shift}" cy="160" rx="350" ry="250" fill="url(#glow)"/>${shape}<path d="M0 520Q200 485 500 520T800 500V600H0" fill="${b}" opacity=".13"/></svg>`;
   return "data:image/svg+xml," + encodeURIComponent(svg);
 }
 function notify(message) {
@@ -258,6 +278,7 @@ function notify(message) {
   toastTimer = setTimeout(() => ($("toast").textContent = ""), 6500);
 }
 function dialog(title, body) {
+  $("modal").classList.remove("tagging-modal");
   $("modal-title").textContent = title;
   $("modal-body").innerHTML = body;
   if (!$("modal").open) $("modal").showModal();
@@ -282,6 +303,14 @@ function heading(title, description, actions = "") {
 function sectionNav(items, active, action) {
   return `<div class="section-nav" role="group" aria-label="${esc(action)} sections">${items.map(([id, title]) => button(title, action, `data-value="${id}" aria-pressed="${active === id}"`)).join("")}</div>`;
 }
+function vocabulary() {
+  return [
+    ...new Set([
+      ...prompts.flatMap((p) => p.tags),
+      ...images.flatMap((i) => i.tags),
+    ]),
+  ];
+}
 function nav() {
   const links = (items) =>
     items
@@ -293,12 +322,7 @@ function nav() {
   $("primary-nav").innerHTML = links([
     ["images", "Images", "images", images.length],
     ["library", "Prompt library", "library", prompts.length],
-    [
-      "tags",
-      "Tags & categories",
-      "tags",
-      new Set(prompts.flatMap((p) => p.tags)).size,
-    ],
+    ["tags", "Tags & categories", "tags", vocabulary().length],
     ["metadata", "Inspect a file", "upload", ""],
   ]);
   $("saved-nav").innerHTML = links([
@@ -351,7 +375,7 @@ function matches(p, additional = "") {
 function visibleImages() {
   let result = images.filter(
     (i) =>
-      matches(prompt(i.prompt), i.filename) &&
+      matches(prompt(i.prompt), [i.filename, ...i.tags].join(" ")) &&
       (state.filter !== "favorites" || i.starred) &&
       (!state.collection ||
         (state.collection === "Landscapes"
@@ -368,11 +392,11 @@ function visibleImages() {
 }
 function mediaCard(i) {
   const p = prompt(i.prompt);
-  return `<article class="media-card ${state.selectedImage === i.id ? "selected" : ""}"><div class="media-art">${button(`<img src="${art(p, i.index)}" width="800" height="600" alt="${esc(p.title)} · sample illustration ${i.index + 1}" ${i.index > 1 ? 'loading="lazy"' : ""}>`, "open-image", `data-id="${i.id}" aria-label="Open ${esc(i.filename)}"`, "image-open")}<div class="image-overlays"><label><input type="checkbox" data-select="${i.id}" ${state.selection.has(i.id) ? "checked" : ""} aria-label="Select ${esc(i.filename)}"></label>${button(i.starred ? "★" : "☆", "favorite", `data-id="${i.id}" aria-pressed="${i.starred}" aria-label="Favorite ${esc(i.filename)}"`, "star-button")}</div></div><div class="media-info"><div><h3>${esc(p.title)}</h3><p>1536 × 1152 · PNG · Seed ${i.seed}</p></div>${button(icon("info"), "inspect", `data-id="${i.id}" aria-label="Inspect ${esc(i.filename)}"`, "icon-btn")}</div></article>`;
+  return `<article class="media-card ${state.selectedImage === i.id ? "selected" : ""}" data-image-id="${i.id}" style="--media-ratio:${i.width}/${i.height}"><div class="media-art">${button(`<img src="${art(p, i.index, i)}" width="${i.width}" height="${i.height}" alt="${esc(p.title)} · sample illustration ${i.index + 1}" ${i.index > 1 ? 'loading="lazy"' : ""}>`, "open-image", `data-id="${i.id}" aria-label="Open ${esc(i.filename)}"`, "image-open")}<div class="image-overlays"><label><input type="checkbox" data-select="${i.id}" ${state.selection.has(i.id) ? "checked" : ""} aria-label="Select ${esc(i.filename)}"></label>${button(i.starred ? "★" : "☆", "favorite", `data-id="${i.id}" aria-pressed="${i.starred}" aria-label="Favorite ${esc(i.filename)}"`, "star-button")}</div></div><div class="media-info"><div><h3>${esc(p.title)}</h3><p>${i.width} × ${i.height} · PNG · Seed ${i.seed}</p></div><div class="image-card-actions">${button(icon("info"), "inspect", `data-id="${i.id}" aria-label="Inspect ${esc(i.filename)}"`, "icon-btn")}${button(icon("tagImage"), "image-tag", `data-id="${i.id}" aria-label="Tag or auto-tag ${esc(i.filename)}"`, "icon-btn")}</div></div></article>`;
 }
 function imageDetails(i, full = false) {
   const p = prompt(i.prompt);
-  return `${!full ? `<img class="detail-cover" src="${art(p, i.index)}" width="800" height="600" alt="">` : ""}<div class="${full ? "" : "detail-inner"}"><div class="panel-heading"><h2>${esc(p.title)}</h2><span class="chip">PNG</span></div><p class="small">${i.filename}</p><div class="tags"><span class="chip blue">Execution recorded</span><span class="chip">${esc(p.category)}</span></div>${promptBlock(p, "positive", i.variant)}${promptBlock(p, "negative", i.variant)}<div class="tags">${p.tags.map((t) => button(esc(t), "tag-filter", `data-value="${esc(t)}"`, "chip")).join("")}</div><dl class="meta-grid">${[
+  return `${!full ? `<img class="detail-cover" src="${art(p, i.index, i)}" width="800" height="600" alt="">` : ""}<div class="${full ? "" : "detail-inner"}"><div class="panel-heading"><h2>${esc(p.title)}</h2><span class="chip">PNG</span></div><p class="small">${i.filename}</p><div class="tags"><span class="chip blue">Execution recorded</span><span class="chip">${esc(p.category)}</span></div>${promptBlock(p, "positive", i.variant)}${promptBlock(p, "negative", i.variant)}<div class="tags">${i.tags.map((t) => button(esc(t), "tag-filter", `data-value="${esc(t)}"`, "chip")).join("")}</div><dl class="meta-grid">${[
     ["Seed", i.seed],
     ["Steps", "28"],
     ["CFG", "6.5"],
@@ -383,7 +407,7 @@ function imageDetails(i, full = false) {
     .map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`)
     .join(
       "",
-    )}</dl>${full ? `<details><summary>File & provenance</summary><p class="small">output/concepts/${i.filename}<br>Prompt evidence: execution recorded<br>Run: sample-${i.seed} · Original file unchanged</p></details><details><summary>Workflow & raw metadata</summary><pre tabindex="0"><code>${esc(JSON.stringify({ sample: true, seed: i.seed, positive: p.positive, negative: p.negatives[i.variant].text, workflow: "Demo workflow — no actual graph" }, null, 2))}</code></pre>${button("Download sample JSON", "download-workflow", `data-id="${i.id}"`)}</details>` : ""}</div>${!full ? '<div class="detail-footer">' : ""}${sendButton(p, "pair", i.variant, true)}${button("Prompt history", "history", `data-prompt="${p.id}"`)}${!full ? "</div>" : ""}`;
+    )}</dl>${full ? `<details><summary>File & provenance</summary><p class="small">output/concepts/${i.filename}<br>Prompt evidence: execution recorded<br>Run: sample-${i.seed} · Original file unchanged</p></details><details><summary>Workflow & raw metadata</summary><pre tabindex="0"><code>${esc(JSON.stringify({ sample: true, seed: i.seed, positive: p.positive, negative: p.negatives[i.variant].text, workflow: "Demo workflow — no actual graph" }, null, 2))}</code></pre>${button("Download sample JSON", "download-workflow", `data-id="${i.id}"`)}</details>` : ""}</div>${!full ? '<div class="detail-footer">' : ""}${sendButton(p, "pair", i.variant, true)}${button(icon("branch") + " Prompt history", "history", `data-prompt="${p.id}"`)}${!full ? "</div>" : ""}`;
 }
 function renderImages() {
   const title =
@@ -396,7 +420,7 @@ function renderImages() {
         button(icon("plus") + " New prompt", "new-prompt", "", "ca-primary"),
     ) +
     toolbar() +
-    `<div class="filter-row"><div class="segmented" role="group" aria-label="Image layout">${button(icon("grid") + " Grid", "image-view", 'data-value="grid" aria-pressed="' + (state.view === "grid") + '"')}${button(icon("list") + " List", "image-view", 'data-value="list" aria-pressed="' + (state.view === "list") + '"')}</div><label class="small" for="image-size">Thumbnail size</label><select id="image-size"><option value="comfortable">Comfortable</option><option value="large">Large</option><option value="compact">Compact</option></select><span class="chip">${icon("folder")} All output folders</span>${button("Group by positive prompt →", "go-library", "", "chip")}<span class="sample-tag">Illustrative previews</span></div><div id="bulkbar"></div><div class="gallery-layout"><div class="gallery-body"><div class="section-caption"><span id="result-count"></span><span>Today · October 17</span></div><div id="image-grid" class="image-grid"></div><p class="small spaced">All sample results loaded · one continuous gallery</p></div><aside id="image-inspector" class="detail-panel" aria-label="Selected image details"></aside></div>`;
+    `<div class="filter-row"><div class="segmented" role="group" aria-label="Image layout">${button(icon("grid") + " Grid", "image-view", 'data-value="grid" aria-pressed="' + (state.view === "grid") + '"')}${button(icon("list") + " List", "image-view", 'data-value="list" aria-pressed="' + (state.view === "list") + '"')}${button(icon("masonry") + " Masonry", "image-view", 'data-value="masonry" aria-pressed="' + (state.view === "masonry") + '"')}</div><label class="small" for="image-size">Thumbnail size</label><select id="image-size"><option value="comfortable">Comfortable</option><option value="large">Large</option><option value="compact">Compact</option></select><span class="chip">${icon("folder")} All output folders</span>${button("Group by positive prompt →", "go-library", "", "chip")}<span class="sample-tag">Illustrative previews</span></div><div id="bulkbar"></div><div class="gallery-layout"><div class="gallery-body"><div class="section-caption"><span id="result-count"></span><span>Today · October 17</span></div><div id="image-grid" class="image-grid"></div><p class="small spaced">All sample results loaded · one continuous gallery</p></div><aside id="image-inspector" class="detail-panel" aria-label="Selected image details"></aside></div>`;
   $("image-size").value = state.size;
   updateImages();
 }
@@ -406,13 +430,14 @@ function updateBulk() {
     : "";
 }
 function updateImages() {
+  stopMasonry();
   const shown = visibleImages();
   if (shown.length && !shown.some((i) => i.id === state.selectedImage))
     state.selectedImage = shown[0].id;
   $("result-count").textContent =
     `${shown.length} images · ${new Set(shown.map((i) => i.prompt)).size} positive prompts`;
   $("image-grid").className =
-    `image-grid ${state.size === "comfortable" ? "" : state.size} ${state.view === "list" ? "list-grid" : ""}`;
+    `image-grid ${state.size === "comfortable" ? "" : state.size} ${state.view === "list" ? "list-grid" : state.view === "masonry" ? "masonry-grid" : ""}`;
   $("image-grid").innerHTML = shown.length
     ? shown.map(mediaCard).join("")
     : '<div class="empty">No matching images. Try another search or category.</div>';
@@ -420,6 +445,55 @@ function updateImages() {
     ? imageDetails(image(state.selectedImage))
     : '<div class="detail-inner"><h2>No image selected</h2><p class="small">Clear the filters or choose a matching image.</p></div>';
   updateBulk();
+  if (state.view === "masonry" && shown.length) mountMasonry($("image-grid"));
+}
+function stopMasonry() {
+  masonryObserver?.disconnect();
+  masonryObserver = null;
+  cancelAnimationFrame(masonryFrame);
+}
+function mountMasonry(grid) {
+  const cards = [...grid.children];
+  let previousWidth = 0;
+  function layout() {
+    if (!grid.isConnected) return;
+    const styles = getComputedStyle(grid);
+    const columns = styles.gridTemplateColumns.split(/\s+/).length;
+    const gap = parseFloat(styles.columnGap) || 13;
+    const width = (grid.clientWidth - gap * (columns - 1)) / columns;
+    if (width <= 0) return;
+    const heights = Array(columns).fill(0);
+    for (const card of cards)
+      card.style.setProperty("--masonry-width", `${width}px`);
+    for (const card of cards) {
+      const column = heights.indexOf(Math.min(...heights));
+      card.style.setProperty("--masonry-x", `${column * (width + gap)}px`);
+      card.style.setProperty("--masonry-y", `${heights[column]}px`);
+      heights[column] += card.getBoundingClientRect().height + gap;
+    }
+    grid.style.setProperty(
+      "--masonry-height",
+      `${Math.max(...heights) - gap}px`,
+    );
+  }
+  function schedule() {
+    cancelAnimationFrame(masonryFrame);
+    masonryFrame = requestAnimationFrame(layout);
+  }
+  masonryObserver = new ResizeObserver((entries) => {
+    if (
+      entries.some(
+        (entry) =>
+          entry.target !== grid.parentElement ||
+          entry.contentRect.width !== previousWidth,
+      )
+    )
+      schedule();
+    previousWidth = grid.parentElement.getBoundingClientRect().width;
+  });
+  masonryObserver.observe(grid.parentElement);
+  cards.forEach((card) => masonryObserver.observe(card));
+  layout();
 }
 function renderLibrary() {
   const shown = prompts.filter((p) => matches(p));
@@ -434,7 +508,7 @@ function renderLibrary() {
         button("+ New prompt", "new-prompt", "", "ca-primary"),
     ) +
     toolbar() +
-    `<div class="section-caption"><span>${shown.length} positive prompts · ${shown.reduce((n, p) => n + p.negatives.length, 0)} negative variants</span><span>Images are grouped by positive prompt</span></div><div class="library-grid">${shown.map((p) => `<article class="prompt-card"><div class="card-art"><img src="${art(p, 0)}" alt="" width="800" height="600"><img src="${art(p, 2)}" alt="" width="800" height="600"></div><div class="card-content"><div class="card-title">${button(esc(p.title), "history", `data-prompt="${p.id}"`)}<span class="chip">${esc(p.category)}</span></div>${promptBlock(p, "positive")}<div class="card-meta"><span class="chip red">− ${p.negatives.length} negative variants</span><span>4 runs</span><span>4 images</span></div><div class="tags">${p.tags.map((t) => `<span class="chip">${t}</span>`).join("")}</div></div><div class="card-footer"><span>${"★".repeat(p.rating)} · Used today</span><div class="row-actions">${sendButton(p, "positive")}${button("Explore history →", "history", `data-prompt="${p.id}"`)}</div></div></article>`).join("") || '<div class="empty">No matching prompts.</div>'}</div>`;
+    `<div class="section-caption"><span>${shown.length} positive prompts · ${shown.reduce((n, p) => n + p.negatives.length, 0)} negative variants</span><span>Images are grouped by positive prompt</span></div><div class="library-grid">${shown.map((p) => `<article class="prompt-card"><div class="card-art"><img src="${art(p, 0)}" alt="" width="800" height="600"><img src="${art(p, 2)}" alt="" width="800" height="600"></div><div class="card-content"><div class="card-title">${button(esc(p.title), "history", `data-prompt="${p.id}"`)}<span class="chip">${esc(p.category)}</span></div>${promptBlock(p, "positive")}<div class="card-meta"><span class="chip red">− ${p.negatives.length} negative variants</span><span>4 runs</span><span>4 images</span></div><div class="tags">${p.tags.map((t) => `<span class="chip">${t}</span>`).join("")}</div></div><div class="card-footer"><span>${"★".repeat(p.rating)} · Used today</span><div class="row-actions">${sendButton(p, "positive")}${button(icon("branch") + " Explore history", "history", `data-prompt="${p.id}"`)}</div></div></article>`).join("") || '<div class="empty">No matching prompts.</div>'}</div>`;
 }
 function renderHistory() {
   const p = prompt(state.prompt),
@@ -526,7 +600,7 @@ function renderSystem() {
         )}</div><div class="two-col"><section class="surface"><h2>Library health</h2>${operation("3 ambiguous image links", "Review metadata before assigning a positive / negative pair.", "go-review", "Review metadata")}${operation("Backup status", "Last sample backup today at 09:30 · verification passed.", "system-tab", "View backups", 'data-value="backups"')}${operation("No missing thumbnails", "Generate only missing previews when necessary.", "job", "Review thumbnails", 'data-job="Thumbnail check"')}</section><section class="surface"><h2>Workspace preferences</h2>${operation("One display configuration", "Grid, density and paging settings are shared across views.", "system-tab", "Appearance", 'data-value="appearance"')}${operation("2 sample output sources", "Monitoring and enrichment share one source list.", "system-tab", "Manage sources", 'data-value="sources"')}${operation("Statistics", "Usage by prompt, category, tag and date.", "stats", "Explore")}</section></div>`;
       break;
     case "appearance":
-      body = `<section class="surface"><h2>Browsing & display</h2><p>One set of defaults; toolbar changes apply to the current view.</p>${setting("default-view", "Default layout", "Choose your starting image layout.", "select", ["Grid", "List"])}${setting("density", "Thumbnail size", "Readable previews by default; no fixed column-count setting.", "select", ["Comfortable", "Large", "Compact"])}${setting("loading", "Loading behavior", "One choice replaces separate page-size and infinite-scroll controls.", "select", ["Load more on scroll", "Paged results"])}${setting("batch-size", "Results per batch", "Controls request size, independent of thumbnail size.", "select", ["50", "100", "200"])}${setting("metadata-auto", "Load metadata on selection", "Use the same inspector in the gallery and image viewer.")}${setting("metadata-cache", "Cache metadata in this browser", "Reuse fetched metadata until it changes or you clear this cache.")}${setting("image-quality", "Image loading quality", "Preserve original / optimized / fast image-loading preferences.", "select", ["Optimized", "Original", "Fast"])}${setting("video-auto", "Autoplay videos", "Videos stay within the same gallery and use native playback controls.")}${setting("video-muted", "Mute videos by default", "Keep playback quiet while browsing.")}${setting("video-loop", "Loop videos", "Repeat a selected clip until you navigate away.")}${setting("paths", "Show file paths", "Paths appear under File & provenance, not across every card.")}${setting("open-mode", "Open from ComfyUI", "Keep the node pack’s popup / new-tab preference.", "select", ["New tab", "Popup window"])}${setting("timeout", "Node search auto-hide (seconds)", "Node search behavior only. Use 0 to keep results visible.", "number", [30])}</section>`;
+      body = `<section class="surface"><h2>Browsing & display</h2><p>One set of defaults; toolbar changes apply to the current view.</p>${setting("default-view", "Default layout", "Choose your starting image layout.", "select", ["Grid", "List", "Masonry"])}${setting("density", "Thumbnail size", "Readable previews by default; no fixed column-count setting.", "select", ["Comfortable", "Large", "Compact"])}${setting("loading", "Loading behavior", "One choice replaces separate page-size and infinite-scroll controls.", "select", ["Load more on scroll", "Paged results"])}${setting("batch-size", "Results per batch", "Controls request size, independent of thumbnail size.", "select", ["50", "100", "200"])}${setting("metadata-auto", "Load metadata on selection", "Use the same inspector in the gallery and image viewer.")}${setting("metadata-cache", "Cache metadata in this browser", "Reuse fetched metadata until it changes or you clear this cache.")}${setting("image-quality", "Image loading quality", "Preserve original / optimized / fast image-loading preferences.", "select", ["Optimized", "Original", "Fast"])}${setting("video-auto", "Autoplay videos", "Videos stay within the same gallery and use native playback controls.")}${setting("video-muted", "Mute videos by default", "Keep playback quiet while browsing.")}${setting("video-loop", "Loop videos", "Repeat a selected clip until you navigate away.")}${setting("paths", "Show file paths", "Paths appear under File & provenance, not across every card.")}${setting("open-mode", "Open from ComfyUI", "Keep the node pack’s popup / new-tab preference.", "select", ["New tab", "Popup window"])}${setting("timeout", "Node search auto-hide (seconds)", "Node search behavior only. Use 0 to keep results visible.", "number", [30])}</section>`;
       break;
     case "sources":
       body = `${state.notice ? `<div class="notice"><div><h2>Bring older images into your prompt history</h2><p>The schema upgrades automatically. An optional metadata scan links existing positives and negatives without regenerating all thumbnails.</p></div><div class="row-actions">${button("Later", "dismiss-notice")}${button("Review scan", "scan-review", "", "ca-primary")}</div></div>` : ""}<section class="surface"><div class="panel-heading"><h2>Image sources</h2>${button("+ Add source", "add-source")}</div><p>The same folders power browsing, monitoring and metadata enrichment.</p><div id="source-list">${operation("ComfyUI output", "/ComfyUI/output · watching · sample path", "scan-review", "Scan changes")}${operation("Archive", "/images/archive · manual scan · sample path", "scan-review", "Scan folder")}</div>${setting("monitoring", "Watch for new outputs", "New files enter the same library. Existing scans do not count as new runs.")}${setting("workers", "Worker threads", "Balance background scans and thumbnail work against generation.", "range", [4])}${operation("Enrich existing metadata", "Resolve both prompts, deduplicate recipes, preserve uncertain links.", "scan-review", "Review scan")}${operation("Thumbnail generation", "Generate missing previews; rebuilding all is a separate explicit option.", "thumbnail-review", "Review options")}</section>`;
@@ -569,7 +643,7 @@ function hydrateSwitches() {
   }
 }
 function renderTags() {
-  const tags = [...new Set(prompts.flatMap((p) => p.tags))];
+  const tags = vocabulary();
   $("main").innerHTML =
     heading(
       "Tags & categories",
@@ -577,7 +651,7 @@ function renderTags() {
       button("+ Create tag", "new-tag") +
         button("Auto-tag images", "tag-review", "", "ca-primary"),
     ) +
-    `<div class="two-col"><section class="surface"><h2>Tag vocabulary</h2><p>Category/tag autocomplete uses this same vocabulary across nodes and dialogs.</p><div class="table-wrap"><table><caption>Reusable tags</caption><thead><tr><th scope="col">Tag</th><th scope="col">Prompts</th><th scope="col">Actions</th></tr></thead><tbody>${tags.map((t) => `<tr><td>${esc(t)}</td><td>${prompts.filter((p) => p.tags.includes(t)).length}</td><td><div class="row-actions">${button("Browse", "tag-filter", `data-value="${t}"`)}${button("Rename / merge", "rename-tag", `data-value="${t}"`)}</div></td></tr>`).join("")}</tbody></table></div></section><section class="surface"><h2>Categories</h2><p>Categories provide a broad home. Tags describe content; proposed collections group projects without changing either.</p>${[...new Set(prompts.map((p) => p.category))].map((c) => operation(c, `${prompts.filter((p) => p.category === c).length} positive prompts`, "category-filter", "Browse", `data-value="${c}"`)).join("")}${operation("Manage category", "Rename or consolidate a category with a preview of affected recipes.", "manage-category", "Review")}</section></div>`;
+    `<div class="two-col"><section class="surface"><h2>Tag vocabulary</h2><p>Category/tag autocomplete uses this same vocabulary across nodes and dialogs.</p><div class="table-wrap"><table><caption>Reusable tags</caption><thead><tr><th scope="col">Tag</th><th scope="col">Prompts</th><th scope="col">Images</th><th scope="col">Actions</th></tr></thead><tbody>${tags.map((t) => `<tr><td>${esc(t)}</td><td>${prompts.filter((p) => p.tags.includes(t)).length}</td><td>${images.filter((i) => i.tags.includes(t)).length}</td><td><div class="row-actions">${button("Browse", "tag-filter", `data-value="${esc(t)}"`)}${button("Rename / merge", "rename-tag", `data-value="${esc(t)}"`)}</div></td></tr>`).join("")}</tbody></table></div></section><section class="surface"><h2>Categories</h2><p>Categories provide a broad home. Tags describe content; proposed collections group projects without changing either.</p>${[...new Set(prompts.map((p) => p.category))].map((c) => operation(c, `${prompts.filter((p) => p.category === c).length} positive prompts`, "category-filter", "Browse", `data-value="${c}"`)).join("")}${operation("Manage category", "Rename or consolidate a category with a preview of affected recipes.", "manage-category", "Review")}</section></div>`;
 }
 function renderActivity() {
   nav();
@@ -599,13 +673,15 @@ function renderMetadata() {
     `<section class="surface"><h2>Inspect without importing</h2><p>Keep the existing local-file inspection workflow. Only add the file to your library when you choose to import it.</p><div class="file-drop spaced-20">${icon("upload")}<label for="local-file">Choose an image for a local preview</label><input id="local-file" type="file" accept="image/png,image/jpeg,image/webp"><span class="small">This mock previews your file locally. Sample metadata is available with “Open sample metadata”.</span></div><div id="local-preview"></div></section>`;
 }
 function renderReview() {
+  const target = image(state.reviewImage),
+    p = prompt(target.prompt);
   $("main").innerHTML =
     heading(
       "Metadata review",
       "Uncertain evidence stays visible until you decide.",
       button("Open activity", "go-activity"),
     ) +
-    `<div class="notice"><div><h2>3 images need a decision</h2><p>Multiple sampler paths were found. The existing image links were preserved. Choose the correct context or leave them unresolved.</p></div><span class="chip">Sample review queue</span></div><div class="gallery-layout"><div class="image-grid">${images.slice(0, 3).map(mediaCard).join("")}</div><section class="surface"><h2>Resolve the sample association</h2><div class="field"><label for="review-context">Sampler context</label><select id="review-context"><option>Sampler 12 · alpine positive / quality baseline</option><option>Sampler 28 · alpine positive / clean architecture</option><option>Leave unresolved</option></select></div>${promptBlock(prompts[0], "positive")}${promptBlock(prompts[0], "negative")}<div class="dialog-actions">${button("Leave for later", "go-images")}${button("Apply sample association", "resolve-review", "", "ca-primary")}</div></section></div>`;
+    `<div class="notice"><div><h2>3 images need a decision</h2><p>Multiple sampler paths were found. The existing image links were preserved. Choose the correct context or leave them unresolved.</p></div><span class="chip">Sample review queue</span></div><div class="gallery-layout"><div class="image-grid">${images.slice(0, 3).map(mediaCard).join("")}</div><section class="surface"><h2>Resolve the sample association</h2><p class="small">${esc(target.filename)}</p><div class="row-actions spaced-15">${button(icon("tagImage") + " Tag image", "image-tag", `data-id="${target.id}"`)}</div><div class="field"><label for="review-context">Sampler context</label><select id="review-context">${p.negatives.map((n, index) => `<option>Sampler ${12 + index * 16} · ${esc(p.title)} / ${esc(n.name)}</option>`).join("")}<option>Leave unresolved</option></select></div>${promptBlock(p, "positive", target.variant)}${promptBlock(p, "negative", target.variant)}<div class="dialog-actions">${button("Leave for later", "go-images")}${button("Apply sample association", "resolve-review", "", "ca-primary")}</div></section></div>`;
 }
 const featureMap = [
   [
@@ -746,7 +822,7 @@ function openViewer(id) {
   viewer = null;
   $("viewer-stage").replaceChildren();
   const img = document.createElement("img");
-  img.src = art(p, viewImage.index);
+  img.src = art(p, viewImage.index, viewImage);
   img.alt = `${p.title}, illustrative generated image`;
   $("viewer-stage").append(img);
   if (!$("viewer-dialog").open) $("viewer-dialog").showModal();
@@ -815,7 +891,15 @@ function editor(p = null, negativeOnly = false, revision = false) {
         : p
           ? "Edit recipe metadata"
           : "New prompt",
-    `<form id="recipe-form"><p class="demo-note">Changes stay in the prototype. Existing recipe text would be immutable while referenced; text edits create a new recipe.</p>${!negativeOnly ? `<div class="field"><label for="recipe-title">Title</label><input id="recipe-title" required value="${esc(p?.title || "")}"></div><div class="field"><label for="recipe-positive">Positive prompt</label><textarea id="recipe-positive" required ${p && !revision ? "readonly" : ""}>${esc(p?.positive || "")}</textarea></div>` : ""}<div class="field"><label for="recipe-negative">${negativeOnly ? "Negative prompt" : "Negative prompt (optional)"}</label><textarea id="recipe-negative" ${p && !negativeOnly && !revision ? "readonly" : ""}>${esc(negativeOnly ? "" : p?.negatives[0]?.text || "")}</textarea></div>${!negativeOnly ? `<div class="two-col"><div class="field"><label for="recipe-category">Category</label><input id="recipe-category" value="${esc(p?.category || "")}" list="categories"></div><div class="field"><label for="recipe-tags">Tags, separated by commas</label><input id="recipe-tags" value="${esc(p?.tags.join(", ") || "")}" list="tag-options"></div></div><datalist id="categories">${[...new Set(prompts.map((item) => item.category))].map((c) => `<option value="${esc(c)}"></option>`).join("")}</datalist><datalist id="tag-options">${[...new Set(prompts.flatMap((item) => item.tags))].map((c) => `<option value="${esc(c)},"></option>`).join("")}</datalist><div class="field"><label for="recipe-rating">Rating</label><select id="recipe-rating">${[5, 4, 3, 2, 1, 0].map((n) => `<option value="${n}" ${(p?.rating ?? 0) === n ? "selected" : ""}>${n ? `${n} / 5` : "Unrated"}</option>`).join("")}</select></div><div class="field"><label for="recipe-notes">Notes</label><textarea id="recipe-notes">${esc(p?.notes || "")}</textarea></div>` : '<p class="small">Leave empty for an explicitly empty negative. The positive stays unchanged.</p>'}<div class="dialog-actions">${p && !negativeOnly && !revision ? button("Create text revision", "revise-prompt", `data-prompt="${p.id}"`) + button("Archive…", "archive-prompt", `data-prompt="${p.id}"`, "danger") : ""}${button("Cancel", "close-dialog")}<button type="submit" class="ca-primary">Save in prototype</button></div></form>`,
+    `<form id="recipe-form"><p class="demo-note">Changes stay in the prototype. Existing recipe text would be immutable while referenced; text edits create a new recipe.</p>${!negativeOnly ? `<div class="field"><label for="recipe-title">Title</label><input id="recipe-title" required value="${esc(p?.title || "")}"></div><div class="field"><label for="recipe-positive">Positive prompt</label><textarea id="recipe-positive" required ${p && !revision ? "readonly" : ""}>${esc(p?.positive || "")}</textarea></div>` : ""}<div class="field"><label for="recipe-negative">${negativeOnly ? "Negative prompt" : "Negative prompt (optional)"}</label><textarea id="recipe-negative" ${p && !negativeOnly && !revision ? "readonly" : ""}>${esc(negativeOnly ? "" : p?.negatives[0]?.text || "")}</textarea></div>${
+      !negativeOnly
+        ? `<div class="two-col"><div class="field"><label for="recipe-category">Category</label><input id="recipe-category" value="${esc(p?.category || "")}" list="categories"></div><div class="field"><label for="recipe-tags">Tags, separated by commas</label><input id="recipe-tags" value="${esc(p?.tags.join(", ") || "")}" list="tag-options"></div></div><datalist id="categories">${[...new Set(prompts.map((item) => item.category))].map((c) => `<option value="${esc(c)}"></option>`).join("")}</datalist><datalist id="tag-options">${vocabulary()
+            .map((c) => `<option value="${esc(c)},"></option>`)
+            .join(
+              "",
+            )}</datalist><div class="field"><label for="recipe-rating">Rating</label><select id="recipe-rating">${[5, 4, 3, 2, 1, 0].map((n) => `<option value="${n}" ${(p?.rating ?? 0) === n ? "selected" : ""}>${n ? `${n} / 5` : "Unrated"}</option>`).join("")}</select></div><div class="field"><label for="recipe-notes">Notes</label><textarea id="recipe-notes">${esc(p?.notes || "")}</textarea></div>`
+        : '<p class="small">Leave empty for an explicitly empty negative. The positive stays unchanged.</p>'
+    }<div class="dialog-actions">${p && !negativeOnly && !revision ? button("Create text revision", "revise-prompt", `data-prompt="${p.id}"`) + button("Archive…", "archive-prompt", `data-prompt="${p.id}"`, "danger") : ""}${button("Cancel", "close-dialog")}<button type="submit" class="ca-primary">Save in prototype</button></div></form>`,
   );
   $("recipe-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -870,23 +954,112 @@ function editor(p = null, negativeOnly = false, revision = false) {
     notify("Saved in this prototype tab.");
   });
 }
-function tagReview() {
+const taggingModels = [
+  ["wd14-swinv2", "WD14 SwinV2 · fast classifier"],
+  ["wd14-vit", "WD14 ViT · visual tags"],
+  ["ollama", "Ollama · local language model"],
+  ["huggingface", "HuggingFace · language model"],
+];
+function tagReview(id = state.selectedImage) {
+  const target = image(id),
+    p = prompt(target.prompt);
+  tagSession = { imageId: target.id, source: state.page, model: "wd14-swinv2" };
   dialog(
-    "Review suggested tags",
-    `<p class="demo-note">Illustrative suggestions · no tagging model is running.</p><p class="small">Review before merging with the existing vocabulary.</p><img src="${art(prompts[0])}" width="800" height="600" alt="Sample alpine observatory" class="sample-preview"><div class="tags">${[
-      ["mountain", 0.98],
-      ["architecture", 0.93],
-      ["blue_hour", 0.87],
-      ["snow", 0.81],
-    ]
-      .map(
-        ([t, c]) =>
-          `<label class="chip"><input type="checkbox" data-tag-suggestion="${t}" checked> ${t} · ${c}</label>`,
-      )
-      .join(
-        "",
-      )}</div><div class="dialog-actions">${button("Skip image", "skip-tag-review")}${button("Apply selected sample tags", "apply-tags", "", "ca-primary")}</div>`,
+    "Tag image",
+    `
+    <p class="demo-note">Prototype · suggestions are simulated. No model is downloaded or run.</p>
+    <div class="tag-image-heading"><img src="${art(p, target.index, target)}" width="${target.width}" height="${target.height}" alt="${esc(p.title)}" class="tag-image-preview"><div><h3>${esc(p.title)}</h3><p class="small">${esc(target.filename)}</p><span class="chip">${target.width} × ${target.height}</span></div></div>
+    ${state.page === "review" ? '<p class="tag-scope-note small">Tags belong to this image. Resolve its prompt association separately in Needs review.</p>' : ""}
+    <div class="field"><label for="manual-image-tags">Image tags · edit manually</label><input id="manual-image-tags" value="${esc(target.tags.join(", "))}" aria-describedby="manual-tags-help"><p id="manual-tags-help" class="small">Comma-separated. Generated suggestions are added only after you approve them.</p></div>
+    <div class="tag-model-panel"><h3>Auto-tag this image</h3><div class="field"><label for="image-tag-model">Tagging model</label><select id="image-tag-model">${taggingModels.map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select></div><div id="image-tag-model-options"></div>${button(icon("tagImage") + " Generate suggestions", "generate-tags", "", "ca-primary")}</div>
+    <section class="tag-suggestion-panel" aria-labelledby="tag-suggestions-title"><div class="panel-heading"><h3 id="tag-suggestions-title">Review suggestions</h3><span class="small" id="suggestion-count">Not generated</span></div><div id="tag-suggestions"><p class="small">Choose a model, then generate tags. Uncheck anything you do not want to add.</p></div><div id="tag-generation-status" role="status" class="small"></div></section>
+    <div class="dialog-actions">${button("Cancel", "close-dialog")}${button("Save manual tags", "apply-tags", "", "ca-primary")}</div>
+  `,
   );
+  $("modal").classList.add("tagging-modal");
+  renderTagModelOptions();
+}
+function renderTagModelOptions() {
+  const model = $("image-tag-model").value;
+  tagSession.model = model;
+  $("image-tag-model-options").innerHTML = model.startsWith("wd14")
+    ? '<div class="two-col"><div class="field"><label for="image-general-threshold">General confidence</label><input id="image-general-threshold" type="number" min="0" max="1" step="0.05" value="0.35"></div><div class="field"><label for="image-character-threshold">Character confidence</label><input id="image-character-threshold" type="number" min="0" max="1" step="0.05" value="0.85"></div></div>'
+    : '<div class="field"><label for="image-tag-instructions">Tagging instructions</label><textarea id="image-tag-instructions">Describe the visible subject, setting, composition and lighting as comma-separated tags.</textarea></div>';
+  $("tag-suggestions").innerHTML =
+    '<p class="small">Generate suggestions with the selected model before approving.</p>';
+  $("suggestion-count").textContent = "Not generated";
+  $("tag-generation-status").textContent = "";
+  $("modal-body").querySelector('[data-action="apply-tags"]').textContent =
+    "Save manual tags";
+}
+function generateTags() {
+  const target = image(tagSession.imageId),
+    p = prompt(target.prompt);
+  const suggestions = {
+    alpine: [
+      ["mountain", 0.98],
+      ["observatory", 0.95],
+      ["snow", 0.88],
+      ["blue_hour", 0.81],
+    ],
+    desert: [
+      ["sandstone", 0.98],
+      ["desert", 0.96],
+      ["pavilion", 0.88],
+      ["warm_light", 0.81],
+    ],
+    forest: [
+      ["forest", 0.98],
+      ["cabin", 0.94],
+      ["lake", 0.87],
+      ["mist", 0.81],
+    ],
+    city: [
+      ["city", 0.98],
+      ["neon", 0.95],
+      ["rain", 0.87],
+      ["night", 0.81],
+    ],
+    lunar: [
+      ["moon", 0.98],
+      ["space", 0.95],
+      ["outpost", 0.88],
+      ["planet", 0.81],
+    ],
+    coast: [
+      ["lighthouse", 0.98],
+      ["coast", 0.95],
+      ["sea", 0.89],
+      ["cliff", 0.81],
+    ],
+  }[p.scene];
+  const classifier = tagSession.model.startsWith("wd14");
+  const threshold = classifier ? Number($("image-general-threshold").value) : 0;
+  if (
+    classifier &&
+    !["image-general-threshold", "image-character-threshold"].every((id) =>
+      $(id).checkValidity(),
+    )
+  ) {
+    ["image-general-threshold", "image-character-threshold"].find(
+      (id) => !$(id).reportValidity(),
+    );
+    return;
+  }
+  const shown = suggestions.filter(([, confidence]) => confidence >= threshold);
+  $("tag-suggestions").innerHTML = shown.length
+    ? shown
+        .map(
+          ([tag, confidence], index) =>
+            `<label class="tag-suggestion" for="suggestion-${index}"><input id="suggestion-${index}" type="checkbox" data-tag-suggestion="${tag}" checked><span>${tag}</span><span class="tag-confidence">${classifier ? Math.round(confidence * 100) + "%" : "Suggested"}</span></label>`,
+        )
+        .join("")
+    : '<p class="small">No suggestions met this threshold. Adjust it or enter tags manually.</p>';
+  $("suggestion-count").textContent = `${shown.length} suggestions`;
+  $("tag-generation-status").textContent =
+    `Sample suggestions from ${taggingModels.find(([id]) => id === tagSession.model)[1]}. Approve tags to save.`;
+  $("modal-body").querySelector('[data-action="apply-tags"]').textContent =
+    "Approve selected tags";
 }
 function simpleInput(title, label, action, value = "") {
   dialog(
@@ -921,6 +1094,7 @@ function navigate(event) {
   if (event) $("page-title")?.focus();
 }
 function render() {
+  stopMasonry();
   nav();
   const page = state.page;
   $("breadcrumb").textContent =
@@ -993,8 +1167,13 @@ const actions = {
   "metadata-demo": () => openViewer(images[0].id),
   inspect: (b) => {
     state.selectedImage = b.dataset.id;
-    updateImages();
+    if (state.page === "review") {
+      state.reviewImage = b.dataset.id;
+      renderReview();
+    } else if ($("image-inspector")) updateImages();
+    else openViewer(b.dataset.id);
   },
+  "image-tag": (b) => tagReview(b.dataset.id),
   favorite: (b) => {
     const i = image(b.dataset.id);
     i.starred = !i.starred;
@@ -1253,19 +1432,42 @@ const actions = {
       `Demo source “${path}” reviewed. No filesystem access was requested.`,
     );
   },
-  "tag-review": tagReview,
+  "tag-review": () => tagReview(state.selectedImage),
+  "generate-tags": generateTags,
   "skip-tag-review": () => {
     closeDialog();
     notify("Sample suggestions skipped.");
   },
   "apply-tags": () => {
-    const selected = [
+    if (!tagSession) return;
+    const target = image(tagSession.imageId);
+    const manual = $("manual-image-tags")
+      .value.split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    const approved = [
       ...document.querySelectorAll("[data-tag-suggestion]:checked"),
-    ].map((i) => i.dataset.tagSuggestion);
-    prompts[0].tags = [...new Set([...prompts[0].tags, ...selected])];
+    ].map((input) => input.dataset.tagSuggestion);
+    const merged = new Map(
+      [...manual, ...approved].map((t) => [t.toLowerCase(), t]),
+    );
+    target.tags = [...merged.values()];
+    const source = tagSession.source;
     closeDialog();
-    notify(`${selected.length} sample tags merged in this tab.`);
+    nav();
     if (state.page === "tags") renderTags();
+    else if (state.page === "review") renderReview();
+    else if ($("image-inspector")) updateImages();
+    if ($("viewer-dialog").open && viewImage?.id === target.id)
+      $("viewer-details").innerHTML = imageDetails(target, true);
+    const trigger =
+      document.querySelector(
+        `[data-action="image-tag"][data-id="${target.id}"]`,
+      ) || document.querySelector('[data-action="tag-review"]');
+    trigger?.focus();
+    notify(
+      `${target.tags.length} tags saved for ${target.filename} in this tab.${source === "review" ? " Prompt association still awaits review." : ""}`,
+    );
   },
   "new-tag": () => simpleInput("Create tag", "Tag name", "new-tag-confirm"),
   "new-tag-confirm": () => {
@@ -1291,6 +1493,12 @@ const actions = {
       (p) =>
         (p.tags = [
           ...new Set(p.tags.map((t) => (t === state.renameTag ? tag : t))),
+        ]),
+    );
+    images.forEach(
+      (i) =>
+        (i.tags = [
+          ...new Set(i.tags.map((t) => (t === state.renameTag ? tag : t))),
         ]),
     );
     closeDialog();
@@ -1368,7 +1576,7 @@ const actions = {
     exportSample(
       "sample-illustration.svg",
       decodeURIComponent(
-        art(prompt(viewImage.prompt), viewImage.index).split(",")[1],
+        art(prompt(viewImage.prompt), viewImage.index, viewImage).split(",")[1],
       ),
       "image/svg+xml",
     ),
@@ -1396,6 +1604,7 @@ scope.listen(document, "input", (event) => {
 });
 scope.listen(document, "change", (event) => {
   const target = event.target;
+  if (target.id === "image-tag-model") renderTagModelOptions();
   if (target.id === "category-filter") {
     state.category = target.value;
     if (state.page === "library") renderLibrary();
@@ -1478,6 +1687,7 @@ scope.listen($("theme"), "change", setTheme);
 scope.listen(matchMedia("(prefers-color-scheme: dark)"), "change", setTheme);
 scope.listen(window, "hashchange", navigate);
 scope.listen(window, "pagehide", () => {
+  stopMasonry();
   viewer?.destroy();
   clearInterval(slideTimer);
   clearTimeout(toastTimer);
