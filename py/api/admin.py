@@ -1506,6 +1506,7 @@ class AdminRoutesMixin:
                 try:
                     canonical[key] = json.loads(canonical[key])
                 except (ValueError, TypeError):
+                    # Preserve malformed metadata for conservative resolver rejection.
                     pass
         if not canonical.get("prompt") and not canonical.get("parameters"):
             return None

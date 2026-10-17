@@ -40,6 +40,7 @@ if __name__ == "__main__":
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        # Ctrl+C exits normally; the finally block closes the listening socket.
         pass
     finally:
         server.server_close()

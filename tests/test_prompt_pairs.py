@@ -253,13 +253,15 @@ class TestPromptPairs(unittest.TestCase):
 
     def test_connection_helpers_leave_commit_and_rollback_to_the_caller(self):
         conn = self.db.model.get_connection()
-        with self.assertRaisesRegex(RuntimeError, "rollback"):
+
+        def rollback_transaction():
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
                 self.db._save_pair(conn, "transient", "temporary", tags=["tag"])
-                with self.assertRaisesRegex(RuntimeError, "own transaction"):
-                    self.save()
+                self.assertRaisesRegex(RuntimeError, "own transaction", self.save)
                 raise RuntimeError("rollback")
+
+        self.assertRaisesRegex(RuntimeError, "rollback", rollback_transaction)
         self.assertEqual(self.db.list_prompt_pairs()["total"], 0)
         self.assertEqual(self.db.search_prompts(), [])
 
