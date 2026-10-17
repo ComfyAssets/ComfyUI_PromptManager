@@ -145,6 +145,13 @@ def create_app(root: Path) -> web.Application:
         await api._run_in_executor(seed, extra, include_video)
         return web.json_response({"success": True})
 
+    @routes.post("/__test__/add-nested-image")
+    async def add_nested_image(request: web.Request) -> web.Response:
+        destination = root / "output" / "project" / "day" / "new-output.png"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / "output" / "shared" / "same.png", destination)
+        return web.json_response({"success": True})
+
     @routes.get("/api/settings/Comfy.ColorPalette")
     async def palette(request: web.Request) -> web.Response:
         return web.json_response("dark")

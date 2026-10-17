@@ -433,3 +433,50 @@ test('refresh releases the previous inspector video source', async ({ page, requ
     await expect.poll(() => page.evaluate(() => !window.__oldInspectorVideo.isConnected)).toBe(true);
     expect(await page.evaluate(() => window.__oldInspectorVideo.getAttribute('src'))).toBeNull();
 });
+
+test('Refresh rescans cached files and preserves the collection when rescan fails', async ({ page, request }) => {
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    await expect(await request.post('/__test__/add-nested-image')).toBeOK();
+    await page.route('**/prompt_manager/gallery/rescan', route => route.fulfill({
+        status: 503, json: { success: false, error: 'Rescan unavailable' },
+    }), { times: 1 });
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('could not be refreshed');
+    await expect(cards(page)).toHaveCount(2);
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await expect(cards(page)).toHaveCount(3);
+    await expect(cards(page).filter({ hasText: 'new-output.png' })).toHaveCount(1);
+    await expect(page.getByRole('alert')).toBeHidden();
+});
+
+test('folder discovery offers ancestors that filter nested images', async ({ page, request }) => {
+    await expect(await request.post('/__test__/add-nested-image')).toBeOK();
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(3);
+    const folder = page.getByRole('combobox', { name: 'Folder', exact: true });
+    await expect(folder.locator('option[value="project"]')).toHaveCount(1);
+    await folder.selectOption('project');
+    await expect(cards(page)).toHaveCount(1);
+    await expect(cards(page)).toContainText('new-output.png');
+});
+
+test('leaving during Refresh cancels it without replacing the next workspace', async ({ page }) => {
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    await page.route('**/prompt_manager/gallery/rescan', async route => {
+        await pending;
+        await route.fulfill({ json: { success: true } }).catch(() => {});
+    });
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    const requested = page.waitForRequest('**/prompt_manager/gallery/rescan');
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await requested;
+    await page.getByRole('navigation', { name: 'Workspace', exact: true })
+        .getByRole('link', { name: 'Overview', exact: true }).click();
+    await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    release();
+    await expect(page.getByRole('heading', { name: 'Continue creating', exact: true })).toBeVisible();
+    await expect(page.getByText('Images could not be refreshed. Try Refresh again.', { exact: true })).toHaveCount(0);
+});

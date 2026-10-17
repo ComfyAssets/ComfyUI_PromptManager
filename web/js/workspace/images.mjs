@@ -61,7 +61,24 @@ export function mountImages(main, api, parentScope) {
         layouts.append(button);
     }
     const refresh = createButton('Refresh');
-    scope.listen(refresh, 'click', () => { loadOptions(); reset(); });
+    scope.listen(refresh, 'click', async () => {
+        if (refresh.disabled) return;
+        refresh.disabled = true;
+        optionsRequest?.abort(); optionsRequest = null;
+        optionsStatus.hidden = true;
+        try {
+            await api.post('/prompt_manager/gallery/rescan', {}, {signal:scope.signal});
+            if (scope.signal.aborted) return;
+            await loadOptions();
+            if (!scope.signal.aborted) reset();
+        } catch {
+            if (scope.signal.aborted) return;
+            optionsStatus.textContent = 'Images could not be refreshed. Try Refresh again.';
+            optionsStatus.hidden = false;
+        } finally {
+            refresh.disabled = false;
+        }
+    });
     const currentGallery = el('a', 'Current gallery', 'workspace-link');
     currentGallery.href = resolveUrl('/prompt_manager/gallery');
     toolbar.append(count, layouts, refresh, currentGallery);
@@ -307,7 +324,7 @@ export function mountImages(main, api, parentScope) {
         optionsRequest?.abort();
         const request = new AbortController(); optionsRequest = request;
         try {
-            const params = new URLSearchParams({mode:'workspace'});
+            const params = new URLSearchParams({mode:'workspace', include_ancestors:'true'});
             if (filters.root !== 'all') params.set('root', filters.root);
             const data = await api.get(`/prompt_manager/gallery/subfolders?${params}`, {signal:request.signal});
             if (scope.signal.aborted || request !== optionsRequest) return;
