@@ -47,3 +47,17 @@ test('router normalizes unknown routes, avoids duplicate renders, and disposes i
     win.dispatchEvent(new Event('hashchange'));
     assert.deepEqual(seen, ['images', 'library']);
 });
+
+test('positive library deep links preserve the selected identity without duplicate route renders', async () => {
+    const {resolveRoute,mountRouter}=await source;
+    assert.equal(resolveRoute('#/library/12').positiveId,12);
+    for(const hash of ['#/library/0','#/library/-1','#/library/1.5','#/library/9007199254740992','#/library/1/extra']) assert.equal(resolveRoute(hash).id,'images');
+    const win=new EventTarget();win.location={hash:'#/library/12'};
+    win.history={state:null,replaceState(state,unused,hash){win.location.hash=hash;}};
+    const seen=[];const dispose=mountRouter(win,route=>seen.push([route.id,route.positiveId]));
+    assert.equal(win.location.hash,'#/library/12');
+    win.dispatchEvent(new Event('hashchange'));assert.equal(seen.length,1);
+    win.location.hash='#/library/13';win.dispatchEvent(new Event('hashchange'));
+    win.location.hash='#/library';win.dispatchEvent(new Event('hashchange'));
+    assert.deepEqual(seen,[['library',12],['library',13],['library',undefined]]);dispose();
+});

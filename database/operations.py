@@ -10,6 +10,7 @@ from typing import Optional, List, Dict, Any
 
 from .models import PromptModel, normalize_image_path, utc_now_iso
 from .pairs import PairDependencyError, PairOperations
+from .library import LibraryOperations
 
 # Import logging system
 try:
@@ -147,7 +148,7 @@ def _coerce_file_info(metadata: Any) -> tuple:
     )
 
 
-class PromptDatabase(PairOperations):
+class PromptDatabase(PairOperations, LibraryOperations):
     """Database operations class for managing prompts."""
 
     def __init__(self, db_path: Optional[str] = None):

@@ -13,6 +13,10 @@ export const routes = [
 ];
 
 export function resolveRoute(hash) {
+    const match = /^#\/library\/([1-9]\d*)$/.exec(hash);
+    if (match && Number.isSafeInteger(Number(match[1]))) {
+        return {...routes.find(route => route.id === 'library'), positiveId:Number(match[1]), hash};
+    }
     return routes.find(route => hash === `#/${route.id}`) || routes[0];
 }
 
@@ -29,9 +33,9 @@ export function mountRouter(win, onRoute) {
     let current;
     const update = () => {
         const route = resolveRoute(win.location.hash);
-        const hash = `#/${route.id}`;
+        const hash = route.hash || `#/${route.id}`;
         if (win.location.hash !== hash) win.history.replaceState(win.history.state, '', hash);
-        if (current === route) return;
+        if (current?.id === route.id && current?.positiveId === route.positiveId) return;
         current = route;
         onRoute(route);
     };

@@ -202,5 +202,17 @@
     "branches": 89,
     "functions": 98,
     "statements": 98
+  },
+  "workspace/library-state.mjs": {
+    "lines": 98,
+    "branches": 94,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/library.mjs": {
+    "lines": 94,
+    "branches": 80,
+    "functions": 93,
+    "statements": 94
   }
 }

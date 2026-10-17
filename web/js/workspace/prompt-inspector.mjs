@@ -29,6 +29,7 @@ export function createInspectionLoader(api, onChange) {
 }
 
 const sources = {
+    library: 'Saved library prompt',
     execution: 'Recorded at execution',
     'graph-inferred': 'Inferred from the saved workflow',
     'embedded-parameters': 'Embedded generation parameters',
@@ -46,14 +47,18 @@ function el(tag, text, className) {
     return node;
 }
 
-export function mountPromptInspector(container, {api, image, sender, parentScope}) {
+function childScope(parentScope) {
     const scope = createScope();
     const dispose = () => scope.dispose();
     parentScope.signal.addEventListener('abort', dispose, {once:true});
     scope.cleanup(() => parentScope.signal.removeEventListener('abort', dispose));
+    if (parentScope.signal.aborted) scope.dispose();
+    return scope;
+}
+
+export function mountPromptBlocks(container, {prompts, sender, parentScope, roles:visibleRoles = ['positive', 'negative'], onRetry}) {
+    const scope = childScope(parentScope);
     container.classList.add('prompt-inspector');
-    const loader = createInspectionLoader(api, render);
-    scope.cleanup(() => loader.dispose());
     scope.listen(container, 'click', async event => {
         const send = event.target.closest('[data-send-role]');
         if (send) {
@@ -71,25 +76,26 @@ export function mountPromptInspector(container, {api, image, sender, parentScope
                 if (!scope.signal.aborted) status.textContent = 'Copy unavailable. Select the prompt text to copy it.';
             }
         }
-        if (event.target.closest('[data-retry-prompts]')) loader.load(image);
+        if (event.target.closest('[data-retry-prompts]')) onRetry?.();
     });
     let roles = {};
     function render(state) {
+        if (scope.signal.aborted) return;
         roles = {};
         container.replaceChildren();
         if (state.loading || state.error) {
             const status = el('p', state.loading ? 'Loading prompts…' : 'Could not read prompts from this file.', 'muted');
             status.setAttribute('role', state.error ? 'alert' : 'status');
             container.append(status);
-            if (state.error) {
+            if (state.error && onRetry) {
                 const retry = createButton('Retry prompt details');
                 retry.dataset.retryPrompts = '';
                 container.append(retry);
             }
             return;
         }
-        roles = promptRoles(state.prompts);
-        for (const role of ['positive', 'negative']) {
+        roles = Object.fromEntries(Object.entries(promptRoles(state.prompts)).filter(([role]) => visibleRoles.includes(role)));
+        for (const role of visibleRoles) {
             const title = `${role[0].toUpperCase() + role.slice(1)} prompt`;
             const record = state.prompts?.[role];
             const block = el('section', undefined, `prompt-block prompt-${role}`);
@@ -119,6 +125,16 @@ export function mountPromptInspector(container, {api, image, sender, parentScope
             container.append(pair);
         }
     }
-    loader.load(image);
+    render({prompts});
+    return {update:prompts => render({prompts}), setState:render, dispose:() => scope.dispose()};
+}
+
+export function mountPromptInspector(container, {api, image, sender, parentScope}) {
+    const scope = childScope(parentScope);
+    let loader;
+    const blocks = mountPromptBlocks(container, {sender, parentScope:scope, onRetry:() => loader.load(image)});
+    loader = createInspectionLoader(api, blocks.setState);
+    scope.cleanup(() => loader.dispose());
+    if (!scope.signal.aborted) loader.load(image);
     return {dispose:() => scope.dispose()};
 }
