@@ -2,7 +2,7 @@
 
 import logging
 import unittest
-from unittest import mock
+import unittest.mock
 
 from prompt_manager import PromptManagerFocused, PromptManagerSplit
 
@@ -28,10 +28,10 @@ class TestSplitNode(unittest.TestCase):
     def test_split_encodes_composition_and_persists_main_text_with_metadata(self):
         node = PromptManagerSplit.__new__(PromptManagerSplit)
         node.logger = logging.getLogger("test.split")
-        node.comfyui_integration = mock.Mock()
+        node.comfyui_integration = unittest.mock.Mock()
         node._inject_lora_trigger_words = lambda text: text
-        node._track_prompt_execution = mock.Mock(return_value=42)
-        clip = mock.Mock()
+        node._track_prompt_execution = unittest.mock.Mock(return_value=42)
+        clip = unittest.mock.Mock()
         graph = {"1": {"class_type": "PromptManagerSplit", "inputs": {"text": "cat"}}}
         conditioning, text = node.encode_prompt(
             clip,
