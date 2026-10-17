@@ -28,8 +28,14 @@ test('workspace serves real library data beside either ComfyUI renderer', async 
         await expect(workspace.locator('#workspace-main h1')).toHaveText('Images');
         const images = await imageResponse;
         expect(images.ok()).toBe(true);
-        expect((await images.json()).success).toBe(true);
-        await expect(workspace.getByRole('list', { name: 'Image collection', exact: true })).toBeVisible();
+        const collection = await images.json();
+        expect(collection.success).toBe(true);
+        await expect(workspace.getByRole('list', { name: 'Image collection', exact: true })).toBeAttached();
+        if (collection.images.length) {
+            await expect(workspace.locator('article[data-image-key]').first()).toBeVisible();
+        } else {
+            await expect(workspace.getByText('No matching images or media. Try changing the filters.', { exact: true })).toBeVisible();
+        }
         await expect(workspace.locator('#workspace-main a[href="/prompt_manager/gallery"]')).toHaveAttribute('href', '/prompt_manager/gallery');
         await workspace.reload();
         await expect(workspace.locator('#workspace-main h1')).toHaveText('Images');
