@@ -4,6 +4,12 @@ The maintainer approved the [interactive concept](concepts/workspace/README.md)
 on 2026-10-17. It is a design reference with simulated operations, not production
 code. This plan proposes implementation order and acceptance gates.
 
+## Delivery status
+
+- Foundation merged in [#198](https://github.com/ComfyAssets/ComfyUI_PromptManager/pull/198).
+- [#200](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues/200) delivers native Images browsing, physical-file details, infinite scroll, Grid/List/Masonry, Viewer.js and video playback. The workspace opens on Images; original application entry points remain available.
+- Prompt metadata, role-aware sending, tagging/review, library/history and System consolidation remain subsequent slices under #196. The physical-file inspector does not display prompt text until the shared prompt inspector/send flow is implemented.
+
 ## Scope and compatibility
 
 Rebuild the standalone application around one shared shell. Preserve existing

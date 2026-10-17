@@ -7,19 +7,22 @@
     <title>Prompt Manager · Workspace</title>
     <link rel="stylesheet" href="js/shared/toolkit/controls.css">
     <link rel="stylesheet" href="js/workspace/style.css">
+    <link rel="stylesheet" href="lib/viewerjs/viewer.min.css">
+    <link rel="stylesheet" href="js/workspace/images.css">
+    <script src="lib/viewerjs/viewer.min.js" defer></script>
     <script type="module" src="js/workspace/index.mjs"></script>
 </head>
 <body class="ca-tools">
     <a class="skip" href="#workspace-main">Skip to content</a>
     <div class="workspace-shell">
         <aside class="sidebar">
-            <a class="brand" href="#/overview"><span class="brand-mark" aria-hidden="true">P</span><span>Prompt Manager<small>ComfyAssets</small></span></a>
+            <a class="brand" href="#/overview"><span class="brand-mark" aria-hidden="true">P<small>±</small></span><span>Prompt Manager<small>ComfyAssets</small></span></a>
             <p class="eyebrow">Your workspace</p>
             <nav aria-label="Workspace"></nav>
             <div class="sidebar-footer"><span class="connection-dot" aria-hidden="true"></span> Your library, on your server</div>
         </aside>
         <div class="workspace-body">
-            <header class="topbar"><span>Prompt Manager <span class="muted">/ Workspace preview</span></span><div id="appearance-control"></div></header>
+            <header class="topbar"><span>ComfyAssets <span class="muted">/ <span id="workspace-breadcrumb">Images</span></span></span><div id="appearance-control"></div></header>
             <main id="workspace-main" tabindex="-1"></main>
             <footer class="page-footer">ComfyAssets <span>Local tools. Your library.</span></footer>
         </div>

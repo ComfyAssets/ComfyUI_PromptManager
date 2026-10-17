@@ -2,6 +2,7 @@ import '../api-client.js';
 import { createButton, createField, createScope, createSelect } from '../shared/toolkit/core.js';
 import { routes, mountRouter, summarizeStats } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
+import { mountImages } from './images.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
 
@@ -56,6 +57,11 @@ function mountWorkspace() {
         main.replaceChildren(element('p', 'YOUR CREATIVE LIBRARY', 'eyebrow'), heading);
         if (!firstRender) main.focus();
         firstRender = false;
+        document.getElementById('workspace-breadcrumb').textContent = route.label;
+        if (route.id === 'images') {
+            mountImages(main, api, view);
+            return;
+        }
         if (route.id !== 'overview') {
             main.append(element('p', route.description, 'intro'));
             const panel = element('section', undefined, 'panel handoff');

@@ -36,7 +36,7 @@ test('workspace starts with real persisted statistics without mutating data', as
     page.on('request', request => {
         if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method())) mutations.push(request.url());
     });
-    await page.goto(workspace);
+    await page.goto(`${workspace}#/overview`);
     await expect(page).toHaveTitle(/Prompt Manager/);
     await expect(page.getByRole('navigation', { name: 'Workspace', exact: true })).toBeVisible();
     const main = page.locator('#workspace-main');
@@ -67,7 +67,7 @@ test('all shell destinations deep-link, reload and expose working existing appli
 });
 
 test('keyboard navigation, browser history and unknown routes remain usable', async ({ page }) => {
-    await page.goto(workspace);
+    await page.goto(`${workspace}#/overview`);
     const navigation = page.getByRole('navigation', { name: 'Workspace', exact: true });
     const images = navigation.getByRole('link', { name: 'Images', exact: true });
     await images.focus();
@@ -80,8 +80,8 @@ test('keyboard navigation, browser history and unknown routes remain usable', as
     await page.goForward();
     await expect(page.locator('#workspace-main h1')).toHaveText('Prompt library');
     await page.goto(`${workspace}#/not-a-page`);
-    await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
-    await expect(navigation.getByRole('link', { name: 'Overview', exact: true }))
+    await expect(page.locator('#workspace-main h1')).toHaveText('Images');
+    await expect(navigation.getByRole('link', { name: 'Images', exact: true }))
         .toHaveAttribute('aria-current', 'page');
 });
 
@@ -97,7 +97,7 @@ test('skip to content focuses the current view without changing its route', asyn
 });
 
 test('returning to overview refreshes persisted counts without duplicating navigation', async ({ page, request }) => {
-    await page.goto(workspace);
+    await page.goto(`${workspace}#/overview`);
     const prompts = statistic(page, 'Prompts');
     await expect(prompts).toHaveText('2');
     const navigation = page.getByRole('navigation', { name: 'Workspace', exact: true });
@@ -111,7 +111,7 @@ test('returning to overview refreshes persisted counts without duplicating navig
 
 test('appearance follows ComfyUI and persists an explicit light or dark preference', async ({ page }) => {
     await page.route('**/api/settings/Comfy.ColorPalette', route => route.fulfill({ json: 'light' }));
-    await page.goto(workspace);
+    await page.goto(`${workspace}#/overview`);
     const theme = page.locator('[data-ca-theme]').first();
     await expect(theme).toHaveAttribute('data-ca-theme', 'light');
     const appearance = page.getByRole('combobox', { name: 'Appearance', exact: true });
@@ -129,7 +129,7 @@ test('appearance follows ComfyUI and persists an explicit light or dark preferen
 test('unavailable host palette falls back to system appearance and tracks system changes', async ({ page }) => {
     await page.route('**/api/settings/Comfy.ColorPalette', route => route.fulfill({ status: 503, json: {} }));
     await page.emulateMedia({ colorScheme: 'light' });
-    await page.goto(workspace);
+    await page.goto(`${workspace}#/overview`);
     const theme = page.locator('[data-ca-theme]').first();
     await expect(theme).toHaveAttribute('data-ca-theme', 'light');
     await page.emulateMedia({ colorScheme: 'dark' });
@@ -143,7 +143,7 @@ test('overview reports loading, offers retry after failure and renders real empt
         await pending;
         await route.fulfill({ status: 503, json: { success: false, error: 'Unavailable' } });
     });
-    await page.goto(workspace);
+    await page.goto(`${workspace}#/overview`);
     await expect(page.locator('#workspace-main').getByRole('status')).toBeVisible();
     release();
     await expect(page.locator('#workspace-main').getByRole('alert')).toBeVisible();
@@ -160,7 +160,7 @@ test('overview reports loading, offers retry after failure and renders real empt
 
 test('small screens keep navigation and appearance accessible without horizontal page overflow', async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
-    await page.goto(workspace);
+    await page.goto(`${workspace}#/overview`);
     const navigation = page.getByRole('navigation', { name: 'Workspace', exact: true });
     for (const [, label] of routes) {
         await navigation.getByRole('link', { name: label, exact: true }).click();
@@ -182,7 +182,7 @@ test('leaving a loading overview prevents its delayed result from replacing the 
         } }).catch(() => {});
         completed();
     });
-    await page.goto(workspace);
+    await page.goto(`${workspace}#/overview`);
     await expect(page.locator('#workspace-main').getByRole('status')).toBeVisible();
     await page.getByRole('navigation', { name: 'Workspace', exact: true })
         .getByRole('link', { name: 'Images', exact: true }).click();
@@ -199,7 +199,7 @@ test('cached-page restoration remounts one working shell and refreshes its data'
     page.on('request', request => {
         if (new URL(request.url()).pathname === '/prompt_manager/stats') reads++;
     });
-    await page.goto(workspace);
+    await page.goto(`${workspace}#/overview`);
     await expect(statistic(page, 'Prompts')).toHaveText('2');
     for (let restore = 0; restore < 2; restore++) {
         await page.evaluate(() => {

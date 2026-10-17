@@ -78,7 +78,7 @@ def create_app(root: Path) -> web.Application:
     api = PromptManagerAPI()
     api.add_routes(routes)
 
-    def seed(extra_images: int = 0) -> None:
+    def seed(extra_images: int = 0, include_video: bool = False) -> None:
         with api.db.model.get_connection() as conn:
             for table in (
                 "image_prompt_pairs",
@@ -114,25 +114,42 @@ def create_app(root: Path) -> web.Application:
             )
             api.db.link_image_to_prompt(pid, str(image_path))
             if index == 0:
+                video_prompt_id = pid
                 for number in range(extra_images):
                     extra = root / directory / "bulk" / f"{number:04}.png"
                     extra.parent.mkdir(exist_ok=True)
                     shutil.copyfile(image_path, extra)
                     api.db.link_image_to_prompt(pid, str(extra))
         api._generate_gallery_thumbnails_sync(api._get_all_output_dirs(), (150, 150))
+        if include_video:
+            # Seed after thumbnail generation to exercise a real unthumbnailed video.
+            video = root / "output" / "clip.webm"
+            shutil.copyfile(
+                Path(__file__).resolve().parents[1] / "fixtures" / "tiny.webm", video
+            )
+            api.db.link_image_to_prompt(video_prompt_id, str(video))
         api.invalidate_gallery_cache()
 
     @routes.post("/__test__/reset")
     async def reset(request: web.Request) -> web.Response:
         data = await request.json() if request.can_read_body else {}
         extra = data.get("extra_images", 0)
+        include_video = data.get("include_video", False)
         if (
             isinstance(extra, bool)
             or not isinstance(extra, int)
             or not 0 <= extra <= 200
+            or not isinstance(include_video, bool)
         ):
             raise web.HTTPBadRequest()
-        await api._run_in_executor(seed, extra)
+        await api._run_in_executor(seed, extra, include_video)
+        return web.json_response({"success": True})
+
+    @routes.post("/__test__/add-nested-image")
+    async def add_nested_image(request: web.Request) -> web.Response:
+        destination = root / "output" / "project" / "day" / "new-output.png"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / "output" / "shared" / "same.png", destination)
         return web.json_response({"success": True})
 
     @routes.get("/api/settings/Comfy.ColorPalette")

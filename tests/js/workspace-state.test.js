@@ -8,7 +8,7 @@ test('workspace routes resolve only supported deep links', async () => {
         assert.equal(resolveRoute(`#/${route}`).id, route);
     }
     for (const hash of ['', '#', '#/unknown', '#/images/other', '#/<script>']) {
-        assert.equal(resolveRoute(hash).id, 'overview');
+        assert.equal(resolveRoute(hash).id, 'images');
     }
 });
 
@@ -35,15 +35,15 @@ test('router normalizes unknown routes, avoids duplicate renders, and disposes i
     }};
     const seen = [];
     const dispose = mountRouter(win, route => seen.push(route.id));
-    assert.deepEqual(seen, ['overview']);
-    assert.deepEqual(replacements, [[{keep:1}, '#/overview']]);
-    win.location.hash = '#/images';
+    assert.deepEqual(seen, ['images']);
+    assert.deepEqual(replacements, [[{keep:1}, '#/images']]);
+    win.location.hash = '#/library';
     win.dispatchEvent(new Event('hashchange'));
     win.dispatchEvent(new Event('hashchange'));
-    assert.deepEqual(seen, ['overview', 'images']);
+    assert.deepEqual(seen, ['images', 'library']);
     dispose();
     dispose();
     win.location.hash = '#/system';
     win.dispatchEvent(new Event('hashchange'));
-    assert.deepEqual(seen, ['overview', 'images']);
+    assert.deepEqual(seen, ['images', 'library']);
 });

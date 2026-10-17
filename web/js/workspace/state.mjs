@@ -1,5 +1,4 @@
 export const routes = [
-    { id: 'overview', label: 'Overview' },
     { id: 'images', label: 'Images', href: '/prompt_manager/gallery',
         description: 'Browse your images, inspect their metadata and review generated tags.', action: 'Open existing image gallery' },
     { id: 'library', label: 'Prompt library', href: '/prompt_manager/admin',
@@ -8,6 +7,7 @@ export const routes = [
         description: 'Explore your vocabulary and find the prompts associated with each tag.', action: 'Open existing tag manager' },
     { id: 'inspect', label: 'Inspect a file', href: '/prompt_manager/gallery.html',
         description: 'Inspect generation metadata from an image or video file.', action: 'Open existing metadata inspector' },
+    { id: 'overview', label: 'Overview' },
     { id: 'system', label: 'System', href: '/prompt_manager/admin',
         description: 'Open the current dashboard, then choose Settings or Maintenance for configuration, scans, backups and diagnostics.', action: 'Open existing administration' },
 ];
