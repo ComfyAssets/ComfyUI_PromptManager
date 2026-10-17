@@ -22,6 +22,7 @@ from aiohttp import web
 from PIL import Image
 
 from .prompts import PromptRoutesMixin
+from .pairs import PairRoutesMixin
 from .images import ImageRoutesMixin
 from .admin import AdminRoutesMixin
 from .logging_routes import LoggingRoutesMixin
@@ -240,6 +241,7 @@ async def _gzip_middleware(request, handler):
 
 
 class PromptManagerAPI(
+    PairRoutesMixin,
     PromptRoutesMixin,
     ImageRoutesMixin,
     AdminRoutesMixin,
@@ -262,12 +264,12 @@ class PromptManagerAPI(
         db (PromptDatabase): Database connection and operations handler
     """
 
-    def __init__(self):
-        """Initialize the PromptManager API with database connection and cleanup."""
+    def __init__(self, db: PromptDatabase | None = None) -> None:
+        """Initialize the API, using an injected database before any cleanup."""
         self.logger = get_logger("prompt_manager.api")
         self.logger.info("Initializing PromptManager API")
 
-        self.db = PromptDatabase()
+        self.db = db if db is not None else PromptDatabase()
         self._cached_output_dir = None  # Lazy-cached by _find_comfyui_output_dir()
         self._html_cache = {}  # Cached HTML file contents keyed by path
         self._gallery_cache = {}  # dict: path_str -> (files, timestamp)
@@ -391,6 +393,7 @@ class PromptManagerAPI(
 
         # ── Register domain-specific routes from mixins ───────────────
 
+        self._register_pair_routes(routes)
         self._register_prompt_routes(routes)
         self._register_image_routes(routes)
         self._register_admin_routes(routes)

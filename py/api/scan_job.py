@@ -16,6 +16,7 @@ class ScanJob:
     def __init__(self):
         self.last_event = None
         self.finished = False
+        self.cancelled = False
         self.task = None
         self._subscribers = set()
 

@@ -2,7 +2,9 @@ import {createScope, createButton, createSwitch, createField} from './shared/too
 import {attachMetadataAutocomplete} from './metadata-autocomplete.js';
 let nextLibraryId = 0;
 
-export function createPromptLibrary({scope, api, settings, parseQuery, onUse, isConnected, onQuery, onFilters}) {
+export function createPromptLibrary({scope, api, settings, parseQuery, onUse, isConnected, onQuery, onFilters, mode = 'prompts'}) {
+    const pairs = mode === 'pairs';
+    const noun = pairs ? 'pair' : 'prompt';
     const element = document.createElement('section');
     element.className = 'pm-editor-library';
     element.setAttribute('aria-label', 'Prompt library');
@@ -18,18 +20,19 @@ export function createPromptLibrary({scope, api, settings, parseQuery, onUse, is
     const category = document.createElement('input'); category.type = 'text';
     const tags = document.createElement('input'); tags.type = 'text';
     filters.append(createField('Filter category',category,`${libraryId}-category`),createField('Filter tags',tags,`${libraryId}-tags`));
-    const hint = document.createElement('p'); hint.className = 'pm-editor-status'; hint.textContent = 'Search combines text, category and tags. Recent shows all recent prompts.';
+    const hint = document.createElement('p'); hint.className = 'pm-editor-status'; hint.textContent = `Search combines text, category and tags. Recent shows all recent ${noun}s.`;
     const completions = [category,tags].map((input,index) => attachMetadataAutocomplete(input, {
         scope,api,settings,multiple:index === 1,available:() => !element.hidden && input.getClientRects().length > 0,
     }));
-    const status = document.createElement('p'); status.className = 'pm-editor-status'; status.setAttribute('role', 'status'); status.textContent = 'Search or browse recent prompts.';
+    const status = document.createElement('p'); status.className = 'pm-editor-status'; status.setAttribute('role', 'status'); status.textContent = `Search or browse recent ${noun}s.`;
     const results = document.createElement('div'); results.className = 'pm-editor-results';
     const preview = document.createElement('section'); preview.className = 'pm-editor-selection'; preview.hidden = true;
     const previewText = document.createElement('p'); previewText.className = 'pm-editor-preview';
+    const previewNegative = document.createElement('p'); previewNegative.className = 'pm-editor-preview';
     const actions = document.createElement('div'); actions.className = 'pm-editor-row';
     const includeMetadata = createSwitch('Load metadata', '', `${libraryId}-load-metadata`);
-    const use = createButton('Use prompt', 'ca-primary'); use.disabled = true;
-    actions.append(includeMetadata, use); preview.append(previewText, actions);
+    const use = createButton(pairs ? 'Use pair' : 'Use prompt', 'ca-primary'); use.disabled = true;
+    actions.append(includeMetadata, use); preview.append(previewText); if (pairs) preview.append(previewNegative); preview.append(actions);
     element.append(heading, queryRow, filters, hint, status, results, preview);
     let selected = null;
     let request = null;
@@ -56,26 +59,33 @@ export function createPromptLibrary({scope, api, settings, parseQuery, onUse, is
         const params = new URLSearchParams(recentOnly ? {limit:'20', sort:'last_used_desc'} : {limit:'50'});
         if (!recentOnly) {
             if (text) params.set('text', text);
-            if (tagFilters.length) params.set('tags', tagFilters.join(','));
+            if (tagFilters.length) { if (pairs) tagFilters.forEach(tag => params.append('tag',tag)); else params.set('tags', tagFilters.join(',')); }
             if (categoryFilter) params.set('category', categoryFilter);
         }
-        status.textContent = 'Loading prompts…';
+        status.textContent = `Loading ${noun}s…`;
         try {
-            const response = await fetch(api.fileURL(`/prompt_manager/${recentOnly ? 'recent' : 'search'}?${params}`), {signal:request.signal});
+            const response = await fetch(api.fileURL(`/prompt_manager/${pairs ? 'pairs' : recentOnly ? 'recent' : 'search'}?${params}`), {signal:request.signal});
             if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             const data = await response.json();
             if (scope.signal.aborted || current !== sequence) return;
-            if (!data.success) throw new Error(data.error || 'Could not load prompts');
-            const found = data.results || [];
-            status.textContent = found.length ? `${found.length} ${found.length === 1 ? 'prompt' : 'prompts'}` : 'No matching prompts.';
+            if (!data.success) throw new Error(data.error || `Could not load ${noun}s`);
+            const found = (pairs ? data.pairs : data.results) || [];
+            status.textContent = found.length ? `${found.length} ${noun}${found.length === 1 ? '' : 's'}` : `No matching ${noun}s.`;
             found.forEach(item => {
                 const button = createButton('', 'pm-editor-result'); button.setAttribute('aria-pressed','false');
-                const text = document.createElement('span'); text.textContent = item.text;
+                const text = document.createElement('span'); text.textContent = pairs ? item.title || item.positive_text : item.text;
                 const metadata = document.createElement('span'); metadata.className = 'pm-editor-result-meta';
                 metadata.textContent = [item.category, Array.isArray(item.tags) ? item.tags.join(', ') : item.tags, item.rating ? `${item.rating}/5` : ''].filter(Boolean).join(' · ');
-                button.append(text, metadata);
+                button.append(text);
+                if (pairs) {
+                    const negative = document.createElement('span'); negative.className = 'pm-editor-result-meta';
+                    const summary = item.negative_text || '(empty)';
+                    negative.textContent = `Negative: ${summary.length > 160 ? `${summary.slice(0,160)}…` : summary}`;
+                    negative.title = summary; button.append(negative);
+                }
+                button.append(metadata);
                 rows.listen(button, 'click', () => {
-                    selected = item; previewText.textContent = item.text; preview.hidden = false;
+                    selected = item; previewText.textContent = pairs ? `Positive: ${item.positive_text}` : item.text; if (pairs) previewNegative.textContent = `Negative: ${item.negative_text || '(empty)'}`; preview.hidden = false;
                     results.querySelectorAll('button').forEach(row => row.setAttribute('aria-pressed', String(row === button)));
                     status.textContent = 'Previewing selection. Editor unchanged.'; refreshAvailability();
                 });
@@ -83,7 +93,7 @@ export function createPromptLibrary({scope, api, settings, parseQuery, onUse, is
             });
         } catch (error) {
             if (scope.signal.aborted || current !== sequence || request.signal.aborted) return;
-            status.classList.add('pm-editor-error'); status.setAttribute('role','alert'); status.textContent = `Could not load prompts: ${error.message}`;
+            status.classList.add('pm-editor-error'); status.setAttribute('role','alert'); status.textContent = `Could not load ${noun}s: ${error.message}`;
         }
     }
     scope.listen(search, 'click', () => load());

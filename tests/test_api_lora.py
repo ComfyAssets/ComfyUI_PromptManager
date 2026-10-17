@@ -76,8 +76,7 @@ class LoraAPITestCase(AioHTTPTestCase):
 
         app = web.Application()
         routes = web.RouteTableDef()
-        self.api = PromptManagerAPI()
-        self.api.db = PromptDatabase(self._temp_db.name)
+        self.api = PromptManagerAPI(db=PromptDatabase(self._temp_db.name))
         self.api.add_routes(routes)
         app.router.add_routes(routes)
         return app

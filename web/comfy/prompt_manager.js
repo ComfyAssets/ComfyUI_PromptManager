@@ -3,8 +3,8 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 const { installClassicControls } = await import(api.fileURL('/prompt_manager/js/classic-node.js'));
-const { installFocusedNode, installSplitNode } = await import(api.fileURL('/prompt_manager/js/focused-node.js'));
-const promptManagerTypes = new Set(['PromptManager', 'PromptManagerText', 'PromptManagerFocused', 'PromptManagerSplit']);
+const { installFocusedNode, installSplitNode, installPairNode } = await import(api.fileURL('/prompt_manager/js/focused-node.js'));
+const promptManagerTypes = new Set(['PromptManager', 'PromptManagerText', 'PromptManagerFocused', 'PromptManagerSplit', 'PromptManagerPair']);
 
 // ============================================================================
 // Top Bar Button Integration (similar to rgthree-comfy approach)
@@ -262,20 +262,12 @@ app.registerExtension({
           if (promptManagerTypes.has(node.type) && output[node.id]) {
             const outputNode = output[node.id];
 
-            // Skip if text input is connected to another node (value is a link reference array)
-            if (outputNode.inputs && Array.isArray(outputNode.inputs.text)) {
-              continue;
+            for (const name of node.type === 'PromptManagerPair' ? ['text','negative_text'] : ['text']) {
+              if (!outputNode.inputs || Array.isArray(outputNode.inputs[name]) || node.inputs?.some(input => input.name === name && input.link != null)) continue;
+              const widget = node.widgets?.find(widget => widget.name === name);
+              if (widget?.inputEl) outputNode.inputs[name] = widget.inputEl.value;
             }
 
-            // Only sync widget DOM value for non-connected (widget-based) text inputs
-            const textWidget = node.widgets?.find(w => w.name === "text");
-            if (textWidget && textWidget.inputEl) {
-              const currentValue = textWidget.inputEl.value;
-
-              if (outputNode.inputs && outputNode.inputs.text !== currentValue) {
-                outputNode.inputs.text = currentValue;
-              }
-            }
           }
         }
       }
@@ -292,8 +284,8 @@ app.registerExtension({
   },
 
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
-    if (nodeData.name === 'PromptManagerFocused' || nodeData.name === 'PromptManagerSplit') {
-      const install = nodeData.name === 'PromptManagerSplit' ? installSplitNode : installFocusedNode;
+    if (nodeData.name === 'PromptManagerFocused' || nodeData.name === 'PromptManagerSplit' || nodeData.name === 'PromptManagerPair') {
+      const install = nodeData.name === 'PromptManagerPair' ? installPairNode : nodeData.name === 'PromptManagerSplit' ? installSplitNode : installFocusedNode;
       install(nodeType, app, api, parseSearchQuery);
       return;
     }

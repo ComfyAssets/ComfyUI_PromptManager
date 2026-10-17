@@ -322,7 +322,9 @@ class TestLongJobLock(unittest.TestCase):
     """_acquire_long_job: one job per family at a time, released on exit."""
 
     def setUp(self):
-        self.api = PromptManagerAPI()
+        database = MagicMock()
+        database.cleanup_duplicates.return_value = 0
+        self.api = PromptManagerAPI(db=database)
 
     def _run(self, coro):
         import asyncio
@@ -373,8 +375,9 @@ class CoreRoutesTestCase(AioHTTPTestCase):
         self.tmpdir = tempfile.mkdtemp()
         app = web.Application()
         routes = web.RouteTableDef()
-        self.api = PromptManagerAPI()
-        self.api.db = PromptDatabase(os.path.join(self.tmpdir, "prompts.db"))
+        self.api = PromptManagerAPI(
+            db=PromptDatabase(os.path.join(self.tmpdir, "prompts.db"))
+        )
         self.api.add_routes(routes)
         app.router.add_routes(routes)
         return app
@@ -565,8 +568,9 @@ class TestInstanceHelpers(FolderPathsFixture):
 
     def setUp(self):
         super().setUp()
-        self.api = PromptManagerAPI()
-        self.api.db = PromptDatabase(os.path.join(self.tmpdir, "prompts.db"))
+        self.api = PromptManagerAPI(
+            db=PromptDatabase(os.path.join(self.tmpdir, "prompts.db"))
+        )
         self.addCleanup(self.api.db.close_all)  # runs before the rmtree cleanup
         orig_dirs = list(GalleryConfig.MONITORING_DIRECTORIES)
         self.addCleanup(setattr, GalleryConfig, "MONITORING_DIRECTORIES", orig_dirs)
@@ -668,7 +672,9 @@ class TestInstanceHelpers(FolderPathsFixture):
 class TestMetadataParsing(unittest.TestCase):
 
     def setUp(self):
-        self.api = PromptManagerAPI()
+        database = MagicMock()
+        database.cleanup_duplicates.return_value = 0
+        self.api = PromptManagerAPI(db=database)
         self.tmpdir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmpdir, True)
 

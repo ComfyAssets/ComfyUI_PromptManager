@@ -64,8 +64,7 @@ class ImageAPITestCase(AioHTTPTestCase):
         app = web.Application()
         routes = web.RouteTableDef()
 
-        self.api = PromptManagerAPI()
-        self.api.db = PromptDatabase(self._temp_db.name)
+        self.api = PromptManagerAPI(db=PromptDatabase(self._temp_db.name))
         self.api._get_all_output_dirs = lambda: [self.output_dir]
         self.api._find_comfyui_output_dir = lambda: str(self.output_dir)
         self.api.add_routes(routes)

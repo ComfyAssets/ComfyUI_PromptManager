@@ -17,6 +17,11 @@ sys.modules.setdefault("server", MagicMock())
 from aiohttp import web  # noqa: E402
 from aiohttp.test_utils import AioHTTPTestCase  # noqa: E402
 
+try:
+    from tests.open_handles import assert_closed
+except ImportError:  # discovered with tests/ as the top-level directory
+    from open_handles import assert_closed
+
 from database.operations import PromptDatabase  # noqa: E402
 from py.api import PromptManagerAPI  # noqa: E402
 import py.api.prompts as prompts_module  # noqa: E402
@@ -38,8 +43,7 @@ class PromptAPITestCase(AioHTTPTestCase):
         app = web.Application()
         routes = web.RouteTableDef()
 
-        self.api = PromptManagerAPI()
-        self.api.db = PromptDatabase(self._temp_db.name)
+        self.api = PromptManagerAPI(db=PromptDatabase(self._temp_db.name))
         self.api.add_routes(routes)
         app.router.add_routes(routes)
         return app
@@ -48,6 +52,7 @@ class PromptAPITestCase(AioHTTPTestCase):
         await super().tearDownAsync()  # closes the aiohttp test client
         # Windows refuses to unlink a database that still has open handles.
         self.api.db.close_all()
+        assert_closed(self, self._temp_db.name)
         for path in (
             self._temp_db.name,
             self._temp_db.name + "-wal",

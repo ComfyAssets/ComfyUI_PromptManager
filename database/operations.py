@@ -9,6 +9,7 @@ import os
 from typing import Optional, List, Dict, Any
 
 from .models import PromptModel, normalize_image_path, utc_now_iso
+from .pairs import PairDependencyError, PairOperations
 
 # Import logging system
 try:
@@ -146,7 +147,7 @@ def _coerce_file_info(metadata: Any) -> tuple:
     )
 
 
-class PromptDatabase:
+class PromptDatabase(PairOperations):
     """Database operations class for managing prompts."""
 
     def __init__(self, db_path: Optional[str] = None):
@@ -581,7 +582,8 @@ class PromptDatabase:
         Returns:
             bool: True if deletion was successful, False otherwise
         """
-        with self.model.get_connection() as conn:
+        with self._pair_transaction() as conn:
+            self._ensure_prompts_unpaired(conn, [prompt_id])
             # First delete related images to avoid foreign key constraint
             conn.execute(
                 "DELETE FROM generated_images WHERE prompt_id = ?", (prompt_id,)
@@ -597,7 +599,7 @@ class PromptDatabase:
         Returns:
             Number of prompts deleted.
         """
-        with self.model.get_connection() as conn:
+        with self._pair_transaction() as conn:
             # Get IDs first for cascade cleanup
             ids = [
                 r[0]
@@ -607,6 +609,7 @@ class PromptDatabase:
             ]
             if not ids:
                 return 0
+            self._ensure_prompts_unpaired(conn, ids)
             placeholders = ",".join("?" * len(ids))
             conn.execute(
                 f"DELETE FROM generated_images WHERE prompt_id IN ({placeholders})",
@@ -632,7 +635,9 @@ class PromptDatabase:
         """
         with self.model.get_connection() as conn:
             cursor = conn.execute(
-                "SELECT DISTINCT TRIM(category) as category FROM prompts WHERE "
+                "SELECT TRIM(category) AS category FROM prompts WHERE "
+                "category IS NOT NULL AND TRIM(category) != '' UNION "
+                "SELECT TRIM(category) AS category FROM prompt_pairs WHERE "
                 "category IS NOT NULL AND TRIM(category) != '' ORDER BY category"
             )
             return [row["category"] for row in cursor.fetchall()]
@@ -699,16 +704,16 @@ class PromptDatabase:
 
     def get_all_tags(self) -> List[str]:
         """
-        Get all unique tags that are in use (linked to at least one prompt).
+        Get all unique tags linked to a standalone prompt or reusable pair.
 
         Returns:
             Sorted list of tag names
         """
         with self.model.get_connection() as conn:
             cursor = conn.execute(
-                "SELECT DISTINCT t.name AS tag "
-                "FROM prompt_tags pt "
-                "JOIN tags t ON pt.tag_id = t.id "
+                "SELECT t.name AS tag FROM tags t WHERE "
+                "EXISTS(SELECT 1 FROM prompt_tags pt WHERE pt.tag_id=t.id) OR "
+                "EXISTS(SELECT 1 FROM prompt_pair_tags pp WHERE pp.tag_id=t.id) "
                 "ORDER BY t.name"
             )
             return [row["tag"] for row in cursor.fetchall()]
@@ -784,7 +789,8 @@ class PromptDatabase:
 
         Returns tags whose name starts with ``prefix`` (case-insensitive),
         counted over the prompts that carry every tag in ``with_tags``; the
-        context tags themselves are left out. Ordered by count, then name.
+        context tags themselves are left out. Counts include separate standalone
+        and pair references, with owner types kept distinct. Ordered by count/name.
         """
         seen = set()
         context = []
@@ -799,11 +805,11 @@ class PromptDatabase:
         if context:
             placeholders = ",".join("?" * len(context))
             where.append(
-                "pt.prompt_id IN ("
-                " SELECT pt2.prompt_id FROM prompt_tags pt2"
+                "(pt.kind,pt.owner_id) IN ("
+                " SELECT pt2.kind,pt2.owner_id FROM tag_refs pt2"
                 " JOIN tags t2 ON t2.id = pt2.tag_id"
                 f" WHERE t2.name COLLATE NOCASE IN ({placeholders})"
-                " GROUP BY pt2.prompt_id"
+                " GROUP BY pt2.kind,pt2.owner_id"
                 " HAVING COUNT(DISTINCT lower(t2.name)) = ?)"
             )
             params.extend(context)
@@ -813,8 +819,11 @@ class PromptDatabase:
         params.append(max(1, int(limit)))
 
         sql = (
+            "WITH tag_refs(kind,owner_id,tag_id) AS ("
+            "SELECT 'prompt',prompt_id,tag_id FROM prompt_tags UNION ALL "
+            "SELECT 'pair',pair_id,tag_id FROM prompt_pair_tags) "
             "SELECT t.name AS name, COUNT(*) AS count"
-            " FROM prompt_tags pt JOIN tags t ON t.id = pt.tag_id"
+            " FROM tag_refs pt JOIN tags t ON t.id = pt.tag_id"
             f" WHERE {' AND '.join(where)}"
             " GROUP BY t.id"
             " ORDER BY count DESC, t.name COLLATE NOCASE ASC"
@@ -921,6 +930,8 @@ class PromptDatabase:
 
         old_name = old_name.strip()
         new_name = new_name.strip()
+        if old_name == new_name:
+            return {"success": True, "affected_count": 0, "skipped_count": 0}
 
         with self.model.get_connection() as conn:
             cursor = conn.execute("SELECT id FROM tags WHERE name = ?", (old_name,))
@@ -942,12 +953,14 @@ class PromptDatabase:
             if existing_new:
                 # Target tag exists — merge: move links, handle conflicts, delete old
                 new_tag_id = existing_new["id"]
-                conn.execute(
-                    "UPDATE OR IGNORE prompt_tags SET tag_id = ? WHERE tag_id = ?",
-                    (new_tag_id, old_tag_id),
-                )
-                # Delete remaining links (conflicts = prompt already had the target tag)
-                conn.execute("DELETE FROM prompt_tags WHERE tag_id = ?", (old_tag_id,))
+                for junction in ("prompt_tags", "prompt_pair_tags"):
+                    conn.execute(
+                        f"UPDATE OR IGNORE {junction} SET tag_id = ? WHERE tag_id = ?",
+                        (new_tag_id, old_tag_id),
+                    )
+                    conn.execute(
+                        f"DELETE FROM {junction} WHERE tag_id = ?", (old_tag_id,)
+                    )
                 conn.execute("DELETE FROM tags WHERE id = ?", (old_tag_id,))
             else:
                 # Simple rename
@@ -966,7 +979,7 @@ class PromptDatabase:
         """
         Remove a tag from all prompts that use it.
 
-        With junction tables, deleting from the tags table cascades to prompt_tags.
+        Deleting from tags cascades to standalone and pair tag relationships.
 
         Args:
             tag_name: Tag name to remove
@@ -1033,20 +1046,27 @@ class PromptDatabase:
                 if not src_row:
                     continue
                 src_id = src_row["id"]
+                if src_id == target_id:
+                    continue
 
                 cursor = conn.execute(
                     "SELECT COUNT(*) as c FROM prompt_tags WHERE tag_id = ?", (src_id,)
                 )
                 src_count = cursor.fetchone()["c"]
 
-                if src_count > 0:
-                    # Move links from source to target (ignore conflicts)
-                    conn.execute(
-                        "UPDATE OR IGNORE prompt_tags SET tag_id = ? WHERE tag_id = ?",
-                        (target_id, src_id),
-                    )
-                    # Delete remaining (conflicts = prompt already had target tag)
-                    conn.execute("DELETE FROM prompt_tags WHERE tag_id = ?", (src_id,))
+                pair_count = conn.execute(
+                    "SELECT COUNT(*) FROM prompt_pair_tags WHERE tag_id = ?", (src_id,)
+                ).fetchone()[0]
+                if src_count or pair_count:
+                    for junction in ("prompt_tags", "prompt_pair_tags"):
+                        conn.execute(
+                            f"UPDATE OR IGNORE {junction} "
+                            "SET tag_id = ? WHERE tag_id = ?",
+                            (target_id, src_id),
+                        )
+                        conn.execute(
+                            f"DELETE FROM {junction} WHERE tag_id = ?", (src_id,)
+                        )
                     tags_merged += 1
                     affected += src_count
 
@@ -1290,7 +1310,7 @@ class PromptDatabase:
         """
         self.logger.info("Starting duplicate cleanup process with image preservation")
         try:
-            with self.model.get_connection() as conn:
+            with self._pair_transaction() as conn:
                 # Find duplicates by text content (case-insensitive)
                 # Note: Removed ORDER BY from GROUP_CONCAT for SQLite compatibility
                 # We'll sort the IDs manually after fetching
@@ -1318,6 +1338,11 @@ class PromptDatabase:
                     id_date_pairs = list(zip(ids, created_dates))
                     id_date_pairs.sort(key=lambda x: x[1])  # Sort by date
                     sorted_ids = [int(pair[0]) for pair in id_date_pairs]
+
+                    try:
+                        self._ensure_prompts_unpaired(conn, sorted_ids)
+                    except PairDependencyError:
+                        continue
 
                     # Keep the oldest one (first), merge and delete the rest
                     primary_id = sorted_ids[0]  # Keep the oldest
@@ -1864,7 +1889,8 @@ class PromptDatabase:
         Raises:
             sqlite3.IntegrityError: Another prompt already has the new hash.
         """
-        with self.model.get_connection() as conn:
+        with self._pair_transaction() as conn:
+            self._ensure_prompts_unpaired(conn, [prompt_id])
             cursor = conn.execute(
                 "UPDATE prompts SET text = ?, hash = ?, updated_at = ? WHERE id = ?",
                 (
@@ -1912,7 +1938,8 @@ class PromptDatabase:
             Number of prompts actually deleted.
         """
         count = 0
-        with self.model.get_connection() as conn:
+        with self._pair_transaction() as conn:
+            self._ensure_prompts_unpaired(conn, prompt_ids)
             for pid in prompt_ids:
                 conn.execute("DELETE FROM generated_images WHERE prompt_id = ?", (pid,))
                 cursor = conn.execute("DELETE FROM prompts WHERE id = ?", (pid,))
@@ -1985,7 +2012,7 @@ class PromptDatabase:
             cursor = conn.execute(
                 """SELECT gi.prompt_id, p.text, p.category, p.rating, p.notes,
                           gi.workflow_data, gi.prompt_metadata, gi.generation_time,
-                          gi.parameters
+                          gi.parameters, gi.id, gi.image_path, gi.file_path
                    FROM generated_images gi
                    JOIN prompts p ON gi.prompt_id = p.id
                    WHERE gi.image_path = ? OR gi.file_path = ?
@@ -1997,9 +2024,71 @@ class PromptDatabase:
                     f"%{escape_like(os.path.basename(image_path))}",
                 ),
             )
-            row = cursor.fetchone()
-            if not row:
+            rows = cursor.fetchall()
+            exact = [
+                row
+                for row in rows
+                if row[10] == image_path or row[11] == normalize_image_path(image_path)
+            ]
+            matches = exact or rows
+            if len(matches) != 1:
                 return None
+            row = matches[0]
+            associations = self.get_image_prompt_pairs(row[9])
+            pair_ids = {item["pair_id"] for item in associations}
+            pair = (
+                self.get_prompt_pair(next(iter(pair_ids)))
+                if len(pair_ids) == 1
+                else None
+            )
+            candidates = []
+            for item in associations:
+                evidence = item["provenance"]
+                positive_side = evidence.get("positive")
+                negative_side = evidence.get("negative")
+                if not isinstance(positive_side, dict) or not isinstance(
+                    negative_side, dict
+                ):
+                    continue
+                positive, negative = positive_side.get("text"), negative_side.get(
+                    "text"
+                )
+                if not isinstance(positive, str) or not isinstance(negative, str):
+                    continue
+                sources = []
+                for side in (positive_side, negative_side):
+                    provenance = side.get("provenance")
+                    sources.append(
+                        provenance.get("text_source")
+                        if isinstance(provenance, dict)
+                        else None
+                    )
+                score = sources.count("execution")
+                source = (
+                    "execution"
+                    if score == 2
+                    else (
+                        "mixed"
+                        if score
+                        else (
+                            "embedded-parameters"
+                            if sources == ["embedded-parameters"] * 2
+                            else "graph-inferred"
+                        )
+                    )
+                )
+                candidates.append((score, positive, negative, source))
+            context = None
+            if candidates and pair:
+                best_score = max(item[0] for item in candidates)
+                contexts = {item[1:] for item in candidates if item[0] == best_score}
+                if len(contexts) == 1:
+                    positive, negative, source = next(iter(contexts))
+                    context = {
+                        "positive_text": positive,
+                        "negative_text": negative,
+                        "text_source": source,
+                    }
             tags = self._get_prompt_tags(conn, row[0])
             try:
                 workflow = json.loads(row[5]) if row[5] else None
@@ -2010,6 +2099,8 @@ class PromptDatabase:
             except (json.JSONDecodeError, TypeError):
                 prompt_meta = None
             return {
+                "pair": pair,
+                "pair_context": context,
                 "prompt_id": row[0],
                 "text": row[1],
                 "category": row[2],
@@ -2050,11 +2141,15 @@ class PromptDatabase:
 
         Returns number of prompts removed.
         """
-        with self.model.get_connection() as conn:
+        with self._pair_transaction() as conn:
             cursor = conn.execute("""
                 SELECT p.id FROM prompts p
                 LEFT JOIN generated_images gi ON p.id = gi.prompt_id
                 WHERE gi.prompt_id IS NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM prompt_pairs pp
+                    WHERE pp.positive_prompt_id = p.id OR pp.negative_prompt_id = p.id
+                )
                 AND NOT EXISTS (
                     SELECT 1 FROM prompt_tags pt
                     JOIN tags t ON pt.tag_id = t.id

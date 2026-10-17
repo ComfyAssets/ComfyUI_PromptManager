@@ -55,12 +55,18 @@
                 found: num(event.found, state.found),
             };
         }
-        if (event.type === "complete") {
+        if (event.type === "complete" || event.type === "cancelled") {
+            const counts = Object.fromEntries(
+                ['pairs_added','pair_links_added','enriched','unchanged','ambiguous','unresolved','conflict','failed']
+                    .map(key => [key, num(event[key], state[key] || 0)])
+            );
             return {
                 ...state,
+                ...counts,
                 status: DONE,
-                progress: 100,
-                statusText: "Scan completed!",
+                cancelled: event.type === "cancelled",
+                progress: event.type === "cancelled" ? state.progress : 100,
+                statusText: event.type === "cancelled" ? "Scan cancelled." : "Scan completed!",
                 processed: num(event.processed, state.processed),
                 found: num(event.found, state.found),
                 added: num(event.added, state.added),
@@ -93,8 +99,14 @@
         return `Scanning ${pct}% · ${state.processed} files · ${state.found} prompts`;
     }
 
+    function completionLabel(state) {
+        const review = (state.ambiguous || 0) + (state.unresolved || 0) + (state.conflict || 0);
+        return `${state.cancelled ? 'Scan cancelled' : 'Scan completed'}! Processed ${state.processed} files, found ${state.found} prompts; ${state.added} new image records, ${state.linked} links, ${state.enriched || 0} enriched, ${state.unchanged || 0} unchanged; ${state.pairs_added || 0} new pairs, ${state.pair_links_added || 0} pair links; ${review} need review, ${state.failed || 0} failed.`;
+    }
+
     const api = {
         initialState,
+        completionLabel,
         reduceScanEvent,
         fromStatus,
         dismissAction,

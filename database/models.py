@@ -4,14 +4,17 @@ Database schema and models for KikoTextEncode prompt storage.
 
 import contextlib
 import datetime
+import json
+import math
 import shutil
 import sqlite3
 import os
 import threading
+import tempfile
 import weakref
 from contextlib import closing
 from pathlib import Path
-from typing import Set, Tuple
+from typing import Optional, Set, Tuple
 
 # Import logging system
 try:
@@ -27,6 +30,41 @@ except ImportError:
 # writes milliseconds (SQLite's %f); live writes use microseconds so runs in the
 # same millisecond still order correctly. Both forms sort correctly together.
 ISO_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%f+00:00"
+
+
+MAX_PAIR_PROVENANCE_LENGTH = 4_000_000
+MAX_PAIR_PROVENANCE_DEPTH = 64
+
+
+def pair_provenance_error(encoded: object) -> Optional[str]:
+    """Validate the same bounded JSON object for live writes and restores."""
+    if not isinstance(encoded, str):
+        return "Pair provenance must be JSON text"
+    if len(encoded) > MAX_PAIR_PROVENANCE_LENGTH:
+        return "Pair provenance exceeds the size limit"
+    try:
+        value = json.loads(encoded)
+    except (ValueError, TypeError, RecursionError):
+        return "Pair provenance is not readable JSON"
+    if not isinstance(value, dict):
+        return "Pair provenance must be a JSON object"
+    pending = [(iter((value,)), 0)]
+    while pending:
+        children, depth = pending[-1]
+        try:
+            item = next(children)
+        except StopIteration:
+            pending.pop()
+            continue
+        if depth > MAX_PAIR_PROVENANCE_DEPTH:
+            return "Pair provenance exceeds the nesting limit"
+        if isinstance(item, float) and not math.isfinite(item):
+            return "Pair provenance contains nonfinite numbers"
+        if isinstance(item, dict):
+            pending.append((iter(item.values()), depth + 1))
+        elif isinstance(item, list):
+            pending.append((iter(item), depth + 1))
+    return None
 
 
 def utc_now_iso() -> str:
@@ -235,6 +273,224 @@ class PromptModel:
 
         # Image uniqueness by full path instead of basename (3.2.4)
         self._migrate_image_uniqueness_by_path(conn)
+        self._migrate_prompt_pairs(conn)
+
+    def _migrate_prompt_pairs(self, conn: sqlite3.Connection) -> None:
+        conn.execute("SAVEPOINT prompt_pair_schema")
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS prompt_pairs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    positive_prompt_id INTEGER NOT NULL,
+                    negative_prompt_id INTEGER,
+                    title TEXT,
+                    category TEXT,
+                    rating INTEGER CHECK(rating BETWEEN 1 AND 5),
+                    notes TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    last_used_at TEXT,
+                    run_count INTEGER NOT NULL DEFAULT 0,
+                    archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0, 1)),
+                    FOREIGN KEY(positive_prompt_id)
+                        REFERENCES prompts(id) ON DELETE RESTRICT,
+                    FOREIGN KEY(negative_prompt_id)
+                        REFERENCES prompts(id) ON DELETE RESTRICT,
+                    UNIQUE(positive_prompt_id, negative_prompt_id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS prompt_pair_tags (
+                    pair_id INTEGER NOT NULL,
+                    tag_id INTEGER NOT NULL,
+                    PRIMARY KEY(pair_id, tag_id),
+                    FOREIGN KEY(pair_id) REFERENCES prompt_pairs(id) ON DELETE CASCADE,
+                    FOREIGN KEY(tag_id) REFERENCES tags(id) ON DELETE CASCADE
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS image_prompt_pairs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    image_id INTEGER NOT NULL,
+                    pair_id INTEGER NOT NULL,
+                    provenance TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(image_id)
+                        REFERENCES generated_images(id) ON DELETE CASCADE,
+                    FOREIGN KEY(pair_id) REFERENCES prompt_pairs(id) ON DELETE RESTRICT,
+                    UNIQUE(pair_id, image_id, provenance)
+                )
+            """)
+            self._create_pair_indexes(conn)
+            error = self._pair_schema_error(conn)
+            if error:
+                raise sqlite3.DatabaseError(error)
+            conn.execute("RELEASE prompt_pair_schema")
+        except BaseException:
+            conn.execute("ROLLBACK TO prompt_pair_schema")
+            conn.execute("RELEASE prompt_pair_schema")
+            raise
+
+    @staticmethod
+    def _create_pair_indexes(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_prompt_pairs_positive_only "
+            "ON prompt_pairs(positive_prompt_id) WHERE negative_prompt_id IS NULL"
+        )
+        for name, target in (
+            ("idx_prompt_pairs_negative", "prompt_pairs(negative_prompt_id)"),
+            ("idx_prompt_pair_tags_tag", "prompt_pair_tags(tag_id)"),
+            ("idx_image_prompt_pairs_image", "image_prompt_pairs(image_id)"),
+        ):
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {target}")
+
+    @staticmethod
+    def _pair_schema_error(conn: sqlite3.Connection) -> Optional[str]:
+        required = {
+            "prompt_pairs": {
+                "id",
+                "positive_prompt_id",
+                "negative_prompt_id",
+                "title",
+                "category",
+                "rating",
+                "notes",
+                "created_at",
+                "updated_at",
+                "last_used_at",
+                "run_count",
+                "archived",
+            },
+            "prompt_pair_tags": {"pair_id", "tag_id"},
+            "image_prompt_pairs": {
+                "id",
+                "image_id",
+                "pair_id",
+                "provenance",
+                "created_at",
+            },
+        }
+        present = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        if not present.intersection(required):
+            return None
+        if not set(required).issubset(present):
+            return "Incomplete prompt pair schema"
+        foreign_keys = {
+            "prompt_pairs": {
+                ("positive_prompt_id", "prompts", "id", "RESTRICT"),
+                ("negative_prompt_id", "prompts", "id", "RESTRICT"),
+            },
+            "prompt_pair_tags": {
+                ("pair_id", "prompt_pairs", "id", "CASCADE"),
+                ("tag_id", "tags", "id", "CASCADE"),
+            },
+            "image_prompt_pairs": {
+                ("pair_id", "prompt_pairs", "id", "RESTRICT"),
+                ("image_id", "generated_images", "id", "CASCADE"),
+            },
+        }
+        unique = {
+            "prompt_pairs": ("positive_prompt_id", "negative_prompt_id"),
+            "prompt_pair_tags": ("pair_id", "tag_id"),
+            "image_prompt_pairs": ("pair_id", "image_id", "provenance"),
+        }
+        non_null = {
+            "prompt_pairs": {
+                "positive_prompt_id",
+                "created_at",
+                "updated_at",
+                "run_count",
+                "archived",
+            },
+            "prompt_pair_tags": {"pair_id", "tag_id"},
+            "image_prompt_pairs": {"pair_id", "image_id", "provenance", "created_at"},
+        }
+        integer_columns = {
+            "id",
+            "positive_prompt_id",
+            "negative_prompt_id",
+            "pair_id",
+            "tag_id",
+            "image_id",
+            "rating",
+            "run_count",
+            "archived",
+        }
+        for table, columns in required.items():
+            info = {row[1]: row for row in conn.execute(f"PRAGMA table_info({table})")}
+            if not columns.issubset(info):
+                return f"{table} is missing required pair columns"
+            if any(not info[name][3] for name in non_null[table]):
+                return f"{table} has nullable required pair columns"
+            if any(
+                info[name][2].upper()
+                != ("INTEGER" if name in integer_columns else "TEXT")
+                for name in columns
+            ):
+                return f"{table} has invalid pair column types"
+            primary = tuple(
+                name
+                for name in sorted(info, key=lambda name: info[name][5])
+                if info[name][5]
+            )
+            if primary != (
+                ("pair_id", "tag_id") if table == "prompt_pair_tags" else ("id",)
+            ):
+                return f"{table} has an invalid pair primary key"
+            actual_fks = {
+                (row[3], row[2], row[4], row[6])
+                for row in conn.execute(f"PRAGMA foreign_key_list({table})")
+            }
+            if actual_fks != foreign_keys[table]:
+                return f"{table} has invalid pair foreign key definitions"
+            if conn.execute(f"PRAGMA foreign_key_check({table})").fetchone():
+                return f"{table} contains foreign key violations"
+            indexes = list(conn.execute(f"PRAGMA index_list({table})"))
+            index_columns = {}
+            for row in indexes:
+                name = row[1].replace('"', '""')
+                index_columns[row[1]] = tuple(
+                    item[2] for item in conn.execute(f'PRAGMA index_info("{name}")')
+                )
+            if not any(
+                row[2] and not row[4] and index_columns[row[1]] == unique[table]
+                for row in indexes
+            ):
+                return f"{table} is missing pair uniqueness constraints"
+            if table == "prompt_pairs":
+                null_unique = False
+                for row in indexes:
+                    if (
+                        row[2]
+                        and row[4]
+                        and index_columns[row[1]] == ("positive_prompt_id",)
+                    ):
+                        sql = conn.execute(
+                            "SELECT sql FROM sqlite_master WHERE type='index' AND name"
+                            "=?",
+                            (row[1],),
+                        ).fetchone()[0]
+                        if " ".join(sql.lower().split()).endswith(
+                            "where negative_prompt_id is null"
+                        ):
+                            null_unique = True
+                if not null_unique:
+                    return "prompt_pairs is missing empty-negative pair uniqueness"
+        if conn.execute(
+            "SELECT 1 FROM image_prompt_pairs ip "
+            "JOIN prompt_pairs pp ON pp.id=ip.pair_id "
+            "JOIN generated_images gi ON gi.id=ip.image_id "
+            "WHERE pp.positive_prompt_id IS NOT gi.prompt_id LIMIT 1"
+        ).fetchone():
+            return "Image pair association has a different positive prompt owner"
+        for row in conn.execute("SELECT provenance FROM image_prompt_pairs"):
+            error = pair_provenance_error(row[0])
+            if error:
+                return error
+        return None
 
     def _create_indexes(self, conn: sqlite3.Connection) -> None:
         """
@@ -772,6 +1028,15 @@ class PromptModel:
                     False,
                     "prompts table is missing required columns: " + ", ".join(missing),
                 )
+            forbidden = conn.execute(
+                "SELECT type FROM sqlite_master WHERE type IN ('trigger', 'view') "
+                "LIMIT 1"
+            ).fetchone()
+            if forbidden:
+                return False, f"Database contains an unsupported {forbidden[0]}"
+            pair_error = PromptModel._pair_schema_error(conn)
+            if pair_error:
+                return False, pair_error
             return True, "ok"
         except sqlite3.Error as e:
             return False, f"Invalid SQLite database: {e}"
@@ -814,13 +1079,11 @@ class PromptModel:
         """
         Replace the live database with the file at src_path.
 
-        The current database is first backed up next to itself as
-        ``<db_path>.backup_<YYYYmmdd_HHMMSS>`` (WAL content included), the
-        pages of ``src_path`` are copied into the live database through
-        SQLite's backup API (visible to every open connection) and the schema
-        migrations run on the restored content.
-
-        Callers should run verify_database_file(src_path) first.
+        A disposable SQLite backup of the source is migrated and verified first.
+        Only then is the current database backed up next to itself as
+        ``<db_path>.backup_<YYYYmmdd_HHMMSS>`` (WAL content included), and the
+        staged pages replace the live pages through SQLite's backup API.
+        Migration failures never replace live content or modify the source.
 
         Args:
             src_path: SQLite file to restore
@@ -833,17 +1096,42 @@ class PromptModel:
             RuntimeError: If the previous database could not be backed up
             OSError: If the restored file could not be copied into place
         """
-        backup_path = ""
-        if os.path.exists(self.db_path):
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_path = f"{self.db_path}.backup_{timestamp}"
-            if not self.backup_database(backup_path):
-                raise RuntimeError("Could not back up the current database")
-            self.logger.info(f"Current database backed up to: {backup_path}")
-
-        self._replace_contents_from(src_path)
-        with PromptModel._init_lock:
-            PromptModel._initialized_paths.discard(self._schema_key())
-        self._ensure_database_exists()
-        self.logger.info(f"Database restored from {src_path}")
-        return backup_path
+        ok, reason = self.verify_database_file(src_path)
+        if not ok:
+            raise ValueError(reason)
+        with tempfile.TemporaryDirectory(prefix="prompt-manager-restore-") as directory:
+            staged_path = str(Path(directory) / "staged.db")
+            source = sqlite3.connect(
+                Path(src_path).resolve().as_uri() + "?mode=ro", uri=True
+            )
+            try:
+                with closing(sqlite3.connect(staged_path)) as destination:
+                    source.backup(destination)
+            finally:
+                source.close()
+            staged = None
+            try:
+                staged = PromptModel(staged_path)
+                ok, reason = self.verify_database_file(staged_path)
+                if not ok:
+                    raise ValueError(reason)
+                staged.close_all()
+                backup_path = ""
+                if os.path.exists(self.db_path):
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    backup_path = f"{self.db_path}.backup_{timestamp}"
+                    if not self.backup_database(backup_path):
+                        raise RuntimeError("Could not back up the current database")
+                    self.logger.info(f"Current database backed up to: {backup_path}")
+                self._replace_contents_from(staged_path)
+                with PromptModel._init_lock:
+                    PromptModel._initialized_paths.add(self._schema_key())
+                self.logger.info(f"Database restored from {src_path}")
+                return backup_path
+            finally:
+                if staged is not None:
+                    staged.close_all()
+                with PromptModel._init_lock:
+                    PromptModel._initialized_paths.discard(
+                        os.path.normcase(os.path.realpath(staged_path))
+                    )

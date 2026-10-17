@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -26,7 +26,16 @@ class TestFindComfyuiOutputDir(unittest.TestCase):
     """Test _find_comfyui_output_dir() respects user-configured directories."""
 
     def setUp(self):
-        self.api = PromptManagerAPI()
+        roots = patch.object(
+            GalleryConfig,
+            "allowed_gallery_parents",
+            return_value=[os.path.normcase(os.path.realpath(tempfile.gettempdir()))],
+        )
+        roots.start()
+        self.addCleanup(roots.stop)
+        database = MagicMock()
+        database.cleanup_duplicates.return_value = 0
+        self.api = PromptManagerAPI(db=database)
         self.api._cached_output_dir = None
         self._orig_dirs = list(GalleryConfig.MONITORING_DIRECTORIES)
 
@@ -110,6 +119,23 @@ class TestFindComfyuiOutputDir(unittest.TestCase):
             result = self.api._find_comfyui_output_dir()
 
             self.assertEqual(result, str(Path(tmpdir).resolve()))
+
+
+class TestOutputDirectoryFixturePortability(unittest.TestCase):
+    def test_aliased_temporary_parent_uses_the_real_gallery_allowlist(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            (parent / "alias").mkdir()
+            (parent / "actual").mkdir()
+            aliased = str(parent / "alias" / ".." / "actual")
+            with patch("tempfile.gettempdir", return_value=aliased):
+                case = TestFindComfyuiOutputDir(
+                    "test_configured_directory_takes_priority"
+                )
+                result = unittest.TestResult()
+                case.run(result)
+            self.assertEqual(result.errors, [])
+            self.assertEqual(result.failures, [])
 
 
 if __name__ == "__main__":

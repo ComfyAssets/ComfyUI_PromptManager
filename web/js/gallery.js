@@ -1221,8 +1221,9 @@
                     if (databasePrompt) {
                         // Create metadata object from database prompt
                         metadata = {
-                            positivePrompt: databasePrompt.text,
-                            negativePrompt: 'No negative prompt found', // Database doesn't separate positive/negative
+                            textSource: databasePrompt.pair_context?.text_source,
+                            positivePrompt: databasePrompt.pair_context?.positive_text ?? databasePrompt.text,
+                            negativePrompt: databasePrompt.pair_context?.negative_text ?? databasePrompt.pair?.negative_text ?? 'No negative prompt found',
                             checkpoint: 'Unknown',
                             steps: 'Unknown',
                             cfgScale: 'Unknown',
@@ -1248,7 +1249,7 @@
                                 metadata.sampler = pngMetadata.sampler;
                                 metadata.seed = pngMetadata.seed;
                                 // Use negative prompt from PNG if available
-                                if (pngMetadata.negativePrompt && pngMetadata.negativePrompt !== 'No negative prompt found') {
+                                if (!databasePrompt.pair && pngMetadata.negativePrompt && pngMetadata.negativePrompt !== 'No negative prompt found') {
                                     metadata.negativePrompt = pngMetadata.negativePrompt;
                                 }
                             }
@@ -1289,6 +1290,12 @@
                     return;
                 }
 
+                const textSourceLabel = new Map([
+                    ['execution','Recorded during execution'],
+                    ['graph-inferred','Recovered from workflow metadata'],
+                    ['embedded-parameters','Read from embedded parameters'],
+                    ['mixed','Execution and workflow metadata'],
+                ]).get(metadata.textSource);
                 const html = `
                     <!-- File Path -->
                     <div class="space-y-2">
@@ -1308,6 +1315,8 @@
                             </div>
                         </div>
                     </div>
+
+                    ${textSourceLabel ? `<p class="text-xs text-pm-secondary">${escapeHtml(textSourceLabel)}</p>` : ''}
 
                     <!-- Prompt Section -->
                     <div class="space-y-3">

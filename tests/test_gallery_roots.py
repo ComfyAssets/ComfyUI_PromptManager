@@ -299,7 +299,9 @@ class TestGetAllOutputDirsFiltersRoots(GalleryRootTestCase):
         super().setUp()
         from py.api import PromptManagerAPI
 
-        self.api = PromptManagerAPI()
+        database = MagicMock()
+        database.cleanup_duplicates.return_value = 0
+        self.api = PromptManagerAPI(db=database)
         self.api._cached_output_dir = None
         self._orig_dirs = list(GalleryConfig.MONITORING_DIRECTORIES)
         self.addCleanup(self._restore_dirs)

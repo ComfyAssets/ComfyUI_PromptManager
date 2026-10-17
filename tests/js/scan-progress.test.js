@@ -76,3 +76,30 @@ test("progressLabel summarises a running scan for the minimized pill", () => {
     assert.equal(progressLabel(running), "Scanning 42% · 84 files · 12 prompts");
     assert.equal(progressLabel(initialState()), "");
 });
+
+test('pair totals survive completion and cancellation closes the running state', () => {
+    const running=reduceScanEvent(initialState(),{type:'progress',progress:30,processed:3});
+    const done=reduceScanEvent(running,{type:'complete',pairs_added:2,pair_links_added:3,enriched:1,unchanged:4,ambiguous:1,failed:2});
+    assert.deepEqual([done.pairs_added,done.pair_links_added,done.enriched,done.unchanged,done.ambiguous,done.failed],[2,3,1,4,1,2]);
+    const cancelled=reduceScanEvent(running,{type:'cancelled',processed:3,pairs_added:1});
+    assert.equal(cancelled.status,'done');
+    assert.equal(cancelled.cancelled,true);
+    assert.equal(cancelled.statusText,'Scan cancelled.');
+    assert.equal(cancelled.progress,30);
+});
+
+test('completion label reports pair enrichment, unresolved work and failures', () => {
+    const {completionLabel}=require('../../web/js/scan-progress.js');
+    const state=reduceScanEvent(initialState(),{type:'complete',processed:10,found:8,added:1,linked:2,pairs_added:3,pair_links_added:4,enriched:2,unchanged:1,ambiguous:1,unresolved:2,conflict:1,failed:1});
+    assert.match(completionLabel(state),/3 new pairs, 4 pair links/);
+    assert.match(completionLabel(state),/4 need review, 1 failed/);
+    assert.match(completionLabel({...state,cancelled:true}),/^Scan cancelled!/);
+});
+
+test('older servers without pair counts retain a complete readable summary', () => {
+    const {completionLabel}=require('../../web/js/scan-progress.js');
+    const state=reduceScanEvent(initialState(),{type:'complete',processed:2,found:1,added:1,linked:0});
+    assert.match(completionLabel(initialState()),/0 new pairs, 0 pair links; 0 need review, 0 failed/);
+    assert.match(completionLabel(state),/0 enriched, 0 unchanged/);
+    assert.equal(fromStatus({running:true,last_event:{type:'unknown'}}).status,'running');
+});
