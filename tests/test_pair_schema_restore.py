@@ -4,6 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -49,6 +50,34 @@ class PairSchemaTests(unittest.TestCase):
             for table in ("image_prompt_pairs", "prompt_pair_tags", "prompt_pairs"):
                 conn.execute(f"DROP TABLE IF EXISTS {table}")
         return model
+
+    def test_restore_scenarios_close_all_sqlite_handles(self):
+        connections = []
+        connect = sqlite3.connect
+
+        def tracked_connect(*args, **kwargs):
+            connection = connect(*args, **kwargs)
+            connections.append(connection)
+            return connection
+
+        scenarios = (
+            "test_pair_ddl_failure_rolls_back_and_retry_succeeds",
+            "test_restore_legacy_wal_migrates_stage_and_preserves_safety_backup",
+            "test_restore_migration_failure_keeps_original_and_source_untouched",
+            "test_verification_rejects_partial_pair_schema_and_orphan_pair",
+        )
+        try:
+            with patch.object(sqlite3, "connect", side_effect=tracked_connect):
+                result = unittest.TestResult()
+                unittest.TestSuite(type(self)(name) for name in scenarios).run(result)
+            self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
+            for index, connection in enumerate(connections):
+                with self.subTest(connection=index):
+                    with self.assertRaises(sqlite3.ProgrammingError):
+                        connection.execute("SELECT 1")
+        finally:
+            for connection in connections:
+                connection.close()
 
     def test_fresh_schema_constraints_and_foreign_keys(self):
         model = self.model()
@@ -127,7 +156,7 @@ class PairSchemaTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(sqlite3.OperationalError, "injected"):
                 self.model()
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             self.assertEqual(
                 conn.execute(
                     "SELECT name FROM sqlite_master WHERE name IN ('prompt_pairs','pro"
@@ -147,13 +176,13 @@ class PairSchemaTests(unittest.TestCase):
                 "ALUES(7,9)"
             )
         model.close_all()
-        with sqlite3.connect(model.db_path) as conn:
+        with closing(sqlite3.connect(model.db_path)) as conn, conn:
             conn.execute("PRAGMA foreign_keys=OFF")
             conn.execute("UPDATE prompt_pairs SET negative_prompt_id=404")
         ok, reason = PromptModel.verify_database_file(model.db_path)
         self.assertFalse(ok)
         self.assertIn("foreign key", reason.lower())
-        with sqlite3.connect(model.db_path) as conn:
+        with closing(sqlite3.connect(model.db_path)) as conn, conn:
             conn.execute("DROP TABLE prompt_pair_tags")
         ok, reason = PromptModel.verify_database_file(model.db_path)
         self.assertFalse(ok)
@@ -184,7 +213,7 @@ class PairSchemaTests(unittest.TestCase):
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM generated_images").fetchone()[0], 1
             )
-        with sqlite3.connect(legacy.db_path) as conn:
+        with closing(sqlite3.connect(legacy.db_path)) as conn, conn:
             self.assertIsNone(
                 conn.execute(
                     "SELECT name FROM sqlite_master WHERE name='prompt_pairs'"
@@ -201,7 +230,7 @@ class PairSchemaTests(unittest.TestCase):
         self.assertGreater(os.path.getsize(legacy.db_path + "-wal"), 0)
         backup = live.restore_from_file(legacy.db_path)
         self.assertTrue(Path(backup).is_file())
-        with sqlite3.connect(backup) as conn:
+        with closing(sqlite3.connect(backup)) as conn, conn:
             self.assertEqual(
                 conn.execute("SELECT text FROM prompts").fetchall(), [("original",)]
             )
