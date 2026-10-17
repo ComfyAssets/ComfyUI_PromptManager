@@ -264,12 +264,12 @@ class PromptManagerAPI(
         db (PromptDatabase): Database connection and operations handler
     """
 
-    def __init__(self):
-        """Initialize the PromptManager API with database connection and cleanup."""
+    def __init__(self, db: PromptDatabase | None = None) -> None:
+        """Initialize the API, using an injected database before any cleanup."""
         self.logger = get_logger("prompt_manager.api")
         self.logger.info("Initializing PromptManager API")
 
-        self.db = PromptDatabase()
+        self.db = db if db is not None else PromptDatabase()
         self._cached_output_dir = None  # Lazy-cached by _find_comfyui_output_dir()
         self._html_cache = {}  # Cached HTML file contents keyed by path
         self._gallery_cache = {}  # dict: path_str -> (files, timestamp)

@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -26,7 +26,16 @@ class TestFindComfyuiOutputDir(unittest.TestCase):
     """Test _find_comfyui_output_dir() respects user-configured directories."""
 
     def setUp(self):
-        self.api = PromptManagerAPI()
+        roots = patch.object(
+            GalleryConfig,
+            "allowed_gallery_parents",
+            return_value=[tempfile.gettempdir()],
+        )
+        roots.start()
+        self.addCleanup(roots.stop)
+        database = MagicMock()
+        database.cleanup_duplicates.return_value = 0
+        self.api = PromptManagerAPI(db=database)
         self.api._cached_output_dir = None
         self._orig_dirs = list(GalleryConfig.MONITORING_DIRECTORIES)
 

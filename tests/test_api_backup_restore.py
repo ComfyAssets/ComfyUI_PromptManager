@@ -45,8 +45,7 @@ class BackupRestoreTestCase(AioHTTPTestCase):
 
         app = web.Application()
         routes = web.RouteTableDef()
-        self.api = PromptManagerAPI()
-        self.api.db = PromptDatabase(self.db_path)
+        self.api = PromptManagerAPI(db=PromptDatabase(self.db_path))
         self.api.add_routes(routes)
         app.router.add_routes(routes)
         return app

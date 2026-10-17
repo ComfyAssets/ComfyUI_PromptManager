@@ -70,8 +70,7 @@ class AdminAPITestCase(AioHTTPTestCase):
         db_path = os.path.join(self.tmpdir, "prompts.db")
         app = web.Application()
         routes = web.RouteTableDef()
-        self.api = PromptManagerAPI()
-        self.api.db = PromptDatabase(db_path)
+        self.api = PromptManagerAPI(db=PromptDatabase(db_path))
         self.api.add_routes(routes)
         app.router.add_routes(routes)
         return app

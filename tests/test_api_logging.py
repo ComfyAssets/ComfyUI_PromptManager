@@ -104,8 +104,9 @@ class LoggingAPITestCase(AioHTTPTestCase):
 
         app = web.Application()
         routes = web.RouteTableDef()
-        self.api = PromptManagerAPI()
-        self.api.db = PromptDatabase(os.path.join(self.tmpdir, "prompts.db"))
+        self.api = PromptManagerAPI(
+            db=PromptDatabase(os.path.join(self.tmpdir, "prompts.db"))
+        )
         self.api._get_logger_manager = lambda: self.manager
         self.api.add_routes(routes)
         app.router.add_routes(routes)
