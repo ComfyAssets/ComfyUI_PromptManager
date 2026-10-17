@@ -1,4 +1,4 @@
-"""Serve only the timeline concept and its pinned toolkit assets."""
+"""Serve only UI concepts and their pinned toolkit and viewer assets."""
 
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -8,6 +8,11 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 FILES = {
     "/": ("docs/concepts/prompt-variant-timeline.html", "text/html; charset=utf-8"),
+    "/workspace/": ("docs/concepts/workspace/index.html", "text/html; charset=utf-8"),
+    "/workspace/style.css": ("docs/concepts/workspace/style.css", "text/css"),
+    "/workspace/app.js": ("docs/concepts/workspace/app.js", "text/javascript"),
+    "/vendor/viewer.js": ("web/lib/viewerjs/viewer.min.js", "text/javascript"),
+    "/vendor/viewer.css": ("web/lib/viewerjs/viewer.min.css", "text/css"),
     "/toolkit/core.js": ("web/js/shared/toolkit/core.js", "text/javascript"),
     "/toolkit/controls.css": ("web/js/shared/toolkit/controls.css", "text/css"),
 }
