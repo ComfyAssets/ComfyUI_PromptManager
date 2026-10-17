@@ -5,6 +5,9 @@ import {
   mountTheme,
 } from "/toolkit/core.js";
 const scope = createScope();
+const imageBatchSize = 12,
+  loadedImageCounts = new Map();
+let imageScrollObserver = null;
 let masonryObserver = null,
   masonryFrame = 0,
   tagSession = null;
@@ -420,7 +423,7 @@ function renderImages() {
         button(icon("plus") + " New prompt", "new-prompt", "", "ca-primary"),
     ) +
     toolbar() +
-    `<div class="filter-row"><div class="segmented" role="group" aria-label="Image layout">${button(icon("grid") + " Grid", "image-view", 'data-value="grid" aria-pressed="' + (state.view === "grid") + '"')}${button(icon("list") + " List", "image-view", 'data-value="list" aria-pressed="' + (state.view === "list") + '"')}${button(icon("masonry") + " Masonry", "image-view", 'data-value="masonry" aria-pressed="' + (state.view === "masonry") + '"')}</div><label class="small" for="image-size">Thumbnail size</label><select id="image-size"><option value="comfortable">Comfortable</option><option value="large">Large</option><option value="compact">Compact</option></select><span class="chip">${icon("folder")} All output folders</span>${button("Group by positive prompt →", "go-library", "", "chip")}<span class="sample-tag">Illustrative previews</span></div><div id="bulkbar"></div><div class="gallery-layout"><div class="gallery-body"><div class="section-caption"><span id="result-count"></span><span>Today · October 17</span></div><div id="image-grid" class="image-grid"></div><p class="small spaced">All sample results loaded · one continuous gallery</p></div><aside id="image-inspector" class="detail-panel" aria-label="Selected image details"></aside></div>`;
+    `<div class="filter-row"><div class="segmented" role="group" aria-label="Image layout">${button(icon("grid") + " Grid", "image-view", 'data-value="grid" aria-pressed="' + (state.view === "grid") + '"')}${button(icon("list") + " List", "image-view", 'data-value="list" aria-pressed="' + (state.view === "list") + '"')}${button(icon("masonry") + " Masonry", "image-view", 'data-value="masonry" aria-pressed="' + (state.view === "masonry") + '"')}</div><label class="small" for="image-size">Thumbnail size</label><select id="image-size"><option value="comfortable">Comfortable</option><option value="large">Large</option><option value="compact">Compact</option></select><span class="chip">${icon("folder")} All output folders</span>${button("Group by positive prompt →", "go-library", "", "chip")}<span class="sample-tag">Illustrative previews</span></div><div id="bulkbar"></div><div class="gallery-layout"><div class="gallery-body"><div class="section-caption"><span id="result-count"></span><span>Today · October 17</span></div><div id="image-grid" class="image-grid"></div><div id="gallery-continuation" class="infinite-continuation"></div></div><aside id="image-inspector" class="detail-panel" aria-label="Selected image details"></aside></div>`;
   $("image-size").value = state.size;
   updateImages();
 }
@@ -430,12 +433,21 @@ function updateBulk() {
     : "";
 }
 function updateImages() {
+  stopImageScroll();
   stopMasonry();
-  const shown = visibleImages();
+  const matching = visibleImages();
+  const key = imageQueryKey();
+  const selectedIndex = matching.findIndex((i) => i.id === state.selectedImage);
+  const limit = Math.max(
+    loadedImageCounts.get(key) || imageBatchSize,
+    Math.ceil((selectedIndex + 1) / imageBatchSize) * imageBatchSize,
+  );
+  loadedImageCounts.set(key, limit);
+  const shown = matching.slice(0, limit);
   if (shown.length && !shown.some((i) => i.id === state.selectedImage))
     state.selectedImage = shown[0].id;
   $("result-count").textContent =
-    `${shown.length} images · ${new Set(shown.map((i) => i.prompt)).size} positive prompts`;
+    `${shown.length} of ${matching.length} images · ${new Set(matching.map((i) => i.prompt)).size} positive prompts`;
   $("image-grid").className =
     `image-grid ${state.size === "comfortable" ? "" : state.size} ${state.view === "list" ? "list-grid" : state.view === "masonry" ? "masonry-grid" : ""}`;
   $("image-grid").innerHTML = shown.length
@@ -446,6 +458,68 @@ function updateImages() {
     : '<div class="detail-inner"><h2>No image selected</h2><p class="small">Clear the filters or choose a matching image.</p></div>';
   updateBulk();
   if (state.view === "masonry" && shown.length) mountMasonry($("image-grid"));
+  updateImageContinuation();
+}
+function imageQueryKey() {
+  return JSON.stringify([
+    state.query,
+    state.category,
+    state.filter,
+    state.collection,
+    state.sort,
+  ]);
+}
+function stopImageScroll() {
+  imageScrollObserver?.disconnect();
+  imageScrollObserver = null;
+}
+function updateImageContinuation() {
+  stopImageScroll();
+  const continuation = $("gallery-continuation");
+  if (!continuation) return;
+  const total = visibleImages().length,
+    loaded = $("image-grid").querySelectorAll(".media-card").length;
+  continuation.innerHTML =
+    loaded < total
+      ? `<p class="small">${loaded} of ${total} images · more load as you scroll</p>${button("Load more images", "load-more-images")}`
+      : `<p class="small">${total ? "You’re all caught up" : "No matching images"} · ${total} images</p>`;
+  if (loaded >= total) return;
+  const key = imageQueryKey();
+  imageScrollObserver = new IntersectionObserver(
+    (entries) => {
+      if (
+        entries.some((entry) => entry.isIntersecting) &&
+        imageQueryKey() === key &&
+        !document.querySelector("dialog[open]")
+      )
+        loadMoreImages();
+    },
+    { rootMargin: "180px 0px" },
+  );
+  imageScrollObserver.observe(continuation);
+}
+function loadMoreImages(trigger = null) {
+  const grid = $("image-grid");
+  if (!grid) return;
+  const loaded = grid.querySelectorAll(".media-card").length;
+  const matching = visibleImages(),
+    next = matching.slice(loaded, loaded + imageBatchSize);
+  if (!next.length) return;
+  stopImageScroll();
+  stopMasonry();
+  loadedImageCounts.set(imageQueryKey(), loaded + next.length);
+  grid.insertAdjacentHTML("beforeend", next.map(mediaCard).join(""));
+  $("result-count").textContent =
+    `${loaded + next.length} of ${matching.length} images · ${new Set(matching.map((i) => i.prompt)).size} positive prompts`;
+  if (state.view === "masonry") mountMasonry(grid);
+  updateImageContinuation();
+  if (trigger?.dataset?.action === "load-more-images")
+    grid
+      .querySelector(`[data-action="open-image"][data-id="${next[0].id}"]`)
+      ?.focus();
+  notify(
+    `${next.length} more images loaded. ${loaded + next.length} of ${matching.length}.`,
+  );
 }
 function stopMasonry() {
   masonryObserver?.disconnect();
@@ -600,7 +674,7 @@ function renderSystem() {
         )}</div><div class="two-col"><section class="surface"><h2>Library health</h2>${operation("3 ambiguous image links", "Review metadata before assigning a positive / negative pair.", "go-review", "Review metadata")}${operation("Backup status", "Last sample backup today at 09:30 · verification passed.", "system-tab", "View backups", 'data-value="backups"')}${operation("No missing thumbnails", "Generate only missing previews when necessary.", "job", "Review thumbnails", 'data-job="Thumbnail check"')}</section><section class="surface"><h2>Workspace preferences</h2>${operation("One display configuration", "Grid, density and paging settings are shared across views.", "system-tab", "Appearance", 'data-value="appearance"')}${operation("2 sample output sources", "Monitoring and enrichment share one source list.", "system-tab", "Manage sources", 'data-value="sources"')}${operation("Statistics", "Usage by prompt, category, tag and date.", "stats", "Explore")}</section></div>`;
       break;
     case "appearance":
-      body = `<section class="surface"><h2>Browsing & display</h2><p>One set of defaults; toolbar changes apply to the current view.</p>${setting("default-view", "Default layout", "Choose your starting image layout.", "select", ["Grid", "List", "Masonry"])}${setting("density", "Thumbnail size", "Readable previews by default; no fixed column-count setting.", "select", ["Comfortable", "Large", "Compact"])}${setting("loading", "Loading behavior", "One choice replaces separate page-size and infinite-scroll controls.", "select", ["Load more on scroll", "Paged results"])}${setting("batch-size", "Results per batch", "Controls request size, independent of thumbnail size.", "select", ["50", "100", "200"])}${setting("metadata-auto", "Load metadata on selection", "Use the same inspector in the gallery and image viewer.")}${setting("metadata-cache", "Cache metadata in this browser", "Reuse fetched metadata until it changes or you clear this cache.")}${setting("image-quality", "Image loading quality", "Preserve original / optimized / fast image-loading preferences.", "select", ["Optimized", "Original", "Fast"])}${setting("video-auto", "Autoplay videos", "Videos stay within the same gallery and use native playback controls.")}${setting("video-muted", "Mute videos by default", "Keep playback quiet while browsing.")}${setting("video-loop", "Loop videos", "Repeat a selected clip until you navigate away.")}${setting("paths", "Show file paths", "Paths appear under File & provenance, not across every card.")}${setting("open-mode", "Open from ComfyUI", "Keep the node pack’s popup / new-tab preference.", "select", ["New tab", "Popup window"])}${setting("timeout", "Node search auto-hide (seconds)", "Node search behavior only. Use 0 to keep results visible.", "number", [30])}</section>`;
+      body = `<section class="surface"><h2>Browsing & display</h2><p>One set of defaults; toolbar changes apply to the current view.</p>${setting("default-view", "Default layout", "Choose your starting image layout.", "select", ["Grid", "List", "Masonry"])}${setting("density", "Thumbnail size", "Readable previews by default; no fixed column-count setting.", "select", ["Comfortable", "Large", "Compact"])}<div class="setting-row"><div><h3>Continuous browsing</h3><p>Images load automatically as you scroll in Grid, List and Masonry. Batch sizing is handled internally.</p></div><span class="chip blue">Infinite scroll</span></div>${setting("metadata-auto", "Load metadata on selection", "Use the same inspector in the gallery and image viewer.")}${setting("metadata-cache", "Cache metadata in this browser", "Reuse fetched metadata until it changes or you clear this cache.")}${setting("image-quality", "Image loading quality", "Preserve original / optimized / fast image-loading preferences.", "select", ["Optimized", "Original", "Fast"])}${setting("video-auto", "Autoplay videos", "Videos stay within the same gallery and use native playback controls.")}${setting("video-muted", "Mute videos by default", "Keep playback quiet while browsing.")}${setting("video-loop", "Loop videos", "Repeat a selected clip until you navigate away.")}${setting("paths", "Show file paths", "Paths appear under File & provenance, not across every card.")}${setting("open-mode", "Open from ComfyUI", "Keep the node pack’s popup / new-tab preference.", "select", ["New tab", "Popup window"])}${setting("timeout", "Node search auto-hide (seconds)", "Node search behavior only. Use 0 to keep results visible.", "number", [30])}</section>`;
       break;
     case "sources":
       body = `${state.notice ? `<div class="notice"><div><h2>Bring older images into your prompt history</h2><p>The schema upgrades automatically. An optional metadata scan links existing positives and negatives without regenerating all thumbnails.</p></div><div class="row-actions">${button("Later", "dismiss-notice")}${button("Review scan", "scan-review", "", "ca-primary")}</div></div>` : ""}<section class="surface"><div class="panel-heading"><h2>Image sources</h2>${button("+ Add source", "add-source")}</div><p>The same folders power browsing, monitoring and metadata enrichment.</p><div id="source-list">${operation("ComfyUI output", "/ComfyUI/output · watching · sample path", "scan-review", "Scan changes")}${operation("Archive", "/images/archive · manual scan · sample path", "scan-review", "Scan folder")}</div>${setting("monitoring", "Watch for new outputs", "New files enter the same library. Existing scans do not count as new runs.")}${setting("workers", "Worker threads", "Balance background scans and thumbnail work against generation.", "range", [4])}${operation("Enrich existing metadata", "Resolve both prompts, deduplicate recipes, preserve uncertain links.", "scan-review", "Review scan")}${operation("Thumbnail generation", "Generate missing previews; rebuilding all is a separate explicit option.", "thumbnail-review", "Review options")}</section>`;
@@ -716,7 +790,7 @@ const featureMap = [
   ],
   [
     "Grid/list, thumbnail size, columns, pages/infinite scroll",
-    "One Appearance configuration; contextual layout / density overrides",
+    "Infinite scroll only; one Appearance configuration and contextual layout / density overrides",
     "Simplified",
   ],
   [
@@ -1094,6 +1168,7 @@ function navigate(event) {
   if (event) $("page-title")?.focus();
 }
 function render() {
+  stopImageScroll();
   stopMasonry();
   nav();
   const page = state.page;
@@ -1123,6 +1198,7 @@ function render() {
   else renderImages();
 }
 const actions = {
+  "load-more-images": loadMoreImages,
   "close-dialog": closeDialog,
   send: (b) =>
     openSend(
@@ -1654,6 +1730,9 @@ scope.listen(document, "change", (event) => {
   }
 });
 scope.listen($("modal-close"), "click", closeDialog);
+scope.listen($("modal"), "close", () => {
+  if ($("gallery-continuation")) updateImageContinuation();
+});
 scope.listen($("viewer-close"), "click", () => $("viewer-dialog").close());
 scope.listen($("viewer-dialog"), "close", () => {
   clearInterval(slideTimer);
@@ -1687,6 +1766,7 @@ scope.listen($("theme"), "change", setTheme);
 scope.listen(matchMedia("(prefers-color-scheme: dark)"), "change", setTheme);
 scope.listen(window, "hashchange", navigate);
 scope.listen(window, "pagehide", () => {
+  stopImageScroll();
   stopMasonry();
   viewer?.destroy();
   clearInterval(slideTimer);

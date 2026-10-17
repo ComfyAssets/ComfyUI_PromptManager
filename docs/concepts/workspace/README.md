@@ -20,8 +20,8 @@ Diagnostics & logs. The in-app Design review contains the feature map below.
 
 One application shell replaces separate Admin, Gallery and Metadata shells.
 Use the approved shared ComfyAssets theme: ComfyUI dark/light, blue primary
-actions, green positive roles, red negative roles and errors. Preserve all
-existing controls and services while making their scope clearer.
+actions, green positive roles, red negative roles and errors. Preserve existing
+capabilities and services while consolidating controls and clarifying their scope.
 
 Browsing is image-led with readable thumbnails and one metadata inspector.
 Prompt library groups by positive; negative variants and runs share its gallery.
@@ -62,7 +62,7 @@ multiple nodes or positive and negative encoder inputs. Verify Classic and Nodes
 | Metadata page / viewer sidebar / full-text popups | One reusable metadata inspector; inline complete prompt text | Consolidated |
 | Prompt add, edit, rating, notes, copy, delete | Recipe editor, shared details, contextual bulk actions; reference-safe archive | Retained, clarified |
 | Categories, tag rename / merge, autocomplete | Tags & categories; same vocabulary in every editor | Retained |
-| Grid/list, thumbnail size, columns, pages/infinite scroll | One Appearance configuration; contextual layout / density overrides | Simplified |
+| Grid/list, thumbnail size, columns, pages/infinite scroll | Infinite scroll only; one Appearance configuration and contextual layout / density overrides | Simplified |
 | Scan, rescan, monitoring directories, worker threads | Sources & scans; explicit metadata enrichment vs thumbnail work | Consolidated |
 | Ollama, HuggingFace, WD14 variants, thresholds, review | One Auto-tagging configuration and review flow | Retained |
 | Thumbnail quality, size limit, metadata cache, paths | Appearance + cache controls in Maintenance | Retained |
@@ -118,3 +118,18 @@ instructions, generate sample suggestions, edit tags manually, and approve only
 the desired suggestions. Changes are staged until approval, apply to that image
 alone and do not resolve uncertain prompt associations. Changing models discards
 previous suggestions. Cancel preserves existing tags. All inference is simulated.
+
+## Continuous browsing decision
+
+The redesign uses infinite scroll only. Remove page numbers, previous/next page
+buttons, paged/infinite mode selection and results-per-page controls. Keep request
+batching internal. The mock appends 12 images at a time in Grid, List and Masonry;
+it preserves existing card nodes, focus and selection while appending. It also
+retains the loaded range when switching layouts or revisiting a search. A
+keyboard-accessible Load more action provides an alternate trigger for the same
+continuous stream, not pagination. Exhausted and empty results are explicit.
+
+Production will need bounded rendering, stable cursors, scroll restoration and
+loading/error/retry behavior for large collections. Existing backend pagination
+can continue providing internal request batches; no production tests or routes
+are removed as part of this prototype.

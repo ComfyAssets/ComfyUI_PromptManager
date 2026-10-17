@@ -1692,3 +1692,12 @@ progress {
   border-top: 1px solid var(--line);
   z-index: 1;
 }
+
+.infinite-continuation {
+  padding-block: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-block-size: 72px;
+}
