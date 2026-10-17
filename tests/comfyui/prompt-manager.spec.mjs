@@ -119,23 +119,25 @@ test('all node schemas and extension entrypoints load from the real host', async
     expect(result).toEqual({ type: 'PromptSearchList', extension: true });
 });
 
-test('node Web UI button opens actual standalone pages', async ({ page }) => {
-    await page.evaluate(async () => {
-        const { app } = await import('/scripts/app.js');
-        const node = LiteGraph.createNode('PromptManager');
-        app.graph.add(node);
-        app.canvas.centerOnNode(node);
+for (const type of ['PromptManager', 'PromptManagerText']) {
+    test(`${type} Web UI button opens actual standalone pages`, async ({ page }) => {
+        await page.evaluate(async type => {
+            const { app } = await import('/scripts/app.js');
+            const node = LiteGraph.createNode(type);
+            app.graph.add(node);
+            app.canvas.centerOnNode(node);
+        }, type);
+        const popupPromise = page.waitForEvent('popup');
+        await page.getByRole('button', { name: '🌐 Web UI', exact: true }).click();
+        const popup = await popupPromise;
+        await popup.waitForLoadState('domcontentloaded');
+        await expect(popup).toHaveURL(/\/prompt_manager\/(web|admin)/);
+        await expect(popup.locator('body')).toContainText('Prompt');
+        await popup.goto(new URL('/prompt_manager/gallery', page.url()).href);
+        await expect(popup.locator('#addPromptBtn')).toBeVisible();
+        await popup.close();
     });
-    const popupPromise = page.waitForEvent('popup');
-    await page.getByRole('button', { name: '🌐 Web UI', exact: true }).click();
-    const popup = await popupPromise;
-    await popup.waitForLoadState('domcontentloaded');
-    await expect(popup).toHaveURL(/\/prompt_manager\/(web|admin)/);
-    await expect(popup.locator('body')).toContainText('Prompt');
-    await popup.goto(new URL('/prompt_manager/gallery', page.url()).href);
-    await expect(popup.locator('#addPromptBtn')).toBeVisible();
-    await popup.close();
-});
+}
 
 test('Classic controls follow actual ComfyUI light and dark palettes', async ({ page }, testInfo) => {
     await page.evaluate(async () => {
