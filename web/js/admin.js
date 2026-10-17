@@ -2353,7 +2353,7 @@
                     if (this.scanState.status === ScanProgress.RUNNING) {
                         // A scan we were following ended while we were disconnected.
                         const last = status.last_event;
-                        const terminal = last && (last.type === "complete" || last.type === "error");
+                        const terminal = last && (last.type === "complete" || last.type === "cancelled" || last.type === "error");
                         this.applyScanEvent(
                             terminal ? last : { type: "error", message: "the server no longer reports a running scan" }
                         );
@@ -2418,13 +2418,8 @@
             }
 
             completeScan(state) {
-                const { processed, found, added, linked } = state;
                 document.getElementById("scanPill").classList.add("hidden");
-                const linkedText = linked > 0 ? `, linked ${linked} images to existing prompts` : '';
-                this.showNotification(
-                    `Scan completed! Processed ${processed} files, found ${found} prompts, added ${added} new prompts to database${linkedText}.`,
-                    "success"
-                );
+                this.showNotification(ScanProgress.completionLabel(state), "success");
 
                 // Auto-close after a short delay so the completion message is visible
                 setTimeout(() => {
