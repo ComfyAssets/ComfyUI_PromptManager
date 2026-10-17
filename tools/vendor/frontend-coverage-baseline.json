@@ -172,5 +172,23 @@
     "branches": 87,
     "functions": 98,
     "statements": 95
+  },
+  "prompt-bridge-adapter.js": {
+    "lines": 98,
+    "branches": 93,
+    "functions": 98,
+    "statements": 98
+  },
+  "prompt-bridge-host.js": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
+  },
+  "shared/toolkit/prompt-bridge.js": {
+    "lines": 98,
+    "branches": 93,
+    "functions": 98,
+    "statements": 98
   }
 }

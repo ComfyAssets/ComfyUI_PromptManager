@@ -13,10 +13,11 @@
     "test:workflows": "playwright test --config playwright.workflows.config.mjs",
     "test:comfyui": "playwright test --config comfyui.config.mjs",
     "test:coverage": "node frontend-coverage.mjs",
-    "coverage:update": "node frontend-coverage.mjs --update-baseline"
+    "coverage:update": "node frontend-coverage.mjs --update-baseline",
+    "test:compat": "playwright test --config pack-compat.config.mjs"
   },
   "devDependencies": {
-    "@comfyassets/toolkit": "https://codeload.github.com/ComfyAssets/ComfyAssets-Toolkit/tar.gz/b5a34b1d12336cd1bdfd6b890b80db63cbc3c389",
+    "@comfyassets/toolkit": "https://codeload.github.com/ComfyAssets/ComfyAssets-Toolkit/tar.gz/ac245953df4c0d4b019c7bc59e93ad011c07ec22",
     "@playwright/test": "1.64.1",
     "c8": "12.0.0",
     "viewerjs": "1.15.2"
