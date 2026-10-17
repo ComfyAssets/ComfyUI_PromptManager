@@ -164,5 +164,8 @@ jobs:
             node --input-type=module --check < "$f" || exit 1
           done
 
+      - name: Install pinned shared test contracts
+        run: npm ci --prefix tools/vendor --ignore-scripts
+
       - name: Run JS tests
         run: node --test tests/js/*.test.js
