@@ -136,5 +136,23 @@
     "branches": 98,
     "functions": 98,
     "statements": 98
+  },
+  "workspace/index.mjs": {
+    "lines": 98,
+    "branches": 92,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/state.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/theme.mjs": {
+    "lines": 98,
+    "branches": 93,
+    "functions": 98,
+    "statements": 98
   }
 }

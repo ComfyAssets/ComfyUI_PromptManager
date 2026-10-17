@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Images · Prompt Manager concept</title>
+    <link rel="stylesheet" href="/toolkit/controls.css" />
+    <link rel="stylesheet" href="/vendor/viewer.css" />
+    <link rel="stylesheet" href="/workspace/style.css" />
+    <script src="/vendor/viewer.js" defer></script>
+    <script src="/workspace/app.js" type="module"></script>
+  </head>
+  <body class="ca-tools">
+    <a class="skip" href="#main">Skip to workspace</a>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="#images"
+          ><span class="brand-mark">P<span>±</span></span
+          ><span>Prompt Manager<small>COMFYASSETS</small></span></a
+        >
+        <div class="sidebar-label">WORKSPACE</div>
+        <nav id="primary-nav" aria-label="Workspace"></nav>
+        <div class="sidebar-label">
+          SAVED VIEWS <span class="new-label">PROPOSED</span>
+        </div>
+        <nav id="saved-nav" aria-label="Saved views"></nav>
+        <div class="sidebar-label">
+          COLLECTIONS <span class="new-label">PROPOSED</span>
+        </div>
+        <nav id="collections-nav" aria-label="Collections"></nav>
+        <div class="sidebar-bottom">
+          <nav id="system-nav" aria-label="Tools and system"></nav>
+          <div class="connection">
+            <i></i>
+            <div>
+              ComfyUI workspace<small
+                >Demo connection · Classic / Nodes 2.0</small
+              >
+            </div>
+          </div>
+        </div>
+      </aside>
+      <div class="workspace">
+        <header class="topbar">
+          <div class="breadcrumbs">
+            ComfyAssets <span>/</span> <span id="breadcrumb">Images</span>
+          </div>
+          <div class="top-actions">
+            <span class="concept-badge">Interactive concept</span
+            ><button id="activity-open" type="button">
+              Activity <span class="count" id="activity-count">2</span></button
+            ><label class="theme-label" for="theme"
+              >Theme
+              <select id="theme" aria-label="Theme">
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+                <option value="system">System</option>
+              </select></label
+            ><a class="canvas-link" href="#send"
+              >ComfyUI <span aria-hidden="true">↗</span></a
+            >
+          </div>
+        </header>
+        <main id="main" tabindex="-1"></main>
+        <footer class="app-footer">
+          <span
+            >Design prototype · sample images and data · actions stay in this
+            tab</span
+          ><button type="button" id="review-link">What changes & why</button>
+        </footer>
+      </div>
+    </div>
+    <div id="toast" class="toast" role="status" aria-atomic="true"></div>
+    <dialog id="modal" aria-labelledby="modal-title">
+      <div class="dialog-header">
+        <h2 id="modal-title"></h2>
+        <button type="button" id="modal-close" aria-label="Close dialog">
+          ×
+        </button>
+      </div>
+      <div id="modal-body"></div>
+    </dialog>
+    <dialog id="viewer-dialog" aria-labelledby="viewer-title">
+      <div class="dialog-header">
+        <div>
+          <h2 id="viewer-title">Image details</h2>
+          <p class="muted small">
+            One viewer · image, prompts, generation data, workflow
+          </p>
+        </div>
+        <button type="button" id="viewer-close" aria-label="Close image viewer">
+          ×
+        </button>
+      </div>
+      <div class="viewer-layout">
+        <div class="viewer-left">
+          <div id="viewer-stage"></div>
+          <div class="viewer-toolbar" id="viewer-toolbar"></div>
+        </div>
+        <aside id="viewer-details" aria-label="Image metadata"></aside>
+      </div>
+    </dialog>
+  </body>
+</html>

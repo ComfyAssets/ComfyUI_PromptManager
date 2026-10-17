@@ -385,6 +385,7 @@ class CoreRoutesTestCase(AioHTTPTestCase):
     async def tearDownAsync(self):
         await super().tearDownAsync()  # closes the aiohttp test client
         self.api.db.close_all()
+        assert_closed(self, self.tmpdir)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _fake_root(self):
@@ -399,6 +400,7 @@ class CoreRoutesTestCase(AioHTTPTestCase):
 
 
 UI_PATHS = (
+    "/prompt_manager/workspace",
     "/prompt_manager/web",
     "/prompt_manager/gallery.html",
     "/prompt_manager/admin",
@@ -429,7 +431,13 @@ class TestUiRoutes(CoreRoutesTestCase):
 
     async def test_unreadable_pages_are_500(self):
         web_dir = self._fake_root()
-        for name in ("index.html", "metadata.html", "admin.html", "gallery.html"):
+        for name in (
+            "workspace.html",
+            "index.html",
+            "metadata.html",
+            "admin.html",
+            "gallery.html",
+        ):
             (web_dir / name).mkdir()  # a directory cannot be read as a file
         for path in UI_PATHS:
             resp = await self.client.request("GET", path)
@@ -445,6 +453,13 @@ class TestStaticRoutes(CoreRoutesTestCase):
 
     async def test_js_served_with_mime(self):
         resp = await self.client.request("GET", "/prompt_manager/js/admin.js")
+        self.assertEqual(resp.status, 200)
+        self.assertIn("application/javascript", resp.headers["Content-Type"])
+
+    async def test_workspace_module_served_with_javascript_mime(self):
+        resp = await self.client.request(
+            "GET", "/prompt_manager/js/workspace/index.mjs"
+        )
         self.assertEqual(resp.status, 200)
         self.assertIn("application/javascript", resp.headers["Content-Type"])
 

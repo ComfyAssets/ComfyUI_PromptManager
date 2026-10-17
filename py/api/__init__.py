@@ -85,6 +85,7 @@ def _public_error(exc: BaseException) -> str:
 # doubles as the allow-list.
 STATIC_MIME_TYPES = {
     ".js": "application/javascript",
+    ".mjs": "application/javascript",
     ".css": "text/css",
     ".map": "application/json",
     ".woff": "font/woff",
@@ -362,6 +363,10 @@ class PromptManagerAPI(
             )
 
         # ── Web UI serving routes ─────────────────────────────────────
+
+        @routes.get("/prompt_manager/workspace")
+        async def serve_workspace_ui(request: web.Request) -> web.Response:
+            return self._serve_html_page("workspace.html", "Workspace")
 
         @routes.get("/prompt_manager/web")
         async def serve_web_ui(request):
