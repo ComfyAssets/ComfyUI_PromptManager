@@ -1,9 +1,10 @@
-.pm-focused { inline-size: 100%; block-size: 100%; min-block-size: 0; padding: 12px; display: flex; flex-direction: column; gap: 10px; overflow: auto; container: pm-editor / inline-size; border-radius: 5px; }
+.pm-focused { box-sizing: border-box; inline-size: 100%; block-size: 100%; min-block-size: 0; padding: 12px; display: flex; flex-direction: column; gap: 10px; overflow: auto; container: pm-editor / inline-size; border-radius: 5px; }
 .pm-focused [hidden] { display: none !important; }
 .pm-editor-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pm-editor-toolbar > strong { margin-inline-end: auto; font-weight: 500; }
 .pm-focused .ca-field-label { align-self: flex-start; margin-inline: 0; text-align: start; }
-.pm-focused > .ca-field { display: flex; flex: 1; min-block-size: 180px; flex-direction: column; align-items: stretch; gap: 5px; text-align: start; }
+.pm-editor-workspace, .pm-editor-compose { display: contents; }
+.pm-focused .pm-editor-main { display: flex; flex: 1; min-block-size: 180px; flex-direction: column; align-items: stretch; gap: 5px; text-align: start; }
 .pm-focused textarea { flex: 1; inline-size: 100%; min-block-size: 160px; resize: vertical; line-height: 1.65; }
 .pm-editor-details { border-block-end: 1px solid var(--ca-line); padding-block: 5px; }
 .pm-editor-details > summary { color: var(--ca-muted); cursor: pointer; }
@@ -17,11 +18,23 @@
 .pm-editor-library h3 { font: inherit; font-weight: 500; margin: 0; }
 .pm-editor-query { display: flex; gap: 6px; flex-wrap: wrap; }
 .pm-editor-query input { flex: 1; inline-size: 100%; min-inline-size: 100px; }
-.pm-editor-results { display: grid; gap: 6px; max-block-size: 300px; overflow: auto; }
+.pm-editor-results { display: grid; grid-auto-rows: max-content; align-content: start; gap: 6px; max-block-size: 300px; overflow: auto; }
 .pm-focused button.pm-editor-result { flex-direction: column; align-items: stretch; text-align: start; white-space: normal; overflow-wrap: anywhere; }
 .pm-editor-result[aria-pressed="true"] { border-color: var(--ca-accent); box-shadow: inset 3px 0 var(--ca-accent); }
 .pm-editor-result-meta { color: var(--ca-muted); font-size: 11px; }
-.pm-editor-result > span:first-child { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-clamp: 2; overflow: hidden; }
+.pm-editor-result > span:first-child { flex-shrink: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-clamp: 2; overflow: hidden; }
 .pm-editor-selection { display: grid; gap: 10px; }
 .pm-editor-selection .pm-editor-row { justify-content: space-between; }
 @container pm-editor (inline-size > 420px) { .pm-editor-fields { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+/* Contain intrinsic sizing so Nodes 2.0 keeps the widget within the node. */
+.pm-split { contain: size; }
+.pm-split .pm-editor-workspace { display: grid; grid-template-columns: minmax(0,1fr); gap: 12px; flex: 1; min-inline-size: 0; }
+.pm-split .pm-editor-compose { display: flex; flex-direction: column; gap: 10px; min-inline-size: 0; min-block-size: 300px; }
+.pm-split .pm-editor-library { min-inline-size: 0; align-content: start; }
+.pm-split .pm-editor-preview { box-sizing: border-box; max-block-size: 180px; overflow: auto; }
+@container pm-editor (inline-size > 720px) {
+    .pm-split .pm-editor-workspace { grid-template-columns: minmax(0,1.3fr) minmax(0,1fr); grid-template-rows: minmax(0,1fr); min-block-size: 0; }
+    .pm-split .pm-editor-compose, .pm-split .pm-editor-library { min-block-size: 0; overflow: auto; }
+    .pm-split .pm-editor-library { border-block-start: 0; border-inline-start: 1px solid var(--ca-line); padding-block-start: 0; padding-inline-start: 12px; }
+    .pm-split .pm-editor-fields { grid-template-columns: minmax(0,1fr); }
+}

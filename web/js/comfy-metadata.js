@@ -236,6 +236,7 @@
         PromptManager: PROMPT_MANAGER_WIDGETS,
         PromptManagerText: PROMPT_MANAGER_WIDGETS,
         PromptManagerFocused: PROMPT_MANAGER_WIDGETS,
+        PromptManagerSplit: PROMPT_MANAGER_WIDGETS,
         CheckpointLoader: ["config_name", "ckpt_name"],
         UNETLoader: ["unet_name", "weight_dtype"],
     };
