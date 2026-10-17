@@ -191,8 +191,15 @@ class PairOperations:
         include_archived: bool = False,
         limit: int = 50,
         offset: int = 0,
+        sort: str = "newest",
     ) -> Dict[str, Any]:
-        """List pairs with all-tag filtering and stable newest-first pagination."""
+        """List pairs with all-tag filtering and stable paginated ordering."""
+        orders = {
+            "newest": "pp.id DESC",
+            "last_used_desc": "julianday(pp.last_used_at) DESC, pp.id DESC",
+        }
+        if sort not in orders:
+            raise ValueError("Unknown pair sort order")
         if type(limit) is not int or not 1 <= limit <= 500:
             raise ValueError("limit must be between 1 and 500")
         if type(offset) is not int or offset < 0:
@@ -227,7 +234,7 @@ class PairOperations:
             conn,
             where,
             [*params, limit, offset],
-            " ORDER BY pp.id DESC LIMIT ? OFFSET ?",
+            f" ORDER BY {orders[sort]} LIMIT ? OFFSET ?",
         )
         return {
             "pairs": pairs,

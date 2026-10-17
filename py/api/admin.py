@@ -1480,7 +1480,16 @@ class AdminRoutesMixin:
                 continue
             counts["found"] += 1
             status = outcome["status"] if isinstance(outcome, dict) else outcome
-            if status in counts:
+            if status in (
+                "added",
+                "linked",
+                "enriched",
+                "unchanged",
+                "ambiguous",
+                "unresolved",
+                "conflict",
+                "failed",
+            ):
                 counts[status] += 1
             if isinstance(outcome, dict):
                 counts["pairs_added"] += outcome.get("pairs_added", 0)
@@ -1492,11 +1501,12 @@ class AdminRoutesMixin:
         if not metadata:
             return None
         canonical = dict(metadata)
-        if isinstance(canonical.get("prompt"), str):
-            try:
-                canonical["prompt"] = json.loads(canonical["prompt"])
-            except (ValueError, TypeError):
-                pass
+        for key in ("prompt", "workflow"):
+            if isinstance(canonical.get(key), str):
+                try:
+                    canonical[key] = json.loads(canonical[key])
+                except (ValueError, TypeError):
+                    pass
         if not canonical.get("prompt") and not canonical.get("parameters"):
             return None
         resolution = resolve_prompt_pair(canonical)
@@ -1505,7 +1515,9 @@ class AdminRoutesMixin:
                 self.db, str(media_file), canonical, resolution
             )
             return result if detailed else result["status"]
-        if resolution["state"] in ("ambiguous", "unresolved"):
+        if resolution["state"] == "ambiguous":
+            return "ambiguous"
+        if resolution["state"] == "unresolved":
             if canonical.get("prompt") or not isinstance(
                 canonical.get("parameters"), str
             ):

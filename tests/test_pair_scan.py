@@ -81,3 +81,33 @@ class TestPairScan(AdminAPITestCase):
             )["unchanged"],
             1,
         )
+
+    def test_legacy_found_outcome_is_not_counted_twice(self):
+        result = self.api._ingest_scan_batch_sync(
+            [(self.output_dir / "blank.png", {"parameters": "Negative prompt: blur"})]
+        )
+        self.assertEqual(result["processed"], 1)
+        self.assertEqual(result["found"], 1)
+
+    def test_ambiguous_a1111_does_not_fall_back_to_legacy_guess(self):
+        meta = {
+            "parameters": (
+                "cat\nNegative prompt: blur\nNegative prompt: noise"
+                "\nSteps: 20, Sampler: Euler"
+            )
+        }
+        self.assertEqual(
+            self.api._ingest_scanned_file(self.output_dir / "ambiguous.png", meta),
+            "ambiguous",
+        )
+        self.assertEqual(self.api.db.get_recent_prompts()["prompts"], [])
+
+    def test_raw_png_workflow_is_stored_as_object_and_repeat_is_unchanged(self):
+        path = self.output_dir / "workflow.png"
+        workflow = {"nodes": [{"id": 1, "type": "PromptManagerPair"}]}
+        metadata = {"prompt": json.dumps(graph()), "workflow": json.dumps(workflow)}
+        self.assertEqual(self.api._ingest_scanned_file(path, metadata), "added")
+        self.assertEqual(
+            self.api.db.get_image_prompt_info(str(path))["workflow_data"], workflow
+        )
+        self.assertEqual(self.api._ingest_scanned_file(path, metadata), "unchanged")

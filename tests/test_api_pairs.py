@@ -113,3 +113,12 @@ class TestPairAPI(PromptAPITestCase):
             "/prompt_manager/bulk/delete", json={"prompt_ids": [prompt_id]}
         )
         self.assertEqual(response.status, 409)
+
+    async def test_recent_pairs_sort_by_use_and_reject_unknown_sort(self):
+        first = (await (await self._create()).json())["pair"]
+        await self._create(negative_text="noise")
+        self.api.db.record_prompt_pair_use(first["id"])
+        response = await self.client.get("/prompt_manager/pairs?sort=last_used_desc")
+        self.assertEqual((await response.json())["pairs"][0]["id"], first["id"])
+        response = await self.client.get("/prompt_manager/pairs?sort=invalid")
+        self.assertEqual(response.status, 400)

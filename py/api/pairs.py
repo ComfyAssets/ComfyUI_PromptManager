@@ -129,6 +129,7 @@ class PairRoutesMixin:
             category=request.query.get("category"),
             tags=request.query.getall("tag", []),
             include_archived=archived == "true",
+            sort=request.query.get("sort", "newest"),
             limit=limit,
             offset=offset,
         )

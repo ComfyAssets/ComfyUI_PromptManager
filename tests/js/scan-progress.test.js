@@ -95,3 +95,11 @@ test('completion label reports pair enrichment, unresolved work and failures', (
     assert.match(completionLabel(state),/4 need review, 1 failed/);
     assert.match(completionLabel({...state,cancelled:true}),/^Scan cancelled!/);
 });
+
+test('older servers without pair counts retain a complete readable summary', () => {
+    const {completionLabel}=require('../../web/js/scan-progress.js');
+    const state=reduceScanEvent(initialState(),{type:'complete',processed:2,found:1,added:1,linked:0});
+    assert.match(completionLabel(initialState()),/0 new pairs, 0 pair links; 0 need review, 0 failed/);
+    assert.match(completionLabel(state),/0 enriched, 0 unchanged/);
+    assert.equal(fromStatus({running:true,last_event:{type:'unknown'}}).status,'running');
+});
