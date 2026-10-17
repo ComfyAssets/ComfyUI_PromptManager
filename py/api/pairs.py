@@ -1,6 +1,7 @@
 """Reusable ordered prompt combinations, separate from legacy prompt CRUD."""
 
 from functools import wraps
+from typing import Callable
 
 from aiohttp import web
 
@@ -24,9 +25,9 @@ except ImportError:
     )
 
 
-def pair_response(handler):
+def pair_response(handler: Callable) -> Callable:
     @wraps(handler)
-    async def wrapped(self, request):
+    async def wrapped(self, request: web.Request) -> web.Response:
         try:
             return await handler(self, request)
         except PairDependencyError as exc:
@@ -67,19 +68,19 @@ def metadata_fields(data: dict) -> dict:
     return fields
 
 
-async def object_body(request) -> dict:
+async def object_body(request: web.Request) -> dict:
     data = await request.json()
     if not isinstance(data, dict):
         raise ValueError("Expected a JSON object")
     return data
 
 
-def missing_pair():
+def missing_pair() -> web.Response:
     return web.json_response({"success": False, "error": "Pair not found"}, status=404)
 
 
 class PairRoutesMixin:
-    def _register_pair_routes(self, routes) -> None:
+    def _register_pair_routes(self, routes: web.RouteTableDef) -> None:
         routes.get("/prompt_manager/pairs/export")(self.export_prompt_pairs)
         routes.get("/prompt_manager/pairs")(self.list_prompt_pairs)
         routes.post("/prompt_manager/pairs")(self.save_prompt_pair)
@@ -88,7 +89,7 @@ class PairRoutesMixin:
         routes.delete("/prompt_manager/pairs/{pair_id}")(self.delete_prompt_pair)
 
     @pair_response
-    async def save_prompt_pair(self, request):
+    async def save_prompt_pair(self, request: web.Request) -> web.Response:
         data = await object_body(request)
         positive = data.get("positive_text")
         negative = data.get("negative_text")
@@ -107,7 +108,7 @@ class PairRoutesMixin:
         return web.json_response({"success": True, "pair": pair})
 
     @pair_response
-    async def get_prompt_pair(self, request):
+    async def get_prompt_pair(self, request: web.Request) -> web.Response:
         pair = await self._run_in_executor(
             self.db.get_prompt_pair, int(request.match_info["pair_id"])
         )
@@ -118,7 +119,7 @@ class PairRoutesMixin:
         )
 
     @pair_response
-    async def list_prompt_pairs(self, request):
+    async def list_prompt_pairs(self, request: web.Request) -> web.Response:
         limit, offset = parse_page_params(request.query)
         archived = request.query.get("include_archived", "false")
         if archived not in ("true", "false"):
@@ -136,7 +137,7 @@ class PairRoutesMixin:
         return web.json_response({"success": True, **result})
 
     @pair_response
-    async def update_prompt_pair(self, request):
+    async def update_prompt_pair(self, request: web.Request) -> web.Response:
         pair_id = int(request.match_info["pair_id"])
         data = await object_body(request)
         allowed = {"title", "category", "tags", "rating", "notes", "archived"}
@@ -161,14 +162,14 @@ class PairRoutesMixin:
         return web.json_response({"success": True, "pair": pair})
 
     @pair_response
-    async def delete_prompt_pair(self, request):
+    async def delete_prompt_pair(self, request: web.Request) -> web.Response:
         deleted = await self._run_in_executor(
             self.db.delete_prompt_pair, int(request.match_info["pair_id"])
         )
         return web.json_response({"success": True}) if deleted else missing_pair()
 
     @pair_response
-    async def export_prompt_pairs(self, request):
+    async def export_prompt_pairs(self, request: web.Request) -> web.Response:
         pairs = []
         offset = 0
         while True:

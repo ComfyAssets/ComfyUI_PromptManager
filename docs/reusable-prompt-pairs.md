@@ -1,8 +1,8 @@
 # Reusable positive and negative prompts
 
 Tracking: [#193](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues/193).
-This work builds on the Split node in PR #192. Keep the feature unmerged until
-maintainer live testing is complete.
+This work builds on the merged Split node in PR #192. Keep the feature unmerged
+until maintainer live testing is complete.
 
 ## Storage contract
 
@@ -55,3 +55,39 @@ Keep all existing coverage floors and test suites. Record regression failures
 before implementing each behavior. Tests use disposable state and the managed
 CPU host; never mutate the maintainer's running ComfyUI or personal database.
 Python changes require a ComfyUI restart. Live approval is required before merge.
+
+## Live testing
+
+1. Download a database backup from Admin before the first restart. The additive
+   schema migration runs on startup; existing workflows and prompt IDs stay valid.
+2. Restart ComfyUI, reload the browser, and add **Prompt Manager (+/-)** from
+   **ComfyAssets / Prompts**. Connect CLIP and the two conditioning outputs to the
+   sampler's positive and negative inputs.
+3. Enter both texts, save a pair, then keep positive unchanged and change negative.
+   Recent should show both combinations with distinct negative excerpts. Selecting
+   one previews both; **Use pair** loads both together.
+4. Test category/tag autocomplete and metadata opt-in, resizing, light/dark,
+   switching Classic / Nodes 2.0 both ways, and workflow reload. Connected fields
+   stay authoritative; run the node to save connected metadata values.
+5. Queue the same recipe twice and change only negative once. Usage should count
+   dequeued jobs even when ComfyUI caches the node. Prepend, append and LoRA triggers
+   affect positive only. Gallery text is labelled as recorded during execution or
+   recovered from workflow metadata.
+6. Run an output metadata scan to enrich existing images. Repeat it: pairs and
+   links must remain deduplicated, with unchanged results rather than new links.
+   Conflicting or ambiguous files need review and are preserved.
+
+Fresh executions embed bounded text evidence in PNG metadata. A cached node may
+not emit fresh evidence, so its graph-derived text is explicitly marked inferred.
+Multiple distinct batch records without an image anchor remain unresolved.
+Rescanning after interruption is safe through idempotent per-file writes; this
+version does not persist a filesystem scan cursor across server restarts.
+The API can request cancellation with `POST /prompt_manager/scan/cancel`; the
+existing dashboard Hide button continues to hide progress without cancelling.
+
+Pair APIs are under `/prompt_manager/pairs`: POST saves a combination, GET lists
+and filters, GET/PATCH/DELETE `/{id}` reads, edits metadata or removes an unused
+pair. Changing text creates another combination. Null metadata updates preserve
+existing values; empty strings/lists clear supported fields. Archive a pair with
+`PATCH {"archived":true}`. GET `/export` provides versioned JSON containing both
+texts and pair metadata; this is an export format, not a JSON import endpoint.
