@@ -45,6 +45,7 @@ from .prompt_manager import (  # noqa: E402
     PromptManagerFocused,
     PromptManagerSplit,
 )
+from .prompt_manager_pair import PromptManagerPair  # noqa: E402
 from .prompt_manager_text import PromptManagerText  # noqa: E402
 from .prompt_search_list import PromptSearchList  # noqa: E402
 
@@ -52,6 +53,7 @@ NODE_CLASS_MAPPINGS = {
     "PromptManager": PromptManager,
     "PromptManagerFocused": PromptManagerFocused,
     "PromptManagerSplit": PromptManagerSplit,
+    "PromptManagerPair": PromptManagerPair,
     "PromptManagerText": PromptManagerText,
     "PromptSearchList": PromptSearchList,
 }
@@ -60,6 +62,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptManager": "Prompt Manager (Classic)",
     "PromptManagerFocused": "Prompt Manager (Focused)",
     "PromptManagerSplit": "Prompt Manager (Split)",
+    "PromptManagerPair": "Prompt Manager (+/-)",
     "PromptManagerText": "Prompt Manager Text",
     "PromptSearchList": "Prompt Search List",
 }

@@ -29,11 +29,13 @@ from typing import Any, Callable, List, Optional, Tuple
 try:
     from .hashing import generate_prompt_hash
     from .logging_config import get_logger
-    from .prompt_graph import resolve_text, run_prompt_nodes
+    from .prompt_graph import intrinsic_pair_nodes, resolve_text, run_prompt_nodes
+    from .prompt_pair_resolver import resolve_text_input
 except ImportError:
     from utils.hashing import generate_prompt_hash
     from utils.logging_config import get_logger
-    from utils.prompt_graph import resolve_text, run_prompt_nodes
+    from utils.prompt_graph import intrinsic_pair_nodes, resolve_text, run_prompt_nodes
+    from utils.prompt_pair_resolver import resolve_text_input
 
 logger = get_logger("prompt_manager.usage_tracking")
 
@@ -88,10 +90,10 @@ class QueuedRuns:
         self._lock = threading.Lock()
 
     def put(self, prompt_id: str, runs: List[Run]) -> None:
-        if not runs:
-            return
         with self._lock:
             self._entries.pop(prompt_id, None)
+            if not runs:
+                return
             self._entries[prompt_id] = list(runs)
             while len(self._entries) > self._max:
                 self._entries.popitem(last=False)
@@ -108,6 +110,8 @@ class QueuedRuns:
 # Shared between the queue hook and the nodes
 PENDING_FIRST_USE = PendingFirstUse()
 QUEUED_RUNS = QueuedRuns()
+PENDING_PAIR_FIRST_USE = PendingFirstUse()
+QUEUED_PAIR_RUNS = QueuedRuns()
 
 
 def queued_prompt_runs(graph: Any) -> List[Run]:
@@ -118,7 +122,12 @@ def queued_prompt_runs(graph: Any) -> List[Run]:
     runs: List[Run] = []
     seen = set()
     for node_id in run_prompt_nodes(graph):
-        text = resolve_text(graph, node_id)
+        node = graph.get(node_id, {}) if isinstance(graph, dict) else {}
+        text = (
+            resolve_text_input(graph, node_id, "text")
+            if node.get("class_type") == "PromptManagerPair"
+            else resolve_text(graph, node_id)
+        )
         if not text:
             continue
         prompt_hash = generate_prompt_hash(text)
@@ -127,6 +136,62 @@ def queued_prompt_runs(graph: Any) -> List[Run]:
         seen.add(prompt_hash)
         runs.append((prompt_hash, text))
     return runs
+
+
+def pair_run_key(positive: str, negative: str) -> str:
+    """Stable ordered identity; an empty negative remains an explicit component."""
+    return generate_prompt_hash(positive) + ":" + generate_prompt_hash(negative)
+
+
+def queued_pair_runs(graph: Any) -> List[Tuple[str, str, str]]:
+    """Resolve raw paired recipes only when both outputs form the used pair."""
+    found, seen = [], set()
+    for node_id in intrinsic_pair_nodes(graph):
+        positive = resolve_text_input(graph, node_id, "text")
+        negative = resolve_text_input(graph, node_id, "negative_text")
+        if positive is None or not positive.strip() or negative is None:
+            continue
+        key = pair_run_key(positive, negative)
+        if key not in seen:
+            seen.add(key)
+            found.append((key, positive, negative))
+    return found
+
+
+def find_pair_id(db: Any, positive: str, negative: str) -> Optional[int]:
+    """Find a saved pair without creating or overwriting its metadata."""
+    positive_row = db.get_prompt_by_hash(generate_prompt_hash(positive))
+    negative_row = (
+        db.get_prompt_by_hash(generate_prompt_hash(negative))
+        if negative.strip()
+        else None
+    )
+    if not positive_row or (negative.strip() and not negative_row):
+        return None
+    row = (
+        db.model.get_connection()
+        .execute(
+            "SELECT id FROM prompt_pairs "
+            "WHERE positive_prompt_id=? AND negative_prompt_id IS ?",
+            (positive_row["id"], negative_row["id"] if negative_row else None),
+        )
+        .fetchone()
+    )
+    return row["id"] if row else None
+
+
+def count_pair_runs(
+    runs: List[Tuple[str, str, str]],
+    db: Any,
+    pending: PendingFirstUse,
+) -> None:
+    """Count existing recipes at dequeue and defer new recipes until first save."""
+    for key, positive, negative in runs:
+        pair_id = find_pair_id(db, positive, negative)
+        if pair_id:
+            db.record_prompt_pair_use(pair_id)
+        else:
+            pending.add(key)
 
 
 def count_runs(runs: List[Run], db: Any, pending: PendingFirstUse) -> None:
@@ -139,7 +204,12 @@ def count_runs(runs: List[Run], db: Any, pending: PendingFirstUse) -> None:
             pending.add(prompt_hash)
 
 
-def handle_queued_prompt(json_data: Any, queued: QueuedRuns = QUEUED_RUNS) -> Any:
+def handle_queued_prompt(
+    json_data: Any,
+    queued: QueuedRuns = QUEUED_RUNS,
+    *,
+    pair_queued: QueuedRuns = QUEUED_PAIR_RUNS,
+) -> Any:
     """ComfyUI on-prompt handler body: stash the runs, always return the request.
 
     Adds a canonical UUID4 ``prompt_id`` when the client sent none, so the stash
@@ -149,13 +219,18 @@ def handle_queued_prompt(json_data: Any, queued: QueuedRuns = QUEUED_RUNS) -> An
     try:
         graph = json_data.get("prompt") if isinstance(json_data, dict) else None
         runs = queued_prompt_runs(graph)
-        if not runs:
+        pair_runs = queued_pair_runs(graph)
+        if not runs and not pair_runs:
+            if isinstance(json_data, dict) and json_data.get("prompt_id") is not None:
+                queued.put(str(json_data["prompt_id"]), [])
+                pair_queued.put(str(json_data["prompt_id"]), [])
             return json_data
         prompt_id = json_data.get("prompt_id")
         if prompt_id is None:
             prompt_id = str(uuid.uuid4())
             json_data["prompt_id"] = prompt_id
         queued.put(str(prompt_id), runs)
+        pair_queued.put(str(prompt_id), pair_runs)
     except Exception as e:
         logger.warning(f"Could not resolve queued prompt runs: {e}")
     return json_data
@@ -166,12 +241,18 @@ def on_dequeue(
     queued: QueuedRuns,
     db_factory: Callable[[], Any],
     pending: PendingFirstUse,
+    *,
+    pair_queued: QueuedRuns = QUEUED_PAIR_RUNS,
+    pair_pending: PendingFirstUse = PENDING_PAIR_FIRST_USE,
 ) -> None:
     """Count the runs stashed for a prompt ComfyUI is about to execute."""
     try:
         runs = queued.pop(str(prompt_id))
-        if runs:
-            count_runs(runs, db_factory(), pending)
+        pair_runs = pair_queued.pop(str(prompt_id))
+        if runs or pair_runs:
+            db = db_factory()
+            count_runs(runs, db, pending)
+            count_pair_runs(pair_runs, db, pair_pending)
     except Exception as e:
         logger.warning(f"Could not count runs of dequeued prompt {prompt_id}: {e}")
 
@@ -183,8 +264,11 @@ def count_queued_prompt(
     try:
         graph = json_data.get("prompt") if isinstance(json_data, dict) else None
         runs = queued_prompt_runs(graph)
-        if runs:
-            count_runs(runs, db_factory(), pending)
+        pair_runs = queued_pair_runs(graph)
+        if runs or pair_runs:
+            db = db_factory()
+            count_runs(runs, db, pending)
+            count_pair_runs(pair_runs, db, PENDING_PAIR_FIRST_USE)
     except Exception as e:
         logger.warning(f"Could not count queued prompt runs: {e}")
     return json_data

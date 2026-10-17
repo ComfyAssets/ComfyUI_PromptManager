@@ -12,7 +12,13 @@ import re
 from typing import Any, Dict, List, Optional
 
 PROMPT_MANAGER_TYPES = frozenset(
-    {"PromptManager", "PromptManagerText", "PromptManagerFocused", "PromptManagerSplit"}
+    {
+        "PromptManager",
+        "PromptManagerText",
+        "PromptManagerFocused",
+        "PromptManagerSplit",
+        "PromptManagerPair",
+    }
 )
 
 # Upper bound on nodes expanded per graph; queued and embedded graphs are untrusted
@@ -105,15 +111,19 @@ def positive_prompt_nodes(graph: Any) -> List[str]:
     seen = set()
     stack = list(reversed(_positive_roots(graph)))
     while stack and len(seen) < MAX_VISITS:
-        node_id = str(stack.pop()[0])
-        if node_id in seen:
+        link = stack.pop()
+        node_id, slot = str(link[0]), link[1]
+        if (node_id, slot) in seen:
             continue
-        seen.add(node_id)
+        seen.add((node_id, slot))
         node = graph.get(node_id)
         if not isinstance(node, dict):
             continue
+        if node.get("class_type") == "PromptManagerPair" and slot not in (0, 2):
+            continue
         if node.get("class_type") in PROMPT_MANAGER_TYPES:
-            found.append(node_id)
+            if node_id not in found:
+                found.append(node_id)
             continue
         stack.extend(reversed(_upstream_links(_inputs(node))))
     return found
@@ -228,3 +238,67 @@ def resolve_text(graph: Any, node_id: str) -> Optional[str]:
 
     text = resolve(_inputs(graph.get(str(node_id))).get("text"))
     return text.strip() if isinstance(text, str) and text.strip() else None
+
+
+def intrinsic_pair_nodes(graph: Any) -> List[str]:
+    """Paired nodes whose matching outputs feed the same sampler, or standalone."""
+    if not isinstance(graph, dict) or len(graph) > MAX_VISITS:
+        return []
+    if not has_sampler(graph):
+        return [
+            str(key)
+            for key, value in graph.items()
+            if isinstance(value, dict)
+            and value.get("class_type") == "PromptManagerPair"
+        ]
+
+    def origin(link: Any, role: str, kind: str = "conditioning") -> Optional[str]:
+        seen = set()
+        while _is_link(link) and len(seen) < MAX_DEPTH:
+            node_id, slot = str(link[0]), link[1]
+            if (node_id, slot, kind) in seen:
+                return None
+            seen.add((node_id, slot, kind))
+            node = graph.get(node_id)
+            if not isinstance(node, dict):
+                return None
+            name, inputs = node.get("class_type"), _inputs(node)
+            if name == "PromptManagerPair":
+                expected = {
+                    ("positive", "conditioning"): 0,
+                    ("negative", "conditioning"): 1,
+                    ("positive", "string"): 2,
+                    ("negative", "string"): 3,
+                }
+                return node_id if slot == expected[(role, kind)] else None
+            if name == "CLIPTextEncode" and slot == 0 and kind == "conditioning":
+                link, kind = inputs.get("text"), "string"
+            elif name == "Reroute" and slot == 0:
+                keys = [key for key in ("value", "input", "in") if key in inputs]
+                if len(keys) != 1:
+                    return None
+                link = inputs[keys[0]]
+            else:
+                return None
+        return None
+
+    found = []
+    for node in graph.values():
+        if not isinstance(node, dict):
+            continue
+        inputs = _inputs(node)
+        if not _is_link(inputs.get("positive")) or not _is_link(inputs.get("negative")):
+            continue
+        if (
+            not _is_link(inputs.get("model"))
+            and "sampler" not in str(node.get("class_type", "")).lower()
+        ):
+            continue
+        positive = origin(inputs["positive"], "positive")
+        if (
+            positive
+            and positive == origin(inputs["negative"], "negative")
+            and positive not in found
+        ):
+            found.append(positive)
+    return found

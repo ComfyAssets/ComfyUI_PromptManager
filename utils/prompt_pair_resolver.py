@@ -392,3 +392,26 @@ def resolve_prompt_pair(
             candidates=[resolver.pair(node_id) for node_id in sampler_ids],
         )
     return resolver.pair(sampler_ids[0])
+
+
+def resolve_text_input(
+    graph: Any,
+    node_id: str,
+    input_name: str,
+    *,
+    max_visits: int = 500,
+    max_depth: int = 64,
+    max_text_length: int = 100_000,
+) -> Optional[str]:
+    """Resolve one raw STRING input; empty text is distinct from unknown input."""
+    if not isinstance(graph, dict) or len(graph) > max_visits:
+        return None
+    normalized = {str(key): value for key, value in graph.items()}
+    if len(normalized) != len(graph) or max_depth <= 0 or max_text_length <= 0:
+        return None
+    resolver = _GraphResolver(normalized, {}, max_visits, max_depth, max_text_length)
+    try:
+        _, inputs = resolver.node(str(node_id))
+        return resolver.text(inputs.get(input_name), "string")[0]
+    except _Unresolved:
+        return None

@@ -138,6 +138,7 @@ class TestPackageWiring(PackageTestCase):
             [
                 "PromptManager",
                 "PromptManagerFocused",
+                "PromptManagerPair",
                 "PromptManagerSplit",
                 "PromptManagerText",
                 "PromptSearchList",
