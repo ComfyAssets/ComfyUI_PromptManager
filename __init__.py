@@ -3,12 +3,13 @@ ComfyUI_PromptManager: A comprehensive ComfyUI custom node that extends text enc
 with persistent prompt storage, advanced search capabilities, and an automatic image
 gallery system.
 
-This module provides two main node types:
+This module provides prompt node types:
 - PromptManager: CLIP encoding node that outputs CONDITIONING
+- PromptManagerFocused: Editor-first layout using the same encoding contract
 - PromptManagerText: Text-only node that outputs STRING with prepend/append
   functionality
 
-Both nodes share the same database backend for persistent prompt storage and include
+The nodes share the same database backend for persistent prompt storage and include
 an automatic image gallery system that monitors ComfyUI output directories and links
 generated images to their source prompts.
 
@@ -38,18 +39,20 @@ def get_version():
     return "unknown"
 
 
-from .prompt_manager import PromptManager  # noqa: E402
+from .prompt_manager import PromptManager, PromptManagerFocused  # noqa: E402
 from .prompt_manager_text import PromptManagerText  # noqa: E402
 from .prompt_search_list import PromptSearchList  # noqa: E402
 
 NODE_CLASS_MAPPINGS = {
     "PromptManager": PromptManager,
+    "PromptManagerFocused": PromptManagerFocused,
     "PromptManagerText": PromptManagerText,
     "PromptSearchList": PromptSearchList,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptManager": "Prompt Manager (Classic)",
+    "PromptManagerFocused": "Prompt Manager (Focused)",
     "PromptManagerText": "Prompt Manager Text",
     "PromptSearchList": "Prompt Search List",
 }

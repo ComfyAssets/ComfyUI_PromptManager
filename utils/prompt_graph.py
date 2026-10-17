@@ -11,7 +11,9 @@ link-tracing rules of web/js/comfy-metadata.js.
 import re
 from typing import Any, Dict, List, Optional
 
-PROMPT_MANAGER_TYPES = frozenset({"PromptManager", "PromptManagerText"})
+PROMPT_MANAGER_TYPES = frozenset(
+    {"PromptManager", "PromptManagerText", "PromptManagerFocused"}
+)
 
 # Upper bound on nodes expanded per graph; queued and embedded graphs are untrusted
 MAX_VISITS = 500
@@ -92,7 +94,7 @@ def has_sampler(graph: Any) -> bool:
 
 
 def positive_prompt_nodes(graph: Any) -> List[str]:
-    """Ids of PromptManager/PromptManagerText nodes that feed a positive input.
+    """Ids of PromptManager family nodes that feed a positive input.
 
     Ordered by discovery, each id once. Malformed graphs yield an empty list.
     """

@@ -327,3 +327,37 @@ test("missing or empty metadata yields placeholders", () => {
     assert.equal(r.checkpoint, "Unknown");
     assert.equal(extractGenerationParams(null).seed, "Unknown");
 });
+
+
+test("Focused API metadata composes linked positive text and preserves negative role", () => {
+    const prompt = {
+        1: { class_type: "KSampler", inputs: { positive: ["2", 0], negative: ["3", 0], model: ["4", 0] } },
+        2: { class_type: "PromptManagerFocused", inputs: { text: "a fox", prepend_text: ["5", 0], append_text: "8k" } },
+        3: { class_type: "PromptManagerFocused", inputs: { text: "blurry", prepend_text: "avoid" } },
+        4: { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "model.safetensors" } },
+        5: { class_type: "PrimitiveString", inputs: { value: "lora trigger" } },
+    };
+    const result = extractGenerationParams({ prompt });
+    assert.equal(result.positivePrompt, "lora trigger a fox 8k");
+    assert.equal(result.negativePrompt, "avoid blurry");
+});
+
+test("Focused workflow-only metadata recovers serialized fields and connected composition", () => {
+    const workflow = {
+        nodes: [
+            { id: 1, type: "KSampler", inputs: [{ name: "positive", link: 1 }, { name: "negative", link: 2 }, { name: "model", link: 3 }] },
+            { id: 2, type: "PromptManagerFocused", widgets_values: ["a fox", "animals", "fox", "ignored search", "stale widget", "8k"], inputs: [{ name: "prepend_text", link: 4 }] },
+            { id: 3, type: "PromptManagerFocused", widgets_values: ["blurry", "negative", "bad", "ignored search", "avoid", "watermark"] },
+            { id: 4, type: "UNETLoader", widgets_values: ["model.safetensors", "default"] },
+            { id: 5, type: "CLIPTextEncode", widgets_values: ["lora trigger"] },
+        ],
+        links: [
+            [1, 2, 0, 1, 0, "CONDITIONING"], [2, 3, 0, 1, 1, "CONDITIONING"],
+            [3, 4, 0, 1, 2, "MODEL"], [4, 5, 0, 2, 0, "STRING"],
+        ],
+    };
+    const result = extractGenerationParams({ workflow });
+    assert.equal(result.positivePrompt, "lora trigger a fox 8k");
+    assert.equal(result.negativePrompt, "avoid blurry watermark");
+    assert.equal(result.checkpoint, "model.safetensors");
+});

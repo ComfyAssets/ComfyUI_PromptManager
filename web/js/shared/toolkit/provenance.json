@@ -1,16 +1,20 @@
 {
   "name": "@comfyassets/toolkit",
   "version": "0.1.0",
-  "resolved": "https://codeload.github.com/ComfyAssets/ComfyAssets-Toolkit/tar.gz/66644f5620e10efeaba090dca2d5be54baa2ee14",
-  "integrity": "sha512-jvDj3iYJHjRCH7nZimoF4KNLwEVdzKVQIOZrMfoLg9aLnHm98R8YvBUOvnlJ+JNrM8/LnD2m30u3ggSTnR0/sw==",
+  "resolved": "https://codeload.github.com/ComfyAssets/ComfyAssets-Toolkit/tar.gz/b5a34b1d12336cd1bdfd6b890b80db63cbc3c389",
+  "integrity": "sha512-rhI9xDH0U1WPBq7zuAN4rE6bLWx7ujTM7IIBNXINexN/z4FoQK4jnGXPMtNhW1XbbEpoZPZdExnrJpcRRPZXUw==",
   "files": {
     "core.js": {
       "source": "ui/core.js",
       "sha256": "cd10b700441a607cb1d56051cf0a430c0b36f901c0c351d8f4dae067090d8838"
     },
+    "suggestions.js": {
+      "source": "ui/suggestions.js",
+      "sha256": "979b7867bcf7c8d5bec2c6631cec4c15a5cbb5774c4eaa554989b954555b9a04"
+    },
     "controls.css": {
       "source": "ui/controls.css",
-      "sha256": "3ae1ca39077ffc3621b86ae7ef77202841fa27061b0e4623f2bb0413b27ecd7b"
+      "sha256": "9bb8662a5c911537c0577c5b21a861356550ec6235fcf2101d6585cc148efb8d"
     },
     "LICENSE": {
       "source": "LICENSE",
@@ -18,7 +22,7 @@
     },
     "SOURCE.md": {
       "source": "SOURCE.md",
-      "sha256": "46c226483f1d0c01524b1363435ccb3b1e67c2b0f6ed9161f7f087e49e8ed5a9"
+      "sha256": "713be4367ac20a587aa7740b985086dc86a866706584de4d56646c6ed0e574c9"
     }
   }
 }

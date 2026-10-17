@@ -3,6 +3,8 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 const { installClassicControls } = await import(api.fileURL('/prompt_manager/js/classic-node.js'));
+const { installFocusedNode } = await import(api.fileURL('/prompt_manager/js/focused-node.js'));
+const promptManagerTypes = new Set(['PromptManager', 'PromptManagerText', 'PromptManagerFocused']);
 
 // ============================================================================
 // Top Bar Button Integration (similar to rgthree-comfy approach)
@@ -197,7 +199,7 @@ function syncPromptManagerWidgets() {
   const nodes = graph._nodes || graph.nodes || [];
 
   for (const node of nodes) {
-    if (node.type === "PromptManager" || node.type === "PromptManagerText") {
+    if (promptManagerTypes.has(node.type)) {
       if (node.widgets && node.widgets.length > 0) {
         if (!node.widgets_values) {
           node.widgets_values = [];
@@ -257,7 +259,7 @@ app.registerExtension({
       if (graph && output) {
         const nodes = graph._nodes || graph.nodes || [];
         for (const node of nodes) {
-          if ((node.type === "PromptManager" || node.type === "PromptManagerText") && output[node.id]) {
+          if (promptManagerTypes.has(node.type) && output[node.id]) {
             const outputNode = output[node.id];
 
             // Skip if text input is connected to another node (value is a link reference array)
@@ -290,6 +292,10 @@ app.registerExtension({
   },
 
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
+    if (nodeData.name === 'PromptManagerFocused') {
+      installFocusedNode(nodeType, app, api, parseSearchQuery);
+      return;
+    }
     if (nodeData.name === "PromptManager" || nodeData.name === "PromptManagerText") {
       // Store original methods
       const onNodeCreated = nodeType.prototype.onNodeCreated;
