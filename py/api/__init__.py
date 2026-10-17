@@ -22,6 +22,7 @@ from aiohttp import web
 from PIL import Image
 
 from .prompts import PromptRoutesMixin
+from .pairs import PairRoutesMixin
 from .images import ImageRoutesMixin
 from .admin import AdminRoutesMixin
 from .logging_routes import LoggingRoutesMixin
@@ -240,6 +241,7 @@ async def _gzip_middleware(request, handler):
 
 
 class PromptManagerAPI(
+    PairRoutesMixin,
     PromptRoutesMixin,
     ImageRoutesMixin,
     AdminRoutesMixin,
@@ -391,6 +393,7 @@ class PromptManagerAPI(
 
         # ── Register domain-specific routes from mixins ───────────────
 
+        self._register_pair_routes(routes)
         self._register_prompt_routes(routes)
         self._register_image_routes(routes)
         self._register_admin_routes(routes)

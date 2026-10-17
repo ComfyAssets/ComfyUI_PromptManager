@@ -6,6 +6,11 @@ import os
 import sqlite3
 
 from aiohttp import web
+
+try:
+    from ...database.pairs import PairDependencyError
+except ImportError:
+    from database.pairs import PairDependencyError
 from urllib.parse import quote
 
 # Upper bounds on page sizes and offsets for every list endpoint. The offset
@@ -793,6 +798,8 @@ class PromptRoutesMixin:
                     status=404,
                 )
 
+        except PairDependencyError as exc:
+            return web.json_response({"success": False, "error": str(exc)}, status=409)
         except ValueError:
             return web.json_response(
                 {"success": False, "error": "Invalid prompt ID"}, status=400
@@ -840,6 +847,8 @@ class PromptRoutesMixin:
                     {"success": False, "error": "Prompt not found"}, status=404
                 )
 
+        except PairDependencyError as exc:
+            return web.json_response({"success": False, "error": str(exc)}, status=409)
         except sqlite3.IntegrityError:
             return web.json_response(
                 {"success": False, "error": "Another prompt already has this text"},
@@ -1081,6 +1090,8 @@ class PromptRoutesMixin:
                 }
             )
 
+        except PairDependencyError as exc:
+            return web.json_response({"success": False, "error": str(exc)}, status=409)
         except Exception as e:
             self.logger.error(f"Bulk delete error: {e}")
             return web.json_response(
