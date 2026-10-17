@@ -15,14 +15,14 @@ function fixture(t) {
     writeFileSync(join(tooling, 'package.json'), JSON.stringify({ devDependencies: { '@comfyassets/toolkit': resolved } }));
     writeFileSync(join(tooling, 'package-lock.json'), JSON.stringify({ packages: { 'node_modules/@comfyassets/toolkit': { version: '0.1.0', resolved, integrity: 'sha512-fixture' } } }));
     writeFileSync(join(dependency, 'package.json'), JSON.stringify({ name: '@comfyassets/toolkit', version: '0.1.0', license: 'MIT' }));
-    for (const file of ['ui/core.js', 'ui/suggestions.js', 'ui/controls.css', 'LICENSE', 'SOURCE.md']) writeFileSync(join(dependency, file), file);
+    for (const file of ['ui/core.js', 'ui/suggestions.js', 'ui/prompt-bridge.js', 'ui/controls.css', 'LICENSE', 'SOURCE.md']) writeFileSync(join(dependency, file), file);
     return { root, tooling, dependency, destination: join(root, 'web/js/shared/toolkit') };
 }
 
 test('toolkit browser assets ship unchanged with deterministic locked provenance', t => {
     const f = fixture(t);
     syncToolkit({ root: f.root });
-    for (const [name, source] of Object.entries({ 'core.js': 'ui/core.js', 'suggestions.js': 'ui/suggestions.js', 'controls.css': 'ui/controls.css', LICENSE: 'LICENSE', 'SOURCE.md': 'SOURCE.md' })) assert.deepEqual(readFileSync(join(f.destination, name)), readFileSync(join(f.dependency, source)));
+    for (const [name, source] of Object.entries({ 'core.js': 'ui/core.js', 'suggestions.js': 'ui/suggestions.js', 'prompt-bridge.js': 'ui/prompt-bridge.js', 'controls.css': 'ui/controls.css', LICENSE: 'LICENSE', 'SOURCE.md': 'SOURCE.md' })) assert.deepEqual(readFileSync(join(f.destination, name)), readFileSync(join(f.dependency, source)));
     const first = readFileSync(join(f.destination, 'provenance.json'), 'utf8');
     assert.equal(JSON.parse(first).integrity, 'sha512-fixture');
     syncToolkit({ root: f.root });

@@ -6,20 +6,22 @@ import runtime from './comfyui-runtime.json' with { type: 'json' };
 
 const repositoryRoot = fileURLToPath(new URL('../../', import.meta.url));
 
+export async function preparePromptManagerPlugin({ installed, stateDirectory }) {
+    const configPath = join(installed, 'config.json');
+    await writeFile(configPath, JSON.stringify({
+        database: { default_path: join(stateDirectory, 'prompts.db') },
+        gallery: { monitoring: { enabled: false, directories: [join(stateDirectory, 'output')] } },
+        web_ui: { result_timeout: 0 },
+    }), { mode: 0o600 });
+    return { PROMPT_MANAGER_CONFIG_PATH: configPath, PROMPT_MANAGER_EXTRA_GALLERY_ROOTS: '' };
+}
+
 export function launchComfyHost({ checkout, repository = repositoryRoot,
     python = process.env.PM_TEST_PYTHON || 'python', port = 8189, pins = runtime,
     logPath = join(repositoryRoot, 'tools/vendor/test-results/comfyui-host.log'), forwardOutput = true }) {
     return launchSharedHost({ checkout, repository, python, port, pins, logPath, forwardOutput,
         pluginName: 'promptmanager',
-        async preparePlugin({ installed, stateDirectory }) {
-            const configPath = join(installed, 'config.json');
-            await writeFile(configPath, JSON.stringify({
-                database: { default_path: join(stateDirectory, 'prompts.db') },
-                gallery: { monitoring: { enabled: false, directories: [join(stateDirectory, 'output')] } },
-                web_ui: { result_timeout: 0 },
-            }), { mode: 0o600 });
-            return { PROMPT_MANAGER_CONFIG_PATH: configPath, PROMPT_MANAGER_EXTRA_GALLERY_ROOTS: '' };
-        },
+        preparePlugin: preparePromptManagerPlugin,
     });
 }
 

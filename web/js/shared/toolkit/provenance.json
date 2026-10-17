@@ -1,8 +1,8 @@
 {
   "name": "@comfyassets/toolkit",
-  "version": "0.1.0",
-  "resolved": "https://codeload.github.com/ComfyAssets/ComfyAssets-Toolkit/tar.gz/b5a34b1d12336cd1bdfd6b890b80db63cbc3c389",
-  "integrity": "sha512-rhI9xDH0U1WPBq7zuAN4rE6bLWx7ujTM7IIBNXINexN/z4FoQK4jnGXPMtNhW1XbbEpoZPZdExnrJpcRRPZXUw==",
+  "version": "0.2.0",
+  "resolved": "https://codeload.github.com/ComfyAssets/ComfyAssets-Toolkit/tar.gz/ac245953df4c0d4b019c7bc59e93ad011c07ec22",
+  "integrity": "sha512-ax+xm+/uZBrYHsByaVqNuON55aNUVbAPiPpgBl5vN/3CmgFcYD7KLs0SOK8EtwZqdKt6PKyQVyNER4gIxy7RoQ==",
   "files": {
     "core.js": {
       "source": "ui/core.js",
@@ -11,6 +11,10 @@
     "suggestions.js": {
       "source": "ui/suggestions.js",
       "sha256": "979b7867bcf7c8d5bec2c6631cec4c15a5cbb5774c4eaa554989b954555b9a04"
+    },
+    "prompt-bridge.js": {
+      "source": "ui/prompt-bridge.js",
+      "sha256": "66f98b31c52a2fe360c3a604738b7d5fb849323fd2a988d681c28859400acb25"
     },
     "controls.css": {
       "source": "ui/controls.css",

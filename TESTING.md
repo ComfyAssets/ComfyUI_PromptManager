@@ -155,3 +155,31 @@ node --test tests/js/workspace-*.test.js
 Use the disposable fixture and managed-host prerequisites above. A maintainer
 live check needs a ComfyUI restart after adding the Python route, then opening
 `/prompt_manager/workspace`; the mockup preview server is a separate design tool.
+
+## Prompt sending and cross-pack compatibility
+
+`tests/js/prompt-bridge-contracts.test.js` runs the Toolkit's shared protocol
+contracts against the actual checked-in browser asset. Adapter and lifecycle
+units cover role isolation, connected inputs, stale previews, callback recovery,
+serialization normalization and cached-page restoration. Browser tab workflows
+exercise real BroadcastChannel delivery; `tests/comfyui/prompt-bridge.spec.mjs`
+checks the real widgets, execution serialization and renderer transitions.
+
+The existing required real-ComfyUI job also runs `test:compat`: PromptManager
+alone, pinned KikoTools alone and both together, each starting in Classic and
+Nodes 2.0. It copies tracked source into disposable hosts, preserves independent
+configuration and checks edits/reload with both packs present. KikoTools remains
+on its current embedded foundation; this does not adopt the Toolkit in that pack.
+
+For local runs, use a clean KikoTools checkout at the revision in
+`tools/vendor/cross-pack-runtime.json`, plus the managed-host prerequisites above:
+
+```sh
+PM_COMFY_ROOT=/path/to/pinned/comfyui PM_KIKO_ROOT=/path/to/pinned/kikotools \
+  npm run --prefix tools/vendor test:compat
+```
+
+The compatibility runner reserves loopback ports 8193–8195; `PM_COMPAT_PORT`
+selects another consecutive unprivileged range. Never run automated tests against
+the maintainer's running ComfyUI. This JavaScript host extension needs a full
+browser refresh after deployment; its first slice adds no gallery send controls.
