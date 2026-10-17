@@ -11,7 +11,11 @@ import sqlite3
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+_mock_server = MagicMock()
+_mock_server.PromptServer.instance.routes = MagicMock()
+sys.modules.setdefault("server", _mock_server)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database.models import PromptModel  # noqa: E402
