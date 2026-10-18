@@ -145,6 +145,32 @@ cover cancellation, malformed responses and bounded visibility lookup. These run
 automatically in the existing four-browser-project workflow and frontend coverage job. `tests/comfyui/workspace.spec.mjs` verifies the page against the
 managed host with both renderer startup configurations.
 
+The shared inline and collection inspector reads the current rooted file's supported
+embedded records, exact generation facts and recorded or inferred prompt evidence.
+`tests/browser/full-inspector.spec.mjs` covers original/metadata/workflow downloads,
+response limits, source changes, nested sending, matched dark/light and mobile
+geometry, and the loaded-collection viewer. The viewer never fetches another page
+or preloads all originals. Its explicit slideshow waits 3.5 seconds after image
+readiness, pauses at native video without advancing on `ended`, and resumes on a
+manually selected image only while prior intent remains. Pause/Stop, inspector
+reading/copy/download/send, hidden document, media failure, close, query/route
+disposal and pagehide cancel that intent; returning visibility or closing the sender
+does not resume it. Stop leaves native video playback alone. Video uses only the
+existing normalized `gallerySettings` autoplay/mute/loop values, read without writes;
+denied/malformed storage falls back to autoplay off, mute on and loop on. Rejected
+autoplay keeps native controls usable.
+
+The inspector does not establish historical file identity, infer run membership,
+edit image tags, export all EXIF, or load/execute a workflow. Saved vocabulary is
+labelled by its recipe or positive-prompt scope. Limited raw evidence is omitted
+atomically, with JSON exports unavailable and the rooted original still downloadable.
+The inspection API uses one bounded read (2 MiB aggregate metadata, 8 MiB non-PNG
+header, 10,000 PNG chunks, three-second ffprobe, 500 graph nodes/semantic expansions,
+64 link/JSON-container levels and an 8 MiB serialized response); retry does not raise
+these limits. Installing the Python inspection/source-scope changes requires a
+maintainer ComfyUI restart. Automated tests use disposable hosts and never restart
+the running personal ComfyUI.
+
 Run the focused page checks with:
 
 ```sh

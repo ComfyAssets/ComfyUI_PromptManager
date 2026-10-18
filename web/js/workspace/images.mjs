@@ -1,9 +1,11 @@
 import { createScope, createButton, createField, createSelect } from '../shared/toolkit/core.js';
 import { createImageStream, imageKey } from './images-state.mjs';
 import { layoutImages, visibleImages, workspaceImageMetrics } from './image-layout.mjs';
-import { mountPromptInspector } from './prompt-inspector.mjs';
+import { mountFileInspector } from './file-inspector.mjs';
+import { createInspectionController } from './inspection-state.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
+import { createMediaViewer } from './media-viewer.mjs';
 
 function el(tag, text, className) {
     const element = document.createElement(tag);
@@ -26,13 +28,16 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     if (parentScope.signal.aborted) { scope.dispose(); return {dispose}; }
     const { resolveUrl } = window.ApiClient;
     const sender = createPromptSender({scope});
-    let detailInspector, previewInspector;
-    scope.cleanup(() => { detailInspector?.dispose(); previewInspector?.dispose(); });
+    let detailInspector;
+    const inspection = createInspectionController({api});
+    scope.cleanup(inspection.subscribe(next => detailInspector?.setState(next)));
+    scope.cleanup(() => inspection.dispose());
+    scope.cleanup(() => detailInspector?.dispose());
     const visit = embedded ? null : lastVisit;
     let density = visit?.density || 'comfortable';
     let metrics = workspaceImageMetrics(window.innerWidth, density);
-    let layout = visit?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer, viewer;
-    let state, geometry = { positions: [], height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest;
+    let layout = visit?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer;
+    let state, geometry = { positions: [], height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest, recovering = false;
     const rendered = new Map();
     const itemIndexes = new Map();
     const filters = { root: 'all', q: '', subfolder: '', media: 'all', sort: 'newest', ...visit?.filters };
@@ -63,7 +68,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     if (!embedded) main.append(filtersBar, optionsStatus);
     const controls = el('div', undefined, 'image-view-controls');
     const toolbar = el('div', undefined, 'image-toolbar');
-    toolbar.append(el('h2', embedded ? 'Linked images' : 'All images'));
+    const collectionHeading = el('h2', embedded ? 'Linked images' : 'All images');collectionHeading.tabIndex = -1;
+    toolbar.append(collectionHeading);
     const count = el('p', 'Loading images…', 'muted');
     const layouts = el('div', undefined, 'image-layouts');
     layouts.setAttribute('role', 'group'); layouts.setAttribute('aria-label', 'Image layout');
@@ -87,14 +93,13 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         try {
             await api.post('/prompt_manager/gallery/rescan', {}, {signal:scope.signal});
             if (scope.signal.aborted) return;
-            await loadOptions();
-            if (!scope.signal.aborted) reset();
+            if (await loadOptions() && !scope.signal.aborted) reset();
         } catch {
             if (scope.signal.aborted) return;
             optionsStatus.textContent = 'Images could not be refreshed. Try Refresh again.';
             optionsStatus.hidden = false;
         } finally {
-            refresh.disabled = false;
+            refresh.disabled = recovering;
         }
     });
     const currentGallery = el('a', 'Current gallery', 'workspace-link');
@@ -128,29 +133,13 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     details.append(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));
     body.append(collection, details);
     main.append(body);
-    const dialog = el('dialog', undefined, 'image-preview');
-    dialog.setAttribute('aria-label', 'Image preview');
-    const dialogHeader = el('header');
-    const previewTitle = el('h2');
-    const close = createButton('Close preview');
-    dialogHeader.append(previewTitle, close);
-    const stage = el('div', undefined, 'image-preview-stage');
-    const previewBody = el('div', undefined, 'image-preview-body');
-    const previewDetails = el('aside', undefined, 'image-preview-details');
-    previewDetails.setAttribute('aria-label', 'Preview prompt details');
-    previewBody.append(stage, previewDetails);
-    dialog.append(dialogHeader, previewBody);
-    main.append(dialog);
-    scope.listen(close, 'click', () => dialog.close());
-    scope.listen(dialog, 'close', () => { destroyPreview(); scheduleLoad(); });
-    function destroyPreview() {
-        previewInspector?.dispose(); previewInspector = null;
-        previewDetails.replaceChildren();
-        viewer?.destroy(); viewer = null;
-        for (const video of stage.querySelectorAll('video')) releaseVideo(video);
-        stage.replaceChildren();
-    }
-    scope.cleanup(() => { dialog.close(); destroyPreview(); dialog.remove(); });
+    const mediaViewer = createMediaViewer({container:main,parentScope:scope,inspectionController:inspection,sender,
+        onSelect:image => {if (selection !== imageKey(image)) inspect(image);else inspection.select(image);},
+        onRefresh:refreshInspectionCollection,onClose:scheduleLoad,onRestoreFocus:image => {
+            const index = state?.items.findIndex(entry => imageKey(entry) === imageKey(image));
+            if (index >= 0) focusImage(index);else collectionHeading.focus({preventScroll:true});
+        }});
+    scope.cleanup(() => mediaViewer.dispose());
 
     function mediaElement(image, lazy = false) {
         const video = image.is_video && !image.thumbnail_url;
@@ -167,51 +156,18 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         detailInspector?.dispose();
         selection = imageKey(image);
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
-        const thumbnail = mediaElement(image);
-        const metadata = el('dl', undefined, 'image-facts');
-        const fields = [['Source', image.root_dir], ['Path', image.path], ['Size', formatBytes(image.size)],
-            ['Dimensions', image.width && image.height ? `${image.width} × ${image.height}` : 'Not available'],
-            ['Modified', new Date(image.modified_time * 1000).toLocaleString()]];
-        for (const [label, value] of fields) {
-            const row = el('div'); row.append(el('dt', label), el('dd', value)); metadata.append(row);
-        }
-        const preview = createButton('Open full preview', 'ca-primary');
-        // The view delegates these controls so changing selection retains no old handlers.
-        preview.dataset.previewKey = selection;
-        const download = el('a', 'Download original', 'workspace-link');
-        download.href = resolveUrl(image.url); download.download = image.filename;
-        const prompts = el('div');
-        const legacy = el('p', 'Open Current gallery for tagging.', 'muted');
-        legacy.hidden = embedded;
-        details.replaceChildren(thumbnail, el('h2', image.filename), preview, download, prompts, metadata, legacy);
-        detailInspector = mountPromptInspector(prompts, {api, image, sender, parentScope:scope});
+        detailInspector = mountFileInspector(details, {sender, parentScope:scope, inline:true,
+            onPreview:() => previewImage(image), onRetry:() => inspection.retry(), onRefresh:refreshInspectionCollection});
+        detailInspector.setState(inspection.state);
+        inspection.select(image);
         for (const [key, card] of rendered) {
             card.classList.toggle('selected', key === selection);
             card.querySelector('.image-open').setAttribute('aria-pressed', String(key === selection));
         }
     }
-    scope.listen(details, 'click', event => {
-        const key = event.target.closest('[data-preview-key]')?.dataset.previewKey;
-        if (key) previewImage(state.items.find(image => imageKey(image) === key));
-    });
     function previewImage(image) {
         if (!image) return;
-        if (selection !== imageKey(image)) inspect(image);
-        destroyPreview();
-        previewTitle.textContent = image.filename;
-        previewInspector = mountPromptInspector(previewDetails, {api, image, sender, parentScope:scope});
-        if (!dialog.open) dialog.showModal();
-        if (image.is_video) {
-            const video = el('video'); video.controls = true; video.src = resolveUrl(image.url); video.preload = 'metadata';
-            stage.append(video);
-        } else if (window.Viewer) {
-            const original = el('img'); original.src = resolveUrl(image.url); original.alt = image.filename;
-            original.hidden = true; stage.append(original);
-            viewer = new window.Viewer(original, { inline: true, container: stage, navbar: false, title: false,
-                transition: false, keyboard: false, viewed() { viewer?.resize(); } });
-        } else {
-            stage.append(el('p', 'The image viewer could not load. Refresh the page to try again.'));
-        }
+        mediaViewer.open({items:state.items,selectedKey:imageKey(image),trigger:document.activeElement});
     }
     function cardFor(image) {
         const key = imageKey(image);
@@ -368,12 +324,12 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         state = next;
         count.textContent = embedded ? `${next.loaded.toLocaleString()} loaded · ${next.total.toLocaleString()} linked images` : `${next.loaded.toLocaleString()} of ${next.total.toLocaleString()} images`;
         if (changed) updateLayout();
-        message.textContent = next.error ? 'Images could not be loaded. Retry or refresh the collection.' : next.loading ? 'Loading images…' : '';
+        message.textContent = recovering ? 'Images paused until sources and folders are available.' : next.error ? 'Images could not be loaded. Retry or refresh the collection.' : next.loading ? 'Loading images…' : '';
         if (next.error) message.setAttribute('role', 'alert'); else message.setAttribute('role', 'status');
         retry.hidden = !next.error;
         more.hidden = !next.hasMore || !!next.error;
-        more.setAttribute('aria-disabled', String(next.loading));
-        end.textContent = !next.loading && !next.error && !next.hasMore ? (next.loaded ? 'You’re all caught up.' : embedded ? 'No linked media available for this selection.' : 'No matching images or media. Try changing the filters.') : '';
+        more.setAttribute('aria-disabled', String(next.loading || recovering));
+        end.textContent = !recovering && !next.loading && !next.error && !next.hasMore ? (next.loaded ? 'You’re all caught up.' : embedded ? 'No linked media available for this selection.' : 'No matching images or media. Try changing the filters.') : '';
         if (!selection && next.items.length) inspect(next.items[0]);
         scheduleLoad();
     }
@@ -382,15 +338,15 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         stream.dispose();
         for (const video of body.querySelectorAll('video')) releaseVideo(video);
     });
-    scope.listen(more, 'click', () => stream.loadMore());
-    scope.listen(retry, 'click', () => stream.loadMore());
+    scope.listen(more, 'click', () => { if (!recovering) stream.loadMore(); });
+    scope.listen(retry, 'click', () => { if (!recovering) stream.loadMore(); });
     function maybeLoad() {
-        if (!observer || scope.signal.aborted || !state?.hasMore || state.loading || state.error || dialog.open) return;
+        if (!observer || recovering || scope.signal.aborted || !state?.hasMore || state.loading || state.error || main.querySelector('.image-preview[open]')) return;
         const bounds = continuation.getBoundingClientRect();
         if (bounds.top <= window.innerHeight + 250 && bounds.bottom >= 0) stream.loadMore();
     }
     function scheduleLoad() {
-        if (!loadFrame) loadFrame = requestAnimationFrame(() => { loadFrame = 0; maybeLoad(); });
+        if (!scope.signal.aborted && !loadFrame) loadFrame = requestAnimationFrame(() => { loadFrame = 0; maybeLoad(); });
     }
     if (typeof IntersectionObserver === 'function') {
         observer = new IntersectionObserver(entries => {
@@ -399,11 +355,31 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         observer.observe(continuation);
     }
     function reset() {
-        detailInspector?.dispose(); detailInspector = null;
+        mediaViewer.stopSlideshow();
+        main.querySelector('.image-preview[open]')?.close();
+        if (!recovering) {
+            inspection.clear();
+            detailInspector?.dispose(); detailInspector = null;
+            details.replaceChildren(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));
+        }
         selection = null;
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
-        details.replaceChildren(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));
-        stream.reset(filters);
+        stream.reset(filters, {load:!recovering});
+    }
+    async function refreshInspectionCollection() {
+        if (scope.signal.aborted) return;
+        // Numeric roots may now name another source; retire the old stream first.
+        recovering = true;
+        filters.root = 'all';filters.subfolder = '';filters.q = search.value.trim();
+        source.replaceChildren(new Option('All sources', 'all'));folder.replaceChildren(new Option('All folders', ''));
+        for (const control of [search,source,folder,media,sort,refresh,more,retry]) control.disabled = true;
+        optionsStatus.hidden = true;
+        reset();
+        const discovery = loadOptions(), request = optionsRequest;
+        if (!await discovery || scope.signal.aborted || request !== optionsRequest) return;
+        recovering = false;
+        for (const control of [search,source,folder,media,sort,refresh,more,retry]) control.disabled = false;
+        reset();
     }
     async function loadOptions() {
         optionsRequest?.abort();
@@ -412,22 +388,25 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             const params = new URLSearchParams({mode:'workspace', include_ancestors:'true'});
             if (filters.root !== 'all') params.set('root', filters.root);
             const data = await api.get(`/prompt_manager/gallery/subfolders?${params}`, {signal:request.signal});
-            if (scope.signal.aborted || request !== optionsRequest) return;
+            if (scope.signal.aborted || request !== optionsRequest) return false;
             source.replaceChildren(new Option('All sources', 'all'), ...data.roots.map(root => new Option(root.label, String(root.index))));
             source.value = filters.root;
             folder.replaceChildren(new Option('All folders', ''), ...data.subfolders.map(path => new Option(path, path)));
             folder.value = filters.subfolder;
             optionsStatus.hidden = true;
+            return true;
         } catch {
-            if (scope.signal.aborted || request !== optionsRequest) return;
-            optionsStatus.textContent = 'Sources and folders could not be loaded. Refresh to retry.';
+            if (scope.signal.aborted || request !== optionsRequest) return false;
+            optionsStatus.textContent = recovering ? 'Sources and folders could not be loaded. Refresh image collection to retry.' : 'Sources and folders could not be loaded. Refresh to retry.';
             optionsStatus.hidden = false;
+            return false;
         }
     }
     scope.cleanup(() => optionsRequest?.abort());
-    scope.listen(search, 'input', scope.debounce(() => { filters.q = search.value.trim(); reset(); }, 200));
+    scope.listen(search, 'input', scope.debounce(() => { if (!recovering) { filters.q = search.value.trim(); reset(); } }, 200));
     for (const [input, key] of [[source, 'root'], [folder, 'subfolder'], [media, 'media'], [sort, 'sort']]) {
         scope.listen(input, 'change', () => {
+            if (recovering) return;
             filters[key] = input.value;
             if (key === 'root') { filters.subfolder = ''; folder.value = ''; loadOptions(); }
             reset();

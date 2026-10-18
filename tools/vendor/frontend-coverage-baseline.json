@@ -13,7 +13,7 @@
   },
   "comfy-metadata.js": {
     "lines": 97,
-    "branches": 90,
+    "branches": 91,
     "functions": 98,
     "statements": 97
   },
@@ -168,10 +168,10 @@
     "statements": 98
   },
   "workspace/images.mjs": {
-    "lines": 95,
+    "lines": 97,
     "branches": 87,
     "functions": 98,
-    "statements": 95
+    "statements": 97
   },
   "prompt-bridge-adapter.js": {
     "lines": 98,
@@ -192,10 +192,10 @@
     "statements": 98
   },
   "workspace/prompt-inspector.mjs": {
-    "lines": 97,
-    "branches": 92,
+    "lines": 98,
+    "branches": 98,
     "functions": 98,
-    "statements": 97
+    "statements": 98
   },
   "workspace/prompt-sender.mjs": {
     "lines": 98,
@@ -224,6 +224,36 @@
   "workspace/library-layout.mjs": {
     "lines": 98,
     "branches": 98,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/file-inspector.mjs": {
+    "lines": 95,
+    "branches": 92,
+    "functions": 88,
+    "statements": 95
+  },
+  "workspace/inspection-state.mjs": {
+    "lines": 98,
+    "branches": 93,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/media-viewer.mjs": {
+    "lines": 98,
+    "branches": 93,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/prompt-blocks.mjs": {
+    "lines": 88,
+    "branches": 88,
+    "functions": 98,
+    "statements": 88
+  },
+  "workspace/viewer-state.mjs": {
+    "lines": 98,
+    "branches": 95,
     "functions": 98,
     "statements": 98
   }

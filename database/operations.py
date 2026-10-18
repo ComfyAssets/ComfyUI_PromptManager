@@ -2014,12 +2014,18 @@ class PromptDatabase(
         return count
 
     def get_image_prompt_info(
-        self, image_path: str, allow_filename_fallback: bool = True
+        self,
+        image_path: str,
+        allow_filename_fallback: bool = True,
+        *,
+        report_ambiguity: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Look up prompt + image metadata for a given image path.
 
         Returns a dict with prompt_id, text, category, tags, rating, notes,
         workflow_data, prompt_metadata, generation_time, parameters — or None.
+        Opting into report_ambiguity returns only an association_status marker
+        for multiple matches; default callers still receive None.
         """
         with self.model.get_connection() as conn:
             cursor = conn.execute(
@@ -2045,6 +2051,8 @@ class PromptDatabase(
             ]
             matches = exact or rows
             if len(matches) != 1:
+                if report_ambiguity and matches:
+                    return {"association_status": "ambiguous"}
                 return None
             row = matches[0]
             associations = self.get_image_prompt_pairs(row[9])

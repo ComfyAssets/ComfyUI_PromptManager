@@ -36,6 +36,34 @@ async function chooseDestination(page) {
     return sender;
 }
 
+test('collection viewer rejects stale source and sends only refreshed API evidence',async({page,request,context})=>{
+    const host=await fakeHost(context,page);
+    await page.addInitScript(()=>{window.copied=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>window.copied.push(text)}});});
+    try {
+        const loaded=await(await request.get('/prompt_manager/images/output?mode=workspace&limit=40')).json();const stale=loaded.images.find(image=>image.root_index===0&&image.path==='shared/same.png');
+        await page.goto(workspace);await select(page,'1:shared/same.png');await expect(details(page)).toContainText('Dog landscape');
+        await expect(await request.post('/prompt_manager/settings',{data:{gallery_root_paths:['input','output']}})).toBeOK();
+        const response=page.waitForResponse(result=>result.url().includes('/images/inspect/shared/same.png?root=0'));
+        await select(page,'0:shared/same.png');const changed=await response;expect(changed.status()).toBe(409);expect((await changed.json()).code).toBe('source-changed');
+        await page.locator('article[data-image-key="0:shared/same.png"] .image-card-footer button').click();const preview=page.getByRole('dialog',{name:'Image preview',exact:true});
+        const message='The source changed. Refresh the image collection before inspecting this file.';
+        await expect(preview).toContainText(message);await expect(preview.locator('[data-copy-role],[data-send-role],.file-inspector a[download]')).toHaveCount(0);
+        const original=preview.getByRole('group',{name:'Media controls',exact:true}).getByLabel('Download original',{exact:true});
+        await expect(original).toHaveAttribute('aria-disabled','true');await expect(original).not.toHaveAttribute('href',/./);
+        let downloads=0;page.on('download',()=>downloads++);await original.focus();await page.keyboard.press('Enter');expect(downloads).toBe(0);
+        await expect(preview.getByRole('button',{name:'Retry media',exact:true})).toBeHidden();
+        await expect(preview.getByRole('button',{name:'Retry prompt details',exact:true})).toHaveCount(0);await expect(preview).not.toContainText('Dog landscape');await expect(preview).not.toContainText('Cat portrait');
+        expect(await page.evaluate(()=>window.copied)).toEqual([]);expect(await host.evaluate(()=>window.applied)).toEqual([]);
+        const refreshed=page.waitForResponse(result=>result.url().includes('/images/output?'));
+        await preview.getByRole('button',{name:'Refresh image collection',exact:true}).click();await refreshed;await expect(preview).toHaveCount(0);
+        const collection=await(await request.get('/prompt_manager/images/output?mode=workspace&limit=40')).json();const fresh=collection.images.find(image=>image.root_index===0&&image.path===stale.path);expect(fresh.root_scope).not.toBe(stale.root_scope);
+        const evidence=await(await request.get(`/prompt_manager/images/inspect/shared/same.png?root=0&root_scope=${fresh.root_scope}`)).json();
+        await select(page,'0:shared/same.png');await details(page).getByRole('button',{name:'Open full preview',exact:true}).click();await expect(preview).toContainText(evidence.prompts.positive.text);
+        await preview.getByRole('button',{name:'Send prompt pair',exact:true}).click();const sender=await chooseDestination(page);await sender.getByRole('button',{name:'Preview changes',exact:true}).click();await sender.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();await expect(sender).toContainText('Sent to ComfyUI.');
+        expect(await host.evaluate(()=>window.applied)).toEqual([{positive:evidence.prompts.positive.text,negative:evidence.prompts.negative.text}]);expect(await page.evaluate(()=>window.copied)).toEqual([]);
+    } finally {await expect(await request.post('/prompt_manager/settings',{data:{gallery_root_paths:['output','input']}})).toBeOK();await host.evaluate(()=>window.fixtureHost.dispose());await host.close();}
+});
+
 test('physical image inspector resolves positive and negative metadata separately for duplicate filenames',async({page})=>{
     await page.goto(workspace);await select(page,'0:shared/same.png');
     await expect(role(details(page),'Positive')).toContainText('Cat portrait');await expect(role(details(page),'Negative')).toContainText('blurry, watermark');
@@ -141,7 +169,7 @@ test('no open ComfyUI window is actionable and rediscovery finds a newly opened 
 test('mobile inspector exposes full long prompts, truthful uncertainty and copy failure feedback',async({page})=>{
     const text=`A long detailed prompt ${'with readable full composition, '.repeat(150)}END OF FULL PROMPT`;
     await page.addInitScript(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw new Error('Permission denied');}}}));
-    await page.route('**/images/inspect/**',route=>route.fulfill({json:{success:true,image:{root_index:0,path:'shared/same.png',filename:'same.png'},prompts:{positive:{status:'resolved',text,source:'execution'},negative:{status:'ambiguous',text:null,source:null}}}}));
+    await page.route('**/images/inspect/**',route=>route.fulfill({json:{success:true,root_scope:new URL(route.request().url()).searchParams.get('root_scope'),image:{root_index:0,path:'shared/same.png',filename:'same.png'},prompts:{positive:{status:'resolved',text,source:'execution'},negative:{status:'ambiguous',text:null,source:null}}}}));
     await page.setViewportSize({width:390,height:844});await page.goto(workspace);await select(page,'0:shared/same.png');
     const positive=role(details(page),'Positive');await expect(positive.locator('pre')).toHaveText(text);
     await expect(role(details(page),'Negative')).toContainText('Multiple possible prompts. Source could not be determined.');
@@ -195,7 +223,7 @@ test('responsive gallery defers observed size writes and still fits the new view
 });
 
 test('unverified saved associations explain uncertainty and cannot be sent',async({page})=>{
-    await page.route('**/images/inspect/uncertain.png?root=0',route=>route.fulfill({json:{success:true,prompts:{
+    await page.route('**/images/inspect/uncertain.png?root=0*',route=>route.fulfill({json:{success:true,root_scope:new URL(route.request().url()).searchParams.get('root_scope'),image:{root_index:0,path:'uncertain.png',filename:'uncertain.png'},prompts:{
         positive:{status:'unresolved',text:null,source:'saved-association',message:'A saved library association exists, but it cannot be verified against this file.'},
         negative:{status:'absent',text:null,source:null},
     }}}));

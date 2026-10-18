@@ -195,6 +195,8 @@ test('history shares real image metadata, vendored Viewer and the acknowledged p
         await sender.getByRole('button',{name:'Close',exact:true}).click();
         await media(page).first().getByRole('button',{name:'Open same.png',exact:true}).click();
         const inspector=page.getByRole('region',{name:'Image details',exact:true});await expect(inspector.getByRole('region',{name:'Positive prompt',exact:true})).toContainText('Cat portrait');
+        await expect(inspector.locator('.generation-facts dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);
+        await expect(inspector.locator('summary')).toHaveText(['File & provenance','Workflow & raw metadata']);
         await inspector.getByRole('button',{name:'Open full preview',exact:true}).click();await expect(page.locator('dialog[open] .viewer-canvas img')).toBeVisible();
         await page.keyboard.press('Escape');await expect(page.locator('dialog[open]')).toHaveCount(0);
         await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Overview',exact:true}).click();await expect(page.locator('.viewer-container')).toHaveCount(0);

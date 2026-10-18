@@ -15,6 +15,7 @@ from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
 from tests.browser.workspace_visual_fixture import seed_workspace_visual
+from tests.browser.workspace_inspector_fixture import seed_workspace_inspector
 
 
 class TestModel:
@@ -226,6 +227,7 @@ def create_app(root: Path) -> web.Application:
     async def reset(request: web.Request) -> web.Response:
         data = await request.json() if request.can_read_body else {}
         workspace_visual = data.get("workspace_visual", False)
+        full_inspector = data.get("full_inspector", False)
         extra = data.get("extra_images", 0)
         include_video = data.get("include_video", False)
         prompt_inspector = data.get("prompt_inspector", False)
@@ -234,6 +236,17 @@ def create_app(root: Path) -> web.Application:
         extra_variants = data.get("extra_variants", 0)
         if (
             not isinstance(workspace_visual, bool)
+            or not isinstance(full_inspector, bool)
+            or (
+                full_inspector
+                and (
+                    workspace_visual
+                    or prompt_inspector
+                    or native_library
+                    or extra_prompts != 0
+                    or extra_variants != 0
+                )
+            )
             or (
                 workspace_visual
                 and any(
@@ -245,6 +258,7 @@ def create_app(root: Path) -> web.Application:
                         "native_library",
                         "extra_prompts",
                         "extra_variants",
+                        "full_inspector",
                     )
                 )
             )
@@ -264,6 +278,13 @@ def create_app(root: Path) -> web.Application:
             raise web.HTTPBadRequest()
         if workspace_visual:
             await api._run_in_executor(seed_workspace_visual, api, root)
+            return web.json_response({"success": True})
+        if full_inspector:
+            await api._run_in_executor(
+                lambda: seed_workspace_inspector(
+                    api, root, extra_images=extra, include_video=include_video
+                )
+            )
             return web.json_response({"success": True})
         await api._run_in_executor(
             seed,

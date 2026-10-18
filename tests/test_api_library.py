@@ -260,6 +260,44 @@ class TestLibraryAPI(ImageAPITestCase):
             self.assertTrue(item["previews"][1]["path"].endswith("-1.png"))
             self.assertTrue(all(image["root_index"] == 0 for image in item["previews"]))
 
+    async def test_root_scope_library_gallery_and_previews_share_formatter(self):
+        from urllib.parse import parse_qs, quote, urlsplit
+
+        relative = "nested/猫 % #.png"
+        pair = self.api.db.save_prompt_pair("Cat", "Noise", title="Pair title")
+        positive = self.api.db.get_prompt_pair(pair)["positive_prompt_id"]
+        path = make_png(self.output_dir / relative)
+        make_png(self.output_dir / "thumbnails/nested/猫 % #_thumb.png")
+        image = self.api.db.link_image_to_prompt(positive, str(path))
+        self.api.db.link_image_to_pair(pair, image, {"source": "fixture"})
+        _, listing = await self.get()
+        preview = listing["items"][0]["previews"][0]
+        _, gallery = await self.get(f"/{positive}/images", pair_id=pair)
+        descriptor = gallery["images"][0]
+        self.assertRegex(descriptor.get("root_scope", ""), r"^[0-9a-f]{64}$")
+        self.assertEqual(preview["root_scope"], descriptor["root_scope"])
+        for entry in (preview, descriptor):
+            self.assertIn(quote(relative, safe="/"), entry["url"])
+            for url in (entry["url"], entry["thumbnail_url"]):
+                query = parse_qs(urlsplit(url).query)
+                self.assertEqual(query["root_scope"], [entry["root_scope"]])
+                self.assertEqual((await self.client.get(url)).status, 200)
+            self.assertIn("v", parse_qs(urlsplit(entry["thumbnail_url"]).query))
+        response = await self.client.get(
+            f"/prompt_manager/images/inspect/{quote(relative, safe='/')}",
+            params={"root": 0, "root_scope": descriptor["root_scope"]},
+        )
+        result = await response.json()
+        self.assertEqual(result["root_scope"], descriptor["root_scope"])
+        self.assertEqual(
+            result["image"],
+            {"root_index": 0, "path": relative, "filename": "猫 % #.png"},
+        )
+        self.assertEqual(result["library"]["metadata_scope"], "pair")
+        self.assertEqual(result["library"]["pair_id"], pair)
+        self.assertEqual(result["library"]["positive_id"], positive)
+        self.assertEqual(result["library"]["title"], "Pair title")
+
 
 class TestNameCursorBudget(unittest.TestCase):
     def test_lru_byte_budget_scope_and_oversize_keys_are_bounded(self):

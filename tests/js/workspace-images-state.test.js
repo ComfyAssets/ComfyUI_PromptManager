@@ -44,6 +44,22 @@ test('reset aborts pending requests and ignores stale success and failure', asyn
     assert.equal(stream.state.loading,false);
 });
 
+test('deferred reset cancels stale source work without fetching until discovery succeeds', async () => {
+    const {createImageStream}=await source;const requests=[];
+    const stream=createImageStream({api:{get:(url,{signal})=>{const d=deferred();requests.push({...d,url,signal});return d.promise;}}});
+    const old=stream.reset({root:1,subfolder:'old'});
+    const deferredReset=stream.reset({root:'all',q:'png',media:'image',sort:'name'},{load:false});
+    assert.equal(requests[0].signal.aborted,true);assert.equal(requests.length,1);
+    assert.equal(await deferredReset,0);
+    assert.equal(stream.state.items.length,0);assert.equal(stream.state.cursor,null);assert.equal(stream.state.loading,false);
+    requests[0].resolve(page([image('old',1)],2,'stale'));assert.equal(await old,0);assert.equal(stream.state.items.length,0);
+    const fresh=stream.loadMore();assert.equal(requests.length,2);
+    const query=new URL(requests[1].url,'http://local').searchParams;
+    assert.equal(query.has('root'),false);assert.equal(query.has('subfolder'),false);assert.equal(query.get('q'),'png');assert.equal(query.get('media'),'image');assert.equal(query.get('sort'),'name');
+    requests[1].resolve(page([image('fresh',0)]));assert.equal(await fresh,1);assert.equal(stream.state.items[0].path,'fresh');
+    stream.dispose();assert.equal(await stream.reset({}, {load:false}),0);assert.equal(requests.length,2);
+});
+
 test('concurrent loads do not duplicate requests, and failures retain data and cursor for retry', async () => {
     const {createImageStream}=await source; const pending=deferred(); const calls=[];
     const responses=[page([image('a')],2,'next'),pending.promise,page([image('b')],2)];

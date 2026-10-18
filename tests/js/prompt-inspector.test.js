@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { inspectPath, promptRoles, createInspectionLoader } from '../../web/js/workspace/prompt-inspector.mjs';
+import { inspectPath, promptRoles, createInspectionLoader, mountPromptBlocks } from '../../web/js/workspace/prompt-inspector.mjs';
 
 test('inspection keeps exact physical root and encodes every path component', () => {
     assert.equal(inspectPath({root_index:2,path:'a b/x#%.png'}), '/prompt_manager/images/inspect/a%20b/x%23%25.png?root=2');
@@ -12,6 +12,14 @@ test('only confirmed strings can be sent, including explicit empty negatives', (
         assert.deepEqual(promptRoles({positive:{status,text:'placeholder'},negative:{status:'resolved',text:null}}), {});
     }
     assert.deepEqual(promptRoles(null), {});
+});
+test('already aborted prompt blocks touch no container DOM or active handlers', () => {
+    const parent = new AbortController(); parent.abort();
+    const container = new Proxy({}, { get() { assert.fail('aborted mount accessed the container'); } });
+    const parentScope = { signal: parent.signal };
+    const view = mountPromptBlocks(container, { parentScope, sender: { open() { assert.fail('aborted action'); } } });
+    view.update({ positive: { status: 'resolved', text: 'late' } });
+    view.setState({ loading: true }); view.dispose();
 });
 test('superseded requests and disposed loaders cannot replace current metadata', async () => {
     const pending = [], changes = [];

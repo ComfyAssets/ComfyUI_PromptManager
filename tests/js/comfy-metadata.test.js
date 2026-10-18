@@ -1,7 +1,391 @@
 // Run with: node --test tests/js/
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { extractGenerationParams } = require("../../web/js/comfy-metadata.js");
+const { extractGenerationParams, extractGenerationFacts } = require("../../web/js/comfy-metadata.js");
+
+const parsedFactGraph = value => ({ status: "parsed", value });
+const absentFactGraph = () => ({ status: "absent", value: null });
+const factFields = ["seed", "steps", "cfg", "sampler", "scheduler", "model"];
+function factsFor(graph, extra = {}) {
+    assert.equal(typeof extractGenerationFacts, "function", "the conservative facts contract is exported");
+    return extractGenerationFacts({ prompt_graph: parsedFactGraph(graph), workflow_graph: absentFactGraph(), metadataStatus: "available", ...extra });
+}
+function factGraph(inputs = {}) {
+    return {
+        s: { class_type: "KSampler", inputs: { seed: "9007199254740993", steps: 28, cfg: "6.5000000000000000001", sampler_name: "dpmpp_2m", scheduler: "karras", model: ["model", 0], ...inputs } },
+        model: { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "model.safetensors" } },
+    };
+}
+
+test("facts keep unsafe seed and decimal strings exact", () => {
+    const facts = factsFor(factGraph());
+    assert.deepEqual(Object.keys(facts), factFields);
+    assert.deepEqual(factFields.map(field => facts[field].value), ["9007199254740993", "28", "6.5000000000000000001", "dpmpp_2m", "karras", "model.safetensors"]);
+    for (const fact of Object.values(facts)) assert.deepEqual(fact, {
+        status: "known", value: fact.value, source: "api-graph", evidence: "configuration", reason: null, sampler_id: "s",
+    });
+    const zero = factsFor(factGraph({ seed: 0, cfg: "0", steps: "1" }));
+    assert.equal(zero.seed.value, "0"); assert.equal(zero.cfg.value, "0");
+    for (const inputs of [{ seed: 9007199254740992 }, { seed: "1.5" }, { steps: "0" }, { cfg: "NaN" }, { cfg: {} }, { cfg: true }]) {
+        const key = Object.keys(inputs)[0];
+        assert.equal(factsFor(factGraph(inputs))[key].status, "unresolved");
+    }
+});
+
+test("facts do not choose equal sampler branches or unrelated model", () => {
+    const graph = factGraph(); graph.other = structuredClone(graph.s);
+    const ambiguous = factsFor(graph);
+    assert.ok(Object.values(ambiguous).every(fact => fact.status === "ambiguous" && fact.value === null));
+    const selected = factsFor(graph, { resolution: { state: "resolved", sampler_id: "other" } });
+    assert.equal(selected.seed.sampler_id, "other");
+    const unrelated = factsFor(factGraph({ model: ["missing", 0] }));
+    assert.equal(unrelated.model.status, "unresolved");
+    assert.equal(unrelated.model.value, null);
+    assert.equal(factsFor({ only: graph.model }).seed.status, "unresolved");
+});
+
+test("facts respect named scalar outputs and custom scheduler paths", () => {
+    const graph = factGraph({ seed: ["primitive", 0], steps: ["steps", 0], cfg: ["cfg", 0], sampler_name: ["sampler", 0], scheduler: ["scheduler", 0], model: ["lora", 0] });
+    graph.primitive = { class_type: "PrimitiveInt", inputs: { value: "0" } };
+    graph.steps = { class_type: "PrimitiveInt", inputs: { value: "50" } };
+    graph.cfg = { class_type: "PrimitiveFloat", inputs: { value: "0" } };
+    graph.sampler = { class_type: "PrimitiveString", inputs: { value: "euler" } };
+    graph.scheduler = { class_type: "PrimitiveStringMultiline", inputs: { value: "normal" } };
+    graph.lora = { class_type: "LoraLoader", inputs: { lora_name: "style", model: ["model", 0] } };
+    assert.deepEqual(factFields.map(field => factsFor(graph)[field].value), ["0", "50", "0", "euler", "normal", "model.safetensors"]);
+    graph.settings = { class_type: "UnknownSettings", inputs: { first: 20, second: 30 } };
+    graph.s.inputs.steps = ["settings", 0];
+    assert.equal(factsFor(graph).steps.status, "unresolved");
+    const custom = {
+        s: { class_type: "SamplerCustomAdvanced", inputs: { guider: ["g", 0], noise: ["n", 0], sampler: ["k", 0], sigmas: ["sigmas", 0] } },
+        g: { class_type: "CFGGuider", inputs: { model: ["m", 0], cfg: "4.0000000000000001" } },
+        n: { class_type: "RandomNoise", inputs: { noise_seed: "9007199254740993" } },
+        k: { class_type: "KSamplerSelect", inputs: { sampler_name: "euler" } },
+        sigmas: { class_type: "BasicScheduler", inputs: { steps: 22, scheduler: "karras" } },
+        m: { class_type: "UNETLoader", inputs: { unet_name: "flux.safetensors" } },
+    };
+    assert.deepEqual(factFields.map(field => factsFor(custom)[field].value), ["9007199254740993", "22", "4.0000000000000001", "euler", "karras", "flux.safetensors"]);
+    custom.s = { class_type: "SamplerCustom", inputs: { model: ["m", 0], cfg: 0, noise_seed: 0, sampler: ["k", 0], sigmas: ["sigmas", 0] } };
+    assert.deepEqual([factsFor(custom).seed.value, factsFor(custom).steps.value, factsFor(custom).cfg.value], ["0", "22", "0"]);
+    custom.sigmas.inputs = { steps: 22 };
+    assert.equal(factsFor(custom).scheduler.status, "not-recorded");
+    assert.equal(factsFor(custom).sampler.value, "euler");
+});
+
+test("facts require supported scalar producer types and output slots", () => {
+    const cases = [
+        ["PrimitiveInt", "seed", "42", true], ["PrimitiveFloat", "cfg", "6.5000000000000000001", true],
+        ["PrimitiveString", "sampler_name", "euler", true], ["PrimitiveStringMultiline", "scheduler", "normal", true],
+        ["PrimitiveString", "seed", "42", false], ["PrimitiveStringMultiline", "steps", "42", false],
+        ["PrimitiveInt", "sampler_name", "euler", false], ["PrimitiveFloat", "scheduler", "normal", false],
+        ["PrimitiveBoolean", "seed", "42", false], ["PrimitiveNode", "seed", "42", false],
+        ["UnknownSettings", "seed", "42", false], ["SamplerCombo", "steps", "42", false],
+    ];
+    for (const [class_type, input, value, supported] of cases) {
+        for (const slot of [0, 1, 999, -1, 0.5]) {
+            const graph = factGraph({ [input]: ["settings", slot] });
+            graph.settings = { class_type, inputs: { value, [input]: value } };
+            const fact = factsFor(graph)[input === "sampler_name" ? "sampler" : input];
+            assert.equal(fact.status, supported && slot === 0 ? "known" : "unresolved", `${class_type} output${slot} as ${input}`);
+            assert.equal(fact.value, supported && slot === 0 ? value : null);
+        }
+    }
+    const graph = factGraph({ seed: ["primitive", 0] });
+    graph.primitive = { class_type: "PrimitiveInt", inputs: { seed: "987" } };
+    assert.equal(factsFor(graph).seed.status, "unresolved", "a matching input is not the output's value");
+    graph.primitive.inputs = { value: "42", seed: "987" };
+    assert.equal(factsFor(graph).seed.value, "42");
+    for (const [input, class_type, inputs] of [
+        ["seed", "RandomNoise", { noise_seed: "42", seed: "42" }],
+        ["sampler_name", "KSamplerSelect", { sampler_name: "euler" }],
+        ["steps", "BasicScheduler", { steps: "42" }],
+        ["cfg", "CFGGuider", { cfg: "7" }],
+    ]) {
+        const graph = factGraph({ [input]: ["provider", 0] }); graph.provider = { class_type, inputs };
+        assert.equal(factsFor(graph)[input === "sampler_name" ? "sampler" : input].status, "unresolved", `${class_type} is not a generic scalar output`);
+    }
+});
+
+function customFactGraph() {
+    return {
+        s: { class_type: "SamplerCustomAdvanced", inputs: { guider: ["g", 0], noise: ["n", 0], sampler: ["k", 0], sigmas: ["sigmas", 0] } },
+        g: { class_type: "CFGGuider", inputs: { model: ["m", 0], cfg: ["cfg", 0] } },
+        n: { class_type: "RandomNoise", inputs: { noise_seed: ["seed", 0] } },
+        k: { class_type: "KSamplerSelect", inputs: { sampler_name: ["sampler", 0] } },
+        sigmas: { class_type: "BasicScheduler", inputs: { steps: ["steps", 0], scheduler: ["scheduler", 0] } },
+        seed: { class_type: "PrimitiveInt", inputs: { value: "9007199254740993" } },
+        cfg: { class_type: "PrimitiveFloat", inputs: { value: "4.0000000000000001" } },
+        steps: { class_type: "PrimitiveInt", inputs: { value: 22 } },
+        sampler: { class_type: "PrimitiveString", inputs: { value: "euler" } },
+        scheduler: { class_type: "PrimitiveString", inputs: { value: "karras" } },
+        m: { class_type: "UNETLoader", inputs: { unet_name: "flux.safetensors" } },
+    };
+}
+
+test("facts require supported custom providers and guider outputs", () => {
+    assert.deepEqual(factFields.map(field => factsFor(customFactGraph())[field].value), ["9007199254740993", "22", "4.0000000000000001", "euler", "karras", "flux.safetensors"]);
+    for (const [input, nodeId, fields] of [["noise", "n", ["seed"]], ["sampler", "k", ["sampler"]], ["sigmas", "sigmas", ["steps", "scheduler"]], ["guider", "g", ["cfg", "model"]]]) {
+        for (const slot of [1, 999, -1, 0.5]) {
+            const graph = customFactGraph(); graph.s.inputs[input] = [nodeId, slot];
+            for (const field of fields) assert.equal(factsFor(graph)[field].status, "unresolved", `${input} output${slot} ${field}`);
+        }
+        for (const class_type of ["UnknownProvider", "PrimitiveInt", "PrimitiveString", "BasicGuider"]) {
+            if (input === "guider" && class_type === "BasicGuider") continue;
+            const graph = customFactGraph(); graph[nodeId].class_type = class_type;
+            for (const field of fields) assert.equal(factsFor(graph)[field].status, "unresolved", `${class_type} cannot provide ${input}`);
+        }
+    }
+    const basic = customFactGraph(); basic.g = { class_type: "BasicGuider", inputs: { model: ["m", 0] } };
+    assert.equal(factsFor(basic).model.value, "flux.safetensors");
+    assert.equal(factsFor(basic).cfg.status, "not-recorded");
+});
+
+test("facts require model output ancestry with supported loaders and passthroughs", () => {
+    for (const [class_type, key] of [["CheckpointLoader", "ckpt_name"], ["CheckpointLoaderSimple", "ckpt_name"], ["unCLIPCheckpointLoader", "ckpt_name"], ["UNETLoader", "unet_name"]]) {
+        for (const slot of [0, 1, 2, 999, -1, 0.5]) {
+            const graph = factGraph({ model: ["loader", slot] });
+            graph.loader = { class_type, inputs: { [key]: "selected.safetensors" } };
+            assert.equal(factsFor(graph).model.value, slot === 0 ? "selected.safetensors" : null, `${class_type} output${slot}`);
+            assert.equal(factsFor(graph).model.status, slot === 0 ? "known" : "unresolved");
+        }
+    }
+    for (const class_type of ["LoraLoader", "LoraLoaderModelOnly", "UnknownModelPassThrough"]) {
+        for (const slot of [0, 1, 2, 999]) {
+            const graph = factGraph({ model: ["lora", slot] }); graph.lora = { class_type, inputs: { model: ["model", 0] } };
+            assert.equal(factsFor(graph).model.status, class_type !== "UnknownModelPassThrough" && slot === 0 ? "known" : "unresolved", `${class_type} output${slot}`);
+        }
+    }
+    for (const [class_type, inputs] of [["UnknownLoader", { ckpt_name: "fake" }], ["PrimitiveString", { model_name: "fake", value: "fake" }], ["__proto__", { "[object Object]": "fake" }]]) {
+        const graph = factGraph({ model: ["unknown", 0] }); graph.unknown = { class_type, inputs };
+        assert.equal(factsFor(graph).model.status, "unresolved");
+    }
+    for (const [input, field] of [["sampler_name", "sampler"], ["scheduler", "scheduler"]]) assert.equal(factsFor(factGraph({ [input]: 42 }))[field].status, "unresolved");
+    const numericModel = factGraph(); numericModel.model.inputs.ckpt_name = 42;
+    assert.equal(factsFor(numericModel).model.status, "unresolved", "model names require string evidence");
+});
+
+test("wide workflow lookups retain selected core sampler facts", () => {
+    const nodes = [{ id: "text", type: "PrimitiveString", widgets_values_named: { value: "unrelated text" } }], links = [];
+    let linkId = 1;
+    for (let index = 0; index < 20; index++) {
+        nodes.push({ id: `r${index}`, type: "Reroute", inputs: [{ name: "value", link: linkId }] });
+        links.push([linkId++, index ? `r${index - 1}` : "text", 0, `r${index}`, 0, "STRING"]);
+    }
+    for (let index = 0; index < 40; index++) {
+        nodes.push({ id: `encoder${index}`, type: "CLIPTextEncode", inputs: [{ name: "text", link: linkId }] });
+        links.push([linkId++, "r19", 0, `encoder${index}`, 0, "STRING"]);
+    }
+    nodes.push({ id: "model", type: "CheckpointLoaderSimple", widgets_values_named: { ckpt_name: "selected.safetensors" } },
+        { id: "steps", type: "PrimitiveInt", widgets_values_named: { value: 28 } },
+        { id: "s", type: "KSampler", widgets_values: ["9007199254740993", "fixed", 28, "6.5000000000000000001", "euler", "normal"], inputs: [{ name: "model", link: linkId }, { name: "steps", link: linkId + 1 }] });
+    links.push([linkId, "model", 0, "s", 0, "MODEL"], [linkId + 1, "steps", 0, "s", 1, "INT"]);
+    const facts = factsFor(null, { prompt_graph: absentFactGraph(), workflow_graph: parsedFactGraph({ nodes, links }) });
+    assert.deepEqual(factFields.map(field => facts[field].value), ["9007199254740993", "28", "6.5000000000000000001", "euler", "normal", "selected.safetensors"]);
+});
+
+test("workflow facts require supported passthrough output slots and bypass ancestry", () => {
+    function workflow(type, slot, mode) {
+        const pass = { id: "pass", type, ...(mode === undefined ? {} : { mode }), widgets_values: ["selected"], inputs: [{ name: type === "Reroute" ? "value" : "model", type: "MODEL", link: 1 }] };
+        const nodes = [{ id: "m", type: "CheckpointLoaderSimple", widgets_values_named: { ckpt_name: "selected.safetensors" } }, pass,
+            { id: "s", type: "KSampler", widgets_values: [0, "fixed", 28, "0", "euler", "normal"], inputs: [{ name: "model", link: 2 }] }];
+        if (type === "GetNode") {
+            nodes.push({ id: "set", type: "SetNode", widgets_values: ["selected"], inputs: [{ name: "model", link: 1 }] });
+            pass.inputs = [];
+        }
+        return { nodes, links: [[1, "m", 0, "pass", 0, "MODEL"], [2, "pass", slot, "s", 0, "MODEL"]] };
+    }
+    const model = value => factsFor(null, { prompt_graph: absentFactGraph(), workflow_graph: parsedFactGraph(value) }).model;
+    for (const [type, mode] of [["Reroute", undefined], ["GetNode", undefined], ["SetNode", undefined], ["LoraLoader", 4], ["LoraLoaderModelOnly", 4]]) {
+        for (const slot of [0, 1, 999, -1, 0.5]) {
+            assert.equal(model(workflow(type, slot, mode)).status, slot === 0 ? "known" : "unresolved", `${type} output${slot}`);
+        }
+    }
+    assert.equal(model(workflow("UnknownBypass", 0, 4)).status, "unresolved");
+    const duplicate = workflow("LoraLoader", 0, 4);
+    duplicate.nodes[1].inputs.push({ name: "model", type: "MODEL", link: 1 });
+    assert.equal(model(duplicate).status, "unresolved", "bypass model input is uniquely named");
+    const wrongOrigin = workflow("Reroute", 0); wrongOrigin.links[0][2] = 1;
+    assert.equal(model(wrongOrigin).status, "unresolved", "passthrough cannot turn CLIP into MODEL");
+    const cycle = workflow("Reroute", 0); cycle.links[0][1] = "pass";
+    assert.equal(model(cycle).status, "unresolved");
+    const unnamed = workflow("GetNode", 0);
+    delete unnamed.nodes.find(node => node.id === "pass").widgets_values;
+    delete unnamed.nodes.find(node => node.id === "set").widgets_values;
+    assert.equal(model(unnamed).status, "unresolved", "missing Get/Set names are not a source association");
+    const scalar = factGraph({ seed: ["bypass", 0] });
+    scalar.bypass = { class_type: "LoraLoader", inputs: { model: ["primitive", 0] } };
+    scalar.primitive = { class_type: "PrimitiveInt", inputs: { value: 42 } };
+    const scalarWorkflow = factWorkflowFromGraph(scalar); scalarWorkflow.nodes.find(node => node.id === "bypass").mode = 4;
+    assert.equal(factsFor(null, { prompt_graph: absentFactGraph(), workflow_graph: parsedFactGraph(scalarWorkflow) }).seed.status, "unresolved", "bypassed MODEL output cannot become a scalar");
+    for (const [input, field] of [["noise", "seed"], ["sampler", "sampler"], ["sigmas", "steps"], ["guider", "model"]]) {
+        const graph = customFactGraph(), target = graph.s.inputs[input];
+        graph.s.inputs[input] = ["bypass", 0]; graph.bypass = { class_type: "LoraLoaderModelOnly", inputs: { model: target } };
+        const workflow = factWorkflowFromGraph(graph); workflow.nodes.find(node => node.id === "bypass").mode = 4;
+        assert.equal(factsFor(null, { prompt_graph: absentFactGraph(), workflow_graph: parsedFactGraph(workflow) })[field].status, "unresolved", `MODEL output cannot become ${input}`);
+    }
+});
+
+function factWorkflowFromGraph(graph) {
+    const nodes = [], links = [];
+    for (const [id, node] of Object.entries(graph)) {
+        const inputs = [], widgets_values_named = {};
+        for (const [name, value] of Object.entries(node.inputs)) {
+            if (Array.isArray(value)) {
+                const link = links.length + 1;
+                links.push([link, value[0], value[1], id, inputs.length, "*"]);
+                inputs.push({ name, link });
+            } else widgets_values_named[name] = value;
+        }
+        nodes.push({ id, type: node.class_type, inputs, widgets_values_named });
+    }
+    return { nodes, links };
+}
+
+test("workflow facts count combined original ancestry once across passthroughs and providers", () => {
+    const inspect = graph => factsFor(null, { prompt_graph: absentFactGraph(), workflow_graph: parsedFactGraph(factWorkflowFromGraph(graph)) });
+    function chain(graph, reroutes, primitives, model = false) {
+        let link = model ? ["model", 0] : null;
+        for (let index = 0; index < primitives; index++) {
+            graph[`p${index}`] = { class_type: model ? "LoraLoader" : "PrimitiveInt", inputs: model ? { model: link } : { value: link || "42" } };
+            link = [`p${index}`, 0];
+        }
+        for (let index = 0; index < reroutes; index++) {
+            graph[`r${index}`] = { class_type: "Reroute", inputs: { value: link } };
+            link = [`r${index}`, 0];
+        }
+        return link;
+    }
+    for (const [reroutes, known] of [[32, true], [33, false]]) {
+        const scalar = factGraph(); scalar.s.inputs.seed = chain(scalar, reroutes, 32);
+        assert.equal(inspect(scalar).seed.status, known ? "known" : "unresolved", `${reroutes}+32 scalar links`);
+        const model = factGraph(); model.s.inputs.model = chain(model, reroutes, 31, true);
+        assert.equal(inspect(model).model.status, known ? "known" : "unresolved", `${reroutes}+31 LoRA+loader links`);
+        const noise = customFactGraph();
+        noise.n.inputs.noise_seed = chain(noise, reroutes - 1, 31);
+        noise.noiseAlias = { class_type: "Reroute", inputs: { value: ["n", 0] } };
+        noise.s.inputs.noise = ["noiseAlias", 0];
+        assert.equal(inspect(noise).seed.status, known ? "known" : "unresolved", `noise alias+provider+${reroutes - 1}+31 links`);
+        const guider = customFactGraph();
+        guider.model = { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "model.safetensors" } };
+        guider.g.inputs.model = chain(guider, reroutes - 1, 30, true);
+        guider.guiderAlias = { class_type: "Reroute", inputs: { value: ["g", 0] } };
+        guider.s.inputs.guider = ["guiderAlias", 0];
+        assert.equal(inspect(guider).model.status, known ? "known" : "unresolved", `guider alias+provider+${reroutes - 1}+30 LoRA+loader links`);
+    }
+    const cycle = factGraph();
+    cycle.s.inputs.seed = ["r", 0]; cycle.r = { class_type: "Reroute", inputs: { value: ["p", 0] } }; cycle.p = { class_type: "PrimitiveInt", inputs: { value: ["r", 0] } };
+    assert.equal(inspect(cycle).seed.status, "unresolved");
+    cycle.s.inputs.model = ["r", 0]; cycle.p = { class_type: "LoraLoader", inputs: { model: ["r", 0] } };
+    assert.equal(inspect(cycle).model.status, "unresolved");
+    for (const [reroutes, known] of [[32, true], [33, false]]) {
+        const graph = factGraph(), value = chain(graph, reroutes, 31);
+        const workflow = factWorkflowFromGraph(graph);
+        const sourceLink = workflow.links.length + 1;
+        workflow.nodes.push({ id: "set", type: "SetNode", widgets_values: ["seed"], inputs: [{ name: "value", link: sourceLink }] }, { id: "get", type: "GetNode", widgets_values: ["seed"], inputs: [] });
+        workflow.links.push([sourceLink, value[0], 0, "set", 0, "INT"], [sourceLink + 1, "get", 0, "s", 0, "INT"]);
+        workflow.nodes.find(node => node.id === "s").inputs.push({ name: "seed", link: sourceLink + 1 });
+        const fact = factsFor(null, { prompt_graph: absentFactGraph(), workflow_graph: parsedFactGraph(workflow) }).seed;
+        assert.equal(fact.status, known ? "known" : "unresolved", `Get+${reroutes}+31 links, no extra setter expansion`);
+    }
+});
+
+test("workflow sampler selection retains prototype-named node identities", () => {
+    const workflow = { nodes: [
+        { id: "__proto__", type: "KSampler", widgets_values: [1, "fixed", 20, "7", "euler", "normal"] },
+        { id: "other", type: "KSampler", widgets_values: [2, "fixed", 20, "7", "euler", "normal"] },
+    ], links: [] };
+    assert.ok(Object.values(factsFor(null, { prompt_graph: absentFactGraph(), workflow_graph: parsedFactGraph(workflow) })).every(fact => fact.status === "ambiguous"));
+});
+
+test("workflow-only facts are configuration without creating sendable roles", () => {
+    const workflow = { nodes: [
+        { id: 1, type: "UNETLoader", widgets_values: ["flux.safetensors", "default"] },
+        { id: 2, type: "SetNode", widgets_values: ["model"], inputs: [{ name: "MODEL", link: 1 }] },
+        { id: 3, type: "GetNode", widgets_values: ["model"] },
+        { id: 4, type: "KSamplerAdvanced", widgets_values: ["enable", "9007199254740993", "fixed", 28, "6.5000000000000000001", "euler", "normal", 0, 28, "disable"], inputs: [{ name: "model", link: 2 }] },
+    ], links: [[1, 1, 0, 2, 0, "MODEL"], [2, 3, 0, 4, 0, "MODEL"]] };
+    const facts = factsFor(null, { prompt_graph: absentFactGraph(), workflow_graph: parsedFactGraph(workflow) });
+    assert.deepEqual(factFields.map(field => facts[field].value), ["9007199254740993", "28", "6.5000000000000000001", "euler", "normal", "flux.safetensors"]);
+    assert.ok(Object.values(facts).every(fact => fact.source === "workflow" && fact.evidence === "configuration"));
+    assert.equal(facts.positive, undefined);
+    workflow.nodes.push({ ...workflow.nodes[3] });
+    assert.ok(Object.values(factsFor(null, { prompt_graph: absentFactGraph(), workflow_graph: parsedFactGraph(workflow) })).every(fact => fact.status === "unresolved"));
+});
+
+test("limited projection stays unresolved", () => {
+    for (const extra of [
+        { prompt_graph: { status: "limited", value: null } },
+        { prompt_graph: absentFactGraph(), workflow_graph: { status: "limited", value: null } },
+        { prompt_graph: absentFactGraph(), metadataStatus: "limited", parameters: null },
+    ]) {
+        const facts = factsFor(null, extra);
+        assert.ok(Object.values(facts).every(fact => fact.status === "unresolved" && fact.value === null && fact.reason === "projection-limited"));
+    }
+    const unreadable = factsFor(null, { prompt_graph: absentFactGraph(), metadataStatus: "unreadable" });
+    assert.equal(unreadable.seed.reason, "metadata-unreadable");
+    const absent = factsFor(null, { prompt_graph: absentFactGraph(), metadataStatus: "absent" });
+    assert.equal(absent.seed.status, "not-recorded");
+});
+
+test("facts preserve exact video-projected decimals without reading reserialized raw", () => {
+    const graph = factGraph();
+    const facts = factsFor(graph, { recordFormats: { prompt: "reserialized-json" }, raw: { prompt: '{"s":{"inputs":{"seed":9007199254740992,"cfg":6.5}}}' } });
+    assert.equal(facts.seed.value, "9007199254740993");
+    assert.equal(facts.cfg.value, "6.5000000000000000001");
+    assert.equal(factsFor(factGraph({ cfg: "1E+1000000000" })).cfg.value, "1E+1000000000");
+});
+
+test("nontext parameters remain unresolved", () => {
+    const parameters = "A portrait\nNegative prompt: blur\nSteps: 28, Sampler: Euler, Schedule type: Karras, CFG scale: 6.5000000000000000001, Seed: 9007199254740993, Model: model";
+    const base = { prompt_graph: absentFactGraph(), parameters };
+    for (const format of [undefined, "reserialized-json", "invalid"]) {
+        const facts = factsFor(null, { ...base, recordFormats: format ? { parameters: format } : {} });
+        assert.ok(Object.values(facts).every(fact => fact.status === "unresolved" && fact.value === null));
+    }
+    const facts = factsFor(null, { ...base, recordFormats: { parameters: "original-text" } });
+    assert.deepEqual(factFields.map(field => facts[field].value), ["9007199254740993", "28", "6.5000000000000000001", "Euler", "Karras", "model"]);
+    assert.ok(Object.values(facts).every(fact => fact.source === "embedded-parameters" && fact.evidence === "embedded-parameters"));
+    for (const invalid of [parameters + "\nSteps: 5, Seed: 2", parameters + ", Seed: 1", parameters + "\ntrailing", parameters.replace("Seed: 9007199254740993", "Seed: -1"), parameters.replace("Karras", "invented"), parameters.replace("Negative prompt: blur", "Negative prompt: blur\nNegative prompt: again")]) {
+        assert.ok(Object.values(factsFor(null, { ...base, parameters: invalid, recordFormats: { parameters: "original-text" } })).some(fact => fact.status === "unresolved"));
+    }
+});
+
+test("malformed or unsupported API evidence blocks plausible workflow and parameter fallback", () => {
+    const workflow = { nodes: [{ id: 1, type: "KSampler", widgets_values: [42, "fixed", 20, 7, "euler", "normal"] }], links: [] };
+    const extra = { workflow_graph: parsedFactGraph(workflow), parameters: "portrait\nSteps: 20, Sampler: Euler, CFG scale: 7, Seed: 42", recordFormats: { parameters: "original-text" } };
+    for (const prompt_graph of [{ status: "malformed", value: null }, parsedFactGraph({ s: { class_type: "UnknownSampler", inputs: { seed: 99 } } }), parsedFactGraph({ s: { class_type: "KSampler", inputs: [] } })]) {
+        const facts = factsFor(null, { ...extra, prompt_graph });
+        assert.ok(Object.values(facts).every(fact => fact.status === "unresolved" && fact.value === null));
+        assert.ok(Object.values(facts).every(fact => fact.source !== "workflow" && fact.source !== "embedded-parameters"));
+    }
+});
+
+test("conservative facts bound cycles fan-out visits and link depth", () => {
+    const graph = factGraph({ seed: ["loop", 0], model: ["loop", 0] });
+    graph.loop = { class_type: "Unknown", inputs: { seed: ["loop", 0], model: ["loop", 0], a: ["loop", 0], b: ["loop", 0] } };
+    assert.equal(factsFor(graph).seed.status, "unresolved");
+    assert.equal(factsFor(graph).model.status, "unresolved");
+    graph.loop = { class_type: "PrimitiveInt", inputs: { value: ["loop", 0] } };
+    assert.equal(factsFor(graph).seed.status, "unresolved", "registered scalar cycle is bounded");
+    graph.loop = { class_type: "LoraLoader", inputs: { model: ["loop", 0] } };
+    assert.equal(factsFor(graph).model.status, "unresolved", "registered model cycle is bounded");
+    const chain = depth => {
+        const value = factGraph({ seed: ["p0", 0] });
+        for (let index = 0; index < depth; index++) value[`p${index}`] = { class_type: "PrimitiveInt", inputs: { value: index === depth - 1 ? "42" : [`p${index + 1}`, 0] } };
+        return value;
+    };
+    assert.equal(factsFor(chain(64)).seed.value, "42");
+    assert.equal(factsFor(chain(65)).seed.status, "unresolved");
+    const custom = chain(64);
+    custom.s = { class_type: "SamplerCustomAdvanced", inputs: { noise: ["noise", 0] } };
+    custom.noise = { class_type: "RandomNoise", inputs: { noise_seed: ["p0", 0] } };
+    assert.equal(factsFor(custom).seed.status, "unresolved", "the provider itself consumes one of the 64 allowed links");
+    const large = factGraph();
+    for (let index = 0; index < 498; index++) large[`unused${index}`] = { class_type: "PrimitiveInt", inputs: { value: index } };
+    assert.equal(factsFor(large).seed.value, "9007199254740993");
+    large.extra = { class_type: "PrimitiveInt", inputs: { value: 1 } };
+    assert.equal(factsFor(large).seed.status, "unresolved");
+});
 
 // Same shape as the workflow attached to #75: PromptManager nodes are saved as
 // CLIPTextEncode with extra inputs, and the checkpoint loader is pysssss'.

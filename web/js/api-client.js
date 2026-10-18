@@ -15,10 +15,11 @@
     "use strict";
 
     class ApiError extends Error {
-        constructor(status, message) {
+        constructor(status, message, code = null) {
             super(message);
             this.name = "ApiError";
             this.status = status;
+            this.code = typeof code === "string" && /^[a-z0-9-]{1,64}$/.test(code) ? code : null;
         }
     }
 
@@ -62,11 +63,11 @@
 
             const serverMessage = data && typeof data === "object" ? data.error || data.message : undefined;
             if (!response.ok) {
-                throw new ApiError(response.status, serverMessage || response.statusText || `HTTP ${response.status}`);
+                throw new ApiError(response.status, serverMessage || response.statusText || `HTTP ${response.status}`, data?.code);
             }
             if (!parsed) throw new ApiError(response.status, "Invalid JSON response");
             if (data && typeof data === "object" && data.success === false) {
-                throw new ApiError(response.status, serverMessage || "Request failed");
+                throw new ApiError(response.status, serverMessage || "Request failed", data.code);
             }
             return data;
         }

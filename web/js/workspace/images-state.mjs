@@ -114,7 +114,7 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         }
     }
 
-    async function reset(filters = {}) {
+    async function reset(filters = {}, {load = true} = {}) {
         if (disposed) return 0;
         const nextQuery = queryFor(filters, batchSize);
         controller?.abort();
@@ -123,7 +123,7 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         seen = new Set();
         publish({ items: Object.freeze([]), total: 0, cursor: null, hasMore: true,
             loading: false, error: null, loaded: 0 });
-        return loadMore();
+        return load ? loadMore() : 0;
     }
 
     return {

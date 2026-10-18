@@ -347,7 +347,7 @@ class TestPromptInspector(ImageAPITestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(result["prompts"]["positive"]["status"], "absent")
         with patch(
-            "py.api.images.read_inspection_metadata",
+            "py.api.images.read_inspection_file",
             side_effect=RuntimeError(str(self.comfy_dir)),
         ):
             response, result = await self.inspect("image.jpg")
@@ -369,7 +369,9 @@ class TestPromptInspector(ImageAPITestCase):
             wraps=self.api.db.get_image_prompt_info,
         ) as lookup:
             _, result = await self.inspect(root="1")
-        lookup.assert_called_once_with(str(other / "image.png"), False)
+        lookup.assert_called_once_with(
+            str(other / "image.png"), False, report_ambiguity=True
+        )
         self.assertEqual(result["prompts"]["positive"]["status"], "absent")
 
     async def test_video_inspection_uses_bounded_container_evidence(self):
@@ -641,3 +643,622 @@ class TestPromptInspector(ImageAPITestCase):
             self.assertEqual(record["source"], "saved-association")
             self.assertIn("cannot be verified", record["message"])
         self.assertNotIn("Original portrait", json.dumps(replaced))
+
+    async def test_full_inspection_envelope_preserves_existing_roles_and_identity(self):
+        from pathlib import Path
+
+        source = graph(negative="")
+        source["3"]["inputs"].update(seed=9007199254740993, cfg=6.5, steps=28)
+        raw = json.dumps(source)
+        workflow = '{"nodes":[],"seed":9007199254740993}'
+        path = png(self.output_dir / "image.png", prompt=raw, workflow=workflow)
+        self._link_image(path, "Saved text must not replace file roles")
+        original_open = Path.open
+        reads = []
+
+        def opened(candidate, *args, **kwargs):
+            if candidate == path:
+                reads.append(candidate)
+            return original_open(candidate, *args, **kwargs)
+
+        with (
+            patch.object(Path, "open", opened),
+            patch.object(Image.Image, "load", side_effect=AssertionError("pixels")),
+            patch.object(
+                self.api.db,
+                "get_image_prompt_info",
+                wraps=self.api.db.get_image_prompt_info,
+            ) as lookup,
+        ):
+            response, result = await self.inspect()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(result.get("inspection_version"), 1)
+        self.assertEqual(
+            result["image"],
+            {
+                "root_index": 0,
+                "path": "image.png",
+                "filename": "image.png",
+            },
+        )
+        self.assertEqual(
+            result["prompts"],
+            {
+                "positive": self.side("portrait"),
+                "negative": self.side(""),
+            },
+        )
+        self.assertRegex(result["root_scope"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            result["metadata"]["raw"], {"prompt": raw, "workflow": workflow}
+        )
+        self.assertEqual(
+            result["metadata"]["record_formats"],
+            {
+                "prompt": "original-text",
+                "workflow": "original-text",
+            },
+        )
+        self.assertEqual(
+            result["metadata"]["prompt_graph"]["value"]["3"]["inputs"]["seed"],
+            "9007199254740993",
+        )
+        self.assertEqual(result["file"]["format"], "PNG")
+        self.assertEqual((result["file"]["width"], result["file"]["height"]), (4, 4))
+        self.assertEqual(result["file"]["observation"], "current-file")
+        self.assertEqual(result["resolution"]["sampler_id"], "3")
+        self.assertEqual(result["library"]["status"], "linked")
+        self.assertEqual(reads, [path])
+        lookup.assert_called_once_with(str(path), False, report_ambiguity=True)
+        self.assertLessEqual(len(await response.read()), 8 * 1024 * 1024)
+        self.assertNotIn(str(self.comfy_dir), json.dumps(result))
+
+    async def test_workflow_raw_uses_same_aggregate_budget_and_read(self):
+        from utils.prompt_inspector import MAX_METADATA_BYTES
+
+        path = self.output_dir / "image.png"
+        png(path, prompt=json.dumps(graph()), workflow="x" * MAX_METADATA_BYTES)
+        response, result = await self.inspect()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(result.get("metadata", {}).get("status"), "unreadable")
+        self.assertEqual(result["prompts"]["positive"]["status"], "unresolved")
+        self.assertEqual(result["metadata"]["raw"], {})
+        self.assertEqual(result["metadata"]["record_formats"], {})
+
+    async def test_workflow_only_keeps_existing_role_uncertainty(self):
+        path = png(self.output_dir / "image.png", workflow={"nodes": []})
+        self._link_image(path, "Saved uncertainty")
+        _, result = await self.inspect()
+        self.assertEqual(result["prompts"]["positive"]["source"], "saved-association")
+        self.assertEqual(
+            result.get("metadata", {}).get("workflow_graph", {}).get("status"), "parsed"
+        )
+        self.assertIsNone(result["prompts"]["positive"]["text"])
+        self.assertEqual(result["prompts"]["negative"]["status"], "absent")
+
+    async def test_library_failure_does_not_erase_file_evidence(self):
+        png(self.output_dir / "image.png", prompt=graph("File portrait"))
+        with patch.object(
+            self.api.db,
+            "get_image_prompt_info",
+            side_effect=OSError("private DB detail"),
+        ):
+            response, result = await self.inspect()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(result["prompts"]["positive"], self.side("File portrait"))
+        self.assertEqual(result.get("library", {}).get("status"), "unavailable")
+        self.assertEqual(result["metadata"]["prompt_graph"]["status"], "parsed")
+        self.assertNotIn("private DB detail", json.dumps(result))
+
+    async def test_file_change_is_retryable_without_saved_text_fallback(self):
+        from pathlib import Path
+
+        path = png(self.output_dir / "image.png", prompt=graph())
+        self._link_image(path, "Saved recipe")
+        original_open = Path.open
+
+        def opened(candidate, *args, **kwargs):
+            stream = original_open(candidate, *args, **kwargs)
+            if candidate == path and args and args[0] == "rb":
+                with original_open(path, "ab") as output:
+                    output.write(b"changed")
+            return stream
+
+        with patch.object(Path, "open", opened):
+            response, result = await self.inspect()
+        self.assertEqual(response.status, 409)
+        self.assertFalse(result["success"])
+        self.assertNotIn("code", result)
+        self.assertNotIn("Saved recipe", json.dumps(result))
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+
+    async def test_surrogate_and_ordinary_unicode_round_trip_without_replacement(self):
+        source = graph("猫 😀 \ud800", "\udfff")
+        raw = json.dumps(source)
+        png(
+            self.output_dir / "image.png",
+            prompt=raw,
+            workflow='{"nodes":[],"label":"\\ud800 猫 😀"}',
+        )
+        response, result = await self.inspect()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(result["prompts"]["positive"], self.side("猫 😀 \ud800"))
+        self.assertEqual(result["prompts"]["negative"], self.side("\udfff"))
+        self.assertEqual(result["metadata"]["raw"]["prompt"], raw)
+        body = await response.read()
+        self.assertIn("猫 😀".encode(), body)
+        self.assertIn(b"\\ud800", body)
+        self.assertNotIn("\ufffd".encode(), body)
+        self.assertLessEqual(len(body), 8 * 1024 * 1024)
+
+    async def video_inspect(self, comment=None, description=None):
+        import io
+        import threading
+        from unittest.mock import MagicMock
+        from utils.prompt_inspector import MAX_METADATA_BYTES
+
+        path = self.output_dir / "clip.mp4"
+        path.write_bytes(b"fixture")
+        tags = {
+            key: value
+            for key, value in (("comment", comment), ("description", description))
+            if value is not None
+        }
+        payload = json.dumps({"format": {"tags": tags}}).encode()
+
+        class ProbeOutput(io.BytesIO):
+            def read(self, size=-1):
+                self.requested_size = size
+                return super().read(size)
+
+        process = MagicMock()
+        process.stdout = ProbeOutput(payload)
+        process.poll.return_value = 0
+        process.returncode = 0
+        timers = []
+        timer_type = threading.Timer
+
+        def timer(*args):
+            instance = timer_type(*args)
+            timers.append(instance)
+            return instance
+
+        with (
+            patch("utils.prompt_inspector.ffprobe_path", return_value="/tool/ffprobe"),
+            patch(
+                "utils.prompt_inspector.subprocess.Popen", return_value=process
+            ) as spawn,
+            patch("utils.prompt_inspector.threading.Timer", side_effect=timer),
+        ):
+            response, result = await self.inspect("clip.mp4")
+        self.assertEqual(spawn.call_count, 1)
+        self.assertTrue(process.stdout.closed)
+        self.assertEqual(process.stdout.requested_size, MAX_METADATA_BYTES + 1)
+        self.assertEqual(len(timers), 1)
+        self.assertTrue(timers[0].finished.is_set())
+        return response, result
+
+    async def test_video_role_description_wins_over_workflow_only_comment(self):
+        evidence = {}
+        source = graph("chosen", "")
+        # CLIP execution is unnecessary here: use the established pair-node carrier.
+        source["1"] = {
+            "class_type": "PromptManagerPair",
+            "inputs": {"text": "chosen", "negative_text": ""},
+        }
+        source["3"]["inputs"]["negative"] = ["1", 1]
+        record_pair_execution(
+            evidence,
+            "1",
+            text="chosen",
+            negative_text="",
+            positive_text="chosen trigger",
+            negative_effective_text="",
+        )
+        _, result = await self.video_inspect(
+            json.dumps({"workflow": {"nodes": [{"id": "ignored"}]}}),
+            json.dumps(
+                {
+                    "prompt": source,
+                    "workflow": {"nodes": [{"id": "chosen"}]},
+                    **evidence,
+                }
+            ),
+        )
+        self.assertEqual(
+            result["prompts"]["positive"], self.side("chosen trigger", "execution")
+        )
+        self.assertEqual(result["prompts"]["negative"], self.side("", "execution"))
+        self.assertEqual(
+            result.get("metadata", {}).get("workflow_graph", {}).get("value"),
+            {"nodes": [{"id": "chosen"}]},
+        )
+        self.assertNotIn("ignored", json.dumps(result))
+
+    async def test_video_present_malformed_role_markers_block_other_carriers(self):
+        for marker in (
+            {"prompt": None},
+            {"prompt": "not-json"},
+            {"parameters": None},
+            {EXECUTION_KEY: "malformed"},
+        ):
+            for comment, description in (
+                (
+                    json.dumps({"workflow": {"nodes": [{"id": "ignored"}]}}),
+                    json.dumps(marker),
+                ),
+                (json.dumps(marker), json.dumps({"prompt": graph("must not win")})),
+            ):
+                _, result = await self.video_inspect(comment, description)
+                self.assertEqual(result["prompts"]["positive"]["status"], "unresolved")
+                self.assertIsNone(result["prompts"]["positive"]["text"])
+                self.assertEqual(
+                    result.get("metadata", {}).get("workflow_graph", {}).get("status"),
+                    "absent",
+                )
+                self.assertNotIn("must not win", json.dumps(result))
+
+    async def test_video_workflow_carrier_fallback_never_merges_tags(self):
+        path = self.output_dir / "clip.mp4"
+        path.write_bytes(b"fixture")
+        self._link_image(path, "Saved workflow association")
+        _, result = await self.video_inspect(
+            '{"workflow":{"nodes":[{"id":"first"}]}}',
+            '{"workflow":{"nodes":[{"id":"second"}]},"unrelated":"unselected"}',
+        )
+        self.assertEqual(result["prompts"]["positive"]["source"], "saved-association")
+        self.assertEqual(
+            result.get("metadata", {}).get("workflow_graph", {}).get("value"),
+            {"nodes": [{"id": "first"}]},
+        )
+        self.assertEqual(
+            result["metadata"]["raw"], {"workflow": '{"nodes": [{"id": "first"}]}'}
+        )
+        self.assertNotIn("second", json.dumps(result))
+        self.assertNotIn("unselected", json.dumps(result))
+
+    async def test_video_object_graph_decimal_and_unsafe_int_projection_is_exact(self):
+        raw = json.dumps(graph("video", ""))
+        raw = raw.replace(
+            '"positive": ["1", 0]',
+            '"seed":9007199254740993,"cfg":6.5000000000000000001,"positive": ["1", 0]',
+        )
+        for prompt in (raw, json.dumps(raw)):
+            carrier = (
+                '{"prompt":'
+                + prompt
+                + ',"workflow":{"nodes":[],"cfg":6.5000000000000000001,'
+                '"seed":9007199254740993}}'
+            )
+            _, result = await self.video_inspect(carrier)
+            self.assertEqual(result["prompts"]["positive"], self.side("video"))
+            inputs = (
+                result.get("metadata", {})
+                .get("prompt_graph", {})
+                .get("value", {})
+                .get("3", {})
+                .get("inputs", {})
+            )
+            self.assertEqual(inputs.get("cfg"), "6.5000000000000000001")
+            self.assertEqual(inputs["seed"], "9007199254740993")
+            self.assertEqual(inputs["positive"], ["1", 0])
+            self.assertEqual(
+                result["metadata"]["workflow_graph"]["value"]["cfg"],
+                "6.5000000000000000001",
+            )
+            self.assertNotIn("video_carrier_text", result)
+            self.assertNotIn("carrier_text", json.dumps(result))
+
+    async def test_video_original_string_and_reserialized_object_formats_are_distinct(
+        self,
+    ):
+        raw = json.dumps(graph())
+        for record, expected in (
+            (json.dumps(raw), "original-text"),
+            (raw, "reserialized-json"),
+        ):
+            _, result = await self.video_inspect(
+                '{"prompt":' + record + ',"workflow":' + record + "}"
+            )
+            self.assertEqual(
+                result.get("metadata", {}).get("record_formats"),
+                {"prompt": expected, "workflow": expected},
+            )
+            self.assertEqual(result["metadata"]["raw"]["prompt"], raw)
+
+    async def test_video_null_role_marker_raises_before_successful_read(self):
+        for key in ("prompt", "parameters", EXECUTION_KEY):
+            _, result = await self.video_inspect(json.dumps({key: None}))
+            self.assertEqual(result["prompts"]["positive"]["status"], "unresolved")
+            self.assertEqual(result.get("metadata", {}).get("status"), "unreadable")
+
+    async def test_video_null_workflow_keeps_valid_legacy_roles(self):
+        _, result = await self.video_inspect(
+            json.dumps({"prompt": graph(), "workflow": None})
+        )
+        self.assertEqual(result["prompts"]["positive"], self.side("portrait"))
+        self.assertEqual(
+            result.get("metadata", {}).get("workflow_graph"),
+            {"status": "malformed", "value": None},
+        )
+        self.assertEqual(result["metadata"]["record_formats"]["workflow"], "invalid")
+        self.assertNotIn("workflow", result["metadata"]["raw"])
+
+    async def test_video_strict_projection_failure_preserves_legacy_roles(self):
+        source = json.dumps(graph())
+        for suffix, expected in (
+            (',"duplicate":1,"duplicate":2', "malformed"),
+            (',"nonfinite":NaN', "malformed"),
+            (',"depth":' + "[" * 64 + "0" + "]" * 64, "limited"),
+        ):
+            _, result = await self.video_inspect(
+                '{"prompt":' + source + ',"workflow":{"nodes":[]}' + suffix + "}"
+            )
+            self.assertEqual(result["prompts"]["positive"], self.side("portrait"))
+            self.assertEqual(
+                result.get("metadata", {}).get("prompt_graph", {}).get("status"),
+                expected,
+            )
+            self.assertIsNone(result["metadata"]["prompt_graph"]["value"])
+            self.assertEqual(result["metadata"]["workflow_graph"]["status"], expected)
+
+    async def test_video_numeric_role_text_never_becomes_sendable(self):
+        source = graph(positive=123)
+        _, result = await self.video_inspect(json.dumps({"prompt": source}))
+        self.assertEqual(result["prompts"]["positive"]["status"], "unresolved")
+        self.assertIsNone(result["prompts"]["positive"]["text"])
+        self.assertEqual(
+            result.get("metadata", {}).get("prompt_graph", {}).get("status"), "parsed"
+        )
+
+    async def scoped_descriptor(self, root_index=0):
+        response = await self.client.get("/prompt_manager/images/output?mode=workspace")
+        entries = (await response.json())["images"]
+        return next(entry for entry in entries if entry["root_index"] == root_index)
+
+    async def assert_scope_skips_access(self, scope, root="0", status=409):
+        from pathlib import Path
+
+        original_stat = Path.stat
+
+        def stat(candidate, *args, **kwargs):
+            if candidate.name == "image.png":
+                raise AssertionError("candidate stat before scope guard")
+            return original_stat(candidate, *args, **kwargs)
+
+        params = {"root_scope": scope}
+        if root is not None:
+            params["root"] = root
+        with (
+            patch.object(Path, "stat", stat),
+            patch(
+                "utils.prompt_inspector.subprocess.Popen",
+                side_effect=AssertionError("probe"),
+            ),
+            patch.object(
+                self.api.db,
+                "get_image_prompt_info",
+                side_effect=AssertionError("saved lookup"),
+            ),
+            patch.object(
+                self.api, "_file_response", side_effect=AssertionError("file response")
+            ),
+            patch(
+                "py.api.images.read_inspection_file",
+                side_effect=AssertionError("metadata read"),
+            ),
+        ):
+            response = await self.client.get(
+                "/prompt_manager/images/inspect/image.png", params=params
+            )
+        self.assertEqual(response.status, status)
+        result = await response.json()
+        self.assertFalse(result["success"])
+        if status == 409:
+            self.assertEqual(result["code"], "source-changed")
+            self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+        self.assertNotIn(str(self.comfy_dir), json.dumps(result))
+
+    async def test_root_scope_equal_label_reorder_or_replacement_never_reads_other_file(
+        self,
+    ):
+        from py.config import GalleryConfig
+
+        roots = [self.comfy_dir / name / "output" for name in ("a", "b", "c")]
+        for index, root in enumerate(roots):
+            png(root / "image.png", prompt=graph(str(index)))
+        with patch.object(
+            GalleryConfig,
+            "path_anchors",
+            classmethod(lambda cls: [str(root.parent) for root in roots]),
+        ):
+            self.api._get_all_output_dirs = lambda: roots[:2]
+            descriptor = await self.scoped_descriptor()
+            other = await self.scoped_descriptor(1)
+            self.assertEqual(descriptor["root_dir"], other["root_dir"])
+            for changed in ([roots[1], roots[0]], [roots[2], roots[1]]):
+                self.api._get_all_output_dirs = lambda: changed
+                await self.assert_scope_skips_access(
+                    descriptor.get("root_scope", "0" * 64)
+                )
+
+    async def test_root_scope_symlink_retarget_requires_refresh(self):
+        first, second = self.comfy_dir / "a", self.comfy_dir / "b"
+        png(first / "image.png", prompt=graph("first"))
+        png(second / "image.png", prompt=graph("second"))
+        link = self.comfy_dir / "linked"
+        self._make_symlink(first, link)
+        self.api._get_all_output_dirs = lambda: [link]
+        descriptor = await self.scoped_descriptor()
+        link.unlink()
+        self._make_symlink(second, link)
+        await self.assert_scope_skips_access(descriptor.get("root_scope", "0" * 64))
+
+    async def test_root_scope_rotated_key_and_removed_index_skip_reader_and_db(self):
+        png(self.output_dir / "image.png", prompt=graph())
+        descriptor = await self.scoped_descriptor()
+        import py.api.images as images_module
+
+        with patch.object(images_module, "_WORKSPACE_CURSOR_SECRET", b"new-key"):
+            await self.assert_scope_skips_access(descriptor.get("root_scope", "0" * 64))
+        self.api._get_all_output_dirs = lambda: []
+        await self.assert_scope_skips_access(descriptor.get("root_scope", "0" * 64))
+
+    async def test_root_scope_malformed_request_skips_reader(self):
+        png(self.output_dir / "image.png", prompt=graph())
+        for token in ("", "z" * 64, "a" * 63, "a" * 65, "a" * 4097):
+            await self.assert_scope_skips_access(token, status=400)
+        for root in (None, "-1", "x", "0.0", "+0"):
+            await self.assert_scope_skips_access("a" * 64, root=root, status=400)
+
+    async def test_root_scope_echo_preserves_legacy_image_and_roles(self):
+        png(self.output_dir / "image.png", prompt=graph())
+        descriptor = await self.scoped_descriptor()
+        token = descriptor.get("root_scope", "0" * 64)
+        _, original = await self.inspect()
+        response = await self.client.get(
+            "/prompt_manager/images/inspect/image.png",
+            params={"root": "0", "root_scope": token},
+        )
+        result = await response.json()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(result.get("root_scope"), token)
+        self.assertEqual(
+            result["image"],
+            {"root_index": 0, "path": "image.png", "filename": "image.png"},
+        )
+        self.assertEqual(result["prompts"], original["prompts"])
+        outside = png(self.comfy_dir / "outside.png", prompt=graph("private"))
+        self._make_symlink(outside, self.output_dir / "escape.png")
+        for path in ("..%2Foutside.png", "escape.png"):
+            denied = await self.client.get(
+                f"/prompt_manager/images/inspect/{path}",
+                params={"root": "0", "root_scope": token},
+            )
+            self.assertEqual(denied.status, 403)
+
+    async def test_root_scope_source_change_returns_refresh_instead_of_other_root(self):
+        png(self.output_dir / "image.png", prompt=graph("old source"))
+        other = self.comfy_dir / "input"
+        png(other / "image.png", prompt=graph("different source"))
+        self.api._get_all_output_dirs = lambda: [self.output_dir, other]
+        descriptor = await self.scoped_descriptor()
+        self.api._get_all_output_dirs = lambda: [other, self.output_dir]
+        response = await self.client.get(
+            "/prompt_manager/images/inspect/image.png",
+            params={"root": 0, "root_scope": descriptor.get("root_scope", "0" * 64)},
+        )
+        self.assertEqual(response.status, 409)
+        result = await response.json()
+        self.assertEqual(result["code"], "source-changed")
+        self.assertNotIn("different source", json.dumps(result))
+
+    async def test_video_unrepresentable_decimal_preserves_file_roles_and_raw(self):
+        carrier = json.dumps({"prompt": graph()}).replace(
+            '"positive": ["1", 0]',
+            '"cfg":1e1000000000000000000000000,"positive": ["1", 0]',
+        )
+        response, result = await self.video_inspect(carrier)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(result["prompts"]["positive"], self.side("portrait"))
+        self.assertEqual(
+            result["metadata"]["prompt_graph"], {"status": "malformed", "value": None}
+        )
+        self.assertEqual(
+            result["metadata"]["record_formats"]["prompt"], "reserialized-json"
+        )
+        self.assertIn("Infinity", result["metadata"]["raw"]["prompt"])
+
+    async def test_root_scope_guard_and_evidence_use_one_current_roots_snapshot(self):
+        png(self.output_dir / "image.png", prompt=graph())
+        descriptor = await self.scoped_descriptor()
+        with patch.object(
+            self.api, "_get_all_output_dirs", side_effect=[[self.output_dir]]
+        ) as roots:
+            response = await self.client.get(
+                "/prompt_manager/images/inspect/image.png",
+                params={"root": 0, "root_scope": descriptor["root_scope"]},
+            )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            (await response.json())["root_scope"], descriptor["root_scope"]
+        )
+        roots.assert_called_once_with()
+
+    async def test_exact_saved_association_ambiguity_preserves_physical_file_evidence(
+        self,
+    ):
+        for readable in (False, True):
+            with self.subTest(readable=readable):
+                filename = "readable.png" if readable else "empty.png"
+                metadata = (
+                    {"prompt": json.dumps(graph("Physical portrait", ""))}
+                    if readable
+                    else {}
+                )
+                path = png(self.output_dir / filename, **metadata)
+                before = path.read_bytes()
+                results, lookups = [], []
+                for count, expected in ((0, "none"), (1, "linked"), (2, "ambiguous")):
+                    if count:
+                        positive = self._save_prompt(
+                            f"Saved owner {readable} {count}",
+                            category=f"Category {count}",
+                            tags=[f"owner-{count}"],
+                        )
+                        self.api.db.link_image_to_prompt(positive, str(path))
+                    with patch.object(
+                        self.api.db,
+                        "get_image_prompt_info",
+                        wraps=self.api.db.get_image_prompt_info,
+                    ) as lookup:
+                        response, result = await self.inspect(filename)
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(result["library"]["status"], expected)
+                    self.assertEqual(lookup.call_count, 1)
+                    lookups.append(lookup)
+                    results.append(result)
+                    self.assertEqual(result["metadata"]["raw"], metadata)
+                    self.assertEqual(path.read_bytes(), before)
+                    if count == 1:
+                        self.assertEqual(result["library"]["positive_id"], positive)
+                        self.assertEqual(
+                            result["library"]["metadata_scope"], "positive"
+                        )
+                        self.assertEqual(result["library"]["category"], "Category 1")
+                        self.assertEqual(result["library"]["tags"], ["owner-1"])
+                        if not readable:
+                            self.assertEqual(
+                                result["prompts"]["positive"]["source"],
+                                "saved-association",
+                            )
+                    if readable or count != 1:
+                        self.assertEqual(result["prompts"], results[0]["prompts"])
+                self.assertEqual(
+                    results[2]["library"],
+                    {
+                        "status": "ambiguous",
+                        "scope": "saved-library",
+                        "positive_id": None,
+                        "pair_id": None,
+                        "title": None,
+                        "category": None,
+                        "tags": [],
+                        "metadata_scope": None,
+                    },
+                )
+                for field in (
+                    "image",
+                    "file",
+                    "metadata",
+                    "prompts",
+                    "resolution",
+                    "root_scope",
+                ):
+                    self.assertEqual(results[2][field], results[0][field])
+                self.assertNotIn("Saved owner", json.dumps(results[2]))
+                self.assertNotIn("association_status", json.dumps(results[2]))
+                for lookup in lookups:
+                    lookup.assert_called_once_with(
+                        str(path), False, report_ambiguity=True
+                    )

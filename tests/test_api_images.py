@@ -2067,3 +2067,128 @@ class TestGalleryRootIdentity(ThumbnailTestCase):
         )
         self.assertEqual(response.status, 200)
         self.assertFalse((await response.json())["success"])
+
+
+class TestRootScopeServing(ImageAPITestCase):
+    async def scoped_request(self, path="image.png", root="0", scope="0" * 64):
+        params = {"root_scope": scope}
+        if root is not None:
+            params["root"] = root
+        return await self.client.get(
+            f"/prompt_manager/images/serve/{path}", params=params
+        )
+
+    async def assert_no_access(self, path, root="0", scope="0" * 64, status=409):
+        original_stat = Path.stat
+
+        def stat(candidate, *args, **kwargs):
+            if candidate.name in ("image.png", "image_thumb.png"):
+                raise AssertionError("candidate stat before scope guard")
+            return original_stat(candidate, *args, **kwargs)
+
+        with (
+            patch.object(Path, "stat", stat),
+            patch.object(
+                self.api, "_file_response", side_effect=AssertionError("file response")
+            ),
+            patch.object(
+                self.api.db,
+                "get_image_prompt_info",
+                side_effect=AssertionError("saved lookup"),
+            ),
+            patch(
+                "py.api.images.read_inspection_file",
+                side_effect=AssertionError("metadata read"),
+            ),
+            patch(
+                "utils.prompt_inspector.subprocess.Popen",
+                side_effect=AssertionError("probe"),
+            ),
+        ):
+            response = await self.scoped_request(path, root, scope)
+        self.assertEqual(response.status, status)
+        result = await response.json()
+        self.assertFalse(result["success"])
+        if status == 409:
+            self.assertEqual(result["code"], "source-changed")
+            self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+        self.assertNotIn(str(self.comfy_dir), json.dumps(result))
+
+    async def test_root_scope_stale_original_and_thumbnail_fail_before_access(self):
+        make_png(self.output_dir / "image.png")
+        make_png(self.output_dir / "thumbnails" / "image_thumb.png")
+        for path in ("image.png", "thumbnails/image_thumb.png"):
+            await self.assert_no_access(path)
+
+    async def test_root_scope_malformed_tokens_are_bad_requests(self):
+        make_png(self.output_dir / "image.png")
+        for scope in ("", "g" * 64, "a" * 63, "a" * 65, "a" * 4097, "A" * 64):
+            await self.assert_no_access("image.png", scope=scope, status=400)
+        for root in (None, "", "x", "-1", "0.0", "+0"):
+            await self.assert_no_access("image.png", root=root, status=400)
+
+    async def test_root_scope_rotated_key_and_removed_index_require_refresh(self):
+        make_png(self.output_dir / "image.png")
+        listing = await self.client.get("/prompt_manager/images/output?mode=workspace")
+        descriptor = (await listing.json())["images"][0]
+        self.assertRegex(descriptor.get("root_scope", ""), r"^[0-9a-f]{64}$")
+        with patch.object(
+            images_module, "_WORKSPACE_CURSOR_SECRET", b"different-process-key"
+        ):
+            await self.assert_no_access("image.png", scope=descriptor["root_scope"])
+        self.api._get_all_output_dirs = lambda: []
+        await self.assert_no_access("image.png", scope=descriptor["root_scope"])
+
+    async def test_root_scope_keeps_containment_and_unscoped_access(self):
+        make_png(self.output_dir / "image.png")
+        listing = await self.client.get("/prompt_manager/images/output?mode=workspace")
+        descriptor = (await listing.json())["images"][0]
+        self.assertRegex(descriptor.get("root_scope", ""), r"^[0-9a-f]{64}$")
+        scope = descriptor["root_scope"]
+        self.assertEqual((await self.scoped_request(scope=scope)).status, 200)
+        outside = make_png(self.comfy_dir / "outside.png")
+        self._make_symlink(outside, self.output_dir / "escape.png")
+        for path in ("..%2Foutside.png", "escape.png"):
+            self.assertEqual((await self.scoped_request(path, scope=scope)).status, 403)
+        self.assertEqual(
+            (await self.client.get("/prompt_manager/images/serve/image.png")).status,
+            200,
+        )
+
+    async def test_root_scope_equal_label_reorder_replacement_and_symlink_are_stale(
+        self,
+    ):
+        roots = [self.comfy_dir / name / "output" for name in ("a", "b", "c")]
+        for index, root in enumerate(roots):
+            make_png(root / "image.png", color=(index, 0, 0))
+            make_png(root / "thumbnails" / "image_thumb.png", color=(index, 0, 0))
+        # Both roots have the same display label under disposable public anchors.
+        with patch.object(
+            GalleryConfig,
+            "path_anchors",
+            classmethod(lambda cls: [str(root.parent) for root in roots]),
+        ):
+            self.api._get_all_output_dirs = lambda: roots[:2]
+            listing = await self.client.get(
+                "/prompt_manager/images/output?mode=workspace"
+            )
+            descriptors = (await listing.json())["images"]
+            self.assertEqual({entry["root_dir"] for entry in descriptors}, {"output"})
+            token = next(
+                entry for entry in descriptors if entry["root_index"] == 0
+            ).get("root_scope", "0" * 64)
+            for changed in ([roots[1], roots[0]], [roots[2], roots[1]]):
+                self.api._get_all_output_dirs = lambda: changed
+                for path in ("image.png", "thumbnails/image_thumb.png"):
+                    await self.assert_no_access(path, scope=token)
+            link = self.comfy_dir / "linked-output"
+            self._make_symlink(roots[0], link)
+            self.api._get_all_output_dirs = lambda: [link]
+            listing = await self.client.get(
+                "/prompt_manager/images/output?mode=workspace"
+            )
+            token = (await listing.json())["images"][0]["root_scope"]
+            link.unlink()
+            self._make_symlink(roots[1], link)
+            for path in ("image.png", "thumbnails/image_thumb.png"):
+                await self.assert_no_access(path, scope=token)
