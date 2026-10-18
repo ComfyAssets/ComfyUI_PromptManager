@@ -22,6 +22,28 @@ class HistoryRestoreTests(unittest.TestCase):
     finish = history_tests.HistoryDatabaseTests.finish
     count = history_tests.HistoryDatabaseTests.count
 
+    def test_output_operations_restore_preserves_evidence_and_rejects_stale_finish(
+        self,
+    ):
+        from database.execution_history import HistoryEpochChanged
+        from tests.test_execution_output_database import bundle
+
+        db = self.database()
+        start = self.start(db)
+        db.write_execution_start(start)
+        finish = self.finish(start)
+        db.write_execution_outputs_for_finish(finish, bundle())
+        evidence = db.get_execution_outputs(start.run_id)
+        backup = str(Path(self.temp.name) / "output-operations.db")
+        self.assertTrue(db.model.backup_database(backup))
+        source = Path(backup).read_bytes()
+        db.model.restore_from_file(backup)
+        self.assertEqual(db.get_execution_outputs(start.run_id), evidence)
+        with self.assertRaises(HistoryEpochChanged):
+            db.write_execution_outputs_for_finish(finish, bundle("late.png"))
+        self.assertEqual(db.get_execution_outputs(start.run_id), evidence)
+        self.assertEqual(Path(backup).read_bytes(), source)
+
     def test_output_wal_backup_restore_preserves_rows_and_historical_epoch(self):
         try:
             from tests.test_execution_output_schema import capture
