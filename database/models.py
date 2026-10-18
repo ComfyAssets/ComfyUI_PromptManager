@@ -124,7 +124,7 @@ class PromptModel:
         self.logger.debug(f"Initializing database model with path: {db_path}")
         self.db_path = db_path
         # One connection per thread (see get_connection); every open connection
-        # is also tracked here so restore_from_file can close them all.
+        # is also tracked here so close_all can clean up across threads.
         self._local = threading.local()
         self._connections: Set[sqlite3.Connection] = set()
         self._conn_lock = threading.Lock()
@@ -550,7 +550,7 @@ class PromptModel:
         if conn is not None and self._local.generation == self._generation:
             return conn
 
-        # check_same_thread=False only so restore_from_file can close other
+        # check_same_thread=False only so close_all can clean up other
         # threads' connections; each connection is still used by one thread.
         conn = sqlite3.connect(
             self.db_path, check_same_thread=False, timeout=BUSY_TIMEOUT_SECONDS
@@ -1123,7 +1123,11 @@ class PromptModel:
                     if not self.backup_database(backup_path):
                         raise RuntimeError("Could not back up the current database")
                     self.logger.info(f"Current database backed up to: {backup_path}")
-                self._replace_contents_from(staged_path)
+                try:
+                    self._replace_contents_from(staged_path)
+                except sqlite3.OperationalError as exc:
+                    exc._prompt_manager_restore_backup_created = bool(backup_path)
+                    raise
                 with PromptModel._init_lock:
                     PromptModel._initialized_paths.add(self._schema_key())
                 self.logger.info(f"Database restored from {src_path}")

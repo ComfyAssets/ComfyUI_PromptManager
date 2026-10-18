@@ -318,6 +318,25 @@ class TestRestoreFromFile(BackupTestCase):
         # being deleted under them; the content is what matters.
         self.assertEqual(_texts(self.path), ["restored one", "restored two"])
 
+    def test_refusal_preserves_exception_identity_and_marks_completed_backup(
+        self,
+    ) -> None:
+        self._save(self.db, "keep live")
+        source = self._make_source_db(["replacement"])
+        failure = sqlite3.OperationalError("online replacement refused")
+        with patch.object(self.db.model, "_replace_contents_from", side_effect=failure):
+            with self.assertRaises(sqlite3.OperationalError) as raised:
+                self.db.model.restore_from_file(source)
+        self.assertIs(raised.exception, failure)
+        self.assertIs(
+            getattr(raised.exception, "_prompt_manager_restore_backup_created", None),
+            True,
+        )
+        self.assertEqual(_texts(self.path), ["keep live"])
+        backups = list(Path(self.tmpdir).glob("prompts.db.backup_*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(_texts(str(backups[0])), ["keep live"])
+
     def test_database_is_usable_from_every_thread_after_restore(self):
         self._save(self.db, "old prompt")
         src = self._make_source_db(["restored"])

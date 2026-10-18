@@ -13,7 +13,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 _mock_server = MagicMock()
 _mock_server.PromptServer.instance.routes = MagicMock()
@@ -1505,6 +1505,159 @@ class TestBackupRestoreContract(AdminAPITestCase):
         self.assertNotIn(self.tmpdir, body)
         data = json.loads(body)
         self.assertTrue(data["backup_created"].startswith("prompts.db.backup_"))
+
+    def _retention_upload(self) -> bytes:
+        import sqlite3
+        from contextlib import closing
+
+        path = Path(self.tmpdir) / "retention-source.db"
+        with closing(sqlite3.connect(path)) as conn:
+            conn.execute("PRAGMA page_size=8192")
+            conn.execute("VACUUM")
+        source = PromptDatabase(str(path))
+        try:
+            source.save_prompt(text="do not publish", prompt_hash="source")
+            self.assertEqual(
+                source.model.get_connection().execute("PRAGMA page_size").fetchone()[0],
+                8192,
+            )
+        finally:
+            source.close_all()
+        return path.read_bytes()
+
+    def _seed_retention_backups(self, count: int) -> list[Path]:
+        snapshot = self._snapshot_upload()
+        paths = []
+        for index in range(count):
+            path = Path(
+                f"{self.api.db.model.db_path}.backup_202001{index + 1:02d}_000000"
+            )
+            path.write_bytes(snapshot)
+            os.utime(path, (1_000_000 + index, 1_000_000 + index))
+            paths.append(path)
+        return paths
+
+    async def test_refused_restore_retains_ten_backups_and_new_recovery_copy(
+        self,
+    ) -> None:
+        import sqlite3
+        from contextlib import closing
+
+        from database.execution_history import subscribe_history_restore
+
+        previous = self.api.db
+        previous.save_prompt(text="keep live", prompt_hash="live")
+        live = previous.model.get_connection()
+        self.assertEqual(live.execute("PRAGMA page_size").fetchone()[0], 4096)
+        self.assertEqual(live.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+        epoch = previous.get_execution_epoch()
+        old_backups = self._seed_retention_backups(10)
+        upload = self._retention_upload()
+        notices = []
+        self.addCleanup(
+            subscribe_history_restore(
+                previous.model.db_path, lambda: notices.append(True)
+            )
+        )
+
+        response = await self._restore("database_file", upload)
+
+        data = await response.json()
+        self.assertEqual(response.status, 500, data)
+        self.assertFalse(data["success"])
+        self.assertNotIn(self.tmpdir, data["error"])
+        remaining = set(Path(self.tmpdir).glob("prompts.db.backup_*"))
+        self.assertEqual(len(remaining), 10)
+        self.assertEqual(remaining.intersection(old_backups), set(old_backups[1:]))
+        new_backups = remaining.difference(old_backups)
+        self.assertEqual(len(new_backups), 1)
+        with closing(sqlite3.connect(new_backups.pop())) as conn:
+            self.assertEqual(
+                conn.execute("SELECT text FROM prompts").fetchone()[0], "keep live"
+            )
+            self.assertEqual(conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+        self.assertIs(self.api.db, previous)
+        self.assertEqual(previous.get_execution_epoch(), epoch)
+        self.assertEqual(notices, [])
+        self.assertEqual(
+            live.execute("SELECT text FROM prompts").fetchone()[0], "keep live"
+        )
+        previous.save_prompt(text="still writes", prompt_hash="after")
+        self.assertEqual(
+            (Path(self.tmpdir) / "retention-source.db").read_bytes(), upload
+        )
+
+    async def test_prebackup_restore_failures_leave_existing_backups_untouched(
+        self,
+    ) -> None:
+        import sqlite3
+
+        self.api.db.save_prompt(text="keep live", prompt_hash="live")
+        old_backups = self._seed_retention_backups(11)
+        original = {path: path.read_bytes() for path in old_backups}
+        epoch = self.api.db.get_execution_epoch()
+        invalid = await self._restore("database_file", b"not a database")
+        self.assertEqual(invalid.status, 400)
+        self.assertFalse((await invalid.json())["success"])
+        compatible = self._snapshot_upload()
+        with patch(
+            "database.models.rotate_history_epoch",
+            side_effect=sqlite3.OperationalError("staging failed before safety backup"),
+        ):
+            staged = await self._restore("database_file", compatible)
+        self.assertEqual(staged.status, 500)
+        self.assertIn("staging failed", (await staged.json())["error"])
+        self.assertEqual(
+            set(Path(self.tmpdir).glob("prompts.db.backup_*")), set(old_backups)
+        )
+        self.assertEqual({path: path.read_bytes() for path in old_backups}, original)
+        self.assertEqual(self.api.db.get_execution_epoch(), epoch)
+        self.assertIsNotNone(self.api.db.get_prompt_by_hash("live"))
+
+    async def test_retention_failure_keeps_original_restore_error_and_backup(
+        self,
+    ) -> None:
+        import sqlite3
+        from contextlib import closing
+
+        self.api.db.save_prompt(text="keep live", prompt_hash="live")
+        previous = self.api.db
+        epoch = previous.get_execution_epoch()
+        old_backups = self._seed_retention_backups(10)
+        upload = self._retention_upload()
+        with patch(
+            "py.api.admin._prune_safety_backups",
+            side_effect=OSError("retention cleanup failure /tmp/private"),
+        ):
+            with self.assertLogs(self.api.logger, level="WARNING") as logs:
+                response = await self._restore("database_file", upload)
+        data = await response.json()
+        self.assertEqual(response.status, 500, data)
+        self.assertFalse(data["success"])
+        self.assertIn("readonly database", data["error"])
+        self.assertNotIn("retention cleanup failure", data["error"])
+        self.assertNotIn("/tmp/", data["error"])
+        warnings = [
+            record.getMessage()
+            for record in logs.records
+            if record.levelname == "WARNING"
+        ]
+        self.assertTrue(any("backup" in message.lower() for message in warnings))
+        self.assertTrue(
+            all("/tmp/" not in message and len(message) < 300 for message in warnings)
+        )
+        self.assertIs(self.api.db, previous)
+        self.assertEqual(previous.get_execution_epoch(), epoch)
+        self.assertIsNotNone(previous.get_prompt_by_hash("live"))
+        remaining = set(Path(self.tmpdir).glob("prompts.db.backup_*"))
+        self.assertEqual(len(remaining), 11)
+        new_backups = remaining.difference(old_backups)
+        self.assertEqual(len(new_backups), 1)
+        with closing(sqlite3.connect(new_backups.pop())) as conn:
+            self.assertEqual(
+                conn.execute("SELECT text FROM prompts").fetchone()[0], "keep live"
+            )
+            self.assertEqual(conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
 
     async def test_restore_rejects_database_with_a_trigger(self):
         self.api.db.save_prompt(text="keep me", prompt_hash="h1")
