@@ -37,7 +37,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     let density = visit?.density || 'comfortable';
     let metrics = workspaceImageMetrics(window.innerWidth, density);
     let layout = visit?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer;
-    let state, geometry = { positions: [], height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest;
+    let state, geometry = { positions: [], height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest, recovering = false;
     const rendered = new Map();
     const itemIndexes = new Map();
     const filters = { root: 'all', q: '', subfolder: '', media: 'all', sort: 'newest', ...visit?.filters };
@@ -93,14 +93,13 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         try {
             await api.post('/prompt_manager/gallery/rescan', {}, {signal:scope.signal});
             if (scope.signal.aborted) return;
-            await loadOptions();
-            if (!scope.signal.aborted) reset();
+            if (await loadOptions() && !scope.signal.aborted) reset();
         } catch {
             if (scope.signal.aborted) return;
             optionsStatus.textContent = 'Images could not be refreshed. Try Refresh again.';
             optionsStatus.hidden = false;
         } finally {
-            refresh.disabled = false;
+            refresh.disabled = recovering;
         }
     });
     const currentGallery = el('a', 'Current gallery', 'workspace-link');
@@ -325,12 +324,12 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         state = next;
         count.textContent = embedded ? `${next.loaded.toLocaleString()} loaded · ${next.total.toLocaleString()} linked images` : `${next.loaded.toLocaleString()} of ${next.total.toLocaleString()} images`;
         if (changed) updateLayout();
-        message.textContent = next.error ? 'Images could not be loaded. Retry or refresh the collection.' : next.loading ? 'Loading images…' : '';
+        message.textContent = recovering ? 'Images paused until sources and folders are available.' : next.error ? 'Images could not be loaded. Retry or refresh the collection.' : next.loading ? 'Loading images…' : '';
         if (next.error) message.setAttribute('role', 'alert'); else message.setAttribute('role', 'status');
         retry.hidden = !next.error;
         more.hidden = !next.hasMore || !!next.error;
-        more.setAttribute('aria-disabled', String(next.loading));
-        end.textContent = !next.loading && !next.error && !next.hasMore ? (next.loaded ? 'You’re all caught up.' : embedded ? 'No linked media available for this selection.' : 'No matching images or media. Try changing the filters.') : '';
+        more.setAttribute('aria-disabled', String(next.loading || recovering));
+        end.textContent = !recovering && !next.loading && !next.error && !next.hasMore ? (next.loaded ? 'You’re all caught up.' : embedded ? 'No linked media available for this selection.' : 'No matching images or media. Try changing the filters.') : '';
         if (!selection && next.items.length) inspect(next.items[0]);
         scheduleLoad();
     }
@@ -339,10 +338,10 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         stream.dispose();
         for (const video of body.querySelectorAll('video')) releaseVideo(video);
     });
-    scope.listen(more, 'click', () => stream.loadMore());
-    scope.listen(retry, 'click', () => stream.loadMore());
+    scope.listen(more, 'click', () => { if (!recovering) stream.loadMore(); });
+    scope.listen(retry, 'click', () => { if (!recovering) stream.loadMore(); });
     function maybeLoad() {
-        if (!observer || scope.signal.aborted || !state?.hasMore || state.loading || state.error || main.querySelector('.image-preview[open]')) return;
+        if (!observer || recovering || scope.signal.aborted || !state?.hasMore || state.loading || state.error || main.querySelector('.image-preview[open]')) return;
         const bounds = continuation.getBoundingClientRect();
         if (bounds.top <= window.innerHeight + 250 && bounds.bottom >= 0) stream.loadMore();
     }
@@ -358,17 +357,29 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     function reset() {
         mediaViewer.stopSlideshow();
         main.querySelector('.image-preview[open]')?.close();
-        inspection.clear();
-        detailInspector?.dispose(); detailInspector = null;
+        if (!recovering) {
+            inspection.clear();
+            detailInspector?.dispose(); detailInspector = null;
+            details.replaceChildren(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));
+        }
         selection = null;
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
-        details.replaceChildren(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));
-        stream.reset(filters);
+        stream.reset(filters, {load:!recovering});
     }
     async function refreshInspectionCollection() {
         if (scope.signal.aborted) return;
+        // Numeric roots may now name another source; retire the old stream first.
+        recovering = true;
+        filters.root = 'all';filters.subfolder = '';filters.q = search.value.trim();
+        source.replaceChildren(new Option('All sources', 'all'));folder.replaceChildren(new Option('All folders', ''));
+        for (const control of [search,source,folder,media,sort,refresh,more,retry]) control.disabled = true;
+        optionsStatus.hidden = true;
         reset();
-        await loadOptions();
+        const discovery = loadOptions(), request = optionsRequest;
+        if (!await discovery || scope.signal.aborted || request !== optionsRequest) return;
+        recovering = false;
+        for (const control of [search,source,folder,media,sort,refresh,more,retry]) control.disabled = false;
+        reset();
     }
     async function loadOptions() {
         optionsRequest?.abort();
@@ -377,22 +388,25 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             const params = new URLSearchParams({mode:'workspace', include_ancestors:'true'});
             if (filters.root !== 'all') params.set('root', filters.root);
             const data = await api.get(`/prompt_manager/gallery/subfolders?${params}`, {signal:request.signal});
-            if (scope.signal.aborted || request !== optionsRequest) return;
+            if (scope.signal.aborted || request !== optionsRequest) return false;
             source.replaceChildren(new Option('All sources', 'all'), ...data.roots.map(root => new Option(root.label, String(root.index))));
             source.value = filters.root;
             folder.replaceChildren(new Option('All folders', ''), ...data.subfolders.map(path => new Option(path, path)));
             folder.value = filters.subfolder;
             optionsStatus.hidden = true;
+            return true;
         } catch {
-            if (scope.signal.aborted || request !== optionsRequest) return;
-            optionsStatus.textContent = 'Sources and folders could not be loaded. Refresh to retry.';
+            if (scope.signal.aborted || request !== optionsRequest) return false;
+            optionsStatus.textContent = recovering ? 'Sources and folders could not be loaded. Refresh image collection to retry.' : 'Sources and folders could not be loaded. Refresh to retry.';
             optionsStatus.hidden = false;
+            return false;
         }
     }
     scope.cleanup(() => optionsRequest?.abort());
-    scope.listen(search, 'input', scope.debounce(() => { filters.q = search.value.trim(); reset(); }, 200));
+    scope.listen(search, 'input', scope.debounce(() => { if (!recovering) { filters.q = search.value.trim(); reset(); } }, 200));
     for (const [input, key] of [[source, 'root'], [folder, 'subfolder'], [media, 'media'], [sort, 'sort']]) {
         scope.listen(input, 'change', () => {
+            if (recovering) return;
             filters[key] = input.value;
             if (key === 'root') { filters.subfolder = ''; folder.value = ''; loadOptions(); }
             reset();

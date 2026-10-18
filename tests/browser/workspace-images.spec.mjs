@@ -478,6 +478,92 @@ test('source and folder discovery failure stays visible and Refresh restores usa
     await expect(cards(page)).toHaveCount(1);
 });
 
+async function staleSourceRecovery(page, request, roots) {
+    await expect(await request.post('/__test__/reset', { data: { extra_images: 80 } })).toBeOK();
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await page.goto(workspace);
+    const source = page.getByRole('combobox', { name: 'Source', exact: true });
+    const folder = page.getByRole('combobox', { name: 'Folder', exact: true });
+    await source.selectOption('0');await expect(folder.locator('option[value="bulk"]')).toHaveCount(1);await folder.selectOption('bulk');
+    const configured = page.waitForResponse(response => {
+        const url = new URL(response.url());return url.pathname.endsWith('/images/output') && url.searchParams.get('root') === '0' && url.searchParams.get('subfolder') === 'bulk' && url.searchParams.get('q') === 'png' && url.searchParams.get('media') === 'image' && url.searchParams.get('sort') === 'name';
+    });
+    await page.getByRole('searchbox', { name: 'Search filenames', exact: true }).fill('png');
+    await page.getByRole('combobox', { name: 'Media', exact: true }).selectOption('image');await page.getByRole('combobox', { name: 'Sort', exact: true }).selectOption('name');
+    const initial = await (await configured).json();await expect(page.locator('.image-toolbar')).toContainText('40 of 80');
+    let oldPage;
+    await page.route('**/prompt_manager/images/output?*', async route => {
+        if (new URL(route.request().url()).searchParams.has('cursor') && !oldPage) {
+            const response = await route.fetch();oldPage = { route, data: await response.json() };
+        } else await route.continue();
+    });
+    await page.getByRole('button', { name: 'Load more images', exact: true }).scrollIntoViewIfNeeded();await expect.poll(() => !!oldPage).toBe(true);
+    await expect(await request.post('/prompt_manager/settings', { data: { gallery_root_paths: roots } })).toBeOK();
+    const selected = initial.images.at(-1), key = `${selected.root_index}:${selected.path}`;
+    const stale = page.waitForResponse(response => response.url().includes('/images/inspect/') && response.status() === 409);
+    await page.locator(`article[data-image-key="${key}"] .image-open`).click();expect((await stale).status()).toBe(409);
+    await expect(details(page)).toContainText('The source changed. Refresh the image collection before inspecting this file.');
+    await page.locator(`article[data-image-key="${key}"] .image-card-footer button`).click();
+    const viewer = page.getByRole('dialog', { name: 'Image preview', exact: true });await expect(viewer).toContainText('The source changed.');
+    const pages = [], inspections = [], options = [], mutations = [];
+    page.on('request', request => {
+        const url = new URL(request.url());
+        if (url.pathname.endsWith('/images/output')) pages.push(url);
+        if (url.pathname.includes('/images/inspect/')) inspections.push(url);
+        if (request.method() !== 'GET') mutations.push(url.pathname);
+    });
+    await page.route('**/prompt_manager/gallery/subfolders?*', route => { options.push(route); });
+    await viewer.getByRole('button', { name: 'Refresh image collection', exact: true }).click();
+    await expect(viewer).toHaveCount(0);await expect.poll(() => options.length).toBe(1);
+    await oldPage.route.fulfill({ json: oldPage.data });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    return { source, folder, pages, inspections, options, mutations };
+}
+
+for (const [name, roots] of [['reordered', ['input', 'output']], ['removed', ['input']]]) {
+    test(`source-change recovery clears a ${name} root before discovery and safe retry`, async ({ page, request }, testInfo) => {
+        const recovery = await staleSourceRecovery(page, request, roots);
+        try {
+            expect(recovery.pages.map(url => url.search)).toEqual([]);expect(recovery.inspections).toEqual([]);
+            await expect(recovery.source).toHaveValue('all');await expect(recovery.source.locator('option')).toHaveText(['All sources']);await expect(recovery.folder).toHaveValue('');
+            for (const name of ['Source', 'Folder', 'Media', 'Sort']) await expect(page.getByRole('combobox', { name, exact: true })).toBeDisabled();
+            await expect(page.getByRole('searchbox', { name: 'Search filenames', exact: true })).toBeDisabled();
+            await expect(page.getByRole('button', { name: 'Load more images', exact: true })).toBeDisabled();
+            await page.getByRole('button', { name: 'Load more images', exact: true }).evaluate(node => node.click());await recovery.source.dispatchEvent('change');
+            await recovery.options[0].fulfill({ status: 503, json: { success: false, error: 'Discovery unavailable' } });
+            await expect(page.getByRole('alert').filter({ hasText: 'Sources and folders could not be loaded.' })).toBeVisible();
+            expect(recovery.pages).toEqual([]);expect(recovery.inspections).toEqual([]);await expect(cards(page)).toHaveCount(0);
+            const retry = details(page).getByRole('button', { name: 'Refresh image collection', exact: true });await expect(retry).toBeEnabled();
+            if (testInfo.project.name === 'chromium' && name === 'reordered') await page.screenshot({ path: testInfo.outputPath('safe-source-discovery-failure.png') });
+            await retry.click();await expect.poll(() => recovery.options.length).toBe(2);
+            expect(new URL(recovery.options[1].request().url()).searchParams.has('root')).toBe(false);
+            const response = await recovery.options[1].fetch();await recovery.options[1].fulfill({ response });
+            await expect.poll(() => recovery.pages.length).toBe(1);
+            const query = recovery.pages[0].searchParams;expect(query.has('root')).toBe(false);expect(query.has('subfolder')).toBe(false);
+            expect(query.get('q')).toBe('png');expect(query.get('media')).toBe('image');expect(query.get('sort')).toBe('name');
+            await expect(recovery.source).toBeEnabled();await expect(recovery.source).toHaveValue('all');
+            await expect(recovery.source.locator('option')).toHaveText(['All sources', ...roots]);
+            await expect.poll(() => recovery.inspections.length).toBe(1);expect(recovery.inspections[0].searchParams.get('root')).toBe(name === 'reordered' ? '1' : '0');
+            expect(recovery.mutations).toEqual([]);
+            if (testInfo.project.name === 'chromium' && name === 'reordered') await page.screenshot({ path: testInfo.outputPath('safe-source-recovery-success.png') });
+        } finally { await expect(await request.post('/prompt_manager/settings', { data: { gallery_root_paths: ['output', 'input'] } })).toBeOK(); }
+    });
+}
+
+test('source-change recovery ignores superseded discovery and route disposal', async ({ page, request }) => {
+    const recovery = await staleSourceRecovery(page, request, ['input', 'output']);
+    try {
+        expect(recovery.pages).toEqual([]);await details(page).getByRole('button', { name: 'Refresh image collection', exact: true }).click();await expect.poll(() => recovery.options.length).toBe(2);
+        await recovery.options[0].fulfill({ json: { roots: [{ index: 0, label: 'Obsolete source label' }], subfolders: ['obsolete'] } });
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        expect(recovery.pages).toEqual([]);await expect(recovery.source.locator('option')).toHaveText(['All sources']);
+        await page.getByRole('navigation', { name: 'Workspace', exact: true }).getByRole('link', { name: 'Overview', exact: true }).click();
+        await recovery.options[1].fulfill({ json: { roots: [{ index: 0, label: 'Late source label' }], subfolders: ['late'] } });
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await expect(page.locator('#workspace-main h1')).toHaveText('Overview');expect(recovery.pages).toEqual([]);expect(recovery.inspections).toEqual([]);expect(recovery.mutations).toEqual([]);
+    } finally { await expect(await request.post('/prompt_manager/settings', { data: { gallery_root_paths: ['output', 'input'] } })).toBeOK(); }
+});
+
 test('mobile Images keeps filters, layouts and selected details within the viewport', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(workspace);
