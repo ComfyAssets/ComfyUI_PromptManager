@@ -129,6 +129,11 @@ EVIDENCE_SOURCES = {
 
 
 def validate_bundle(bundle: ContextBundle) -> None:
+    bundle_payload_size(bundle)
+
+
+def bundle_payload_size(bundle: ContextBundle) -> int:
+    """Validate scalar contracts and measure the charged UTF-8 payload."""
     if (
         type(bundle) is not ContextBundle
         or type(bundle.format_version) is not int
@@ -193,3 +198,4 @@ def validate_bundle(bundle: ContextBundle) -> None:
         total += size
         if total > MAX_ATTEMPT_BYTES:
             raise ValueError("Attempt payload limit reached")
+    return total

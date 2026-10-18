@@ -105,6 +105,313 @@ class HistoryWriterTests(unittest.TestCase):
         self.releases.append(release)
         return entered, release
 
+    def sealed(self, writer, value="exact text", generation=None):
+        from utils.execution_context_budget import SealedContext
+        from utils.execution_contexts import (
+            ContextBundle,
+            RecipeContext,
+            PromptSnapshot,
+            TextEvidence,
+            bundle_payload_size,
+        )
+
+        field = TextEvidence(value, "recorded", "runtime_return", None)
+        snapshot = PromptSnapshot(field, field, field, field)
+        bundle = ContextBundle(
+            (RecipeContext("1", snapshot, snapshot, "inferred"),),
+            "complete",
+            "captured",
+        )
+        lease = writer.context_budget.reserve(bundle_payload_size(bundle))
+        return SealedContext(
+            bundle,
+            lease,
+            "complete",
+            "captured",
+            writer.status().capture_generation if generation is None else generation,
+        )
+
+    def test_context_success_releases_and_legacy_finish_preserves_capture(self):
+        writer = self.writer()
+        start = self.start_command()
+        sealed = self.sealed(writer)
+        self.assertTrue(writer.submit(start))
+        self.assertTrue(writer.submit_finalization(self.finish_command(start), sealed))
+        self.wait_for(lambda: writer.status().pending == 0)
+        self.assertEqual(writer.context_budget.charged_bytes, 0)
+        self.assertEqual(
+            self.db.get_execution_contexts(start.run_id)["state"], "complete"
+        )
+        self.assertTrue(writer.submit(self.finish_command(start)))
+        self.wait_for(lambda: writer.status().pending == 0)
+        self.assertEqual(
+            self.db.get_execution_contexts(start.run_id)["state"], "complete"
+        )
+
+    def test_context_saturation_keeps_lifecycle_and_status(self):
+        from utils.execution_context_budget import SealedContext
+        from utils.execution_history_events import encode_command
+
+        writer = self.writer()
+        lease = writer.context_budget.reserve(8388608)
+        self.assertIsNone(writer.context_budget.reserve(1))
+        start = self.start_command()
+        self.assertTrue(writer.submit(start))
+        finish = self.finish_command(start)
+        self.assertLessEqual(len(encode_command(finish)), 2048)
+        self.assertTrue(
+            writer.submit_finalization(
+                finish, SealedContext(None, None, "unavailable", "budget_exhausted")
+            )
+        )
+        self.wait_for(lambda: writer.status().pending == 0)
+        self.assertEqual(
+            self.db.get_execution_run(start.run_id)["outcome"], "succeeded"
+        )
+        self.assertEqual(
+            self.db.get_execution_contexts(start.run_id)["reason"], "budget_exhausted"
+        )
+        lease.release()
+        self.assertEqual(writer.context_budget.charged_bytes, 0)
+
+    def test_outcome_survives_context_transaction_failure(self):
+        for error, ready in (
+            (ValueError("invalid evidence"), True),
+            (sqlite3.OperationalError("unavailable"), False),
+        ):
+            with self.subTest(error=type(error)):
+                writer = self.writer()
+                start = self.start_command(10 if ready else 11)
+                self.assertTrue(writer.submit(start))
+                sealed = self.sealed(writer)
+                entered, release = self.block()
+
+                def fail_context(*args):
+                    entered.set()
+                    release.wait(3)
+                    raise error
+
+                with patch.object(self.db, "write_execution_contexts", fail_context):
+                    self.assertTrue(
+                        writer.submit_finalization(self.finish_command(start), sealed)
+                    )
+                    self.assertTrue(entered.wait(1))
+                    self.assertEqual(
+                        self.db.get_execution_run(start.run_id)["outcome"], "succeeded"
+                    )
+                    self.assertGreater(writer.context_budget.charged_bytes, 0)
+                    release.set()
+                    self.wait_for(lambda: writer.status().pending == 0)
+                self.assertEqual(
+                    self.db.get_execution_run(start.run_id)["outcome"], "succeeded"
+                )
+                self.assertEqual(writer.status().accepting, ready)
+                self.assertEqual(writer.context_budget.charged_bytes, 0)
+                if not ready:
+                    self.clock.advance(5)
+                    self.wait_for(lambda: writer.status().accepting)
+                self.assertEqual(
+                    self.db.get_execution_contexts(start.run_id)["state"],
+                    "not_captured",
+                )
+                self.assertTrue(writer.close())
+
+    def test_same_epoch_recovery_changes_capture_generation(self):
+        writer = self.writer()
+        start = self.start_command()
+        old_generation = writer.status().capture_generation
+        sealed = self.sealed(writer)
+        writer.invalidate()
+        self.clock.advance(5)
+        self.wait_for(lambda: writer.status().accepting)
+        self.assertEqual(writer.status().epoch, start.storage_epoch)
+        self.assertGreater(writer.status().capture_generation, old_generation)
+        self.assertTrue(writer.submit(start))
+        self.assertTrue(writer.submit_finalization(self.finish_command(start), sealed))
+        self.wait_for(lambda: writer.status().pending == 0)
+        self.assertEqual(
+            self.db.get_execution_run(start.run_id)["outcome"], "succeeded"
+        )
+        self.assertEqual(writer.context_budget.charged_bytes, 0)
+        self.assertEqual(self.db.get_execution_contexts(start.run_id)["contexts"], [])
+
+    def test_restore_between_transactions_rejects_context(self):
+        writer = self.writer()
+        start = self.start_command()
+        self.db.write_execution_start(start)
+        backup = os.path.join(self.directory.name, "between.db")
+        self.assertTrue(self.db.model.backup_database(backup))
+        original = self.db.write_execution_finish
+
+        def finish(command):
+            result = original(command)
+            self.db.model.restore_from_file(backup)
+            return result
+
+        with patch.object(self.db, "write_execution_finish", finish):
+            self.assertTrue(
+                writer.submit_finalization(
+                    self.finish_command(start), self.sealed(writer)
+                )
+            )
+            self.wait_for(lambda: writer.status().pending == 0)
+        self.assertEqual(
+            self.db.get_execution_contexts(start.run_id)["state"], "not_captured"
+        )
+        self.assertEqual(writer.context_budget.charged_bytes, 0)
+        self.assertFalse(writer.status().accepting)
+
+    def test_reject_discard_and_bounded_close_release_leases(self):
+        writer = self.writer()
+        start = self.start_command()
+        sealed = self.sealed(writer)
+        self.assertFalse(writer.submit_finalization(object(), sealed))
+        self.assertEqual(writer.context_budget.charged_bytes, 0)
+        entered, release = self.block()
+        original = self.db.write_execution_start
+
+        def write(command):
+            entered.set()
+            release.wait(3)
+            return original(command)
+
+        with patch.object(self.db, "write_execution_start", write):
+            self.assertTrue(writer.submit(start))
+            self.assertTrue(entered.wait(1))
+            for _ in range(1023):
+                self.assertTrue(
+                    writer.submit_finalization(
+                        self.finish_command(start), self.sealed(writer)
+                    )
+                )
+            self.assertEqual(writer.status().pending, 1024)
+            self.assertFalse(
+                writer.submit_finalization(
+                    self.finish_command(start), self.sealed(writer)
+                )
+            )
+            self.assertFalse(writer.close(0.01))
+            release.set()
+            self.wait_for(lambda: not writer.status().alive)
+        self.assertEqual(writer.context_budget.charged_bytes, 0)
+        self.assertEqual(
+            self.db.get_execution_contexts(start.run_id)["state"], "not_captured"
+        )
+
+    def test_bounded_close_keeps_inflight_charge_and_releases_queued(self):
+        from utils.execution_context_budget import ContextBudget
+
+        pool = ContextBudget(1000)
+        writer = HistoryWriter(lambda: self.db, clock=self.clock, context_budget=pool)
+        self.writers.append(writer)
+        writer.start()
+        self.wait_for(lambda: writer.status().accepting)
+        start = self.start_command()
+        self.db.write_execution_start(start)
+        entered, release = self.block()
+        original = self.db.write_execution_contexts
+        first = self.sealed(writer)
+        charge = first.lease.byte_count
+
+        def write(*args):
+            entered.set()
+            release.wait(3)
+            return original(*args)
+
+        with patch.object(self.db, "write_execution_contexts", write):
+            self.assertTrue(
+                writer.submit_finalization(self.finish_command(start), first)
+            )
+            self.assertTrue(entered.wait(1))
+            self.assertTrue(
+                writer.submit_finalization(
+                    self.finish_command(start), self.sealed(writer)
+                )
+            )
+            before = time.monotonic()
+            self.assertFalse(writer.close(0.02))
+            self.assertLess(time.monotonic() - before, 0.2)
+            self.assertEqual(pool.charged_bytes, charge)
+            replacement = HistoryWriter(lambda: self.db, context_budget=pool)
+            self.writers.append(replacement)
+            self.assertIsNone(replacement.context_budget.reserve(1000))
+            release.set()
+            self.wait_for(lambda: not writer.status().alive)
+        self.assertEqual(pool.charged_bytes, 0)
+
+    def test_same_epoch_invalidation_between_transactions_drops_payload(self):
+        writer = self.writer()
+        start = self.start_command()
+        self.db.write_execution_start(start)
+        original = self.db.write_execution_finish
+
+        def finish(command):
+            result = original(command)
+            writer.invalidate()
+            return result
+
+        with patch.object(self.db, "write_execution_finish", finish):
+            self.assertTrue(
+                writer.submit_finalization(
+                    self.finish_command(start), self.sealed(writer)
+                )
+            )
+            self.wait_for(lambda: writer.status().pending == 0)
+        self.assertEqual(
+            self.db.get_execution_run(start.run_id)["outcome"], "succeeded"
+        )
+        self.assertEqual(
+            self.db.get_execution_contexts(start.run_id)["state"], "not_captured"
+        )
+        self.assertEqual(writer.context_budget.charged_bytes, 0)
+        self.clock.advance(5)
+        self.wait_for(lambda: writer.status().accepting)
+        self.assertEqual(
+            self.db.get_execution_contexts(start.run_id)["state"], "not_captured"
+        )
+
+    def test_invalid_seals_release_and_keep_valid_outcome(self):
+        from utils.execution_context_budget import ContextBudget
+
+        writer = self.writer()
+        cases = [
+            dict(state="private text" * 100),
+            dict(reason="arbitrary_exception"),
+            dict(capture_generation=True),
+            dict(capture_generation=-1),
+            dict(capture_generation=None),
+            dict(lease=None),
+        ]
+        for item, changes in enumerate(cases, 20):
+            start = self.start_command(item)
+            self.db.write_execution_start(start)
+            sealed = self.sealed(writer)
+            malformed = replace(sealed, **changes)
+            if changes == {"lease": None}:
+                sealed.lease.release()
+            self.assertTrue(
+                writer.submit_finalization(self.finish_command(start), malformed)
+            )
+            self.wait_for(lambda: writer.status().pending == 0)
+            self.assertEqual(
+                self.db.get_execution_run(start.run_id)["outcome"], "succeeded"
+            )
+            self.assertEqual(
+                self.db.get_execution_contexts(start.run_id)["reason"],
+                "invalid_evidence",
+            )
+            self.assertEqual(writer.context_budget.charged_bytes, 0)
+        foreign = ContextBudget(1000)
+        sealed = self.sealed(writer)
+        sealed.lease.release()
+        sealed = replace(sealed, lease=foreign.reserve(1000))
+        start = self.start_command(30)
+        self.db.write_execution_start(start)
+        self.assertTrue(writer.submit_finalization(self.finish_command(start), sealed))
+        self.wait_for(lambda: writer.status().pending == 0)
+        self.assertEqual(foreign.charged_bytes, 0)
+        self.assertEqual(self.db.get_execution_contexts(start.run_id)["contexts"], [])
+
     def test_fifo_single_worker_and_thread_local_connection_cleanup(self):
         caller_conn = self.db.model.get_connection()
         threads, timeouts = [], []
