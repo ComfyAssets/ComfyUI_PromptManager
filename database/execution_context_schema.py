@@ -387,7 +387,9 @@ def context_schema_error(conn: sqlite3.Connection) -> str | None:
                 "SELECT state,reason FROM execution_context_capture WHERE run_id=?",
                 (run_id,),
             ).fetchone()
-            state, reason = status if status else ("partial", "")
+            if status is None:
+                raise ValueError("Context link has no capture header")
+            state, reason = status
             if state == "complete" and not complete:
                 raise ValueError("Incomplete evidence marked complete")
             candidate = (*contexts, context)

@@ -281,6 +281,30 @@ class HistoryRestoreTests(unittest.TestCase):
                 )
                 self.assertEqual(Path(source).read_bytes(), original)
 
+    def test_missing_capture_header_rejects_backup_verification_and_restore(self):
+        try:
+            from tests.test_execution_context_database import bundle
+        except ImportError:
+            from test_execution_context_database import bundle
+
+        live = self.database()
+        start = self.start(live)
+        live.write_execution_start(start)
+        live.write_execution_contexts(start.run_id, start.storage_epoch, bundle())
+        self.assertEqual(live.get_execution_contexts(start.run_id)["state"], "complete")
+        before = "\n".join(live.model.get_connection().iterdump())
+        source = str(Path(self.temp.name) / "missing-capture.db")
+        self.assertTrue(live.model.backup_database(source))
+        with closing(sqlite3.connect(source)) as conn, conn:
+            conn.execute("DELETE FROM execution_context_capture")
+        original = Path(source).read_bytes()
+        valid, _ = PromptModel.verify_database_file(source)
+        self.assertFalse(valid)
+        with self.assertRaises(ValueError):
+            live.model.restore_from_file(source)
+        self.assertEqual("\n".join(live.model.get_connection().iterdump()), before)
+        self.assertEqual(Path(source).read_bytes(), original)
+
     def test_failed_staging_rotation_keeps_live_epoch_and_never_notifies(self):
         from database.execution_history import subscribe_history_restore
 

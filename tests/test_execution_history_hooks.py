@@ -76,6 +76,8 @@ class HistoryHooksTests(unittest.TestCase):
         logger.handlers, logger.propagate, logger.level = previous
 
     def cleanup_registrations(self):
+        for registration in self.registrations:
+            registration.writer.invalidate()
         for release in self.releases:
             release.set()
         for registration in self.registrations:
@@ -449,6 +451,55 @@ class HistoryHooksTests(unittest.TestCase):
         self.assertEqual(seen, [JOB])
         self.assertEqual(len(self.rows()), 1)
 
+    def test_fixture_cleanup_discards_saturation_before_release_and_database_close(
+        self,
+    ):
+        from utils.execution_history_events import make_start
+
+        entered, release, rescue = (threading.Event() for _ in range(3))
+        self.releases.append(release)
+        pending_at_release, writes = [], []
+        original = self.db.write_execution_start
+
+        def blocked(command):
+            entered.set()
+            release.wait(5)
+            pending = registration.writer.status().pending
+            pending_at_release.append(pending)
+            # Model a slow drain without executing 1,024 SQLite transactions.
+            if pending > 1:
+                rescue.wait(5)
+            writes.append(command.run_id)
+            return original(command)
+
+        with patch.object(self.db, "write_execution_start", blocked):
+            registration = self.register()
+            try:
+                self.dequeue(1)
+                self.assertTrue(entered.wait(1))
+                epoch = registration.writer.status().epoch
+                for i in range(1023):
+                    command = make_start(
+                        registration._session_id, item(1000 + i), epoch, 0
+                    )
+                    self.assertTrue(registration.writer.submit(command))
+                self.assertEqual(registration.writer.status().pending, 1024)
+                before = time.monotonic()
+                self.cleanup_registrations()
+                self.assertLess(time.monotonic() - before, 2)
+                self.assertEqual(pending_at_release, [1])
+                self.assertEqual(len(writes), 1)
+                self.assertFalse(registration.writer.status().alive)
+                self.assertEqual(registration.writer.status().pending, 0)
+                self.db.model.close_all()
+            finally:
+                registration.writer.invalidate()
+                rescue.set()
+                release.set()
+                self.assertTrue(
+                    registration.dispose(3), "regression rescue leaked worker"
+                )
+
     def test_rejected_new_start_revokes_previous_worker_capability(self):
         from utils.execution_context_capture import active_capture
         from utils.execution_history_events import make_start
@@ -476,7 +527,9 @@ class HistoryHooksTests(unittest.TestCase):
             self.dequeue(2)
             self.assertIsNone(active_capture())
             self.assertFalse(previous[0].valid(previous[1]))
+            registration.writer.invalidate()
             release.set()
+            self.assertTrue(registration.dispose(3), "owned worker leaked")
 
     def test_late_finish_does_not_clear_new_attempt_binding(self):
         from utils.execution_context_capture import active_capture

@@ -256,6 +256,17 @@ class ContextSchemaTests(unittest.TestCase):
             (text,),
         )
 
+    def test_link_without_capture_header_is_malformed_v2(self):
+        from database.execution_context_schema import context_schema_error
+
+        conn = self.connection()
+        self.populate(conn)
+        conn.execute("DELETE FROM execution_context_capture")
+        before = "\n".join(conn.iterdump())
+        self.assertIsNotNone(context_schema_error(conn))
+        self.assertIsNotNone(history.history_schema_error(conn, allow_missing=False))
+        self.assertEqual("\n".join(conn.iterdump()), before)
+
     def test_valid_context_and_fingerprints(self):
         conn = self.connection()
         self.populate(conn)

@@ -509,7 +509,9 @@ class HistoryWriterTests(unittest.TestCase):
                 self.assertTrue(writer.status().accepting)
                 self.assertTrue(writer.submit(self.finish_command(start)))
                 self.assertLess(time.monotonic() - before, 0.1)
-                self.assertFalse(writer.close(0.02))
+                before = time.monotonic()
+                self.assertFalse(writer.close(0))
+                self.assertLess(time.monotonic() - before, 0.1)
                 self.assertGreater(writer.context_budget.charged_bytes, 0)
                 self.assertEqual(writer.status().pending, 1)
             finally:

@@ -113,6 +113,40 @@ class ProjectionTests(unittest.TestCase):
             self.assertEqual(result.recipes, ())
             self.assertTrue(result.reason)
 
+    def test_selected_ancestry_ignores_unrelated_widget_arrays(self):
+        for widget in (
+            [1, 2, 3],
+            ("s", 0, "widget"),
+            [],
+            ["s"],
+            ["s", "0"],
+            ["s", True],
+            ["s", -1],
+            [["s", 0], 0],
+        ):
+            with self.subTest(widget=widget):
+                g = graph()
+                g["other"] = node("KSampler", positive=["p", 0], negative=["p", 1])
+                g["adapter"] = node("CustomAdapter", samples=("s", 0), widget=widget)
+                g["save"] = node("CustomOutput", images=["adapter", 0])
+                result = self.m.project_contexts(g, ["save"])
+                self.assertEqual(tuple(r.anchor_id for r in result.recipes), ("s",))
+                self.assertEqual(result.recipes[0].positive.inferred.raw.value, " cat ")
+
+    def test_two_element_link_shapes_are_followed_conservatively(self):
+        g = graph()
+        # A typed two-element value cannot be distinguished from a real link.
+        g["save"] = node("CustomOutput", widget=["s", 0])
+        self.assertEqual(
+            tuple(r.anchor_id for r in self.m.project_contexts(g, ["save"]).recipes),
+            ("s",),
+        )
+        for value in (["missing", 0], ["x" * 129, 0]):
+            g["save"]["inputs"]["widget"] = value
+            result = self.m.project_contexts(g, ["save"])
+            self.assertEqual(result.recipes, ())
+            self.assertTrue(result.reason)
+
     def test_projection_limits(self):
         for count, succeeds in ((500, True), (501, False)):
             g = graph()

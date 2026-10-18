@@ -353,7 +353,13 @@ class _Projector:
         name, inputs = self.node(node_id, depth)
         anchors = [node_id] if name in _SAMPLERS else []
         for value in inputs.values():
-            if type(value) not in (tuple, list):
+            if (
+                type(value) not in (tuple, list)
+                or len(value) != 2
+                or type(value[0]) not in (str, int)
+                or type(value[1]) is not int
+                or value[1] < 0
+            ):
                 continue
             parent, _ = _link(value)
             anchors.extend(self.anchors(parent, depth + 1))
