@@ -1,8 +1,9 @@
 import { createScope, createButton, createField, createSelect } from '../shared/toolkit/core.js';
 import { createImageStream, imageKey } from './images-state.mjs';
-import { layoutImages, visibleImages } from './image-layout.mjs';
+import { layoutImages, visibleImages, workspaceImageMetrics } from './image-layout.mjs';
 import { mountPromptInspector } from './prompt-inspector.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
+import { createWorkspaceIcon } from './icons.mjs';
 
 function el(tag, text, className) {
     const element = document.createElement(tag);
@@ -28,18 +29,24 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     let detailInspector, previewInspector;
     scope.cleanup(() => { detailInspector?.dispose(); previewInspector?.dispose(); });
     const visit = embedded ? null : lastVisit;
+    let density = visit?.density || 'comfortable';
+    let metrics = workspaceImageMetrics(window.innerWidth, density);
     let layout = visit?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer, viewer;
     let state, geometry = { positions: [], height: 0, maxHeight: 0 }, optionsRequest;
     const rendered = new Map();
     const itemIndexes = new Map();
     const filters = { root: 'all', q: '', subfolder: '', media: 'all', sort: 'newest', ...visit?.filters };
     scope.cleanup(() => {
-        if (!embedded) lastVisit = state ? { filters: {...filters}, state, layout, selection, scrollY: window.scrollY } : null;
+        if (!embedded) lastVisit = state ? { filters: {...filters}, state, layout, density, selection, scrollY: window.scrollY } : null;
         cancelAnimationFrame(restoreFrame);
     });
     main.classList.add('images-main');
     scope.cleanup(() => main.classList.remove('images-main'));
-    if (!embedded) main.append(el('p', 'Browse your images, explore the details, keep your creative context.', 'intro'));
+    if (!embedded) {
+        const intro = el('p', 'Browse your images, explore the details, keep your creative context.', 'intro');
+        (main.querySelector('.workspace-heading-copy') || main).append(intro);
+        scope.cleanup(() => intro.remove());
+    }
     const filtersBar = el('div', undefined, 'image-filters');
     const search = el('input');
     search.value = filters.q;
@@ -54,12 +61,15 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const optionsStatus = el('p', '', 'options-status muted');
     optionsStatus.hidden = true; optionsStatus.setAttribute('role', 'alert');
     if (!embedded) main.append(filtersBar, optionsStatus);
+    const controls = el('div', undefined, 'image-view-controls');
     const toolbar = el('div', undefined, 'image-toolbar');
+    toolbar.append(el('h2', embedded ? 'Linked images' : 'All images'));
     const count = el('p', 'Loading images…', 'muted');
     const layouts = el('div', undefined, 'image-layouts');
     layouts.setAttribute('role', 'group'); layouts.setAttribute('aria-label', 'Image layout');
     for (const mode of ['grid', 'list', 'masonry']) {
         const button = createButton(mode[0].toUpperCase() + mode.slice(1));
+        button.prepend(createWorkspaceIcon(mode));
         button.setAttribute('aria-pressed', String(mode === layout));
         scope.listen(button, 'click', () => {
             layout = mode;
@@ -89,9 +99,17 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     });
     const currentGallery = el('a', 'Current gallery', 'workspace-link');
     currentGallery.href = resolveUrl('/prompt_manager/gallery');
-    toolbar.append(count, layouts);
-    if (!embedded) toolbar.append(refresh, currentGallery);
-    main.append(toolbar);
+    const thumbnails = createSelect([['comfortable', 'Comfortable'], ['large', 'Large'], ['compact', 'Compact']], '');
+    thumbnails.value = density;
+    scope.listen(thumbnails, 'change', () => { density = thumbnails.value; updateLayout(); });
+    controls.append(layouts, createField('Thumbnail size', thumbnails, 'image-density'));
+    if (!embedded) {
+        const group = el('a', 'Group by positive prompt', 'workspace-link');
+        group.href = '#/library'; group.prepend(createWorkspaceIcon('branch'));
+        controls.append(group, refresh);
+    }
+    main.append(controls);
+    toolbar.append(count);
     const body = el('div', undefined, 'image-workspace');
     const collection = el('section', undefined, 'image-collection');
     collection.setAttribute('aria-label', 'Images');
@@ -103,7 +121,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const retry = createButton('Retry');
     const end = el('p', '', 'muted');
     continuation.append(message, more, retry, end);
-    collection.append(grid, continuation);
+    collection.append(toolbar, grid, continuation);
+    if (!embedded) collection.append(currentGallery);
     const details = el('section', undefined, 'image-details panel');
     details.setAttribute('aria-label', 'Image details');
     details.append(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));
@@ -164,7 +183,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const prompts = el('div');
         const legacy = el('p', 'Open Current gallery for tagging.', 'muted');
         legacy.hidden = embedded;
-        details.replaceChildren(el('p', 'SELECTED IMAGE', 'eyebrow'), el('h2', image.filename), thumbnail, preview, download, prompts, metadata, legacy);
+        details.replaceChildren(thumbnail, el('h2', image.filename), preview, download, prompts, metadata, legacy);
         detailInspector = mountPromptInspector(prompts, {api, image, sender, parentScope:scope});
         for (const [key, card] of rendered) {
             card.classList.toggle('selected', key === selection);
@@ -205,8 +224,11 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         open.append(img);
         const footer = el('div', undefined, 'image-card-footer');
         const title = el('strong', image.filename); title.title = image.path;
-        const sub = el('small', `${formatBytes(image.size)} · ${image.media_type === 'video' ? 'Video' : 'Image'}`);
-        const preview = createButton('↗', 'ca-icon-button');
+        const dimensions = image.width && image.height ? `${image.width} × ${image.height} · ` : '';
+        const type = image.media_type === 'video' ? 'Video' : image.filename.split('.').pop().toUpperCase();
+        const sub = el('small', `${dimensions}${type} · ${formatBytes(image.size)}`);
+        const preview = createButton('', 'ca-icon-button');
+        preview.append(createWorkspaceIcon('images'));
         preview.setAttribute('aria-label', `Preview ${image.filename}`);
         footer.append(title, sub, preview); card.append(open, footer);
         return card;
@@ -270,7 +292,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const card = event.target.closest('article[data-image-key]');
         if (!card) return;
         const index = Number(card.dataset.index);
-        const columns = layout === 'list' ? 1 : Math.max(1, Math.floor((grid.clientWidth + 16) / 256));
+        const columns = layout === 'list' ? 1 : metrics.columns;
         const target = { Home: 0, End: state.items.length - 1, ArrowRight: index + 1,
             ArrowLeft: index - 1, ArrowDown: index + columns, ArrowUp: index - columns }[event.key];
         if (target !== undefined) { event.preventDefault(); focusImage(Math.max(0, Math.min(state.items.length - 1, target))); }
@@ -288,7 +310,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (!state || scope.signal.aborted) return;
         grid.dataset.layout = layout;
         cancelAnimationFrame(frame); frame = 0;
-        geometry = layoutImages(state.items, grid.clientWidth, layout);
+        metrics = workspaceImageMetrics(window.innerWidth, density);
+        grid.dataset.density = density;
+        geometry = layoutImages(state.items, grid.clientWidth, layout, 240, metrics);
         grid.style.height = `${geometry.height}px`;
         renderVisible();
     }
@@ -304,6 +328,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     });
     resize.observe(grid);
     scope.listen(window, 'scroll', scheduleVisible);
+    scope.listen(window, 'resize', () => {
+        if (!resizeFrame) resizeFrame = requestAnimationFrame(() => { resizeFrame = 0; updateLayout(); });
+    });
     scope.cleanup(() => { resize.disconnect(); observer?.disconnect(); cancelAnimationFrame(resizeFrame); cancelAnimationFrame(frame); cancelAnimationFrame(loadFrame); });
     function renderState(next) {
         const changed = state?.items !== next.items;

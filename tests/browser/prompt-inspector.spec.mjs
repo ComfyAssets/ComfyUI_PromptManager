@@ -190,7 +190,7 @@ test('responsive gallery defers observed size writes and still fits the new view
     await expect(page.locator('.image-card')).toHaveCount(4);
     await page.setViewportSize({width:390,height:844});
     await expect.poll(()=>page.locator('.image-card').first().evaluate(node=>node.getBoundingClientRect().width)).toBeLessThan(390);
-    await expect.poll(()=>page.locator('.image-grid').evaluate(node=>Number.parseFloat(node.style.height))).toBeGreaterThan(900);
+    await expect.poll(()=>page.locator('.image-grid').evaluate(node=>Number.parseFloat(node.style.height))).toBeCloseTo(383.75,0);
     expect(await page.evaluate(()=>window.inlineResizeWrites)).toBe(0);
 });
 
@@ -202,4 +202,23 @@ test('unverified saved associations explain uncertainty and cannot be sent',asyn
     await page.goto(workspace);await select(page,'0:uncertain.png');
     await expect(role(details(page),'Positive')).toContainText('cannot be verified against this file');
     await expect(details(page).getByRole('button',{name:/^Send /})).toHaveCount(0);
+});
+
+
+test('prompt role headings contain compact real actions and honest source evidence',async({page})=>{
+    await page.goto(workspace);await select(page,'0:shared/same.png');
+    for (const name of ['Positive','Negative']) {
+        const block=role(details(page),name),heading=block.locator('.prompt-block-heading');
+        await expect(heading.getByRole('heading',{name:`${name} prompt`,exact:true})).toBeVisible();
+        await expect(heading.getByRole('button',{name:`Copy ${name.toLowerCase()} prompt`,exact:true})).toBeVisible();
+        await expect(heading.getByRole('button',{name:`Send ${name.toLowerCase()} prompt`,exact:true})).toBeVisible();
+        await expect(heading.locator('[data-copy-role] svg')).toHaveCount(1);
+        expect(await heading.evaluate(node=>node.nextElementSibling.classList.contains('prompt-source'))).toBe(true);
+    }
+    await expect(role(details(page),'Positive').locator('.prompt-source')).toHaveText('Inferred from the saved workflow');
+    await select(page,'0:empty-negative.png');
+    await expect(role(details(page),'Negative')).toContainText('Empty negative prompt');
+    await expect(role(details(page),'Negative').locator('.prompt-block-heading [data-copy-role]')).toHaveCount(1);
+    await select(page,'0:uncertain.png');await expect(details(page).locator('[data-copy-role]')).toHaveCount(0);
+    await expect(details(page)).toContainText('Not recorded in this file.');
 });

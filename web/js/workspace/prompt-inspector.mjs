@@ -1,5 +1,6 @@
 import { createScope, createButton } from '../shared/toolkit/core.js';
 import { createSendButton } from './prompt-sender.mjs';
+import { createWorkspaceIcon } from './icons.mjs';
 
 export function inspectPath(image) {
     return `/prompt_manager/images/inspect/${image.path.split('/').map(encodeURIComponent).join('/')}?root=${image.root_index}`;
@@ -100,7 +101,9 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
             const record = state.prompts?.[role];
             const block = el('section', undefined, `prompt-block prompt-${role}`);
             block.setAttribute('aria-label', title);
-            block.append(el('h3', title));
+            const heading = el('div', undefined, 'prompt-block-heading');
+            heading.append(el('h3', title));
+            block.append(heading);
             if (Object.hasOwn(roles, role)) {
                 block.append(el('p', sources[record.source] || 'Source not recorded', 'prompt-source muted'));
                 if (roles[role] === '') block.append(el('p', `Empty ${role} prompt`, 'prompt-empty'));
@@ -112,11 +115,15 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
                 const actions = el('div', undefined, 'prompt-actions');
                 const send = createSendButton(`Send ${role} prompt`);
                 send.dataset.sendRole = role;
-                const copy = createButton(`Copy ${role} prompt`);
+                const copy = createButton('', 'ca-icon-button');
+                copy.setAttribute('aria-label', `Copy ${role} prompt`);
+                copy.title = `Copy ${role} prompt`;
+                copy.append(createWorkspaceIcon('copy'));
                 copy.dataset.copyRole = role;
-                actions.append(send, copy);
+                actions.append(copy, send);
+                heading.append(actions);
                 const status = el('p', '', 'prompt-copy-status muted'); status.setAttribute('role', 'status');
-                block.append(actions, status);
+                block.append(status);
             } else block.append(el('p', typeof record?.message === 'string' ? record.message : statuses[record?.status] || statuses.unresolved, 'muted'));
             container.append(block);
         }

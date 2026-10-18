@@ -17,17 +17,19 @@ async function groupedNavigation(page) {
         expect(await region.locator('[data-route]').evaluateAll(nodes => nodes.map(node => node.dataset.route))).toEqual(routes);
     }
 }
-async function attachEvidence(page, testInfo, name) {
+async function attachEvidence(page, testInfo, name, fullPage = true) {
     await page.evaluate(async () => {
         await document.fonts.ready;
         for (const image of document.images) image.loading = 'eager';
         await Promise.all([...document.images].map(image => image.decode().catch(() => {})));
     });
     const screenshotPath = testInfo.outputPath(`${name}.png`);
-    await page.screenshot({ path: screenshotPath, fullPage: true });
+    await page.screenshot({ path: screenshotPath, fullPage });
     await testInfo.attach(name, { path: screenshotPath, contentType: 'image/png' });
-    const geometry = await page.evaluate(() => Object.fromEntries(['.sidebar', '.topbar', '#workspace-main', '.workspace-heading', 'h1'].map(selector => {
-        const node = document.querySelector(selector), box = node.getBoundingClientRect(), style = getComputedStyle(node);
+    const geometry = await page.evaluate(() => Object.fromEntries(['.sidebar', '.topbar', '#workspace-main', '.workspace-heading', 'h1', '.image-workspace', '.image-grid', '.image-card', '.image-details', '.prompt-block-heading'].map(selector => {
+        const node = document.querySelector(selector);
+        if (!node) return [selector, null];
+        const box = node.getBoundingClientRect(), style = getComputedStyle(node);
         return [selector, { x: box.x, y: box.y, width: box.width, height: box.height, padding: style.padding, fontSize: style.fontSize }];
     })));
     const geometryPath = testInfo.outputPath(`${name}-geometry.json`);
@@ -168,4 +170,73 @@ test('approved icons are decorative safe SVGs and reject unknown vocabulary', as
         expect(icon.path.length).toBeGreaterThan(10);
     }
     expect(icons.rendered.find(icon => icon.name === 'overview').path).toBe('M3 12h4l3-8 4 16 3-8h4');
+});
+
+
+async function orderedMedia(page) {
+    const boxes=await page.locator('article[data-image-key]').evaluateAll(nodes=>nodes.map(node=>{
+        const box=node.getBoundingClientRect();return {x:box.x,y:box.y,right:box.right,bottom:box.bottom};
+    }));
+    for (let index=0;index<boxes.length;index++) for (const other of boxes.slice(index+1)) {
+        const box=boxes[index];
+        expect(box.right<=other.x+1||other.right<=box.x+1||box.bottom<=other.y+1||other.bottom<=box.y+1).toBe(true);
+    }
+    await noOverflow(page);
+}
+
+test('Images visual layouts retain real delayed media long filenames and loaded scroll',async({page,request},testInfo)=>{
+    await request.post('/__test__/reset',{data:{workspace_visual:true}});
+    let release, mediaRequests=0;const held=new Promise(resolve=>{release=resolve;});
+    await page.route('**/images/serve/**',async route=>{mediaRequests++;await held;await route.continue().catch(()=>{});});
+    try {
+        await page.setViewportSize({width:1600,height:1100});await page.goto(`${workspace}#/images`,{waitUntil:'domcontentloaded'});
+        await expect(page.locator('article[data-image-key]')).toHaveCount(24);
+        await expect.poll(()=>mediaRequests).toBeGreaterThan(0);
+        expect(await page.locator('.image-card img').first().evaluate(image=>image.complete)).toBe(false);
+        await expect(page.locator('.image-card').first()).toHaveCSS('border-radius','7px');
+        await orderedMedia(page);
+    } finally {release();}
+    for (const [width,height] of [[1600,1100],[390,844]]) {
+        await page.setViewportSize({width,height});
+        for (const theme of ['dark','light']) {
+            await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+            await page.locator('.image-card .image-open').first().click();
+            await expect(page.locator('.image-details h2')).toHaveText('study-01.png');
+            for (const layout of ['Grid','List','Masonry']) {
+                await page.getByRole('button',{name:layout,exact:true}).click();await page.evaluate(()=>scrollTo(0,0));
+                if(layout==='List') await expect(page.locator('.image-card').first()).toHaveCSS('height','97px');
+                await orderedMedia(page);
+                await attachEvidence(page,testInfo,`after-images-${layout.toLowerCase()}-${width}-${theme}`,false);
+            }
+            await page.locator('article[data-image-key]').last().scrollIntoViewIfNeeded();
+            const longCard=page.locator('article[data-image-key]').filter({hasText:'a-very-long-geometric-composition-'});
+            await expect(longCard.locator('strong')).toHaveText(/layered-context-.*\.png/);
+            await longCard.locator('.image-open').click();
+            await expect(page.locator('.image-details h2')).toHaveText(await longCard.locator('strong').textContent());
+            await orderedMedia(page);
+            await attachEvidence(page,testInfo,`after-images-loaded-scroll-${width}-${theme}`,false);
+        }
+    }
+    await page.evaluate(()=>{location.hash='#/overview';});
+    await expect(page.locator('.image-card,.image-details,.viewer-container,dialog[open]')).toHaveCount(0);
+});
+
+test('embedded history gallery keeps the history heading and disposes its layouts',async({page,request},testInfo)=>{
+    await request.post('/__test__/reset',{data:{workspace_visual:true}});
+    for (const width of [1600,390]) {
+        await page.setViewportSize({width,height:width===1600?1100:844});await page.goto(`${workspace}#/library`);
+        await page.getByRole('link',{name:'Explore history',exact:true}).first().click();
+        await expect(page.getByRole('region',{name:'Prompt history',exact:true})).toBeVisible();
+        await expect(page.locator('h1')).not.toHaveText('Prompt library');
+        const title=await page.locator('h1').textContent();expect(title).not.toBe('Images');
+        await expect(page.locator('article[data-image-key]').first()).toBeVisible();
+        for (const layout of ['List','Masonry','Grid']) {
+            await page.getByRole('button',{name:layout,exact:true}).click();await orderedMedia(page);
+            await expect(page.locator('h1')).toHaveText(title);
+            await expect(page.locator('.workspace-heading-copy > .intro')).toHaveCount(0);
+        }
+        await attachEvidence(page,testInfo,`after-images-embedded-history-${width}`,false);
+        await page.getByRole('link',{name:'Back to library',exact:true}).click();
+        await expect(page.locator('.image-card,.image-details,dialog[open]')).toHaveCount(0);
+    }
 });
