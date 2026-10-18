@@ -19,6 +19,15 @@ from typing import Dict, Any, Optional, List
 from pathlib import Path
 
 
+class _OwnedRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """Keep a retired owned sink closed when an in-flight record resumes."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # Handler.handle and FileHandler.close hold the same handler lock.
+        if not self._closed:
+            super().emit(record)
+
+
 class PromptManagerLogger:
     """
     Centralized logging system for PromptManager.
@@ -88,9 +97,11 @@ class PromptManagerLogger:
         # ComfyUI's root handler would print every record a second time.
         self.logger.propagate = False
 
-        # Clear existing handlers
+        # External handlers are detached but retain their caller-owned resources.
         for handler in self.logger.handlers[:]:
             self.logger.removeHandler(handler)
+            if getattr(handler, "_prompt_manager_owned", False) is True:
+                handler.close()
 
         # Custom formatter
         formatter = logging.Formatter(
@@ -104,12 +115,13 @@ class PromptManagerLogger:
             console_handler = logging.StreamHandler()
             console_handler.setLevel(self._console_level())
             console_handler.setFormatter(formatter)
+            console_handler._prompt_manager_owned = True
             self.logger.addHandler(console_handler)
 
         # File handler with rotation and safe encoding for Windows
         if self.config["file_logging"]:
             log_file = self.log_dir / "prompt_manager.log"
-            file_handler = logging.handlers.RotatingFileHandler(
+            file_handler = _OwnedRotatingFileHandler(
                 log_file,
                 maxBytes=self.config["max_file_size"],
                 backupCount=self.config["backup_count"],
@@ -117,11 +129,13 @@ class PromptManagerLogger:
                 errors="replace",  # Replace problematic characters instead of crashing
             )
             file_handler.setFormatter(formatter)
+            file_handler._prompt_manager_owned = True
             self.logger.addHandler(file_handler)
 
         # Memory handler for web viewer
         memory_handler = MemoryBufferHandler(self)
         memory_handler.setFormatter(formatter)
+        memory_handler._prompt_manager_owned = True
         self.logger.addHandler(memory_handler)
 
         # Component-specific loggers

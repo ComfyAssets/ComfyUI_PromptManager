@@ -235,6 +235,197 @@ class TestFilesAndRotation(IsolatedLoggerTestCase):
 
 
 class TestConfiguration(IsolatedLoggerTestCase):
+    def test_in_flight_record_cannot_reopen_retired_file_handler(self) -> None:
+        handler = next(
+            h
+            for h in self.manager.logger.handlers
+            if isinstance(h, logging.FileHandler)
+        )
+        stream = handler.stream
+        selected = threading.Event()
+        resume = threading.Event()
+        errors = []
+        message = "in-flight record selected before file logging disabled"
+
+        def pause_before_handler_lock(record: logging.LogRecord) -> bool:
+            if record.getMessage() == message:
+                selected.set()
+                if not resume.wait(5):
+                    raise RuntimeError("logging thread was not released")
+            return True
+
+        def log_from_background_thread() -> None:
+            try:
+                self.manager.logger.info(message)
+            except BaseException as error:
+                errors.append(error)
+
+        # Allow this record through the fixture's normal main-thread filter.
+        handler.filters.clear()
+        handler.addFilter(pause_before_handler_lock)
+        worker = threading.Thread(target=log_from_background_thread, daemon=True)
+        worker.start()
+        try:
+            self.assertTrue(selected.wait(5), "logger did not select the file handler")
+            self.assertFalse(stream.closed)
+            self.manager.update_config({"file_logging": False})
+            self.assertNotIn(handler, self.manager.logger.handlers)
+            self.assertTrue(stream.closed)
+            self.assertIsNone(handler.stream)
+
+            resume.set()
+            worker.join(5)
+            self.assertFalse(worker.is_alive(), "logging thread did not finish")
+            self.assertEqual(errors, [])
+            self.assertIsNone(handler.stream)
+            self.assertTrue(stream.closed)
+            self.assertFalse(self.manager.config["file_logging"])
+            self.assertFalse(
+                any(
+                    isinstance(h, logging.FileHandler)
+                    for h in self.manager.logger.handlers
+                )
+            )
+            self.assertNotIn(
+                message,
+                pathlib.Path(self.log_dir, "prompt_manager.log").read_text(),
+            )
+        finally:
+            resume.set()
+            worker.join(5)
+            handler.close()
+
+    def test_rebuild_closes_replaced_file_stream(self) -> None:
+        old_handler = next(
+            h
+            for h in self.manager.logger.handlers
+            if isinstance(h, logging.FileHandler)
+        )
+        stream = old_handler.stream
+        self.addCleanup(old_handler.close)
+        self.assertFalse(stream.closed)
+
+        self.manager.update_config({"file_logging": False})
+
+        self.assertTrue(stream.closed)
+        self.assertIsNone(old_handler.stream)
+        self.assertNotIn(old_handler, self.manager.logger.handlers)
+        log_file = pathlib.Path(self.log_dir, "prompt_manager.log")
+        renamed = log_file.rename(log_file.with_suffix(".retired"))
+        renamed.unlink()
+        self.assertFalse(renamed.exists())
+
+    def test_repeated_rebuilds_retire_previous_handlers(self) -> None:
+        for change in (
+            {"max_file_size": 4096},
+            {"backup_count": 3},
+            {"console_logging": True},
+            {"console_logging": False},
+        ):
+            with self.subTest(change=change):
+                previous = self.manager.logger.handlers[:]
+                for handler in previous:
+                    self.addCleanup(handler.close)
+                old_file = next(
+                    h for h in previous if isinstance(h, logging.FileHandler)
+                )
+                stream = old_file.stream
+                self.assertFalse(stream.closed)
+                console_streams = [
+                    h.stream for h in previous if type(h) is logging.StreamHandler
+                ]
+
+                self.manager.update_config(change)
+
+                self.assertTrue(stream.closed)
+                self.assertIsNone(old_file.stream)
+                self.assertTrue(all(h._closed for h in previous))
+                self.assertTrue(all(not s.closed for s in console_streams))
+                self.assertTrue(
+                    all(h not in self.manager.logger.handlers for h in previous)
+                )
+                current_files = [
+                    h
+                    for h in self.manager.logger.handlers
+                    if isinstance(h, logging.FileHandler)
+                ]
+                self.assertEqual(len(current_files), 1)
+                self.assertFalse(current_files[0].stream.closed)
+                message = f"usable replacement after {change}"
+                self.logger.info(message)
+                self.assertIn(
+                    message,
+                    pathlib.Path(self.log_dir, "prompt_manager.log").read_text(),
+                )
+                self.assertEqual(
+                    self.manager.get_recent_logs(limit=1)[0]["message"], message
+                )
+
+    def test_rebuild_does_not_close_external_handler(self) -> None:
+        external_path = pathlib.Path(self.tmp.name, "external.log")
+        external_handler = logging.FileHandler(
+            external_path, mode="w", encoding="utf-8"
+        )
+        self.addCleanup(external_handler.close)
+        other_logger = logging.Logger("external_shared_sink", level=logging.INFO)
+        other_logger.addHandler(external_handler)
+        self.addCleanup(other_logger.removeHandler, external_handler)
+        self.manager.logger.addHandler(external_handler)
+
+        with mock.patch.object(
+            external_handler, "close", wraps=external_handler.close
+        ) as close:
+            self.manager.update_config({"backup_count": 3})
+            close.assert_not_called()
+
+        self.assertNotIn(external_handler, self.manager.logger.handlers)
+        self.assertFalse(external_handler.stream.closed)
+        other_logger.info("external sink still usable")
+        self.assertIn("external sink still usable", external_path.read_text())
+
+    def test_level_only_change_keeps_current_file_handler(self) -> None:
+        handler = next(
+            h
+            for h in self.manager.logger.handlers
+            if isinstance(h, logging.FileHandler)
+        )
+        stream = handler.stream
+
+        self.manager.update_config({"level": "DEBUG"})
+
+        self.assertIn(handler, self.manager.logger.handlers)
+        self.assertIs(handler.stream, stream)
+        self.assertFalse(stream.closed)
+        self.logger.debug("same sink still usable")
+        self.assertIn(
+            "same sink still usable",
+            pathlib.Path(self.log_dir, "prompt_manager.log").read_text(),
+        )
+
+    def test_replacement_manager_closes_previous_owned_handlers(self) -> None:
+        previous = self.manager.logger.handlers[:]
+        for handler in previous:
+            self.addCleanup(handler.close)
+        old_file = next(h for h in previous if isinstance(h, logging.FileHandler))
+        stream = old_file.stream
+        self.assertFalse(stream.closed)
+        fake_file = pathlib.Path(self.tmp.name, "pkg", "utils", "logging_config.py")
+
+        with mock.patch.object(logging_config, "__file__", str(fake_file)):
+            replacement = object.__new__(PromptManagerLogger)
+            replacement.__init__()
+
+        self.assertIs(replacement.logger, self.manager.logger)
+        self.assertTrue(stream.closed)
+        self.assertIsNone(old_file.stream)
+        self.assertTrue(all(h._closed for h in previous))
+        self._filter_to_this_thread()
+        self.logger.info("replacement manager sink")
+        self.assertEqual(
+            replacement.get_recent_logs(limit=1)[0]["message"],
+            "replacement manager sink",
+        )
+
     def test_level_change_applies_to_every_prompt_manager_logger(self):
         self.manager.update_config({"level": "DEBUG"})
         self.assertEqual(logging.getLogger("prompt_manager").level, logging.DEBUG)
