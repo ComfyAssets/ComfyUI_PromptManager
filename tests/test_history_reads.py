@@ -369,14 +369,19 @@ class HistoryReadTests(unittest.TestCase):
         conn.rollback()
         trace = []
         conn.set_trace_callback(trace.append)
-        with self.assertRaisesRegex(RuntimeError, "abort"):
+
+        def abort_snapshot() -> None:
             with db.recorded_history_snapshot() as epoch:
                 self.assertEqual(epoch, db.get_execution_epoch())
                 db.get_execution_contexts("missing")
                 db.get_execution_outputs("missing")
                 self.assertTrue(conn.in_transaction)
                 raise RuntimeError("abort")
-        conn.set_trace_callback(None)
+
+        try:
+            self.assertRaisesRegex(RuntimeError, "abort", abort_snapshot)
+        finally:
+            conn.set_trace_callback(None)
         self.assertIn("storage_epoch", next(q for q in trace if q.startswith("SELECT")))
         self.assertFalse(conn.in_transaction)
         with self.assertRaises(HistoryEpochChanged):

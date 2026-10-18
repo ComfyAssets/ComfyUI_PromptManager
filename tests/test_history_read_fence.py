@@ -128,17 +128,18 @@ class HistoryReadFenceTests(unittest.TestCase):
         module = importlib.import_module("utils.history_read_fence")
         original_connect = sqlite3.connect
         epoch = db.get_execution_epoch()
+        database_path = self.path
         for close in (False, True):
             fence = self.fence(db)
             generation = fence.begin()
 
             class InterruptedConnection(sqlite3.Connection):
-                def close(connection):
+                def close(self):
                     super().close()
                     if close:
                         fence.close()
                     else:
-                        notify_history_restore(self.path)
+                        notify_history_restore(database_path)
 
             def interrupted_connect(*args, **kwargs):
                 return original_connect(*args, factory=InterruptedConnection, **kwargs)

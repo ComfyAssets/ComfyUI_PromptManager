@@ -5,6 +5,7 @@ import base64
 import copy
 import importlib
 import json
+import os
 import sqlite3
 import tempfile
 import threading
@@ -787,31 +788,38 @@ class HistoryAPITests(ImageAPITestCase):
         source = str(self.comfy_dir / "source.db")
         self.assertTrue(self.api.db.model.backup_database(source))
         writer = PromptDatabase(self.api.db.model.db_path)
-        self.addCleanup(writer.close_all)
-        for method, read in (
-            ("list_history_window", lambda: self.window(positive)),
-            ("get_history_run", lambda: self.detail(start.run_id)),
-        ):
-            original = getattr(self.api.db, method)
+        try:
+            for method, read in (
+                ("list_history_window", lambda: self.window(positive)),
+                ("get_history_run", lambda: self.detail(start.run_id)),
+            ):
+                original = getattr(self.api.db, method)
 
-            def during_snapshot(*args, **kwargs):
-                result = original(*args, **kwargs)
-                with patch("database.execution_history.notify_history_restore"):
-                    writer.model.restore_from_file(source)
-                return result
+                def during_snapshot(*args, **kwargs):
+                    result = original(*args, **kwargs)
+                    with patch("database.execution_history.notify_history_restore"):
+                        writer.model.restore_from_file(source)
+                    return result
 
-            with patch.object(self.api.db, method, side_effect=during_snapshot):
-                response, body = await read()
-            self.assert_error(
-                response, body, 409, "history-changed", {"action": "refresh-history"}
-            )
+                with patch.object(self.api.db, method, side_effect=during_snapshot):
+                    response, body = await read()
+                self.assert_error(
+                    response,
+                    body,
+                    409,
+                    "history-changed",
+                    {"action": "refresh-history"},
+                )
+        finally:
+            writer.close_all()
+        self.assertEqual(len(writer.model._connections), 0)
 
     async def test_one_lazy_subscription_cleanup_and_no_reinitialization(self):
         import database.execution_history as observers
 
         positive = self._save_prompt("positive")
         start = self.capture()
-        identity = str(Path(self.api.db.model.db_path).resolve())
+        identity = os.path.normcase(str(Path(self.api.db.model.db_path).resolve()))
         self.assertNotIn(identity, observers._restore_observers)
         executor = self.api._run_in_executor
 

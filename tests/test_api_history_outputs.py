@@ -901,7 +901,7 @@ class HistoryOutputAPITests(ImageAPITestCase):
                 await asyncio.wait_for(reached.wait(), 5)
                 pending.cancel()
                 with self.assertRaises(asyncio.CancelledError):
-                    await pending
+                    await asyncio.wait_for(pending, 5)
             finally:
                 release.set()
                 await asyncio.wait_for(closed.wait(), 5)
@@ -945,16 +945,42 @@ class HistoryOutputAPITests(ImageAPITestCase):
         source = self.restore_fixture()
         fence = self.api._history_fence()
         validate = fence.validate
+        mod = importlib.import_module("py.api.history_current")
+        close = mod._OpenedCurrentMedia.close
+        closed = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        handles = []
+        blocked_unlinks = []
+
+        def track_close(opened):
+            close(opened)
+            handles.append(opened.handle)
+            loop.call_soon_threadsafe(closed.set)
 
         def after(epoch, generation):
             validate(epoch, generation)
             self.api.db.model.restore_from_file(source)
-            path.unlink()
+            try:
+                path.unlink()
+            except PermissionError:
+                if os.name != "nt":
+                    raise
+                self.assertTrue(path.exists())
+                blocked_unlinks.append(path)
 
-        with patch.object(fence, "validate", side_effect=after):
+        with (
+            patch.object(fence, "validate", side_effect=after),
+            patch.object(mod._OpenedCurrentMedia, "close", track_close),
+        ):
             response = await self.current(descriptor["url"])
             self.assertEqual(response.status, 200)
             self.assertEqual(await response.read(), expected)
+            await asyncio.wait_for(closed.wait(), 5)
+        self.assertEqual(len(handles), 1)
+        self.assertTrue(handles[0].closed)
+        for locked_path in blocked_unlinks:
+            locked_path.unlink()
+        self.assertFalse(path.exists())
         response = await self.current(descriptor["url"])
         self.assert_error(response, await response.json(), 409, "history-changed")
 

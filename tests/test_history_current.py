@@ -94,7 +94,8 @@ class CurrentLocationTests(unittest.TestCase):
             Path, "stat", side_effect=AssertionError("locator performed IO")
         ):
             self.assertEqual(
-                mod.candidate_locator(reference, scope), str(alias / path.name)
+                mod.candidate_locator(reference, scope),
+                os.path.normcase(str(alias / path.name)),
             )
         candidate = mod.resolve_current_candidate(reference, scope, {}).public
         self.assertEqual(candidate["status"], "available")
@@ -221,28 +222,29 @@ class CurrentLocationTests(unittest.TestCase):
         db = PromptDatabase(str(self.base / "gallery.db"))
         self.addCleanup(db.close_all)
         path = make_png(self.output / "image.png")
+        locator = os.path.normcase(str(path))
         prompt = db.save_prompt("first", prompt_hash="first-hash")
         other = db.save_prompt("second", prompt_hash="second-hash")
         image = db.link_image_to_prompt(prompt, str(path))
         db.link_image_to_prompt(other, str(self.temp / path.name))
         conn = db.model.get_connection()
         with self.assertRaises(Exception):
-            mod.read_history_gallery(conn, (str(path),))
+            mod.read_history_gallery(conn, (locator,))
         with db.recorded_history_snapshot():
-            projected = mod.read_history_gallery(conn, (str(path),))
+            projected = mod.read_history_gallery(conn, (locator,))
             self.assertTrue(conn.in_transaction)
-            self.assertEqual(projected[str(path)]["gallery_match"], "unique")
-            self.assertEqual(projected[str(path)]["gallery_image_id"], image)
+            self.assertEqual(projected[locator]["gallery_match"], "unique")
+            self.assertEqual(projected[locator]["gallery_image_id"], image)
         db.link_image_to_prompt(other, str(path))
         with db.recorded_history_snapshot():
-            projected = mod.read_history_gallery(conn, (str(path),))
-            self.assertEqual(projected[str(path)]["gallery_match"], "ambiguous")
-            self.assertIsNone(projected[str(path)]["gallery_image_id"])
-            self.assertIsNone(projected[str(path)]["saved"])
-            self.assertEqual(projected[str(path)]["library"]["status"], "ambiguous")
+            projected = mod.read_history_gallery(conn, (locator,))
+            self.assertEqual(projected[locator]["gallery_match"], "ambiguous")
+            self.assertIsNone(projected[locator]["gallery_image_id"])
+            self.assertIsNone(projected[locator]["saved"])
+            self.assertEqual(projected[locator]["library"]["status"], "ambiguous")
             with self.assertRaises(ValueError):
                 mod.read_history_gallery(
-                    conn, tuple(str(path) + str(i) for i in range(101))
+                    conn, tuple(locator + str(i) for i in range(101))
                 )
 
     def test_gallery_display_is_bounded_without_loading_workflow_or_prompt(self):
@@ -250,6 +252,7 @@ class CurrentLocationTests(unittest.TestCase):
         db = PromptDatabase(str(self.base / "gallery.db"))
         self.addCleanup(db.close_all)
         path = make_png(self.output / "image.png")
+        locator = os.path.normcase(str(path))
         prompt = db.save_prompt(
             "secret prompt" * 10000, prompt_hash="large-hash", category="猫" * 12000
         )
@@ -264,8 +267,8 @@ class CurrentLocationTests(unittest.TestCase):
         conn.set_trace_callback(statements.append)
         self.addCleanup(conn.set_trace_callback, None)
         with db.recorded_history_snapshot():
-            result = mod.read_history_gallery(conn, (str(path),))
-        display = result[str(path)]["library"]
+            result = mod.read_history_gallery(conn, (locator,))
+        display = result[locator]["library"]
         self.assertEqual(display["status"], "limited")
         self.assertEqual(display["tags"], [])
         self.assertFalse(
@@ -282,6 +285,8 @@ class CurrentLocationTests(unittest.TestCase):
         self.addCleanup(db.close_all)
         path = make_png(self.output / "image.png")
         unique = make_png(self.output / "unique.png")
+        locator = os.path.normcase(str(path))
+        unique_locator = os.path.normcase(str(unique))
         prompt = db.save_prompt("owner", prompt_hash="owner")
         image = db.link_image_to_prompt(prompt, str(unique))
         with db.model.get_connection() as conn:
@@ -305,7 +310,7 @@ class CurrentLocationTests(unittest.TestCase):
                     "INSERT INTO generated_images"
                     "(prompt_id,image_path,filename,file_path) "
                     "VALUES(?,?,'image.png',?)",
-                    (owner, str(path), str(path)),
+                    (owner, str(path), locator),
                 )
         fetched = {"owners": 0, "pairs": 0}
 
@@ -319,12 +324,12 @@ class CurrentLocationTests(unittest.TestCase):
 
         conn.row_factory = row_factory
         with db.recorded_history_snapshot():
-            result = mod.read_history_gallery(conn, (str(path), str(unique)))
+            result = mod.read_history_gallery(conn, (locator, unique_locator))
         self.assertEqual(fetched, {"owners": 3, "pairs": 2})
-        self.assertEqual(result[str(path)]["gallery_match"], "ambiguous")
-        self.assertEqual(result[str(unique)]["gallery_match"], "unique")
-        self.assertEqual(result[str(unique)]["library"]["status"], "limited")
-        self.assertIsNone(result[str(unique)]["library"].get("pair_id"))
+        self.assertEqual(result[locator]["gallery_match"], "ambiguous")
+        self.assertEqual(result[unique_locator]["gallery_match"], "unique")
+        self.assertEqual(result[unique_locator]["library"]["status"], "limited")
+        self.assertIsNone(result[unique_locator]["library"].get("pair_id"))
 
     def test_host_root_failure_and_removal_do_not_search_another_root(self):
         make_png(self.output / "image.png")
@@ -359,7 +364,7 @@ class CurrentLocationTests(unittest.TestCase):
         mod = self.module("database.history_gallery")
         db = PromptDatabase(str(self.base / "gallery.db"))
         self.addCleanup(db.close_all)
-        path = str(self.output / "image.png")
+        path = os.path.normcase(str(self.output / "image.png"))
         with db.model.get_connection() as conn:
             for item in range(512):
                 owner = conn.execute(
@@ -393,6 +398,7 @@ class CurrentLocationTests(unittest.TestCase):
         db = PromptDatabase(str(self.base / "gallery.db"))
         self.addCleanup(db.close_all)
         path = make_png(self.output / "image.png")
+        locator = os.path.normcase(str(path))
         pair = db.save_prompt_pair("owner", "negative one")
         other_pair = db.save_prompt_pair("owner", "negative two")
         owner = db.get_prompt_pair(pair)["positive_prompt_id"]
@@ -409,7 +415,7 @@ class CurrentLocationTests(unittest.TestCase):
                     (image, pair_id, provenance),
                 )
         with db.recorded_history_snapshot():
-            result = mod.read_history_gallery(conn, (str(path),))[str(path)]
+            result = mod.read_history_gallery(conn, (locator,))[locator]
         self.assertEqual(result["gallery_match"], "unique")
         self.assertEqual(result["gallery_image_id"], image)
         self.assertEqual(result["library"]["status"], "limited")
@@ -446,14 +452,15 @@ class CurrentLocationTests(unittest.TestCase):
 
 class HistoryImportTests(unittest.TestCase):
     def test_api_import_does_not_require_a_running_host_server(self):
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                "import sys, types; "
-                "sys.modules['folder_paths'] = types.ModuleType('folder_paths'); "
+        script = "; ".join(
+            (
+                "import sys, types",
+                "sys.modules['folder_paths'] = types.ModuleType('folder_paths')",
                 "import py.api",
-            ],
+            )
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
             cwd=Path(__file__).resolve().parents[1],
             capture_output=True,
             text=True,

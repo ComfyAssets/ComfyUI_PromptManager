@@ -110,6 +110,30 @@ not certify every existing feature, arbitrary host versions,
 GPU/model changes, cross-pack installation or visual design changes. Those still
 need targeted validation.
 
+## Windows portability preflight
+
+Before changing paths, SQLite, streams, restore or cleanup:
+
+- Follow the boundary's existing native canonical/identity contract;
+  `Path.resolve()` alone does not fold Windows case. Keep lexical aliases
+  distinct from resolved targets. Cover mixed case, drive and UNC spellings,
+  plus foreign-namespace denial with an allowed native control.
+  See Python's [normcase documentation](https://docs.python.org/3.13/library/os.path.html#os.path.normcase).
+- Close every owned database/model connection, worker and stream handle before
+  unlink or `TemporaryDirectory.cleanup()`. Await worker/stream retirement.
+  A SQLite [`with conn` manages transactions, not connection closure](https://docs.python.org/3.13/library/sqlite3.html#how-to-use-the-connection-context-manager),
+  and [`addCleanup` runs after teardown](https://docs.python.org/3.13/library/unittest.html#unittest.TestCase.addCleanup);
+  use explicit `finally` cleanup when teardown removes files first.
+- Windows can reject unlink of an open file; Unix can remove its directory entry
+  while the handle remains usable. Preserve the shared behavior assertions and
+  exercise the actual native branch, then prove handle release and successful
+  cleanup. Do not hide failures with blanket skips or retries.
+  See Python's [remove/unlink semantics](https://docs.python.org/3.13/library/os.html#os.remove).
+- Run native Windows CI early for these changes and include a Windows impact and
+  evidence note in the PR. All twelve OS/Python combinations and every applicable
+  exact-head check must pass before merge. Portable `ntpath`/`PureWindowsPath`
+  controls do not establish native filesystem, locking or cleanup success.
+
 ## Required merge checks
 
 `.github/branch-protection.json` records the required checks: all twelve Python/OS
