@@ -22,6 +22,91 @@ class HistoryRestoreTests(unittest.TestCase):
     finish = history_tests.HistoryDatabaseTests.finish
     count = history_tests.HistoryDatabaseTests.count
 
+    def test_legacy_identifier_and_diagnostic_bytes_rejected_before_fetch(self):
+        try:
+            from tests.test_execution_context_schema import legacy, RUN
+        except ImportError:
+            from test_execution_context_schema import legacy, RUN
+        from database.execution_history_schema import history_schema_error
+
+        for table, column, prefix in (
+            ("execution_history_metadata", "storage_epoch", RUN),
+            *(
+                ("execution_runs", column, RUN)
+                for column in (
+                    "run_id",
+                    "session_id",
+                    "job_id",
+                    "storage_epoch",
+                )
+            ),
+            ("execution_runs", "node_id", "x" * 128),
+            ("execution_runs", "node_type", "x" * 128),
+            ("execution_runs", "exception_type", "x" * 256),
+        ):
+            with self.subTest(table=table, column=column):
+                with closing(sqlite3.connect(":memory:")) as conn:
+                    legacy(conn)
+                    malicious = prefix + "\0" + "x" * 1024
+                    conn.execute(f"UPDATE {table} SET {column}=?", (malicious,))
+
+                    def bounded_text(value):
+                        self.assertNotEqual(value, malicious.encode())
+                        return value.decode()
+
+                    conn.text_factory = bounded_text
+                    self.assertIsNotNone(history_schema_error(conn))
+
+    def test_legacy_metadata_version_payload_is_rejected_before_fetch(self):
+        try:
+            from tests.test_execution_context_schema import legacy
+        except ImportError:
+            from test_execution_context_schema import legacy
+        from database.execution_history_schema import history_schema_error
+
+        for malicious in ("x" * 1024, b"x" * 1024):
+            with self.subTest(kind=type(malicious).__name__):
+                with closing(sqlite3.connect(":memory:")) as conn:
+                    legacy(conn)
+                    conn.execute("PRAGMA ignore_check_constraints=ON")
+                    conn.execute(
+                        "UPDATE execution_history_metadata SET schema_version=?",
+                        (malicious,),
+                    )
+
+                    def bounded_row(cursor, row):
+                        self.assertFalse(any(value == malicious for value in row))
+                        return row
+
+                    conn.row_factory = bounded_row
+                    self.assertIsNotNone(history_schema_error(conn))
+
+    def test_legacy_four_byte_diagnostics_validate_and_migrate(self):
+        try:
+            from tests.test_execution_context_schema import legacy
+        except ImportError:
+            from test_execution_context_schema import legacy
+        from database.execution_history_schema import (
+            history_schema_error,
+            migrate_execution_history,
+        )
+
+        with closing(sqlite3.connect(":memory:")) as conn:
+            legacy(conn)
+            conn.execute(
+                "UPDATE execution_runs SET node_id=?,node_type=?,exception_type=?",
+                ("😀" * 128, "😀" * 128, "😀" * 256),
+            )
+            self.assertIsNone(history_schema_error(conn))
+            migrate_execution_history(conn)
+            self.assertIsNone(history_schema_error(conn, allow_missing=False))
+            self.assertEqual(
+                conn.execute(
+                    "SELECT node_id,node_type,exception_type FROM " "execution_runs"
+                ).fetchone(),
+                ("😀" * 128, "😀" * 128, "😀" * 256),
+            )
+
     def test_committed_wal_backup_includes_history_and_epoch(self):
         db = self.database()
         conn = db.model.get_connection()

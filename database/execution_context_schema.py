@@ -79,9 +79,14 @@ TABLE_COLUMNS = {
 def _digest_check(column: str, nullable: bool = False) -> str:
     check = (
         f"typeof({column}) = 'text' AND length({column}) = 64 "
+        f"AND length(CAST({column} AS BLOB)) = 64 "
         f"AND {column} NOT GLOB '*[^0-9a-f]*'"
     )
     return f"{column} IS NULL OR ({check})" if nullable else check
+
+
+def _bounded_uuid_check(column: str) -> str:
+    return f"{_uuid_check(column)} AND length(CAST({column} AS BLOB)) = 36"
 
 
 def _enum_check(column: str, values: frozenset[str]) -> str:
@@ -108,8 +113,9 @@ TABLE_CHECKS = {
         "positive_snapshot_id IS NOT NULL OR negative_snapshot_id IS NOT NULL",
     ),
     "execution_run_contexts": (
-        _uuid_check("run_id"),
-        "typeof(anchor_id) = 'text' AND length(anchor_id) BETWEEN 1 AND 128",
+        _bounded_uuid_check("run_id"),
+        "typeof(anchor_id) = 'text' AND length(anchor_id) BETWEEN 1 AND 128 "
+        "AND length(CAST(anchor_id AS BLOB)) <= 512",
         _digest_check("context_id"),
         "typeof(evidence_json) = 'text' AND length(CAST(evidence_json AS "
         "BLOB)) <= 8192",
@@ -117,11 +123,11 @@ TABLE_CHECKS = {
             f"{column} IS NULL OR (typeof({column}) = 'integer' AND {column} > 0)"
             for column in ("positive_prompt_id", "negative_prompt_id", "pair_id")
         ),
-        f"reference_epoch IS NULL OR ({_uuid_check('reference_epoch')})",
+        f"reference_epoch IS NULL OR ({_bounded_uuid_check('reference_epoch')})",
         "typeof(capture_version) = 'integer' AND capture_version = 1",
     ),
     "execution_context_capture": (
-        _uuid_check("run_id"),
+        _bounded_uuid_check("run_id"),
         _enum_check("state", BUNDLE_STATES),
         _enum_check("reason", CAPTURE_REASONS),
         "length(CAST(reason AS BLOB)) <= 64",

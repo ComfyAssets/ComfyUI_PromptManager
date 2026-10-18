@@ -92,6 +92,30 @@ _TABLE_CHECKS = {
     "execution_history_metadata": _METADATA_CHECKS,
     "execution_runs": _RUN_CHECKS,
 }
+# Row-only guards preserve the supported v1 DDL fingerprint while bounding reads.
+_ROW_BYTE_CHECKS = {
+    "execution_history_metadata": ("length(CAST(storage_epoch AS BLOB)) = 36",),
+    "execution_runs": (
+        *(
+            f"length(CAST({column} AS BLOB)) = 36"
+            for column in (
+                "run_id",
+                "session_id",
+                "job_id",
+                "storage_epoch",
+            )
+        ),
+        *(
+            f"{column} IS NULL OR length(CAST({column} AS BLOB)) <= {limit}"
+            for column, limit in (
+                ("node_id", 512),
+                ("node_type", 512),
+                ("exception_type", 1024),
+            )
+        ),
+    ),
+}
+
 _INDEXES = {
     "idx_execution_runs_identity": (True, ("session_id", "queue_item_id")),
     "idx_execution_runs_observed": (False, ("observed_dequeue_at", "run_id")),
@@ -127,11 +151,12 @@ def history_schema_error(
     if tables.keys() != _TABLE_COLUMNS.keys():
         return "Incomplete execution history schema"
     metadata = conn.execute(
-        "SELECT * FROM execution_history_metadata LIMIT 2"
+        "SELECT CASE WHEN typeof(schema_version) = 'integer' "
+        "THEN schema_version ELSE NULL END FROM execution_history_metadata LIMIT 2"
     ).fetchall()
-    if len(metadata) != 1 or len(metadata[0]) != 3 or metadata[0][1] not in (1, 2):
+    if len(metadata) != 1 or len(metadata[0]) != 1 or metadata[0][0] not in (1, 2):
         return "Unsupported execution history metadata/version"
-    version = metadata[0][1]
+    version = metadata[0][0]
     if version == 1 and context_present:
         return "Unexpected execution contexts for history v1"
     if not allow_missing and version != SCHEMA_VERSION:
@@ -173,7 +198,9 @@ def history_schema_error(
                 or any(key[3] or key[4] != "BINARY" for key in keys)
             ):
                 return f"{table} has unexpected execution history uniqueness"
-        predicate = " AND ".join(f"({check})" for check in checks)
+        predicate = " AND ".join(
+            f"({check})" for check in (*checks, *_ROW_BYTE_CHECKS[table])
+        )
         if conn.execute(
             f"SELECT 1 FROM {table} WHERE NOT ({predicate}) LIMIT 1"
         ).fetchone():

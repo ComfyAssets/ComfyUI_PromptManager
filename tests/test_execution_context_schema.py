@@ -161,6 +161,101 @@ class ContextSchemaTests(unittest.TestCase):
         )
         return evidence
 
+    def test_owned_identifier_constraints_reject_nul_suffixed_bytes(self):
+        columns = {
+            "execution_context_texts": ("text_id",),
+            "execution_prompt_snapshots": (
+                "snapshot_id",
+                "raw_text_id",
+                "effective_text_id",
+                "prepend_text_id",
+                "append_text_id",
+            ),
+            "execution_contexts": (
+                "context_id",
+                "positive_snapshot_id",
+                "negative_snapshot_id",
+            ),
+            "execution_run_contexts": (
+                "run_id",
+                "anchor_id",
+                "context_id",
+                "reference_epoch",
+            ),
+            "execution_context_capture": ("run_id",),
+        }
+        for table, names in columns.items():
+            for column in names:
+                with self.subTest(table=table, column=column):
+                    conn = self.connection()
+                    self.populate(conn)
+                    prefix = (
+                        RUN
+                        if column in ("run_id", "reference_epoch")
+                        else "node" if column == "anchor_id" else "a" * 64
+                    )
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        conn.execute(
+                            f"UPDATE {table} SET {column}=?",
+                            (prefix + "\0" + "x" * 1024,),
+                        )
+
+    def test_context_validation_rejects_oversized_keys_before_fetch(self):
+        for table, column, prefix in (
+            ("execution_context_texts", "text_id", "a" * 64),
+            ("execution_run_contexts", "anchor_id", "node"),
+        ):
+            with self.subTest(table=table, column=column):
+                conn = self.connection()
+                self.populate(conn)
+                malicious = prefix + "\0" + "x" * 1024
+                if table == "execution_context_texts":
+                    for dependent in (
+                        "execution_context_capture",
+                        "execution_run_contexts",
+                        "execution_contexts",
+                        "execution_prompt_snapshots",
+                    ):
+                        conn.execute(f"DELETE FROM {dependent}")
+                conn.execute("PRAGMA ignore_check_constraints=ON")
+                conn.execute(f"UPDATE {table} SET {column}=?", (malicious,))
+
+                def bounded_text(value):
+                    self.assertNotEqual(value, malicious.encode())
+                    return value.decode()
+
+                conn.text_factory = bounded_text
+                self.assertIsNotNone(history.history_schema_error(conn))
+
+    def test_unicode_anchor_boundary_and_prompt_nuls_preserve_exact_text(self):
+        conn = self.connection()
+        self.populate(conn)
+        text = "hello\0world"
+        text_id = content_digest("text", (text,))
+        snapshot_id = content_digest("snapshot", (text, None, None, None))
+        context_id = content_digest("context", (snapshot_id, None))
+        conn.execute(
+            "UPDATE execution_context_texts SET text_id=?,text_value=?",
+            (text_id, text),
+        )
+        conn.execute(
+            "UPDATE execution_prompt_snapshots SET snapshot_id=?,raw_text_id=?",
+            (snapshot_id, text_id),
+        )
+        conn.execute(
+            "UPDATE execution_contexts SET context_id=?,positive_snapshot_id=?",
+            (context_id, snapshot_id),
+        )
+        conn.execute(
+            "UPDATE execution_run_contexts SET context_id=?,anchor_id=?",
+            (context_id, "😀" * 128),
+        )
+        self.assertIsNone(history.history_schema_error(conn))
+        self.assertEqual(
+            conn.execute("SELECT text_value FROM execution_context_texts").fetchone(),
+            (text,),
+        )
+
     def test_valid_context_and_fingerprints(self):
         conn = self.connection()
         self.populate(conn)
