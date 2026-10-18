@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
+from tests.history_waits import drain_writer
 from database import PromptDatabase
 from utils.execution_history_events import (
     LifecycleEvent,
@@ -696,7 +697,7 @@ class HistoryWriterTests(unittest.TestCase):
                 "prompt_manager.execution_history_writer", "WARNING"
             ) as logs:
                 release.set()
-                self.wait_for(lambda: writer.status().pending == 0)
+                drain_writer(writer)
                 self.assertTrue(writer.close(2))
             self.assertEqual(len(logs.records), 1)
 
