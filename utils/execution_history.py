@@ -65,6 +65,7 @@ class HistoryRegistration:
                     )
                 )
             except (ImportError, AttributeError, TypeError, ValueError):
+                # Optional cache evidence must not prevent lifecycle tracking.
                 pass
             self.writer.start()
             atexit.register(self.dispose)

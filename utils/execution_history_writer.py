@@ -209,6 +209,7 @@ class HistoryWriter:
             try:
                 self._on_invalidation()
             except Exception:
+                # Observer failure must not block revocation of stale captures.
                 pass
 
     def invalidate(self) -> None:
