@@ -32,6 +32,16 @@ class ContextBudget:
             self._charged += byte_count
             return PayloadLease._new(self, byte_count)
 
+    def reserve_up_to(self, max_bytes: int) -> "PayloadLease | None":
+        """Atomically own up to the remaining capacity in this same pool."""
+        _byte_count(max_bytes)
+        with self._lock:
+            byte_count = min(max_bytes, self._limit - self._charged)
+            if not byte_count:
+                return None
+            self._charged += byte_count
+            return PayloadLease._new(self, byte_count)
+
 
 class PayloadLease:
     def __init__(self, pool: ContextBudget, byte_count: int) -> None:

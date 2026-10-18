@@ -113,3 +113,48 @@ class ContextBudgetTests(unittest.TestCase):
                     contexts=(*sixteen.contexts, replace(small, anchor_id="17")),
                 )
             )
+
+    def test_reserve_up_to_uses_only_available_space_and_same_pool(self):
+        from utils.execution_context_budget import ContextBudget
+
+        pool = ContextBudget(100)
+        self.assertTrue(callable(getattr(pool, "reserve_up_to", None)))
+        first = pool.reserve(70)
+        second = pool.reserve_up_to(50)
+        self.assertEqual(second.byte_count, 30)
+        self.assertEqual(pool.charged_bytes, 100)
+        self.assertIsNone(pool.reserve_up_to(1))
+        first.release()
+        third = pool.reserve_up_to(20)
+        self.assertEqual(third.byte_count, 20)
+        self.assertIsNone(pool.reserve_up_to(0))
+        for invalid in (-1, True, 1.0):
+            with self.assertRaises(ValueError):
+                pool.reserve_up_to(invalid)
+        third.release()
+        second.release()
+        self.assertEqual(pool.charged_bytes, 0)
+
+    def test_reserve_up_to_is_atomic_under_competing_reservations(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        from utils.execution_context_budget import ContextBudget
+
+        pool = ContextBudget(100)
+        self.assertTrue(callable(getattr(pool, "reserve_up_to", None)))
+        barrier = Barrier(8)
+
+        def reserve(_):
+            barrier.wait()
+            return pool.reserve_up_to(30)
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            leases = list(executor.map(reserve, range(8)))
+        self.assertEqual(
+            sorted(lease.byte_count for lease in leases if lease), [10, 30, 30, 30]
+        )
+        self.assertEqual(pool.charged_bytes, 100)
+        for lease in leases:
+            if lease is not None:
+                lease.release()
+        self.assertEqual(pool.charged_bytes, 0)
