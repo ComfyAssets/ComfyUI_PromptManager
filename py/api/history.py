@@ -259,13 +259,17 @@ class HistoryRoutesMixin:
 
         def project() -> bytes:
             generation = fence.begin()
-            with db.recorded_history_snapshot(expected_epoch) as epoch:
-                try:
-                    result = db.list_history_window(
-                        positive_id, limit=limit, after=position
-                    )
-                except ValueError:
-                    raise HistoryReadError(400, "invalid-cursor") from None
+            try:
+                with db.recorded_history_snapshot(expected_epoch) as epoch:
+                    try:
+                        result = db.list_history_window(
+                            positive_id, limit=limit, after=position
+                        )
+                    except ValueError:
+                        raise HistoryReadError(400, "invalid-cursor") from None
+            finally:
+                # Restore may retire this owner before a queued read opens it.
+                db.model.close()
             if result is None:
                 fence.validate(epoch, generation)
                 raise HistoryReadError(404, "not-found")
@@ -299,8 +303,11 @@ class HistoryRoutesMixin:
 
         def project() -> bytes:
             generation = fence.begin()
-            with db.recorded_history_snapshot(expected_epoch) as epoch:
-                result = db.get_history_run(run_id)
+            try:
+                with db.recorded_history_snapshot(expected_epoch) as epoch:
+                    result = db.get_history_run(run_id)
+            finally:
+                db.model.close()
             if result is None:
                 fence.validate(epoch, generation)
                 raise HistoryReadError(404, "not-found")

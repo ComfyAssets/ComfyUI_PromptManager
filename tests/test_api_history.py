@@ -1,12 +1,15 @@
 """History HTTP contracts use disposable SQLite, exact cursors and restore fences."""
 
+import asyncio
 import base64
 import copy
 import importlib
 import json
 import sqlite3
 import tempfile
+import threading
 import unittest
+from contextlib import contextmanager, ExitStack
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -695,6 +698,7 @@ class HistoryAPITests(ImageAPITestCase):
         self.assertEqual(response.status, 200, await response.text())
         self.assertIsNot(self.api.db, old_db)
         self.assertEqual(len(old_db.model._connections), 0)
+
         with patch.object(
             old_db.model, "get_connection", side_effect=AssertionError("retired owner")
         ):
@@ -715,6 +719,167 @@ class HistoryAPITests(ImageAPITestCase):
             },
         )
         self.assertEqual(len(old_db.model._connections), 0)
+
+    async def assert_projection_releases_retired_owner(
+        self, route, *, acquisition=False, failure=None
+    ):
+        positive = self._save_prompt("positive")
+        start = self.capture()
+        await self.window(positive)
+        old_db = self.api.db
+        self.addCleanup(old_db.close_all)
+        source = self.comfy_dir / "queued-restore.db"
+        self.assertTrue(old_db.model.backup_database(str(source)))
+        upload = source.read_bytes()
+        reached = asyncio.Event()
+        release = threading.Event() if acquisition else asyncio.Event()
+        executor = self.api._run_in_executor
+        connection = old_db.model.get_connection
+        history = importlib.import_module("py.api.history")
+        serialize = history._serialize_history
+        fence = self.api._history_fence()
+        validate = fence.validate
+        loop = asyncio.get_running_loop()
+        armed = True
+
+        async def queued(func, *args, **kwargs):
+            nonlocal armed
+            if armed and func.__name__ == "project":
+                armed = False
+                reached.set()
+                await asyncio.wait_for(release.wait(), 5)
+            return await executor(func, *args, **kwargs)
+
+        def selected_connection():
+            nonlocal armed
+            if armed:
+                armed = False
+                loop.call_soon_threadsafe(reached.set)
+                if not release.wait(5):
+                    raise AssertionError("connection-acquisition barrier timed out")
+            return connection()
+
+        @contextmanager
+        def failed_snapshot(expected_epoch=None):
+            old_db.model.get_connection()
+            raise sqlite3.OperationalError("snapshot unavailable")
+            yield
+
+        def released_before_serialization(payload, **kwargs):
+            self.assertEqual(len(old_db.model._connections), 0)
+            return serialize(payload, **kwargs)
+
+        def released_before_validation(epoch, generation):
+            self.assertEqual(len(old_db.model._connections), 0)
+            return validate(epoch, generation)
+
+        with ExitStack() as patches:
+            patches.enter_context(
+                patch.object(
+                    history,
+                    "_serialize_history",
+                    side_effect=released_before_serialization,
+                )
+            )
+            patches.enter_context(
+                patch.object(fence, "validate", side_effect=released_before_validation)
+            )
+            if acquisition:
+                patches.enter_context(
+                    patch.object(
+                        old_db.model, "get_connection", side_effect=selected_connection
+                    )
+                )
+            else:
+                patches.enter_context(
+                    patch.object(self.api, "_run_in_executor", side_effect=queued)
+                )
+            if failure == "snapshot":
+                patches.enter_context(
+                    patch.object(
+                        old_db, "recorded_history_snapshot", side_effect=failed_snapshot
+                    )
+                )
+            elif failure == "lookup":
+                patches.enter_context(
+                    patch.object(
+                        old_db,
+                        (
+                            "list_history_window"
+                            if route == "window"
+                            else "get_history_run"
+                        ),
+                        side_effect=sqlite3.OperationalError("lookup unavailable"),
+                    )
+                )
+            read = (
+                self.window(positive)
+                if route == "window"
+                else self.detail(start.run_id)
+            )
+            pending = asyncio.create_task(read)
+            try:
+                await asyncio.wait_for(reached.wait(), 5)
+                form = FormData()
+                form.add_field("database_file", upload, filename="upload.db")
+                restored = await self.client.post("/prompt_manager/restore", data=form)
+                self.assertEqual(restored.status, 200, await restored.text())
+                self.assertIsNot(self.api.db, old_db)
+                self.assertEqual(len(old_db.model._connections), 0)
+            finally:
+                release.set()
+                response, body = await asyncio.wait_for(pending, 5)
+
+        if failure is not None:
+            self.assert_error(
+                response, body, 503, "storage-unavailable", {"action": "retry-read"}
+            )
+        elif acquisition:
+            self.assert_error(
+                response, body, 409, "history-changed", {"action": "refresh-history"}
+            )
+        else:
+            self.assertEqual(response.status, 200, body)
+            self.assertEqual(body["history_epoch"], self.api.db.get_execution_epoch())
+            self.assertNotEqual(body["history_epoch"], start.storage_epoch)
+            run = body["items"][0] if route == "window" else body["run"]
+            self.assertEqual(run["run_id"], start.run_id)
+            self.assertEqual(run["storage_epoch"], start.storage_epoch)
+        self.assertEqual(
+            len(old_db.model._connections),
+            0,
+            "completed projection retained a handle on the API-retired owner",
+        )
+
+    async def test_queued_window_across_multipart_restore_closes_retired_handle(self):
+        await self.assert_projection_releases_retired_owner("window")
+
+    async def test_queued_detail_across_multipart_restore_closes_retired_handle(self):
+        await self.assert_projection_releases_retired_owner("detail")
+
+    async def test_window_retirement_before_connection_acquisition_closes_handle(self):
+        await self.assert_projection_releases_retired_owner("window", acquisition=True)
+
+    async def test_detail_retirement_before_connection_acquisition_closes_handle(self):
+        await self.assert_projection_releases_retired_owner("detail", acquisition=True)
+
+    async def test_retired_window_handle_closes_after_snapshot_and_lookup_failures(
+        self,
+    ):
+        for failure in ("snapshot", "lookup"):
+            with self.subTest(failure=failure):
+                await self.assert_projection_releases_retired_owner(
+                    "window", acquisition=True, failure=failure
+                )
+
+    async def test_retired_detail_handle_closes_after_snapshot_and_lookup_failures(
+        self,
+    ):
+        for failure in ("snapshot", "lookup"):
+            with self.subTest(failure=failure):
+                await self.assert_projection_releases_retired_owner(
+                    "detail", acquisition=True, failure=failure
+                )
 
 
 class HistoryHostCleanupTests(unittest.IsolatedAsyncioTestCase):
