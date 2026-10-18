@@ -112,12 +112,24 @@ export function createMediaViewer({container,parentScope,inspectionController,se
             }
             node.src = url.href;media.append(node);
             if (!selected.is_video && window.Viewer) {
+                let fitFrame = 0, fitWidth, fitHeight;
+                const scheduleFit = () => {
+                    if (!current() || fitFrame) return;
+                    fitFrame = requestAnimationFrame(() => {
+                        fitFrame = 0;
+                        if (!current() || !instance.viewed) return;
+                        const width = media.offsetWidth, height = media.offsetHeight;
+                        if (width === fitWidth && height === fitHeight) return;
+                        fitWidth = width;fitHeight = height;instance.resize();
+                    });
+                };
                 const instance = new window.Viewer(node,{inline:true,container:media,toolbar:false,navbar:false,title:false,button:false,
                     keyboard:false,fullscreen:false,transition:false,viewed() {
                         if (!current()) return;
-                        instance.resize();session.ready(key);
+                        session.ready(key);scheduleFit();
                     }});
-                viewer = instance;mediaLocal.cleanup(() => instance.destroy());
+                const observer = new ResizeObserver(scheduleFit);observer.observe(stage);
+                viewer = instance;mediaLocal.cleanup(() => {observer.disconnect();cancelAnimationFrame(fitFrame);instance.destroy();});
             }
             updateControls(session.state);
         }

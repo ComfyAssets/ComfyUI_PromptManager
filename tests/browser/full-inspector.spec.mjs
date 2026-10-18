@@ -387,3 +387,87 @@ test('collection viewer matches approved responsive frame',async({page,request},
     await page.evaluate(()=>{document.documentElement.style.zoom='2';});await modal.evaluate(node=>{node.scrollTop=0;});
     await expect(modal.getByRole('button',{name:'Close preview',exact:true})).toBeInViewport();
 });
+
+async function currentStageFit(page) {
+    return page.evaluate(()=>{
+        const instance=window.fitInstances.at(-1),stage=document.querySelector('.image-preview-stage');
+        const bounds=stage.getBoundingClientRect(),image=instance.image.getBoundingClientRect();
+        return {stage:{width:stage.offsetWidth,height:stage.offsetHeight},viewer:{...instance.viewerData},
+            image:{width:image.width,height:image.height},
+            center:{x:image.x+image.width/2-bounds.x-bounds.width/2,y:image.y+image.height/2-bounds.y-bounds.height/2},
+            contained:image.left>=bounds.left-1&&image.top>=bounds.top-1&&image.right<=bounds.right+1&&image.bottom<=bounds.bottom+1};
+    });
+}
+async function openStageFitFixture(page,request) {
+    await expect(await request.post('/__test__/reset',{data:{full_inspector:true}})).toBeOK();
+    await page.setViewportSize({width:1600,height:1100});await page.goto('/prompt_manager/workspace#/images');
+    let release;const pending=new Promise(resolve=>{release=resolve;});
+    await page.route('**/images/inspect/architecture/study-02.png?*',async route=>{
+        const response=await route.fetch(),data=await response.json();data.library.title='W'.repeat(220);await pending;
+        await route.fulfill({response,json:data}).catch(()=>{});
+    });
+    await page.evaluate(async()=>{
+        const [{createMediaViewer},{createInspectionController},{createScope},{createPromptSender}]=await Promise.all([
+            import('/prompt_manager/js/workspace/media-viewer.mjs'),import('/prompt_manager/js/workspace/inspection-state.mjs'),
+            import('/prompt_manager/js/shared/toolkit/core.js'),import('/prompt_manager/js/workspace/prompt-sender.mjs')]);
+        const api=window.ApiClient.createApiClient(),list=await api.get('/prompt_manager/images/output?mode=workspace&limit=40');
+        const tall=list.images.find(image=>image.root_index===1&&image.path==='architecture/study-02.png');
+        const next=list.images.find(image=>image.root_index===0&&image.path==='inspector/explicit-empty.png');
+        window.fitInstances=[];window.fitResizeCalls=[];window.fitObservers=[];
+        const Native=window.Viewer,resize=Native.prototype.resize;
+        Native.prototype.resize=function(...args){window.fitResizeCalls.push({destroyed:!!this.destroyed,connected:this.element.isConnected});return resize.apply(this,args);};
+        window.Viewer=class extends Native {constructor(...args){super(...args);window.fitInstances.push(this);}};
+        const NativeObserver=window.ResizeObserver;
+        window.ResizeObserver=class extends NativeObserver {
+            constructor(callback){super(callback);this.probe={callback,observer:this,disconnected:false};window.fitObservers.push(this.probe);}
+            observe(target,...args){this.probe.target=target;return super.observe(target,...args);}
+            disconnect(){this.probe.disconnected=true;super.disconnect();}
+        };
+        const scope=createScope(),controller=createInspectionController({api}),sender=createPromptSender({scope});scope.cleanup(()=>controller.dispose());
+        const view=createMediaViewer({container:document.getElementById('workspace-main'),parentScope:scope,inspectionController:controller,sender,onSelect:entry=>controller.select(entry)});
+        window.stageFitFixture={scope,controller,view};view.open({items:[tall,next],selectedKey:`${tall.root_index}:${tall.path}`,trigger:document.activeElement});
+    });
+    await expect(mediaDialog(page).getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
+    await expect(mediaDialog(page).locator('.image-preview-reason')).toBeHidden();
+    return release;
+}
+async function attachStageFit(page,testInfo,name) {
+    const data=await currentStageFit(page);await testInfo.attach(name,{body:JSON.stringify(data,null,2),contentType:'application/json'});return data;
+}
+
+test('collection viewer fits current stage after readiness reason removal',async({page,request},testInfo)=>{
+    const release=await openStageFitFixture(page,request);
+    try {
+        await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+        await attachStageFit(page,testInfo,'ready-stage-fit');
+        await page.screenshot({path:testInfo.outputPath('ready-stage-fit.png')});
+        await expect.poll(async()=>{const fit=await currentStageFit(page);return Math.abs(fit.viewer.height-fit.stage.height);}).toBeLessThanOrEqual(1);
+        const fit=await currentStageFit(page);expect(Math.abs(fit.center.x)).toBeLessThanOrEqual(1);expect(Math.abs(fit.center.y)).toBeLessThanOrEqual(1);expect(fit.contained).toBe(true);
+    } finally {release();await page.evaluate(()=>window.stageFitFixture.scope.dispose());}
+});
+
+test('collection viewer refits a late wrapped title without replacing current media',async({page,request},testInfo)=>{
+    const release=await openStageFitFixture(page,request);
+    try {
+        const modal=mediaDialog(page),fit=modal.getByRole('button',{name:'Fit image',exact:true});
+        await page.evaluate(()=>{window.fitImage=document.querySelector('.viewer-canvas img');window.fitControl=document.querySelector('[aria-label="Fit image"]');});
+        await fit.focus();const initial=await attachStageFit(page,testInfo,'before-late-title');release();
+        await expect(modal.locator('.image-preview-header h2')).toHaveText(`${'W'.repeat(220)} · study-02.png`);
+        await expect(fit).toBeFocused();await fit.click();await attachStageFit(page,testInfo,'late-title-fit');
+        await expect.poll(async()=>{const data=await currentStageFit(page);return Math.abs(data.viewer.height-data.stage.height);}).toBeLessThanOrEqual(1);
+        const current=await currentStageFit(page);expect(current.stage.height).toBeLessThan(initial.stage.height);expect(Math.abs(current.center.y)).toBeLessThanOrEqual(1);expect(current.contained).toBe(true);
+        await page.screenshot({path:testInfo.outputPath('late-title-fit.png')});
+        expect(await page.evaluate(()=>window.fitImage===document.querySelector('.viewer-canvas img')&&window.fitControl===document.querySelector('[aria-label="Fit image"]')&&window.fitInstances.length===1)).toBe(true);
+        await modal.getByRole('button',{name:'Zoom in',exact:true}).click();await modal.getByRole('button',{name:'Rotate image 90 degrees',exact:true}).click();await modal.getByRole('button',{name:'Flip image horizontally',exact:true}).click();
+        const transformed=await page.evaluate(()=>({...window.fitInstances[0].imageData}));await page.evaluate(()=>window.stageFitFixture.controller.retry());
+        await expect(modal.locator('.file-name')).toHaveText('study-02.png');await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+        expect(await page.evaluate(()=>window.fitInstances[0].imageData)).toEqual(transformed);
+        await fit.click();const fitted=await currentStageFit(page);expect(Math.abs(fitted.center.y)).toBeLessThanOrEqual(1);expect(fitted.contained).toBe(true);
+        await modal.getByRole('button',{name:'Next media',exact:true}).click();await expect(modal.getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
+        await page.evaluate(()=>{for(const probe of window.fitObservers.filter(probe=>probe.disconnected))probe.callback([],probe.observer);});
+        await modal.getByRole('button',{name:'Close preview',exact:true}).click();await expect(modal).toHaveCount(0);
+        await page.evaluate(async()=>{for(const probe of window.fitObservers)probe.callback([],probe.observer);await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
+        expect(await page.evaluate(()=>window.fitObservers.every(probe=>probe.disconnected))).toBe(true);
+        expect(await page.evaluate(()=>window.fitResizeCalls.filter(call=>call.destroyed||!call.connected))).toEqual([]);
+    } finally {release();await page.evaluate(()=>window.stageFitFixture.scope.dispose());}
+});
