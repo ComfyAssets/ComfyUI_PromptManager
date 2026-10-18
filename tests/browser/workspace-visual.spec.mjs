@@ -1,7 +1,7 @@
 import { writeFile } from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { captureCanonicalState, historyGeometry, compareCanonicalHistory, nativeDialogState, exerciseCurrentPairSend } from './history-canonical-comparison.mjs';
+import { captureCanonicalState, historyGeometry, compareCanonicalHistory, nativeDialogState, exerciseCurrentPairSend, assertRecordedHistory } from './history-canonical-comparison.mjs';
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 
@@ -131,6 +131,24 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         await captureCanonicalState(page, testInfo, `production-viewer-${width}-${theme}`, 'dialog.image-preview');
         await page.keyboard.press('Escape');await expect(view).toBeFocused();await page.keyboard.press('Escape');await expect(run).toBeFocused();
         await compareCanonicalHistory(reference, actual, testInfo);
+
+        const history = await request.get(`/prompt_manager/library/${fixture.positive_id}/history`);await expect(history).toBeOK();
+        const window = await history.json();expect(window.items.map(item => item.run_id)).toEqual(fixture.aab);
+        expect(window.context_summaries).toHaveLength(2);
+        const contextIds = [...new Set(window.items.flatMap(item => item.matching_anchors.map(anchor => anchor.context_id)))];
+        expect(contextIds).toHaveLength(2);
+        await page.goto(`${workspace}#/library/${fixture.positive_id}`);
+        await expect(page.locator('.history-run-marker')).toHaveCount(3);
+        await page.locator('.history-timeline').evaluate(node => { node.scrollLeft = 0;node.scrollTop = 0; });
+        const anchor = page.locator('.history-context-anchor').first();await anchor.focus();await expect(anchor).toBeFocused();
+        const multiple = await historyGeometry(page, true);
+        expect(multiple.recordedBranch.map(branch => branch.contextId)).toEqual(contextIds);
+        expect(multiple.recordedMarker.map(marker => marker.runId)).toEqual(fixture.aab);
+        await captureCanonicalState(page, testInfo, `production-chronology-multiple-${width}-${theme}`, '.recorded-history');
+        const geometryPath = testInfo.outputPath('canonical-recorded-geometry.json');
+        await writeFile(geometryPath, JSON.stringify({ reference, actual: multiple, expected: { contextIds, runIds: fixture.aab, branchCount: 2, anchorCount: 2, repeatCount: 1 }, differences: 'Two real frozen contexts / three runs versus three illustrative saved variants; chronological columns retain 64px run spacing, with the same role colors, curves and 57px row rhythm.' }, null, 2));
+        await testInfo.attach('canonical-recorded-geometry', { path: geometryPath, contentType: 'application/json' });
+        assertRecordedHistory(reference, multiple, { branchCount: 2, anchorCount: 2, repeatCount: 1 });
     });
 }
 

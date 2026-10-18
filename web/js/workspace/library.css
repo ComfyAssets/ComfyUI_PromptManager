@@ -82,7 +82,7 @@ main.library-main { --library-negative: #ff8c98; }
 .history-run-column { position: absolute; inset-block: 0; inline-size: 64px; pointer-events: none; }
 .history-position { position: absolute; inset-block-start: 41px; font-size: 10px; color: var(--ca-muted); }
 .ca-tools .history-run-marker { position: absolute; pointer-events: auto; transform: translate(-50%, -50%); inline-size: 12px; block-size: 12px; min-inline-size: 12px; min-block-size: 12px; border: 2px solid var(--library-negative); border-radius: 50%; background: var(--ca-field); padding: 0; color: var(--ca-field); font-size: 16px; line-height: 1; }
-.ca-tools .history-context-anchor { inline-size: 29px; block-size: 29px; min-inline-size: 29px; min-block-size: 29px; background: var(--library-negative); }
+.ca-tools .history-context-anchor { inline-size: 29px; block-size: 29px; min-inline-size: 29px; min-block-size: 29px; background: var(--library-negative); color: #38151b; font-size: 12px; }
 .history-run-marker[aria-pressed="true"], .history-run-marker:focus-visible { outline: 3px solid var(--ca-focus); outline-offset: 4px; }
 .history-run-marker[aria-disabled="true"] { opacity: .6; cursor: progress; }
 .recorded-run-dialog { box-sizing: border-box; inline-size: min(1100px, calc(100% - 32px)); max-inline-size: calc(100% - 32px); max-block-size: calc(100dvh - 32px); padding: 22px; border: 1px solid var(--ca-border); border-radius: 7px; color: var(--ca-text); background: var(--ca-surface); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; overflow-wrap: anywhere; }
@@ -114,7 +114,7 @@ main.library-main { --library-negative: #ff8c98; }
     .recorded-history :where(.history-toolbar button, .history-scope summary) { min-inline-size: 44px; min-block-size: 44px; }
     .ca-tools .history-run-marker { inline-size: 44px; block-size: 44px; min-inline-size: 44px; min-block-size: 44px; border: 0; background: transparent; color: transparent; }
     .ca-tools .history-run-marker::before { content: ""; position: absolute; inset: 16px; box-sizing: border-box; border: 2px solid var(--library-negative); border-radius: 50%; background: var(--ca-field); }
-    .ca-tools .history-context-anchor::before { content: "−"; inset: 7.5px; inline-size: 29px; block-size: 29px; line-height: 25px; color: var(--ca-field); background: var(--library-negative); }
+    .ca-tools .history-context-anchor::before { content: "−"; inset: 7.5px; inline-size: 29px; block-size: 29px; line-height: 25px; color: #38151b; background: var(--library-negative); }
     .ca-tools .library-main .library-variant-dot::after { content: ""; position: absolute; inset: -9px; }
     .ca-tools .recorded-run-dialog :where(button, summary) { min-inline-size: 44px; min-block-size: 44px; }
 }

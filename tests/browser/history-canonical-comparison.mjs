@@ -45,6 +45,9 @@ export async function historyGeometry(page, production) {
         footer: '.library-variant-footer', all: '.library-variants button:last-child',
         recordedPositiveLabel: '.history-positive-lane span', recordedBranch: '.history-context-branch',
         recordedHeading: '.recorded-history h2', recordedTimeline: '.history-timeline', recordedCanvas: '.history-canvas',
+        recordedPositive: '.history-positive-lane', recordedLabel: '.history-context-label',
+        recordedAnchor: '.history-context-anchor', recordedRepeat: '.history-run-marker:not(.history-context-anchor)',
+        recordedMarker: '.history-run-marker', recordedColumn: '.history-run-column',
     } : {
         surface: '.surface', timeline: '.timeline', positive: '.positive-lane', branch: '.variant-lane',
         label: '.variant-lane span', dot: '.variant-dot[aria-pressed="true"]', role: '.surface .prompt-section',
@@ -52,8 +55,10 @@ export async function historyGeometry(page, production) {
         prompt: '.surface .prompt-text', gallery: '.history-gallery',
         heading: '.timeline-panel h2', intro: '.timeline-panel .panel-heading .small',
         footer: '.timeline-lower', all: '.timeline-lower button',
+        repeat: '.timeline .run-dot',
     };
-    return page.evaluate(selectors => Object.fromEntries(Object.entries(selectors).map(([key, selector]) => {
+    return page.evaluate(selectors => ({ pointerCoarse: matchMedia('(pointer: coarse)').matches,
+        ...Object.fromEntries(Object.entries(selectors).map(([key, selector]) => {
         const nodes = [...document.querySelectorAll(selector)];
         return [key, nodes.map(node => {
             const style = getComputedStyle(node), before = getComputedStyle(node, '::before');
@@ -62,13 +67,18 @@ export async function historyGeometry(page, production) {
                 padding: style.padding, top: style.top, left: style.left, background: style.backgroundColor, color: style.color,
                 border: style.borderTopWidth, borderColor: style.borderTopColor, radius: style.borderRadius,
                 fontSize: style.fontSize, fontFamily: style.fontFamily, lineHeight: style.lineHeight,
+                fontWeight: style.fontWeight, text: node.textContent, contextId: node.dataset.contextId || node.dataset.contextBranch,
+                runId: node.dataset.runId,
                 marginLeft: style.marginLeft, outline: style.outlineWidth, outlineColor: style.outlineColor,
                 outlineOffset: style.outlineOffset, before: { width: before.width, height: before.height,
                     top: before.top, left: before.left, borderLeft: before.borderLeftWidth,
                     borderBottom: before.borderBottomWidth, radius: before.borderBottomLeftRadius,
-                    background: before.backgroundColor, color: before.color } };
+                    background: before.backgroundColor, color: before.color, borderColor: before.borderTopColor,
+                    borderLeftColor: before.borderLeftColor, borderBottomColor: before.borderBottomColor,
+                    fontSize: before.fontSize, fontFamily: before.fontFamily, fontWeight: before.fontWeight,
+                    content: before.content } };
         })];
-    })), selectors);
+    })) }), selectors);
 }
 
 export async function nativeDialogState(locator) {
@@ -156,4 +166,54 @@ export async function compareCanonicalHistory(reference, actual, testInfo) {
     for (const property of ['color', 'background']) expect.soft(actual.positive[0].before[property]).toBe(reference.positive[0].before[property]);
     for (const [index, block] of actual.role.entries()) for (const property of ['border', 'borderColor', 'fontSize']) expect.soft(block[property]).toBe(reference.role[index][property]);
     for (const [index, prompt] of actual.prompt.entries()) for (const property of ['fontSize', 'lineHeight', 'fontFamily']) expect.soft(prompt[property]).toBe(reference.prompt[index][property]);
+    assertRecordedHistory(reference, actual, { branchCount: 1, anchorCount: 1, repeatCount: 0 });
+}
+
+export function assertRecordedHistory(reference, actual, { branchCount, anchorCount, repeatCount }) {
+    expect(branchCount).toBeGreaterThan(0);
+    expect(reference.branch.length).toBeGreaterThanOrEqual(2);
+    expect(reference.dot).toHaveLength(1);
+    expect(reference.repeat.length).toBeGreaterThan(0);
+    expect.soft(actual.recordedBranch, 'chronological branches').toHaveLength(branchCount);
+    expect.soft(actual.recordedLabel, 'chronological labels').toHaveLength(branchCount);
+    expect.soft(actual.recordedAnchor, 'chronological anchors').toHaveLength(anchorCount);
+    expect.soft(actual.recordedRepeat, 'chronological repeats').toHaveLength(repeatCount);
+    expect.soft(actual.recordedMarker).toHaveLength(anchorCount + repeatCount);
+    expect.soft(actual.recordedColumn).toHaveLength(anchorCount + repeatCount);
+    expect.soft(actual.recordedPositive).toHaveLength(1);
+    for (const property of ['border', 'borderColor']) expect.soft(actual.recordedPositive[0][property], `recorded positive ${property}`).toBe(reference.positive[0][property]);
+    for (const property of ['color', 'background', 'width', 'height', 'fontSize']) expect.soft(actual.recordedPositive[0].before[property], `recorded positive glyph ${property}`).toBe(reference.positive[0].before[property]);
+    for (const [index, branch] of actual.recordedBranch.entries()) {
+        for (const property of ['height', 'border', 'borderColor']) expect.soft(branch[property], `recorded branch ${index} ${property}`).toBe(reference.branch[0][property]);
+        for (const property of ['width', 'height', 'top', 'left', 'borderLeft', 'borderBottom', 'radius', 'borderLeftColor', 'borderBottomColor']) expect.soft(branch.before[property], `recorded curve ${index} ${property}`).toBe(reference.branch[0].before[property]);
+        if (index) expect.soft(branch.y - actual.recordedBranch[index - 1].y, 'recorded 57px branch rhythm').toBe(reference.branch[1].y - reference.branch[0].y);
+    }
+    for (const label of actual.recordedLabel) for (const property of ['color', 'fontSize']) expect.soft(label[property], `recorded label ${property}`).toBe(reference.label[0][property]);
+    for (const [index, column] of actual.recordedColumn.entries()) {
+        expect.soft(column.left).toBe(`${38 + index * 64}px`);
+        if (index) expect.soft(column.x - actual.recordedColumn[index - 1].x, '64px chronological columns').toBe(64);
+    }
+    const checkMarker = (marker, canonical, anchor) => {
+        const visual = actual.pointerCoarse ? marker.before : marker;
+        const size = anchor ? 29 : 12;
+        expect.soft(visual.width, 'recorded marker visual width').toBe(actual.pointerCoarse ? `${size}px` : size);
+        expect.soft(visual.height, 'recorded marker visual height').toBe(actual.pointerCoarse ? `${size}px` : size);
+        for (const property of ['background', 'borderColor', 'radius']) expect.soft(visual[property], `recorded marker ${property}`).toBe(canonical[property]);
+        if (actual.pointerCoarse) {
+            expect.soft(marker.width, 'coarse marker hit width').toBeGreaterThanOrEqual(44);
+            expect.soft(marker.height, 'coarse marker hit height').toBeGreaterThanOrEqual(44);
+            expect.soft(visual.borderLeft).toBe('2px');
+        } else expect.soft(marker.border).toBe(canonical.border);
+        if (anchor) {
+            expect.soft(marker.text).toBe('−');
+            if (actual.pointerCoarse) expect.soft(visual.content).toBe('"−"');
+            for (const property of ['color', 'fontSize', 'fontFamily', 'fontWeight']) expect.soft(visual[property], `recorded minus ${property}`).toBe(canonical[property]);
+            const branch = actual.recordedBranch.find(value => value.contextId === marker.contextId);
+            expect(branch, 'each context anchor has its real branch').toBeTruthy();
+            expect.soft(Math.abs(marker.x + marker.width / 2 - branch.x)).toBeLessThanOrEqual(1);
+            expect.soft(Math.abs(marker.y + marker.height / 2 - branch.y)).toBeLessThanOrEqual(1);
+        } else expect.soft(marker.text).toBe('');
+    };
+    for (const marker of actual.recordedAnchor) checkMarker(marker, reference.dot[0], true);
+    for (const marker of actual.recordedRepeat) checkMarker(marker, reference.repeat[0], false);
 }
