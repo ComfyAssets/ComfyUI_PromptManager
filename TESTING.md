@@ -200,8 +200,8 @@ loading a workflow or queueing generation.
 
 ## Durable execution ledger
 
-`npm run --prefix tools/vendor test:executions` runs 26 real execution cases
-(13 each in Classic and Nodes 2.0, retaining the original ten ledger cases),
+`npm run --prefix tools/vendor test:executions` runs 42 real execution cases
+(21 each in Classic and Nodes 2.0, retaining all 26 prior execution cases),
 alongside the existing 78 stock host cases and six pack compatibility cases. Run
 these suites serially because they share report cleanup and owned host resources. Use the same pinned disposable `PM_COMFY_ROOT`,
 `PM_TEST_PYTHON` and Playwright browser installation as `test:comfyui`:
@@ -217,8 +217,9 @@ This suite reserves `http://127.0.0.1:8196/` and never attaches to an existing
 server. Each renderer worker launches a CPU/offline host with independent
 configuration, database, user and output directories. The shared launcher installs
 tracked snapshots of PromptManager and a tiny temporary Git-tracked fixture pack.
-Only that owned test pack provides cached output, deliberate failure, an
-interruptible queue gate, deterministic CLIP/model/latent inputs and control routes.
+Only that owned test pack provides cached text, deliberate failure, an
+interruptible queue gate, deterministic CLIP/model/latent and CPU tensor inputs,
+and control routes.
 It replaces external sampler inference and trigger injection only inside the
 disposable host; real registered PromptManager classes, queue, executor and cache
 remain active. Its cache control resets the real executor on its worker to exercise
@@ -236,8 +237,24 @@ mode, exact UUID job/session filters and a 256-row limit; absent ledger schema i
 explicit, while missing/corrupt databases and other read errors fail the suite.
 Sensitive diagnostic and extra-data sentinels must never appear in lifecycle
 rows. Exact prompt fields are deliberately persisted only in context snapshots.
-The same read-only helper calls the internal `get_execution_contexts` reader for
-requested run IDs and inspects their snapshot identities and current usage counts.
+The same read-only helper calls the internal `get_execution_contexts` and
+`get_execution_outputs` readers for requested run IDs and inspects their snapshot
+identities and current usage counts. Its `outputs` map is keyed by immutable run
+ID, alongside the existing `rows`, `captures`, `usage` and `snapshotIds` results.
+
+`execution-outputs.spec.mjs` runs actual stock SaveImage and PreviewImage nodes
+from tiny CPU tensors. It compares each attempt's persisted descriptors with that
+attempt's final host history, including A,A,B batches, multiple output nodes,
+cached locators, reused public UUIDs, PNG metadata disabled, graphs without PM
+nodes and text-only outputs. The pinned SaveImage returns an IMAGE socket; linking
+it to the owned failure/gate node orders the partial-run tests explicitly. A held
+downstream gate proves completed image work does not finalize the run early.
+Other cases verify real output capture across startup in each renderer, switching
+both ways and workflow reload. PM usage counts retain their existing per-job
+behavior. References identify reported locators only: file identity is unverified,
+new generation and context membership are unknown, and temp references are
+transient. The stock suite excludes both execution files; discovery retains its
+78 cases and the six pack cases unchanged.
 
 For a meaningful historical failure, create a separate disposable detached
 checkout at `fdba6fd0126a8a40cbd6f3e50ed4c5de8991efd4` and pass its path to
@@ -285,8 +302,21 @@ Fault injection for restore fencing, inherited async capability revocation, queu
 finalization, epoch and generation revocation, provider-local cache entries, eviction/reset, malformed or
 oversized payloads and missing host interfaces lives in the focused Python
 `test_execution*.py` suites. These use disposable storage and mocked host interfaces;
-they are distinct from the pinned real executor/cache checks above. No output-file
-associations or chronological timeline are introduced. Deploying the Python changes
+they are distinct from the pinned real executor/cache checks above. Run-owned
+output descriptors do not create gallery image associations or a chronological
+timeline. Deploying the Python changes
 requires a ComfyUI restart. After restart, queue three new jobs A,A,B with identical
 positive fields and two negative recipes; existing counters should advance as usual,
 and internal context inspection should find three attempts and two combinations.
+For a live output check after that manual restart:
+
+- Queue SaveImage and PreviewImage with a batch of two, then submit an unchanged
+  cached repeat and a changed tensor/input under new jobs.
+- Inspect each run's internal output capture against its final ComfyUI history;
+  cached references may repeat, while the attempts remain distinct.
+- Switch Classic to Nodes 2.0 and back, reload the workflow and queue again.
+- Verify prompt/pair counters and gallery links retain their existing behavior;
+  output references alone do not prove file bytes or prompt membership.
+
+Automated checks use only managed disposable hosts. They never restart or upgrade
+the personal ComfyUI server.

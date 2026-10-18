@@ -187,6 +187,12 @@ class ContextCapture:
                     projection = GraphProjection((), (), "")
                     reason = "graph_limit"
                     retained = 0
+                except Exception:
+                    projection = GraphProjection((), (), "")
+                    reason = "invalid_evidence"
+                    retained = 0
+                    lease.release()
+                    lease = None
             cap = replace(cap, sources=projection.sources)
             self._attempts[cap.nonce] = _Attempt(
                 cap, projection, lease, {}, retained, reason
@@ -396,6 +402,10 @@ class ContextCapture:
                 self._discard_payload(attempt)
                 lease.release()
                 return SealedContext(None, None, "unavailable", "limit_reached")
+            except Exception:
+                self._discard_payload(attempt)
+                lease.release()
+                return SealedContext(None, None, "unavailable", "invalid_evidence")
 
 
 def record_runtime_context(

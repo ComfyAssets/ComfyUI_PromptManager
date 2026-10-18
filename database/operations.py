@@ -13,6 +13,7 @@ from .pairs import PairDependencyError, PairOperations
 from .library import LibraryOperations
 from .execution_history import ExecutionHistoryOperations
 from .execution_contexts import ExecutionContextOperations
+from .execution_outputs import ExecutionOutputOperations
 
 # Import logging system
 try:
@@ -158,6 +159,7 @@ class PromptDatabase(
     LibraryOperations,
     ExecutionHistoryOperations,
     ExecutionContextOperations,
+    ExecutionOutputOperations,
 ):
     """Database operations class for managing prompts."""
 

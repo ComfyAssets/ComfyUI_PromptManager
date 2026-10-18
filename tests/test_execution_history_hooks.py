@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from tests.history_waits import drain_writer
 from database import PromptDatabase
 from utils import usage_tracking
 from utils.execution_history_writer import HistoryWriter
@@ -117,7 +118,7 @@ class HistoryHooksTests(unittest.TestCase):
         ]
 
     def drain(self, registration):
-        self.wait_for(lambda: registration.writer.status().pending == 0)
+        drain_writer(registration.writer, clock=time.monotonic)
 
     def test_package_history_initializes_when_monitor_and_usage_setup_fail(self):
         try:

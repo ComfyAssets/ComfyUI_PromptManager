@@ -22,6 +22,133 @@ class HistoryRestoreTests(unittest.TestCase):
     finish = history_tests.HistoryDatabaseTests.finish
     count = history_tests.HistoryDatabaseTests.count
 
+    def test_output_operations_restore_preserves_evidence_and_rejects_stale_finish(
+        self,
+    ):
+        from database.execution_history import HistoryEpochChanged
+        from tests.test_execution_output_database import bundle
+
+        db = self.database()
+        start = self.start(db)
+        db.write_execution_start(start)
+        finish = self.finish(start)
+        db.write_execution_outputs_for_finish(finish, bundle())
+        evidence = db.get_execution_outputs(start.run_id)
+        backup = str(Path(self.temp.name) / "output-operations.db")
+        self.assertTrue(db.model.backup_database(backup))
+        source = Path(backup).read_bytes()
+        db.model.restore_from_file(backup)
+        self.assertEqual(db.get_execution_outputs(start.run_id), evidence)
+        with self.assertRaises(HistoryEpochChanged):
+            db.write_execution_outputs_for_finish(finish, bundle("late.png"))
+        self.assertEqual(db.get_execution_outputs(start.run_id), evidence)
+        self.assertEqual(Path(backup).read_bytes(), source)
+
+    def test_output_wal_backup_restore_preserves_rows_and_historical_epoch(self):
+        try:
+            from tests.test_execution_output_schema import capture
+        except ImportError:
+            from test_execution_output_schema import capture
+        db = self.database()
+        start = self.start(db)
+        db.write_execution_start(start)
+        conn = db.model.get_connection()
+        conn.execute("PRAGMA wal_autocheckpoint=0")
+        with conn:
+            capture(conn, run=start.run_id)
+        expected = [
+            tuple(row) for row in conn.execute("SELECT * FROM execution_run_outputs")
+        ]
+        source = str(Path(self.temp.name) / "outputs-wal.db")
+        self.assertGreater(Path(self.path + "-wal").stat().st_size, 0)
+        self.assertTrue(db.model.backup_database(source))
+        original = Path(source).read_bytes()
+        for _ in range(2):
+            previous = db.get_execution_epoch()
+            db.model.restore_from_file(source)
+            self.assertNotEqual(db.get_execution_epoch(), previous)
+            self.assertNotEqual(db.get_execution_epoch(), start.storage_epoch)
+            conn = db.model.get_connection()
+            self.assertEqual(
+                [
+                    tuple(row)
+                    for row in conn.execute("SELECT * FROM execution_run_outputs")
+                ],
+                expected,
+            )
+            self.assertEqual(
+                db.get_execution_run(start.run_id)["storage_epoch"], start.storage_epoch
+            )
+            self.assertEqual(
+                tuple(
+                    conn.execute(
+                        "SELECT state,reason,format_version,source FROM "
+                        "execution_output_capture"
+                    ).fetchone()
+                ),
+                ("complete", "reported", 1, "host_final_history"),
+            )
+            self.assertEqual(Path(source).read_bytes(), original)
+
+    def test_malformed_outputs_preserve_source_live_and_existing_safety_backup(self):
+        try:
+            from tests.test_execution_output_schema import capture
+        except ImportError:
+            from test_execution_output_schema import capture
+        live = self.database()
+        start = self.start(live)
+        live.write_execution_start(start)
+        with live.model.get_connection() as conn:
+            capture(conn, run=start.run_id)
+        before = list(live.model.get_connection().iterdump())
+        safety = Path(self.path + ".backup_existing")
+        safety.write_bytes(b"existing safety backup")
+        mutations = (
+            "DROP TABLE execution_run_outputs",
+            "DROP TABLE execution_output_capture",
+            "DELETE FROM execution_output_capture",
+            "DELETE FROM execution_runs",
+            "CREATE UNIQUE INDEX bad_output ON execution_run_outputs(filename)",
+            "CREATE INDEX bad_output ON execution_run_outputs(filename)",
+            "CREATE VIEW bad_output AS SELECT * FROM execution_run_outputs",
+            "CREATE TRIGGER bad_output AFTER INSERT ON execution_run_outputs "
+            "BEGIN SELECT 1; END",
+            "PRAGMA ignore_check_constraints=ON; UPDATE execution_output_capture "
+            "SET source='filesystem_scan'",
+            "PRAGMA ignore_check_constraints=ON; UPDATE execution_output_capture "
+            "SET format_version=2",
+            "PRAGMA ignore_check_constraints=ON; UPDATE execution_output_capture "
+            "SET state='unavailable',reason='unavailable'",
+            "PRAGMA ignore_check_constraints=ON; UPDATE execution_run_outputs "
+            "SET filename='a' || char(0) || 'b'",
+            "PRAGMA ignore_check_constraints=ON; UPDATE execution_run_outputs "
+            "SET filename=replace(hex(zeroblob(1025)),'0','x')",
+            "DROP TABLE execution_runs; DROP TABLE execution_history_metadata",
+        )
+        for index, mutation in enumerate(mutations):
+            with self.subTest(mutation=mutation):
+                source = str(Path(self.temp.name) / f"bad-output-{index}.db")
+                self.assertTrue(live.model.backup_database(source))
+                with closing(sqlite3.connect(source)) as conn, conn:
+                    conn.executescript(mutation)
+                original = Path(source).read_bytes()
+                backups = {
+                    p.name: p.read_bytes()
+                    for p in Path(self.temp.name).glob("live.db.backup_*")
+                }
+                self.assertFalse(PromptModel.verify_database_file(source)[0])
+                with self.assertRaises(ValueError):
+                    live.model.restore_from_file(source)
+                self.assertEqual(list(live.model.get_connection().iterdump()), before)
+                self.assertEqual(Path(source).read_bytes(), original)
+                self.assertEqual(
+                    {
+                        p.name: p.read_bytes()
+                        for p in Path(self.temp.name).glob("live.db.backup_*")
+                    },
+                    backups,
+                )
+
     def test_legacy_identifier_and_diagnostic_bytes_rejected_before_fetch(self):
         try:
             from tests.test_execution_context_schema import legacy, RUN
@@ -200,6 +327,7 @@ class HistoryRestoreTests(unittest.TestCase):
 
     def test_wal_and_old_backup_staging_leave_source_unchanged(self):
         from database.execution_context_schema import TABLE_COLUMNS
+        from database.execution_output_schema import TABLE_COLUMNS as OUTPUT_COLUMNS
 
         source = str(Path(self.temp.name) / "v1.db")
         old = self.database(source)
@@ -207,6 +335,8 @@ class HistoryRestoreTests(unittest.TestCase):
         old.write_execution_start(start)
         with old.model.get_connection() as conn:
             conn.execute("INSERT INTO prompts(id,text,run_count) VALUES(7,'old',19)")
+            for table in reversed(OUTPUT_COLUMNS):
+                conn.execute(f"DROP TABLE {table}")
             for table in reversed(TABLE_COLUMNS):
                 conn.execute(f"DROP TABLE {table}")
             sql = (
@@ -215,7 +345,7 @@ class HistoryRestoreTests(unittest.TestCase):
                     "name='execution_history_metadata'"
                 )
                 .fetchone()[0]
-                .replace("schema_version = 2", "schema_version = 1")
+                .replace("schema_version = 3", "schema_version = 1")
             )
             conn.execute("DROP TABLE execution_history_metadata")
             conn.execute(sql)
@@ -272,6 +402,25 @@ class HistoryRestoreTests(unittest.TestCase):
                 source = str(Path(self.temp.name) / "bad-context.db")
                 self.assertTrue(live.model.backup_database(source))
                 with closing(sqlite3.connect(source)) as conn, conn:
+                    # Manufacture v2 explicitly so this still tests old restores.
+                    conn.execute("DROP TABLE execution_run_outputs")
+                    conn.execute("DROP TABLE execution_output_capture")
+                    sql = (
+                        conn.execute(
+                            "SELECT sql FROM sqlite_master WHERE "
+                            "name='execution_history_metadata'"
+                        )
+                        .fetchone()[0]
+                        .replace("schema_version = 3", "schema_version = 2")
+                    )
+                    epoch = conn.execute(
+                        "SELECT storage_epoch FROM execution_history_metadata"
+                    ).fetchone()[0]
+                    conn.execute("DROP TABLE execution_history_metadata")
+                    conn.execute(sql)
+                    conn.execute(
+                        "INSERT INTO execution_history_metadata VALUES(1,2,?)", (epoch,)
+                    )
                     conn.execute(mutation)
                 original = Path(source).read_bytes()
                 with self.assertRaises(ValueError):

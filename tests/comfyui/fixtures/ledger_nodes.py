@@ -5,6 +5,7 @@ import time
 
 import nodes
 import execution
+import torch
 
 from aiohttp import web
 import comfy.model_management
@@ -151,6 +152,62 @@ class PMHistoryTransform:
 NODE_CLASS_MAPPINGS.update(
     {"PMHistoryList": PMHistoryList, "PMHistoryTransform": PMHistoryTransform}
 )
+
+
+class PMHistoryImages:
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {
+                "value": ("INT", {"default": 0, "min": 0, "max": 255}),
+                "batch": ("INT", {"default": 1, "min": 1, "max": 2}),
+            },
+            "optional": {"latent": ("LATENT",)},
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "execute"
+    CATEGORY = "testing/execution-history"
+
+    def execute(self, value: int, batch: int, latent: dict | None = None) -> tuple:
+        return (torch.full((batch, 8, 8, 3), value / 255.0, device="cpu"),)
+
+
+class PMHistoryImageOutput:
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "mode": (["failure", "gate"],),
+            }
+        }
+
+    RETURN_TYPES = ()
+    FUNCTION = "execute"
+    CATEGORY = "testing/execution-history"
+    OUTPUT_NODE = True
+
+    def execute(self, images: torch.Tensor, mode: str) -> tuple:
+        if mode == "failure":
+            raise ValueError("owned failure after real image output")
+        PMHistoryGate().execute("owned gate after real image output")
+        return ()
+
+
+NODE_CLASS_MAPPINGS.update(
+    {"PMHistoryImages": PMHistoryImages, "PMHistoryImageOutput": PMHistoryImageOutput}
+)
+
+
+@PromptServer.instance.routes.post("/pm_execution_fixture/metadata")
+async def metadata(request: web.Request) -> web.Response:
+    disabled = (await request.json())["disabled"]
+    if type(disabled) is not bool:
+        raise web.HTTPBadRequest()
+    nodes.args.disable_metadata = disabled
+    return web.json_response({"disabled": disabled})
+
 
 _INJECTION_ORIGINALS = {}
 

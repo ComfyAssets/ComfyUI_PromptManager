@@ -17,6 +17,7 @@ class ContextBudget:
         _byte_count(limit_bytes)
         self._limit = limit_bytes
         self._charged = 0
+        self._owners: set[PayloadLease] = set()
         self._lock = threading.Lock()
 
     @property
@@ -29,8 +30,22 @@ class ContextBudget:
         with self._lock:
             if byte_count > self._limit - self._charged:
                 return None
+            owner = PayloadLease._new(self, byte_count)
+            self._owners.add(owner)
             self._charged += byte_count
-            return PayloadLease._new(self, byte_count)
+            return owner
+
+    def reserve_up_to(self, max_bytes: int) -> "PayloadLease | None":
+        """Atomically own up to the remaining capacity in this same pool."""
+        _byte_count(max_bytes)
+        with self._lock:
+            byte_count = min(max_bytes, self._limit - self._charged)
+            if not byte_count:
+                return None
+            owner = PayloadLease._new(self, byte_count)
+            self._owners.add(owner)
+            self._charged += byte_count
+            return owner
 
 
 class PayloadLease:
@@ -52,13 +67,15 @@ class PayloadLease:
             return self._bytes
 
     def _require_owner(self) -> None:
-        if not self._active:
-            raise ValueError("Inactive payload lease")
+        if self not in self._pool._owners or not self._active:
+            raise ValueError("Inactive or unissued payload lease")
 
     def transfer(self) -> "PayloadLease":
         with self._pool._lock:
             self._require_owner()
             owner = PayloadLease._new(self._pool, self._bytes)
+            self._pool._owners.add(owner)
+            self._pool._owners.remove(self)
             self._active = False
             return owner
 
@@ -73,7 +90,8 @@ class PayloadLease:
 
     def release(self) -> None:
         with self._pool._lock:
-            if self._active:
+            if self in self._pool._owners:
+                self._pool._owners.remove(self)
                 self._pool._charged -= self._bytes
                 self._active = False
 

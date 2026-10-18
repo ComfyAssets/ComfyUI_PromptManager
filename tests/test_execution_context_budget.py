@@ -1,6 +1,8 @@
 """Ownership and accounting behavior for shared context payloads."""
 
 import unittest
+from copy import copy
+from unittest.mock import patch
 
 
 class ContextBudgetTests(unittest.TestCase):
@@ -113,3 +115,111 @@ class ContextBudgetTests(unittest.TestCase):
                     contexts=(*sixteen.contexts, replace(small, anchor_id="17")),
                 )
             )
+
+    def test_reserve_up_to_uses_only_available_space_and_same_pool(self):
+        from utils.execution_context_budget import ContextBudget
+
+        pool = ContextBudget(100)
+        self.assertTrue(callable(getattr(pool, "reserve_up_to", None)))
+        first = pool.reserve(70)
+        second = pool.reserve_up_to(50)
+        self.assertEqual(second.byte_count, 30)
+        self.assertEqual(pool.charged_bytes, 100)
+        self.assertIsNone(pool.reserve_up_to(1))
+        first.release()
+        third = pool.reserve_up_to(20)
+        self.assertEqual(third.byte_count, 20)
+        self.assertIsNone(pool.reserve_up_to(0))
+        for invalid in (-1, True, 1.0):
+            with self.assertRaises(ValueError):
+                pool.reserve_up_to(invalid)
+        third.release()
+        second.release()
+        self.assertEqual(pool.charged_bytes, 0)
+
+    def test_reserve_up_to_is_atomic_under_competing_reservations(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        from utils.execution_context_budget import ContextBudget
+
+        pool = ContextBudget(100)
+        self.assertTrue(callable(getattr(pool, "reserve_up_to", None)))
+        barrier = Barrier(8)
+
+        def reserve(_):
+            barrier.wait()
+            return pool.reserve_up_to(30)
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            leases = list(executor.map(reserve, range(8)))
+        self.assertEqual(
+            sorted(lease.byte_count for lease in leases if lease), [10, 30, 30, 30]
+        )
+        self.assertEqual(pool.charged_bytes, 100)
+        for lease in leases:
+            if lease is not None:
+                lease.release()
+        self.assertEqual(pool.charged_bytes, 0)
+
+    def test_copied_and_forged_handles_cannot_spend_or_release_genuine_credits(self):
+        from utils.execution_context_budget import ContextBudget, PayloadLease
+
+        pool = ContextBudget(100)
+        genuine = pool.reserve(80)
+        forged = object.__new__(PayloadLease)
+        forged.__dict__.update(genuine.__dict__)
+        for impostor in (copy(genuine), forged):
+            with self.subTest(impostor=impostor):
+                with self.assertRaises(ValueError):
+                    _ = impostor.byte_count
+                with self.assertRaises(ValueError):
+                    impostor.transfer()
+                with self.assertRaises(ValueError):
+                    impostor.shrink_to(1)
+                impostor.release()
+                self.assertEqual(pool.charged_bytes, 80)
+                self.assertEqual(genuine.byte_count, 80)
+                self.assertIsNone(pool.reserve(21))
+        owner = genuine.transfer()
+        genuine.release()
+        owner.shrink_to(20)
+        self.assertEqual(pool.charged_bytes, 20)
+        owner.release()
+        self.assertEqual(pool.charged_bytes, 0)
+        last = pool.reserve(100)
+        self.assertIsNotNone(last)
+        last.release()
+        self.assertEqual(pool.charged_bytes, 0)
+
+    def test_failed_owner_allocation_or_registration_never_orphans_credits(self):
+        from utils.execution_context_budget import ContextBudget, PayloadLease
+
+        pool = ContextBudget(100)
+        genuine = pool.reserve(20)
+        with patch.object(PayloadLease, "_new", side_effect=MemoryError):
+            for operation in (
+                lambda: pool.reserve(10),
+                lambda: pool.reserve_up_to(10),
+                genuine.transfer,
+            ):
+                with self.assertRaises(MemoryError):
+                    operation()
+                self.assertEqual(pool.charged_bytes, 20)
+                self.assertEqual(genuine.byte_count, 20)
+
+        class DeniedOwners(set):
+            def add(self, owner):
+                raise MemoryError
+
+        pool._owners = DeniedOwners(pool._owners)
+        for operation in (
+            lambda: pool.reserve(10),
+            lambda: pool.reserve_up_to(10),
+            genuine.transfer,
+        ):
+            with self.assertRaises(MemoryError):
+                operation()
+            self.assertEqual(pool.charged_bytes, 20)
+            self.assertEqual(genuine.byte_count, 20)
+        genuine.release()
+        self.assertEqual(pool.charged_bytes, 0)

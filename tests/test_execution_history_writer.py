@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
+from tests.history_waits import drain_writer
 from database import PromptDatabase
 from utils.execution_history_events import (
     LifecycleEvent,
@@ -245,11 +246,21 @@ class HistoryWriterTests(unittest.TestCase):
         backup = os.path.join(self.directory.name, "between.db")
         self.assertTrue(self.db.model.backup_database(backup))
         original = self.db.write_execution_finish
+        restore_started = threading.Event()
+        restore_finished = threading.Event()
+        restore_errors = []
 
         def finish(command):
-            result = original(command)
-            self.db.model.restore_from_file(backup)
-            return result
+            try:
+                result = original(command)
+                restore_started.set()
+                self.db.model.restore_from_file(backup)
+                return result
+            except Exception as error:
+                restore_errors.append(error)
+                raise
+            finally:
+                restore_finished.set()
 
         with patch.object(self.db, "write_execution_finish", finish):
             self.assertTrue(
@@ -257,7 +268,15 @@ class HistoryWriterTests(unittest.TestCase):
                     self.finish_command(start), self.sealed(writer)
                 )
             )
+            # Disk restore must finish before the worker's short drain deadline.
+            self.assertTrue(
+                restore_finished.wait(30),
+                "finish/restore operation did not complete: "
+                f"restore_started={restore_started.is_set()}, {writer.status()}",
+            )
+            self.assertEqual(restore_errors, [])
             self.wait_for(lambda: writer.status().pending == 0)
+        self.assertNotEqual(self.db.get_execution_epoch(), start.storage_epoch)
         self.assertEqual(
             self.db.get_execution_contexts(start.run_id)["state"], "not_captured"
         )
@@ -678,7 +697,7 @@ class HistoryWriterTests(unittest.TestCase):
                 "prompt_manager.execution_history_writer", "WARNING"
             ) as logs:
                 release.set()
-                self.wait_for(lambda: writer.status().pending == 0)
+                drain_writer(writer)
                 self.assertTrue(writer.close(2))
             self.assertEqual(len(logs.records), 1)
 

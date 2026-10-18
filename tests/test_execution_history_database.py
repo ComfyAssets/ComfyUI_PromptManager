@@ -97,6 +97,12 @@ class HistoryDatabaseTests(unittest.TestCase):
                 with conn:
                     from database.execution_context_schema import TABLE_COLUMNS
 
+                    from database.execution_output_schema import (
+                        TABLE_COLUMNS as OUTPUT_COLUMNS,
+                    )
+
+                    for table in reversed(OUTPUT_COLUMNS):
+                        conn.execute(f"DROP TABLE {table}")
                     for table in reversed(TABLE_COLUMNS):
                         conn.execute(f"DROP TABLE {table}")
                     conn.execute("DROP TABLE execution_runs")
@@ -198,7 +204,10 @@ class HistoryDatabaseTests(unittest.TestCase):
         self.assertEqual(self.count(db), 1)
 
     def test_schema_rejects_extra_uniqueness_and_allows_nonunique_indexes(self):
-        from database.execution_history_schema import history_schema_error
+        from database.execution_history_schema import (
+            SCHEMA_VERSION,
+            history_schema_error,
+        )
 
         for table, constraint in (
             ("execution_runs", "job_id"),
@@ -236,8 +245,8 @@ class HistoryDatabaseTests(unittest.TestCase):
                             else:
                                 conn.execute(
                                     "INSERT INTO execution_history_metadata "
-                                    "VALUES(1,2,?)",
-                                    (epoch,),
+                                    "VALUES(1,?,?)",
+                                    (SCHEMA_VERSION, epoch),
                                 )
                         else:
                             conn.execute(
@@ -436,7 +445,7 @@ class HistoryDatabaseTests(unittest.TestCase):
             "sql=replace(sql, 'queue_item_id >= 0', 'queue_item_id >= -1') "
             "WHERE name='execution_runs'; PRAGMA writable_schema=OFF",
             "PRAGMA ignore_check_constraints=ON; "
-            "UPDATE execution_history_metadata SET schema_version=3",
+            "UPDATE execution_history_metadata SET schema_version=4",
             "PRAGMA writable_schema=ON; UPDATE sqlite_master SET "
             "sql=replace(sql, \"'observed'\", \"'OBSERVED'\") "
             "WHERE name='execution_runs'; PRAGMA writable_schema=OFF",

@@ -14,7 +14,7 @@ const servers = [{
 
 export default defineConfig({
     testDir: '../../tests/comfyui',
-    testIgnore: 'execution-history.spec.mjs',
+    testIgnore: ['execution-history.spec.mjs', 'execution-outputs.spec.mjs'],
     outputDir: './test-results/comfyui',
     timeout: 60000,
     workers: 1,
