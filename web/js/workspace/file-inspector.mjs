@@ -74,7 +74,7 @@ function definitionList(entries, className) {
 function factText(fact) {
     if (fact?.status === 'known' && typeof fact.value === 'string') return fact.value;
     if (fact?.status === 'ambiguous') return 'Ambiguous';
-    if (fact?.status === 'absent') return 'Not recorded';
+    if (fact?.status === 'not-recorded') return 'Not recorded';
     return fact?.reason === 'projection-limited' ? 'Unavailable within inspection limits' : 'Unresolved';
 }
 function formatBytes(value) {
@@ -150,6 +150,14 @@ export function mountFileInspector(container, {sender, parentScope, inline = fal
         } else if (!library) inner.append(el('p', 'Saved vocabulary is unavailable for this inspection response.', 'muted'));
         const facts = definitionList(FACTS.map(([key, label]) => [label, factText(record.generation[key])]), 'generation-facts');
         inner.append(facts);
+        if (FACTS.some(([key]) => record.generation[key]?.reason === 'projection-limited')) {
+            const explanation = el('p', 'Configuration exceeds inspection limits; download the original file to inspect it locally.', 'generation-limit muted');
+            explanation.id = `file-fact-limit-${++factReasonId}`;
+            FACTS.forEach(([key], index) => {
+                if (record.generation[key]?.reason === 'projection-limited') facts.children[index].querySelector('dd').setAttribute('aria-describedby', explanation.id);
+            });
+            inner.append(explanation);
+        }
         const provenance = disclosure('File & provenance');
         provenance.append(el('p', 'Current file at this source; historical bytes are not verified.', 'muted'));
         if (file) provenance.append(definitionList([
@@ -217,7 +225,7 @@ export function mountFileInspector(container, {sender, parentScope, inline = fal
     }
     return {setState, dispose:() => scope.dispose()};
 }
-let downloadReasonId = 0;
+let downloadReasonId = 0, factReasonId = 0;
 
 /** Compatible standalone controller; Images owns a single shared controller instead. */
 export function mountPromptInspector(container, {api, image, sender, parentScope}) {

@@ -17,6 +17,7 @@
 .file-vocabulary > p { margin-block: 0 6px; font-size: 10px; }
 .file-vocabulary .file-chip { font-size: 12px; }
 .generation-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-block: 16px; font-size: 11px; }
+.generation-limit { font-size: 10px; line-height: 1.65; margin-block: 12px; }
 .generation-facts dt, .file-facts dt { color: var(--ca-muted); font-size: 10px; }
 .generation-facts dd, .file-facts dd { margin: 3px 0 0; }
 .file-inspector details { border-block-start: 1px solid var(--ca-line); margin-block-start: 16px; padding-block-start: 13px; font-size: 12px; }
@@ -36,3 +37,7 @@
 .file-inspector-footer .workspace-icon { inline-size: 14px; block-size: 14px; }
 .file-status { padding: 17px; }
 @media (max-width: 700px) { .ca-tools .file-cover { block-size: 200px; } }
+@media (pointer: coarse) {
+    .ca-tools .file-inspector :is(button, a, summary) { min-inline-size: 40px; min-block-size: 40px; }
+    .ca-tools .file-inspector .prompt-actions button { inline-size: 36px; block-size: 36px; min-inline-size: 36px; min-block-size: 36px; }
+}

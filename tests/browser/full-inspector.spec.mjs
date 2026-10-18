@@ -98,6 +98,10 @@ test('full inspector shows six facts and scoped provenance',async({page,request}
     await expect(panel.locator('.file-evidence')).toHaveText('Workflow prompt evidence');
     expect(await panel.evaluate(node=>node.getBoundingClientRect().width)).toBe(310);
     expect(await panel.locator('.file-inspector-inner').evaluate(node=>getComputedStyle(node).padding)).toBe('17px');
+    if (!await page.evaluate(()=>matchMedia('(pointer: coarse)').matches)) {
+        const copy=await panel.getByRole('button',{name:'Copy positive prompt',exact:true}).boundingBox();expect(copy.width).toBe(30);expect(copy.height).toBe(26);
+        expect((await panel.getByRole('button',{name:'Send prompt pair',exact:true}).boundingBox()).height).toBe(30);
+    }
     await expect(panel.locator('.generation-facts dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);
     await expect(panel.locator('.generation-facts dd')).toHaveText(['9007199254740993','28','6.5','dpmpp_2m','karras','fixture-model.safetensors']);
     await expect(panel).toContainText('Recipe tags');await expect(panel).toContainText('Recipe category');
@@ -188,4 +192,45 @@ test('full inspector labels container representations and releases action URLs',
     await expect.poll(()=>page.evaluate(()=>window.renderFixture.created.length===window.renderFixture.revoked.length)).toBe(true);
     await page.evaluate(()=>{window.renderFixture.view.dispose();window.renderFixture.view.dispose();window.renderFixture.scope.dispose();});await expect(panel).toBeEmpty();
     expect(await page.evaluate(()=>window.renderFixture.revoked)).toEqual(await page.evaluate(()=>window.renderFixture.created));
+});
+
+test('full inspector distinguishes missing, limited and legacy unknown generation facts',async({page,request})=>{
+    await fullFixture(page,request);const panel=inspector(page);
+    await selectFile(page,'empty.png');await expect(panel.locator('.generation-facts dd')).toHaveText(Array(6).fill('Not recorded'));
+    await page.locator('article[data-image-key="0:architecture/study-01.png"] .image-open').click();await expect(panel.locator('.generation-facts dd')).toHaveText(Array(6).fill('Not recorded'));
+    await selectFile(page,'control-heavy.png');
+    const explanation='Configuration exceeds inspection limits; download the original file to inspect it locally.';
+    await expect(panel.getByText(explanation,{exact:true})).toHaveCount(1);await expect(panel.getByText(explanation,{exact:true})).toBeVisible();
+    for(const value of await panel.locator('.generation-facts dd').all())await expect(value).toHaveAccessibleDescription(explanation);
+    await page.evaluate(async()=>{
+        const {mountFileInspector}=await import('/prompt_manager/js/workspace/file-inspector.mjs');
+        const {toInspectionRecord}=await import('/prompt_manager/js/workspace/inspection-state.mjs');
+        const {createScope}=await import('/prompt_manager/js/shared/toolkit/core.js');
+        const container=document.createElement('section');container.id='legacy-facts';document.body.append(container);
+        window.legacyFactsScope=createScope();window.legacyFactsView=mountFileInspector(container,{parentScope:window.legacyFactsScope});
+        window.legacyFactsView.setState({record:toInspectionRecord({prompts:{}},{root_index:0,path:'legacy.png'})});
+    });
+    const legacy=page.locator('#legacy-facts');await expect(legacy.locator('.generation-facts dd')).toHaveText(Array(6).fill('Unresolved'));await expect(legacy).not.toContainText(explanation);await expect(legacy.locator('.generation-facts dd[aria-describedby]')).toHaveCount(0);
+    await page.evaluate(()=>{window.legacyFactsView.dispose();window.legacyFactsScope.dispose();});
+});
+
+test.describe('full inspector coarse pointer',()=>{
+    test.use({hasTouch:true,viewport:{width:390,height:844}});
+    test('full inspector meets coarse target sizes and keeps long content reachable at zoom',async({page,request})=>{
+        await fullFixture(page,request);expect(await page.evaluate(()=>matchMedia('(pointer: coarse)').matches)).toBe(true);const panel=inspector(page);
+        await expect(panel.locator('.prompt-positive pre')).toContainText('Full prompt context, fine geometry and light.');
+        const fullText=await panel.locator('.prompt-positive pre').textContent();expect(fullText.length).toBeGreaterThan(1000);
+        await panel.getByText('File & provenance',{exact:true}).click();await panel.getByText('Workflow & raw metadata',{exact:true}).click();
+        const bounds=await panel.locator('button,a,summary').evaluateAll(nodes=>nodes.map(node=>({name:node.getAttribute('aria-label')||node.textContent,role:node.matches('.prompt-actions button'),width:node.getBoundingClientRect().width,height:node.getBoundingClientRect().height})));
+        for(const target of bounds){expect(target.width,target.name).toBeGreaterThanOrEqual(target.role?36:40);expect(target.height,target.name).toBeGreaterThanOrEqual(target.role?36:40);}
+        for(const zoom of [1,2]) {
+            await page.evaluate(zoom=>{document.documentElement.style.zoom=String(zoom);},zoom);
+            await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
+            await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+            for(const target of [panel.locator('summary').first(),panel.getByRole('button',{name:'Download metadata JSON',exact:true}),panel.getByRole('link',{name:'Prompt history',exact:true})]) {
+                await target.scrollIntoViewIfNeeded();await target.focus();await expect(target).toBeFocused();await expect(target).toBeInViewport();
+            }
+            await expect(panel.locator('.prompt-positive pre')).toHaveText(fullText);
+        }
+    });
 });
