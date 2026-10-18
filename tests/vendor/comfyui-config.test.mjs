@@ -24,12 +24,15 @@ test('execution script discovers only the new matrix and preserves all 78 stock 
     const stock = list('tools/vendor/comfyui.config.mjs');
     assert.match(stock, /Total: 78 tests in 7 files/);
     assert.doesNotMatch(stock, /execution-history/);
+    assert.doesNotMatch(stock, /execution-outputs/);
     const executions = list('tools/vendor/playwright.execution.config.mjs');
     assert.match(executions, /\[classic-start\]/);
     assert.match(executions, /\[nodes2-start\]/);
-    assert.match(executions, /Total: 26 tests in 1 file/);
+    assert.match(executions, /Total: 42 tests in 2 files/);
     for (const project of ['classic-start', 'nodes2-start']) {
-        assert.equal(executions.split('\n').filter(line => line.includes(`[${project}]`)).length, 13);
+        const cases = executions.split('\n').filter(line => line.includes(`[${project}]`));
+        assert.equal(cases.filter(line => line.includes('execution-history.spec.mjs')).length, 13);
+        assert.equal(cases.filter(line => line.includes('execution-outputs.spec.mjs')).length, 8);
     }
     assert.doesNotMatch(executions, /prompt-manager.spec/);
 });

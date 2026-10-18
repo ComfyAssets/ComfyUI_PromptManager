@@ -11,9 +11,12 @@ from uuid import UUID
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from database.execution_contexts import ExecutionContextOperations  # noqa: E402
 from database.execution_history import ExecutionHistoryOperations  # noqa: E402
+from database.execution_outputs import ExecutionOutputOperations  # noqa: E402
 
 
-class _ReadOnlyHistory(ExecutionContextOperations, ExecutionHistoryOperations):
+class _ReadOnlyHistory(
+    ExecutionContextOperations, ExecutionHistoryOperations, ExecutionOutputOperations
+):
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.model = SimpleNamespace(get_connection=lambda: connection)
 
@@ -79,6 +82,10 @@ def read_runs(database: str, job_id: str, session_id: str | None = None) -> dict
             "captures": captures,
             "usage": usage,
             "snapshotIds": snapshot_ids,
+            "outputs": {
+                row["run_id"]: reader.get_execution_outputs(row["run_id"])
+                for row in rows
+            },
         }
 
 

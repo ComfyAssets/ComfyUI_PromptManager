@@ -97,6 +97,7 @@ test('read-only ledger helper distinguishes absent schema from missing, corrupt 
 from database.operations import PromptDatabase
 from utils.execution_history_events import RunStart, make_finish
 from utils.execution_contexts import ContextBundle, PromptSnapshot, RecipeContext, TextEvidence
+from utils.execution_outputs import OutputBundle, OutputReference
 from types import SimpleNamespace
 
 db = PromptDatabase(sys.argv[1])
@@ -123,6 +124,10 @@ try:
     db.write_execution_contexts(sys.argv[5], epoch, ContextBundle(
         (RecipeContext('4', snapshot(' positive '), snapshot('negative'), 'inferred'),),
         'complete', 'captured'))
+    db.write_execution_outputs_for_finish(make_finish(sys.argv[3], 1, epoch,
+        SimpleNamespace(messages=[('execution_success', {'prompt_id': sys.argv[2]})]), 200),
+        OutputBundle((OutputReference('9', 0, 'temp', 'nested', 'preview.png', 'posix', 'a' * 64),),
+                     'complete', 'reported'))
     print(epoch)
 finally:
     db.close_all()
@@ -138,6 +143,12 @@ finally:
         node_id: null, node_type: null, exception_type: null,
     }]);
     assert.deepEqual(Object.keys(result.captures), [runId]);
+    assert.deepEqual(result.outputs, { [runId]: {
+        state: 'complete', reason: 'reported', format_version: 1, source: 'host_final_history',
+        references: [{ output_node_id: '9', image_ordinal: 0, folder_type: 'temp',
+            subfolder: 'nested', filename: 'preview.png', path_style: 'posix', root_key: 'a'.repeat(64),
+            file_identity: 'unverified', newly_generated: 'unknown', context_membership: 'unknown', transient: true }],
+    } });
     const capture = result.captures[runId];
     assert.equal(capture.contexts.length, 1);
     const contextId = capture.contexts[0].context_id;
@@ -170,8 +181,11 @@ finally:
     });
     assert.deepEqual(unfiltered.usage[uncapturedId], []);
     assert.deepEqual(unfiltered.snapshotIds[uncapturedId], []);
+    assert.deepEqual(unfiltered.outputs[uncapturedId], {
+        state: 'not_captured', reason: null, format_version: null, source: null, references: [],
+    });
     assert.deepEqual(await readExecutionRuns(database, job, '60000000-0000-4000-8000-000000000001'), {
-        schemaAvailable: true, rows: [], captures: {}, usage: {}, snapshotIds: {},
+        schemaAvailable: true, rows: [], captures: {}, usage: {}, snapshotIds: {}, outputs: {},
     });
     assert.deepEqual(await readFile(database), before);
     await assert.rejects(readExecutionRuns(database, "' OR 1=1 --"));
