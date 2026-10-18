@@ -232,5 +232,158 @@ test.describe('full inspector coarse pointer',()=>{
             }
             await expect(panel.locator('.prompt-positive pre')).toHaveText(fullText);
         }
+        await panel.getByRole('button',{name:'Open full preview',exact:true}).click();const viewer=page.getByRole('dialog',{name:'Image preview',exact:true});
+        await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
+        for(const target of await viewer.locator('.image-preview-controls > :is(button,a),.image-preview-header > button').all()) {
+            const box=await target.boundingBox();expect(box.width).toBeGreaterThanOrEqual(80);expect(box.height).toBeGreaterThanOrEqual(80);
+        }
+        const raw=viewer.getByText('Workflow & raw metadata',{exact:true});await raw.scrollIntoViewIfNeeded();await raw.focus();await expect(raw).toBeInViewport();
     });
+});
+
+const mediaDialog=page=>page.getByRole('dialog',{name:'Image preview',exact:true});
+const mediaStage=page=>mediaDialog(page).getByRole('region',{name:'Media preview',exact:true});
+const position=page=>mediaDialog(page).locator('.image-preview-position');
+async function openCollection(page) {
+    await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();
+    await expect(mediaDialog(page).locator('.viewer-canvas img')).toBeVisible();
+    await expect(mediaDialog(page).getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
+}
+
+test('collection viewer follows filtered loaded order beyond mounted cards',async({page,request})=>{
+    await page.addInitScript(()=>{window.IntersectionObserver=undefined;});
+    await expect(await request.post('/__test__/reset',{data:{full_inspector:true,extra_images:200}})).toBeOK();
+    await page.goto('/prompt_manager/workspace#/images');
+    await page.getByRole('combobox',{name:'Source',exact:true}).selectOption('0');
+    await page.getByRole('combobox',{name:'Folder',exact:true}).selectOption('inspector');
+    await page.getByRole('combobox',{name:'Sort',exact:true}).selectOption('name');
+    const more=page.getByRole('button',{name:'Load more images',exact:true});
+    await expect(page.locator('.image-toolbar')).toContainText('40 of');
+    for(const n of [80,120,160]) {await more.click();await expect(page.locator('.image-toolbar')).toContainText(`${n} of`);}
+    const listed=await(await request.get('/prompt_manager/images/output?mode=workspace&root=0&subfolder=inspector&sort=name&limit=200')).json();
+    const loaded=listed.images.slice(0,160);expect(loaded).toHaveLength(160);
+    await page.evaluate(()=>scrollTo(0,0));await expect.poll(()=>page.locator('article[data-image-key]').count()).toBeLessThan(120);
+    let release,started;const held=new Promise(resolve=>{release=resolve;});const hit=new Promise(resolve=>{started=resolve;});
+    await page.route('**/images/output?*',async route=>{started();await held;await route.continue();},{times:1});
+    await more.click();await hit;await page.evaluate(()=>scrollTo(0,0));
+    const opener=page.locator(`article[data-image-key="0:${loaded[0].path}"] .image-card-footer button`);
+    await opener.click();release();await expect(page.locator('.image-toolbar')).toContainText('200 of');
+    const modal=mediaDialog(page);await expect(position(page)).toHaveText(`1 of 160 loaded: ${loaded[0].filename}`);
+    let pages=0;page.on('request',req=>{if(req.url().includes('/images/output?'))pages++;});
+    await modal.getByRole('button',{name:'Previous media',exact:true}).click();
+    await expect(position(page)).toHaveText(`160 of 160 loaded: ${loaded[159].filename}`);
+    await expect(modal.locator('.file-name')).toHaveText(loaded[159].filename);
+    await expect(modal.getByRole('group',{name:'Media controls',exact:true}).getByRole('link',{name:'Download original',exact:true})).toHaveAttribute('href',loaded[159].url);
+    await expect(page.locator(`article[data-image-key="0:${loaded[159].path}"]`)).toHaveCount(0);
+    await modal.getByRole('button',{name:'Next media',exact:true}).click();await expect(position(page)).toHaveText(`1 of 160 loaded: ${loaded[0].filename}`);
+    await mediaStage(page).focus();await page.keyboard.press('ArrowRight');await expect(position(page)).toHaveText(`2 of 160 loaded: ${loaded[1].filename}`);
+    expect(pages).toBe(0);await modal.getByRole('button',{name:'Close preview',exact:true}).click();
+    await expect(opener).toBeFocused();
+    await page.getByRole('combobox',{name:'Source',exact:true}).selectOption('1');
+    await page.getByRole('combobox',{name:'Folder',exact:true}).selectOption('inspector');
+    await selectFile(page,'complete.png',1);await openCollection(page);await expect(position(page)).toHaveText('1 of 1 loaded: complete.png');
+    for(const name of ['Previous media','Next media'])await expect(mediaDialog(page).getByRole('button',{name,exact:true})).toHaveAttribute('aria-disabled','true');
+    await mediaDialog(page).getByRole('button',{name:'Close preview',exact:true}).click();
+    const library=await(await request.get('/prompt_manager/library')).json();const id=library.items.find(item=>item.text.startsWith('Inspector portrait')).id;
+    await page.goto(`/prompt_manager/workspace#/library/${id}`);await page.getByRole('button',{name:'Select negative variant 1',exact:true}).click();await selectFile(page,'complete.png');await openCollection(page);
+    await expect(position(page)).toContainText('of 1 loaded: complete.png');
+    await mediaDialog(page).getByRole('button',{name:'Close preview',exact:true}).click();
+    await page.getByRole('button',{name:'All images for this positive',exact:true}).click();
+    await selectFile(page,'complete.png');await openCollection(page);await expect(position(page)).toContainText('of 2 loaded:');
+});
+
+test('collection viewer uses real public transforms and resets on navigation',async({page,request})=>{
+    await fullFixture(page,request);
+    await page.evaluate(()=>{
+        window.viewerCalls=[];window.viewerInstances=[];
+        const Native=window.Viewer;
+        for(const method of ['zoom','reset','rotate','scaleX']) {const original=Native.prototype[method];Native.prototype[method]=function(...args){window.viewerCalls.push([method,...args]);return original.apply(this,args);};}
+        window.Viewer=class extends Native {constructor(...args){super(...args);window.viewerInstances.push(this);}};
+    });
+    await openCollection(page);const modal=mediaDialog(page),controls=modal.getByRole('group',{name:'Media controls',exact:true});
+    await expect(modal.locator('.viewer-container')).toHaveCount(1);await expect(modal.locator(':is(.viewer-toolbar,.viewer-navbar,.viewer-title,.viewer-button):visible')).toHaveCount(0);
+    const fitted=await page.evaluate(()=>({...window.viewerInstances.at(-1).imageData}));
+    await controls.getByRole('button',{name:'Zoom in',exact:true}).click();expect(await page.evaluate(()=>window.viewerInstances.at(-1).imageData.width)).toBeGreaterThan(fitted.width);
+    await controls.getByRole('button',{name:'Zoom out',exact:true}).click();
+    await controls.getByRole('button',{name:'Rotate image 90 degrees',exact:true}).click();await controls.getByRole('button',{name:'Flip image horizontally',exact:true}).click();
+    expect(await page.evaluate(()=>({rotate:window.viewerInstances.at(-1).imageData.rotate,scaleX:window.viewerInstances.at(-1).imageData.scaleX}))).toEqual({rotate:90,scaleX:-1});
+    const fit=controls.getByRole('button',{name:'Fit image',exact:true});await fit.click();await expect(fit).toBeFocused();
+    expect(await page.evaluate(()=>({rotate:window.viewerInstances.at(-1).imageData.rotate,scaleX:window.viewerInstances.at(-1).imageData.scaleX}))).toEqual({rotate:0,scaleX:1});
+    expect(await page.evaluate(()=>window.viewerCalls)).toEqual(expect.arrayContaining([['zoom',0.2],['zoom',-0.2],['reset'],['rotate',90],['scaleX',-1]]));
+    await page.evaluate(()=>{window.currentMedia=document.querySelector('.viewer-canvas img');window.currentFit=document.querySelector('[aria-label="Fit image"]');});
+    await modal.getByText('File & provenance',{exact:true}).click();await modal.getByText('Workflow & raw metadata',{exact:true}).click();
+    expect(await page.evaluate(()=>window.currentMedia===document.querySelector('.viewer-canvas img')&&window.currentFit===document.querySelector('[aria-label="Fit image"]'))).toBe(true);
+    await controls.getByRole('button',{name:'Rotate image 90 degrees',exact:true}).click();await controls.getByRole('button',{name:'Next media',exact:true}).click();
+    await expect(controls.getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');await expect(modal.locator('.viewer-container')).toHaveCount(1);
+    expect(await page.evaluate(()=>window.currentMedia!==document.querySelector('.viewer-canvas img')&&window.currentFit===document.querySelector('[aria-label="Fit image"]'))).toBe(true);
+    expect(await page.evaluate(()=>({rotate:window.viewerInstances.at(-1).imageData.rotate,scaleX:window.viewerInstances.at(-1).imageData.scaleX}))).toEqual({rotate:0,scaleX:1});
+    await expect(controls.getByRole('button',{name:/slideshow/})).toHaveCount(0);
+});
+
+test('collection viewer preserves original download and rooted retries',async({page,request})=>{
+    await fullFixture(page,request);let deny=true;const originals=[];
+    await page.route('**/images/serve/inspector/complete.png?*',route=>{originals.push(route.request().url());return deny?route.fulfill({status:404,body:'Missing'}):route.continue();});
+    await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();const modal=mediaDialog(page);
+    await expect(modal).toContainText('Media could not be loaded. Retry this file.');await expect(modal.locator('.generation-facts dd').first()).toHaveText('9007199254740993');
+    await expect(modal.locator('.image-preview-position')).toContainText('Media could not be loaded.');
+    const download=modal.getByRole('group',{name:'Media controls',exact:true}).getByRole('link',{name:'Download original',exact:true});const original=await download.getAttribute('href');
+    await expect(modal.getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','true');
+    const denied=page.waitForResponse(response=>response.url().includes('/images/serve/inspector/complete.png?')&&response.status()===404);
+    await modal.getByRole('button',{name:'Retry media',exact:true}).click();await denied;
+    await expect.poll(()=>mediaStage(page).locator('.image-preview-media > img').evaluate(node=>node.complete&&node.naturalWidth===0)).toBe(true);
+    await expect(modal.getByRole('button',{name:'Retry media',exact:true})).toBeVisible();
+    deny=false;await modal.getByRole('button',{name:'Retry media',exact:true}).click();await expect(modal.locator('.viewer-canvas img')).toBeVisible();
+    await expect(download).toHaveAttribute('href',original);
+    const stages=originals.map(value=>new URL(value)).filter(url=>url.searchParams.has('_pm_viewer'));
+    expect(new Set(stages.map(url=>url.searchParams.get('_pm_viewer'))).size).toBe(3);
+    for(const value of originals) {const actual=new URL(value),expected=new URL(original,'http://127.0.0.1');expect(actual.pathname).toBe(expected.pathname);for(const key of ['root','root_scope','v'])expect(actual.searchParams.get(key)).toBe(expected.searchParams.get(key));expect(actual.searchParams.getAll('_pm_viewer').length).toBeLessThanOrEqual(1);expect([...actual.searchParams.keys()].filter(key=>!expected.searchParams.has(key))).toEqual(actual.searchParams.has('_pm_viewer')?['_pm_viewer']:[]);}
+    const [saved]=await Promise.all([page.waitForEvent('download'),download.click()]);expect(saved.suggestedFilename()).toBe('complete.png');
+    await modal.getByRole('button',{name:'Close preview',exact:true}).click();await page.evaluate(()=>{window.availableViewer=window.Viewer;window.Viewer=undefined;});
+    await page.route('**/images/inspect/inspector/explicit-empty.png?*',route=>route.fulfill({status:503,json:{success:false,error:'Unavailable'}}),{times:1});
+    await selectFile(page,'explicit-empty.png');await expect(inspector(page)).toContainText('Could not read prompts from this file.');
+    await page.locator('article[data-image-key="0:inspector/explicit-empty.png"] .image-card-footer button').click();
+    await expect(mediaStage(page).locator('img')).toBeVisible();await expect(mediaStage(page).locator('img')).toHaveJSProperty('naturalWidth',720);
+    await expect(mediaDialog(page).getByRole('button',{name:'Zoom in',exact:true})).toHaveAccessibleDescription('Image transforms are unavailable because Viewer.js could not load.');
+    await page.evaluate(()=>{window.Viewer=window.availableViewer;});await mediaDialog(page).getByRole('button',{name:'Retry prompt details',exact:true}).click();
+    await expect(mediaDialog(page).locator('.file-name')).toHaveText('explicit-empty.png');await expect(mediaDialog(page).getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','true');
+});
+
+test('collection viewer keeps nested dialog focus and route cleanup',async({page,request})=>{
+    await fullFixture(page,request);await openCollection(page);const modal=mediaDialog(page);
+    const send=modal.getByRole('button',{name:'Send prompt pair',exact:true});await send.click();const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
+    await expect(sender).toBeVisible();const before=await position(page).textContent();await page.keyboard.press('ArrowRight');await expect(position(page)).toHaveText(before);
+    await page.keyboard.press('Escape');await expect(sender).toBeHidden();await expect(modal).toBeVisible();await expect(send).toBeFocused();
+    const text=modal.locator('.prompt-positive pre');await text.focus();await page.keyboard.press('ArrowRight');await expect(position(page)).toHaveText(before);
+    await modal.getByText('Workflow & raw metadata',{exact:true}).focus();await page.keyboard.press('ArrowLeft');await expect(position(page)).toHaveText(before);
+    await modal.getByRole('button',{name:'Next media',exact:true}).click();const key=(await position(page).textContent()).split('loaded: ')[1];
+    await page.keyboard.press('Escape');await expect(modal).toHaveCount(0);await expect(page.locator('.image-open[aria-pressed="true"]')).toBeFocused();await expect(inspector(page).locator('.file-name')).toHaveText(key);
+    await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();await page.evaluate(()=>{location.hash='/overview';});
+    await expect(page.locator('h1')).toHaveText('Overview');await expect(page.locator('.viewer-container,.image-preview')).toHaveCount(0);
+});
+
+test('collection viewer matches approved responsive frame',async({page,request},testInfo)=>{
+    await page.setViewportSize({width:1600,height:1100});await fullFixture(page,request);await openCollection(page);
+    const modal=mediaDialog(page),body=modal.locator('.image-preview-body'),rail=modal.locator('.image-preview-details');
+    for(const theme of ['dark','light']) {
+        await page.evaluate(theme=>{const preference=document.getElementById('workspace-appearance');preference.value=theme;preference.dispatchEvent(new Event('change'));},theme);
+        const geometry=await modal.evaluate(node=>{const style=getComputedStyle(node),box=node.getBoundingClientRect(),rail=node.querySelector('.image-preview-details').getBoundingClientRect();return{width:box.width,height:box.height,padding:style.padding,radius:style.borderRadius,rail:rail.width,gap:getComputedStyle(node.querySelector('.image-preview-body')).columnGap};});
+        expect(geometry).toEqual({width:1500,height:940,padding:'18px',radius:'9px',rail:340,gap:'20px'});
+        await page.screenshot({path:testInfo.outputPath(`viewer-${theme}-1600.png`)});
+    }
+    for(const [width,expected] of [[1200,300],[900,270]]) {await page.setViewportSize({width,height:1000});await expect(rail).toHaveCSS('width',`${expected}px`);}
+    await page.setViewportSize({width:390,height:844});
+    for(const zoom of [1,2]) {
+        await page.evaluate(zoom=>{document.documentElement.style.zoom=String(zoom);},zoom);
+        expect(await modal.evaluate(node=>{const box=node.getBoundingClientRect();return box.top>=0&&box.bottom<=innerHeight+1;})).toBe(true);
+        await expect.poll(()=>modal.evaluate(node=>node.scrollWidth<=node.clientWidth+1)).toBe(true);
+        await expect(rail).toHaveCSS('overflow-y','visible');expect(await body.evaluate(node=>getComputedStyle(node).gridTemplateColumns.split(' ').length)).toBe(1);
+        await rail.getByText('Workflow & raw metadata',{exact:true}).click();const raw=rail.locator('pre code').first();await expect(raw).toBeVisible();
+        await rail.getByRole('button',{name:'Send prompt pair',exact:true}).focus();await expect(rail.getByRole('button',{name:'Send prompt pair',exact:true})).toBeInViewport();
+        await page.screenshot({path:testInfo.outputPath(`viewer-mobile-${zoom}x.png`)});await rail.getByText('Workflow & raw metadata',{exact:true}).click();
+    }
+    await modal.getByRole('button',{name:'Close preview',exact:true}).click();await page.evaluate(()=>{document.documentElement.style.zoom='1';});
+    const longFiles=await(await request.get('/prompt_manager/images/output?mode=workspace&q=a-very-long&limit=40')).json();const long=longFiles.images[0];
+    await page.locator(`article[data-image-key="${long.root_index}:${long.path}"] .image-open`).click();await openCollection(page);
+    await page.evaluate(()=>{document.documentElement.style.zoom='2';});await modal.evaluate(node=>{node.scrollTop=0;});
+    await expect(modal.getByRole('button',{name:'Close preview',exact:true})).toBeInViewport();
 });

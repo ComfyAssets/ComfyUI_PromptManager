@@ -36,6 +36,21 @@ function pendingApi() {
     return { api, requests };
 }
 
+test('original media validation is strict before inspection and preserves rooted URLs', () => {
+    const validate = contract('originalMediaDownload'), entry = image();
+    assert.deepEqual(validate(entry), {url:entry.url,filename:'a #%.png'});
+    for (const change of [{url:'https://other.test/prompt_manager/images/serve/folder/a%20%23%25.png?root=0'},
+        {url:entry.url.replace('root=0','root=1')},{url:entry.url.replace(scopeA,scopeB)},
+        {url:entry.url.replace('folder/a','elsewhere/a')},{url:entry.url.replace(`&root_scope=${scopeA}`,'')},
+        {url:entry.url+'&root=0'},{url:entry.url+'#wrong'},{path:'../a.png'},{root_scope:''}]) {
+        assert.throws(() => validate({...entry,...change}), TypeError);
+    }
+    const before = Object.getOwnPropertyDescriptor(globalThis,'window');
+    Object.defineProperty(globalThis,'window',{configurable:true,value:{location:{href:'https://example.test/proxy/prompt_manager/workspace'},ApiClient:{resolveUrl:url=>`/proxy${url}`}}});
+    try { assert.deepEqual(validate(entry),{url:`/proxy${entry.url}`,filename:'a #%.png'}); }
+    finally { if (before) Object.defineProperty(globalThis,'window',before); else delete globalThis.window; }
+});
+
 test('record preserves exact projections and unknown roles without execution fact promotion', () => {
     const entry = image(), data = envelope(entry);
     const record = contract('toInspectionRecord')(data, entry, extractGenerationFacts);

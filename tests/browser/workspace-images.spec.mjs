@@ -336,6 +336,44 @@ test('real video media has a usable card and native playback cleans up on close 
     expect(await page.evaluate(() => window.__previewVideo.paused && !window.__previewVideo.isConnected)).toBe(true);
 });
 
+test('collection viewer ignores delayed media callbacks and keeps inspection retries independent',async({page})=>{
+    await page.goto(workspace);await expect(cards(page)).toHaveCount(2);
+    await page.evaluate(()=>{const Native=window.Viewer;window.liveViewers=[];window.Viewer=class extends Native {constructor(...args){super(...args);window.liveViewers.push(this);}};});
+    let release,held;const waiting=new Promise(resolve=>{held=resolve;});const pending=new Promise(resolve=>{release=resolve;});
+    await page.route('**/images/serve/shared/same.png?*',async route=>{
+        const url=new URL(route.request().url());
+        if(url.searchParams.get('root')==='0'&&url.searchParams.has('_pm_viewer')) {held();await pending;}
+        await route.continue().catch(()=>{});
+    });
+    await cards(page).first().getByRole('button',{name:'Preview same.png',exact:true}).click();await waiting;
+    const preview=page.getByRole('dialog',{name:'Image preview',exact:true});
+    await expect(preview.getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','true');
+    await page.route('**/images/inspect/shared/same.png?*',route=>route.fulfill({status:503,json:{success:false,error:'Unavailable'}}),{times:1});
+    await preview.getByRole('button',{name:'Next media',exact:true}).click();
+    await expect(preview).toContainText('Could not read prompts from this file.');await expect(preview.getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
+    await expect(preview.getByRole('group',{name:'Media controls',exact:true}).getByRole('link',{name:'Download original',exact:true})).toHaveAttribute('href',/root=1&root_scope=/);
+    await preview.getByRole('button',{name:'Rotate image 90 degrees',exact:true}).click();
+    await page.evaluate(()=>{window.latestCanvas=document.querySelector('.viewer-canvas img');window.liveViewers[0].options.viewed();});release();
+    expect(await page.evaluate(()=>window.liveViewers.at(-1).imageData.rotate)).toBe(90);
+    await preview.getByRole('button',{name:'Retry prompt details',exact:true}).click();
+    await expect(preview).toContainText('same.png');await expect(preview.getByRole('button',{name:'Retry prompt details',exact:true})).toHaveCount(0);
+    expect(await page.evaluate(()=>window.latestCanvas===document.querySelector('.viewer-canvas img'))).toBe(true);
+    await page.evaluate(()=>{location.hash='/overview';});await expect(page.locator('.viewer-container,.image-preview')).toHaveCount(0);
+});
+
+test('collection viewer describes video transforms and releases native playback on navigation',async({page,request})=>{
+    await expect(await request.post('/__test__/reset',{data:{include_video:true}})).toBeOK();await page.goto(workspace);
+    await page.locator('article[data-image-key="0:clip.webm"] .image-card-footer button').click();
+    const preview=page.getByRole('dialog',{name:'Image preview',exact:true}),video=preview.locator('video');
+    await expect(video).toHaveJSProperty('controls',true);await expect(video).toHaveJSProperty('playsInline',true);
+    const zoom=preview.getByRole('button',{name:'Zoom in',exact:true});await expect(zoom).toHaveAttribute('aria-disabled','true');await expect(zoom).toHaveAccessibleDescription('Image transforms are unavailable for video.');
+    await video.focus();const position=await preview.locator('.image-preview-position').textContent();await page.keyboard.press('ArrowRight');await expect(preview.locator('.image-preview-position')).toHaveText(position);
+    await video.evaluate(async node=>{window.previousClip=node;node.muted=true;await node.play();});
+    await preview.getByRole('button',{name:'Next media',exact:true}).click();await expect(preview.locator('video')).toHaveCount(0);await expect(zoom).toHaveAttribute('aria-disabled','false');
+    expect(await page.evaluate(()=>window.previousClip.paused&&!window.previousClip.isConnected&&!window.previousClip.hasAttribute('src'))).toBe(true);
+    await preview.getByRole('button',{name:'Close preview',exact:true}).click();await expect(page.locator('.image-preview')).toHaveCount(0);
+});
+
 test('failed image requests offer retry while stale results cannot replace a newer route', async ({ page }) => {
     await page.route('**/prompt_manager/images/output?*', route => route.fulfill({
         status: 503, json: { success: false, error: 'Images unavailable' },
@@ -518,9 +556,10 @@ test('Images uses approved geometry while keeping real controls', async ({page,r
     expect(geometry[0].mediaWidth/geometry[0].mediaHeight).toBeCloseTo(4/3,2);
     expect((await page.locator('.image-toolbar').boundingBox()).y).toBeLessThan(geometry[0].y);
     await expect(cards(page).first()).toHaveCSS('outline-style','solid');
-    const cover=details(page).locator(':scope > img');
+    const cover=details(page).getByRole('button',{name:'Open full preview',exact:true});
     await expect(cover).toHaveCSS('height','150px');
-    expect(await details(page).evaluate(node=>node.firstElementChild.tagName)).toBe('IMG');
+    await expect(cover.locator('img')).toBeVisible();await expect(cover.locator('img')).toHaveCSS('height','150px');
+    expect(await cover.evaluate(node=>node===node.parentElement.firstElementChild&&node.tagName==='BUTTON')).toBe(true);
     await page.setViewportSize({width:390,height:844});
     await expect.poll(()=>cards(page).nth(1).evaluate(node=>node.offsetTop)).toBe(0);
     await expect.poll(()=>cards(page).nth(2).evaluate(node=>node.offsetTop)).toBeGreaterThan(0);

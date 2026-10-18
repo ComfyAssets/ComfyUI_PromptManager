@@ -1,6 +1,8 @@
 .image-details.file-inspector { padding: 0; }
 .file-inspector { min-inline-size: 0; overflow-wrap: anywhere; }
 .file-inspector-inner { padding: 17px; }
+.image-preview-details .file-inspector-inner { padding: 0; }
+.image-preview-details .file-inspector-footer { padding-inline: 0; }
 .ca-tools .file-cover { display: block; padding: 0; border: 0; border-radius: 6px 6px 0 0; inline-size: 100%; block-size: 150px; background: var(--ca-field); }
 .file-cover :where(img, video) { display: block; inline-size: 100%; block-size: 100%; object-fit: cover; border-radius: inherit; }
 .file-title { display: flex; align-items: start; justify-content: space-between; gap: 8px; }

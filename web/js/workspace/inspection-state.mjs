@@ -59,6 +59,11 @@ function downloadFor(image, required) {
     }
 }
 
+export function originalMediaDownload(image) {
+    validateIdentity(image);
+    return downloadFor(image, true);
+}
+
 function promptsFor(value) {
     if (!object(value)) throw new TypeError('Invalid inspection prompts');
     const confirmed = promptRoles(value);

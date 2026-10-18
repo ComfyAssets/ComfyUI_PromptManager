@@ -5,6 +5,7 @@ import { mountFileInspector } from './file-inspector.mjs';
 import { createInspectionController } from './inspection-state.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
+import { createMediaViewer } from './media-viewer.mjs';
 
 function el(tag, text, className) {
     const element = document.createElement(tag);
@@ -27,15 +28,15 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     if (parentScope.signal.aborted) { scope.dispose(); return {dispose}; }
     const { resolveUrl } = window.ApiClient;
     const sender = createPromptSender({scope});
-    let detailInspector, previewInspector;
+    let detailInspector;
     const inspection = createInspectionController({api});
-    scope.cleanup(inspection.subscribe(next => {detailInspector?.setState(next); previewInspector?.setState(next);}));
+    scope.cleanup(inspection.subscribe(next => detailInspector?.setState(next)));
     scope.cleanup(() => inspection.dispose());
-    scope.cleanup(() => { detailInspector?.dispose(); previewInspector?.dispose(); });
+    scope.cleanup(() => detailInspector?.dispose());
     const visit = embedded ? null : lastVisit;
     let density = visit?.density || 'comfortable';
     let metrics = workspaceImageMetrics(window.innerWidth, density);
-    let layout = visit?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer, viewer;
+    let layout = visit?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer;
     let state, geometry = { positions: [], height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest;
     const rendered = new Map();
     const itemIndexes = new Map();
@@ -67,7 +68,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     if (!embedded) main.append(filtersBar, optionsStatus);
     const controls = el('div', undefined, 'image-view-controls');
     const toolbar = el('div', undefined, 'image-toolbar');
-    toolbar.append(el('h2', embedded ? 'Linked images' : 'All images'));
+    const collectionHeading = el('h2', embedded ? 'Linked images' : 'All images');collectionHeading.tabIndex = -1;
+    toolbar.append(collectionHeading);
     const count = el('p', 'Loading images…', 'muted');
     const layouts = el('div', undefined, 'image-layouts');
     layouts.setAttribute('role', 'group'); layouts.setAttribute('aria-label', 'Image layout');
@@ -132,29 +134,14 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     details.append(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));
     body.append(collection, details);
     main.append(body);
-    const dialog = el('dialog', undefined, 'image-preview');
-    dialog.setAttribute('aria-label', 'Image preview');
-    const dialogHeader = el('header');
-    const previewTitle = el('h2');
-    const close = createButton('Close preview');
-    dialogHeader.append(previewTitle, close);
-    const stage = el('div', undefined, 'image-preview-stage');
-    const previewBody = el('div', undefined, 'image-preview-body');
-    const previewDetails = el('aside', undefined, 'image-preview-details');
-    previewDetails.setAttribute('aria-label', 'Preview prompt details');
-    previewBody.append(stage, previewDetails);
-    dialog.append(dialogHeader, previewBody);
-    main.append(dialog);
-    scope.listen(close, 'click', () => dialog.close());
-    scope.listen(dialog, 'close', () => { destroyPreview(); scheduleLoad(); });
-    function destroyPreview() {
-        previewInspector?.dispose(); previewInspector = null;
-        previewDetails.replaceChildren();
-        viewer?.destroy(); viewer = null;
-        for (const video of stage.querySelectorAll('video')) releaseVideo(video);
-        stage.replaceChildren();
-    }
-    scope.cleanup(() => { dialog.close(); destroyPreview(); dialog.remove(); });
+    const mediaViewer = createMediaViewer({container:main,parentScope:scope,inspectionController:inspection,sender,
+        onSelect:image => {if (selection !== imageKey(image)) inspect(image);else inspection.select(image);},
+        onRefresh:refreshInspectionCollection,onRestoreFocus:image => {
+            const index = state?.items.findIndex(entry => imageKey(entry) === imageKey(image));
+            if (index >= 0) focusImage(index);else collectionHeading.focus({preventScroll:true});
+        }});
+    scope.cleanup(() => mediaViewer.dispose());
+    main.addEventListener('close',event => {if (event.target.matches('.image-preview')) scheduleLoad();},{capture:true,signal:scope.signal});
 
     function mediaElement(image, lazy = false) {
         const video = image.is_video && !image.thumbnail_url;
@@ -182,24 +169,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     }
     function previewImage(image) {
         if (!image) return;
-        if (selection !== imageKey(image)) inspect(image);
-        destroyPreview();
-        previewTitle.textContent = image.filename;
-        previewInspector = mountFileInspector(previewDetails, {sender, parentScope:scope,
-            onRetry:() => inspection.retry(), onRefresh:refreshInspectionCollection});
-        previewInspector.setState(inspection.state);
-        if (!dialog.open) dialog.showModal();
-        if (image.is_video) {
-            const video = el('video'); video.controls = true; video.src = resolveUrl(image.url); video.preload = 'metadata';
-            stage.append(video);
-        } else if (window.Viewer) {
-            const original = el('img'); original.src = resolveUrl(image.url); original.alt = image.filename;
-            original.hidden = true; stage.append(original);
-            viewer = new window.Viewer(original, { inline: true, container: stage, navbar: false, title: false,
-                transition: false, keyboard: false, viewed() { viewer?.resize(); } });
-        } else {
-            stage.append(el('p', 'The image viewer could not load. Refresh the page to try again.'));
-        }
+        mediaViewer.open({items:state.items,selectedKey:imageKey(image),trigger:document.activeElement});
     }
     function cardFor(image) {
         const key = imageKey(image);
@@ -373,7 +343,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     scope.listen(more, 'click', () => stream.loadMore());
     scope.listen(retry, 'click', () => stream.loadMore());
     function maybeLoad() {
-        if (!observer || scope.signal.aborted || !state?.hasMore || state.loading || state.error || dialog.open) return;
+        if (!observer || scope.signal.aborted || !state?.hasMore || state.loading || state.error || main.querySelector('.image-preview[open]')) return;
         const bounds = continuation.getBoundingClientRect();
         if (bounds.top <= window.innerHeight + 250 && bounds.bottom >= 0) stream.loadMore();
     }
@@ -387,8 +357,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         observer.observe(continuation);
     }
     function reset() {
-        if (dialog.open) dialog.close();
-        destroyPreview();
+        main.querySelector('.image-preview[open]')?.close();
         inspection.clear();
         detailInspector?.dispose(); detailInspector = null;
         selection = null;
