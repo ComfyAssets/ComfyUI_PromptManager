@@ -16,7 +16,10 @@ from PIL.PngImagePlugin import PngInfo
 
 from tests.browser.workspace_visual_fixture import seed_workspace_visual
 from tests.browser.workspace_inspector_fixture import seed_workspace_inspector
-from tests.browser.workspace_history_fixture import seed_workspace_history
+from tests.browser.workspace_history_fixture import (
+    capture_workspace_history_zero_outputs,
+    seed_workspace_history,
+)
 
 
 class TestModel:
@@ -224,8 +227,26 @@ def create_app(root: Path) -> web.Application:
             api.db.link_image_to_prompt(video_prompt_id, str(video))
         api.invalidate_gallery_cache()
 
+    history_fixture = None
+
+    @routes.post("/__test__/history/capture-zero-outputs")
+    async def capture_history_outputs(request: web.Request) -> web.Response:
+        data = await request.json() if request.can_read_body else None
+        if (
+            not isinstance(data, dict)
+            or set(data) != {"run_id"}
+            or history_fixture is None
+            or data["run_id"] not in history_fixture["runs"].values()
+        ):
+            raise web.HTTPBadRequest()
+        captured = await api._run_in_executor(
+            capture_workspace_history_zero_outputs, api, data["run_id"]
+        )
+        return web.json_response({"success": captured})
+
     @routes.post("/__test__/reset")
     async def reset(request: web.Request) -> web.Response:
+        nonlocal history_fixture
         data = await request.json() if request.can_read_body else {}
         if not isinstance(data, dict):
             raise web.HTTPBadRequest()
@@ -247,6 +268,7 @@ def create_app(root: Path) -> web.Application:
             manifest = await api._run_in_executor(
                 lambda: seed_workspace_history(api, root, history_runs=history_runs)
             )
+            history_fixture = manifest
             return web.json_response({"success": True, **manifest})
         workspace_visual = data.get("workspace_visual", False)
         full_inspector = data.get("full_inspector", False)
@@ -299,15 +321,18 @@ def create_app(root: Path) -> web.Application:
         ):
             raise web.HTTPBadRequest()
         if workspace_visual:
+            history_fixture = None
             await api._run_in_executor(seed_workspace_visual, api, root)
             return web.json_response({"success": True})
         if full_inspector:
+            history_fixture = None
             await api._run_in_executor(
                 lambda: seed_workspace_inspector(
                     api, root, extra_images=extra, include_video=include_video
                 )
             )
             return web.json_response({"success": True})
+        history_fixture = None
         await api._run_in_executor(
             seed,
             extra,

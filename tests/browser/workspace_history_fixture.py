@@ -41,6 +41,28 @@ def _snapshot(raw: str, suffix: str = "") -> PromptSnapshot:
     return PromptSnapshot(_known(raw), _known(raw + suffix), _known(""), _known(suffix))
 
 
+def capture_workspace_history_zero_outputs(api: PromptManagerAPI, run_id: str) -> bool:
+    """Apply one late host capture through the normal immutable storage command."""
+    run = api.db.get_execution_run(run_id)
+    finish = make_finish(
+        run["session_id"],
+        run["queue_item_id"],
+        run["storage_epoch"],
+        SimpleNamespace(
+            messages=[
+                (
+                    "execution_success",
+                    {"prompt_id": run["job_id"], "timestamp": run["terminal_event_at"]},
+                )
+            ]
+        ),
+        run["observed_callback_at"],
+    )
+    return api.db.write_execution_outputs_for_finish(
+        finish, OutputBundle((), "complete", "none_reported")
+    )
+
+
 def seed_workspace_history(
     api: PromptManagerAPI, root: Path, *, history_runs: int = 0
 ) -> dict:
@@ -225,6 +247,16 @@ def seed_workspace_history(
         ),
         "conflicting": run(
             (x,), receipts, conflicting=True, observed=9_223_372_036_854_775_807
+        ),
+        "paged": run(
+            (x,),
+            OutputBundle(
+                tuple(
+                    reference("paged", ordinal, "current.png") for ordinal in range(41)
+                ),
+                "complete",
+                "reported",
+            ),
         ),
     }
     api.invalidate_gallery_cache()

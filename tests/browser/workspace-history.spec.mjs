@@ -259,3 +259,103 @@ test('a bounded saved-parent prefix leaves previously loaded variants unverified
     await expect(choices.last()).toHaveAttribute('aria-pressed','true');expect(await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).textContent()).toBe(negative);
     await expect(page.getByRole('button',{name:'Reload saved Library view',exact:true})).toBeVisible();await expect(choices.last()).toBeDisabled();
 });
+
+async function retainSavedSelection(page,request,fixture) {
+    await open(page,fixture.detail_id);
+    const details=await(await request.get(`/prompt_manager/library/${fixture.detail_id}`)).json();
+    const index=details.variants.findIndex(variant=>variant.id===fixture.saved_pair);
+    await page.getByRole('button',{name:`Select negative variant ${index+1}`,exact:true}).click();
+    await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
+    const negative=await exact(saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre'));
+    await gallery(page).locator('article[data-image-key]').first().evaluate(node=>{window.fix1SavedGalleryCard=node;});
+    let reads=0;page.on('request',request=>{if(new URL(request.url()).pathname===`/prompt_manager/library/${fixture.detail_id}/images`)reads++;});
+    return async()=>{
+        await expect(page.getByRole('button',{name:`Select negative variant ${index+1}`,exact:true})).toHaveAttribute('aria-pressed','true');
+        expect(await exact(saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre'))).toBe(negative);
+        expect(await gallery(page).locator('article[data-image-key]').first().evaluate(node=>node===window.fix1SavedGalleryCard)).toBe(true);expect(reads).toBe(0);
+    };
+}
+
+for(const change of ['mode','anchor']) test(`initial receipt read restarts after a held ${change} cancellation`,async({page,request})=>{
+    const f=page.fixture;const retained=await retainSavedSelection(page,request,f);let reads=0,release,entered;
+    const held=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});
+    let aborted=0;page.on('requestfailed',request=>{if(new URL(request.url()).pathname===`/prompt_manager/history/runs/${f.runs.shared}/outputs`)aborted++;});
+    await page.route(new RegExp(`/history/runs/${f.runs.shared}/outputs\\?`),async route=>{reads++;if(reads===1){entered();await held;}await route.continue().catch(()=>{});});
+    try {
+        await marker(page,f.runs.shared).click();await started;
+        if(change==='mode')await dialog(page).getByRole('button',{name:'Effective',exact:true}).click();
+        else await dialog(page).getByRole('group',{name:'Recorded anchors',exact:true}).getByRole('button',{name:/^Anchor z /}).click();
+        release();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);expect(reads).toBe(2);
+        await expect.poll(()=>aborted).toBeGreaterThan(0);
+        if(change==='mode')await expect(dialog(page).getByRole('button',{name:'Effective',exact:true})).toHaveAttribute('aria-pressed','true');
+        else await expect(dialog(page).getByRole('group',{name:'Recorded anchors',exact:true}).getByRole('button',{name:/^Anchor z /})).toHaveAttribute('aria-pressed','true');
+        await page.keyboard.press('Escape');await retained();
+    } finally {release();}
+});
+
+test('same-run reopen loads page one after cancellation and a held fresh detail read',async({page,request})=>{
+    const f=page.fixture,retained=await retainSavedSelection(page,request,f);let reads=0,releaseOutputs,enteredOutputs,releaseDetail,enteredDetail;
+    const outputsHeld=new Promise(resolve=>{releaseOutputs=resolve;}),outputsStarted=new Promise(resolve=>{enteredOutputs=resolve;});
+    const detailHeld=new Promise(resolve=>{releaseDetail=resolve;}),detailStarted=new Promise(resolve=>{enteredDetail=resolve;});
+    await page.route(new RegExp(`/history/runs/${f.runs.shared}/outputs\\?`),async route=>{reads++;enteredOutputs();await outputsHeld;await route.continue().catch(()=>{});});
+    try {
+        await marker(page,f.runs.shared).click();await outputsStarted;await dialog(page).getByRole('button',{name:'Effective',exact:true}).click();await dialog(page).getByRole('button',{name:'Close recorded run',exact:true}).click();
+        await page.route(new RegExp(`/history/runs/${f.runs.shared}\\?`),async route=>{enteredDetail();await detailHeld;await route.continue().catch(()=>{});});
+        await marker(page,f.runs.shared).click();await detailStarted;await expect(dialog(page).locator('[data-receipt]')).toHaveCount(0);await expect(dialog(page)).toContainText('Loading recorded run');
+        releaseDetail();releaseOutputs();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);expect(reads).toBe(3);
+        await expect(dialog(page).getByRole('button',{name:'Effective',exact:true})).toHaveAttribute('aria-pressed','true');await page.keyboard.press('Escape');await retained();
+    } finally {releaseDetail();releaseOutputs();}
+});
+
+test('late output capture replaces the earlier uncaptured detail summary with real complete-zero evidence',async({page,request})=>{
+    const f=page.fixture,retained=await retainSavedSelection(page,request,f);let release,entered;
+    const held=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});
+    for(const data of [{}, {run_id:f.runs.equal_looking,extra:true}, {run_id:[]}, {run_id:'not-a-run'}])expect((await request.post('/__test__/history/capture-zero-outputs',{data})).status()).toBe(400);
+    await page.route(new RegExp(`/history/runs/${f.runs.equal_looking}/outputs\\?`),async route=>{entered();await held;await route.continue().catch(()=>{});});
+    const detailRead=page.waitForResponse(response=>new URL(response.url()).pathname===`/prompt_manager/history/runs/${f.runs.equal_looking}`);
+    try {
+        await marker(page,f.runs.equal_looking).click();await started;const detail=await(await detailRead).json();expect(detail.output_summary.state).toBe('not_captured');
+        const write=await request.post('/__test__/history/capture-zero-outputs',{data:{run_id:f.runs.equal_looking}});await expect(write).toBeOK();expect((await write.json()).success).toBe(true);
+        const pageRead=page.waitForResponse(response=>new URL(response.url()).pathname===`/prompt_manager/history/runs/${f.runs.equal_looking}/outputs`);release();const outputs=await(await pageRead).json();
+        expect(outputs.capture).toMatchObject({state:'complete',reason:'none_reported'});expect(outputs.retained_occurrence_count).toBe(0);expect(outputs.list_status).toBe('complete');
+        await expect(dialog(page).locator('.recorded-output-status')).toHaveText('0 reported outputs · complete · All retained receipts loaded.');
+        await expect(dialog(page).getByText('Output capture',{exact:true}).locator('..').locator('dd')).toHaveText('complete · none_reported');
+        await expect(dialog(page).getByText('Context capture',{exact:true}).locator('..').locator('dd')).toHaveText('complete · captured');
+        await page.keyboard.press('Escape');await retained();
+    } finally {release();}
+});
+
+test('capture-only recovery uses the changed real output capture without re-reading run or saved gallery',async({page,request})=>{
+    const f=page.fixture,retained=await retainSavedSelection(page,request,f);let outputsReads=0,runReads=0;
+    page.on('request',request=>{if(new URL(request.url()).pathname===`/prompt_manager/history/runs/${f.runs.whitespace}`)runReads++;});
+    await page.route(new RegExp(`/history/runs/${f.runs.whitespace}/outputs\\?`),async route=>{
+        outputsReads++;
+        if(outputsReads===1) {
+            const write=await request.post('/__test__/history/capture-zero-outputs',{data:{run_id:f.runs.whitespace}});await expect(write).toBeOK();expect((await write.json()).success).toBe(true);
+            return route.fulfill({status:409,json:{success:false,history_version:1,code:'capture-changed',error:'Reported output capture changed',recovery:{action:'refresh-outputs'}}});
+        }
+        await route.continue();
+    });
+    const detailRead=page.waitForResponse(response=>new URL(response.url()).pathname===`/prompt_manager/history/runs/${f.runs.whitespace}`);
+    const outputsRead=page.waitForResponse(response=>new URL(response.url()).pathname===`/prompt_manager/history/runs/${f.runs.whitespace}/outputs`&&response.status()===200);
+    await marker(page,f.runs.whitespace).click();const detail=await(await detailRead).json();expect(detail.output_summary.state).toBe('partial');
+    const outputs=await(await outputsRead).json();expect(outputs.capture.state).toBe('conflicting');expect(outputs.retained_occurrence_count).toBe(1);expect(outputs.list_status).toBe('incomplete');
+    await expect(dialog(page).locator('[data-receipt]')).toHaveCount(1);await expect(dialog(page).locator('.recorded-output-status')).toContainText('1 retained reported output · incomplete · conflicting');
+    await expect(dialog(page).getByText('Output capture',{exact:true}).locator('..').locator('dd')).toHaveText('conflicting · conflicting');expect(runReads).toBe(1);expect(outputsReads).toBe(2);
+    expect(await exact(dialog(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre'))).toBe('  \n\t ');await page.keyboard.press('Escape');await retained();
+});
+
+test('completed page one stays bounded across mode changes until explicit output paging',async({page,request})=>{
+    const f=page.fixture,retained=await retainSavedSelection(page,request,f);let reads=0,releaseNext,enteredNext;
+    const held=new Promise(resolve=>{releaseNext=resolve;}),started=new Promise(resolve=>{enteredNext=resolve;});
+    await page.route(new RegExp(`/history/runs/${f.runs.paged}/outputs\\?`),async route=>{
+        reads++;if(new URL(route.request().url()).searchParams.has('cursor')){enteredNext();await held;}await route.continue().catch(()=>{});
+    });
+    try {
+        await marker(page,f.runs.paged).click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(40);expect(reads).toBe(1);
+        await dialog(page).getByRole('button',{name:'Effective',exact:true}).click();await dialog(page).getByRole('button',{name:'Raw',exact:true}).click();
+        const more=dialog(page).getByRole('button',{name:'Load more reported outputs',exact:true});await expect(more).toBeEnabled();expect(reads).toBe(1);await expect(dialog(page).locator('[data-receipt]')).toHaveCount(40);
+        await more.click();await started;expect(reads).toBe(2);releaseNext();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(41);await expect(more).toBeHidden();
+        await page.keyboard.press('Escape');await retained();
+    } finally {releaseNext();}
+});

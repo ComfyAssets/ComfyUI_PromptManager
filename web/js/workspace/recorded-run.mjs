@@ -12,9 +12,9 @@ function el(tag, text, className) {
     if (className) node.className = className;
     return node;
 }
-function facts(entries) {
+function facts(entries, values) {
     const list = el('dl', undefined, 'recorded-run-facts');
-    for (const [label, value] of entries) {const row = el('div');row.append(el('dt', label), el('dd', value ?? 'Not recorded'));list.append(row);}
+    for (const [label, value] of entries) {const row = el('div'), description = el('dd', value ?? 'Not recorded');row.append(el('dt', label), description);list.append(row);values.set(label, description);}
     return list;
 }
 function observed(value) {
@@ -64,8 +64,9 @@ export function mountRecordedRun(container, {api, controller, sender, parentScop
         const inspectorContainer = el('div');current.append(inspectorContainer);current.hidden = true;
         body.append(metadata, anchors, mode, promptSection, outputs, current);dialog.append(header, message, retry, reload, body);container.append(dialog);
         const inspection = createInspectionController({api, extractFacts:window.ComfyMetadata.extractGenerationFacts, adapter:reportedLocationAdapter});
-        let closed = false, renderedDetail = null, renderedRoles = '', outputsRequested = false, inspected = null, viewerOpen = false;
+        let closed = false, renderedDetail = null, renderedRoles = '', initialOutputQueued = false, inspected = null, viewerOpen = false;
         const receiptNodes = new Map();
+        const evidenceValues = new Map();
         const blocks = mountPromptBlocks(prompts, {sender, parentScope:local});
         const inspector = mountFileInspector(inspectorContainer, {sender, parentScope:local, inline:true, onRetry:() => inspection.retry(), onPreview:() => showViewer(), onRefresh:refreshCurrent});
         function selectedReceipt() {
@@ -150,7 +151,7 @@ export function mountRecordedRun(container, {api, controller, sender, parentScop
                     ['Output capture', `${detail.output_summary.state} · ${detail.output_summary.reason ?? 'not captured'}`],
                     ['Safe diagnostic node', run.node_id], ['Safe diagnostic node type', run.node_type], ['Safe exception type', run.exception_type],
                     ['Diagnostics omitted', run.diagnostics_omitted ? 'Yes' : 'No'],
-                ]));
+                ], evidenceValues));
                 if (detail.context_capture.state === 'conflicting') metadata.append(el('p', 'First captured context · conflicting evidence', 'muted'));
                 anchors.replaceChildren();
                 for (const context of detail.contexts) {
@@ -175,8 +176,10 @@ export function mountRecordedRun(container, {api, controller, sender, parentScop
                 }
             }
             const output = next.outputs;
+            const outputEvidence = output.capture ? {...output.capture, retained_occurrence_count:output.retained_occurrence_count, list_status:output.list_status} : detail.output_summary;
+            evidenceValues.get('Output capture').textContent = `${outputEvidence.state} · ${outputEvidence.reason ?? 'not captured'}`;
             outputState.setAttribute('role', output.error ? 'alert' : 'status');
-            outputState.textContent = `${outputSummary(detail.output_summary)}${output.loading ? ' · Loading reported outputs…' : output.error ? ' · Reported outputs could not be loaded.' : output.capture && !output.has_more ? ' · All retained receipts loaded.' : ''}`;
+            outputState.textContent = `${outputSummary(outputEvidence)}${output.loading ? ' · Loading reported outputs…' : output.error ? ' · Reported outputs could not be loaded.' : output.capture && !output.has_more ? ' · All retained receipts loaded.' : ''}`;
             more.hidden = !output.has_more;more.disabled = output.loading || !enabled;
             retryOutputs.hidden = !output.error;retryOutputs.disabled = !!next.refreshRequired;
             const keep = new Set(output.items.map(item => occurrenceKey(item.occurrence)));
@@ -196,9 +199,12 @@ export function mountRecordedRun(container, {api, controller, sender, parentScop
             const selected = selectedReceipt();current.hidden = !selected;
             if (!selected && inspected !== null) {inspected = null;inspection.clear();if (viewerOpen) resetViewer();}
             if (!enabled && viewerOpen) resetViewer();
-            if (!outputsRequested && !output.capture && !output.loading && !output.error) {
-                outputsRequested = true;
-                queueMicrotask(() => {if (!closed && latest.selection.run_id === runId && !local.signal.aborted) controller.loadOutputs();});
+            if (enabled && !initialOutputQueued && !output.capture && !output.loading && !output.error) {
+                initialOutputQueued = true;
+                queueMicrotask(() => {
+                    initialOutputQueued = false;
+                    if (!closed && !local.signal.aborted && latest.selection.run_id === runId && latest.actionsEnabled && latest.run.detail && !latest.run.loading && !latest.outputs.capture && !latest.outputs.loading && !latest.outputs.error) controller.loadOutputs();
+                });
             }
         }
         active = {close:closeRun, render};
