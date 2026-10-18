@@ -324,6 +324,51 @@ class HistoryRestoreTests(unittest.TestCase):
         self.assertNotEqual(db.get_execution_epoch(), original_epoch)
         self.assertEqual(notices, [True])
 
+    def test_restore_preserves_context_scalars_but_never_reepochs_hints(self):
+        try:
+            from tests.test_execution_context_database import bundle
+        except ImportError:
+            from test_execution_context_database import bundle
+        from database.execution_history import HistoryEpochChanged
+
+        db = self.database()
+        with db.model.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO prompts(id,text) VALUES(1,'positive'),(2,'negative')"
+            )
+            conn.execute(
+                "INSERT INTO prompt_pairs(id,positive_prompt_id,negative_prompt_id) "
+                "VALUES(7,1,2)"
+            )
+        start = self.start(db)
+        db.write_execution_start(start)
+        db.write_execution_contexts(start.run_id, start.storage_epoch, bundle())
+        original = db.get_execution_contexts(start.run_id)
+        backup = str(Path(self.temp.name) / "contexts.db")
+        self.assertTrue(db.model.backup_database(backup))
+        source_bytes = Path(backup).read_bytes()
+        for _ in range(2):
+            db.model.restore_from_file(backup)
+            read = db.get_execution_contexts(start.run_id)
+            expected = original["contexts"][0].copy()
+            expected.update(
+                positive_prompt_id=None, negative_prompt_id=None, pair_id=None
+            )
+            self.assertEqual(read["contexts"], [expected])
+            self.assertEqual(read["state"], "complete")
+            self.assertEqual(
+                read["contexts"][0]["reference_epoch"], start.storage_epoch
+            )
+            with self.assertRaises(HistoryEpochChanged):
+                db.write_execution_contexts(start.run_id, start.storage_epoch, bundle())
+            self.assertFalse(
+                db.write_execution_contexts(
+                    start.run_id, db.get_execution_epoch(), bundle()
+                )
+            )
+            self.assertEqual(db.get_execution_contexts(start.run_id), read)
+            self.assertEqual(Path(backup).read_bytes(), source_bytes)
+
 
 if __name__ == "__main__":
     unittest.main()
