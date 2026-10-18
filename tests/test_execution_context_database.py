@@ -3,6 +3,9 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+import subprocess
+import sys
+import textwrap
 from unittest.mock import patch
 import unittest
 
@@ -466,3 +469,79 @@ class ContextDatabaseTests(unittest.TestCase):
                 start.run_id, start.storage_epoch, bundle("changed")
             )
         self.assertEqual(tuple(db.model.get_connection().iterdump()), before)
+
+    def test_package_qualified_capture_with_and_without_repository_on_sys_path(self):
+        # A host imports node packs under a package name, not as top-level utils.
+        script = textwrap.dedent("""\
+            import importlib
+            import sys
+            import tempfile
+            import types
+            from pathlib import Path
+            root, expose_root = sys.argv[1:]
+            if expose_root == "yes":
+                sys.path.insert(0, root)
+            else:
+                assert all(Path(p).resolve() != Path(root) for p in sys.path)
+            package = types.ModuleType("context_pack")
+            package.__path__ = [root]
+            sys.modules[package.__name__] = package
+            records = importlib.import_module("context_pack.utils.execution_contexts")
+            operations = importlib.import_module("context_pack.database.operations")
+            events = importlib.import_module(
+                "context_pack.utils.execution_history_events"
+            )
+            schema = importlib.import_module(
+                "context_pack.database.execution_context_schema"
+            )
+            with tempfile.TemporaryDirectory() as directory:
+                db = operations.PromptDatabase(str(Path(directory) / "capture.db"))
+                try:
+                    start = events.make_start(
+                        "11111111-1111-4111-8111-111111111111",
+                        ((0, "22222222-2222-4222-8222-222222222222", {}, {}), 0),
+                        db.get_execution_epoch(), 100,
+                    )
+                    db.write_execution_start(start)
+                    def known(value):
+                        return records.TextEvidence(
+                            value, "recorded", "runtime_return", None
+                        )
+                    snapshot = records.PromptSnapshot(
+                        known("raw"), known("effective"), known(""), known("")
+                    )
+                    context = records.RecipeContext(
+                        "4", snapshot, snapshot, "inferred"
+                    )
+                    bundle = records.ContextBundle(
+                        (context,), "complete", "captured"
+                    )
+                    assert db.write_execution_contexts(
+                        start.run_id, start.storage_epoch, bundle
+                    )
+                    read = db.get_execution_contexts(start.run_id)
+                    assert read["state"] == "complete", read
+                    assert read["contexts"][0]["positive"]["raw"] == "raw", read
+                    role = read["contexts"][0]["positive"]
+                    assert role["effective"] == "effective", read
+                    error = schema.context_schema_error(db.model.get_connection())
+                    assert error is None, error
+                    verified = db.model.verify_database_file(db.model.db_path)
+                    assert verified == (True, "ok"), verified
+                    if expose_root == "no":
+                        assert "utils.execution_contexts" not in sys.modules
+                        assert "database.execution_context_schema" not in sys.modules
+                finally:
+                    db.close_all()
+            """)
+        root = str(Path(__file__).resolve().parents[1])
+        for expose_root in ("yes", "no"):
+            with self.subTest(repository_on_sys_path=expose_root):
+                result = subprocess.run(
+                    [sys.executable, "-I", "-c", script, root, expose_root],
+                    cwd=self.temp.name,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

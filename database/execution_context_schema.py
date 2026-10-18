@@ -7,21 +7,39 @@ All validation scans use cursors and bounded per-row payloads.
 import json
 import sqlite3
 
-from database.execution_history_schema import _compact, _uuid_check
-from utils.execution_contexts import (
-    BUNDLE_STATES,
-    CAPTURE_REASONS,
-    EVIDENCE_SOURCES,
-    UNKNOWN_REASONS,
-    MAX_CONTEXT_BYTES,
-    ContextBundle,
-    PromptSnapshot,
-    RecipeContext,
-    TextEvidence,
-    validate_bundle,
-    content_digest,
-    text_size,
-)
+from .execution_history_schema import _compact, _uuid_check
+
+try:
+    from ..utils.execution_contexts import (
+        BUNDLE_STATES,
+        CAPTURE_REASONS,
+        EVIDENCE_SOURCES,
+        UNKNOWN_REASONS,
+        MAX_CONTEXT_BYTES,
+        ContextBundle,
+        PromptSnapshot,
+        RecipeContext,
+        TextEvidence,
+        validate_bundle,
+        content_digest,
+        text_size,
+    )
+except ImportError:
+    from utils.execution_contexts import (
+        BUNDLE_STATES,
+        CAPTURE_REASONS,
+        EVIDENCE_SOURCES,
+        UNKNOWN_REASONS,
+        MAX_CONTEXT_BYTES,
+        ContextBundle,
+        PromptSnapshot,
+        RecipeContext,
+        TextEvidence,
+        validate_bundle,
+        content_digest,
+        text_size,
+    )
+
 
 FIELDS = ("raw", "effective", "prepend", "append")
 TABLE_COLUMNS = {

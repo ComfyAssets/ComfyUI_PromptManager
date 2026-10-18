@@ -4,12 +4,21 @@ import json
 import sqlite3
 from typing import Iterator
 
-from utils.execution_contexts import (
-    CAPTURE_REASONS,
-    ContextBundle,
-    content_digest,
-    validate_bundle,
-)
+try:
+    from ..utils.execution_contexts import (
+        CAPTURE_REASONS,
+        ContextBundle,
+        content_digest,
+        validate_bundle,
+    )
+except ImportError:
+    from utils.execution_contexts import (
+        CAPTURE_REASONS,
+        ContextBundle,
+        content_digest,
+        validate_bundle,
+    )
+
 
 FIELDS = ("raw", "effective", "prepend", "append")
 ROLES = ("positive", "negative")

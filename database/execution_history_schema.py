@@ -114,7 +114,7 @@ def history_schema_error(
         for row in conn.execute("SELECT name,sql FROM sqlite_master WHERE type='table'")
         if row[0] in _TABLE_COLUMNS
     }
-    from database.execution_context_schema import TABLE_COLUMNS, context_schema_error
+    from .execution_context_schema import TABLE_COLUMNS, context_schema_error
 
     context_present = any(
         row[0] in TABLE_COLUMNS
@@ -201,7 +201,7 @@ def history_schema_error(
 
 
 def install_context_schema(conn: sqlite3.Connection) -> None:
-    from database.execution_context_schema import install_context_schema as install
+    from .execution_context_schema import install_context_schema as install
 
     install(conn)
 
