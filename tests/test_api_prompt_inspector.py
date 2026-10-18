@@ -347,7 +347,7 @@ class TestPromptInspector(ImageAPITestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(result["prompts"]["positive"]["status"], "absent")
         with patch(
-            "py.api.images.read_inspection_file",
+            "py.api.inspection_service.read_inspection_file",
             side_effect=RuntimeError(str(self.comfy_dir)),
         ):
             response, result = await self.inspect("image.jpg")
@@ -1044,7 +1044,7 @@ class TestPromptInspector(ImageAPITestCase):
                 self.api, "_file_response", side_effect=AssertionError("file response")
             ),
             patch(
-                "py.api.images.read_inspection_file",
+                "py.api.inspection_service.read_inspection_file",
                 side_effect=AssertionError("metadata read"),
             ),
         ):

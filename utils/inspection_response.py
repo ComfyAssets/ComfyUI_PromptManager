@@ -237,10 +237,9 @@ def _library_projection(library: dict) -> dict:
     return result
 
 
-def encode_inspection_response(
+def _encode_inspection(
     *,
-    image: dict,
-    root_scope: str,
+    identity: dict,
     file: dict,
     prompts: dict,
     resolution: dict,
@@ -252,8 +251,7 @@ def encode_inspection_response(
     response = {
         "success": True,
         "inspection_version": 1,
-        "root_scope": root_scope,
-        "image": image,
+        **identity,
         "file": _file_projection(file, inspection),
         "prompts": prompts,
         "resolution": resolution,
@@ -277,3 +275,48 @@ def encode_inspection_response(
     if len(body) > MAX_RESPONSE_BYTES:
         raise ValueError("Inspection response exceeds limits")
     return body
+
+
+def encode_inspection_response(
+    *,
+    image: dict,
+    root_scope: str,
+    file: dict,
+    prompts: dict,
+    resolution: dict,
+    inspection: "InspectionRead | None",
+    library: dict,
+) -> bytes:
+    """Preserve the existing rooted wire and its bounded metadata projection."""
+    return _encode_inspection(
+        identity={"root_scope": root_scope, "image": image},
+        file=file,
+        prompts=prompts,
+        resolution=resolution,
+        inspection=inspection,
+        library=library,
+    )
+
+
+def encode_history_inspection_response(
+    *,
+    current_output: dict,
+    file: dict,
+    prompts: dict,
+    resolution: dict,
+    inspection: "InspectionRead | None",
+    library: dict,
+) -> bytes:
+    """Use occurrence identity with the same current-file evidence projection."""
+    return _encode_inspection(
+        identity={
+            "history_version": 1,
+            "history_epoch": current_output["history_epoch"],
+            "current_output": current_output,
+        },
+        file=file,
+        prompts=prompts,
+        resolution=resolution,
+        inspection=inspection,
+        library=library,
+    )

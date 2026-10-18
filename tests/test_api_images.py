@@ -2097,7 +2097,7 @@ class TestRootScopeServing(ImageAPITestCase):
                 side_effect=AssertionError("saved lookup"),
             ),
             patch(
-                "py.api.images.read_inspection_file",
+                "py.api.inspection_service.read_inspection_file",
                 side_effect=AssertionError("metadata read"),
             ),
             patch(
