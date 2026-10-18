@@ -68,6 +68,7 @@ function compareRun(a, b) {
 }
 function validateWindow(value, positiveId, cursor, epoch) {
     envelope(value, epoch); pagination(value, cursor);
+    requireValue(value.items?.length ? text(value.resume_cursor, 4096) && value.resume_cursor.length > 0 : value.resume_cursor === null);
     requireValue(object(value.group) && value.group.positive_id === positiveId && (value.group.raw_text_id === null || digest(value.group.raw_text_id)) &&
         value.group.relation === 'exact_frozen_raw_text' && ['uncapturable_text', 'no_matches', 'matched'].includes(value.group.scope_status) &&
         count(value.recorded_run_count) && Array.isArray(value.items) && value.items.length <= 100 && value.recorded_run_count >= value.items.length && Array.isArray(value.context_summaries));
@@ -93,6 +94,7 @@ function validateWindow(value, positiveId, cursor, epoch) {
 function validateContext(value) {
     anchor(value);
     requireValue(uuid(value.reference_epoch) && object(value.evidence) && value.evidence.format_version === 1 && value.evidence.role_provenance === 'inferred');
+    requireValue(value.positive_raw_text_id === null ? value.positive?.raw == null : digest(value.positive_raw_text_id) && typeof value.positive?.raw === 'string');
     for (const role of ['positive', 'negative']) {
         const side = value[role], proof = value.evidence[role];
         requireValue((side === null) === (value[`${role}_snapshot_id`] === null));
@@ -152,7 +154,7 @@ function validateOutputs(value, runId, epoch, cursor, previous) {
     requireValue(value.items.every((r, i) => i === 0 || compareCoordinate(value.items[i - 1].occurrence, r.occurrence) < 0));
     if (cursor !== null && previous.items.length && value.items.length) requireValue(compareCoordinate(previous.items.at(-1).occurrence, value.items[0].occurrence) < 0);
 }
-const emptyWindow = () => ({items:[], context_summaries:[], group:null, recorded_run_count:0, next_cursor:null, has_more:false, history_epoch:null, loading:false, error:null});
+const emptyWindow = () => ({items:[], context_summaries:[], group:null, recorded_run_count:0, next_cursor:null, resume_cursor:null, has_more:false, history_epoch:null, loading:false, error:null});
 const emptyRun = () => ({detail:null, loading:false, error:null});
 const emptyOutputs = () => ({items:[], capture:null, capture_fingerprint:null, retained_occurrence_count:null, list_status:null, next_cursor:null, has_more:false, loading:false, error:null});
 const emptySelection = mode => ({run_id:null, anchor_id:null, context_id:null, mode, receipt:null});
@@ -174,11 +176,20 @@ export function visibleHistoryColumns(count, left, width, focusedIndex = -1) {
 
 export function createHistoryController({api, positiveId, onChange = () => {}, restore}) {
     requireValue(id(positiveId), 'Invalid saved positive ID');
-    const intent = {search:typeof restore?.search === 'string' ? restore.search : '', scrollTop:typeof restore?.scrollTop === 'number' && Number.isFinite(restore.scrollTop) ? Math.max(0, restore.scrollTop) : 0};
+    const offset = value => typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
+    const intent = {search:typeof restore?.search === 'string' ? restore.search : '', scrollTop:offset(restore?.scrollTop), scrollLeft:offset(restore?.scrollLeft),
+        anchor:uuid(restore?.anchor?.runId) && digest(restore?.anchor?.contextId) && Number.isFinite(restore.anchor.x) && Number.isFinite(restore.anchor.y) ? {runId:restore.anchor.runId, contextId:restore.anchor.contextId, x:restore.anchor.x, y:restore.anchor.y} : null};
     let state = freeze({window:emptyWindow(), run:emptyRun(), outputs:emptyOutputs(), selection:emptySelection(restore?.mode === 'effective' ? 'effective' : 'raw'),
         parent:{detail:null, loading:false, error:null}, intent, refreshRequired:null, refreshLabel:'', validating:false, actionsEnabled:false});
     let disposed = false, failedOutput = null, runOptions = null;
+    const receiptReads = new Map();
     let restoreHint = uuid(restore?.runId) && (restore.anchorId === undefined || restore.anchorId === null || node(restore.anchorId)) && (restore.contextId === undefined || restore.contextId === null || digest(restore.contextId)) ? {runId:restore.runId, anchorId:restore.anchorId ?? null, contextId:restore.contextId ?? null} : null;
+    const restoreEpoch = uuid(restore?.historyEpoch) ? restore.historyEpoch : null;
+    let restoreRange = restoreEpoch && text(restore?.resumeCursor, 4096) && restore.resumeCursor && id(restore?.loadedCount) ? {cursor:restore.resumeCursor, pages:Math.ceil(restore.loadedCount / 40), epoch:restoreEpoch} : null;
+    if (restoreHint) {
+        restoreHint.epoch = restoreEpoch;restoreHint.outputCount = count(restore?.outputCount) && restore.outputCount <= 256 ? restore.outputCount : 0;restoreHint.outputsLoaded = restore?.outputsLoaded === true;
+        try {if (restoreEpoch && restoreHint.outputCount && restore?.receipt?.run_id === restoreHint.runId) {occurrenceKey(restore.receipt);restoreHint.receipt = {...restore.receipt};}} catch { /* Invalid selection intent cannot become a receipt. */ }
+    }
     const requests = {window:null, run:null, outputs:null, parent:null, validation:null};
     const generations = {window:0, run:0, outputs:0, parent:0, validation:0};
     function cancel(slot) {generations[slot]++; requests[slot]?.abort(); requests[slot] = null;}
@@ -189,7 +200,7 @@ export function createHistoryController({api, positiveId, onChange = () => {}, r
         next.actionsEnabled = !!next.window.history_epoch && !next.refreshRequired && !next.validating && !next.window.loading && !next.window.error && !next.run.loading && !next.run.error;
         state = freeze(next); onChange(state);
     }
-    function clearOutputs() {cancel('outputs'); failedOutput = null; return emptyOutputs();}
+    function clearOutputs() {cancel('outputs'); failedOutput = null; receiptReads.clear(); return emptyOutputs();}
     function clearDependents() {cancel('run'); return {run:emptyRun(), outputs:clearOutputs(), selection:emptySelection(state.selection.mode)};}
     async function validateParent() {
         const request = begin('parent'); emit({parent:{detail:null, loading:true, error:null}});
@@ -203,7 +214,7 @@ export function createHistoryController({api, positiveId, onChange = () => {}, r
     function recover(error) {
         if (error?.status !== 409 || !['history-changed', 'capture-changed', 'candidate-stale'].includes(error.code)) return false;
         if (error.code === 'history-changed') {
-            restoreHint = null; runOptions = null;
+            restoreHint = null;restoreRange = null;runOptions = null;
             cancel('window'); cancel('validation');
             emit({...clearDependents(), window:emptyWindow(), validating:false, refreshRequired:error.code, refreshLabel:'Reload recorded history'});
             void validateParent();
@@ -224,38 +235,76 @@ export function createHistoryController({api, positiveId, onChange = () => {}, r
         const ordered = new Map(); for (const r of items) for (const a of r.matching_anchors) ordered.set(a.context_id, map.get(a.context_id));
         return [...ordered.values()];
     }
-    async function fetchWindow(earlier = false) {
-        if (disposed || (earlier && (state.window.loading || !state.window.has_more || state.refreshRequired))) return;
-        const cursor = earlier ? state.window.next_cursor : null, epoch = earlier ? state.window.history_epoch : null;
+    async function fetchWindow(earlier = false, {owner = null, expectedEpoch = null, resume = null} = {}) {
+        if (disposed || (earlier && (state.window.loading || !state.window.has_more || state.refreshRequired || (state.validating && !owner)))) return false;
+        const cursor = earlier ? state.window.next_cursor : null, epoch = earlier ? state.window.history_epoch : expectedEpoch;
         const previous = state.window, request = begin('window');
-        if (!earlier) {cancel('validation'); emit({...clearDependents(), window:emptyWindow(), validating:false, refreshRequired:null, refreshLabel:''});}
         emit({window:{...state.window, loading:true, error:null}});
-        const query = new URLSearchParams({limit:'40'}); if (cursor !== null) query.set('cursor', cursor);
+        const query = new URLSearchParams({limit:'40'});if (cursor !== null) query.set('cursor', cursor);else if (resume !== null) query.set('resume', resume);
         try {
             const value = await api.get(`/prompt_manager/library/${positiveId}/history?${query}`, {signal:request.signal});
-            if (!request.current()) return;
+            if (!request.current() || (owner && !owner.current())) return false;
             validateWindow(value, positiveId, cursor, epoch);
+            requireValue(!earlier || value.group.raw_text_id === previous.group.raw_text_id);
             const page = structuredClone(value), merged = new Map();
             for (const r of [...page.items, ...(earlier ? previous.items : [])]) merged.set(r.run_id, r);
             const items = [...merged.values()].sort(compareRun);
             emit({window:{...page, items, context_summaries:mergeSummaries(page.context_summaries, earlier ? previous.context_summaries : [], items), loading:false, error:null}});
-            const hint = restoreHint; restoreHint = null;
-            if (hint && items.some(r => r.run_id === hint.runId)) void selectRun(hint.runId, hint);
-        } catch (error) {if (request.current() && !recover(error)) emit({window:{...state.window, loading:false, error}});}
+            return true;
+        } catch (error) {if (request.current() && (!owner || owner.current()) && !recover(error)) emit({window:{...state.window, loading:false, error}});return false;}
     }
-    async function selectRun(runId, {anchorId = null, contextId = null} = {}) {
+    function selectedIntent() {
+        return state.selection.run_id ? {runId:state.selection.run_id, anchorId:state.selection.anchor_id, contextId:state.selection.context_id, epoch:state.window.history_epoch,
+            outputCount:state.outputs.items.length, outputsLoaded:state.outputs.capture !== null, receipt:state.selection.receipt && {...state.selection.receipt}} : null;
+    }
+    async function restoreSelection(hint, owner) {
+        await selectRun(hint.runId, {...hint, restoring:true});
+        if (!owner.current()) return;
+        if (!state.run.detail && (state.run.error?.status === 404 || state.run.error instanceof TypeError)) {
+            emit({validating:false, selection:emptySelection(state.selection.mode)});return;
+        }
+        if (state.run.detail && (hint.outputsLoaded || hint.outputCount)) {
+            const pages = Math.max(1, Math.ceil(hint.outputCount / 40));
+            for (let page = 0; page < pages; page++) {
+                await fetchOutputs(state.outputs.next_cursor, 40);
+                if (!owner.current()) return;
+                if (!state.outputs.capture || state.outputs.error || state.refreshRequired || !state.outputs.has_more || state.outputs.items.length >= hint.outputCount) break;
+            }
+        }
+        if (!owner.current()) return;
+        const receipt = hint.receipt && state.outputs.items.find(item => occurrenceKey(item.occurrence) === occurrenceKey(hint.receipt));
+        emit({validating:false, selection:{...state.selection, receipt:receipt ? {...receipt.occurrence} : null}});
+    }
+    async function loadHistory(useVisit = false) {
+        if (disposed) return;
+        const hint = selectedIntent() || (useVisit ? restoreHint : null), range = useVisit ? restoreRange : null;
+        const expectedEpoch = state.window.history_epoch || range?.epoch || hint?.epoch || null, owner = begin('validation');
+        cancel('window');emit({...clearDependents(), window:emptyWindow(), validating:true, refreshRequired:null, refreshLabel:''});
+        const pages = range?.pages || 1;
+        for (let page = 0; page < pages; page++) {
+            const loaded = await fetchWindow(page > 0, {owner, expectedEpoch, resume:page === 0 ? range?.cursor ?? null : null});
+            if (!owner.current()) return;
+            if (!loaded) {emit({validating:false});return;}
+            if (!state.window.has_more) break;
+        }
+        restoreHint = null;restoreRange = null;
+        if (hint && (hint.epoch === state.window.history_epoch || state.window.items.some(run => run.run_id === hint.runId))) void restoreSelection(hint, owner);
+        else emit({validating:false});
+    }
+    async function selectRun(runId, {anchorId = null, contextId = null, restoring = false} = {}) {
         if (disposed) return;
         requireValue(uuid(runId) && (anchorId === null || node(anchorId)) && (contextId === null || digest(contextId)), 'Invalid run selection');
         requireValue(state.window.history_epoch !== null && !state.refreshRequired, 'Load recorded history before selecting a run');
-        cancel('validation');
+        if (!restoring) {cancel('validation');cancel('window');}
         runOptions = {runId, anchorId, contextId};
         const request = begin('run'), epoch = state.window.history_epoch;
-        emit({validating:false, run:{...emptyRun(), loading:true}, outputs:clearOutputs(), selection:{...emptySelection(state.selection.mode), run_id:runId}});
+        emit({validating:restoring, window:{...state.window, loading:false}, run:{...emptyRun(), loading:true}, outputs:clearOutputs(), selection:{...emptySelection(state.selection.mode), run_id:runId}});
         try {
             const value = await api.get(`/prompt_manager/history/runs/${runId}?${new URLSearchParams({epoch})}`, {signal:request.signal});
             if (!request.current()) return;
             validateDetail(value, runId, epoch);
             const detail = structuredClone(value);
+            requireValue(digest(state.window.group?.raw_text_id) && detail.contexts.some(context => context.positive_raw_text_id === state.window.group.raw_text_id), 'Recorded run is outside this positive history');
             const selected = detail.contexts.find(c => (anchorId === null || c.anchor_id === anchorId) && (contextId === null || c.context_id === contextId));
             requireValue((anchorId === null && contextId === null) || !!selected, 'Recorded context is unavailable');
             emit({run:{detail, loading:false, error:null}, selection:{...state.selection, anchor_id:selected?.anchor_id ?? null, context_id:selected?.context_id ?? null}});
@@ -274,12 +323,51 @@ export function createHistoryController({api, positiveId, onChange = () => {}, r
             validateOutputs(value, runId, epoch, cursor, previous);
             const page = structuredClone(value), items = cursor === null ? page.items : [...previous.items, ...page.items];
             requireValue(items.length <= 256 && (page.retained_occurrence_count ?? 0) >= items.length && (page.has_more ? page.items.length > 0 && (page.retained_occurrence_count ?? 0) > items.length : (page.retained_occurrence_count ?? 0) === items.length));
+            if (cursor === null) receiptReads.clear();
+            const read = {cursor, limit, keys:page.items.map(item => occurrenceKey(item.occurrence))};
+            for (const key of read.keys) receiptReads.set(key, read);
             failedOutput = null;
             emit({outputs:{...page, items, loading:false, error:null}, refreshRequired:null, refreshLabel:''});
         } catch (error) {
             if (!request.current() || recover(error)) return;
             failedOutput = attempt;
-            if (error?.status === 422 && error.code === 'response-limit' && error.recovery?.action === 'retry-outputs' && Number.isSafeInteger(error.recovery.limit) && error.recovery.limit >= 1 && error.recovery.limit < limit) failedOutput = {cursor, limit:error.recovery.limit};
+            if (error?.status === 422 && error.code === 'response-limit' && error.recovery?.action === 'smaller-limit' && Number.isSafeInteger(error.recovery.limit) && error.recovery.limit >= 1 && error.recovery.limit < limit) failedOutput = {cursor, limit:error.recovery.limit};
+            emit({outputs:{...previous, loading:false, error}});
+        }
+    }
+    async function retryReceipt(occurrence) {
+        if (disposed || state.refreshRequired || state.validating || state.outputs.loading || !state.run.detail) return;
+        const key = occurrenceKey(occurrence), read = receiptReads.get(key);
+        requireValue(!!read, 'Reported output is unavailable');
+        const previous = state.outputs, request = begin('outputs'), runId = state.selection.run_id, epoch = state.window.history_epoch;
+        let cursor = read.cursor, limit = failedOutput?.receipt && occurrenceKey(failedOutput.receipt) === key ? failedOutput.limit : read.limit;
+        emit({outputs:{...previous, loading:true, error:null}});
+        try {
+            const replacements = new Map();
+            // A reduced response budget may need several reads, bounded by this one loaded page.
+            for (let offset = 0; offset < read.keys.length;) {
+                const query = new URLSearchParams({epoch, limit:String(limit)});if (cursor !== null) query.set('cursor', cursor);
+                const value = await api.get(`/prompt_manager/history/runs/${runId}/outputs?${query}`, {signal:request.signal});
+                if (!request.current()) return;
+                validateOutputs(value, runId, epoch, cursor, {...previous, items:[]});
+                if (value.capture_fingerprint !== previous.capture_fingerprint) throw Object.assign(new Error('Output capture changed'), {status:409, code:'capture-changed'});
+                const page = structuredClone(value);
+                requireValue(page.items.length > 0 && page.items.length <= read.keys.length - offset);
+                for (const [index, item] of page.items.entries()) {
+                    const itemKey = occurrenceKey(item.occurrence), old = previous.items.find(item => occurrenceKey(item.occurrence) === itemKey);
+                    requireValue(itemKey === read.keys[offset + index] && old && ['folder_type', 'subfolder', 'filename', 'path_style', 'root_key'].every(field => old.reference[field] === item.reference[field]));
+                    replacements.set(itemKey, item);
+                }
+                offset += page.items.length;
+                if (replacements.has(key)) break;
+                requireValue(page.has_more);cursor = page.next_cursor;
+            }
+            requireValue(replacements.has(key));failedOutput = null;
+            emit({outputs:{...previous, items:previous.items.map(item => replacements.get(occurrenceKey(item.occurrence)) || item), loading:false, error:null}});
+        } catch (error) {
+            if (!request.current() || recover(error)) return;
+            if (error?.status === 422 && error.code === 'response-limit' && error.recovery?.action === 'smaller-limit' && Number.isSafeInteger(error.recovery.limit) && error.recovery.limit >= 1 && error.recovery.limit < limit) limit = error.recovery.limit;
+            failedOutput = {receipt:{...occurrence}, limit};
             emit({outputs:{...previous, loading:false, error}});
         }
     }
@@ -299,7 +387,7 @@ export function createHistoryController({api, positiveId, onChange = () => {}, r
         } catch (error) {if (request.current() && !recover(error)) emit({validating:false, refreshRequired:'revalidation-failed', refreshLabel:'Reload recorded history', window:{...state.window, error}});}
     }
     return {
-        get state() {return state;}, load:() => fetchWindow(), refresh:() => fetchWindow(), loadEarlier:() => fetchWindow(true), selectRun,
+        get state() {return state;}, load:() => loadHistory(true), refresh:() => {restoreRange = null;return loadHistory();}, loadEarlier:() => fetchWindow(true), selectRun,
         selectContext(anchorId) {
             if (disposed) return;
             requireValue(node(anchorId), 'Invalid context anchor'); const c = state.run.detail?.contexts.find(c => c.anchor_id === anchorId); requireValue(!!c, 'Recorded context is unavailable');
@@ -310,10 +398,18 @@ export function createHistoryController({api, positiveId, onChange = () => {}, r
         selectReceipt(occurrence) {
             if (disposed) return;
             const key = occurrenceKey(occurrence); requireValue(!state.refreshRequired && !state.validating && state.outputs.items.some(r => occurrenceKey(r.occurrence) === key), 'Reported output is unavailable');
-            cancelDependentRead(); emit({selection:{...state.selection, receipt:{...occurrence}}});
+            cancel('outputs'); emit({outputs:{...state.outputs, loading:false}, selection:{...state.selection, receipt:{...occurrence}}});
         },
         retryRun() {if (!disposed && !state.refreshRequired && runOptions) return selectRun(runOptions.runId, runOptions);},
-        retryOutputs() {if (!disposed && !state.refreshRequired && failedOutput) return fetchOutputs(failedOutput.cursor, failedOutput.limit);},
+        retryReceipt,
+        retryOutputs() {if (!disposed && !state.refreshRequired && failedOutput) return failedOutput.receipt ? retryReceipt(failedOutput.receipt) : fetchOutputs(failedOutput.cursor, failedOutput.limit);},
+        inspectionFailed(target, error) {
+            if (disposed || state.validating || state.refreshRequired || !error?.error || !error.refreshRequired || !state.selection.receipt) return;
+            const selected = occurrenceKey(state.selection.receipt), candidate = state.outputs.items.find(item => occurrenceKey(item.occurrence) === selected)?.current_candidate;
+            if (candidate?.status !== 'available' || occurrenceKey(target.occurrence) !== selected || target.history_epoch !== state.window.history_epoch ||
+                target.current_scope !== candidate.media.current_scope || target.location_key !== candidate.media.location_key) return;
+            recover({status:409, code:error.code, recovery:error.recovery});
+        },
         revalidate,
         dispose() {if (disposed) return; disposed = true; Object.keys(requests).forEach(cancel); failedOutput = null; runOptions = null; state = freeze({...state, ...clearDependents(), window:emptyWindow(), parent:{detail:null, loading:false, error:null}, actionsEnabled:false});},
     };

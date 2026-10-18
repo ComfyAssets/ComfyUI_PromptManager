@@ -16,6 +16,10 @@ function distinction(summary) {
     const sources = [...new Set(summary.negative_raw.evidence.map(e => e.source))];
     return `Frozen composition · ${sources.join(', ') || 'unknown evidence'}`;
 }
+function observedLabel(value) {
+    const time = Number(value);
+    return `Observed dequeue ${value} ms (${Number.isSafeInteger(time) && time <= 8640000000000000 ? new Date(time).toISOString() : 'outside display range'})`;
+}
 
 // New nodes use ordinary insertion; connected moves preserve browser state where supported.
 function place(parent, node, before) {
@@ -37,8 +41,8 @@ export function mountRecordedHistory(container, {api, positiveId, parentScope, s
     const scopeText = el('p', '', 'muted');disclosure.append(scopeText);
     const toolbar = el('div', undefined, 'history-toolbar');
     const earlier = createButton('Load earlier runs'), refresh = createButton('Refresh history'), retry = createButton('Retry recorded history');
-    const reload = createButton('Reload recorded history');
-    toolbar.append(earlier, refresh, retry, reload);
+    const reload = createButton('Reload recorded history'), selected = createButton('View selected run');selected.hidden = true;
+    toolbar.append(earlier, refresh, retry, reload, selected);
     const status = el('p', '', 'history-status muted');status.setAttribute('role', 'status');
     const timeline = el('div', undefined, 'history-timeline');timeline.setAttribute('aria-label', 'Chronological branch timeline');
     const canvas = el('div', undefined, 'history-canvas');
@@ -51,6 +55,7 @@ export function mountRecordedHistory(container, {api, positiveId, parentScope, s
     container.append(section);
     let state, runView, frame = 0, observer, items = null, summaries = [], indexes = new Map(), contexts = new Map();
     let initialized = false, focusedRun = null, activeParent = null;
+    let restorePosition = typeof visit.resumeCursor === 'string' && Number.isFinite(visit.scrollLeft) && visit.scrollLeft >= 0;
     const columns = new Map(), branchNodes = new Map();
     const controller = createHistoryController({api, positiveId, restore:visit, onChange:next => {
         render(next);runView?.setState(next);
@@ -117,7 +122,8 @@ export function mountRecordedHistory(container, {api, positiveId, parentScope, s
                 button.classList.toggle('history-context-anchor', first);
                 button.style.insetBlockStart = `${80 + context.row * 57}px`;
                 button.textContent = first ? '−' : '';
-                button.setAttribute('aria-label', `Recorded run ${index + 1} of ${items.length} loaded · ${preview(context.summary)} · context ${anchor.context_id.slice(0, 8)} · anchor ${anchor.anchor_id}`);
+                const label = `Recorded run ${index + 1} of ${items.length} loaded · ${observedLabel(run.observed_dequeue_at)} · Outcome ${run.outcome} · ${preview(context.summary)} · context ${anchor.context_id.slice(0, 8)} · anchor ${anchor.anchor_id}`;
+                button.setAttribute('aria-label', label);button.title = label;
                 button.setAttribute('aria-pressed', String(state.selection.run_id === run.run_id && state.selection.context_id === anchor.context_id));
                 // Disabling a focused native button drops focus during a prepend read.
                 button.setAttribute('aria-disabled', String(!state.actionsEnabled));
@@ -128,7 +134,7 @@ export function mountRecordedHistory(container, {api, positiveId, parentScope, s
     }
     function render(next) {
         if (scope.signal.aborted) return;
-        const anchor = items !== next.window.items ? captureAnchor() : null;
+        const anchor = initialized && items !== next.window.items ? captureAnchor() : null;
         state = next;
         const window = next.window;
         if (items !== window.items) {
@@ -149,8 +155,7 @@ export function mountRecordedHistory(container, {api, positiveId, parentScope, s
                 branch.firstChild.textContent = `${preview(context.summary)} · ${id.slice(0, 8)} · ${distinction(context.summary)}`;
                 place(branches, branch, before);before = branch.nextSibling;
             }
-            if (!initialized && items.length) {timeline.scrollLeft = canvas.offsetWidth;timeline.scrollTop = state.intent.scrollTop;initialized = true;}
-            else if (anchor) {
+            if (anchor) {
                 const index = indexes.get(anchor.run);
                 if (index !== undefined) timeline.scrollLeft = Math.max(0, 38 + index * 64 - anchor.x);
             }
@@ -158,12 +163,25 @@ export function mountRecordedHistory(container, {api, positiveId, parentScope, s
         count.textContent = window.group ? `${window.recorded_run_count} distinct recorded runs as of this read · ${window.items.length} loaded positions` : '';
         const group = window.group;
         scopeText.textContent = group?.scope_status === 'uncapturable_text' ? 'This saved positive cannot be matched within frozen-text capture limits.' : 'Runs are grouped by exact frozen positive raw text, independently of saved pairs. Effective text, prepend/append composition and evidence can differ. Reported output locations do not establish context membership or historical file identity.';
-        status.setAttribute('role', window.error ? 'alert' : 'status');
+        status.setAttribute('role', window.error || next.run.error ? 'alert' : 'status');
         status.textContent = next.validating ? 'Revalidating recorded history…' : window.loading ? 'Loading recorded history…' : window.error ? 'Recorded history could not be loaded.' : next.refreshRequired ? 'Recorded evidence changed. Reload before using these actions.' : !items.length ? 'No matching recorded executions.' : window.has_more ? 'Newest bounded window · displayed in chronological order.' : 'All matching recorded runs in this window are loaded.';
+        if (next.run.error && !next.selection.run_id && !next.refreshRequired) status.textContent += ' The previous recorded selection could not be restored.';
+        const outside = !!next.selection.run_id && !indexes.has(next.selection.run_id);
+        if (outside && !next.validating && !next.refreshRequired) status.textContent += ` Selected run ${next.selection.run_id} is outside this loaded timeline window.`;
+        selected.hidden = !outside;selected.disabled = next.validating || window.loading || !!next.refreshRequired;
         earlier.hidden = !window.has_more;earlier.disabled = window.loading || !!next.refreshRequired;earlier.setAttribute('aria-disabled', String(earlier.disabled));
         refresh.disabled = window.loading || next.validating;retry.hidden = !window.error || !!next.refreshRequired;
         reload.hidden = !next.refreshRequired;reload.textContent = next.refreshLabel || 'Reload recorded history';
-        timeline.hidden = !items.length;renderColumns();if (anchor) restoreAnchor(anchor);
+        timeline.hidden = !items.length;
+        let initialAnchor = null;
+        if (!initialized && items.length && !window.loading && !next.validating && !next.refreshRequired) {
+            timeline.scrollLeft = restorePosition ? state.intent.scrollLeft : canvas.offsetWidth;
+            timeline.scrollTop = restorePosition ? state.intent.scrollTop : 0;
+            if (restorePosition && state.intent.anchor) initialAnchor = {run:state.intent.anchor.runId, context:state.intent.anchor.contextId, x:state.intent.anchor.x, y:state.intent.anchor.y};
+            initialized = true;restorePosition = false;
+        }
+        if (next.refreshRequired === 'history-changed') {initialized = false;restorePosition = false;}
+        renderColumns();if (initialAnchor || anchor) restoreAnchor(initialAnchor || anchor);
     }
     const schedule = () => {if (!frame) frame = requestAnimationFrame(() => {frame = 0;renderColumns();});};
     scope.listen(timeline, 'scroll', schedule);scope.listen(window, 'resize', schedule);
@@ -180,18 +198,24 @@ export function mountRecordedHistory(container, {api, positiveId, parentScope, s
         event.preventDefault();focusedRun = items[next].run_id;renderColumns();
         const button = columns.get(focusedRun).node.querySelector('button');button.focus({preventScroll:true});button.scrollIntoView({block:'nearest', inline:'nearest'});renderColumns();
     });
-    scope.listen(earlier, 'click', () => controller.loadEarlier());scope.listen(refresh, 'click', () => {initialized = false;controller.refresh();});
+    scope.listen(earlier, 'click', () => controller.loadEarlier());scope.listen(refresh, 'click', () => {initialized = false;restorePosition = false;controller.refresh();});
+    scope.listen(selected, 'click', () => {
+        if (!selected.disabled && state.selection.run_id) runView.open({runId:state.selection.run_id, anchorId:state.selection.anchor_id, contextId:state.selection.context_id, trigger:selected});
+    });
     scope.listen(retry, 'click', () => controller.load());scope.listen(reload, 'click', () => state.refreshRequired === 'history-changed' || state.refreshRequired === 'revalidation-failed' ? controller.refresh() : controller.loadOutputs());
     if (typeof IntersectionObserver === 'function') {
         observer = new IntersectionObserver(entries => {if (entries.some(entry => entry.isIntersecting) && state.actionsEnabled && state.window.has_more) controller.loadEarlier();}, {root:timeline});observer.observe(edge);
     }
     scope.listen(window, 'pagehide', dispose);
     scope.cleanup(() => {
-        Object.assign(visit, {mode:state.selection.mode, runId:state.selection.run_id, anchorId:state.selection.anchor_id, contextId:state.selection.context_id, scrollTop:timeline.scrollTop});
+        const anchor = captureAnchor();
+        Object.assign(visit, {mode:state.selection.mode, runId:state.selection.run_id, anchorId:state.selection.anchor_id, contextId:state.selection.context_id,
+            historyEpoch:state.window.history_epoch, resumeCursor:state.window.resume_cursor, loadedCount:state.window.items.length,
+            outputCount:state.outputs.items.length, outputsLoaded:state.outputs.capture !== null, receipt:state.selection.receipt && {...state.selection.receipt},
+            scrollLeft:timeline.scrollLeft, scrollTop:timeline.scrollTop, anchor:anchor && {runId:anchor.run, contextId:anchor.context, x:anchor.x, y:anchor.y}});
         observer?.disconnect();cancelAnimationFrame(frame);runView.dispose();controller.dispose();columns.clear();branchNodes.clear();section.remove();
     });
     render(state);
-    const reentry = Object.hasOwn(visit, 'mode');
-    void controller.load().then(() => {if (reentry && !scope.signal.aborted) return controller.revalidate();});
+    void controller.load();
     return {dispose};
 }

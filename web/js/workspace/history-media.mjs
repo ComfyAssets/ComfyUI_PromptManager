@@ -48,7 +48,7 @@ function validate(target) {
     urlFor(target, 'url', 'media'); urlFor(target, 'inspection_url', 'inspection'); urlFor(target, 'thumbnail_url', 'thumbnail');
 }
 function changed(code) {
-    return Object.assign(new Error('Current recorded location changed; reload before using this file.'), {refreshRequired:true, code, recovery:{action:code === 'history-changed' ? 'reload-history' : 'refresh-outputs'}});
+    return Object.assign(new Error('Current recorded location changed; reload before using this file.'), {status:409, refreshRequired:true, code, recovery:{action:code === 'history-changed' ? 'refresh-history' : 'reload-outputs'}});
 }
 function sameReference(a, b) {
     return object(a) && ['folder_type', 'subfolder', 'filename', 'path_style', 'root_key'].every(key => a[key] === b[key]);

@@ -60,14 +60,15 @@ class HistoryOutputAPITests(ImageAPITestCase):
         await super().tearDownAsync()
 
     def ref(self, node="1", ordinal=0, filename="image.png", **kwargs):
-        roots = snapshot_output_roots("posix", self.host_output, self.host_temp)
+        native = "windows" if os.name == "nt" else "posix"
+        roots = snapshot_output_roots(native, self.host_output, self.host_temp)
         return OutputReference(
             node,
             ordinal,
             kwargs.get("folder_type", "output"),
             kwargs.get("subfolder", ""),
             filename,
-            kwargs.get("path_style", "posix"),
+            kwargs.get("path_style", native),
             kwargs.get("root_key", roots.output_key),
         )
 
@@ -121,6 +122,11 @@ class HistoryOutputAPITests(ImageAPITestCase):
         self.assertEqual(body["code"], code)
         self.assertEqual(response.headers.get("Cache-Control"), "no-store")
         self.assertNotIn(str(self.comfy_dir), json.dumps(body))
+        if body["recovery"] is not None:
+            self.assertIn(
+                body["recovery"]["action"],
+                ("refresh-history", "reload-outputs", "retry-read", "smaller-limit"),
+            )
 
     def saved_state(self):
         conn = self.api.db.model.get_connection()
@@ -590,6 +596,64 @@ class HistoryOutputAPITests(ImageAPITestCase):
         self.assertEqual(len(body["items"]), 100)
         self.assertEqual(len(locators), 1)
 
+    async def test_portable_utf8_page_budget_recovers_every_receipt_on_native_files(
+        self,
+    ):
+        make_png(self.output_dir / "native-猫.png")
+        start = self.capture(
+            [self.ref("\x01\n猫" * 30, i, filename="native-猫.png") for i in range(100)]
+        )
+        response, page = await self.outputs(
+            start, {"epoch": start.storage_epoch, "limit": "100"}
+        )
+        self.assertEqual(response.status, 200, page)
+        self.assertTrue(
+            all(
+                item["current_candidate"]["status"] == "available"
+                for item in page["items"]
+            )
+        )
+        self.assertEqual(
+            page["items"][0]["reference"]["path_style"],
+            "windows" if os.name == "nt" else "posix",
+        )
+        encoded = await response.read()
+        self.assertIn(b"\\u0001", encoded)
+        self.assertIn(b"%01", encoded)
+        module = importlib.import_module("py.api.history")
+        with patch.object(module, "_OUTPUTS_MAX_BYTES", len(encoded)):
+            response, _ = await self.outputs(
+                start, {"epoch": start.storage_epoch, "limit": "100"}
+            )
+            self.assertEqual(response.status, 200)
+        with patch.object(module, "_OUTPUTS_MAX_BYTES", len(encoded) - 1):
+            response, error = await self.outputs(
+                start, {"epoch": start.storage_epoch, "limit": "100"}
+            )
+            self.assert_error(response, error, 422, "response-limit")
+            self.assertEqual(
+                error["recovery"], {"action": "smaller-limit", "limit": 50}
+            )
+            retained = []
+            cursor = None
+            for _ in range(2):
+                params = {"epoch": start.storage_epoch, "limit": "50"}
+                if cursor:
+                    params["cursor"] = cursor
+                response, smaller = await self.outputs(start, params)
+                self.assertEqual(response.status, 200, smaller)
+                retained.extend(item["occurrence"] for item in smaller["items"])
+                cursor = smaller["next_cursor"]
+            self.assertIsNone(cursor)
+            self.assertEqual(retained, [item["occurrence"] for item in page["items"]])
+        with patch.object(module, "_OUTPUTS_MAX_BYTES", 1):
+            response, error = await self.outputs(
+                start, {"epoch": start.storage_epoch, "limit": "1"}
+            )
+            self.assert_error(response, error, 422, "response-limit")
+            self.assertIsNone(error["recovery"])
+
+    @skipUnless(os.name != "nt", "Control-character physical filenames require POSIX")
     async def test_actual_control_heavy_page_uses_serialized_bytes_and_smaller_retry(
         self,
     ):
@@ -610,7 +674,7 @@ class HistoryOutputAPITests(ImageAPITestCase):
             response, error = await self.outputs(start)
             self.assert_error(response, error, 422, "response-limit")
             self.assertEqual(
-                error["recovery"], {"action": "retry-outputs", "limit": 20}
+                error["recovery"], {"action": "smaller-limit", "limit": 20}
             )
             response, smaller = await self.outputs(
                 start, {"epoch": start.storage_epoch, "limit": "20"}
@@ -624,6 +688,7 @@ class HistoryOutputAPITests(ImageAPITestCase):
             self.assert_error(response, error, 422, "response-limit")
             self.assertIsNone(error["recovery"])
 
+    @skipUnless(os.name != "nt", "Control-character physical paths require POSIX")
     async def test_legal_capture_can_exceed_one_mib_and_recover_without_lost_receipts(
         self,
     ):
@@ -640,7 +705,7 @@ class HistoryOutputAPITests(ImageAPITestCase):
             start, {"epoch": start.storage_epoch, "limit": "100"}
         )
         self.assert_error(response, error, 422, "response-limit")
-        self.assertEqual(error["recovery"], {"action": "retry-outputs", "limit": 50})
+        self.assertEqual(error["recovery"], {"action": "smaller-limit", "limit": 50})
         response, page = await self.outputs(
             start, {"epoch": start.storage_epoch, "limit": "50"}
         )
@@ -678,12 +743,16 @@ class HistoryOutputAPITests(ImageAPITestCase):
         self.assertEqual(await response.read(), path.read_bytes())
         make_png(self.temp_dir / "image.png")
         temp_key = snapshot_output_roots(
-            "posix", self.host_output, self.host_temp
+            "windows" if os.name == "nt" else "posix", self.host_output, self.host_temp
         ).temp_key
         denied = self.capture(
             [
                 self.ref("1", root_key=None),
-                self.ref("2", path_style="windows", root_key="a" * 64),
+                self.ref(
+                    "2",
+                    path_style="posix" if os.name == "nt" else "windows",
+                    root_key="a" * 64,
+                ),
                 self.ref("3", folder_type="temp", root_key=temp_key),
             ],
             item=1,

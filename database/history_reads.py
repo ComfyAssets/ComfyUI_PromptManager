@@ -235,10 +235,15 @@ class HistoryReadOperations:
         *,
         limit: int = 40,
         after: WindowPosition | None = None,
+        restart: bool = False,
     ) -> dict | None:
         conn = self._history_connection()
         _limit(limit)
         _validate_window_position(after)
+        if type(restart) is not bool or (
+            restart and (after is None or after.before != after.upper)
+        ):
+            raise ValueError("Invalid history restart position")
         saved = conn.execute(
             "SELECT CASE WHEN typeof(p.text)='text' AND "
             "length(CAST(p.text AS BLOB))<=65536 THEN p.text ELSE NULL END AS text "
@@ -264,6 +269,7 @@ class HistoryReadOperations:
             context_summaries=[],
             has_more=False,
             next_position=None,
+            resume_position=None,
         )
         if (
             raw_id is None
@@ -285,7 +291,7 @@ class HistoryReadOperations:
         ).fetchone()[0]
         result["recorded_run_count"] = count
         group["scope_status"] = "matched" if count else "no_matches"
-        if after is not None:
+        if after is not None and not restart:
             where += f" AND {_KEY}<(?,?,?,?)"
             params.extend(after.before)
         rows = [
@@ -301,6 +307,7 @@ class HistoryReadOperations:
         if not rows:
             return result
         upper = after.upper if after is not None else _key(rows[0])
+        result["resume_position"] = WindowPosition(raw_id, upper, upper)
         if more:
             result["next_position"] = WindowPosition(raw_id, upper, _key(rows[-1]))
         result["has_more"] = more
@@ -412,9 +419,11 @@ class HistoryReadOperations:
         snapshots = {
             row["anchor_id"]: row
             for row in conn.execute(
-                "SELECT rc.anchor_id,c.positive_snapshot_id,c.negative_snapshot_id "
+                "SELECT rc.anchor_id,c.positive_snapshot_id,c.negative_snapshot_id,"
+                "p.raw_text_id AS positive_raw_text_id "
                 "FROM execution_run_contexts rc JOIN execution_contexts c "
-                "ON c.context_id=rc.context_id WHERE rc.run_id=?",
+                "ON c.context_id=rc.context_id LEFT JOIN execution_prompt_snapshots p "
+                "ON p.snapshot_id=c.positive_snapshot_id WHERE rc.run_id=?",
                 (run_id,),
             )
         }
@@ -424,7 +433,11 @@ class HistoryReadOperations:
             context.update(
                 {
                     key: row[key]
-                    for key in ("positive_snapshot_id", "negative_snapshot_id")
+                    for key in (
+                        "positive_snapshot_id",
+                        "negative_snapshot_id",
+                        "positive_raw_text_id",
+                    )
                 }
             )
             pair = context["pair_id"]

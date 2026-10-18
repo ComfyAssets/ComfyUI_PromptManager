@@ -385,6 +385,24 @@ conflicting capture remains incomplete. Receipts prove reported locations, not
 historical bytes, newly generated files or context-output ownership. Cached
 attempts can repeat exactly the same receipts.
 
+Each nonempty history page also returns an authenticated `resume_cursor`, including
+an exhausted page with no continuation. Re-entry uses `resume` instead of `cursor`
+to read from that prior upper boundary, then restores at most the prior number of
+40-run pages. It retains horizontal/vertical scroll and the visible anchor as
+in-memory visit intent. The API validates epoch and exact saved-text scope again;
+DTOs and current candidates are never saved as visit intent. Explicit Refresh
+loads the newest window/count and revalidates the selected run's exact raw-positive
+membership, context and receipt. A valid selection outside that window has an
+explicit label and **View selected run** control.
+
+Every receipt can be selected, including missing/error candidates. **Retry current
+availability** rereads its existing bounded output page; a reduced response limit
+may require several reads within that one already loaded page. Earlier rows,
+context/mode, exact selection and saved gallery remain. Recovery actions use the
+shared client's strict `smaller-limit`, `reload-outputs`, `retry-read` and
+`refresh-history` vocabulary. Active inspection epoch/identity failures immediately
+reach the owning history recovery, clearing stale recorded actions before reload.
+
 Restore acceptance depends on merged #223: incompatible online storage
 replacement must safely refuse without harming another owner's WAL/connection.
 History fencing does not repair unsafe replacement. For accepted replacement,

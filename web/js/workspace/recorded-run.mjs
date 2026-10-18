@@ -75,12 +75,12 @@ export function mountRecordedRun(container, {api, controller, sender, parentScop
         }
         function restoreReceiptFocus() {
             const key = latest.selection.receipt && occurrenceKey(latest.selection.receipt);
-            receiptNodes.get(key)?.view?.focus({preventScroll:true});
+            const row = receiptNodes.get(key);(row?.view.hidden ? row.select : row?.view)?.focus({preventScroll:true});
         }
         const makeViewer = () => createMediaViewer({container, parentScope:local, inspectionController:inspection, sender, adapter:reportedLocationAdapter,
             onSelect:entry => {
                 if (closed || !latest.actionsEnabled) return;
-                controller.selectReceipt(entry.occurrence);inspected = occurrenceKey(entry.occurrence);inspection.select(entry);
+                inspected = occurrenceKey(entry.occurrence);controller.selectReceipt(entry.occurrence);inspection.select(entry);
             }, onRefresh:refreshCurrent, onRestoreFocus:restoreReceiptFocus,
             onClose:() => {viewerOpen = false;restoreReceiptFocus();},
         });
@@ -100,8 +100,12 @@ export function mountRecordedRun(container, {api, controller, sender, parentScop
         }
         function chooseReceipt(receipt, triggerButton) {
             if (!latest.actionsEnabled || closed) return;
-            controller.selectReceipt(receipt.occurrence);inspected = occurrenceKey(receipt.occurrence);
+            inspected = occurrenceKey(receipt.occurrence);controller.selectReceipt(receipt.occurrence);
             inspection.select(receipt.current_candidate.media);showViewer(triggerButton);
+        }
+        function selectReceipt(receipt) {
+            if (!latest.actionsEnabled || closed) return;
+            inspected = null;controller.selectReceipt(receipt.occurrence);inspection.clear();if (viewerOpen) resetViewer();
         }
         function closeRun(restore = true) {
             if (closed) return;closed = true;active = null;local.dispose();
@@ -124,13 +128,22 @@ export function mountRecordedRun(container, {api, controller, sender, parentScop
         local.listen(anchors, 'click', event => {const button = event.target.closest('[data-select-anchor]');if (button && latest.actionsEnabled) controller.selectContext(button.dataset.selectAnchor);});
         local.listen(more, 'click', () => controller.loadOutputs());local.listen(retryOutputs, 'click', () => controller.retryOutputs());
         local.listen(receipts, 'click', event => {
-            const button = event.target.closest('[data-view-receipt]');if (!button || button.disabled) return;
-            const receipt = latest.outputs.items.find(item => occurrenceKey(item.occurrence) === button.dataset.viewReceipt);
-            if (receipt) chooseReceipt(receipt, button);
+            const button = event.target.closest('[data-view-receipt],[data-select-receipt],[data-retry-receipt]');if (!button || button.disabled) return;
+            const key = button.dataset.viewReceipt ?? button.dataset.selectReceipt ?? button.dataset.retryReceipt;
+            const receipt = latest.outputs.items.find(item => occurrenceKey(item.occurrence) === key);if (!receipt) return;
+            if (button.hasAttribute('data-view-receipt')) chooseReceipt(receipt, button);
+            else if (button.hasAttribute('data-select-receipt')) selectReceipt(receipt);
+            else {selectReceipt(receipt);void controller.retryReceipt(receipt.occurrence);}
         });
         local.cleanup(inspection.subscribe(state => {
-            if (closed) return;inspector.setState(state);
-            for (const receipt of receiptNodes.values()) receipt.view.disabled = !latest.actionsEnabled || state.refreshRequired;
+            if (closed) return;
+            const target = selectedReceipt()?.current_candidate.media;
+            if (target && inspected === occurrenceKey(target.occurrence) && state.error && state.refreshRequired) {
+                controller.inspectionFailed(target, state);
+                if (inspected === null || !latest.selection.receipt) return;
+            }
+            inspector.setState(state);
+            for (const receipt of receiptNodes.values()) receipt.view.disabled = !latest.actionsEnabled || latest.outputs.loading || state.refreshRequired;
         }));
         function render(next) {
             if (closed || local.signal.aborted) return;
@@ -140,7 +153,13 @@ export function mountRecordedRun(container, {api, controller, sender, parentScop
             message.textContent = next.refreshRequired ? 'Recorded evidence changed. Reload before using these actions.' : next.validating ? 'Revalidating recorded run…' : next.run.error && selectedRun ? 'Recorded run details could not be loaded.' : !detail ? 'Loading recorded run…' : '';
             retry.hidden = !selectedRun || !next.run.error || !!next.refreshRequired;reload.hidden = !next.refreshRequired;reload.textContent = next.refreshLabel || 'Reload recorded history';
             body.hidden = !detail;raw.disabled = effective.disabled = !enabled;
-            if (!detail) {if (renderedDetail) {inspection.clear();renderedDetail = null;renderedRoles = '';metadata.replaceChildren();anchors.replaceChildren();receipts.replaceChildren();receiptNodes.clear();}return;}
+            if (!detail) {
+                if (renderedDetail) {
+                    inspected = null;inspection.clear();resetViewer();blocks.setState({actionsEnabled:false});proof.replaceChildren();current.hidden = true;
+                    renderedDetail = null;renderedRoles = '';metadata.replaceChildren();anchors.replaceChildren();receipts.replaceChildren();receiptNodes.clear();
+                }
+                return;
+            }
             raw.setAttribute('aria-pressed', String(next.selection.mode === 'raw'));effective.setAttribute('aria-pressed', String(next.selection.mode === 'effective'));
             if (detail !== renderedDetail) {
                 renderedDetail = detail;const run = detail.run;
@@ -189,15 +208,21 @@ export function mountRecordedRun(container, {api, controller, sender, parentScop
                 let record = receiptNodes.get(key);
                 if (!record) {
                     const node = el('li', undefined, 'recorded-receipt');node.dataset.receipt = key;node.dataset.outputNodeId = receipt.occurrence.output_node_id;node.dataset.imageOrdinal = String(receipt.occurrence.image_ordinal);
-                    const description = el('div'), view = createButton('View current file');view.dataset.viewReceipt = key;node.append(description, view);receipts.append(node);record = {node, description, view};receiptNodes.set(key, record);
+                    const description = el('div'), select = createButton('Select reported output'), view = createButton('View current file'), retry = createButton('Retry current availability');
+                    select.dataset.selectReceipt = view.dataset.viewReceipt = retry.dataset.retryReceipt = key;
+                    select.title = `Select output node ${receipt.occurrence.output_node_id} · image ordinal ${receipt.occurrence.image_ordinal}`;
+                    node.append(description, select, view, retry);receipts.append(node);record = {node, description, select, view, retry};receiptNodes.set(key, record);
                 }
                 const reference = receipt.reference;
                 record.description.textContent = `Output node ${receipt.occurrence.output_node_id} · image ordinal ${receipt.occurrence.image_ordinal} · ${reference.folder_type}/${[reference.subfolder, reference.filename].filter(Boolean).join('/')} · ${reference.path_style} · root namespace ${reference.root_key ?? 'not recorded'} · ${receipt.transient ? 'Transient' : 'Non-transient locator'} · capture ${output.capture?.state || detail.output_summary.state} · Current candidate: ${candidate.status}${candidate.reason ? ` · ${candidate.reason}` : ''}`;
                 record.node.setAttribute('aria-current', String(next.selection.receipt !== null && key === occurrenceKey(next.selection.receipt)));
-                record.view.hidden = candidate.status !== 'available';record.view.disabled = !enabled || inspection.state.refreshRequired;
+                record.select.setAttribute('aria-pressed', record.node.getAttribute('aria-current'));record.select.disabled = !enabled;
+                record.retry.hidden = candidate.status === 'available';record.retry.disabled = !enabled || output.loading;
+                record.view.hidden = candidate.status !== 'available';record.view.disabled = !enabled || output.loading || inspection.state.refreshRequired;
             }
-            const selected = selectedReceipt();current.hidden = !selected;
-            if (!selected && inspected !== null) {inspected = null;inspection.clear();if (viewerOpen) resetViewer();}
+            const selected = selectedReceipt(), selectedKey = selected && occurrenceKey(selected.occurrence);
+            current.hidden = !selected || inspected !== selectedKey || selected.current_candidate.status !== 'available';
+            if (inspected !== null && inspected !== selectedKey) {inspected = null;inspection.clear();if (viewerOpen) resetViewer();}
             if (!enabled && viewerOpen) resetViewer();
             if (enabled && !initialOutputQueued && !output.capture && !output.loading && !output.error) {
                 initialOutputQueued = true;
@@ -210,7 +235,11 @@ export function mountRecordedRun(container, {api, controller, sender, parentScop
         active = {close:closeRun, render};
         dialog.showModal();
         render(latest);
-        void controller.selectRun(runId, {anchorId, contextId});
+        const reusable = latest.actionsEnabled && latest.selection.run_id === runId && latest.run.detail && latest.outputs.capture && !latest.outputs.loading && !latest.outputs.error;
+        if (reusable) {
+            const context = latest.run.detail.contexts.find(context => (anchorId === null || context.anchor_id === anchorId) && (contextId === null || context.context_id === contextId));
+            if (context && context.anchor_id !== latest.selection.anchor_id) controller.selectContext(context.anchor_id);
+        } else void controller.selectRun(runId, {anchorId, contextId});
     }
     function setState(state) {if (scope.signal.aborted) return;latest = state;active?.render(state);}
     return {open, setState, dispose};

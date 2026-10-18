@@ -110,7 +110,13 @@ def register_workspace_history_commands(
     @routes.post("/__test__/history/commands")
     async def command(request: web.Request) -> web.Response:
         data = await request.json() if request.can_read_body else None
-        actions = {"release", "replace-file", "reconfigure-root"}
+        actions = {
+            "release",
+            "replace-file",
+            "reconfigure-root",
+            "make-missing-available",
+            "append-history-runs",
+        }
         if (
             not isinstance(data, dict)
             or type(data.get("action")) is not str
@@ -138,6 +144,40 @@ def register_workspace_history_commands(
             with Image.new("RGB", (160, 100), (225, 30, 40)) as image:
                 image.save(replacement)
             replacement.replace(root / "output" / "history" / "current.png")
+        elif action == "make-missing-available":
+            target = root / "output" / "history" / "missing.png"
+            with Image.new("RGB", (160, 100), (30, 150, 70)) as image:
+                image.save(target)
+        elif action == "append-history-runs":
+            session = str(uuid5(UUID(SESSION), "fixed-late-history"))
+            context = RecipeContext(
+                "10", _snapshot(HISTORY_POSITIVE), _snapshot("A negative"), "inferred"
+            )
+            for number in range(61):
+                job = str(uuid5(UUID(session), str(number)))
+                start = make_start(
+                    session,
+                    ((0, job, {}, {}), number),
+                    api.db.get_execution_epoch(),
+                    1_790_000_000_000 + number,
+                )
+                api.db.write_execution_start(start)
+                api.db.write_execution_finish(
+                    make_finish(
+                        session,
+                        number,
+                        start.storage_epoch,
+                        SimpleNamespace(
+                            messages=[("execution_success", {"prompt_id": job})]
+                        ),
+                        1_790_000_000_010 + number,
+                    )
+                )
+                api.db.write_execution_contexts(
+                    start.run_id,
+                    start.storage_epoch,
+                    ContextBundle((context,), "complete", "captured"),
+                )
         elif action == "reconfigure-root":
             import folder_paths
 

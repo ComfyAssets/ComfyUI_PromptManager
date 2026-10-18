@@ -101,7 +101,9 @@ class CurrentLocationTests(unittest.TestCase):
         self.assertEqual(candidate["gallery_match"], "none")
         self.assertRegex(candidate["location_key"], r"^[0-9a-f]{64}$")
         wrong = self.reference(
-            root_key=snapshot_output_roots("posix", str(self.output), None).output_key
+            root_key=snapshot_output_roots(
+                "windows" if os.name == "nt" else "posix", str(self.output), None
+            ).output_key
         )
         self.assertEqual(
             mod.resolve_current_candidate(wrong, scope, {}).public["reason"],
@@ -115,7 +117,11 @@ class CurrentLocationTests(unittest.TestCase):
             ({"root_key": None}, "root_unavailable"),
             ({"root_key": "a" * 64}, "namespace_mismatch"),
             (
-                {"path_style": "windows", "subfolder": "sub", "root_key": "b" * 64},
+                {
+                    "path_style": "posix" if os.name == "nt" else "windows",
+                    "subfolder": "sub",
+                    "root_key": "b" * 64,
+                },
                 "foreign_path_style",
             ),
             ({"subfolder": "../outside"}, "namespace_mismatch"),
@@ -133,7 +139,9 @@ class CurrentLocationTests(unittest.TestCase):
         reference = self.reference(
             folder_type="temp",
             root_key=snapshot_output_roots(
-                "posix", self.host_output, self.host_temp
+                "windows" if os.name == "nt" else "posix",
+                self.host_output,
+                self.host_temp,
             ).temp_key,
         )
         self.assertEqual(self.resolve(reference)["reason"], "not_authorized")

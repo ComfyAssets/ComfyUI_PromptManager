@@ -176,34 +176,32 @@ def _cursor_payload(token: str, kind: str) -> object:
 
 
 def _decode_window_cursor(
-    token: str | None, positive_id: int
+    token: str | None, positive_id: int, *, resume: bool = False
 ) -> tuple[str | None, WindowPosition | None]:
     if token is None:
         return None, None
     try:
-        value = _cursor_payload(token, "history-window")
+        value = _cursor_payload(token, "history-resume" if resume else "history-window")
         if type(value) is not dict or set(value) != {
             "version",
             "epoch",
             "positive_id",
             "raw_text_id",
-            "direction",
             "upper",
-            "before",
-        }:
+        } | (set() if resume else {"direction", "before"}):
             raise ValueError
         if (
             type(value["version"]) is not int
             or value["version"] != 1
             or _decimal(value["positive_id"], minimum=1) != positive_id
-            or value["direction"] != "older"
+            or (not resume and value["direction"] != "older")
             or type(value["raw_text_id"]) is not str
             or _DIGEST.fullmatch(value["raw_text_id"]) is None
         ):
             raise ValueError
         epoch = _uuid(value["epoch"])
         upper = _decode_run_key(value["upper"])
-        before = _decode_run_key(value["before"])
+        before = upper if resume else _decode_run_key(value["before"])
         if before > upper:
             raise ValueError
         return epoch, WindowPosition(value["raw_text_id"], upper, before)
@@ -212,21 +210,26 @@ def _decode_window_cursor(
 
 
 def _encode_window_cursor(
-    position: WindowPosition | None, epoch: str, positive_id: int
+    position: WindowPosition | None,
+    epoch: str,
+    positive_id: int,
+    *,
+    resume: bool = False,
 ) -> str | None:
     if position is None:
         return None
+    value = {
+        "version": 1,
+        "epoch": epoch,
+        "positive_id": str(positive_id),
+        "raw_text_id": position.raw_text_id,
+        "upper": _wire_run_key(position.upper),
+    }
+    if not resume:
+        value.update(direction="older", before=_wire_run_key(position.before))
     return _encode(
-        {
-            "version": 1,
-            "epoch": epoch,
-            "positive_id": str(positive_id),
-            "raw_text_id": position.raw_text_id,
-            "direction": "older",
-            "upper": _wire_run_key(position.upper),
-            "before": _wire_run_key(position.before),
-        },
-        _scope({"kind": "history-window"}),
+        value,
+        _scope({"kind": "history-resume" if resume else "history-window"}),
     )
 
 
@@ -293,15 +296,15 @@ def _encode_output_cursor(
 
 
 def _current_stale() -> HistoryReadError:
-    return HistoryReadError(409, "candidate-stale", {"action": "refresh-outputs"})
+    return HistoryReadError(409, "candidate-stale", {"action": "reload-outputs"})
 
 
 def _current_unavailable(reason: str) -> HistoryReadError:
     if reason == "temporary_unavailable":
         return HistoryReadError(503, "storage-unavailable", {"action": "retry-read"})
     if reason == "missing":
-        return HistoryReadError(404, "not-found", {"action": "retry-current-file"})
-    return HistoryReadError(403, "not-authorized", {"action": "retry-current-file"})
+        return HistoryReadError(404, "not-found", {"action": "retry-read"})
+    return HistoryReadError(403, "not-authorized", {"action": "retry-read"})
 
 
 def _check_current(
@@ -418,10 +421,17 @@ class HistoryRoutesMixin:
     @_history_errors
     async def get_library_history(self, request: web.Request) -> web.Response:
         _query(request)
+        if set(request.query) - {"limit", "cursor", "resume"} or (
+            "cursor" in request.query and "resume" in request.query
+        ):
+            raise ValueError("Invalid history window query")
         positive_id = _decimal(request.match_info["positive_id"], minimum=1)
         limit = _page_limit(request)
+        resuming = "resume" in request.query
         expected_epoch, position = _decode_window_cursor(
-            request.query.get("cursor"), positive_id
+            request.query.get("resume" if resuming else "cursor"),
+            positive_id,
+            resume=resuming,
         )
         fence = self._history_fence()
         db = self.db
@@ -432,7 +442,7 @@ class HistoryRoutesMixin:
                 with db.recorded_history_snapshot(expected_epoch) as epoch:
                     try:
                         result = db.list_history_window(
-                            positive_id, limit=limit, after=position
+                            positive_id, limit=limit, after=position, restart=resuming
                         )
                     except ValueError:
                         raise HistoryReadError(400, "invalid-cursor") from None
@@ -444,6 +454,9 @@ class HistoryRoutesMixin:
                 raise HistoryReadError(404, "not-found")
             result["next_cursor"] = _encode_window_cursor(
                 result.pop("next_position"), epoch, positive_id
+            )
+            result["resume_cursor"] = _encode_window_cursor(
+                result.pop("resume_position"), epoch, positive_id, resume=True
             )
             for run in result["items"]:
                 _wire_run(run)
@@ -529,7 +542,7 @@ class HistoryRoutesMixin:
                         )
                     except HistoryCaptureChanged:
                         raise HistoryReadError(
-                            409, "capture-changed", {"action": "refresh-outputs"}
+                            409, "capture-changed", {"action": "reload-outputs"}
                         ) from None
                     if result is not None:
                         paths = tuple(
@@ -585,7 +598,7 @@ class HistoryRoutesMixin:
             _check_current(scope, self, fence, epoch, generation)
             if len(encoded) > _OUTPUTS_MAX_BYTES:
                 recovery = (
-                    {"action": "retry-outputs", "limit": max(1, limit // 2)}
+                    {"action": "smaller-limit", "limit": max(1, limit // 2)}
                     if limit > 1
                     else None
                 )

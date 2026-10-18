@@ -1,5 +1,7 @@
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
 import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import {readFile,writeFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
 
 test.use({locale:'en-US',timezoneId:'UTC',reducedMotion:'reduce'});
 const recorded=page=>page.getByRole('region',{name:'Recorded executions',exact:true});
@@ -21,6 +23,19 @@ const restoreSnapshot=async(request,bytes)=>{const response=await request.post('
 const historyRead=async(request,id)=>{const response=await request.get(`/prompt_manager/library/${id}/history`);await expect(response).toBeOK();return response.json();};
 const frozenContexts=contexts=>contexts.map(({navigation,positive_prompt_id,negative_prompt_id,pair_id,...frozen})=>frozen);
 const immutableReceipts=items=>items.map(({current_candidate,...receipt})=>receipt);
+
+async function reviewCapture(page,testInfo,name,target) {
+    await target.scrollIntoViewIfNeeded();await expect(target).toBeVisible();await page.evaluate(()=>document.fonts.ready);
+    const path=testInfo.outputPath(`${name}.png`);await target.screenshot({path,animations:'disabled'});await testInfo.attach(name,{path,contentType:'image/png'});
+    const geometry=await target.evaluate(node=>{
+        const box=node.getBoundingClientRect();
+        return {bounds:{x:box.x,y:box.y,width:box.width,height:box.height},scrollLeft:node.scrollLeft,scrollTop:node.scrollTop,
+            buttons:[...node.querySelectorAll('button')].filter(button=>button.checkVisibility()).map(button=>{const box=button.getBoundingClientRect();return {label:button.getAttribute('aria-label')||button.textContent,disabled:button.disabled,pressed:button.getAttribute('aria-pressed'),width:box.width,height:box.height};})};
+    });
+    const geometryPath=testInfo.outputPath(`${name}-geometry.json`);await writeFile(geometryPath,JSON.stringify(geometry,null,2));
+    await testInfo.attach(`${name}-geometry`,{path:geometryPath,contentType:'application/json'});
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+}
 
 test('owned history commands validate fixed boundaries and expire after ordinary reset',async({request})=>{
     for(const data of [{}, {action:'arm',boundary:'arbitrary'}, {action:'replace-file',path:'/tmp/other'}, {action:'release',extra:true}, {action:'restore'}]) expect((await request.post('/__test__/history/commands',{data})).status()).toBe(400);
@@ -132,6 +147,9 @@ for(const outcome of ['success','error'])test(`delayed actual old browser ${outc
         await marker(page,f.runs.shared).click();await started;if(outcome==='success')await restoreSnapshot(request,bytes);
         await page.evaluate(()=>{location.hash='#/overview';});await expect(page.locator('#workspace-main h1')).toHaveText('Overview');release();
         await page.unroute(new RegExp(`/history/runs/${f.runs.shared}\\?`));await open(page,f.detail_id);
+        await expect(recorded(page).locator('button[data-run-id]')).toHaveCount(0);
+        await expect(recorded(page).getByRole('button',{name:'Reload recorded history',exact:true})).toBeVisible();
+        await recorded(page).getByRole('button',{name:'Reload recorded history',exact:true}).click();
         await expect(recorded(page).locator('button[data-run-id]').first()).toBeEnabled();await expect(page.locator('dialog[open]')).toHaveCount(0);
         await marker(page,f.runs.empty).click();await expect(dialog(page)).toContainText(f.runs.empty);await page.keyboard.press('Escape');await expect(saved(page)).toBeVisible();
     } finally {release();}
@@ -215,6 +233,153 @@ test('every ordered receipt remains selected through distinct current locations,
     await page.keyboard.press('Escape');await expect(dialog(page)).toHaveCount(0);await expect(marker(page,f.runs.shared)).toBeFocused();
     const window=await(await request.get(`/prompt_manager/library/${f.detail_id}/history`)).json();
     const outputs=await(await request.get(`/prompt_manager/history/runs/${f.runs.shared}/outputs?epoch=${window.history_epoch}`)).json();expect(outputs.items).toHaveLength(5);
+});
+
+test('inspection first discovers a real restore and immediately retires every surrounding recorded action',async({page,request})=>{
+    const f=page.fixture;await open(page,f.detail_id);await marker(page,f.runs.shared).click();
+    await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
+    const snapshot=await request.get('/__test__/history/snapshot');await expect(snapshot).toBeOK();
+    await command(request,{action:'arm',boundary:'inspection'});
+    const inspectionRead=page.waitForResponse(response=>new URL(response.url()).pathname.endsWith('/output/current/inspection'));
+    try {
+        await dialog(page).locator('[data-receipt]').first().getByRole('button',{name:'View current file',exact:true}).click();
+        await expect(page.getByRole('dialog',{name:'Image preview',exact:true})).toBeVisible();
+        await expect.poll(async()=> (await(await request.get('/__test__/history/checkpoint')).json()).entered).toBe(true);
+        await page.evaluate(()=>{
+            window.recordedRecoveryStates=[];
+            const run=document.querySelector('.recorded-run-dialog');let changed=false;
+            const observer=new MutationObserver(()=>{
+                changed ||= run.querySelector('.recorded-run-status').textContent.includes('Recorded evidence changed');
+                if(changed)window.recordedRecoveryStates.push({receipts:run.querySelectorAll('[data-receipt]').length,active:[...run.querySelectorAll('[data-send-role],[data-copy-role],[data-view-receipt]')].filter(node=>!node.disabled&&node.checkVisibility()).length});
+            });observer.observe(run,{subtree:true,childList:true,attributes:true,characterData:true});
+        });
+        await restoreSnapshot(request,await snapshot.body());
+    } finally {await command(request,{action:'release'});}
+    const response=await inspectionRead;expect(response.status()).toBe(409);expect((await response.json()).code).toBe('history-changed');
+    await expect(dialog(page).locator('.recorded-run-status')).toContainText('Recorded evidence changed');
+    const viewer=page.getByRole('dialog',{name:'Image preview',exact:true});
+    if(await viewer.count())await page.keyboard.press('Escape');
+    await expect(dialog(page)).toBeVisible();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(0);
+    await expect(dialog(page).locator('[data-send-role]:enabled:visible,[data-copy-role]:enabled:visible,[data-view-receipt]:enabled:visible')).toHaveCount(0);
+    await expect(recorded(page).locator('button[data-run-id]')).toHaveCount(0);
+    await expect(page.locator('.library-parent-status')).toContainText('revalidated');
+    const states=await page.evaluate(()=>window.recordedRecoveryStates);expect(states.length).toBeGreaterThan(0);expect(states.every(state=>state.receipts===0&&state.active===0)).toBe(true);
+    await expect(dialog(page).getByRole('button',{name:'Reload recorded history',exact:true})).toBeVisible();
+});
+
+test('active stale inspection echo reaches history ownership without a second metadata implementation',async({page})=>{
+    const f=page.fixture;await open(page,f.detail_id);await marker(page,f.runs.shared).click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
+    await page.route(/\/output\/current\/inspection\?/,async route=>{
+        const response=await route.fetch(),body=await response.json();body.history_epoch='33333333-3333-3333-3333-333333333333';await route.fulfill({response,json:body});
+    });
+    await dialog(page).locator('[data-receipt]').first().getByRole('button',{name:'View current file',exact:true}).click();
+    await expect(dialog(page).locator('.recorded-run-status')).toContainText('Recorded evidence changed');
+    await expect(dialog(page).locator('[data-receipt]')).toHaveCount(0);await expect(recorded(page).locator('button[data-run-id]')).toHaveCount(0);
+});
+
+test('unavailable exact receipt selection and targeted retry observe a newly available file without writes',async({page,request})=>{
+    const f=page.fixture;await open(page,f.detail_id);await page.getByRole('button',{name:'Select negative variant 1',exact:true}).click();
+    const keys=await gallery(page).locator('article[data-image-key]').evaluateAll(nodes=>nodes.map(node=>node.dataset.imageKey));
+    let writes=0,galleryReads=0,outputReads=0;
+    page.on('request',request=>{const url=new URL(request.url());if(url.pathname.startsWith('/prompt_manager/')&&request.method()!=='GET')writes++;if(url.pathname.endsWith('/images'))galleryReads++;if(url.pathname.endsWith('/outputs'))outputReads++;});
+    await marker(page,f.runs.shared,'z').click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
+    await dialog(page).getByRole('button',{name:'Effective',exact:true}).click();
+    const missing=dialog(page).locator('[data-output-node-id="2"][data-image-ordinal="1"]');await expect(missing).toContainText('missing');
+    await missing.getByRole('button',{name:'Select reported output',exact:true}).click();await expect(missing).toHaveAttribute('aria-current','true');
+    await expect(missing.getByRole('button',{name:'View current file',exact:true})).toBeHidden();
+    await command(request,{action:'make-missing-available'});
+    const beforeReads=outputReads,beforeGallery=galleryReads;
+    await missing.getByRole('button',{name:'Retry current availability',exact:true}).click();
+    await expect(missing).toContainText('Current candidate: available');await expect(missing).toHaveAttribute('aria-current','true');
+    expect(outputReads).toBe(beforeReads+1);expect(galleryReads).toBe(beforeGallery);expect(writes).toBe(0);
+    await expect(dialog(page).getByRole('button',{name:'Effective',exact:true})).toHaveAttribute('aria-pressed','true');
+    await expect(dialog(page).getByRole('group',{name:'Recorded anchors',exact:true}).locator('[aria-pressed="true"]')).toContainText('z');
+    await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
+    await missing.getByRole('button',{name:'View current file',exact:true}).click();await expect(page.getByRole('dialog',{name:'Image preview',exact:true})).toBeVisible();await page.keyboard.press('Escape');
+    await expect(missing).toHaveAttribute('aria-current','true');await page.keyboard.press('Escape');
+    await expect(page.getByRole('button',{name:'Select negative variant 1',exact:true})).toHaveAttribute('aria-pressed','true');
+    expect(await gallery(page).locator('article[data-image-key]').evaluateAll(nodes=>nodes.map(node=>node.dataset.imageKey))).toEqual(keys);expect(writes).toBe(0);
+});
+
+test('marker labels disclose exact observed dequeue and outcome including times outside display range',async({page,request})=>{
+    const f=page.fixture;await open(page,f.detail_id);const window=await historyRead(request,f.detail_id);
+    for(const run of window.items)for(const anchor of [...new Map(run.matching_anchors.map(anchor=>[anchor.context_id,run.matching_anchors.find(first=>first.context_id===anchor.context_id)])).values()]) {
+        const button=recorded(page).locator(`button[data-run-id="${run.run_id}"][data-context-id="${anchor.context_id}"]`);
+        const label=await button.getAttribute('aria-label');
+        expect(label).toContain(`Observed dequeue ${run.observed_dequeue_at} ms`);expect(label).toContain(`Outcome ${run.outcome}`);expect(label).toContain(`anchor ${anchor.anchor_id}`);
+        expect(await button.getAttribute('title')).toBe(label);
+        if(run.observed_dequeue_at==='9223372036854775807')expect(label).toContain('outside display range');
+    }
+});
+
+test('same-epoch refresh retains recorded context mode and exact receipt after fresh candidate reads',async({page})=>{
+    const f=page.fixture;await open(page,f.detail_id);await marker(page,f.runs.shared,'z').click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
+    await dialog(page).getByRole('button',{name:'Effective',exact:true}).click();
+    const selected=dialog(page).locator('[data-output-node-id="2"][data-image-ordinal="1"]');await selected.getByRole('button',{name:'Select reported output',exact:true}).click();
+    await page.keyboard.press('Escape');
+    let reads=0;page.on('request',request=>{if(new URL(request.url()).pathname.endsWith('/outputs'))reads++;});
+    await recorded(page).getByRole('button',{name:'Refresh history',exact:true}).click();
+    await expect(marker(page,f.runs.shared,'z')).toHaveAttribute('aria-pressed','true');await expect.poll(()=>reads).toBe(1);
+    await marker(page,f.runs.shared,'z').click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
+    await expect(selected).toHaveAttribute('aria-current','true');await expect(dialog(page).getByRole('button',{name:'Effective',exact:true})).toHaveAttribute('aria-pressed','true');
+    await expect(dialog(page).getByRole('group',{name:'Recorded anchors',exact:true}).locator('[aria-pressed="true"]')).toContainText('z');
+});
+
+test('route reentry restores older timeline range and both scroll axes after 61 new same-epoch runs',async({page,request})=>{
+    const reset=await request.post('/__test__/reset',{data:{chronological_history:true,history_runs:85}});await expect(reset).toBeOK();const f=await reset.json();
+    await page.addInitScript(()=>{window.IntersectionObserver=undefined;});await open(page,f.positive_id);
+    await expect(recorded(page)).toContainText('40 loaded positions');await recorded(page).getByRole('button',{name:'Load earlier runs',exact:true}).click();await expect(recorded(page)).toContainText('80 loaded positions');
+    const oldIds=await recorded(page).locator('[data-history-run]').evaluateAll(nodes=>nodes.map(node=>node.dataset.historyRun));const oldRun=oldIds[0];
+    await marker(page,oldRun).click();await expect(dialog(page)).toContainText(oldRun);await dialog(page).getByRole('button',{name:'Effective',exact:true}).click();await page.keyboard.press('Escape');
+    const timeline=recorded(page).locator('.history-timeline');await timeline.evaluate(node=>{node.scrollLeft=731;node.scrollTop=95;node.dispatchEvent(new Event('scroll'));});
+    const scroll=await timeline.evaluate(node=>({left:node.scrollLeft,top:node.scrollTop}));expect(scroll.left).toBeGreaterThan(0);expect(scroll.top).toBeGreaterThan(0);
+    await page.getByRole('link',{name:'Back to library',exact:true}).evaluate(node=>node.click());await expect(recorded(page)).toHaveCount(0);await command(request,{action:'append-history-runs'});
+    let windowReads=0;page.on('request',request=>{if(/\/library\/\d+\/history$/.test(new URL(request.url()).pathname))windowReads++;});
+    let release,entered;const held=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});
+    await page.route(new RegExp(`/history/runs/${oldRun}\\?`),async route=>{const response=await route.fetch();entered();await held;await route.fulfill({response}).catch(()=>{});});
+    try {
+        await page.evaluate(id=>{location.hash=`#/library/${id}`;},f.positive_id);await started;
+        await expect(recorded(page)).toContainText('80 loaded positions');await expect(marker(page,oldRun)).toHaveAttribute('aria-disabled','true');
+    } finally {release();}
+    await expect(marker(page,oldRun)).toHaveAttribute('aria-pressed','true');await expect(marker(page,oldRun)).toHaveAttribute('aria-disabled','false');
+    expect(await recorded(page).locator('[data-history-run]').evaluateAll(nodes=>nodes.map(node=>node.dataset.historyRun))).toEqual(oldIds);expect(windowReads).toBe(2);
+    const restored=await timeline.evaluate(node=>({left:node.scrollLeft,top:node.scrollTop}));expect(Math.abs(restored.left-scroll.left)).toBeLessThanOrEqual(1);expect(Math.abs(restored.top-scroll.top)).toBeLessThanOrEqual(1);
+    await recorded(page).getByRole('button',{name:'Refresh history',exact:true}).click();await expect(recorded(page)).toContainText('149 distinct recorded runs');await expect(recorded(page)).toContainText('40 loaded positions');
+    await expect(recorded(page).locator('.history-status')).toContainText(`Selected run ${oldRun} is outside this loaded timeline window`);await expect(marker(page,oldRun)).toHaveCount(0);
+    await recorded(page).getByRole('button',{name:'View selected run',exact:true}).click();await expect(dialog(page)).toContainText(oldRun);await expect(dialog(page).getByRole('button',{name:'Effective',exact:true})).toHaveAttribute('aria-pressed','true');
+});
+
+for(const [width,height] of [[1600,1100],[390,844]])for(const theme of ['dark','light'])test(`final fix review states ${width} ${theme}`,async({page,request},testInfo)=>{
+    test.setTimeout(60000);await page.setViewportSize({width,height});await page.addInitScript(()=>{window.IntersectionObserver=undefined;});
+    const f=page.fixture;await open(page,f.detail_id);await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+    await marker(page,f.runs.shared,'z').click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
+    const missing=dialog(page).locator('[data-output-node-id="2"][data-image-ordinal="1"]');await missing.getByRole('button',{name:'Select reported output',exact:true}).click();
+    await expect(missing).toHaveAttribute('aria-current','true');await expect(missing.getByRole('button',{name:'Retry current availability',exact:true})).toBeVisible();
+    await reviewCapture(page,testInfo,`missing-selected-${width}-${theme}`,missing);
+    await reviewCapture(page,testInfo,`missing-dialog-${width}-${theme}`,dialog(page));
+    await command(request,{action:'make-missing-available'});await missing.getByRole('button',{name:'Retry current availability',exact:true}).click();
+    await expect(missing.getByRole('button',{name:'View current file',exact:true})).toBeVisible();await expect(missing).toHaveAttribute('aria-current','true');
+    await reviewCapture(page,testInfo,`available-selected-${width}-${theme}`,missing);await page.keyboard.press('Escape');
+    const reset=await request.post('/__test__/reset',{data:{chronological_history:true,history_runs:85}});await expect(reset).toBeOK();const range=await reset.json();await open(page,range.positive_id);
+    await recorded(page).getByRole('button',{name:'Load earlier runs',exact:true}).click();await expect(recorded(page)).toContainText('80 loaded positions');
+    const ids=await recorded(page).locator('[data-history-run]').evaluateAll(nodes=>nodes.map(node=>node.dataset.historyRun)),oldRun=ids[0];
+    await marker(page,oldRun).click();await expect(dialog(page)).toContainText(oldRun);await dialog(page).getByRole('button',{name:'Effective',exact:true}).click();await page.keyboard.press('Escape');
+    const timeline=recorded(page).locator('.history-timeline');await timeline.evaluate(node=>{node.scrollLeft=731;node.scrollTop=95;node.dispatchEvent(new Event('scroll'));});
+    const before=await timeline.evaluate(node=>({left:node.scrollLeft,top:node.scrollTop}));await reviewCapture(page,testInfo,`range-before-${width}-${theme}`,timeline);
+    await page.getByRole('link',{name:'Back to library',exact:true}).evaluate(node=>node.click());await expect(recorded(page)).toHaveCount(0);await command(request,{action:'append-history-runs'});
+    await page.evaluate(id=>{location.hash=`#/library/${id}`;},range.positive_id);await expect(recorded(page)).toContainText('80 loaded positions');await expect(marker(page,oldRun)).toHaveAttribute('aria-disabled','false');await expect(marker(page,oldRun)).toHaveAttribute('aria-pressed','true');
+    const after=await timeline.evaluate(node=>({left:node.scrollLeft,top:node.scrollTop}));expect(Math.abs(after.left-before.left)).toBeLessThanOrEqual(1);expect(Math.abs(after.top-before.top)).toBeLessThanOrEqual(1);
+    expect(await recorded(page).locator('[data-history-run]').evaluateAll(nodes=>nodes.map(node=>node.dataset.historyRun))).toEqual(ids);
+    await reviewCapture(page,testInfo,`range-after-${width}-${theme}`,timeline);
+    await recorded(page).getByRole('button',{name:'Refresh history',exact:true}).click();await expect(recorded(page)).toContainText(`Selected run ${oldRun} is outside this loaded timeline window`);await expect(recorded(page)).toContainText('149 distinct recorded runs');
+    await reviewCapture(page,testInfo,`outside-window-${width}-${theme}`,recorded(page));
+    await recorded(page).getByRole('button',{name:'View selected run',exact:true}).click();await expect(dialog(page)).toContainText(oldRun);await expect(dialog(page).getByRole('button',{name:'Effective',exact:true})).toHaveAttribute('aria-pressed','true');
+    await reviewCapture(page,testInfo,`outside-selected-dialog-${width}-${theme}`,dialog(page));
+    const hashes={};
+    for(const path of ['docs/concepts/workspace/index.html','docs/concepts/workspace/app.js','docs/concepts/workspace/style.css','database/history_reads.py','py/api/history.py','web/js/workspace/history-state.mjs','web/js/workspace/history-media.mjs','web/js/workspace/history.mjs','web/js/workspace/recorded-run.mjs','web/js/workspace/library.css'])hashes[path]=createHash('sha256').update(await readFile(new URL(`../../${path}`,import.meta.url))).digest('hex');
+    expect(hashes['docs/concepts/workspace/index.html']).toBe('d84712c7284bb232919a1ed9b154575c8ac574f63b2404a4ac4bc06cbf323c03');expect(hashes['docs/concepts/workspace/app.js']).toBe('e33e7652da12a68cd3fe31e94d77d680aa439b6434ceee94f21cc4ce8883263e');expect(hashes['docs/concepts/workspace/style.css']).toBe('2c479ca1a2ddbbd14a550eae27dd731c326ccdb91fe9ddc87e2b81cd5298fce8');
+    const manifest=testInfo.outputPath('final-fix-visual-source-and-scroll.json');await writeFile(manifest,JSON.stringify({width,height,theme,oldRun,before,after,hashes},null,2));
+    await testInfo.attach('final-fix-visual-source-and-scroll.json',{path:manifest,contentType:'application/json'});
 });
 
 test('output capture distinguishes unknown, complete zero, partial and conflicts with exact out-of-range time',async({page})=>{
@@ -345,7 +510,7 @@ test('capture recovery reloads only reported outputs while retaining frozen run 
     const f=page.fixture;let failures=2,outputReads=0,runReads=0,galleryReads=0;
     page.on('request',request=>{const path=new URL(request.url()).pathname;if(path===`/prompt_manager/history/runs/${f.runs.shared}`)runReads++;if(path===`/prompt_manager/library/${f.detail_id}/images`)galleryReads++;});
     await page.route(/\/history\/runs\/[^/]+\/outputs\?/,async route=>{
-        outputReads++;if(failures-->0)return route.fulfill({status:409,json:{success:false,history_version:1,code:'capture-changed',error:'Reported output capture changed',recovery:{action:'refresh-outputs'}}});
+        outputReads++;if(failures-->0)return route.fulfill({status:409,json:{success:false,history_version:1,code:'capture-changed',error:'Reported output capture changed',recovery:{action:'reload-outputs'}}});
         await route.continue();
     });
     await open(page,f.detail_id);await marker(page,f.runs.shared).click();
@@ -358,7 +523,7 @@ test('history epoch recovery reports saved-parent read failures and retries with
     const f=page.fixture;await open(page,f.detail_id);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
     let parentFailure=true,galleryReads=0;page.on('request',request=>{if(new URL(request.url()).pathname===`/prompt_manager/library/${f.detail_id}/images`)galleryReads++;});
     await page.route(new RegExp(`/prompt_manager/library/${f.detail_id}(?:\\?|$)`),async route=>parentFailure?route.fulfill({status:503,json:{success:false,error:'Unavailable'}}):route.continue());
-    await page.route(/\/history\/runs\/[^/]+\/outputs\?/,async route=>route.fulfill({status:409,json:{success:false,history_version:1,code:'history-changed',error:'History changed',recovery:{action:'reload-history'}}}));
+    await page.route(/\/history\/runs\/[^/]+\/outputs\?/,async route=>route.fulfill({status:409,json:{success:false,history_version:1,code:'history-changed',error:'History changed',recovery:{action:'refresh-history'}}}));
     await marker(page,f.runs.shared).click();await expect(dialog(page)).toContainText('Recorded evidence changed');await dialog(page).getByRole('button',{name:'Close recorded run',exact:true}).click();
     const retry=page.getByRole('button',{name:'Retry saved Library details',exact:true});await expect(retry).toBeVisible();await expect(page.locator('.library-parent-status')).toContainText('could not be revalidated');
     parentFailure=false;await retry.click();await expect(page.locator('.library-parent-status')).toContainText('revalidated');await expect(retry).toBeHidden();
@@ -374,7 +539,7 @@ test('changed saved-owner identity is disclosed without silently relabeling or r
     await expect(await request.delete(`/prompt_manager/images/${f.detail_image_id}`)).toBeOK();
     for(const variant of details.variants) await expect(await request.delete(`/prompt_manager/pairs/${variant.id}`)).toBeOK();
     await expect(await request.put(`/prompt_manager/prompts/${f.detail_id}`,{data:{text:'Replaced saved owner'}})).toBeOK();
-    await page.route(/\/history\/runs\/[^/]+\/outputs\?/,async route=>route.fulfill({status:409,json:{success:false,history_version:1,code:'history-changed',error:'History changed',recovery:{action:'reload-history'}}}));
+    await page.route(/\/history\/runs\/[^/]+\/outputs\?/,async route=>route.fulfill({status:409,json:{success:false,history_version:1,code:'history-changed',error:'History changed',recovery:{action:'refresh-history'}}}));
     await marker(page,f.runs.shared).click();await expect(dialog(page)).toContainText('Recorded evidence changed');await dialog(page).getByRole('button',{name:'Close recorded run',exact:true}).click();
     await expect(page.locator('.library-parent-status')).toContainText('changed');expect(await exact(positive.locator('pre'))).toBe(original);
     const reload=page.getByRole('button',{name:'Reload saved Library view',exact:true});await expect(reload).toBeVisible();
@@ -388,7 +553,7 @@ test('a bounded saved-parent prefix leaves previously loaded variants unverified
     await open(page,f.detail_id);await expect(page.getByRole('button',{name:'Load more negative variants',exact:true})).toBeVisible();await page.getByRole('button',{name:'Load more negative variants',exact:true}).click();
     const choices=page.getByRole('button',{name:/^Select negative variant /});await expect(choices).toHaveCount(43);await choices.last().click();await expect(choices.last()).toHaveAttribute('aria-pressed','true');
     const negative=await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).textContent();
-    await page.route(/\/history\/runs\/[^/]+\/outputs\?/,async route=>route.fulfill({status:409,json:{success:false,history_version:1,code:'history-changed',error:'History changed',recovery:{action:'reload-history'}}}));
+    await page.route(/\/history\/runs\/[^/]+\/outputs\?/,async route=>route.fulfill({status:409,json:{success:false,history_version:1,code:'history-changed',error:'History changed',recovery:{action:'refresh-history'}}}));
     await marker(page,f.runs.shared).click();await expect(dialog(page)).toContainText('Recorded evidence changed');await page.keyboard.press('Escape');
     await expect(page.locator('.library-parent-status')).toContainText('not observed in this bounded revalidation page');await expect(page.locator('.library-parent-status')).not.toContainText(/deleted|removed/i);
     await expect(choices.last()).toHaveAttribute('aria-pressed','true');expect(await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).textContent()).toBe(negative);
@@ -467,7 +632,7 @@ test('capture-only recovery uses the changed real output capture without re-read
         outputsReads++;
         if(outputsReads===1) {
             const write=await request.post('/__test__/history/capture-zero-outputs',{data:{run_id:f.runs.whitespace}});await expect(write).toBeOK();expect((await write.json()).success).toBe(true);
-            return route.fulfill({status:409,json:{success:false,history_version:1,code:'capture-changed',error:'Reported output capture changed',recovery:{action:'refresh-outputs'}}});
+            return route.fulfill({status:409,json:{success:false,history_version:1,code:'capture-changed',error:'Reported output capture changed',recovery:{action:'reload-outputs'}}});
         }
         await route.continue();
     });

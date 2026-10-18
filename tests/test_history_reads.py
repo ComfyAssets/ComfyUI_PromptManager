@@ -272,6 +272,83 @@ class HistoryReadTests(unittest.TestCase):
                     ),
                 )
 
+    def test_restart_is_upper_inclusive_with_fresh_rows_and_the_same_bounded_query_cost(
+        self,
+    ):
+        db = self.database()
+        self.saved(db)
+        starts = [self.capture(db, i, time=i) for i in range(45)]
+        conn = db.model.get_connection()
+        trace = []
+        conn.set_trace_callback(trace.append)
+        with db.recorded_history_snapshot():
+            first = db.list_history_window(1)
+        self.assertIn("resume_position", first)
+        baseline_queries = len([sql for sql in trace if sql.startswith("SELECT")])
+        conn.set_trace_callback(None)
+        for i in range(45, 106):
+            self.capture(db, i, time=i)
+        trace.clear()
+        conn.set_trace_callback(trace.append)
+        try:
+            with db.recorded_history_snapshot():
+                resumed = db.list_history_window(
+                    1, after=first["resume_position"], restart=True
+                )
+        finally:
+            conn.set_trace_callback(None)
+        self.assertEqual(resumed["recorded_run_count"], 45)
+        self.assertEqual(
+            [run["run_id"] for run in resumed["items"]],
+            [start.run_id for start in starts[5:]],
+        )
+        self.assertLessEqual(
+            len([sql for sql in trace if sql.startswith("SELECT")]), baseline_queries
+        )
+        run_queries = [
+            sql for sql in trace if sql.startswith("SELECT r.* FROM execution_runs")
+        ]
+        self.assertEqual(len(run_queries), 1)
+        self.assertIn("LIMIT 41", run_queries[0])
+        plan = list(conn.execute("EXPLAIN QUERY PLAN " + run_queries[0]))
+        self.assertTrue(any("INDEX" in row[3] for row in plan), plan)
+        with db.recorded_history_snapshot():
+            earlier = db.list_history_window(1, after=resumed["next_position"])
+        self.assertEqual(
+            [run["run_id"] for run in earlier["items"]],
+            [start.run_id for start in starts[:5]],
+        )
+        self.assertFalse(earlier["has_more"])
+        self.assertEqual(earlier["resume_position"], first["resume_position"])
+
+    def test_restart_requires_a_complete_authenticated_style_upper_position_before_sql(
+        self,
+    ):
+        from database.history_reads import WindowPosition
+
+        db = self.database()
+        self.saved(db)
+        self.capture(db)
+        with db.recorded_history_snapshot():
+            page = db.list_history_window(1)
+            self.assertIn("resume_position", page)
+            position = page["resume_position"]
+            for options in (
+                {"restart": True},
+                {"after": position, "restart": 1},
+                {
+                    "after": WindowPosition(
+                        position.raw_text_id,
+                        position.upper,
+                        (0, position.upper[1], 0, position.upper[3]),
+                    ),
+                    "restart": True,
+                },
+            ):
+                self.assert_position_rejected_before_sql(
+                    db, lambda: db.list_history_window(1, **options)
+                )
+
     def test_snapshot_epoch_first_ownership_and_rollback(self):
         db = self.database()
         self.require_reads(db)

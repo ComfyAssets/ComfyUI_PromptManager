@@ -156,6 +156,10 @@ class HistoryAPITests(ImageAPITestCase):
         self.assertEqual(body["run"]["observed_callback_at"], "9223372036854775807")
         self.assertIsNone(body["run"]["executor_started_at"])
         context = body["contexts"][0]
+        _, window = await self.window(positive)
+        self.assertEqual(
+            context["positive_raw_text_id"], window["group"]["raw_text_id"]
+        )
         self.assertEqual(
             context["positive"],
             {"raw": "positive", "effective": "positive", "prepend": "", "append": ""},
@@ -589,6 +593,115 @@ class HistoryAPITests(ImageAPITestCase):
             positive, {"cursor": "bad" + first["next_cursor"]}
         )
         self.assert_error(response, body, 400, "invalid-cursor")
+
+    async def test_resume_rebuilds_the_old_bounded_range_after_many_new_runs(self):
+        positive = self._save_prompt("positive")
+        starts = [self.capture(i, i) for i in range(42)]
+        _, first = await self.window(positive)
+        self.assertIn("resume_cursor", first)
+        self.assertIsInstance(first["resume_cursor"], str)
+        self.assertLessEqual(len(first["resume_cursor"]), 4096)
+        _, exhausted = await self.window(positive, {"cursor": first["next_cursor"]})
+        self.assertFalse(exhausted["has_more"])
+        self.assertIsNone(exhausted["next_cursor"])
+        self.assertIsInstance(exhausted["resume_cursor"], str)
+        for i in range(42, 103):
+            self.capture(i, i)
+        response, resumed = await self.window(
+            positive, {"resume": exhausted["resume_cursor"]}
+        )
+        self.assertEqual(response.status, 200, resumed)
+        self.assertEqual(resumed["recorded_run_count"], 42)
+        self.assertEqual(
+            [run["run_id"] for run in resumed["items"]],
+            [start.run_id for start in starts[2:]],
+        )
+        self.assertEqual(resumed["resume_cursor"], first["resume_cursor"])
+        response, older = await self.window(
+            positive, {"cursor": resumed["next_cursor"]}
+        )
+        self.assertEqual(response.status, 200, older)
+        self.assertEqual(
+            [run["run_id"] for run in older["items"]],
+            [start.run_id for start in starts[:2]],
+        )
+        _, fresh = await self.window(positive)
+        self.assertEqual(fresh["recorded_run_count"], 103)
+        self.assertTrue(
+            set(run["run_id"] for run in fresh["items"]).isdisjoint(
+                start.run_id for start in starts
+            )
+        )
+
+    async def test_exhausted_resume_authenticates_scope_and_distinguishes_epoch_change(
+        self,
+    ):
+        positive = self._save_prompt("positive")
+        starts = [self.capture(i, i) for i in range(3)]
+        _, first = await self.window(positive)
+        self.assertIsNone(first["next_cursor"])
+        self.assertIn("resume_cursor", first)
+        token = first["resume_cursor"]
+        response, resumed = await self.window(positive, {"resume": token})
+        self.assertEqual(response.status, 200, resumed)
+        self.assertEqual(
+            [run["run_id"] for run in resumed["items"]],
+            [start.run_id for start in starts],
+        )
+        _, ordinary = await self.window(positive, {"limit": "1"})
+        for params in (
+            {"resume": ""},
+            {"resume": "x" * 4097},
+            {"resume": "bad" + token},
+            {"cursor": token},
+            {"resume": ordinary["next_cursor"]},
+        ):
+            response, body = await self.window(positive, params)
+            self.assert_error(response, body, 400, "invalid-cursor")
+        for params in (
+            {"resume": token, "cursor": ordinary["next_cursor"]},
+            [("resume", token), ("resume", token)],
+            {"resume": token, "limit": "101"},
+            {"resume": token, "unknown": "value"},
+        ):
+            response, body = await self.window(positive, params)
+            self.assert_error(response, body, 400, "invalid-request")
+        payload = self.cursor_payload(token)
+        for change in (
+            {"version": True},
+            {"positive_id": positive},
+            {"positive_id": "999"},
+            {"raw_text_id": "bad"},
+            {"upper": ["01", SESSION, "0", starts[0].run_id]},
+            {"upper": ["0", SESSION, True, starts[0].run_id]},
+            {"upper": []},
+            {"before": payload["upper"]},
+            {"epoch": "bad"},
+        ):
+            signed = self.signed({**payload, **change}, "history-resume")
+            response, body = await self.window(positive, {"resume": signed})
+            self.assert_error(response, body, 400, "invalid-cursor")
+        other = self._save_prompt("other positive")
+        response, body = await self.window(other, {"resume": token})
+        self.assert_error(response, body, 400, "invalid-cursor")
+        with self.api.db.model.get_connection() as conn:
+            conn.execute("UPDATE prompts SET text='changed' WHERE id=?", (positive,))
+        response, body = await self.window(positive, {"resume": token})
+        self.assert_error(response, body, 400, "invalid-cursor")
+        source = str(self.comfy_dir / "resume-restore.db")
+        self.assertTrue(self.api.db.model.backup_database(source))
+        self.api.db.model.restore_from_file(source)
+        response, body = await self.window(positive, {"resume": token})
+        self.assert_error(
+            response, body, 409, "history-changed", {"action": "refresh-history"}
+        )
+
+    async def test_empty_history_has_no_authenticated_resume_anchor(self):
+        positive = self._save_prompt("positive")
+        response, body = await self.window(positive)
+        self.assertEqual(response.status, 200, body)
+        self.assertIn("resume_cursor", body)
+        self.assertIsNone(body["resume_cursor"])
 
     async def test_real_control_heavy_detail_uses_actual_utf8_budget_without_mutation(
         self,
