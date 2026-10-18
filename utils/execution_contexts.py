@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 
 
@@ -93,6 +94,20 @@ def context_digest(context: RecipeContext) -> str:
     )
 
 
+BUNDLE_STATES = frozenset(
+    {"complete", "partial", "ambiguous", "unavailable", "conflicting"}
+)
+
+UNKNOWN_REASONS = frozenset(
+    {"unavailable", "unsupported", "ambiguous", "limit_reached", "missing"}
+)
+EVIDENCE_SOURCES = {
+    "recorded": frozenset({"runtime_return", "host_cache_output"}),
+    "inferred": frozenset({"graph_literal", "graph_semantics"}),
+    "unknown": frozenset({"unknown"}),
+}
+
+
 def validate_bundle(bundle: ContextBundle) -> None:
     if (
         type(bundle) is not ContextBundle
@@ -103,6 +118,10 @@ def validate_bundle(bundle: ContextBundle) -> None:
     ):
         raise ValueError("Invalid context bundle")
     total = text_size(bundle.state, 128) + text_size(bundle.reason, 128)
+    if bundle.state not in BUNDLE_STATES:
+        raise ValueError("Invalid bundle state")
+    if bundle.reason and re.fullmatch(r"[a-z][a-z0-9_-]*", bundle.reason) is None:
+        raise ValueError("Invalid bundle reason code")
     anchors = set()
     for context in bundle.contexts:
         if type(context) is not RecipeContext:
@@ -114,6 +133,8 @@ def validate_bundle(bundle: ContextBundle) -> None:
             raise ValueError("Duplicate or empty recipe anchor")
         anchors.add(context.anchor_id)
         size += text_size(context.role_provenance, 128)
+        if context.role_provenance != "inferred":
+            raise ValueError("Invalid declared role provenance")
         for snapshot in (context.positive, context.negative):
             if snapshot is None:
                 continue
@@ -127,6 +148,21 @@ def validate_bundle(bundle: ContextBundle) -> None:
             ):
                 if type(field) is not TextEvidence:
                     raise ValueError("Invalid text evidence")
+                if (
+                    type(field.provenance) is not str
+                    or type(field.source) is not str
+                    or field.source not in EVIDENCE_SOURCES.get(field.provenance, ())
+                ):
+                    raise ValueError("Invalid evidence provenance or source")
+                if field.value is None:
+                    if (
+                        field.provenance != "unknown"
+                        or type(field.reason) is not str
+                        or field.reason not in UNKNOWN_REASONS
+                    ):
+                        raise ValueError("Unknown evidence requires a reason code")
+                elif field.provenance == "unknown" or field.reason is not None:
+                    raise ValueError("Known evidence requires a known provenance")
                 if field.value is not None:
                     size += text_size(field.value)
                 size += text_size(field.provenance, 128) + text_size(field.source, 128)

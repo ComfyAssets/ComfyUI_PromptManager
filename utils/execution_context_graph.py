@@ -51,16 +51,16 @@ class _Unknown(ValueError):
 def _identifier(value: object) -> str:
     if type(value) is int:
         if abs(value) > 10**127:
-            raise _Unknown("Invalid node identifier")
+            raise _Unknown("invalid_node_identifier")
         value = str(value)
     try:
         text_size(value, 512)
         if len(value) > 128:
-            raise ValueError("Oversized node identifier")
+            raise ValueError("oversized_node_identifier")
     except ValueError:
-        raise _Unknown("Invalid node identifier") from None
+        raise _Unknown("invalid_node_identifier") from None
     if not value:
-        raise _Unknown("Invalid node identifier")
+        raise _Unknown("invalid_node_identifier")
     return value
 
 
@@ -71,7 +71,7 @@ def _link(value: object) -> tuple[str, int]:
         or type(value[1]) is not int
         or value[1] < 0
     ):
-        raise _Unknown("Expected typed graph link")
+        raise _Unknown("expected_typed_graph_link")
     return _identifier(value[0]), value[1]
 
 
@@ -85,17 +85,17 @@ class _Projector:
     def node(self, node_id: str, depth: int) -> tuple[str, dict]:
         self.visits += 1
         if self.visits > 500 or depth > 64:
-            raise _Unknown("Graph resolution limit reached")
+            raise _Unknown("graph_resolution_limit_reached")
         node = self.graph.get(node_id)
         if type(node) is not dict or type(node.get("inputs")) is not dict:
-            raise _Unknown("Missing or malformed node")
+            raise _Unknown("missing_or_malformed_node")
         if len(node["inputs"]) > 500:
-            raise _Unknown("Node input limit reached")
+            raise _Unknown("node_input_limit_reached")
         kind = node.get("class_type")
         try:
             text_size(kind, 128)
         except ValueError:
-            raise _Unknown("Invalid node type") from None
+            raise _Unknown("invalid_node_type") from None
         return kind, node["inputs"]
 
     def text(
@@ -107,13 +107,13 @@ class _Projector:
         node_id, slot = _link(value)
         key = (node_id, slot)
         if key in active:
-            raise _Unknown("Cyclic prompt graph")
+            raise _Unknown("cyclic_prompt_graph")
         name, inputs = self.node(node_id, depth)
         active = active | {key}
         if name == "Reroute" and slot == 0:
             keys = [key for key in ("value", "input", "in") if key in inputs]
             if len(keys) != 1:
-                raise _Unknown("Ambiguous reroute")
+                raise _Unknown("ambiguous_reroute")
             return self.text(inputs[keys[0]], kind, depth + 1, active)
         if (
             name in ("StringConcatenate", "Text Concatenate")
@@ -135,14 +135,14 @@ class _Projector:
             text_size(delimiter)
             clean_value = inputs.get("clean_whitespace", "true")
             if name == "Text Concatenate" and type(clean_value) not in (str, bool):
-                raise _Unknown("Invalid whitespace mode")
+                raise _Unknown("invalid_whitespace_mode")
             clean = name == "Text Concatenate" and (
                 clean_value is True
                 or type(clean_value) is str
                 and clean_value.lower() == "true"
             )
             if not keys:
-                raise _Unknown("Missing concatenation inputs")
+                raise _Unknown("missing_concatenation_inputs")
             parts, sources, size = [], [], 0
             for input_name in keys:
                 child, refs = self.text(
@@ -152,17 +152,19 @@ class _Projector:
                 if part or name == "StringConcatenate":
                     size += text_size(part) + (text_size(delimiter) if parts else 0)
                     if size > 65536:
-                        raise _Unknown("Text field limit reached")
+                        raise _Unknown("text_field_limit_reached")
                     parts.append(part)
                 sources.extend(refs)
                 if len(sources) > 64:
-                    raise _Unknown("Source reference limit reached")
+                    raise _Unknown("source_reference_limit_reached")
             self.transformed = self.transformed or bool(sources)
             text = delimiter.join(parts)
-            return self.snapshot(text, text, "", ""), tuple(sources)
+            return self.snapshot(
+                text, text, "", "", composed=True, raw_composed=True
+            ), tuple(sources)
         adapter = _DEFAULT_ADAPTERS.get((name, slot))
         if adapter is None or adapter.kind != kind:
-            raise _Unknown("Unsupported node semantics or output slot")
+            raise _Unknown("unsupported_node_semantics_or_output_slot")
         child, sources = self.text(
             inputs.get(adapter.input_name), "string", depth + 1, active
         )
@@ -181,38 +183,118 @@ class _Projector:
                 part for part in (prepend.strip(), raw, append.strip()) if part
             )
             text_size(effective)
-            snapshot = self.snapshot(raw, effective, prepend, append)
+            snapshot = PromptSnapshot(
+                child.effective,
+                TextEvidence(effective, "inferred", "graph_semantics", None),
+                before.effective,
+                after.effective,
+            )
             if name not in _PM:
                 sources += before_sources + after_sources
         elif name in _PM:
-            snapshot = self.snapshot(
-                child.effective.value, child.effective.value, "", ""
+            snapshot = PromptSnapshot(
+                child.effective,
+                child.effective,
+                TextEvidence("", "inferred", "graph_literal", None),
+                TextEvidence("", "inferred", "graph_literal", None),
             )
         else:
             snapshot = child
         if len(sources) > 64:
-            raise _Unknown("Source reference limit reached")
+            raise _Unknown("source_reference_limit_reached")
         return snapshot, sources
 
+    def discover_sources(
+        self, value: object, kind: str, depth: int = 1, active: frozenset = frozenset()
+    ) -> tuple[SourceRef, ...]:
+        if type(value) is str and kind == "string":
+            return ()
+        node_id, slot = _link(value)
+        key = (node_id, slot)
+        if key in active:
+            raise _Unknown("cyclic_prompt_graph")
+        name, inputs = self.node(node_id, depth)
+        active = active | {key}
+        adapter = _DEFAULT_ADAPTERS.get((name, slot))
+        if adapter is not None and adapter.kind == kind:
+            if name in _PM:
+                return (SourceRef(node_id, name, slot),)
+            return self.discover_sources(
+                inputs.get(adapter.input_name), "string", depth + 1, active
+            )
+        if name == "Reroute" and slot == 0:
+            keys = [key for key in ("value", "input", "in") if key in inputs]
+            if len(keys) != 1:
+                raise _Unknown("ambiguous_reroute")
+            return self.discover_sources(inputs[keys[0]], kind, depth + 1, active)
+        if (
+            name in ("StringConcatenate", "Text Concatenate")
+            and slot == 0
+            and kind == "string"
+        ):
+            keys = (
+                ["string_a", "string_b"]
+                if name == "StringConcatenate"
+                else sorted(
+                    key
+                    for key in inputs
+                    if type(key) is str and re.fullmatch(r"text_[a-z]", key)
+                )
+            )
+            sources = []
+            for key in keys:
+                sources.extend(
+                    self.discover_sources(
+                        inputs.get(key, ""), "string", depth + 1, active
+                    )
+                )
+                if len(sources) > 64:
+                    raise _Unknown("source_limit_reached")
+            self.transformed = self.transformed or bool(sources)
+            return tuple(sources)
+        return ()
+
     @staticmethod
-    def snapshot(raw: str, effective: str, prepend: str, append: str) -> PromptSnapshot:
+    def snapshot(
+        raw: str,
+        effective: str,
+        prepend: str,
+        append: str,
+        composed: bool = False,
+        raw_composed: bool = False,
+    ) -> PromptSnapshot:
         return PromptSnapshot(
             *(
-                TextEvidence(value, "graph-inferred", "graph", None)
-                for value in (raw, effective, prepend, append)
+                TextEvidence(
+                    value,
+                    "inferred",
+                    (
+                        "graph_semantics"
+                        if (composed and index == 1 or raw_composed and index == 0)
+                        else "graph_literal"
+                    ),
+                    None,
+                )
+                for index, value in enumerate((raw, effective, prepend, append))
             )
         )
 
     def role(self, value: object) -> GraphRole:
+        sources = ()
         try:
             self.transformed = False
-            snapshot, sources = self.text(value, "conditioning")
+            sources = self.discover_sources(value, "conditioning")
+            snapshot, _ = self.text(value, "conditioning")
             return GraphRole(
                 sources, snapshot, "source-transformed" if self.transformed else ""
             )
         except ValueError as error:
-            reason = str(error) if isinstance(error, _Unknown) else "Invalid text value"
-            return GraphRole((), None, reason)
+            reason = str(error) if isinstance(error, _Unknown) else "invalid_text_value"
+            return GraphRole(
+                sources,
+                None,
+                "source-transformed" if self.transformed and sources else reason,
+            )
 
     def anchors(self, node_id: str, depth: int = 1) -> tuple[str, ...]:
         if node_id in self.selected_seen:
@@ -226,7 +308,7 @@ class _Projector:
             parent, _ = _link(value)
             anchors.extend(self.anchors(parent, depth + 1))
             if len(anchors) > 16:
-                raise _Unknown("Recipe context limit reached")
+                raise _Unknown("recipe_context_limit_reached")
         return tuple(anchors)
 
 
@@ -238,10 +320,10 @@ def project_contexts(graph: object, outputs: object) -> GraphProjection:
     """
     try:
         if type(graph) is not dict or len(graph) > 500:
-            raise _Unknown("Invalid or oversized graph")
+            raise _Unknown("invalid_or_oversized_graph")
         normalized = {_identifier(key): value for key, value in graph.items()}
         if len(normalized) != len(graph):
-            raise _Unknown("Duplicate graph identifiers")
+            raise _Unknown("duplicate_graph_identifiers")
         resolver = _Projector(normalized)
         if outputs is None:
             anchors = [
@@ -257,9 +339,9 @@ def project_contexts(graph: object, outputs: object) -> GraphProjection:
                 anchors.extend(resolver.anchors(_identifier(output)))
             anchors = list(dict.fromkeys(anchors))
         else:
-            raise _Unknown("Invalid output selection")
+            raise _Unknown("invalid_output_selection")
         if len(anchors) > 16:
-            raise _Unknown("Recipe context limit reached")
+            raise _Unknown("recipe_context_limit_reached")
         recipes, sources = [], []
         for anchor in anchors:
             _, inputs = resolver.node(anchor, 1)
@@ -269,15 +351,15 @@ def project_contexts(graph: object, outputs: object) -> GraphProjection:
             sources.extend(positive.sources + negative.sources)
         sources = tuple(dict.fromkeys(sources))
         if len(sources) > 64:
-            raise _Unknown("Source reference limit reached")
-        reason = "" if recipes else "No selected sampler anchors"
+            raise _Unknown("source_reference_limit_reached")
+        reason = "" if recipes else "no_selected_sampler_anchors"
         if any(
             role.reason
             for recipe in recipes
             for role in (recipe.positive, recipe.negative)
         ):
-            reason = "Some roles require inferred or unresolved text"
+            reason = "some_roles_require_inferred_or_unresolved_text"
         return GraphProjection(tuple(recipes), sources, reason)
     except ValueError as error:
-        reason = str(error) if isinstance(error, _Unknown) else "Invalid text value"
+        reason = str(error) if isinstance(error, _Unknown) else "invalid_text_value"
         return GraphProjection((), (), reason)

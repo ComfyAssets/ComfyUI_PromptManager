@@ -29,8 +29,17 @@ class ExactContextsTests(unittest.TestCase):
     def setUp(self):
         self.m = load_module("execution_contexts")
 
-    def evidence(self, value, provenance="graph-inferred"):
-        return self.m.TextEvidence(value, provenance, "node", None)
+    def evidence(self, value, provenance="inferred"):
+        return self.m.TextEvidence(
+            value,
+            "unknown" if value is None else provenance,
+            (
+                "unknown"
+                if value is None
+                else "runtime_return" if provenance == "recorded" else "graph_literal"
+            ),
+            "unavailable" if value is None else None,
+        )
 
     def snapshot(self, value):
         return self.m.PromptSnapshot(
@@ -52,12 +61,12 @@ class ExactContextsTests(unittest.TestCase):
         )
         a = self.snapshot("cat")
         b = m.PromptSnapshot(
-            *(self.evidence(v, "execution") for v in ("cat", "cat", "", ""))
+            *(self.evidence(v, "recorded") for v in ("cat", "cat", "", ""))
         )
         self.assertEqual(m.snapshot_digest(a), m.snapshot_digest(b))
         self.assertNotEqual(
-            m.context_digest(m.RecipeContext("1", a, None, "declared")),
-            m.context_digest(m.RecipeContext("1", None, a, "declared")),
+            m.context_digest(m.RecipeContext("1", a, None, "inferred")),
+            m.context_digest(m.RecipeContext("1", None, a, "inferred")),
         )
 
     def test_invalid_text_and_bounds(self):
@@ -71,8 +80,8 @@ class ExactContextsTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 m.validate_bundle(
                     m.ContextBundle(
-                        (m.RecipeContext(identifier, None, None, "declared"),),
-                        "unknown",
+                        (m.RecipeContext(identifier, None, None, "inferred"),),
+                        "unavailable",
                         "missing",
                     )
                 )
@@ -80,7 +89,7 @@ class ExactContextsTests(unittest.TestCase):
             m.validate_bundle(
                 m.ContextBundle(
                     tuple(
-                        m.RecipeContext(str(i), None, None, "declared")
+                        m.RecipeContext(str(i), None, None, "inferred")
                         for i in range(17)
                     ),
                     "partial",
@@ -90,7 +99,7 @@ class ExactContextsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             m.validate_bundle(
                 m.ContextBundle(
-                    (m.RecipeContext("1", self.snapshot("\ud800"), None, "declared"),),
+                    (m.RecipeContext("1", self.snapshot("\ud800"), None, "inferred"),),
                     "complete",
                     "",
                 )
@@ -99,7 +108,7 @@ class ExactContextsTests(unittest.TestCase):
     def test_bundle_preserves_unknown_and_empty(self):
         m = self.m
         bundle = m.ContextBundle(
-            (m.RecipeContext("1", self.snapshot(""), self.snapshot(None), "declared"),),
+            (m.RecipeContext("1", self.snapshot(""), self.snapshot(None), "inferred"),),
             "partial",
             "unknown",
         )
@@ -109,17 +118,77 @@ class ExactContextsTests(unittest.TestCase):
                 m.ContextBundle(bundle.contexts, "partial", "", format_version=2)
             )
 
+    def test_evidence_contract_rejects_incompatible_metadata(self):
+        m = self.m
+        invalid = (
+            ("", "graph-inferred", "graph_literal", None),
+            ("", "recorded", "graph_literal", None),
+            ("", "inferred", "runtime_return", None),
+            (None, "inferred", "graph_literal", None),
+            ("", "unknown", "unknown", "unavailable"),
+            (None, "unknown", "unknown", None),
+            (None, "unknown", "unknown", "an arbitrary exception message"),
+        )
+        for fields in invalid:
+            with self.subTest(fields=fields):
+                evidence = m.TextEvidence(*fields)
+                snapshot = m.PromptSnapshot(evidence, evidence, evidence, evidence)
+                with self.assertRaises(ValueError):
+                    m.validate_bundle(
+                        m.ContextBundle(
+                            (m.RecipeContext("1", snapshot, None, "inferred"),),
+                            "partial",
+                            "",
+                        )
+                    )
+        for provenance, source in (
+            ("recorded", "runtime_return"),
+            ("recorded", "host_cache_output"),
+            ("inferred", "graph_literal"),
+            ("inferred", "graph_semantics"),
+        ):
+            evidence = m.TextEvidence("", provenance, source, None)
+            snapshot = m.PromptSnapshot(evidence, evidence, evidence, evidence)
+            m.validate_bundle(
+                m.ContextBundle(
+                    (m.RecipeContext("1", snapshot, None, "inferred"),), "complete", ""
+                )
+            )
+
+    def test_bundle_state_and_declared_role_contract(self):
+        m = self.m
+        for state, role in (
+            ("unknown", "inferred"),
+            ("complete", "recorded"),
+            ("complete", "declared"),
+        ):
+            with self.subTest(state=state, role=role):
+                with self.assertRaises(ValueError):
+                    m.validate_bundle(
+                        m.ContextBundle(
+                            (m.RecipeContext("1", None, None, role),), state, ""
+                        )
+                    )
+        for state in ("complete", "partial", "ambiguous", "unavailable", "conflicting"):
+            m.validate_bundle(
+                m.ContextBundle(
+                    (m.RecipeContext("1", None, None, "inferred"),), state, ""
+                )
+            )
+
     def test_identifier_limit_counts_characters(self):
         m = self.m
         m.validate_bundle(
             m.ContextBundle(
-                (m.RecipeContext("é" * 128, None, None, "declared"),), "unknown", ""
+                (m.RecipeContext("é" * 128, None, None, "inferred"),), "unavailable", ""
             )
         )
         with self.assertRaises(ValueError):
             m.validate_bundle(
                 m.ContextBundle(
-                    (m.RecipeContext("é" * 129, None, None, "declared"),), "unknown", ""
+                    (m.RecipeContext("é" * 129, None, None, "inferred"),),
+                    "unavailable",
+                    "",
                 )
             )
 
@@ -129,11 +198,11 @@ class ExactContextsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             m.validate_bundle(
                 m.ContextBundle(
-                    (m.RecipeContext("1", large, large, "declared"),), "complete", ""
+                    (m.RecipeContext("1", large, large, "inferred"),), "complete", ""
                 )
             )
         contexts = tuple(
-            m.RecipeContext(str(i), large, None, "declared") for i in range(8)
+            m.RecipeContext(str(i), large, None, "inferred") for i in range(8)
         )
         with self.assertRaises(ValueError):
             m.validate_bundle(m.ContextBundle(contexts, "complete", ""))
@@ -143,7 +212,7 @@ class ExactContextsTests(unittest.TestCase):
         # remain separate invalid records even if their prompt values are equal.
         m = self.m
         context = m.RecipeContext(
-            "1", self.snapshot("same"), self.snapshot("same"), "declared"
+            "1", self.snapshot("same"), self.snapshot("same"), "inferred"
         )
         with self.assertRaises(ValueError):
             m.validate_bundle(m.ContextBundle((context, context), "complete", ""))

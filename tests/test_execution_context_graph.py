@@ -117,6 +117,64 @@ class ProjectionTests(unittest.TestCase):
         g["s" * 129] = g.pop("s")
         self.assertFalse(self.m.project_contexts(g, None).recipes)
 
+    def test_dynamic_pm_inputs_preserve_observable_sources(self):
+        for kind, positive_slot, negative_slot in (
+            ("PromptManagerText", 0, 0),
+            ("PromptManagerPair", 2, 3),
+            ("PromptManager", 1, 1),
+            ("PromptManagerFocused", 1, 1),
+            ("PromptManagerSplit", 1, 1),
+            ("PromptManagerPair", 0, 1),
+        ):
+            with self.subTest(kind=kind, slots=(positive_slot, negative_slot)):
+                g = graph(source=kind)
+                g["generator"] = node("UnknownGenerator")
+                g["p"]["inputs"]["text"] = ["generator", 0]
+                g["p"]["inputs"]["negative_text"] = ["generator", 0]
+                g["pos"] = node("CLIPTextEncode", text=["p", positive_slot])
+                g["neg"] = node("CLIPTextEncode", text=["p", negative_slot])
+                g["s"]["inputs"] = {"positive": ["pos", 0], "negative": ["neg", 0]}
+                if kind == "PromptManagerPair" and positive_slot == 0:
+                    g["s"]["inputs"] = {"positive": ["p", 1], "negative": ["p", 0]}
+                    positive_slot, negative_slot = 1, 0
+                result = self.m.project_contexts(g, None)
+                recipe = result.recipes[0]
+                for role, slot in (
+                    (recipe.positive, positive_slot),
+                    (recipe.negative, negative_slot),
+                ):
+                    self.assertEqual(
+                        tuple(ref.output_slot for ref in role.sources), (slot,)
+                    )
+                    self.assertIsNone(role.inferred)
+                    self.assertTrue(role.reason)
+                self.assertTrue(result.sources)
+
+    def test_graph_evidence_distinguishes_literals_from_semantics(self):
+        result = self.m.project_contexts(graph(), None)
+        evidence = result.recipes[0].positive.inferred
+        self.assertEqual(evidence.raw.provenance, "inferred")
+        self.assertEqual(evidence.raw.source, "graph_literal")
+        self.assertEqual(evidence.effective.source, "graph_semantics")
+
+    def test_derived_raw_and_composition_preserve_field_sources(self):
+        g = graph(source="PromptManagerText")
+        g["join"] = node(
+            "Text Concatenate",
+            text_a=" a ",
+            text_b=" b ",
+            delimiter="-",
+            clean_whitespace="true",
+        )
+        g["p"]["inputs"]["text"] = ["join", 0]
+        g["clip"] = node("CLIPTextEncode", text=["p", 0])
+        g["s"]["inputs"] = {"positive": ["clip", 0], "negative": ["clip", 0]}
+        role = self.m.project_contexts(g, None).recipes[0].positive
+        self.assertIsNotNone(role.inferred)
+        self.assertEqual(role.inferred.raw.value, "a-b")
+        self.assertEqual(role.inferred.raw.source, "graph_semantics")
+        self.assertEqual(role.inferred.prepend.source, "graph_literal")
+
     def test_selected_custom_outputs_and_multistage_ancestry(self):
         g = graph()
         g["earlier"] = node("SamplerCustom", positive=["p", 0], negative=["p", 1])
@@ -157,7 +215,7 @@ class ProjectionTests(unittest.TestCase):
         role = self.m.project_contexts(g, None).recipes[0].positive
         self.assertIsNotNone(role.inferred)
         self.assertEqual(role.inferred.effective.value, "pre  cat  post!")
-        self.assertEqual(role.inferred.effective.provenance, "graph-inferred")
+        self.assertEqual(role.inferred.effective.provenance, "inferred")
         self.assertEqual(role.sources[0].node_id, "p")
         self.assertEqual(role.reason, "source-transformed")
 
