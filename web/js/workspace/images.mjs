@@ -1,7 +1,8 @@
 import { createScope, createButton, createField, createSelect } from '../shared/toolkit/core.js';
 import { createImageStream, imageKey } from './images-state.mjs';
 import { layoutImages, visibleImages, workspaceImageMetrics } from './image-layout.mjs';
-import { mountPromptInspector } from './prompt-inspector.mjs';
+import { mountFileInspector } from './file-inspector.mjs';
+import { createInspectionController } from './inspection-state.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 
@@ -27,6 +28,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const { resolveUrl } = window.ApiClient;
     const sender = createPromptSender({scope});
     let detailInspector, previewInspector;
+    const inspection = createInspectionController({api});
+    scope.cleanup(inspection.subscribe(next => {detailInspector?.setState(next); previewInspector?.setState(next);}));
+    scope.cleanup(() => inspection.dispose());
     scope.cleanup(() => { detailInspector?.dispose(); previewInspector?.dispose(); });
     const visit = embedded ? null : lastVisit;
     let density = visit?.density || 'comfortable';
@@ -167,39 +171,23 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         detailInspector?.dispose();
         selection = imageKey(image);
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
-        const thumbnail = mediaElement(image);
-        const metadata = el('dl', undefined, 'image-facts');
-        const fields = [['Source', image.root_dir], ['Path', image.path], ['Size', formatBytes(image.size)],
-            ['Dimensions', image.width && image.height ? `${image.width} × ${image.height}` : 'Not available'],
-            ['Modified', new Date(image.modified_time * 1000).toLocaleString()]];
-        for (const [label, value] of fields) {
-            const row = el('div'); row.append(el('dt', label), el('dd', value)); metadata.append(row);
-        }
-        const preview = createButton('Open full preview', 'ca-primary');
-        // The view delegates these controls so changing selection retains no old handlers.
-        preview.dataset.previewKey = selection;
-        const download = el('a', 'Download original', 'workspace-link');
-        download.href = resolveUrl(image.url); download.download = image.filename;
-        const prompts = el('div');
-        const legacy = el('p', 'Open Current gallery for tagging.', 'muted');
-        legacy.hidden = embedded;
-        details.replaceChildren(thumbnail, el('h2', image.filename), preview, download, prompts, metadata, legacy);
-        detailInspector = mountPromptInspector(prompts, {api, image, sender, parentScope:scope});
+        detailInspector = mountFileInspector(details, {sender, parentScope:scope, inline:true,
+            onPreview:() => previewImage(image), onRetry:() => inspection.retry(), onRefresh:refreshInspectionCollection});
+        detailInspector.setState(inspection.state);
+        inspection.select(image);
         for (const [key, card] of rendered) {
             card.classList.toggle('selected', key === selection);
             card.querySelector('.image-open').setAttribute('aria-pressed', String(key === selection));
         }
     }
-    scope.listen(details, 'click', event => {
-        const key = event.target.closest('[data-preview-key]')?.dataset.previewKey;
-        if (key) previewImage(state.items.find(image => imageKey(image) === key));
-    });
     function previewImage(image) {
         if (!image) return;
         if (selection !== imageKey(image)) inspect(image);
         destroyPreview();
         previewTitle.textContent = image.filename;
-        previewInspector = mountPromptInspector(previewDetails, {api, image, sender, parentScope:scope});
+        previewInspector = mountFileInspector(previewDetails, {sender, parentScope:scope,
+            onRetry:() => inspection.retry(), onRefresh:refreshInspectionCollection});
+        previewInspector.setState(inspection.state);
         if (!dialog.open) dialog.showModal();
         if (image.is_video) {
             const video = el('video'); video.controls = true; video.src = resolveUrl(image.url); video.preload = 'metadata';
@@ -399,11 +387,19 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         observer.observe(continuation);
     }
     function reset() {
+        if (dialog.open) dialog.close();
+        destroyPreview();
+        inspection.clear();
         detailInspector?.dispose(); detailInspector = null;
         selection = null;
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
         details.replaceChildren(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));
         stream.reset(filters);
+    }
+    async function refreshInspectionCollection() {
+        if (scope.signal.aborted) return;
+        reset();
+        await loadOptions();
     }
     async function loadOptions() {
         optionsRequest?.abort();

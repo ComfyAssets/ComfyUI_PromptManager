@@ -92,7 +92,7 @@
 .prompt-copy-status { font-size: 11px; margin-block-end: 0; }
 .prompt-copy-status:empty { display: none; }
 .image-preview-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(270px, 340px); }
-.image-preview-details { padding: 0 18px 18px; max-block-size: 75dvh; overflow: auto; min-inline-size: 0; }
+.image-preview-details { padding: 0; max-block-size: 75dvh; overflow: auto; min-inline-size: 0; }
 .image-preview-details .prompt-inspector { margin-block-start: 0; }
 .image-preview > header { border-block-end: 1px solid var(--ca-line); }
 .prompt-send-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; color: var(--ca-focus); }

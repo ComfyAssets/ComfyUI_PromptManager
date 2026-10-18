@@ -141,7 +141,7 @@ test('no open ComfyUI window is actionable and rediscovery finds a newly opened 
 test('mobile inspector exposes full long prompts, truthful uncertainty and copy failure feedback',async({page})=>{
     const text=`A long detailed prompt ${'with readable full composition, '.repeat(150)}END OF FULL PROMPT`;
     await page.addInitScript(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw new Error('Permission denied');}}}));
-    await page.route('**/images/inspect/**',route=>route.fulfill({json:{success:true,image:{root_index:0,path:'shared/same.png',filename:'same.png'},prompts:{positive:{status:'resolved',text,source:'execution'},negative:{status:'ambiguous',text:null,source:null}}}}));
+    await page.route('**/images/inspect/**',route=>route.fulfill({json:{success:true,root_scope:new URL(route.request().url()).searchParams.get('root_scope'),image:{root_index:0,path:'shared/same.png',filename:'same.png'},prompts:{positive:{status:'resolved',text,source:'execution'},negative:{status:'ambiguous',text:null,source:null}}}}));
     await page.setViewportSize({width:390,height:844});await page.goto(workspace);await select(page,'0:shared/same.png');
     const positive=role(details(page),'Positive');await expect(positive.locator('pre')).toHaveText(text);
     await expect(role(details(page),'Negative')).toContainText('Multiple possible prompts. Source could not be determined.');
@@ -195,7 +195,7 @@ test('responsive gallery defers observed size writes and still fits the new view
 });
 
 test('unverified saved associations explain uncertainty and cannot be sent',async({page})=>{
-    await page.route('**/images/inspect/uncertain.png?root=0',route=>route.fulfill({json:{success:true,prompts:{
+    await page.route('**/images/inspect/uncertain.png?root=0*',route=>route.fulfill({json:{success:true,root_scope:new URL(route.request().url()).searchParams.get('root_scope'),image:{root_index:0,path:'uncertain.png',filename:'uncertain.png'},prompts:{
         positive:{status:'unresolved',text:null,source:'saved-association',message:'A saved library association exists, but it cannot be verified against this file.'},
         negative:{status:'absent',text:null,source:null},
     }}}));

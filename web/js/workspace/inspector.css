@@ -1,0 +1,38 @@
+.image-details.file-inspector { padding: 0; }
+.file-inspector { min-inline-size: 0; overflow-wrap: anywhere; }
+.file-inspector-inner { padding: 17px; }
+.ca-tools .file-cover { display: block; padding: 0; border: 0; border-radius: 6px 6px 0 0; inline-size: 100%; block-size: 150px; background: var(--ca-field); }
+.file-cover :where(img, video) { display: block; inline-size: 100%; block-size: 100%; object-fit: cover; border-radius: inherit; }
+.file-title { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
+.file-inspector .file-title h2 { font-size: 14px; line-height: 1.5; margin: 0; }
+.file-name { font-size: 12px; margin-block: 12px; }
+.file-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.file-chip { display: inline-block; padding: 3px 7px; border: 1px solid var(--ca-line); border-radius: 4px; background: var(--ca-field); font-size: 10px; }
+.file-evidence { color: var(--ca-focus); }
+.file-format { flex-shrink: 0; max-inline-size: 50%; }
+.file-inspector .prompt-inspector { margin-block-start: 15px; }
+.file-inspector .prompt-block { padding-block: 15px 0; margin-block-start: 15px; }
+.file-inspector .prompt-text { margin-block: 8px 0; }
+.file-inspector .prompt-negative { margin-block-end: 12px; }
+.file-vocabulary > p { margin-block: 0 6px; font-size: 10px; }
+.file-vocabulary .file-chip { font-size: 12px; }
+.generation-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-block: 16px; font-size: 11px; }
+.generation-facts dt, .file-facts dt { color: var(--ca-muted); font-size: 10px; }
+.generation-facts dd, .file-facts dd { margin: 3px 0 0; }
+.file-inspector details { border-block-start: 1px solid var(--ca-line); margin-block-start: 16px; padding-block-start: 13px; font-size: 12px; }
+.file-inspector summary { cursor: pointer; min-block-size: 24px; }
+.file-inspector :where(summary, button, a):focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 2px; }
+.file-inspector details p { font-size: 10px; line-height: 1.65; }
+.file-facts { font-size: 11px; }
+.file-facts > div { margin-block: 10px; }
+.file-inspector details pre { white-space: pre-wrap; overflow-wrap: anywhere; max-block-size: 350px; overflow: auto; padding: 10px; background: var(--ca-field); border: 1px solid var(--ca-line); border-radius: 4px; font-size: 11px; line-height: 1.6; }
+.raw-record-name { font-weight: 600; }
+.file-download { margin-block: 12px; }
+.ca-tools .file-download button { font-size: 11px; min-block-size: 30px; }
+.file-inspector [aria-disabled="true"] { opacity: .6; cursor: not-allowed; }
+.file-inspector-footer { display: flex; flex-wrap: wrap; gap: 8px; border-block-start: 1px solid var(--ca-line); padding: 13px 17px; }
+.ca-tools .file-inspector-footer :where(button, a) { font-size: 11px; min-block-size: 30px; }
+.file-inspector-footer .workspace-link { display: inline-flex; gap: 7px; border: 1px solid var(--ca-line); border-radius: 4px; padding: 5px 8px; }
+.file-inspector-footer .workspace-icon { inline-size: 14px; block-size: 14px; }
+.file-status { padding: 17px; }
+@media (max-width: 700px) { .ca-tools .file-cover { block-size: 200px; } }

@@ -34,7 +34,7 @@ function childScope(parentScope) {
     return scope;
 }
 
-export function mountPromptBlocks(container, {prompts, sender, parentScope, roles:visibleRoles = ['positive', 'negative'], onRetry}) {
+export function mountPromptBlocks(container, {prompts, sender, parentScope, roles:visibleRoles = ['positive', 'negative'], onRetry, includePairAction = true}) {
     if (parentScope.signal.aborted) return {update() {}, setState() {}, dispose() {}};
     const scope = childScope(parentScope);
     container.classList.add('prompt-inspector');
@@ -105,7 +105,7 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
             } else block.append(el('p', typeof record?.message === 'string' ? record.message : statuses[record?.status] || statuses.unresolved, 'muted'));
             container.append(block);
         }
-        if (Object.hasOwn(roles, 'positive') && Object.hasOwn(roles, 'negative')) {
+        if (includePairAction && Object.hasOwn(roles, 'positive') && Object.hasOwn(roles, 'negative')) {
             const pair = createSendButton('Send prompt pair'); pair.dataset.sendRole = 'pair';
             container.append(pair);
         }
