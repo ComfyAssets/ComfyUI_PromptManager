@@ -88,9 +88,11 @@ class PromptManagerLogger:
         # ComfyUI's root handler would print every record a second time.
         self.logger.propagate = False
 
-        # Clear existing handlers
+        # External handlers are detached but retain their caller-owned resources.
         for handler in self.logger.handlers[:]:
             self.logger.removeHandler(handler)
+            if getattr(handler, "_prompt_manager_owned", False) is True:
+                handler.close()
 
         # Custom formatter
         formatter = logging.Formatter(
@@ -104,6 +106,7 @@ class PromptManagerLogger:
             console_handler = logging.StreamHandler()
             console_handler.setLevel(self._console_level())
             console_handler.setFormatter(formatter)
+            console_handler._prompt_manager_owned = True
             self.logger.addHandler(console_handler)
 
         # File handler with rotation and safe encoding for Windows
@@ -117,11 +120,13 @@ class PromptManagerLogger:
                 errors="replace",  # Replace problematic characters instead of crashing
             )
             file_handler.setFormatter(formatter)
+            file_handler._prompt_manager_owned = True
             self.logger.addHandler(file_handler)
 
         # Memory handler for web viewer
         memory_handler = MemoryBufferHandler(self)
         memory_handler.setFormatter(formatter)
+        memory_handler._prompt_manager_owned = True
         self.logger.addHandler(memory_handler)
 
         # Component-specific loggers
