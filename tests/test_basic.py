@@ -247,7 +247,8 @@ class TestNodeIntegration(unittest.TestCase):
         # Import and test the node
         from prompt_manager import PromptManager
 
-        node = PromptManager()
+        with patch("prompt_manager_base.get_image_monitor"):
+            node = PromptManager()
 
         # Test encoding
         result = node.encode_prompt(clip=mock_clip, text="Test prompt", search_text="")
