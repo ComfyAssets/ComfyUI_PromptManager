@@ -960,6 +960,70 @@ class TestImageQueries(DatabaseTestCase):
         self.assertIsNone(info["workflow_data"])
         self.assertEqual(info["prompt_metadata"], {"k": 1})
 
+    def test_image_prompt_info_reports_ambiguity_only_when_requested(self):
+        stored = os.path.join("out", "exact.png")
+        self.assertIsNone(self.db.get_image_prompt_info(stored, False))
+        self.assertIsNone(
+            self.db.get_image_prompt_info(stored, False, report_ambiguity=True)
+        )
+
+        first = self._save("First owner", category="First", tags=["first"])
+        self.db.link_image_to_prompt(first, stored, self.METADATA)
+        original = self.db.get_image_prompt_info(stored, False)
+        self.assertEqual(original["prompt_id"], first)
+        self.assertEqual(original["category"], "First")
+        self.assertEqual(original["tags"], ["first"])
+        self.assertEqual(
+            self.db.get_image_prompt_info(stored, False, report_ambiguity=True),
+            original,
+        )
+
+        second = self._save("Second owner", category="Second", tags=["second"])
+        self.db.link_image_to_prompt(second, stored, self.METADATA)
+        self.assertIsNone(self.db.get_image_prompt_info(stored))
+        self.assertIsNone(self.db.get_image_prompt_info(stored, False))
+        statements = []
+        with self.db.model.get_connection() as conn:
+            conn.set_trace_callback(statements.append)
+            try:
+                result = self.db.get_image_prompt_info(
+                    stored, False, report_ambiguity=True
+                )
+            finally:
+                conn.set_trace_callback(None)
+        self.assertEqual(result, {"association_status": "ambiguous"})
+        self.assertEqual(
+            len(
+                [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
+            ),
+            1,
+        )
+        self.assertIsNone(
+            self.db.get_image_prompt_info("missing.png", False, report_ambiguity=True)
+        )
+
+    def test_image_prompt_info_ambiguity_opt_in_keeps_exact_path_precedence(self):
+        first = self._save("Exact owner")
+        second = self._save("Same basename")
+        exact = os.path.join("out", "one", "same.png")
+        other = os.path.join("out", "two", "same.png")
+        self.db.link_image_to_prompt(first, exact)
+        self.db.link_image_to_prompt(second, other)
+        original = self.db.get_image_prompt_info(exact)
+        self.assertEqual(original["prompt_id"], first)
+        self.assertEqual(
+            self.db.get_image_prompt_info(exact, report_ambiguity=True), original
+        )
+        absent = os.path.join("elsewhere", "same.png")
+        self.assertIsNone(self.db.get_image_prompt_info(absent))
+        self.assertIsNone(
+            self.db.get_image_prompt_info(absent, False, report_ambiguity=True)
+        )
+        self.assertEqual(
+            self.db.get_image_prompt_info(absent, report_ambiguity=True),
+            {"association_status": "ambiguous"},
+        )
+
 
 class TestMaintenanceOperations(DatabaseTestCase):
     def test_statistics_count_everything(self):

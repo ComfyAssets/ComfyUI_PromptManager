@@ -1746,7 +1746,9 @@ class ImageRoutesMixin:
                     return None
                 saved, unavailable = None, False
                 try:
-                    saved = self.db.get_image_prompt_info(str(path), False)
+                    saved = self.db.get_image_prompt_info(
+                        str(path), False, report_ambiguity=True
+                    )
                 except Exception:
                     unavailable = True
                     self.logger.warning("Saved inspection display could not be read")
@@ -1763,7 +1765,12 @@ class ImageRoutesMixin:
                         },
                     }
                 else:
-                    evidence = inspect_prompt_evidence(inspection.metadata, saved)
+                    role_saved = (
+                        None
+                        if saved and saved.get("association_status") == "ambiguous"
+                        else saved
+                    )
+                    evidence = inspect_prompt_evidence(inspection.metadata, role_saved)
                 return encode_inspection_response(
                     image={
                         "root_index": index,
@@ -1826,6 +1833,9 @@ class ImageRoutesMixin:
             "metadata_scope": None,
         }
         if not isinstance(saved, dict) or not saved:
+            return result
+        if saved.get("association_status") == "ambiguous":
+            result["status"] = "ambiguous"
             return result
         pair = saved.get("pair")
         if isinstance(pair, dict):

@@ -369,7 +369,9 @@ class TestPromptInspector(ImageAPITestCase):
             wraps=self.api.db.get_image_prompt_info,
         ) as lookup:
             _, result = await self.inspect(root="1")
-        lookup.assert_called_once_with(str(other / "image.png"), False)
+        lookup.assert_called_once_with(
+            str(other / "image.png"), False, report_ambiguity=True
+        )
         self.assertEqual(result["prompts"]["positive"]["status"], "absent")
 
     async def test_video_inspection_uses_bounded_container_evidence(self):
@@ -707,7 +709,7 @@ class TestPromptInspector(ImageAPITestCase):
         self.assertEqual(result["resolution"]["sampler_id"], "3")
         self.assertEqual(result["library"]["status"], "linked")
         self.assertEqual(reads, [path])
-        lookup.assert_called_once_with(str(path), False)
+        lookup.assert_called_once_with(str(path), False, report_ambiguity=True)
         self.assertLessEqual(len(await response.read()), 8 * 1024 * 1024)
         self.assertNotIn(str(self.comfy_dir), json.dumps(result))
 
@@ -1182,3 +1184,81 @@ class TestPromptInspector(ImageAPITestCase):
             (await response.json())["root_scope"], descriptor["root_scope"]
         )
         roots.assert_called_once_with()
+
+    async def test_exact_saved_association_ambiguity_preserves_physical_file_evidence(
+        self,
+    ):
+        for readable in (False, True):
+            with self.subTest(readable=readable):
+                filename = "readable.png" if readable else "empty.png"
+                metadata = (
+                    {"prompt": json.dumps(graph("Physical portrait", ""))}
+                    if readable
+                    else {}
+                )
+                path = png(self.output_dir / filename, **metadata)
+                before = path.read_bytes()
+                results, lookups = [], []
+                for count, expected in ((0, "none"), (1, "linked"), (2, "ambiguous")):
+                    if count:
+                        positive = self._save_prompt(
+                            f"Saved owner {readable} {count}",
+                            category=f"Category {count}",
+                            tags=[f"owner-{count}"],
+                        )
+                        self.api.db.link_image_to_prompt(positive, str(path))
+                    with patch.object(
+                        self.api.db,
+                        "get_image_prompt_info",
+                        wraps=self.api.db.get_image_prompt_info,
+                    ) as lookup:
+                        response, result = await self.inspect(filename)
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(result["library"]["status"], expected)
+                    self.assertEqual(lookup.call_count, 1)
+                    lookups.append(lookup)
+                    results.append(result)
+                    self.assertEqual(result["metadata"]["raw"], metadata)
+                    self.assertEqual(path.read_bytes(), before)
+                    if count == 1:
+                        self.assertEqual(result["library"]["positive_id"], positive)
+                        self.assertEqual(
+                            result["library"]["metadata_scope"], "positive"
+                        )
+                        self.assertEqual(result["library"]["category"], "Category 1")
+                        self.assertEqual(result["library"]["tags"], ["owner-1"])
+                        if not readable:
+                            self.assertEqual(
+                                result["prompts"]["positive"]["source"],
+                                "saved-association",
+                            )
+                    if readable or count != 1:
+                        self.assertEqual(result["prompts"], results[0]["prompts"])
+                self.assertEqual(
+                    results[2]["library"],
+                    {
+                        "status": "ambiguous",
+                        "scope": "saved-library",
+                        "positive_id": None,
+                        "pair_id": None,
+                        "title": None,
+                        "category": None,
+                        "tags": [],
+                        "metadata_scope": None,
+                    },
+                )
+                for field in (
+                    "image",
+                    "file",
+                    "metadata",
+                    "prompts",
+                    "resolution",
+                    "root_scope",
+                ):
+                    self.assertEqual(results[2][field], results[0][field])
+                self.assertNotIn("Saved owner", json.dumps(results[2]))
+                self.assertNotIn("association_status", json.dumps(results[2]))
+                for lookup in lookups:
+                    lookup.assert_called_once_with(
+                        str(path), False, report_ambiguity=True
+                    )
