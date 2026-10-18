@@ -13,7 +13,8 @@ except ImportError:
     from database import PromptDatabase
 
 from .execution_history_events import make_finish, make_start
-from .execution_context_capture import ContextCapture, unbind_current
+from .execution_context_capture import ContextCapture, active_capture, unbind_current
+from .execution_context_host import observe_cached_context, subscribe_executor_messages
 from .execution_history_writer import HistoryWriter
 from .logging_config import get_logger
 from .queue_observers import subscribe_dequeue, subscribe_task_done
@@ -57,11 +58,27 @@ class HistoryRegistration:
             self._unsubscribers.append(
                 subscribe_task_done(queue, "execution_history", self._task_done)
             )
+            try:
+                self._unsubscribers.append(
+                    subscribe_executor_messages(
+                        f"execution_history_{id(self)}", self._executor_message
+                    )
+                )
+            except (ImportError, AttributeError, TypeError, ValueError):
+                pass
             self.writer.start()
             atexit.register(self.dispose)
         except Exception:
             self.dispose()
             raise
+
+    def _executor_message(self, executor: object, args: tuple, kwargs: dict) -> None:
+        binding = active_capture()
+        if binding is None or binding[0] is not self.capture:
+            return
+        event = args[0] if args else kwargs.get("event")
+        data = args[1] if len(args) > 1 else kwargs.get("data")
+        observe_cached_context(executor, event, data)
 
     def _invalidate_capture(self) -> None:
         self.capture.revoke_all()

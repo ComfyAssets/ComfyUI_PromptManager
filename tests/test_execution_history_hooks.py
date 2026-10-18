@@ -625,3 +625,82 @@ class HistoryHooksTests(unittest.TestCase):
         self.queue.task_done(10, {}, status())
         self.drain(second)
         self.assertEqual(len(self.rows()), 1)
+
+    def test_cached_executor_subscription_persists_strings_and_disposes_cooperatively(
+        self,
+    ):
+        from utils.execution_context_host import subscribe_executor_messages
+
+        calls = []
+        execution = types.ModuleType("execution")
+        caching = types.ModuleType("comfy_execution.caching")
+        package = types.ModuleType("comfy_execution")
+        entry_type = namedtuple("CacheEntry", "ui outputs")
+
+        class PromptExecutor:
+            def add_message(self, event, data, broadcast):
+                calls.append(event)
+                return "host-result"
+
+        class HierarchicalCache:
+            def get_local(self, node_id):
+                return entry_type(None, [object(), object(), ["old trigger"], [""]])
+
+        execution.PromptExecutor, execution.CacheEntry = PromptExecutor, entry_type
+        caching.HierarchicalCache = HierarchicalCache
+        package.caching = caching
+        with patch.dict(
+            sys.modules,
+            {
+                "execution": execution,
+                "comfy_execution": package,
+                "comfy_execution.caching": caching,
+            },
+        ):
+            observer_calls = []
+            independent = subscribe_executor_messages(
+                "independent", lambda *args: observer_calls.append(args)
+            )
+            try:
+                registration = self.register()
+                g = {
+                    "p": {
+                        "class_type": "PromptManagerPair",
+                        "inputs": {"text": "raw", "negative_text": ""},
+                    },
+                    "s": {
+                        "class_type": "KSampler",
+                        "inputs": {"positive": ["p", 0], "negative": ["p", 1]},
+                    },
+                }
+                self.queue.results.append(((0, JOB, g, {}, ["s"]), 1))
+                self.queue.get()
+                executor = PromptExecutor()
+                executor.server = self.server
+                executor.caches = SimpleNamespace(outputs=HierarchicalCache())
+                self.assertEqual(
+                    executor.add_message("execution_start", {"prompt_id": JOB}, False),
+                    "host-result",
+                )
+                executor.add_message(
+                    event="execution_cached",
+                    data={"prompt_id": JOB, "nodes": ["p"]},
+                    broadcast=False,
+                )
+                self.queue.task_done(1, {}, status())
+                self.drain(registration)
+                result = self.db.get_execution_contexts(self.rows()[0]["run_id"])
+                self.assertEqual(
+                    result["contexts"][0]["positive"]["effective"], "old trigger"
+                )
+                self.assertEqual(result["contexts"][0]["negative"]["effective"], "")
+                self.assertTrue(registration.dispose())
+                executor.add_message(
+                    "execution_cached", {"prompt_id": JOB, "nodes": ["p"]}, False
+                )
+                self.assertEqual(len(observer_calls), 3)
+            finally:
+                independent()
+        self.assertEqual(
+            calls, ["execution_start", "execution_cached", "execution_cached"]
+        )

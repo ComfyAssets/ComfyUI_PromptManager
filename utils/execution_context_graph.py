@@ -32,6 +32,7 @@ class GraphProjection:
     recipes: tuple[DeclaredRecipe, ...]
     sources: tuple[SourceRef, ...]
     reason: str
+    source_snapshots: tuple[tuple[SourceRef, PromptSnapshot], ...] = ()
 
 
 _SAMPLERS = {"KSampler", "KSamplerAdvanced", "SamplerCustom"}
@@ -214,6 +215,26 @@ class _Projector:
             raise _Unknown("source_reference_limit_reached")
         return snapshot, sources
 
+    def source_snapshot(self, source: SourceRef) -> PromptSnapshot:
+        name, inputs = self.node(source.node_id, 1)
+        adapter = _DEFAULT_ADAPTERS[(name, source.output_slot)]
+        unknown = TextEvidence(None, "unknown", "unknown", "missing")
+
+        def literal(value: object) -> TextEvidence:
+            try:
+                snapshot, sources = self.text(value, "string", 2)
+                # Stateful PM outputs cannot prove their injected result from inputs.
+                return unknown if sources else snapshot.effective
+            except _Limit:
+                raise
+            except ValueError:
+                return unknown
+
+        raw = literal(inputs.get(adapter.input_name))
+        before = literal(inputs.get("prepend_text", "") if adapter.compose else "")
+        after = literal(inputs.get("append_text", "") if adapter.compose else "")
+        return self.retain(PromptSnapshot(raw, unknown, before, after))
+
     def discover_sources(
         self, value: object, kind: str, depth: int = 1, active: frozenset = frozenset()
     ) -> tuple[SourceRef, ...]:
@@ -266,7 +287,7 @@ class _Projector:
 
     def retain(self, snapshot: PromptSnapshot) -> PromptSnapshot:
         size = sum(
-            text_size(field.value) + 64
+            (text_size(field.value) if field.value is not None else 0) + 64
             for field in (
                 snapshot.raw,
                 snapshot.effective,
@@ -388,7 +409,12 @@ def project_contexts(graph: object, outputs: object) -> GraphProjection:
             for role in (recipe.positive, recipe.negative)
         ):
             reason = "some_roles_require_inferred_or_unresolved_text"
-        return GraphProjection(tuple(recipes), sources, reason)
+        return GraphProjection(
+            tuple(recipes),
+            sources,
+            reason,
+            tuple((source, resolver.source_snapshot(source)) for source in sources),
+        )
     except ValueError as error:
         reason = str(error) if isinstance(error, _Unknown) else "invalid_text_value"
         return GraphProjection((), (), reason)

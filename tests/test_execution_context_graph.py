@@ -244,3 +244,22 @@ class ProjectionTests(unittest.TestCase):
             g[str(i)] = node("KSampler", positive=["p", 0], negative=["p", 0])
         result = self.m.project_contexts(g, None)
         self.assertEqual(result.recipes, ())
+
+    def test_partial_source_snapshots_keep_literal_fields_without_stateful_substitution(
+        self,
+    ):
+        for upstream in ("RuntimeGenerator", "PromptManagerText"):
+            g = graph()
+            g["dynamic"] = node(upstream, text="looks literal")
+            g["p"]["inputs"]["text"] = ["dynamic", 0]
+            projection = self.m.project_contexts(g, None)
+            positive = next(
+                snapshot
+                for ref, snapshot in projection.source_snapshots
+                if ref.output_slot == 0
+            )
+            self.assertIsNone(positive.raw.value)
+            self.assertIsNone(positive.effective.value)
+            self.assertEqual(positive.prepend.value, "pre")
+            self.assertEqual(positive.append.value, "post")
+            self.assertEqual(positive.append.provenance, "inferred")

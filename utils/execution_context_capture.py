@@ -51,6 +51,8 @@ class _Attempt:
     samples: dict
     retained_bytes: int
     reason: str = ""
+    executor_identity: int | None = None
+    executor_rejected: bool = False
 
 
 _binding: ContextVar[tuple | None] = ContextVar("prompt_manager_attempt", default=None)
@@ -164,13 +166,20 @@ class ContextCapture:
             if lease is not None:
                 try:
                     projection = project_contexts(graph, outputs)
-                    retained = sum(
-                        _snapshot_bytes(role.inferred) if role.inferred else 0
-                        for recipe in projection.recipes
-                        for role in (recipe.positive, recipe.negative)
-                    ) + sum(
-                        text_size(s.node_id, 512) + text_size(s.node_type, 128) + 32
-                        for s in projection.sources
+                    retained = (
+                        sum(
+                            _snapshot_bytes(role.inferred) if role.inferred else 0
+                            for recipe in projection.recipes
+                            for role in (recipe.positive, recipe.negative)
+                        )
+                        + sum(
+                            _snapshot_bytes(snapshot)
+                            for _, snapshot in projection.source_snapshots
+                        )
+                        + sum(
+                            text_size(s.node_id, 512) + text_size(s.node_type, 128) + 32
+                            for s in projection.sources
+                        )
                     )
                     if retained > MAX_ATTEMPT_BYTES:
                         raise ValueError("projection_limit")
@@ -185,6 +194,36 @@ class ContextCapture:
             _binding.set((weakref.ref(self), cap))
             self._current(cap)
             return cap
+
+    def bind_executor(self, capability: AttemptCapability, identity: int) -> None:
+        """Bind one scalar host identity; recursive starts invalidate cache proof."""
+        with self._lock:
+            attempt = self._current(capability)
+            if attempt is not None:
+                if attempt.executor_identity is not None:
+                    attempt.executor_rejected = True
+                else:
+                    attempt.executor_identity = identity
+
+    def matches_executor(self, capability: AttemptCapability, identity: int) -> bool:
+        with self._lock:
+            attempt = self._current(capability)
+            return bool(
+                attempt is not None
+                and not attempt.executor_rejected
+                and attempt.executor_identity == identity
+            )
+
+    def source_snapshot(
+        self, capability: AttemptCapability, source: SourceRef
+    ) -> PromptSnapshot | None:
+        with self._lock:
+            attempt = self._current(capability)
+            if attempt is not None:
+                for ref, snapshot in attempt.projection.source_snapshots:
+                    if ref == source:
+                        return snapshot
+            return None
 
     def observe(
         self,
@@ -292,8 +331,19 @@ class ContextCapture:
                         return _unknown("ambiguous")
                     if len(role.sources) == 1 and len(values) == 1:
                         return values[0]
-                    if role.inferred is not None:
-                        s = role.inferred
+                    inferred = role.inferred
+                    if len(role.sources) == 1:
+                        snapshots = attempt.projection.source_snapshots
+                        inferred = next(
+                            (
+                                snapshot
+                                for source, snapshot in snapshots
+                                if source == role.sources[0]
+                            ),
+                            inferred,
+                        )
+                    if inferred is not None:
+                        s = inferred
                         return PromptSnapshot(
                             s.raw, _unknown().effective, s.prepend, s.append
                         )
