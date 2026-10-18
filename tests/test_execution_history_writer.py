@@ -902,10 +902,6 @@ class HistoryWriterTests(unittest.TestCase):
         self.assertEqual(writer.status().recording_gaps, 2**63 - 1)
         self.assertTrue(writer.close())
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     def test_owner_invalidation_callback_runs_outside_both_locks_and_is_contained(self):
         observations = []
         writer = None
@@ -928,3 +924,7 @@ if __name__ == "__main__":
         writer.invalidate()
         writer.close(0)
         self.assertEqual(observations, [(True, True), (True, True)])
+
+
+if __name__ == "__main__":
+    unittest.main()
