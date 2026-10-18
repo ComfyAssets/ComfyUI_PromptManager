@@ -26,7 +26,7 @@ async function attachEvidence(page, testInfo, name, fullPage = true) {
     const screenshotPath = testInfo.outputPath(`${name}.png`);
     await page.screenshot({ path: screenshotPath, fullPage });
     await testInfo.attach(name, { path: screenshotPath, contentType: 'image/png' });
-    const geometry = await page.evaluate(() => Object.fromEntries(['.sidebar', '.topbar', '#workspace-main', '.workspace-heading', 'h1', '.image-workspace', '.image-grid', '.image-card', '.image-details', '.prompt-block-heading'].map(selector => {
+    const geometry = await page.evaluate(() => Object.fromEntries(['.sidebar', '.topbar', '#workspace-main', '.workspace-heading', 'h1', '.image-workspace', '.image-grid', '.image-card', '.image-details', '.prompt-block-heading', '.library-toolbar', '.library-grid', '.library-card', '.library-card-art', '.library-card-content'].map(selector => {
         const node = document.querySelector(selector);
         if (!node) return [selector, null];
         const box = node.getBoundingClientRect(), style = getComputedStyle(node);
@@ -97,6 +97,7 @@ test('shell matches approved stable geometry in both themes', async ({ page, req
                 await expect(page.locator('h1')).toHaveCSS('letter-spacing', '-0.7px');
                 await expect(page.locator('.workspace-heading')).toHaveCSS('margin-block-end', '22px');
                 await expect(page.locator('h1')).toHaveCSS('font-size', width === 1600 ? '28px' : '25px');
+                await expect(page.locator('.workspace-heading-copy > .intro')).toHaveCSS('line-height', '18px');
                 await expect(page.locator('#workspace-main')).toHaveCSS('padding-inline-start', width === 1600 ? '30px' : '14px');
                 if (width === 1600) {
                     await expect(page.locator('.sidebar')).toHaveCSS('width', '218px');
@@ -131,8 +132,7 @@ test('long content and zoom keep grouped navigation reachable', async ({ page, r
     await text.focus(); await expect(text).toBeFocused();
     expect(await text.evaluate(node => {
         const scroller = node.closest('.library-card-prompts');
-        scroller.scrollTop = scroller.scrollHeight;
-        return scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1;
+        return scroller.scrollHeight <= scroller.clientHeight + 1 && node.scrollHeight <= node.clientHeight + 1;
     })).toBe(true);
     await noOverflow(page);
     await page.evaluate(() => { document.documentElement.style.zoom = ''; });
@@ -142,6 +142,27 @@ test('long content and zoom keep grouped navigation reachable', async ({ page, r
         if (width > 950) await expect(page.locator('.sidebar')).toHaveCSS('width', width > 1250 ? '218px' : '185px');
         await expect(page.locator('#workspace-main')).toHaveCSS('padding-inline-start', width > 1250 ? '30px' : width > 700 ? '24px' : '14px');
         await noOverflow(page);
+    }
+});
+
+test('Library visual evidence keeps natural cards and returns from real history in both themes',async({browser,browserName,request},testInfo)=>{
+    await request.post('/__test__/reset',{data:{workspace_visual:true}});
+    for(const [width,height] of [[1600,1100],[390,844]]) for(const theme of ['dark','light']) {
+        const context=await browser.newContext({viewport:{width,height},locale:'en-US',timezoneId:'UTC',reducedMotion:'reduce'});
+        const page=await context.newPage();const errors=[];page.on('pageerror',error=>errors.push(error.message));await startCoverage(page,browserName);
+        try {
+            await page.goto(`${workspace}#/library`);await expect(page.locator('article[data-prompt-id]')).toHaveCount(6);
+            await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+            await attachEvidence(page,testInfo,`after-library-${width}-${theme}`,false);
+            await noOverflow(page);
+            await page.getByRole('link',{name:'Explore history',exact:true}).first().click();
+            await expect(page.getByRole('region',{name:'Prompt history',exact:true})).toBeVisible();
+            await expect(page.locator('.library-history > div > .intro')).toHaveCount(1);
+            await page.getByRole('link',{name:'Back to library',exact:true}).click();
+            await expect(page.locator('article[data-prompt-id]')).toHaveCount(6);
+            await expect(page.locator('.workspace-heading-copy > .intro')).toHaveCount(1);
+            expect(errors).toEqual([]);
+        } finally {await saveCoverage(page,browserName);await context.close();}
     }
 });
 

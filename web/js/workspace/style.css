@@ -36,7 +36,7 @@ main { flex: 1; padding: 30px; inline-size: 100%; max-inline-size: 1900px; min-i
 h1 { font-size: 28px; line-height: 1.3; letter-spacing: -0.7px; margin: 0; font-weight: 620; overflow-wrap: anywhere; }
 .workspace-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-block-end: 22px; }
 .workspace-heading-copy { min-inline-size: 0; }
-.workspace-heading-copy .intro { font-size: 12px; margin: 6px 0 0; }
+.workspace-heading-copy .intro { font-size: 12px; line-height: 1.5; margin: 6px 0 0; }
 h2 { font-size: 18px; margin: 0 0 8px; }
 h3 { font-size: 15px; margin: 0; }
 p { line-height: 1.6; }

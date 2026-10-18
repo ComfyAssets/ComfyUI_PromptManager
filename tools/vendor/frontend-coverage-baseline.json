@@ -220,5 +220,11 @@
     "branches": 98,
     "functions": 98,
     "statements": 98
+  },
+  "workspace/library-layout.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
   }
 }

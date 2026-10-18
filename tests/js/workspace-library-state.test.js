@@ -42,6 +42,12 @@ test('parent shelf window bounds DOM and pins focused rows without changing logi
  const {libraryWindow}=await source;const first=libraryWindow(500,2,0,900);assert.equal(first[0],0);assert.ok(first.length<24);
  const middle=libraryWindow(500,2,50000,900,0);assert.equal(middle[0],0);assert.ok(middle.some(index=>index>150));assert.ok(middle.length<24);assert.deepEqual(middle,[...middle].sort((a,b)=>a-b));assert.deepEqual(libraryWindow(3,2,0,900),[0,1,2]);
 });
+test('uniform compatibility window handles huge counts without collection allocation',async()=>{
+ const {libraryWindow}=await source;const original=Array.from;const lengths=[];
+ Array.from=function(value,...args){lengths.push(value.length);assert.ok(!Number.isFinite(value.length)||value.length<32,'collection-sized allocation');return original.call(this,value,...args);};
+ try {const indexes=libraryWindow(Number.MAX_SAFE_INTEGER,2,50000,900,0);assert.ok(indexes.length<32);assert.ok(indexes.includes(0));assert.ok(indexes.includes(2*Math.floor(50000/578)));assert.deepEqual(indexes,[...new Set(indexes)].sort((a,b)=>a-b));assert.ok(lengths.every(length=>length<32));}
+ finally {Array.from=original;}
+});
 test('negative variants append continuously without losing selected identity, and failures retry same cursor',async()=>{
  const {createLibraryDetail}=await source;const calls=[];let count=0;const v=id=>({id,negative_text:id===9?'':'bad',explicit_empty:id===9});
  const loader=createLibraryDetail({api:{get:async url=>{calls.push(url);count++;if(count===2)throw Error('offline');return {positive:item(1),variants:count===1?[v(9)]:[v(9),v(10)],variant_total:2,variants_has_more:count===1,variants_next_cursor:count===1?'next':null,unassigned_image_count:0};}},onChange:()=>{}});
