@@ -19,6 +19,15 @@ from typing import Dict, Any, Optional, List
 from pathlib import Path
 
 
+class _OwnedRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """Keep a retired owned sink closed when an in-flight record resumes."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # Handler.handle and FileHandler.close hold the same handler lock.
+        if not self._closed:
+            super().emit(record)
+
+
 class PromptManagerLogger:
     """
     Centralized logging system for PromptManager.
@@ -112,7 +121,7 @@ class PromptManagerLogger:
         # File handler with rotation and safe encoding for Windows
         if self.config["file_logging"]:
             log_file = self.log_dir / "prompt_manager.log"
-            file_handler = logging.handlers.RotatingFileHandler(
+            file_handler = _OwnedRotatingFileHandler(
                 log_file,
                 maxBytes=self.config["max_file_size"],
                 backupCount=self.config["backup_count"],

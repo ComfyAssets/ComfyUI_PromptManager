@@ -235,6 +235,66 @@ class TestFilesAndRotation(IsolatedLoggerTestCase):
 
 
 class TestConfiguration(IsolatedLoggerTestCase):
+    def test_in_flight_record_cannot_reopen_retired_file_handler(self) -> None:
+        handler = next(
+            h
+            for h in self.manager.logger.handlers
+            if isinstance(h, logging.FileHandler)
+        )
+        stream = handler.stream
+        selected = threading.Event()
+        resume = threading.Event()
+        errors = []
+        message = "in-flight record selected before file logging disabled"
+
+        def pause_before_handler_lock(record: logging.LogRecord) -> bool:
+            if record.getMessage() == message:
+                selected.set()
+                if not resume.wait(5):
+                    raise RuntimeError("logging thread was not released")
+            return True
+
+        def log_from_background_thread() -> None:
+            try:
+                self.manager.logger.info(message)
+            except BaseException as error:
+                errors.append(error)
+
+        # Allow this record through the fixture's normal main-thread filter.
+        handler.filters.clear()
+        handler.addFilter(pause_before_handler_lock)
+        worker = threading.Thread(target=log_from_background_thread, daemon=True)
+        worker.start()
+        try:
+            self.assertTrue(selected.wait(5), "logger did not select the file handler")
+            self.assertFalse(stream.closed)
+            self.manager.update_config({"file_logging": False})
+            self.assertNotIn(handler, self.manager.logger.handlers)
+            self.assertTrue(stream.closed)
+            self.assertIsNone(handler.stream)
+
+            resume.set()
+            worker.join(5)
+            self.assertFalse(worker.is_alive(), "logging thread did not finish")
+            self.assertEqual(errors, [])
+            self.assertIsNone(handler.stream)
+            self.assertTrue(stream.closed)
+            self.assertFalse(self.manager.config["file_logging"])
+            self.assertFalse(
+                any(
+                    isinstance(h, logging.FileHandler)
+                    for h in self.manager.logger.handlers
+                )
+            )
+            self.assertNotIn(
+                message,
+                pathlib.Path(self.log_dir, "prompt_manager.log").read_text(),
+            )
+        finally:
+            resume.set()
+            worker.join(5)
+            handler.close()
+
     def test_rebuild_closes_replaced_file_stream(self) -> None:
         old_handler = next(
             h
