@@ -4,7 +4,7 @@ import re
 import sqlite3
 from uuid import uuid4
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _uuid_check(column: str) -> str:
@@ -24,7 +24,7 @@ def _integer_check(column: str, *, nullable: bool = False) -> str:
 
 _METADATA_CHECKS = (
     "singleton_id = 1",
-    "schema_version = 2",
+    "schema_version = 3",
     _uuid_check("storage_epoch"),
 )
 _RUN_CHECKS = (
@@ -140,6 +140,17 @@ def history_schema_error(
     }
     from .execution_context_schema import TABLE_COLUMNS, context_schema_error
 
+    from .execution_output_schema import (
+        TABLE_COLUMNS as OUTPUT_COLUMNS,
+        output_schema_error,
+    )
+
+    output_present = any(
+        row[0] in OUTPUT_COLUMNS
+        for row in conn.execute("SELECT name FROM sqlite_master")
+    )
+    if not tables and output_present:
+        return "Execution outputs require execution history"
     context_present = any(
         row[0] in TABLE_COLUMNS
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -154,9 +165,11 @@ def history_schema_error(
         "SELECT CASE WHEN typeof(schema_version) = 'integer' "
         "THEN schema_version ELSE NULL END FROM execution_history_metadata LIMIT 2"
     ).fetchall()
-    if len(metadata) != 1 or len(metadata[0]) != 1 or metadata[0][0] not in (1, 2):
+    if len(metadata) != 1 or len(metadata[0]) != 1 or metadata[0][0] not in (1, 2, 3):
         return "Unsupported execution history metadata/version"
     version = metadata[0][0]
+    if version < 3 and output_present:
+        return "Unexpected execution outputs for history v1/v2"
     if version == 1 and context_present:
         return "Unexpected execution contexts for history v1"
     if not allow_missing and version != SCHEMA_VERSION:
@@ -170,9 +183,9 @@ def history_schema_error(
             return f"{table} has invalid execution history columns"
         sql = _compact(tables[table])
         checks = _TABLE_CHECKS[table]
-        if table == "execution_history_metadata" and version == 1:
+        if table == "execution_history_metadata":
             checks = tuple(
-                check.replace("schema_version = 2", "schema_version = 1")
+                check.replace("schema_version = 3", f"schema_version = {version}")
                 for check in checks
             )
         if sql.count("check(") != len(checks) or any(
@@ -222,9 +235,11 @@ def history_schema_error(
             item[3] or item[4] != "BINARY" for item in keys
         ):
             return f"Invalid execution history index {name}"
-    if version == 2:
-        return context_schema_error(conn)
-    return None
+    if version >= 2:
+        error = context_schema_error(conn)
+        if error:
+            return error
+    return output_schema_error(conn) if version == 3 else None
 
 
 def install_context_schema(conn: sqlite3.Connection) -> None:
@@ -233,8 +248,14 @@ def install_context_schema(conn: sqlite3.Connection) -> None:
     install(conn)
 
 
+def install_output_schema(conn: sqlite3.Connection) -> None:
+    from .execution_output_schema import install_output_schema as install
+
+    install(conn)
+
+
 def migrate_execution_history(conn: sqlite3.Connection) -> None:
-    """Install versioned history and context tables atomically, without backfill."""
+    """Install history, contexts and outputs atomically, without backfill."""
     conn.execute("SAVEPOINT execution_history_schema")
     try:
         error = history_schema_error(conn)
@@ -263,14 +284,15 @@ def migrate_execution_history(conn: sqlite3.Connection) -> None:
                 (SCHEMA_VERSION, str(uuid4())),
             )
             install_context_schema(conn)
+            install_output_schema(conn)
         else:
             version, epoch = conn.execute(
                 "SELECT schema_version,storage_epoch FROM execution_history_metadata"
             ).fetchone()
-            if version == 1:
+            if version < SCHEMA_VERSION:
                 conn.execute(
                     "ALTER TABLE execution_history_metadata RENAME TO "
-                    "execution_history_metadata_v1"
+                    "execution_history_metadata_old"
                 )
                 definitions = [
                     f"{name} {kind}{' NOT NULL' if required else ''}"
@@ -285,10 +307,13 @@ def migrate_execution_history(conn: sqlite3.Connection) -> None:
                     f"({', '.join(definitions)})"
                 )
                 conn.execute(
-                    "INSERT INTO execution_history_metadata VALUES(1,2,?)", (epoch,)
+                    "INSERT INTO execution_history_metadata VALUES(1,?,?)",
+                    (SCHEMA_VERSION, epoch),
                 )
-                conn.execute("DROP TABLE execution_history_metadata_v1")
-                install_context_schema(conn)
+                conn.execute("DROP TABLE execution_history_metadata_old")
+                if version == 1:
+                    install_context_schema(conn)
+                install_output_schema(conn)
         error = history_schema_error(conn, allow_missing=False)
         if error:
             raise sqlite3.DatabaseError(error)

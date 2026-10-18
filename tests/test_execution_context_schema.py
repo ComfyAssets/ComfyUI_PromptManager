@@ -65,7 +65,7 @@ class ContextSchemaTests(unittest.TestCase):
             conn.execute(
                 "SELECT schema_version,storage_epoch FROM execution_history_metadata"
             ).fetchone(),
-            (2, EPOCH),
+            (history.SCHEMA_VERSION, EPOCH),
         )
         self.assertEqual(
             conn.execute("SELECT * FROM execution_runs").fetchall(), before
@@ -94,7 +94,7 @@ class ContextSchemaTests(unittest.TestCase):
             conn.execute(
                 "SELECT schema_version FROM execution_history_metadata"
             ).fetchone()[0],
-            2,
+            history.SCHEMA_VERSION,
         )
 
     def test_migration_failure_rolls_back_metadata_and_all_tables(self):
