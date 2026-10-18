@@ -1,6 +1,7 @@
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 
+test.use({locale:'en-US',timezoneId:'UTC',reducedMotion:'reduce'});
 test.beforeEach(async({page,browserName})=>{await startCoverage(page,browserName);page.inspectorErrors=[];page.on('pageerror',error=>page.inspectorErrors.push(error.message));});
 test.afterEach(async({page,browserName})=>{await saveCoverage(page,browserName);expect(page.inspectorErrors).toEqual([]);});
 
@@ -235,7 +236,8 @@ test.describe('full inspector coarse pointer',()=>{
         await panel.getByRole('button',{name:'Open full preview',exact:true}).click();const viewer=page.getByRole('dialog',{name:'Image preview',exact:true});
         await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
         for(const target of await viewer.locator('.image-preview-controls > :is(button,a),.image-preview-header > button').all()) {
-            const box=await target.boundingBox();expect(box.width).toBeGreaterThanOrEqual(80);expect(box.height).toBeGreaterThanOrEqual(80);
+            const box=await target.evaluate(node=>{const {width,height}=node.getBoundingClientRect();return {width,height,name:node.getAttribute('aria-label')};});
+            expect(box.width,box.name).toBeGreaterThanOrEqual(80);expect(box.height,box.name).toBeGreaterThanOrEqual(80);
         }
         const raw=viewer.getByText('Workflow & raw metadata',{exact:true});await raw.scrollIntoViewIfNeeded();await raw.focus();await expect(raw).toBeInViewport();
     });
@@ -283,6 +285,8 @@ test('collection viewer follows filtered loaded order beyond mounted cards',asyn
     await page.getByRole('combobox',{name:'Folder',exact:true}).selectOption('inspector');
     await selectFile(page,'complete.png',1);await openCollection(page);await expect(position(page)).toHaveText('1 of 1 loaded: complete.png');
     for(const name of ['Previous media','Next media'])await expect(mediaDialog(page).getByRole('button',{name,exact:true})).toHaveAttribute('aria-disabled','true');
+    const onePlay=mediaDialog(page).getByRole('button',{name:'Play slideshow',exact:true});
+    await expect(onePlay).toHaveAccessibleDescription('Slideshow requires at least two loaded media entries.');await onePlay.dispatchEvent('click');await expect(onePlay).toHaveText('Play');
     await mediaDialog(page).getByRole('button',{name:'Close preview',exact:true}).click();
     const library=await(await request.get('/prompt_manager/library')).json();const id=library.items.find(item=>item.text.startsWith('Inspector portrait')).id;
     await page.goto(`/prompt_manager/workspace#/library/${id}`);await page.getByRole('button',{name:'Select negative variant 1',exact:true}).click();await selectFile(page,'complete.png');await openCollection(page);
@@ -317,7 +321,182 @@ test('collection viewer uses real public transforms and resets on navigation',as
     await expect(controls.getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');await expect(modal.locator('.viewer-container')).toHaveCount(1);
     expect(await page.evaluate(()=>window.currentMedia!==document.querySelector('.viewer-canvas img')&&window.currentFit===document.querySelector('[aria-label="Fit image"]'))).toBe(true);
     expect(await page.evaluate(()=>({rotate:window.viewerInstances.at(-1).imageData.rotate,scaleX:window.viewerInstances.at(-1).imageData.scaleX}))).toEqual({rotate:0,scaleX:1});
-    await expect(controls.getByRole('button',{name:/slideshow/})).toHaveCount(0);
+    await expect(controls.getByRole('button',{name:'Play slideshow',exact:true})).toBeVisible();
+});
+
+async function slideshowFixture(page,request,preferences={videoAutoplay:false,videoMute:true,videoLoop:false}) {
+    await expect(await request.post('/__test__/reset',{data:{full_inspector:true,include_video:true}})).toBeOK();
+    await page.goto('/prompt_manager/workspace#/images');
+    await page.evaluate(async preferences=>{
+        if(preferences) localStorage.setItem('gallerySettings',JSON.stringify(preferences));
+        const [{createMediaViewer},{createInspectionController},{createScope},{createPromptSender}]=await Promise.all([
+            import('/prompt_manager/js/workspace/media-viewer.mjs'),import('/prompt_manager/js/workspace/inspection-state.mjs'),
+            import('/prompt_manager/js/shared/toolkit/core.js'),import('/prompt_manager/js/workspace/prompt-sender.mjs')]);
+        const api=window.ApiClient.createApiClient(),collection=await api.get('/prompt_manager/images/output?mode=workspace&subfolder=inspector&limit=40');
+        const items=['complete.png','clip.webm','explicit-empty.png'].map(filename=>collection.images.find(image=>image.root_index===0&&image.filename===filename));
+        window.slideshowTimers=new Set();window.slideshowCallbacks=[];window.slideshowReady=[];
+        const schedule=window.setTimeout.bind(window),cancel=window.clearTimeout.bind(window);
+        window.setTimeout=(callback,delay,...args)=>{let id;id=schedule(()=>{window.slideshowTimers.delete(id);callback(...args);},delay);if(delay===3500){window.slideshowTimers.add(id);window.slideshowCallbacks.push(callback);}return id;};
+        window.clearTimeout=id=>{window.slideshowTimers.delete(id);cancel(id);};
+        const Native=window.Viewer;
+        window.Viewer=class extends Native {constructor(node,options){window.slideshowReady.push(options.viewed);super(node,options);}};
+        const scope=createScope(),controller=createInspectionController({api}),sender=createPromptSender({scope});scope.cleanup(()=>controller.dispose());
+        const view=createMediaViewer({container:document.getElementById('workspace-main'),parentScope:scope,inspectionController:controller,sender,onSelect:entry=>controller.select(entry)});
+        window.slideshowFixture={scope,controller,view,items,open:()=>view.open({items,selectedKey:'0:inspector/complete.png'})};window.slideshowFixture.open();
+    },preferences);
+    await expect(mediaDialog(page).getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
+    await expect(mediaDialog(page).locator('.file-name')).toHaveText('complete.png');
+    await page.clock.install();await page.clock.pauseAt(new Date(Date.now()+1000));
+}
+const slideshowButton=page=>mediaDialog(page).getByRole('group',{name:'Media controls',exact:true}).getByRole('button',{name:/^(Play|Pause|Stop) slideshow$/});
+const timerCount=page=>page.evaluate(()=>window.slideshowTimers.size);
+const mediaStep=async(page,direction)=>mediaDialog(page).getByRole('button',{name:`${direction} media`,exact:true}).click();
+async function readyClockImage(page) {
+    await expect.poll(async()=>{await page.clock.runFor(50);return mediaDialog(page).getByRole('button',{name:'Zoom in',exact:true}).getAttribute('aria-disabled');}).toBe('false');
+}
+
+test('slideshow exposes exact state labels and respects video playback',async({page,request})=>{
+    const originals=[];page.on('request',request=>{if(request.url().includes('_pm_viewer='))originals.push(request.url());});
+    await slideshowFixture(page,request);const button=slideshowButton(page),modal=mediaDialog(page);
+    await expect(button).toHaveText('Play');await expect(button).not.toHaveAttribute('aria-pressed');
+    expect(originals).toHaveLength(1);
+    await button.click();await expect(button).toHaveText('Pause');await expect(button).toBeFocused();await expect(position(page)).toContainText('Slideshow playing.');expect(await timerCount(page)).toBe(1);
+    await page.clock.runFor(3499);await expect(position(page)).toContainText('1 of 3 loaded: complete.png');
+    await page.clock.runFor(1);await expect(position(page)).toContainText('2 of 3 loaded: clip.webm');
+    await expect(button).toHaveAccessibleName('Stop slideshow');await expect(button).toHaveText('Stop');await expect(button).toBeFocused();
+    await expect(position(page)).toContainText('Slideshow paused for video. Next or Previous continues it on an image; Stop ends slideshow.');expect(await timerCount(page)).toBe(0);
+    const video=modal.locator('video');await expect.poll(()=>video.evaluate(node=>node.readyState)).toBeGreaterThanOrEqual(1);
+    expect(await video.evaluate(node=>({controls:node.controls,inline:node.playsInline,muted:node.muted,loop:node.loop}))).toEqual({controls:true,inline:true,muted:true,loop:false});
+    await expect(modal.getByRole('button',{name:'Zoom in',exact:true})).toHaveAccessibleDescription('Image transforms are unavailable for video.');
+    await video.evaluate(node=>node.play());await expect.poll(()=>video.evaluate(node=>node.ended)).toBe(true);
+    await page.clock.runFor(10500);await expect(position(page)).toContainText('2 of 3 loaded');await expect(button).toHaveText('Stop');
+    await video.evaluate(node=>{node.loop=true;node.currentTime=0;return node.play();});
+    await button.click();await expect(button).toHaveText('Play');expect(await video.evaluate(node=>node.paused)).toBe(false);
+    await expect(button).toHaveAttribute('aria-disabled','true');await mediaStep(page,'Next');
+    await readyClockImage(page);await expect(button).toHaveText('Play');expect(await timerCount(page)).toBe(0);
+    await button.click();await mediaStep(page,'Previous');await expect(button).toHaveText('Stop');
+    await mediaStep(page,'Previous');await expect(button).toHaveText('Pause');await expect(position(page)).toContainText('Slideshow waiting for image.');await readyClockImage(page);await expect.poll(()=>timerCount(page)).toBe(1);
+    expect(new Set(originals.map(url=>new URL(url).pathname)).size).toBe(3);
+    await button.click();await modal.locator('.image-preview-details').evaluate(node=>{node.scrollTop=node.scrollHeight;});await page.clock.runFor(50);
+    await button.click();await mediaStep(page,'Previous');await readyClockImage(page);await expect(button).toHaveText('Pause');expect(await timerCount(page)).toBe(1);
+});
+
+test('slideshow stop fences old timer and readiness callbacks',async({page,request})=>{
+    await slideshowFixture(page,request);const button=slideshowButton(page);
+    await button.click();await page.clock.runFor(3499);await button.click();
+    await page.evaluate(()=>{for(const callback of window.slideshowCallbacks)callback();for(const callback of window.slideshowReady)callback();});
+    await page.clock.runFor(7000);await expect(position(page)).toContainText('1 of 3 loaded');await expect(button).toHaveText('Play');expect(await timerCount(page)).toBe(0);
+    await button.click();await mediaStep(page,'Previous');await expect(position(page)).toContainText('Slideshow waiting for image.');await button.click();
+    await page.evaluate(()=>{for(const callback of window.slideshowCallbacks)callback();for(const callback of window.slideshowReady)callback();});
+    await expect(button).toHaveText('Play');expect(await timerCount(page)).toBe(0);await mediaStep(page,'Next');await readyClockImage(page);
+    await page.route('**/images/serve/inspector/explicit-empty.png?*',route=>route.abort());
+    await button.click();await mediaStep(page,'Previous');await expect(position(page)).toContainText('Media could not be loaded.');
+    await expect(button).toHaveText('Play');await expect(button).toHaveAttribute('aria-disabled','true');expect(await timerCount(page)).toBe(0);
+    await mediaStep(page,'Next');await expect(button).toHaveText('Play');
+    await page.evaluate(()=>window.slideshowFixture.scope.dispose());await expect(mediaDialog(page)).toHaveCount(0);
+    await page.evaluate(()=>{for(const callback of window.slideshowCallbacks)callback();for(const callback of window.slideshowReady)callback();window.slideshowFixture.view.stopSlideshow();});
+    expect(await timerCount(page)).toBe(0);
+});
+
+test('slideshow production query and route disposal cancel the active deadline',async({page,request})=>{
+    await fullFixture(page,request);await page.clock.install();
+    await page.evaluate(()=>{
+        window.slideshowTimers=new Set();const schedule=window.setTimeout.bind(window),cancel=window.clearTimeout.bind(window);
+        window.setTimeout=(callback,delay,...args)=>{let id;id=schedule(()=>{window.slideshowTimers.delete(id);callback(...args);},delay);if(delay===3500)window.slideshowTimers.add(id);return id;};
+        window.clearTimeout=id=>{window.slideshowTimers.delete(id);cancel(id);};
+    });
+    await openCollection(page);await expect(mediaDialog(page).getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
+    await page.clock.pauseAt(new Date(Date.now()+1000));await slideshowButton(page).click();expect(await timerCount(page)).toBe(1);
+    await page.clock.runFor(3499);
+    const pendingAtReset=await page.evaluate(()=>{const folder=document.getElementById('image-folder');folder.value='inspector';folder.dispatchEvent(new Event('change'));return window.slideshowTimers.size;});
+    expect(pendingAtReset).toBe(0);await page.clock.runFor(1);
+    await expect(mediaDialog(page)).toHaveCount(0);expect(await timerCount(page)).toBe(0);
+    await selectFile(page,'complete.png');await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();await readyClockImage(page);await expect(slideshowButton(page)).toHaveText('Play');
+    await slideshowButton(page).click();await page.evaluate(()=>{location.hash='/overview';});await expect(page.locator('h1')).toHaveText('Overview');await expect(mediaDialog(page)).toHaveCount(0);expect(await timerCount(page)).toBe(0);
+    await page.clock.runFor(7000);await expect(page.locator('.viewer-container')).toHaveCount(0);
+});
+
+test('slideshow interaction visibility sender and disposal clear intent',async({page,request})=>{
+    await slideshowFixture(page,request);const button=slideshowButton(page),modal=mediaDialog(page);
+    for(const action of [
+        ()=>modal.locator('.prompt-positive pre').click(),
+        ()=>modal.locator('.image-preview-details').dispatchEvent('wheel',{deltaY:100}),
+        ()=>modal.getByRole('button',{name:'Copy positive prompt',exact:true}).click(),
+        async()=>{await modal.getByText('Workflow & raw metadata',{exact:true}).click();await downloadText(page,modal.getByRole('button',{name:'Download metadata JSON',exact:true}));},
+        async()=>{await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'));});},
+        async()=>{const trigger=modal.getByRole('button',{name:'Send prompt pair',exact:true});await trigger.click();await expect(page.getByRole('dialog',{name:'Send to ComfyUI',exact:true})).toBeVisible();await page.keyboard.press('Escape');await expect(trigger).toBeFocused();},
+        ()=>modal.getByRole('group',{name:'Media controls',exact:true}).getByRole('link',{name:'Download original',exact:true}).click(),
+        ()=>page.evaluate(()=>window.slideshowFixture.view.stopSlideshow()),
+    ]) {
+        await button.click();expect(await timerCount(page)).toBe(1);await action();await expect(button).toHaveText('Play');expect(await timerCount(page)).toBe(0);await page.clock.runFor(3500);await expect(position(page)).toContainText('1 of 3 loaded');
+    }
+    for(let mount=0;mount<3;mount++) {
+        await button.click();await modal.getByRole('button',{name:'Close preview',exact:true}).click();await expect(modal).toHaveCount(0);expect(await timerCount(page)).toBe(0);
+        await page.evaluate(()=>window.slideshowFixture.open());await expect(button).toHaveText('Play');
+        await readyClockImage(page);
+    }
+    await button.click();await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));await expect(modal).toHaveCount(0);expect(await timerCount(page)).toBe(0);
+    await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true})));await expect(modal).toHaveCount(0);
+});
+
+test('slideshow preference failures leave native playback usable',async({page,request})=>{
+    await slideshowFixture(page,request,null);const modal=mediaDialog(page);
+    for(const failure of ['denied','malformed','rejected']) {
+        await page.evaluate(failure=>{
+            if(failure==='denied') {window.normalStorage=Object.getOwnPropertyDescriptor(window,'localStorage');Object.defineProperty(window,'localStorage',{configurable:true,get(){throw new DOMException('Denied','SecurityError');}});}
+            else {if(window.normalStorage)Object.defineProperty(window,'localStorage',window.normalStorage);localStorage.setItem('gallerySettings',failure==='malformed'?'{broken':JSON.stringify({videoAutoplay:true,videoMute:true,videoLoop:false}));}
+            if(failure==='rejected'){window.nativePlay=HTMLMediaElement.prototype.play;window.playRejections=0;HTMLMediaElement.prototype.play=function(){window.playRejections++;return Promise.reject(new DOMException('Blocked','NotAllowedError'));};}
+        },failure);
+        await mediaStep(page,'Next');const video=modal.locator('video');await expect.poll(()=>video.evaluate(node=>node.readyState)).toBeGreaterThanOrEqual(1);
+        expect(await video.evaluate(node=>({controls:node.controls,inline:node.playsInline,muted:node.muted,loop:node.loop}))).toEqual({controls:true,inline:true,muted:true,loop:failure!=='rejected'});
+        if(failure==='rejected') {expect(await page.evaluate(()=>window.playRejections)).toBe(1);await page.evaluate(()=>{HTMLMediaElement.prototype.play=window.nativePlay;});}
+        await video.evaluate(node=>node.play());expect(await video.evaluate(node=>node.paused)).toBe(false);
+        await mediaStep(page,'Previous');await expect(slideshowButton(page)).toHaveText('Play');
+    }
+});
+
+test('full inspector attaches matched theme and mobile evidence with reachable content',async({page,request},testInfo)=>{
+    await expect(await request.post('/__test__/reset',{data:{full_inspector:true,include_video:true}})).toBeOK();
+    await page.goto('/prompt_manager/workspace#/images');
+    const measurements=[];
+    async function capture(name,viewer=false) {
+        await page.evaluate(()=>document.fonts.ready);
+        if(viewer) {
+            const modal=mediaDialog(page),rail=modal.locator('.image-preview-details');
+            expect(await modal.evaluate(node=>node.scrollWidth<=node.clientWidth+1)).toBe(true);
+            measurements.push({name,...await modal.evaluate(node=>{
+                const box=element=>{const bounds=element.getBoundingClientRect();return{x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height};};
+                return{frame:box(node),header:box(node.querySelector('.image-preview-header')),stage:box(node.querySelector('.image-preview-stage')),
+                    toolbar:box(node.querySelector('.image-preview-toolbar')),rail:box(node.querySelector('.image-preview-details')),
+                    footer:node.querySelector('.file-inspector-footer')?box(node.querySelector('.file-inspector-footer')):null};
+            })});
+            if(page.viewportSize().width===1600)expect(await rail.evaluate(node=>node.getBoundingClientRect().width)).toBe(340);
+            else await expect(rail).toHaveCSS('overflow-y','visible');
+        }
+        const file=testInfo.outputPath(`${name}.png`);await page.screenshot({path:file});await testInfo.attach(name,{path:file,contentType:'image/png'});
+    }
+    for(const [width,height,theme]of [[1600,1100,'dark'],[1600,1100,'light'],[390,844,'dark'],[390,844,'light']]) {
+        const label=`${theme}-${width}`;await page.setViewportSize({width,height});
+        await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+        await selectFile(page,'complete.png');await expect(inspector(page).locator('.generation-facts dd').first()).toHaveText('9007199254740993');
+        if(width===1600)await page.evaluate(()=>scrollTo(0,0));else await inspector(page).locator('.file-cover').evaluate(node=>node.scrollIntoView({block:'start'}));
+        await capture(`inline-${label}`);
+        await openCollection(page);const modal=mediaDialog(page),rail=modal.locator('.image-preview-details');
+        await expect(modal.locator('.viewer-canvas img')).toBeVisible();await expect.poll(()=>modal.locator('.viewer-canvas img').evaluate(node=>node.complete&&node.naturalWidth>0)).toBe(true);
+        await modal.evaluate(node=>{node.scrollTop=0;});await capture(`viewer-${label}`,true);
+        await expect(rail.locator('.prompt-negative')).toContainText('blurred edges, watermark');await rail.locator('.generation-facts').scrollIntoViewIfNeeded();await capture(`facts-${label}`,true);
+        await rail.getByText('File & provenance',{exact:true}).click();await rail.locator('.file-facts').scrollIntoViewIfNeeded();await capture(`provenance-${label}`,true);
+        await rail.getByText('Workflow & raw metadata',{exact:true}).click();const raw=rail.locator('pre code').first();await raw.scrollIntoViewIfNeeded();await expect(raw).toBeInViewport();await capture(`raw-${label}`,true);
+        const send=rail.getByRole('button',{name:'Send prompt pair',exact:true});await send.focus();await expect(send).toBeInViewport();await send.click();await expect(page.getByRole('dialog',{name:'Send to ComfyUI',exact:true})).toBeVisible();await capture(`sender-${label}`);await page.keyboard.press('Escape');await expect(send).toBeFocused();
+        await modal.getByRole('button',{name:'Close preview',exact:true}).click();await selectFile(page,'clip.webm');await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();
+        await expect.poll(()=>modal.locator('video').evaluate(node=>node.readyState)).toBeGreaterThanOrEqual(1);await capture(`video-${label}`,true);await modal.getByRole('button',{name:'Close preview',exact:true}).click();
+        await selectFile(page,'control-heavy.png');await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();
+        await expect(modal).toContainText('Unavailable within inspection limits');await modal.getByText('Workflow & raw metadata',{exact:true}).click();
+        const limitedDownload=modal.getByRole('button',{name:'Download metadata JSON',exact:true});await limitedDownload.scrollIntoViewIfNeeded();await expect(limitedDownload).toHaveAttribute('aria-disabled','true');await capture(`limited-${label}`,true);
+        await modal.getByRole('button',{name:'Close preview',exact:true}).click();
+    }
+    const fs=await import('node:fs/promises'),geometryPath=testInfo.outputPath('inspector-geometry.json');
+    await fs.writeFile(geometryPath,JSON.stringify(measurements,null,2));await testInfo.attach('inspector-geometry',{path:geometryPath,contentType:'application/json'});
 });
 
 test('collection viewer preserves original download and rooted retries',async({page,request})=>{
@@ -371,9 +550,14 @@ test('collection viewer matches approved responsive frame',async({page,request},
         await page.screenshot({path:testInfo.outputPath(`viewer-${theme}-1600.png`)});
     }
     for(const [width,expected] of [[1200,300],[900,270]]) {await page.setViewportSize({width,height:1000});await expect(rail).toHaveCSS('width',`${expected}px`);}
+    await page.setViewportSize({width:390,height:844});expect(await modal.evaluate(node=>node.getBoundingClientRect().width)).toBeCloseTo(356,1);
+    for(const [width,expected]of [[840,806],[850,816],[860,825.6]]) {
+        await page.setViewportSize({width,height:1000});expect(await modal.evaluate(node=>node.getBoundingClientRect().width)).toBeCloseTo(expected,1);
+    }
     await page.setViewportSize({width:390,height:844});
     for(const zoom of [1,2]) {
         await page.evaluate(zoom=>{document.documentElement.style.zoom=String(zoom);},zoom);
+        expect(await modal.evaluate(node=>node.getBoundingClientRect().width)).toBeCloseTo(zoom===1?356:322,1);
         expect(await modal.evaluate(node=>{const box=node.getBoundingClientRect();return box.top>=0&&box.bottom<=innerHeight+1;})).toBe(true);
         await expect.poll(()=>modal.evaluate(node=>node.scrollWidth<=node.clientWidth+1)).toBe(true);
         await expect(rail).toHaveCSS('overflow-y','visible');expect(await body.evaluate(node=>getComputedStyle(node).gridTemplateColumns.split(' ').length)).toBe(1);

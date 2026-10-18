@@ -1,4 +1,5 @@
 .image-details.file-inspector { padding: 0; }
+.image-preview-slideshow-reason { text-align: center; font-size: 11px; line-height: 1.6; margin: 8px 0 0; }
 .file-inspector { min-inline-size: 0; overflow-wrap: anywhere; }
 .file-inspector-inner { padding: 17px; }
 .image-preview-details .file-inspector-inner { padding: 0; }

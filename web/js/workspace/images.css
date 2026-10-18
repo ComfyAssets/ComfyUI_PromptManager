@@ -43,7 +43,7 @@
 .image-details .workspace-link { display: flex; font-size: 11px; }
 .image-continuation { text-align: center; padding-block: 24px; font-size: 12px; }
 .image-continuation [role="alert"] { color: var(--ca-error-text); }
-.image-preview { box-sizing: border-box; background: var(--ca-surface); color: var(--ca-text); border: 1px solid var(--ca-border); border-radius: 9px; inline-size: min(1500px, 96%); block-size: min(940px, 94dvh); max-inline-size: none; max-block-size: 94%; padding: 18px; overflow: hidden; overscroll-behavior: contain; }
+.image-preview { box-sizing: border-box; background: var(--ca-surface); color: var(--ca-text); border: 1px solid var(--ca-border); border-radius: 9px; inline-size: min(1500px, 96%); block-size: min(940px, 94dvh); max-block-size: 94%; padding: 18px; overflow: hidden; overscroll-behavior: contain; }
 .image-preview[open] { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 20px; }
 .image-preview::backdrop { background: #080b12b8; overflow: hidden; overscroll-behavior: contain; }
 .image-preview-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-inline-size: 0; }

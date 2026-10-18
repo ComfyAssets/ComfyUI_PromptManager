@@ -357,6 +357,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         observer.observe(continuation);
     }
     function reset() {
+        mediaViewer.stopSlideshow();
         main.querySelector('.image-preview[open]')?.close();
         inspection.clear();
         detailInspector?.dispose(); detailInspector = null;

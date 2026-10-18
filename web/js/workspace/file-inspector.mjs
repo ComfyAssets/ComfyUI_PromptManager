@@ -88,6 +88,8 @@ export function mountFileInspector(container, {sender, parentScope, inline = fal
     container.classList.add('file-inspector');
     scope.listen(container, 'pointerdown', onInteraction);
     scope.listen(container, 'keydown', onInteraction);
+    scope.listen(container, 'click', onInteraction);
+    scope.listen(container, 'wheel', onInteraction, {passive:true});
     scope.cleanup(() => {contentScope?.dispose(); container.replaceChildren(); container.classList.remove('file-inspector');});
 
     function setState(state) {

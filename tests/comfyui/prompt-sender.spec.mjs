@@ -7,11 +7,13 @@ installHostHooks(test,['PromptManagerPair']);
 test('native image inspector previews and sends a pair into real visible widgets without loading or queueing',async({page,context,request},testInfo)=>{
     const positive=`Inspector host positive ${testInfo.project.name}`;const negative='host negative, watermark';
     const image=execFileSync(process.env.PM_TEST_PYTHON||'python',['-c',[
-        'import io,sys',
+        'import io,json,sys',
         'from PIL import Image',
         'from PIL.PngImagePlugin import PngInfo',
         'info=PngInfo()',
-        'info.add_text("parameters",sys.argv[1]+"\\nNegative prompt: "+sys.argv[2]+"\\nSteps: 20, Sampler: Euler")',
+        'graph={"1":{"class_type":"CLIPTextEncode","inputs":{"text":sys.argv[1]}},"2":{"class_type":"CLIPTextEncode","inputs":{"text":sys.argv[2]}},"3":{"class_type":"KSampler","inputs":{"positive":["1",0],"negative":["2",0],"model":["4",0],"seed":9007199254740993,"steps":28,"cfg":6.5,"sampler_name":"dpmpp_2m","scheduler":"karras"}},"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"host-fixture.safetensors"}}}',
+        'info.add_text("prompt",json.dumps(graph))',
+        'info.add_text("workflow",json.dumps({"nodes":[],"links":[]}))',
         'buffer=io.BytesIO()',
         'Image.new("RGB",(64,64),(30,80,140)).save(buffer,format="PNG",pnginfo=info)',
         'sys.stdout.buffer.write(buffer.getvalue())',
@@ -44,7 +46,23 @@ test('native image inspector previews and sends a pair into real visible widgets
         await card.getByRole('button',{name:`Open ${filename}`,exact:true}).click();
         const inspector=workspace.getByRole('region',{name:'Image details',exact:true});
         await expect(inspector.getByRole('region',{name:'Positive prompt',exact:true})).toContainText(positive);
-        await inspector.getByRole('button',{name:'Send prompt pair',exact:true}).click();
+        await inspector.getByRole('button',{name:'Open full preview',exact:true}).click();
+        const viewer=workspace.getByRole('dialog',{name:'Image preview',exact:true});
+        await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
+        await expect(viewer.locator('.generation-facts dd')).toHaveText(['9007199254740993','28','6.5','dpmpp_2m','karras','host-fixture.safetensors']);
+        await viewer.getByText('Workflow & raw metadata',{exact:true}).click();
+        await expect(viewer.locator('pre code').first()).toContainText('9007199254740993');
+        await expect(viewer.getByRole('button',{name:'Download workflow JSON',exact:true})).not.toHaveAttribute('aria-disabled','true');
+        expect(await page.evaluate(()=>window.senderEffects)).toEqual({queue:0,load:0});
+        for(const renderer of [!testInfo.project.metadata.initialRenderer,testInfo.project.metadata.initialRenderer]) {
+            await page.evaluate(async renderer=>{const {app}=await import('/scripts/app.js');await app.ui.settings.setSettingValue('Comfy.VueNodes.Enabled',renderer);await app.loadGraphData(app.graph.serialize());app.canvas.centerOnNode(app.graph._nodes[0]);},renderer);
+            await expect.poll(()=>page.evaluate(()=>LiteGraph.vueNodesMode)).toBe(renderer);
+            await expect(viewer).toBeVisible();await expect(viewer.locator('.generation-facts dd').first()).toHaveText('9007199254740993');
+            await expect(nodeRoot.getByRole('textbox',{name:'Positive prompt',exact:true})).toHaveValue('Before positive');
+        }
+        expect(await page.evaluate(()=>window.senderEffects.queue)).toBe(0);
+        await page.evaluate(()=>{window.senderSendBaseline={...window.senderEffects};});
+        await viewer.getByRole('button',{name:'Send prompt pair',exact:true}).click();
         const sender=workspace.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
         const hosts=sender.getByRole('combobox',{name:'ComfyUI window',exact:true});
         await expect(hosts.locator('option')).toHaveCount(2);
@@ -60,9 +78,11 @@ test('native image inspector previews and sends a pair into real visible widgets
         const state=await page.evaluate(async id=>{
             const {app}=await import('/scripts/app.js');const node=app.graph.getNodeById(id);const serialized=node.serialize();
             return{inputs:(await app.graphToPrompt()).output[String(id)].inputs,
-                serialized:Object.fromEntries(node.widgets.map((widget,index)=>[widget.name,serialized.widgets_values[index]])),effects:window.senderEffects};
+                serialized:Object.fromEntries(node.widgets.map((widget,index)=>[widget.name,serialized.widgets_values[index]])),
+                effects:{queue:window.senderEffects.queue-window.senderSendBaseline.queue,load:window.senderEffects.load-window.senderSendBaseline.load}};
         },id);
         for(const name of ['inputs','serialized'])expect(state[name]).toMatchObject({text:positive,negative_text:negative,prepend_text:'LoRA trigger',append_text:'fine detail'});
         expect(state.effects).toEqual({queue:0,load:0});expect(errors).toEqual([]);
+        await workspace.screenshot({path:testInfo.outputPath('full-inspector-host-send.png')});
     } finally {await workspace.close();}
 });
