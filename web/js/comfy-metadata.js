@@ -59,7 +59,7 @@
      * their workflow widget text back. Otherwise the API graph is what actually ran
      * (expanded dynamic prompts, linked text) and always wins.
      */
-    function createContext(graph, workflow, conservative = false, budget = { remaining: MAX_VISITS }) {
+    function createContext(graph, workflow, conservative = false) {
         const widgets = new Map();
         for (const n of workflowNodes(workflow)) {
             const text = widgetsOf(n)[0];
@@ -82,7 +82,7 @@
                 ids.forEach((id) => widgetText.set(id, widgets.get(id)));
             }
         }
-        return { graph, widgetText, conservative, budget };
+        return { graph, widgetText, conservative };
     }
 
     /**
@@ -92,7 +92,7 @@
      */
     function enter(ctx, link, seen) {
         if (!isLink(link) || seen.size >= MAX_VISITS) return [];
-        if (ctx.conservative && (!Number.isSafeInteger(link[1]) || link[1] < 0 || seen.size >= 64 || ctx.budget.remaining-- <= 0)) return [];
+        if (ctx.conservative && (!Number.isSafeInteger(link[1]) || link[1] < 0 || seen.size >= 64)) return [];
         const id = String(link[0]);
         const node = !ctx.conservative || Object.hasOwn(ctx.graph, id) ? ctx.graph[id] : undefined;
         const key = `${id}:${link[1]}`;
@@ -110,12 +110,14 @@
         if (!isLink(value)) return value;
         const [, node] = enter(ctx, value, seen);
         if (!node) return undefined;
+        if (ctx.conservative) {
+            if (node[WORKFLOW_PASSTHROUGH]) return node[WORKFLOW_PASSTHROUGH] === "value" && value[1] === 0 ? resolveScalar(ctx, node.inputs.value, name, seen) : undefined;
+            const kind = ["seed", "noise_seed", "steps", "cfg"].includes(name) ? "number" : "string";
+            return value[1] === 0 && SCALAR_OUTPUTS[node.class_type] === kind && Object.hasOwn(node.inputs, "value") ?
+                resolveScalar(ctx, node.inputs.value, name, seen) : undefined;
+        }
         if (name && Object.prototype.hasOwnProperty.call(node.inputs, name)) {
             return resolveScalar(ctx, node.inputs[name], name, seen);
-        }
-        if (ctx.conservative) {
-            return value[1] === 0 && /^(Primitive(Int|Float|String|Boolean|Node)|PrimitiveStringMultiline)$/.test(node.class_type)
-                && Object.hasOwn(node.inputs, "value") ? resolveScalar(ctx, node.inputs.value, name, seen) : undefined;
         }
         for (const v of Object.values(node.inputs)) {
             const resolved = resolveScalar(ctx, v, name, seen);
@@ -191,11 +193,11 @@
         const [, node] = enter(ctx, link, seen);
         if (!node) return undefined;
         if (ctx.conservative) {
-            const names = MODEL_NAME_KEYS.filter(key => Object.hasOwn(node.inputs, key));
-            if (names.length) {
-                const values = names.map(key => resolveScalar(ctx, node.inputs[key], key, new Set(seen)));
-                return values.every(value => typeof value === "string" && value.trim() && value === values[0]) ? values[0] : undefined;
-            }
+            if (link[1] !== 0) return undefined;
+            if (node[WORKFLOW_PASSTHROUGH]) return traceModelName(ctx, node.inputs.value, seen);
+            const key = Object.hasOwn(MODEL_OUTPUTS, node.class_type) ? MODEL_OUTPUTS[node.class_type] : undefined;
+            if (key) return resolveScalar(ctx, node.inputs[key], key, seen);
+            return MODEL_PASSTHROUGHS.has(node.class_type) ? traceModelName(ctx, node.inputs.model, seen) : undefined;
         }
         const key = MODEL_NAME_KEYS.find((k) => typeof node.inputs[k] === "string");
         return key ? node.inputs[key] : traceModelName(ctx, node.inputs.model, seen);
@@ -290,12 +292,56 @@
         return out;
     }
 
+    function factWorkflowGraph(workflow) {
+        const nodes = workflowNodes(workflow), links = new Map(), setters = new Map();
+        for (const link of workflow.links || []) {
+            if (Array.isArray(link)) links.set(link[0], { from: link[1], slot: link[2] });
+            else links.set(link.id, { from: link.origin_id, slot: link.origin_slot });
+        }
+        const source = id => {
+            const link = links.get(id);
+            if (!link || !["string", "number"].includes(typeof link.from) || !Number.isSafeInteger(link.slot) || link.slot < 0) return undefined;
+            return [String(link.from), link.slot];
+        };
+        for (const node of nodes) {
+            const name = widgetsOf(node)[0];
+            if (node.type === "SetNode" && node.mode !== MODE_MUTED && typeof name === "string") setters.set(name, node.inputs?.length === 1 ? node.inputs[0].link : undefined);
+        }
+        const graph = Object.create(null);
+        for (const node of nodes) {
+            if (node.mode === MODE_MUTED) continue;
+            let pass = PASS_THROUGH_TYPES.has(node.type), link, kind = "value";
+            if (pass) {
+                const name = widgetsOf(node)[0];
+                if (node.type === "GetNode") link = typeof name === "string" ? setters.get(name) : undefined;
+                else if (node.inputs?.length === 1) link = node.inputs[0].link;
+            }
+            else if (node.mode === MODE_BYPASSED) {
+                if (!MODEL_PASSTHROUGHS.has(node.type)) continue;
+                const models = (node.inputs || []).filter(input => input.name === "model");
+                pass = true; kind = "model"; link = models.length === 1 ? models[0].link : undefined;
+            }
+            if (pass) {
+                // Retain the actual alias hop so a fact's full original ancestry shares one depth/visit set.
+                graph[String(node.id)] = { class_type: node.type, inputs: { value: source(link) }, [WORKFLOW_PASSTHROUGH]: kind };
+                continue;
+            }
+            const inputs = namedWidgets(node);
+            for (const input of node.inputs || []) {
+                if (input.link !== null && input.link !== undefined) inputs[input.name] = source(input.link);
+            }
+            graph[String(node.id)] = { class_type: node.type, inputs };
+        }
+        return graph;
+    }
+
     /**
      * Convert a UI workflow ({nodes, links}) into the API graph shape so images
      * without a `prompt` chunk are traced the same way. Set/Get pairs, Reroutes and
      * bypassed nodes are resolved to their real source; muted nodes are dropped.
      */
-    function workflowToGraph(workflow, conservative = false, budget = { remaining: MAX_VISITS }) {
+    function workflowToGraph(workflow, conservative = false) {
+        if (conservative) return factWorkflowGraph(workflow);
         const nodes = workflowNodes(workflow).filter((n) => n && n.id !== undefined && n.id !== null);
         const byId = new Map(nodes.map((n) => [String(n.id), n]));
         const links = new Map();
@@ -311,8 +357,7 @@
         const source = (linkId, hops = 0) => {
             const link = links.get(linkId);
             const node = link && byId.get(String(link.from));
-            if (!node || node.mode === MODE_MUTED || hops > MAX_VISITS ||
-                (conservative && (hops >= 64 || budget.remaining-- <= 0))) return undefined;
+            if (!node || node.mode === MODE_MUTED || hops > MAX_VISITS) return undefined;
             const next = (id) => source(id, hops + 1);
             if (node.type === "Reroute") return next(node.inputs && node.inputs[0] && node.inputs[0].link);
             if (node.type === "GetNode") return next(setters.get(widgetsOf(node)[0]));
@@ -331,7 +376,7 @@
             const inputs = namedWidgets(n);
             for (const i of n.inputs || []) {
                 const src = i && i.link !== null && i.link !== undefined ? source(i.link) : undefined;
-                if (src || (conservative && i && i.link !== null && i.link !== undefined)) inputs[i.name] = src;
+                if (src) inputs[i.name] = src;
             }
             graph[String(n.id)] = { class_type: n.type, inputs };
         }
@@ -359,6 +404,24 @@
 
     const FACT_FIELDS = ["seed", "steps", "cfg", "sampler", "scheduler", "model"];
     const GENERATION_SAMPLERS = new Set(["KSampler", "KSamplerAdvanced", "SamplerCustom", "SamplerCustomAdvanced"]);
+    const WORKFLOW_PASSTHROUGH = Symbol("inspection workflow passthrough");
+    // Fixed output0 contracts from the pinned core node schemas, not input-name inference.
+    const SCALAR_OUTPUTS = Object.freeze({
+        PrimitiveInt: "number", PrimitiveFloat: "number",
+        PrimitiveString: "string", PrimitiveStringMultiline: "string",
+    });
+    const MODEL_OUTPUTS = Object.freeze({
+        CheckpointLoader: "ckpt_name", CheckpointLoaderSimple: "ckpt_name",
+        unCLIPCheckpointLoader: "ckpt_name", UNETLoader: "unet_name",
+    });
+    const MODEL_PASSTHROUGHS = new Set(["LoraLoader", "LoraLoaderModelOnly"]);
+    const CONFIGURATION_OUTPUTS = Object.freeze({
+        RandomNoise: { kind: "noise", fields: ["noise_seed"] },
+        KSamplerSelect: { kind: "sampler", fields: ["sampler_name"] },
+        BasicScheduler: { kind: "sigmas", fields: ["steps", "scheduler"] },
+        CFGGuider: { kind: "guider", fields: ["cfg", "model"] },
+        BasicGuider: { kind: "guider", fields: ["model"] },
+    });
     const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
 
     function fact(status, source = null, samplerId = null, value = null, reason = null) {
@@ -372,7 +435,7 @@
     function exactFactValue(value, field) {
         if (typeof value === "number") {
             // The projection carries decimals as strings; a float here cannot prove exactness.
-            if (!Number.isFinite(value) || !Number.isSafeInteger(value)) return null;
+            if (!["seed", "steps", "cfg"].includes(field) || !Number.isFinite(value) || !Number.isSafeInteger(value)) return null;
             value = String(value);
         }
         if (typeof value !== "string" || !value.trim()) return null;
@@ -389,15 +452,22 @@
         return fact(value === null ? "unresolved" : "known", source, samplerId, value);
     }
 
-    function providerFact(ctx, link, keys, field, source, samplerId) {
+    function configurationOutput(ctx, link, kind, seen) {
+        const [id, node] = enter(ctx, link, seen);
+        if (node?.[WORKFLOW_PASSTHROUGH]) return node[WORKFLOW_PASSTHROUGH] === "value" && link[1] === 0 ? configurationOutput(ctx, node.inputs.value, kind, seen) : [];
+        const adapter = node && CONFIGURATION_OUTPUTS[node.class_type];
+        return node && link[1] === 0 && adapter?.kind === kind ? [id, node, adapter] : [];
+    }
+
+    function providerFact(ctx, link, kind, keys, field, source, samplerId) {
         const seen = new Set();
-        const [, node] = enter(ctx, link, seen);
+        const [, node, adapter] = configurationOutput(ctx, link, kind, seen);
         if (!node) return fact("unresolved", source, samplerId);
-        const key = keys.find(name => Object.hasOwn(node.inputs, name));
+        const key = keys.find(name => adapter.fields.includes(name) && Object.hasOwn(node.inputs, name));
         return key === undefined ? fact("not-recorded", source, samplerId) : scalarFact(ctx, node.inputs, key, field, source, samplerId, seen);
     }
 
-    function graphFacts(graph, source, resolution, budget) {
+    function graphFacts(graph, source, resolution) {
         if (!object(graph)) return factSet("unresolved", source);
         const entries = Object.entries(graph);
         if (entries.length > MAX_VISITS) return factSet("unresolved", source, "projection-limited");
@@ -406,24 +476,30 @@
         const selected = candidates.find(([id]) => typeof resolution?.sampler_id === "string" && id === resolution.sampler_id);
         if (!selected && candidates.length !== 1) return factSet(candidates.length > 1 ? "ambiguous" : "unresolved", source);
         const [samplerId, sampler] = selected || candidates[0];
-        const ctx = createContext(graph, null, true, budget);
+        const ctx = createContext(graph, null, true);
         const inputs = sampler.inputs;
         const advanced = sampler.class_type === "SamplerCustomAdvanced";
         const custom = advanced || sampler.class_type === "SamplerCustom";
         let settings = inputs;
+        let settingsAdapter;
         const settingsPath = new Set();
         if (advanced) {
-            const [, guider] = enter(ctx, inputs.guider, settingsPath);
-            settings = guider && ["CFGGuider", "BasicGuider"].includes(guider.class_type) ? guider.inputs : null;
+            const [, guider, adapter] = configurationOutput(ctx, inputs.guider, "guider", settingsPath);
+            settings = guider ? guider.inputs : null;
+            settingsAdapter = adapter;
         }
-        const fromSettings = (key, field) => settings ? scalarFact(ctx, settings, key, field, source, samplerId, new Set(settingsPath)) : fact("unresolved", source, samplerId);
+        const fromSettings = (key, field) => {
+            if (!settings) return fact("unresolved", source, samplerId);
+            if (settingsAdapter && !settingsAdapter.fields.includes(key)) return fact(Object.hasOwn(settings, key) ? "unresolved" : "not-recorded", source, samplerId);
+            return scalarFact(ctx, settings, key, field, source, samplerId, new Set(settingsPath));
+        };
         const seedKey = Object.hasOwn(inputs, "seed") ? "seed" : "noise_seed";
         const facts = {
-            seed: advanced ? providerFact(ctx, inputs.noise, ["noise_seed", "seed"], "seed", source, samplerId) : scalarFact(ctx, inputs, seedKey, "seed", source, samplerId),
-            steps: custom ? providerFact(ctx, inputs.sigmas, ["steps"], "steps", source, samplerId) : scalarFact(ctx, inputs, "steps", "steps", source, samplerId),
+            seed: advanced ? providerFact(ctx, inputs.noise, "noise", ["noise_seed"], "seed", source, samplerId) : scalarFact(ctx, inputs, seedKey, "seed", source, samplerId),
+            steps: custom ? providerFact(ctx, inputs.sigmas, "sigmas", ["steps"], "steps", source, samplerId) : scalarFact(ctx, inputs, "steps", "steps", source, samplerId),
             cfg: fromSettings("cfg", "cfg"),
-            sampler: custom ? providerFact(ctx, inputs.sampler, ["sampler_name"], "sampler", source, samplerId) : scalarFact(ctx, inputs, "sampler_name", "sampler", source, samplerId),
-            scheduler: Object.hasOwn(inputs, "scheduler") || !custom ? scalarFact(ctx, inputs, "scheduler", "scheduler", source, samplerId) : providerFact(ctx, inputs.sigmas, ["scheduler"], "scheduler", source, samplerId),
+            sampler: custom ? providerFact(ctx, inputs.sampler, "sampler", ["sampler_name"], "sampler", source, samplerId) : scalarFact(ctx, inputs, "sampler_name", "sampler", source, samplerId),
+            scheduler: Object.hasOwn(inputs, "scheduler") || !custom ? scalarFact(ctx, inputs, "scheduler", "scheduler", source, samplerId) : providerFact(ctx, inputs.sigmas, "sigmas", ["scheduler"], "scheduler", source, samplerId),
             model: fact(settings && !Object.hasOwn(settings, "model") ? "not-recorded" : "unresolved", source, samplerId),
         };
         if (settings && Object.hasOwn(settings, "model")) {
@@ -483,13 +559,12 @@
             if (!record || record.status === "absent") continue;
             if (record.status === "limited") return factSet("unresolved", source, "projection-limited");
             if (record.status !== "parsed") return factSet("unresolved", source);
-            const budget = { remaining: MAX_VISITS };
             if (source === "workflow") {
                 if (record.value?.nodes?.length > MAX_VISITS) return factSet("unresolved", source, "projection-limited");
                 if (!validFactWorkflow(record.value)) return factSet("unresolved", source);
-                return graphFacts(workflowToGraph(record.value, true, budget), source, null, budget);
+                return graphFacts(workflowToGraph(record.value, true), source, null);
             }
-            return graphFacts(record.value, source, resolution, budget);
+            return graphFacts(record.value, source, resolution);
         }
         if (metadataStatus === "limited") return factSet("unresolved", null, "projection-limited");
         if (metadataStatus === "unreadable") return factSet("unresolved", null, "metadata-unreadable");

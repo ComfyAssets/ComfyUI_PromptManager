@@ -78,6 +78,7 @@ test('record format validation never guesses original text', () => {
     assert.equal(toRecord(data, entry, extractGenerationFacts).metadata.record_formats.workflow, 'invalid');
     data.metadata.raw = {}; data.metadata.status = 'limited'; data.metadata.omitted_reason = 'response-size-limit';
     data.metadata.prompt_graph = { status: 'limited', value: null };
+    data.metadata.workflow_graph = { status: 'limited', value: null };
     const limited = toRecord(data, entry, extractGenerationFacts);
     assert.deepEqual(limited.metadata.record_formats, { prompt: 'reserialized-json', workflow: 'invalid' });
     assert.equal(limited.generation.seed.status, 'unresolved');
@@ -86,6 +87,46 @@ test('record format validation never guesses original text', () => {
     toRecord(envelope(entry), entry, input => { seen = input; return extractGenerationFacts(input); });
     assert.deepEqual(seen.recordFormats, { prompt: 'reserialized-json' });
     assert.equal(seen.raw, undefined, 'facts never receive raw graphs for reparsing');
+});
+
+test('record accepts actual atomic omission producer states', () => {
+    const toRecord = contract('toInspectionRecord');
+    for (const wholeRaw of [false, true]) {
+        const data = envelope();
+        data.metadata.record_formats.workflow = 'invalid';
+        data.metadata.prompt_graph = { status: 'limited', value: null };
+        data.metadata.workflow_graph = { status: 'limited', value: null };
+        if (wholeRaw) Object.assign(data.metadata, { raw: {}, parameters: null, status: 'limited', omitted_reason: 'response-size-limit' });
+        let record;
+        assert.doesNotThrow(() => { record = toRecord(data, image(), extractGenerationFacts); }, 'actual producer omission remains renderable');
+        assert.deepEqual(record.metadata.raw, wholeRaw ? {} : { prompt: '{"rounded":"raw copy"}' });
+        assert.equal(record.metadata.status, wholeRaw ? 'limited' : 'available');
+        assert.equal(record.metadata.omitted_reason, wholeRaw ? 'response-size-limit' : null);
+        assert.deepEqual(record.metadata.record_formats, { prompt: 'reserialized-json', workflow: 'invalid' });
+        assert.equal(record.prompts.positive.text, 'exact\npositive');
+        assert.equal(record.download.url, image().url);
+        assert.ok(Object.values(record.generation).every(fact => fact.status === 'unresolved' && fact.reason === 'projection-limited'));
+    }
+    const absent = envelope();
+    Object.assign(absent.metadata, { status: 'limited', omitted_reason: 'response-size-limit', raw: {}, record_formats: { parameters: 'original-text' }, parameters: null, prompt_graph: { status: 'absent', value: null } });
+    assert.equal(toRecord(absent, image(), extractGenerationFacts).generation.seed.reason, 'projection-limited');
+});
+
+test('record rejects contradictory omission provenance before extracting facts', () => {
+    const toRecord = contract('toInspectionRecord');
+    for (const mutate of [
+        data => Object.assign(data.metadata, { status: 'limited', omitted_reason: 'response-size-limit' }),
+        data => Object.assign(data.metadata, { status: 'limited', omitted_reason: 'response-size-limit', raw: {} }),
+        data => { data.metadata.raw = {}; },
+        data => { data.metadata.record_formats.workflow = 'original-text'; data.metadata.workflow_graph = { status: 'parsed', value: { nodes: [] } }; },
+        data => { Object.assign(data.metadata, { status: 'limited', omitted_reason: 'response-size-limit', raw: {}, prompt_graph: { status: 'limited', value: null } }); data.metadata.record_formats.workflow = 'invalid'; data.metadata.workflow_graph = { status: 'malformed', value: null }; },
+        data => { data.metadata.record_formats.workflow = 'invalid'; data.metadata.raw.workflow = 'null'; data.metadata.workflow_graph = { status: 'limited', value: null }; },
+        data => { data.metadata.record_formats.workflow = 'invalid'; data.metadata.workflow_graph = { status: 'limited', value: null }; },
+    ]) {
+        const data = envelope(); mutate(data); let extractions = 0;
+        assert.throws(() => toRecord(data, image(), () => { extractions++; return extractGenerationFacts({}); }), TypeError);
+        assert.equal(extractions, 0, 'contradictory transport cannot produce known facts');
+    }
 });
 
 test('record rejects root path media and invalid versioned fields with retryable TypeError', () => {
@@ -225,4 +266,46 @@ test('disposed or superseded responses never publish', async () => {
     requests[3].resolve(envelope()); await final;
     await controller.select(newer); await controller.retry(); controller.clear();
     assert.equal(updates.length, disposedCount); assert.equal(requests.length, 4);
+});
+
+const invalidSelections = () => [null, undefined, 0, 'new.png', {}, { ...image(), path: '../new.png' }, { ...image(), root_scope: null }, { ...image(), root_scope: 'malformed' }];
+
+test('invalid attempted selections clear completed actions and retry validation only', async () => {
+    for (const invalid of invalidSelections()) {
+        const { api, requests } = pendingApi();
+        const controller = contract('createInspectionController')({ api, extractFacts: extractGenerationFacts });
+        const previous = controller.select(image()); requests[0].resolve(envelope()); await previous;
+        assert.equal(controller.state.prompts.positive.text, 'exact\npositive');
+        let rejected, thrown;
+        try { rejected = controller.select(invalid); } catch (error) { thrown = error; }
+        assert.equal(controller.state.record, null, 'invalid navigation cannot retain completed actions'); assert.equal(controller.state.prompts, undefined);
+        assert.equal(thrown, undefined, 'selection validation uses the retryable state');
+        await rejected;
+        assert.deepEqual([controller.state.loading, controller.state.error, controller.state.refreshRequired, controller.state.message], [false, true, false, 'Could not read details from this file.']);
+        await controller.retry(); await controller.retry(); assert.equal(requests.length, 1);
+        const valid = controller.select(image()); assert.equal(requests.length, 2);
+        requests[1].resolve(envelope()); await valid;
+        await controller.select({ ...image() }); assert.equal(requests.length, 2);
+        controller.dispose();
+    }
+});
+
+test('invalid attempted selections abort pending reads and suppress late results', async () => {
+    for (const invalid of invalidSelections()) {
+        const { api, requests } = pendingApi(), changes = [];
+        const controller = contract('createInspectionController')({ api, extractFacts: extractGenerationFacts });
+        controller.subscribe(state => changes.push(state));
+        const previous = controller.select(image());
+        let rejected, thrown;
+        try { rejected = controller.select(invalid); } catch (error) { thrown = error; }
+        assert.equal(requests[0].signal.aborted, true);
+        assert.equal(thrown, undefined, 'selection validation uses the retryable state');
+        assert.equal(controller.state.record, null); assert.equal(controller.state.prompts, undefined);
+        await rejected; const count = changes.length;
+        requests[0].resolve(envelope()); await previous;
+        assert.equal(changes.length, count); assert.equal(controller.state.error, true);
+        assert.equal(controller.state.record, null); assert.equal(controller.state.prompts, undefined);
+        await controller.retry(); assert.equal(requests.length, 1);
+        controller.dispose();
+    }
 });

@@ -107,10 +107,15 @@ function metadataFor(value) {
     }
     if (value.parameters !== (raw.parameters ?? null)) throw new TypeError('Invalid inspection parameters projection');
     const prompt = graphFor(value.prompt_graph), workflow = graphFor(value.workflow_graph);
+    const wholeRawOmitted = value.status === 'limited';
+    if (wholeRawOmitted && (Object.keys(raw).length || value.parameters !== null)) throw new TypeError('Invalid atomic raw omission');
+    if (!wholeRawOmitted && Object.entries(formats).some(([key, format]) => format !== 'invalid' && !Object.hasOwn(raw, key))) throw new TypeError('Missing represented raw record');
+    const invalidGraphOmitted = [['prompt', prompt], ['workflow', workflow]].some(([key, graph]) => formats[key] === 'invalid' && graph.status === 'limited');
     for (const [key, graph] of [['prompt', prompt], ['workflow', workflow]]) {
         const hasRecord = Object.hasOwn(formats, key);
-        if ((formats[key] === 'invalid' && graph.status !== 'malformed') ||
+        if ((formats[key] === 'invalid' && !['malformed', 'limited'].includes(graph.status)) ||
             hasRecord !== (graph.status !== 'absent')) throw new TypeError('Invalid graph representation provenance');
+        if (hasRecord && (wholeRawOmitted || invalidGraphOmitted) && graph.status !== 'limited') throw new TypeError('Invalid atomic graph omission');
     }
     if ((value.status === 'limited') !== (value.omitted_reason === 'response-size-limit')) throw new TypeError('Invalid metadata omission status');
     if (['absent', 'unreadable'].includes(value.status) && (Object.keys(raw).length || Object.keys(formats).length || prompt.status !== 'absent' || workflow.status !== 'absent')) throw new TypeError('Invalid unavailable metadata');
@@ -188,6 +193,7 @@ const emptyState = () => ({ loading: false, error: false, record: null, prompts:
 
 export function createInspectionController({ api, extractFacts }) {
     let state = Object.freeze(emptyState()), current = null, pending = null, disposed = false;
+    let attempted, hasAttempt = false;
     const listeners = new Set();
     function publish(update) {
         if (disposed) return;
@@ -204,18 +210,25 @@ export function createInspectionController({ api, extractFacts }) {
         get state() { return state; },
         select(image) {
             if (disposed) return;
-            const scope = validateIdentity(image), key = imageKey(image);
-            if (current?.key === key && current.scope === scope) return pending;
-            current = { key, scope, image: { ...image } };
-            return read(current.image);
+            let selected = null;
+            try {
+                const scope = validateIdentity(image), key = imageKey(image);
+                if (current?.key === key && current.scope === scope) return pending;
+                selected = { key, scope };
+            } catch {
+                // The loader publishes validation errors after invalidating the previous source.
+            }
+            loader.dispose(); loader = makeLoader(); current = selected;
+            attempted = object(image) ? { ...image } : image; hasAttempt = true;
+            return read(attempted);
         },
         retry() {
-            if (disposed || !current || state.refreshRequired) return;
-            return read(current.image);
+            if (disposed || !hasAttempt || state.refreshRequired) return;
+            return read(attempted);
         },
         clear() {
             if (disposed) return;
-            loader.dispose(); loader = makeLoader(); current = null; pending = null;
+            loader.dispose(); loader = makeLoader(); current = null; pending = null; attempted = undefined; hasAttempt = false;
             publish({});
         },
         subscribe(listener) {
@@ -225,7 +238,7 @@ export function createInspectionController({ api, extractFacts }) {
         },
         dispose() {
             if (disposed) return;
-            disposed = true; loader.dispose(); listeners.clear(); current = null; pending = null; state = Object.freeze(emptyState());
+            disposed = true; loader.dispose(); listeners.clear(); current = null; pending = null; attempted = undefined; hasAttempt = false; state = Object.freeze(emptyState());
         },
     };
 }
