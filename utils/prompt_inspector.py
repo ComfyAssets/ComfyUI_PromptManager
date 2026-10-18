@@ -6,6 +6,7 @@ import struct
 import subprocess  # nosec B404
 import threading
 import zlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,17 +14,37 @@ from PIL import Image
 
 from .pair_execution import EXECUTION_KEY
 from .prompt_pair_resolver import resolve_prompt_pair
-from .video_metadata import ffprobe_path, is_video_path, metadata_from_tags
+from .video_metadata import ffprobe_path, is_video_path
 
 MAX_METADATA_BYTES = 2 * 1024 * 1024
 MAX_HEADER_BYTES = 8 * 1024 * 1024
 MAX_PNG_CHUNKS = 10_000
-_METADATA_KEYS = frozenset({"prompt", "parameters", EXECUTION_KEY})
+_ROLE_METADATA_KEYS = frozenset({"prompt", "parameters", EXECUTION_KEY})
+_METADATA_KEYS = _ROLE_METADATA_KEYS | {"workflow"}
 _SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 class MetadataReadError(ValueError):
     """Prompt evidence is unreadable, incomplete, or exceeds inspection limits."""
+
+
+@dataclass(frozen=True)
+class InspectionRead:
+    """One bounded read, with its transient exact video source kept private."""
+
+    metadata: dict[str, str]
+    record_formats: dict[str, str]
+    video_carrier_text: str | None
+    format: str | None
+    width: int | None
+    height: int | None
+
+
+@dataclass(frozen=True)
+class _VideoInspection:
+    metadata: dict[str, str | None]
+    record_formats: dict[str, str]
+    carrier_text: str | None
 
 
 def _inflate(data: bytes) -> bytes:
@@ -60,7 +81,7 @@ def _png_text(kind: bytes, data: bytes) -> tuple[str, str]:
     return key, body.decode(encoding)
 
 
-def _png_metadata(stream: Any, size: int) -> dict:
+def _png_metadata(stream: Any, size: int) -> tuple[dict, int, int]:
     """CRC-check text and structural chunks, seeking past compressed pixels.
 
     PNG text chunks may follow IDAT. Pillow's ``.text`` loads pixels to find
@@ -89,10 +110,11 @@ def _png_metadata(stream: Any, size: int) -> dict:
                 if saw_header or not all(struct.unpack(">II", data[:8])):
                     raise MetadataReadError("Malformed PNG header")
                 saw_header = True
+                width, height = struct.unpack(">II", data[:8])
             elif kind == b"IEND":
                 if length or not saw_pixels:
                     raise MetadataReadError("Incomplete PNG image")
-                return found
+                return found, width, height
             else:
                 key, value = _png_text(kind, data)
                 expanded_size += len(value.encode("utf-8"))
@@ -108,7 +130,7 @@ def _png_metadata(stream: Any, size: int) -> dict:
     raise MetadataReadError("PNG chunk count exceeds inspection limits")
 
 
-def _video_metadata(path: Path) -> dict:
+def _video_metadata(path: Path) -> _VideoInspection:
     probe = ffprobe_path()
     if not probe:
         raise MetadataReadError("Video metadata reader is unavailable")
@@ -161,6 +183,7 @@ def _video_metadata(path: Path) -> dict:
     # The scan normalizer drops null fields and unknown keys. Inspection must
     # retain explicit prompt/execution markers so malformed evidence cannot
     # silently fall back to an unrelated saved recipe or another comment.
+    candidates = []
     for key in ("comment", "description"):
         raw = tags.get(key)
         if not isinstance(raw, str):
@@ -169,44 +192,73 @@ def _video_metadata(path: Path) -> dict:
             envelope = json.loads(raw)
         except ValueError:
             continue
-        if not isinstance(envelope, dict) or not _METADATA_KEYS.intersection(envelope):
+        if not isinstance(envelope, dict):
             continue
-        metadata = metadata_from_tags({key: raw})
+        candidates.append((raw, envelope))
+    selected = next(
+        (item for item in candidates if _ROLE_METADATA_KEYS.intersection(item[1])),
+        None,
+    )
+    if selected is None:
+        selected = next((item for item in candidates if "workflow" in item[1]), None)
+    if selected is not None:
+        raw, envelope = selected
+        metadata, formats = {}, {}
         for field in _METADATA_KEYS.intersection(envelope):
             value = envelope[field]
+            if field == "workflow" and not isinstance(value, (str, dict)):
+                formats[field] = "invalid"
+                continue
             metadata[field] = (
                 value if value is None or isinstance(value, str) else json.dumps(value)
             )
-        return metadata
-    return {}
+            formats[field] = (
+                "original-text" if isinstance(value, str) else "reserialized-json"
+            )
+        return _VideoInspection(metadata, formats, raw)
+    return _VideoInspection({}, {}, None)
 
 
-def read_inspection_metadata(path: Path) -> dict:
-    """Return bounded, header-only metadata or raise a response-safe error."""
+def read_inspection_file(path: Path) -> InspectionRead:
+    """Read bounded metadata and header facts without decoding media pixels."""
     try:
+        formats, carrier = {}, None
+        format_name = width = height = None
         if is_video_path(path):
-            metadata = _video_metadata(path)
+            video = _video_metadata(path)
+            metadata, formats, carrier = (
+                video.metadata,
+                video.record_formats,
+                video.carrier_text,
+            )
         else:
             with path.open("rb") as stream:
                 signature = stream.read(8)
                 if signature == _SIGNATURE:
-                    return _png_metadata(stream, path.stat().st_size)
-                stream.seek(0)
-                header = stream.read(MAX_HEADER_BYTES)
-            with Image.open(io.BytesIO(header)) as image:
-                metadata = dict(image.info)
+                    metadata, width, height = _png_metadata(stream, path.stat().st_size)
+                    format_name = "PNG"
+                else:
+                    stream.seek(0)
+                    header = stream.read(MAX_HEADER_BYTES)
+                    with Image.open(io.BytesIO(header)) as image:
+                        metadata = dict(image.info)
+                        format_name, (width, height) = image.format, image.size
         result, size = {}, 0
         for key in _METADATA_KEYS:
             if key not in metadata:
                 continue
             value = metadata[key]
+            if key == "workflow" and not isinstance(value, str):
+                formats[key] = "invalid"
+                continue
             if not isinstance(value, str):
                 raise MetadataReadError("Malformed prompt metadata")
-            size += len(value.encode("utf-8"))
+            size += len(value.encode("utf-8", "surrogatepass"))
             if size > MAX_METADATA_BYTES:
                 raise MetadataReadError("Metadata exceeds inspection limits")
             result[key] = value
-        return result
+            formats.setdefault(key, "original-text")
+        return InspectionRead(result, formats, carrier, format_name, width, height)
     except MetadataReadError:
         raise
     except (
@@ -221,12 +273,25 @@ def read_inspection_metadata(path: Path) -> dict:
         raise MetadataReadError("Media metadata could not be read") from None
 
 
+def read_inspection_metadata(path: Path) -> dict[str, str]:
+    """Compatible metadata-only projection of the single inspection read."""
+    return read_inspection_file(path).metadata
+
+
 def _side(status: str, text: str | None = None, source: str | None = None) -> dict:
     return {"status": status, "text": text, "source": source}
 
 
-def inspect_prompt_roles(metadata: dict, saved: dict | None = None) -> dict:
+def inspect_prompt_evidence(metadata: dict, saved: dict | None = None) -> dict:
     """Keep uncertainty visible; a saved association never replaces file evidence."""
+    metadata = {
+        key: value for key, value in metadata.items() if key in _ROLE_METADATA_KEYS
+    }
+    resolution = {
+        "state": "unresolved",
+        "sampler_id": None,
+        "reason": "Prompt evidence is malformed",
+    }
     if not metadata:
         result = {role: _side("absent") for role in ("positive", "negative")}
         if saved:
@@ -240,20 +305,35 @@ def inspect_prompt_roles(metadata: dict, saved: dict | None = None) -> dict:
                         "verified against this file."
                     ),
                 }
-        return result
+        return {
+            "prompts": result,
+            "resolution": {
+                "state": "absent",
+                "sampler_id": None,
+                "reason": "No parsed prompt metadata",
+            },
+        }
     canonical = dict(metadata)
     if "prompt" not in canonical and "parameters" not in canonical:
-        return {role: _side("unresolved") for role in ("positive", "negative")}
+        return {
+            "prompts": {role: _side("unresolved") for role in ("positive", "negative")},
+            "resolution": resolution,
+        }
     if isinstance(canonical.get("prompt"), str):
         try:
             canonical["prompt"] = json.loads(canonical["prompt"])
         except (ValueError, RecursionError):
-            return {role: _side("unresolved") for role in ("positive", "negative")}
-    resolution = resolve_prompt_pair(canonical)
-    state = resolution["state"]
+            return {
+                "prompts": {
+                    role: _side("unresolved") for role in ("positive", "negative")
+                },
+                "resolution": resolution,
+            }
+    resolved = resolve_prompt_pair(canonical)
+    state = resolved["state"]
     result = {}
     for role in ("positive", "negative"):
-        side = resolution[role]
+        side = resolved[role]
         if (
             state != "ambiguous"
             and isinstance(side, dict)
@@ -264,4 +344,16 @@ def inspect_prompt_roles(metadata: dict, saved: dict | None = None) -> dict:
             )
         else:
             result[role] = _side(state if state != "resolved" else "unresolved")
-    return result
+    return {
+        "prompts": result,
+        "resolution": {
+            "state": state,
+            "sampler_id": resolved.get("sampler_id"),
+            "reason": resolved.get("reason", ""),
+        },
+    }
+
+
+def inspect_prompt_roles(metadata: dict, saved: dict | None = None) -> dict:
+    """Keep the established role-only helper contract."""
+    return inspect_prompt_evidence(metadata, saved)["prompts"]

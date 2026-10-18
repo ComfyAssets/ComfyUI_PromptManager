@@ -11,6 +11,7 @@ import re
 import threading
 import time as _time
 import urllib.parse
+from collections.abc import Mapping
 from pathlib import Path
 
 from aiohttp import web
@@ -22,17 +23,19 @@ from .prompts import safe_error_message as _safe_error
 
 try:
     from ...utils.parallel import map_parallel
+    from ...utils.inspection_response import encode_inspection_response
     from ...utils.prompt_inspector import (
         MetadataReadError,
-        inspect_prompt_roles,
-        read_inspection_metadata,
+        inspect_prompt_evidence,
+        read_inspection_file,
     )
 except ImportError:
     from utils.parallel import map_parallel
+    from utils.inspection_response import encode_inspection_response
     from utils.prompt_inspector import (
         MetadataReadError,
-        inspect_prompt_roles,
-        read_inspection_metadata,
+        inspect_prompt_evidence,
+        read_inspection_file,
     )
 
 # Only these file types are ever served by the image routes, regardless of
@@ -375,7 +378,9 @@ def _iter_media_files(output_path, max_files):
             yield root_path / name
 
 
-def _output_image_entry(media_path, output_path, root_index, public_root=None):
+def _output_image_entry(
+    media_path, output_path, root_index, public_root=None, *, root_scope=None
+):
     """Build one gallery entry for *media_path* (blocking stat).
 
     ``path`` is relative to its root (what delete/autotag resolve against) and
@@ -396,15 +401,20 @@ def _output_image_entry(media_path, output_path, root_index, public_root=None):
     if thumbnail_url is not None:
         thumbnail_url += f"&root={root_index}"
     encoded_path = urllib.parse.quote(rel_path.as_posix(), safe="/")
+    url = f"/prompt_manager/images/serve/{encoded_path}?root={root_index}"
+    if root_scope is not None:
+        url += f"&root_scope={root_scope}"
+        if thumbnail_url is not None:
+            thumbnail_url += f"&root_scope={root_scope}"
 
-    return {
+    entry = {
         "id": hashlib.sha1(str(media_path).encode("utf-8")).hexdigest()[:16],
         "filename": media_path.name,
         "path": rel_path.as_posix(),
         "relative_path": str(rel_path),
         "root_dir": public_root,
         "root_index": root_index,
-        "url": f"/prompt_manager/images/serve/{encoded_path}?root={root_index}",
+        "url": url,
         "thumbnail_url": thumbnail_url,
         "size": stat.st_size,
         "modified_time": stat.st_mtime,
@@ -412,6 +422,9 @@ def _output_image_entry(media_path, output_path, root_index, public_root=None):
         "media_type": "video" if is_video else "image",
         "is_video": is_video,
     }
+    if root_scope is not None:
+        entry["root_scope"] = root_scope
+    return entry
 
 
 def _in_subfolder(rel_dir, subfolder):
@@ -420,6 +433,48 @@ def _in_subfolder(rel_dir, subfolder):
 
 class ImageRoutesMixin:
     """Mixin providing image and gallery-related API endpoints."""
+
+    def _gallery_root_scope(self, root: Path, index: int) -> str:
+        payload = json.dumps(
+            ["prompt-manager-gallery-root-v1", index, str(_canonical(root))],
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        return hmac.new(_WORKSPACE_CURSOR_SECRET, payload, hashlib.sha256).hexdigest()
+
+    def _gallery_scope_error(
+        self, query: Mapping, roots: list[Path]
+    ) -> web.Response | None:
+        if "root_scope" not in query:
+            return None
+        scope, root = query.get("root_scope"), query.get("root")
+        if (
+            not isinstance(scope, str)
+            or re.fullmatch(r"[0-9a-f]{64}", scope) is None
+            or not isinstance(root, str)
+            or re.fullmatch(r"[0-9]+", root) is None
+        ):
+            return bad_request("Invalid gallery root scope")
+        try:
+            index = int(root)
+        except ValueError:
+            return bad_request("Invalid gallery root scope")
+        if index >= len(roots) or not hmac.compare_digest(
+            scope, self._gallery_root_scope(roots[index], index)
+        ):
+            return web.json_response(
+                {
+                    "success": False,
+                    "code": "source-changed",
+                    "error": (
+                        "The source changed. Refresh the image collection before "
+                        "inspecting this file."
+                    ),
+                },
+                status=409,
+                headers={"Cache-Control": "no-store"},
+            )
+        return None
 
     def _register_image_routes(self, routes):
         @routes.get("/prompt_manager/prompts/{prompt_id}/images")
@@ -910,15 +965,17 @@ class ImageRoutesMixin:
     async def serve_output_image(self, request):
         """Serve a media file from the ComfyUI output folder(s)."""
         try:
+            roots = list(self._get_all_output_dirs())
+            scope_error = self._gallery_scope_error(request.query, roots)
+            if scope_error is not None:
+                return scope_error
             filepath = request.match_info["filepath"]
             if _has_traversal(filepath):
                 return _forbidden()
             if Path(filepath).suffix.lower() not in SERVABLE_EXTENSIONS:
                 return _forbidden("Only media files can be served")
 
-            output_dirs = self._select_root(
-                list(self._get_all_output_dirs()), request.query.get("root")
-            )
+            output_dirs = self._select_root(roots, request.query.get("root"))
             if not output_dirs:
                 return _forbidden("No allowed image directories configured")
 
@@ -1645,12 +1702,18 @@ class ImageRoutesMixin:
     async def inspect_image(self, request):
         """Read prompt evidence for one explicitly rooted physical media file."""
         roots = list(self._get_all_output_dirs())
+        scope_error = self._gallery_scope_error(request.query, roots)
+        if scope_error is not None:
+            return scope_error
         try:
             index = _workspace_root(request.query, roots)
             if index is None:
                 raise ValueError("Gallery root is required")
         except ValueError as error:
             return bad_request(str(error))
+        root_scope = request.query.get("root_scope") or self._gallery_root_scope(
+            roots[index], index
+        )
         relative = request.match_info.get("image_path", "")
         if (
             _has_traversal(relative)
@@ -1668,38 +1731,122 @@ class ImageRoutesMixin:
             )
         try:
 
-            def inspect() -> dict:
+            def inspect() -> bytes | None:
+                before = path.stat()
                 try:
-                    metadata = read_inspection_metadata(path)
+                    inspection = read_inspection_file(path)
                 except MetadataReadError:
-                    return {
-                        role: {"status": "unresolved", "text": None, "source": None}
-                        for role in ("positive", "negative")
+                    inspection = None
+                try:
+                    after = path.stat()
+                except FileNotFoundError:
+                    return None
+                fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+                if any(getattr(before, key) != getattr(after, key) for key in fields):
+                    return None
+                saved, unavailable = None, False
+                try:
+                    saved = self.db.get_image_prompt_info(str(path), False)
+                except Exception:
+                    unavailable = True
+                    self.logger.warning("Saved inspection display could not be read")
+                if inspection is None:
+                    evidence = {
+                        "prompts": {
+                            role: {"status": "unresolved", "text": None, "source": None}
+                            for role in ("positive", "negative")
+                        },
+                        "resolution": {
+                            "state": "unresolved",
+                            "sampler_id": None,
+                            "reason": "Media metadata could not be read",
+                        },
                     }
-                saved = (
-                    self.db.get_image_prompt_info(str(path), False)
-                    if not metadata
-                    else None
-                )
-                return inspect_prompt_roles(metadata, saved)
-
-            prompts = await self._run_in_executor(inspect)
-            return web.json_response(
-                {
-                    "success": True,
-                    "image": {
+                else:
+                    evidence = inspect_prompt_evidence(inspection.metadata, saved)
+                return encode_inspection_response(
+                    image={
                         "root_index": index,
                         "path": Path(relative).as_posix(),
                         "filename": path.name,
                     },
-                    "prompts": prompts,
-                }
+                    root_scope=root_scope,
+                    file={
+                        "observation": "current-file",
+                        "source_label": _public_path(roots[index]),
+                        "media_type": (
+                            "video"
+                            if path.suffix.lower() in VIDEO_EXTENSIONS
+                            else "image"
+                        ),
+                        "extension": path.suffix.lower(),
+                        "size": before.st_size,
+                        "modified_time": before.st_mtime,
+                        "format": None,
+                        "width": None,
+                        "height": None,
+                    },
+                    prompts=evidence["prompts"],
+                    resolution=evidence["resolution"],
+                    inspection=inspection,
+                    library=self._inspection_library(saved, unavailable=unavailable),
+                )
+
+            body = await self._run_in_executor(inspect)
+            if body is None:
+                return web.json_response(
+                    {
+                        "success": False,
+                        "error": "The file changed while being inspected. Try again.",
+                    },
+                    status=409,
+                    headers={"Cache-Control": "no-store"},
+                )
+            return web.Response(
+                body=body,
+                content_type="application/json",
+                charset="utf-8",
+                headers={"Cache-Control": "no-store"},
             )
         except Exception:
             self.logger.exception("Prompt inspection failed")
             return web.json_response(
                 {"success": False, "error": "Prompt inspection failed"}, status=500
             )
+
+    def _inspection_library(self, saved: dict | None, *, unavailable: bool) -> dict:
+        result = {
+            "status": "unavailable" if unavailable else "none",
+            "scope": "saved-library",
+            "positive_id": None,
+            "pair_id": None,
+            "title": None,
+            "category": None,
+            "tags": [],
+            "metadata_scope": None,
+        }
+        if not isinstance(saved, dict) or not saved:
+            return result
+        pair = saved.get("pair")
+        if isinstance(pair, dict):
+            result.update(
+                status="linked",
+                positive_id=pair.get("positive_prompt_id"),
+                pair_id=pair.get("id"),
+                title=pair.get("title"),
+                category=pair.get("category"),
+                tags=pair.get("tags"),
+                metadata_scope="pair",
+            )
+        else:
+            result.update(
+                status="linked",
+                positive_id=saved.get("prompt_id"),
+                category=saved.get("category"),
+                tags=saved.get("tags"),
+                metadata_scope="positive",
+            )
+        return result
 
     async def get_image_prompt(self, request):
         """Get prompt information for a specific image path."""
@@ -1799,7 +1946,7 @@ class ImageRoutesMixin:
         ]
 
     def _format_workspace_page(self, page: list[tuple]) -> list[dict]:
-        images = self._format_output_page(page)
+        images = self._format_output_page(page, scoped=True)
         paths = {
             (entry[3], entry[0].relative_to(entry[2]).as_posix()): entry[0]
             for entry in page
@@ -1818,7 +1965,7 @@ class ImageRoutesMixin:
                 continue
         return images
 
-    def _format_output_page(self, page):
+    def _format_output_page(self, page, *, scoped=False):
         entries = []
         public_roots = {}
         for media_path, _mtime, output_path, root_index in page:
@@ -1827,7 +1974,15 @@ class ImageRoutesMixin:
             try:
                 entries.append(
                     _output_image_entry(
-                        media_path, output_path, root_index, public_roots[output_path]
+                        media_path,
+                        output_path,
+                        root_index,
+                        public_roots[output_path],
+                        root_scope=(
+                            self._gallery_root_scope(output_path, root_index)
+                            if scoped
+                            else None
+                        ),
                     )
                 )
             except Exception as e:

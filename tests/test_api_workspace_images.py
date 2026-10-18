@@ -255,6 +255,51 @@ class TestWorkspaceImages(ImageAPITestCase):
         response = await self.client.get("/prompt_manager/gallery/subfolders")
         self.assertNotIn("roots", await response.json())
 
+    async def test_root_scope_workspace_descriptors_guard_original_and_thumbnail_urls(
+        self,
+    ):
+        from urllib.parse import parse_qs, quote, urlsplit
+
+        roots = [self.output_dir, self.comfy_dir / "input"]
+        self.api._get_all_output_dirs = lambda: roots
+        relative = "nested/猫 % #.png"
+        for index, root in enumerate(roots):
+            self.media(relative, root=root)
+            self.media("thumbnails/nested/猫 % #_thumb.png", root=root)
+            make_png(root / relative, color=(index, 0, 0))
+            make_png(root / "thumbnails/nested/猫 % #_thumb.png", color=(index, 0, 0))
+        _, result = await self.get(limit=10)
+        for entry in result["images"]:
+            self.assertRegex(entry.get("root_scope", ""), r"^[0-9a-f]{64}$")
+            self.assertIn(quote(relative, safe="/"), entry["url"])
+            for url in (entry["url"], entry["thumbnail_url"]):
+                query = parse_qs(urlsplit(url).query)
+                self.assertEqual(query["root_scope"], [entry["root_scope"]])
+                self.assertEqual(query["root"], [str(entry["root_index"])])
+                response = await self.client.get(url)
+                self.assertEqual(response.status, 200)
+                expected = roots[entry["root_index"]] / (
+                    "thumbnails/nested/猫 % #_thumb.png"
+                    if url == entry["thumbnail_url"]
+                    else relative
+                )
+                self.assertEqual(await response.read(), expected.read_bytes())
+            self.assertIn("v", parse_qs(urlsplit(entry["thumbnail_url"]).query))
+            response = await self.client.get(
+                f"/prompt_manager/images/inspect/{quote(relative, safe='/')}",
+                params={"root": entry["root_index"], "root_scope": entry["root_scope"]},
+            )
+            data = await response.json()
+            self.assertEqual(data["root_scope"], entry["root_scope"])
+            self.assertEqual(
+                data["image"],
+                {
+                    "root_index": entry["root_index"],
+                    "path": relative,
+                    "filename": "猫 % #.png",
+                },
+            )
+
 
 class TestWorkspaceCursorEncoding(unittest.TestCase):
     def test_ntfs_unicode_basename_cursor_is_bounded_and_round_trips(self):
