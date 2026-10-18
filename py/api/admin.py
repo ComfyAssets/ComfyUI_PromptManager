@@ -1248,9 +1248,24 @@ class AdminRoutesMixin:
                     {"success": False, "error": reason}, status=400
                 )
 
-            backup_path = await self._run_in_executor(
-                model.restore_from_file, temp_path
-            )
+            try:
+                backup_path = await self._run_in_executor(
+                    model.restore_from_file, temp_path
+                )
+            except sqlite3.OperationalError as exc:
+                if (
+                    getattr(exc, "_prompt_manager_restore_backup_created", False)
+                    is True
+                ):
+                    try:
+                        await self._run_in_executor(
+                            _prune_safety_backups, model.db_path
+                        )
+                    except Exception:
+                        self.logger.warning(
+                            "Could not prune safety backups after failed restore"
+                        )
+                raise
             removed = await self._run_in_executor(_prune_safety_backups, model.db_path)
             if removed:
                 self.logger.info(f"Removed {len(removed)} old safety backups")
