@@ -10,6 +10,8 @@ import unittest
 import weakref
 from unittest.mock import patch
 
+from test_execution_context_graph import transformed_input_graph
+
 from utils.execution_context_budget import ContextBudget
 from utils.execution_context_graph import SourceRef
 from utils.execution_contexts import PromptSnapshot, TextEvidence
@@ -215,6 +217,32 @@ class CaptureTests(unittest.TestCase):
         result = self.seal(cap)
         self.assertIsNone(result.bundle.contexts[0].positive.effective.value)
         self.assertNotEqual(result.state, "complete")
+
+    def test_upstream_transform_preserves_final_pm_runtime_snapshot(self):
+        for field in ("text", "prepend_text", "append_text"):
+            for unresolved in (False, True):
+                with self.subTest(field=field, unresolved=unresolved):
+                    cap = self.begin(g=transformed_input_graph(field, unresolved))
+                    self.host_context()
+                    capture.record_runtime_context(
+                        "PromptManagerPair",
+                        " actual raw ",
+                        " actual pre ",
+                        " actual post ",
+                        " actual injected effective ",
+                        role="positive",
+                    )
+                    side = self.seal(cap).bundle.contexts[0].positive
+                    for name, expected in (
+                        ("raw", " actual raw "),
+                        ("prepend", " actual pre "),
+                        ("append", " actual post "),
+                        ("effective", " actual injected effective "),
+                    ):
+                        evidence = getattr(side, name)
+                        self.assertEqual(evidence.value, expected)
+                        self.assertEqual(evidence.provenance, "recorded")
+                        self.assertEqual(evidence.source, "runtime_return")
 
     def test_unsupported_graph_has_no_supported_context(self):
         result = self.seal(self.begin(g={}))

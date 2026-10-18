@@ -163,7 +163,6 @@ class _Projector:
                 sources.extend(refs)
                 if len(sources) > 64:
                     raise _Unknown("source_reference_limit_reached")
-            self.transformed = self.transformed or bool(sources)
             text = delimiter.join(parts)
             return self.snapshot(
                 text, text, "", "", composed=True, raw_composed=True
@@ -331,6 +330,7 @@ class _Projector:
         sources = ()
         try:
             self.transformed = False
+            # Only the capture-source-to-consumer path determines transforms.
             sources = self.discover_sources(value, "conditioning")
             snapshot, _ = self.text(value, "conditioning")
             return GraphRole(

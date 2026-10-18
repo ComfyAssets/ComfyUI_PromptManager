@@ -21,6 +21,24 @@ def graph(kind="KSampler", source="PromptManagerPair"):
     }
 
 
+def transformed_input_graph(field: str, unresolved: bool = False) -> dict:
+    g = graph()
+    g["upstream"] = node("PromptManagerText", text="looks literal")
+    g["dynamic"] = node("RuntimeGenerator")
+    g["join"] = node(
+        "StringConcatenate",
+        string_a=["upstream", 0],
+        string_b=["dynamic", 0] if unresolved else " suffix",
+    )
+    if unresolved:
+        g["inner"] = node(
+            "StringConcatenate", string_a=["upstream", 0], string_b=" inner"
+        )
+        g["join"]["inputs"]["string_a"] = ["inner", 0]
+    g["p"]["inputs"][field] = ["join", 0]
+    return g
+
+
 class ProjectionTests(unittest.TestCase):
     def setUp(self):
         self.m = load_module("execution_context_graph")
@@ -218,6 +236,29 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual(role.inferred.effective.provenance, "inferred")
         self.assertEqual(role.sources[0].node_id, "p")
         self.assertEqual(role.reason, "source-transformed")
+
+    def test_transform_provenance_stops_at_selected_pm_capture_boundary(self):
+        for field in ("text", "prepend_text", "append_text"):
+            for unresolved in (False, True):
+                with self.subTest(field=field, unresolved=unresolved):
+                    g = transformed_input_graph(field, unresolved)
+                    g["outer"] = node(
+                        "StringConcatenate", string_a=["p", 2], string_b=" outer"
+                    )
+                    g["clip"] = node("CLIPTextEncode", text=["outer", 0])
+                    g["s"]["inputs"]["negative"] = ["clip", 0]
+                    result = self.m.project_contexts(g, None)
+                    positive, negative = (
+                        result.recipes[0].positive,
+                        result.recipes[0].negative,
+                    )
+                    self.assertEqual(
+                        [(ref.node_id, ref.output_slot) for ref in positive.sources],
+                        [("p", 0)],
+                    )
+                    self.assertNotEqual(positive.reason, "source-transformed")
+                    self.assertEqual(negative.reason, "source-transformed")
+                    self.assertEqual(negative.sources[0].node_id, "p")
 
     def test_malformed_inputs_do_not_stringify(self):
         class HostValue:

@@ -11,6 +11,8 @@ import types
 import unittest
 from unittest.mock import patch
 
+from test_execution_context_graph import transformed_input_graph
+
 from utils.execution_context_budget import ContextBudget
 from utils.execution_context_capture import ContextCapture
 from utils.execution_history_events import RunStart
@@ -246,6 +248,54 @@ class HostTests(unittest.TestCase):
                         self.assertEqual(result.prepend.value, " pre ")
                     else:
                         self.assertEqual(result.raw.value, " raw ")
+
+    def test_upstream_transform_preserves_final_pm_cached_effective_only(self):
+        for field, snapshot_field in (
+            ("text", "raw"),
+            ("prepend_text", "prepend"),
+            ("append_text", "append"),
+        ):
+            for unresolved in (False, True):
+                with self.subTest(field=field, unresolved=unresolved):
+                    g = transformed_input_graph(field, unresolved)
+                    g["outer"] = {
+                        "class_type": "StringConcatenate",
+                        "inputs": {"string_a": ["p", 2], "string_b": " outer"},
+                    }
+                    g["clip"] = {
+                        "class_type": "CLIPTextEncode",
+                        "inputs": {"text": ["outer", 0]},
+                    }
+                    g["s"]["inputs"]["negative"] = ["clip", 0]
+                    self.cap = self.capture.begin(
+                        RunStart(SESSION, SESSION, 1, JOB, EPOCH, 0),
+                        3,
+                        g,
+                        None,
+                    )
+                    self.executor.caches.outputs.entries["p"] = Entry(
+                        None, [object(), object(), [" cached injected "], [""]]
+                    )
+                    self.observe("execution_start")
+                    self.observe("execution_cached", nodes=["upstream", "p"])
+                    result = self.seal()
+                    self.assertIsNone(result.negative.effective.value)
+                    side = result.positive
+                    self.assertEqual(side.effective.value, " cached injected ")
+                    self.assertEqual(side.effective.provenance, "recorded")
+                    self.assertEqual(side.effective.source, "host_cache_output")
+                    for name, expected in (
+                        ("raw", " cat "),
+                        ("prepend", "pre"),
+                        ("append", "post"),
+                    ):
+                        evidence = getattr(side, name)
+                        if name == snapshot_field:
+                            self.assertIsNone(evidence.value)
+                            self.assertEqual(evidence.provenance, "unknown")
+                        else:
+                            self.assertEqual(evidence.value, expected)
+                            self.assertEqual(evidence.provenance, "inferred")
 
     def test_provider_local_reset_eviction_and_unknown_modes_fail_closed(self):
         for mode in (
