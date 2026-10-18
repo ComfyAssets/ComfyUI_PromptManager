@@ -203,7 +203,7 @@ export function createMediaViewer({container,parentScope,inspectionController,se
         dialog.showModal();mounted = true;update(...initial);
         local.cleanup(inspectionController.subscribe(state => {
             inspectionState = state;updateControls(session.state);
-            if (state.loading || state.error) session.stop();
+            if (state.error) session.stop();
             inspector.setState(state);
             if (state.record?.identity.key === currentKey && state.record.library?.title) title.textContent = `${state.record.library.title} · ${entry.filename}`;
         }));

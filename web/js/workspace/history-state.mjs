@@ -278,8 +278,9 @@ export function createHistoryController({api, positiveId, onChange = () => {}, r
             if (!request.current()) return;
             if (runId) validateDetail(value, runId, epoch); else validateWindow(value, positiveId, null, epoch);
             const hadOutputs = state.outputs.capture !== null;
-            emit({validating:false, ...(runId ? {run:{detail:structuredClone(value), loading:false, error:null}} : {})});
-            if (hadOutputs) {emit({outputs:clearOutputs(), selection:{...state.selection, receipt:null}}); return fetchOutputs(null, 40);}
+            emit({validating:false, ...(runId ? {run:{detail:structuredClone(value), loading:false, error:null}} : {}),
+                ...(hadOutputs ? {outputs:clearOutputs(), selection:{...state.selection, receipt:null}} : {})});
+            if (hadOutputs) return fetchOutputs(null, 40);
         } catch (error) {if (request.current() && !recover(error)) emit({validating:false, refreshRequired:'revalidation-failed', refreshLabel:'Reload recorded history', window:{...state.window, error}});}
     }
     return {

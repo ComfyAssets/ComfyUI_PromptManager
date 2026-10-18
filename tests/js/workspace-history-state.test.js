@@ -56,3 +56,35 @@ test('repeated stale output responses stop automatic recovery and retain explici
 test('known and unknown frozen evidence cannot contradict their field or declared role provenance',async()=>{for(const mutate of [p=>p.contexts[0].evidence.role_provenance='recorded',p=>p.contexts[0].evidence.negative.raw.reason='missing',p=>p.contexts[0].evidence.positive.effective.reason=null,p=>p.run.outcome='conflicting',p=>p.run.reason='terminal_error']) {const {c,requests}=await loaded();const p=c.selectRun(id(1)),data=detail();mutate(data);requests.at(-1).resolve(data);await p;assert.ok(c.state.run.error);assert.equal(c.state.run.detail,null);c.dispose();}});
 
 test('contradictory page counts and unrelated summary evidence are rejected before showing branches',async()=>{for(const mutate of [p=>{p.items=[];p.has_more=true;p.next_cursor='more';},p=>p.context_summaries[0].negative_raw.evidence[0].run_id=id(88),p=>p.context_summaries[0].positive_snapshot_id=digest('f')]){const {c,requests}=setup(),p=c.load(),data=windowPage();mutate(data);requests[0].resolve(data);await p;assert.ok(c.state.window.error);c.dispose();}const {c,requests}=await selected();let p=c.loadOutputs();requests.at(-1).resolve(outputs());await p;p=c.loadOutputs();requests.at(-1).resolve(outputs([receipt('2',0)],false));await p;assert.ok(c.state.outputs.error);assert.equal(c.state.outputs.items.length,2);assert.equal(c.state.outputs.next_cursor,'outputs-token');c.dispose();});
+
+function availableReceipt(currentScope) {
+    const r=receipt(),locationKey=currentScope==='a'?digest('b'):digest('9');
+    const query=new URLSearchParams({node:'1',ordinal:'0',epoch,current_scope:digest(currentScope)}),base=`/prompt_manager/history/runs/${id(1)}/output/current`;
+    const media={kind:'reported-location',occurrence:r.occurrence,reference:r.reference,history_epoch:epoch,current_scope:digest(currentScope),location_key:locationKey,filename:'image.png',is_video:false,url:`${base}/media?${query}`,thumbnail_url:`${base}/thumbnail?${query}`,inspection_url:`${base}/inspection?${query}`};
+    return {...r,current_candidate:{status:'available',reason:null,evidence_class:'locator_candidate',current_scope:digest(currentScope),location_key:locationKey,relative_path:'image.png',source_label:'output',gallery_match:'none',gallery_image_id:null,media}};
+}
+
+test('every revalidation emission clears old available candidates and selected receipt before enabling actions',async()=>{
+    const {c,requests,changes}=await selected();let p=c.loadOutputs();
+    requests.at(-1).resolve({...outputs([availableReceipt('a')],false),retained_occurrence_count:1});await p;
+    c.selectReceipt({run_id:id(1),output_node_id:'1',image_ordinal:0});assert.equal(c.state.actionsEnabled,true);
+    const first=changes.length,validation=c.revalidate();assert.equal(c.state.validating,true);assert.equal(c.state.actionsEnabled,false);
+    requests.at(-1).resolve(detail());await new Promise(resolve=>setImmediate(resolve));
+    const pending=requests.at(-1);assert.match(pending.url,/\/outputs\?/);assert.equal(c.state.outputs.loading,true);
+    const assertSafe=state=>{if(state.actionsEnabled){assert.equal(state.selection.receipt,null,'an enabled emission cannot retain the pre-validation receipt');assert.ok(state.outputs.items.every(r=>r.current_candidate.media.current_scope!==digest('a')),'an enabled emission cannot expose old current scope');}};
+    try {
+        changes.slice(first).forEach(assertSafe);
+        pending.resolve({...outputs([availableReceipt('9')],false),retained_occurrence_count:1});await validation;
+        changes.slice(first).forEach(assertSafe);assert.equal(c.state.outputs.items[0].current_candidate.media.current_scope,digest('9'));
+        assert.equal(c.state.selection.receipt,null);assert.equal(c.state.validating,false);assert.equal(c.state.actionsEnabled,true);
+    } finally {c.dispose();}
+});
+
+test('pending mode-independent detail keeps the current mode and derives its exact effective roles without another GET',async()=>{
+    const {c,requests}=await loaded(),pending=c.selectRun(id(1)),read=requests.at(-1);
+    c.setMode('effective');assert.equal(read.signal.aborted,false);assert.equal(requests.length,2);
+    read.resolve(detail());await pending;
+    assert.equal(c.state.selection.mode,'effective');const ctx=c.state.run.detail.contexts.find(ctx=>ctx.anchor_id===c.state.selection.anchor_id);
+    const roles=m.frozenPromptRoles(ctx,c.state.selection.mode);assert.equal(roles.negative.text,'negative');assert.equal(roles.positive.text,null);assert.equal(roles.positive.status,'unresolved');assert.deepEqual(roles.positive.evidence,proof('unknown'));
+    assert.equal(requests.length,2);assert.equal(c.state.run.error,null);c.dispose();
+});

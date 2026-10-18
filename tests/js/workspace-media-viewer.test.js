@@ -102,11 +102,59 @@ test('slideshow stops for detail reading nested send close and parent disposal w
         view.open({items,selectedKey:'c'.repeat(64)});
         const find=label=>f.walk(f.container,n=>n.attributes['aria-label']===label)[0];
         let media=f.walk(f.container,n=>n.tagName==='img')[0];media.fire('load');find('Play slideshow').fire('click');assert.ok(find('Pause slideshow'));
-        controller.publish({loading:true,error:false});assert.ok(find('Play slideshow'),'detail reading ends slideshow intent');
+        f.walk(f.container,n=>n.tagName==='aside')[0].fire('pointerdown');assert.ok(find('Play slideshow'),'explicit detail reading ends slideshow intent');
         const record={identity:{kind:'reported-location',key:'c'.repeat(64),path:'a.png',occurrence:items[0].occurrence,reference:items[0].reference,history_epoch:items[0].history_epoch,current_scope:items[0].current_scope},file:null,library:null,metadata:null,generation:{},prompts:{positive:{status:'resolved',text:'current'},negative:{status:'resolved',text:''}},download:{url:items[0].url,filename:'a.png'}};
         controller.publish({loading:false,error:false,record});assert.ok(f.walk(f.container,n=>n.textContent==='Current file at the reported location · identity unverified').length);
         find('Play slideshow').fire('click');const pair=f.walk(f.container,n=>n.dataset.sendRole==='pair')[0];pair.fire('click');assert.equal(sends,1);assert.ok(find('Play slideshow'));
         find('Play slideshow').fire('click');find('Close preview').fire('click');assert.equal(closes,1);assert.equal(controller.listeners,0);media.fire('load');
         view.open({items,selectedKey:'c'.repeat(64)});media=f.walk(f.container,n=>n.tagName==='img')[0];parentScope.dispose();assert.equal(closes,1,'parent disposal suppresses onClose');assert.equal(f.container.children.length,0);media.fire('load');assert.equal(controller.disposed,0);
     } finally {view.dispose();parentScope.dispose();f.restore();}
+});
+
+function currentInspectionEnvelope(target) {
+    return {success:true,inspection_version:1,history_version:1,history_epoch:target.history_epoch,
+        current_output:{occurrence:target.occurrence,reference:target.reference,history_epoch:target.history_epoch,current_scope:target.current_scope,location_key:target.location_key,evidence_class:'locator_candidate',observation:'current-file',file_identity:'unverified',newly_generated:'unknown',context_membership:'unknown',transient:false},
+        file:{observation:'current-file',source_label:'output',media_type:'image',extension:'.png',format:'PNG',size:10,width:2,height:3,modified_time:1},
+        prompts:{positive:{status:'resolved',text:'current positive',source:'execution'},negative:{status:'resolved',text:'',source:'execution'}},
+        metadata:{status:'absent',omitted_reason:null,raw:{},record_formats:{},prompt_graph:{status:'absent',value:null},workflow_graph:{status:'absent',value:null},parameters:null},
+        resolution:{state:'absent',sampler_id:null,reason:'no graph'},library:{status:'none',scope:'saved-library',positive_id:null,pair_id:null,title:null,category:null,tags:[],metadata_scope:null}};
+}
+
+test('real inspection navigation preserves slideshow across two advances and deferred metadata loads',async()=>{
+    const {reportedLocationAdapter:adapter}=await import('../../web/js/workspace/history-media.mjs');
+    const {createInspectionController}=await import('../../web/js/workspace/inspection-state.mjs');
+    const {extractGenerationFacts}=(await import('../../web/js/comfy-metadata.js')).default;
+    const f=mountedDom(),parentScope=createScope(),calls=[],reads=[],selected=[],timers=new Map();let serial=0,closed=0,sent=0;
+    const oldSetTimeout=globalThis.setTimeout,oldClearTimeout=globalThis.clearTimeout;
+    globalThis.setTimeout=(callback,delay)=>{assert.equal(delay,3500);timers.set(++serial,callback);return serial;};
+    globalThis.clearTimeout=token=>timers.delete(token);
+    const controller=createInspectionController({adapter,extractFacts:extractGenerationFacts,api:{get:(url,{signal})=>new Promise((resolve,reject)=>calls.push({url,signal,resolve,reject}))}});
+    const items=[occurrenceMedia('1',1,'c'),occurrenceMedia('2',0,'d'),occurrenceMedia('3',0,'e')];
+    const view=module.createMediaViewer({container:f.container,parentScope,inspectionController:controller,adapter,
+        onSelect(entry){selected.push(entry.occurrence);reads.push(controller.select(entry));},onClose(){closed++;},sender:{open(){sent++;}}});
+    const find=label=>f.walk(f.container,n=>n.attributes['aria-label']===label)[0];
+    const image=()=>f.walk(f.container,n=>n.tagName==='img')[0];
+    const advance=()=>{assert.equal(timers.size,1);const [token,callback]=timers.entries().next().value;timers.delete(token);callback();};
+    try {
+        view.open({items,selectedKey:items[0].location_key});assert.equal(controller.state.loading,true);
+        calls[0].resolve(currentInspectionEnvelope(items[0]));await reads[0];image().fire('load');find('Play slideshow').fire('click');
+        advance();assert.equal(controller.state.loading,true);assert.ok(find('Pause slideshow'),'automatic next-file inspection preserves intent');
+        assert.deepEqual(selected.map(o=>o.output_node_id),['1','2']);assert.equal(timers.size,0,'readiness still gates the next advance');
+        image().fire('load');advance();assert.equal(controller.state.loading,true);assert.ok(find('Pause slideshow'));
+        assert.deepEqual(selected.map(o=>o.output_node_id),['1','2','3']);assert.equal(calls[1].signal.aborted,true);
+        image().fire('load');assert.equal(timers.size,1);calls[1].reject(new Error('late superseded inspection'));await reads[1];assert.ok(find('Pause slideshow'));
+        calls[2].resolve(currentInspectionEnvelope(items[2]));await reads[2];assert.ok(find('Pause slideshow'));assert.equal(timers.size,1);
+        f.walk(f.container,n=>n.tagName==='aside')[0].fire('keydown');assert.ok(find('Play slideshow'));assert.equal(timers.size,0);
+        find('Play slideshow').fire('click');f.walk(f.container,n=>n.dataset.sendRole==='pair')[0].fire('click');assert.equal(sent,1);assert.ok(find('Play slideshow'));assert.equal(timers.size,0);
+        find('Play slideshow').fire('click');const retry=controller.retry();calls.at(-1).reject(new Error('inspection read failed'));await retry;
+        assert.ok(find('Play slideshow'),'inspection errors stop intent');assert.equal(timers.size,0);
+        const retryButton=f.walk(f.container,n=>n.textContent==='Retry prompt details')[0];assert.ok(retryButton);
+        find('Play slideshow').fire('click');f.walk(f.container,n=>n.tagName==='aside')[0].fire('click',{target:retryButton});retryButton.fire('click');
+        assert.ok(find('Play slideshow'),'explicit retry interaction stops intent');assert.equal(controller.state.loading,true);assert.equal(timers.size,0);
+        calls.at(-1).resolve(currentInspectionEnvelope(items[2]));await new Promise(resolve=>setImmediate(resolve));
+        find('Play slideshow').fire('click');const lateTimer=[...timers.values()][0];find('Close preview').fire('click');assert.equal(closed,1);assert.equal(timers.size,0);
+        lateTimer();assert.equal(selected.length,3);assert.equal(controller.state.record.identity.occurrence.output_node_id,'3','closing keeps the borrowed controller live');
+        view.open({items,selectedKey:items[2].location_key});const lateMedia=image();lateMedia.fire('load');find('Play slideshow').fire('click');parentScope.dispose();assert.equal(timers.size,0);assert.equal(closed,1);lateMedia.fire('load');
+        assert.equal(f.container.children.length,0);assert.equal(controller.state.record.identity.occurrence.output_node_id,'3');
+    } finally {view.dispose();controller.dispose();parentScope.dispose();globalThis.setTimeout=oldSetTimeout;globalThis.clearTimeout=oldClearTimeout;f.restore();}
 });
