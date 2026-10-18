@@ -4,11 +4,13 @@ import asyncio
 import errno
 import importlib
 import json
+import os
 import sqlite3
 import threading
 from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import skipUnless
 from unittest.mock import patch
 
 from aiohttp import web
@@ -1088,3 +1090,150 @@ class HistoryOutputAPITests(ImageAPITestCase):
             body = await response.json()
             self.assert_error(response, body, 503, "storage-unavailable")
             self.assertEqual(body["recovery"], {"action": "retry-read"})
+
+    async def test_inspection_rejects_directory_replacement_before_parser(self):
+        path = png(self.output_dir / "image.png", prompt=graph("Current portrait"))
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        response = await self.current(descriptor["inspection_url"])
+        body = await response.json()
+        self.assertEqual(response.status, 200, body)
+        self.assertEqual(body["prompts"]["positive"]["text"], "Current portrait")
+        service = importlib.import_module("py.api.inspection_service")
+        inspect = service.inspect_current_file
+        read = service.read_inspection_file
+        reads = []
+
+        def replaced(target, **kwargs):
+            path.unlink()
+            path.mkdir()
+            return inspect(target, **kwargs)
+
+        def traced(target):
+            reads.append(target)
+            return read(target)
+
+        with patch("py.api.history.inspect_current_file", side_effect=replaced):
+            with patch.object(service, "read_inspection_file", side_effect=traced):
+                response = await self.current(descriptor["inspection_url"])
+                body = await response.json()
+        self.assert_error(response, body, 409, "candidate-stale")
+        self.assertEqual(reads, [], "Nonregular targets must not reach the parser")
+        self.assertTrue(path.is_dir())
+        self.assertNotIn("Current portrait", json.dumps(body))
+
+    @skipUnless(os.name == "posix", "FIFO replacement is a POSIX filesystem case")
+    async def test_inspection_rejects_fifo_replacement_before_parser(self):
+        path = make_png(self.output_dir / "image.png")
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        response = await self.current(descriptor["inspection_url"])
+        self.assertEqual(response.status, 200, await response.json())
+        service = importlib.import_module("py.api.inspection_service")
+        inspect = service.inspect_current_file
+        reads = []
+
+        def replaced(target, **kwargs):
+            path.unlink()
+            os.mkfifo(path)
+            return inspect(target, **kwargs)
+
+        def forbidden(target):
+            reads.append(target)
+            raise AssertionError("FIFO must be rejected before a metadata open")
+
+        with patch("py.api.history.inspect_current_file", side_effect=replaced):
+            with patch.object(service, "read_inspection_file", side_effect=forbidden):
+                response = await self.current(descriptor["inspection_url"])
+                body = await response.json()
+        self.assert_error(response, body, 409, "candidate-stale")
+        self.assertEqual(reads, [], "A FIFO must never reach the blocking parser")
+
+    async def test_inspection_rejects_unreadable_file_before_parser(self):
+        path = png(self.output_dir / "image.png", prompt=graph("Readable portrait"))
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        service = importlib.import_module("py.api.inspection_service")
+        inspect = service.inspect_current_file
+        read = service.read_inspection_file
+        access = os.access
+        revoked = False
+        reads = []
+
+        def unreadable(target, **kwargs):
+            nonlocal revoked
+            revoked = True
+            return inspect(target, **kwargs)
+
+        def current_access(target, mode, **kwargs):
+            if revoked and Path(target) == path:
+                return False
+            return access(target, mode, **kwargs)
+
+        def traced(target):
+            reads.append(target)
+            return read(target)
+
+        with patch("py.api.history.inspect_current_file", side_effect=unreadable):
+            with patch("os.access", side_effect=current_access):
+                with patch.object(service, "read_inspection_file", side_effect=traced):
+                    response = await self.current(descriptor["inspection_url"])
+                    body = await response.json()
+        self.assert_error(response, body, 409, "candidate-stale")
+        self.assertEqual(reads, [], "Unreadable targets must not reach the parser")
+        response = await self.current(descriptor["inspection_url"])
+        body = await response.json()
+        self.assertEqual(response.status, 200, body)
+        self.assertEqual(body["prompts"]["positive"]["text"], "Readable portrait")
+
+    async def test_inspection_rejects_directory_replacement_after_parser(self):
+        path = png(self.output_dir / "image.png", prompt=graph("Current portrait"))
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        service = importlib.import_module("py.api.inspection_service")
+        read = service.read_inspection_file
+
+        def replaced(target):
+            result = read(target)
+            path.unlink()
+            path.mkdir()
+            return result
+
+        with patch.object(service, "read_inspection_file", side_effect=replaced):
+            response = await self.current(descriptor["inspection_url"])
+            body = await response.json()
+        self.assert_error(response, body, 409, "candidate-stale")
+        self.assertNotIn("Current portrait", json.dumps(body))
+
+    async def test_inspection_rejects_readability_revoked_after_parser(self):
+        path = png(self.output_dir / "image.png", prompt=graph("Readable portrait"))
+        before = path.read_bytes()
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        service = importlib.import_module("py.api.inspection_service")
+        read = service.read_inspection_file
+        access = os.access
+        revoked = False
+
+        def changed(target):
+            nonlocal revoked
+            result = read(target)
+            revoked = True
+            return result
+
+        def current_access(target, mode, **kwargs):
+            if revoked and Path(target) == path:
+                return False
+            return access(target, mode, **kwargs)
+
+        with patch.object(service, "read_inspection_file", side_effect=changed):
+            with patch("os.access", side_effect=current_access):
+                response = await self.current(descriptor["inspection_url"])
+                body = await response.json()
+        self.assert_error(response, body, 409, "candidate-stale")
+        self.assertNotIn("Readable portrait", json.dumps(body))
+        self.assertEqual(path.read_bytes(), before)
+        response = await self.current(descriptor["inspection_url"])
+        body = await response.json()
+        self.assertEqual(response.status, 200, body)
+        self.assertEqual(body["prompts"]["positive"]["text"], "Readable portrait")

@@ -20,7 +20,13 @@ from PIL import Image, UnidentifiedImageError
 from .prompts import bad_request, parse_page_params, publish_image_paths
 from .prompts import thumbnail_url_for
 from .prompts import safe_error_message as _safe_error
-from .inspection_service import CurrentFileChanged, inspect_current_file
+from .inspection_service import (
+    CurrentFileChanged,
+    IMAGE_EXTENSIONS as _IMAGE_EXTENSIONS,
+    SERVABLE_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+    inspect_current_file,
+)
 
 try:
     from ...utils.parallel import map_parallel
@@ -29,23 +35,8 @@ except ImportError:
     from utils.parallel import map_parallel
     from utils.inspection_response import encode_inspection_response
 
-# Only these file types are ever served by the image routes, regardless of
-# what sits inside an allowed directory (defence in depth for the gallery).
-IMAGE_EXTENSIONS = frozenset(
-    {
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".webp",
-        ".gif",
-        ".bmp",
-        ".tiff",
-        ".tif",
-        ".mp4",
-        ".webm",
-        ".mov",
-    }
-)
+
+IMAGE_EXTENSIONS = _IMAGE_EXTENSIONS
 
 
 def _public_path(path):
@@ -97,11 +88,7 @@ def _media_access_error(path, allowed_dirs):
 
 # Media types the gallery scans and thumbnails (a superset is never served).
 GALLERY_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
-VIDEO_EXTENSIONS = frozenset({".mp4", ".webm", ".avi", ".mov", ".mkv", ".m4v", ".wmv"})
 MEDIA_EXTENSIONS = GALLERY_IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
-# What the serve routes hand out: every image type above plus every video type
-# the gallery lists, so a card never points at a 403.
-SERVABLE_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
 # Caps on request-triggered filesystem work.
 MAX_SCAN_DEPTH = 12

@@ -1,5 +1,7 @@
 """One bounded current-file inspection worker shared by physical identities."""
 
+import os
+import stat
 from pathlib import Path
 
 try:
@@ -18,23 +20,56 @@ except ImportError:
     from utils.video_metadata import is_video_path
 
 
+# Only these file types are served or inspected within an authorized directory.
+IMAGE_EXTENSIONS = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".gif",
+        ".bmp",
+        ".tiff",
+        ".tif",
+        ".mp4",
+        ".webm",
+        ".mov",
+    }
+)
+VIDEO_EXTENSIONS = frozenset({".mp4", ".webm", ".avi", ".mov", ".mkv", ".m4v", ".wmv"})
+SERVABLE_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+
+
 class CurrentFileChanged(Exception):
-    """File facts changed across the bounded metadata observation."""
+    """File facts are invalid or changed across the bounded metadata observation."""
+
+
+def _current_file_facts(path: Path) -> os.stat_result:
+    if path.suffix.lower() not in SERVABLE_EXTENSIONS:
+        raise CurrentFileChanged
+    try:
+        observed = path.stat()
+    except (FileNotFoundError, NotADirectoryError, PermissionError):
+        raise CurrentFileChanged from None
+    if (
+        not stat.S_ISREG(observed.st_mode)
+        or not observed.st_mode & 0o444
+        or not os.access(path, os.R_OK)
+    ):
+        raise CurrentFileChanged
+    return observed
 
 
 def inspect_current_file(
     path: Path, *, source_label: str, saved: dict | None, library: dict
 ) -> dict:
-    before = path.stat()
+    before = _current_file_facts(path)
     try:
         inspection = read_inspection_file(path)
     except MetadataReadError:
         inspection = None
-    try:
-        after = path.stat()
-    except FileNotFoundError:
-        raise CurrentFileChanged from None
-    fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+    after = _current_file_facts(path)
+    fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
     if any(getattr(before, key) != getattr(after, key) for key in fields):
         raise CurrentFileChanged
     if inspection is None:

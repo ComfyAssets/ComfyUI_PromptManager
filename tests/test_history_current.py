@@ -408,6 +408,33 @@ class CurrentLocationTests(unittest.TestCase):
         self.assertIsNone(result["library"].get("pair_id"))
         self.assertIsNone(result["saved"].get("pair"))
 
+    def test_inspection_rejects_unsupported_suffix_before_parser(self):
+        service = self.module("py.api.inspection_service")
+        path = make_png(self.output / "image.png")
+        observed = service.inspect_current_file(
+            path, source_label="output", saved=None, library={"status": "none"}
+        )
+        self.assertEqual(observed["file"]["media_type"], "image")
+        self.assertEqual(observed["inspection"].format, "PNG")
+        unsupported = self.output / "image.txt"
+        unsupported.write_bytes(path.read_bytes())
+        read = service.read_inspection_file
+        reads = []
+
+        def traced(target):
+            reads.append(target)
+            return read(target)
+
+        with patch.object(service, "read_inspection_file", side_effect=traced):
+            with self.assertRaises(service.CurrentFileChanged):
+                service.inspect_current_file(
+                    unsupported,
+                    source_label="output",
+                    saved=None,
+                    library={"status": "none"},
+                )
+        self.assertEqual(reads, [], "Unsupported media must not reach the parser")
+
 
 class HistoryImportTests(unittest.TestCase):
     def test_api_import_does_not_require_a_running_host_server(self):
