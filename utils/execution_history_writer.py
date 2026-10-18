@@ -1,12 +1,13 @@
 """A bounded, single-worker transport for best-effort execution history."""
 
+from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 import math
 import queue
 import threading
 import time
-from typing import Callable
-from uuid import UUID, uuid5
+from typing import Callable, Iterator
 
 try:
     from ..database import PromptDatabase
@@ -68,6 +69,7 @@ class HistoryWriter:
         )
         self._db_factory = db_factory
         self._clock = clock
+        self._context_commit_gate = threading.Lock()
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._queue: queue.Queue[RunCommand | _Finalization] = queue.Queue(
@@ -187,13 +189,27 @@ class HistoryWriter:
             self._record_gap_locked()
         self._wake.set()
 
+    @contextmanager
+    def _context_generation_guard(
+        self, generation: int, epoch: str, capture_generation: int | None
+    ) -> Iterator[bool]:
+        with self._context_commit_gate:
+            with self._lock:
+                current = (
+                    generation == self._generation
+                    and epoch == self._epoch
+                    and (capture_generation is None or capture_generation == generation)
+                )
+            yield current
+
     def invalidate(self) -> None:
-        with self._lock:
-            self._accepting = False
-            self._epoch = None
-            self._generation += 1
-            self._next_probe = self._clock() + _PROBE_INTERVAL
-            self._discard_locked()
+        with self._context_commit_gate:
+            with self._lock:
+                self._accepting = False
+                self._epoch = None
+                self._generation += 1
+                self._next_probe = self._clock() + _PROBE_INTERVAL
+                self._discard_locked()
         self._wake.set()
 
     def status(self) -> HistoryWriterStatus:
@@ -314,20 +330,20 @@ class HistoryWriter:
                                 )
                             if current:
                                 try:
-                                    db.write_execution_contexts(
-                                        str(
-                                            uuid5(
-                                                UUID(command.session_id),
-                                                str(command.queue_item_id),
-                                            )
-                                        ),
-                                        command.storage_epoch,
+                                    db.write_execution_contexts_for_finish(
+                                        command,
                                         (
                                             context.bundle
                                             if context.bundle is not None
                                             else ContextBundle(
                                                 (), context.state, context.reason
                                             )
+                                        ),
+                                        generation_guard=partial(
+                                            self._context_generation_guard,
+                                            generation,
+                                            command.storage_epoch,
+                                            context.capture_generation,
                                         ),
                                     )
                                 except ValueError:

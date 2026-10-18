@@ -1,10 +1,12 @@
 """Immutable execution capture and exact, epoch-fenced library navigation hints."""
 
+from contextlib import ExitStack
 import json
 import sqlite3
-from typing import Iterator
+from typing import Callable, ContextManager, Iterator
 
 try:
+    from ..utils.execution_history_events import RunFinish, encode_command
     from ..utils.execution_contexts import (
         CAPTURE_REASONS,
         ContextBundle,
@@ -12,6 +14,7 @@ try:
         validate_bundle,
     )
 except ImportError:
+    from utils.execution_history_events import RunFinish, encode_command
     from utils.execution_contexts import (
         CAPTURE_REASONS,
         ContextBundle,
@@ -183,6 +186,77 @@ def _values(conn: sqlite3.Connection, snapshot_id: str | None) -> dict | None:
     return dict(zip(FIELDS, row))
 
 
+def _write_capture(
+    conn: sqlite3.Connection,
+    run_id: str,
+    expected_epoch: str,
+    bundle: ContextBundle,
+    prepared: list[dict],
+) -> bool:
+    capture = conn.execute(
+        "SELECT state,reason,format_version FROM execution_context_capture "
+        "WHERE run_id=?",
+        (run_id,),
+    ).fetchone()
+    if capture is not None:
+        for item in prepared:
+            for table, columns, values in _content_rows(item):
+                _existing_row(conn, table, columns, values)
+        links = conn.execute(
+            "SELECT anchor_id,context_id,evidence_json FROM "
+            "execution_run_contexts WHERE run_id=? ORDER BY anchor_id",
+            (run_id,),
+        ).fetchall()
+        expected = [
+            (item["anchor_id"], item["context_id"], item["evidence_json"])
+            for item in prepared
+        ]
+        # Compare JSON objects so serialization order never creates a conflict.
+        original = [(row[0], row[1], json.loads(row[2])) for row in links]
+        proposed = [
+            (anchor, context, json.loads(evidence))
+            for anchor, context, evidence in expected
+        ]
+        if capture[0] != "conflicting" and (
+            tuple(capture) != (bundle.state, bundle.reason, bundle.format_version)
+            or original != proposed
+        ):
+            conn.execute(
+                "UPDATE execution_context_capture SET "
+                "state='conflicting',reason='conflicting' WHERE run_id=?",
+                (run_id,),
+            )
+        return True
+    for item in prepared:
+        for table, columns, values in _content_rows(item):
+            _insert_exact(conn, table, columns, values)
+        raw = [snapshot[1][0] if snapshot else None for snapshot in item["snapshots"]]
+        positive_id, negative_id, pair_id = _hints(conn, *raw)
+        conn.execute(
+            "INSERT INTO "
+            "execution_run_contexts(run_id,anchor_id,context_id,evidence_json,"
+            "positive_prompt_id,negative_prompt_id,pair_id,reference_epoch,"
+            "capture_version) VALUES(?,?,?,?,?,?,?,?,1)",
+            (
+                run_id,
+                item["anchor_id"],
+                item["context_id"],
+                item["evidence_json"],
+                positive_id,
+                negative_id,
+                pair_id,
+                expected_epoch,
+            ),
+        )
+    conn.execute(
+        "INSERT INTO "
+        "execution_context_capture(run_id,state,reason,format_version) "
+        "VALUES(?,?,?,?)",
+        (run_id, bundle.state, bundle.reason, bundle.format_version),
+    )
+    return True
+
+
 class ExecutionContextOperations:
     """Compose with ExecutionHistoryOperations on PromptDatabase."""
 
@@ -199,72 +273,36 @@ class ExecutionContextOperations:
                 is None
             ):
                 return False
-            capture = conn.execute(
-                "SELECT state,reason,format_version FROM execution_context_capture "
-                "WHERE run_id=?",
-                (run_id,),
-            ).fetchone()
-            if capture is not None:
-                for item in prepared:
-                    for table, columns, values in _content_rows(item):
-                        _existing_row(conn, table, columns, values)
-                links = conn.execute(
-                    "SELECT anchor_id,context_id,evidence_json FROM "
-                    "execution_run_contexts WHERE run_id=? ORDER BY anchor_id",
-                    (run_id,),
-                ).fetchall()
-                expected = [
-                    (item["anchor_id"], item["context_id"], item["evidence_json"])
-                    for item in prepared
-                ]
-                # Compare JSON objects so serialization order never creates a conflict.
-                original = [(row[0], row[1], json.loads(row[2])) for row in links]
-                proposed = [
-                    (anchor, context, json.loads(evidence))
-                    for anchor, context, evidence in expected
-                ]
-                if capture[0] != "conflicting" and (
-                    tuple(capture)
-                    != (bundle.state, bundle.reason, bundle.format_version)
-                    or original != proposed
+            return _write_capture(conn, run_id, expected_epoch, bundle, prepared)
+
+    def write_execution_contexts_for_finish(
+        self,
+        command: RunFinish,
+        bundle: ContextBundle,
+        *,
+        generation_guard: Callable[[], ContextManager[bool]] | None = None,
+    ) -> bool:
+        encode_command(command)
+        if type(command) is not RunFinish:
+            raise ValueError("Expected execution finish command")
+        prepared = _prepare(bundle)
+        # Enter the guard after BEGIN, and keep it until COMMIT/ROLLBACK exits.
+        with ExitStack() as guards:
+            with self._execution_transaction(command.storage_epoch) as conn:
+                if generation_guard is not None and not guards.enter_context(
+                    generation_guard()
                 ):
-                    conn.execute(
-                        "UPDATE execution_context_capture SET "
-                        "state='conflicting',reason='conflicting' WHERE run_id=?",
-                        (run_id,),
-                    )
-                return True
-            for item in prepared:
-                for table, columns, values in _content_rows(item):
-                    _insert_exact(conn, table, columns, values)
-                raw = [
-                    snapshot[1][0] if snapshot else None
-                    for snapshot in item["snapshots"]
-                ]
-                positive_id, negative_id, pair_id = _hints(conn, *raw)
-                conn.execute(
-                    "INSERT INTO "
-                    "execution_run_contexts(run_id,anchor_id,context_id,evidence_json,"
-                    "positive_prompt_id,negative_prompt_id,pair_id,reference_epoch,"
-                    "capture_version) VALUES(?,?,?,?,?,?,?,?,1)",
-                    (
-                        run_id,
-                        item["anchor_id"],
-                        item["context_id"],
-                        item["evidence_json"],
-                        positive_id,
-                        negative_id,
-                        pair_id,
-                        expected_epoch,
-                    ),
+                    return False
+                row = conn.execute(
+                    "SELECT run_id FROM execution_runs WHERE session_id=? "
+                    "AND queue_item_id=? AND storage_epoch=?",
+                    (command.session_id, command.queue_item_id, command.storage_epoch),
+                ).fetchone()
+                if row is None:
+                    return False
+                return _write_capture(
+                    conn, row[0], command.storage_epoch, bundle, prepared
                 )
-            conn.execute(
-                "INSERT INTO "
-                "execution_context_capture(run_id,state,reason,format_version) "
-                "VALUES(?,?,?,?)",
-                (run_id, bundle.state, bundle.reason, bundle.format_version),
-            )
-        return True
 
     def get_execution_contexts(self, run_id: str) -> dict:
         """Return first-capture scalars; hints are None unless currently valid.

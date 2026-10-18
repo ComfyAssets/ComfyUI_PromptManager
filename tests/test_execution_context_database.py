@@ -1,6 +1,8 @@
 """Immutable scalar capture, deduplication, and conservative navigation hints."""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from uuid import uuid4
 from dataclasses import replace
 from pathlib import Path
 import subprocess
@@ -69,6 +71,70 @@ class ContextDatabaseTests(unittest.TestCase):
                 "execution_context_capture",
             )
         )
+
+    def test_finish_capture_uses_stored_parent_identity(self):
+        db = self.database()
+        start = replace(self.start(db), run_id=str(uuid4()))
+        db.write_execution_start(start)
+        finish = self.finish(start)
+        self.assertTrue(db.write_execution_contexts_for_finish(finish, bundle()))
+        self.assertEqual(db.get_execution_contexts(start.run_id)["state"], "complete")
+        missing = replace(finish, queue_item_id=999)
+        self.assertFalse(db.write_execution_contexts_for_finish(missing, bundle()))
+        self.assertEqual(self.counts(db), (1, 1, 2, 1))
+
+    def test_finish_generation_guard_encloses_commit_and_rollback(self):
+        db = self.database()
+        start = self.start(db)
+        db.write_execution_start(start)
+        finish = self.finish(start)
+        observed = []
+
+        @contextmanager
+        def guard():
+            observed.append(db.model.get_connection().in_transaction)
+            try:
+                yield True
+            finally:
+                observed.append(db.model.get_connection().in_transaction)
+
+        self.assertTrue(
+            db.write_execution_contexts_for_finish(
+                finish, bundle(), generation_guard=guard
+            )
+        )
+        self.assertEqual(observed, [True, False])
+        observed.clear()
+        other = replace(self.start(db, 1), run_id=str(uuid4()))
+        db.write_execution_start(other)
+        with patch(
+            "database.execution_contexts._insert_exact",
+            side_effect=ValueError("collision"),
+        ):
+            with self.assertRaises(ValueError):
+                db.write_execution_contexts_for_finish(
+                    self.finish(other), bundle(), generation_guard=guard
+                )
+        self.assertEqual(observed, [True, False])
+        self.assertEqual(
+            db.get_execution_contexts(other.run_id)["state"], "not_captured"
+        )
+
+    def test_finish_generation_guard_rejects_without_capture(self):
+        db = self.database()
+        start = self.start(db)
+        db.write_execution_start(start)
+
+        @contextmanager
+        def stale():
+            yield False
+
+        self.assertFalse(
+            db.write_execution_contexts_for_finish(
+                self.finish(start), bundle(), generation_guard=stale
+            )
+        )
+        self.assertEqual(self.counts(db), (1, 0, 0, 0))
 
     def test_a_a_b_cardinality(self):
         db = self.database()
