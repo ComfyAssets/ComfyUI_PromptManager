@@ -48,6 +48,10 @@ class _Unknown(ValueError):
     pass
 
 
+class _Limit(_Unknown):
+    pass
+
+
 def _identifier(value: object) -> str:
     if type(value) is int:
         if abs(value) > 10**127:
@@ -79,6 +83,7 @@ class _Projector:
     def __init__(self, graph: dict) -> None:
         self.graph = graph
         self.visits = 0
+        self.retained = 0
         self.transformed = False
         self.selected_seen = set()
 
@@ -179,24 +184,29 @@ class _Projector:
             )
             raw = child.effective.value
             prepend, append = before.effective.value, after.effective.value
-            effective = " ".join(
-                part for part in (prepend.strip(), raw, append.strip()) if part
-            )
+            parts = [part for part in (prepend.strip(), raw, append.strip()) if part]
+            if sum(text_size(part) for part in parts) + max(0, len(parts) - 1) > 65536:
+                raise _Unknown("text_field_limit_reached")
+            effective = " ".join(parts)
             text_size(effective)
-            snapshot = PromptSnapshot(
-                child.effective,
-                TextEvidence(effective, "inferred", "graph_semantics", None),
-                before.effective,
-                after.effective,
+            snapshot = self.retain(
+                PromptSnapshot(
+                    child.effective,
+                    TextEvidence(effective, "inferred", "graph_semantics", None),
+                    before.effective,
+                    after.effective,
+                )
             )
             if name not in _PM:
                 sources += before_sources + after_sources
         elif name in _PM:
-            snapshot = PromptSnapshot(
-                child.effective,
-                child.effective,
-                TextEvidence("", "inferred", "graph_literal", None),
-                TextEvidence("", "inferred", "graph_literal", None),
+            snapshot = self.retain(
+                PromptSnapshot(
+                    child.effective,
+                    child.effective,
+                    TextEvidence("", "inferred", "graph_literal", None),
+                    TextEvidence("", "inferred", "graph_literal", None),
+                )
             )
         else:
             snapshot = child
@@ -254,8 +264,23 @@ class _Projector:
             return tuple(sources)
         return ()
 
-    @staticmethod
+    def retain(self, snapshot: PromptSnapshot) -> PromptSnapshot:
+        size = sum(
+            text_size(field.value) + 64
+            for field in (
+                snapshot.raw,
+                snapshot.effective,
+                snapshot.prepend,
+                snapshot.append,
+            )
+        )
+        if self.retained + size > 1048576:
+            raise _Limit("projection_payload_limit_reached")
+        self.retained += size
+        return snapshot
+
     def snapshot(
+        self,
         raw: str,
         effective: str,
         prepend: str,
@@ -263,19 +288,21 @@ class _Projector:
         composed: bool = False,
         raw_composed: bool = False,
     ) -> PromptSnapshot:
-        return PromptSnapshot(
-            *(
-                TextEvidence(
-                    value,
-                    "inferred",
-                    (
-                        "graph_semantics"
-                        if (composed and index == 1 or raw_composed and index == 0)
-                        else "graph_literal"
-                    ),
-                    None,
+        return self.retain(
+            PromptSnapshot(
+                *(
+                    TextEvidence(
+                        value,
+                        "inferred",
+                        (
+                            "graph_semantics"
+                            if (composed and index == 1 or raw_composed and index == 0)
+                            else "graph_literal"
+                        ),
+                        None,
+                    )
+                    for index, value in enumerate((raw, effective, prepend, append))
                 )
-                for index, value in enumerate((raw, effective, prepend, append))
             )
         )
 
@@ -288,6 +315,8 @@ class _Projector:
             return GraphRole(
                 sources, snapshot, "source-transformed" if self.transformed else ""
             )
+        except _Limit:
+            raise
         except ValueError as error:
             reason = str(error) if isinstance(error, _Unknown) else "invalid_text_value"
             return GraphRole(

@@ -230,3 +230,17 @@ class ProjectionTests(unittest.TestCase):
             {"s": node("KSampler", positive=HostValue())},
         ):
             self.m.project_contexts(g, None)
+
+    def test_composed_affixes_and_retained_projection_are_bounded(self):
+        g = graph()
+        g["p"]["inputs"].update(
+            text="x" * 65536, prepend_text="y" * 65536, append_text="z" * 65536
+        )
+        result = self.m.project_contexts(g, None)
+        self.assertIsNone(result.recipes[0].positive.inferred)
+        g = graph()
+        g["p"]["inputs"]["text"] = "x" * 60000
+        for i in range(15):
+            g[str(i)] = node("KSampler", positive=["p", 0], negative=["p", 0])
+        result = self.m.project_contexts(g, None)
+        self.assertEqual(result.recipes, ())

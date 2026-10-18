@@ -63,10 +63,12 @@ class HistoryWriter:
         *,
         clock: Callable[[], float] = time.monotonic,
         context_budget: ContextBudget | None = None,
+        on_invalidation: Callable[[], None] | None = None,
     ) -> None:
         self.context_budget = (
             SHARED_CONTEXT_BUDGET if context_budget is None else context_budget
         )
+        self._on_invalidation = on_invalidation
         self._db_factory = db_factory
         self._clock = clock
         self._context_commit_gate = threading.Lock()
@@ -202,6 +204,13 @@ class HistoryWriter:
                 )
             yield current
 
+    def _notify_invalidation(self) -> None:
+        if self._on_invalidation is not None:
+            try:
+                self._on_invalidation()
+            except Exception:
+                pass
+
     def invalidate(self) -> None:
         with self._context_commit_gate:
             with self._lock:
@@ -210,6 +219,7 @@ class HistoryWriter:
                 self._generation += 1
                 self._next_probe = self._clock() + _PROBE_INTERVAL
                 self._discard_locked()
+        self._notify_invalidation()
         self._wake.set()
 
     def status(self) -> HistoryWriterStatus:
@@ -233,6 +243,7 @@ class HistoryWriter:
                 self._close_deadline = deadline
                 self._accepting = False
             thread = self._thread
+        self._notify_invalidation()
         self._wake.set()
         if thread is not None:
             thread.join(max(0.0, deadline - time.monotonic()))
@@ -369,6 +380,8 @@ class HistoryWriter:
                             self._generation += 1
                             self._next_probe = self._clock() + _PROBE_INTERVAL
                             self._discard_locked()
+                    if failed:
+                        self._notify_invalidation()
                 with self._lock:
                     gaps = self._gaps
                     has_work = self._epoch is not None and not self._queue.empty()
@@ -386,6 +399,7 @@ class HistoryWriter:
                 self._accepting = False
                 self._epoch = None
                 self._discard_locked()
+            self._notify_invalidation()
             if unsubscribe is not None:
                 unsubscribe()
             if db is not None:

@@ -6,6 +6,11 @@ without CLIP encoding, while maintaining all database and search features.
 import time
 from typing import Any, Dict, Optional, Tuple
 
+if __package__:
+    from .utils.execution_context_capture import record_runtime_context
+else:
+    from utils.execution_context_capture import record_runtime_context
+
 try:
     from comfy.comfy_types import IO, ComfyNodeABC, InputTypeDict
 except ImportError:
@@ -227,7 +232,11 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
         )
 
         self.logger.debug(f"Text processing completed: {final_text[:100]}...")
-        return (final_text,)
+        result = (final_text,)
+        record_runtime_context(
+            type(self).__name__, text, prepend_text, append_text, final_text
+        )
+        return result
 
     @classmethod
     def IS_CHANGED(

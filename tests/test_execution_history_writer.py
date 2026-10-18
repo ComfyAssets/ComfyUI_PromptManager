@@ -905,3 +905,26 @@ class HistoryWriterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_owner_invalidation_callback_runs_outside_both_locks_and_is_contained(self):
+        observations = []
+        writer = None
+
+        def callback():
+            acquired = [
+                lock.acquire(blocking=False)
+                for lock in (writer._lock, writer._context_commit_gate)
+            ]
+            observations.append(tuple(acquired))
+            for lock, owned in zip(
+                (writer._lock, writer._context_commit_gate), acquired
+            ):
+                if owned:
+                    lock.release()
+            raise RuntimeError("callback failure cannot escape")
+
+        writer = HistoryWriter(lambda: self.db, on_invalidation=callback)
+        self.writers.append(writer)
+        writer.invalidate()
+        writer.close(0)
+        self.assertEqual(observations, [(True, True), (True, True)])

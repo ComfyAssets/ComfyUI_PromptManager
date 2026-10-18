@@ -356,7 +356,7 @@ class HistoryHooksTests(unittest.TestCase):
         clock = ManualClock()
         with patch(
             "utils.execution_history.HistoryWriter",
-            lambda factory: HistoryWriter(factory, clock=clock),
+            lambda factory, **kwargs: HistoryWriter(factory, clock=clock, **kwargs),
         ):
             registration = self.register()
         for index in range(128):
@@ -447,4 +447,181 @@ class HistoryHooksTests(unittest.TestCase):
         self.queue.task_done(0, {}, status())
         self.drain(registration)
         self.assertEqual(seen, [JOB])
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_rejected_new_start_revokes_previous_worker_capability(self):
+        from utils.execution_context_capture import active_capture
+        from utils.execution_history_events import make_start
+
+        entered, release = threading.Event(), threading.Event()
+        self.releases.append(release)
+        original = self.db.write_execution_start
+
+        def blocked(command):
+            entered.set()
+            release.wait(5)
+            return original(command)
+
+        with patch.object(self.db, "write_execution_start", blocked):
+            registration = self.register()
+            self.dequeue(1)
+            self.assertTrue(entered.wait(1))
+            previous = active_capture()
+            self.assertIsNotNone(previous)
+            epoch = registration.writer.status().epoch
+            for i in range(1023):
+                command = make_start(registration._session_id, item(1000 + i), epoch, 0)
+                self.assertTrue(registration.writer.submit(command))
+            self.assertEqual(registration.writer.status().pending, 1024)
+            self.dequeue(2)
+            self.assertIsNone(active_capture())
+            self.assertFalse(previous[0].valid(previous[1]))
+            release.set()
+
+    def test_late_finish_does_not_clear_new_attempt_binding(self):
+        from utils.execution_context_capture import active_capture
+
+        registration = self.register()
+        self.dequeue(1)
+        self.dequeue(2)
+        current = active_capture()
+        self.assertIsNotNone(current)
+        self.queue.task_done(1, {}, status())
+        self.assertEqual(active_capture(), current)
+        # An identical callback replay keeps the already accepted binding.
+        registration._dequeue(item(2))
+        self.assertEqual(active_capture(), current)
+        self.queue.task_done(2, {}, status())
+        self.assertIsNone(active_capture())
+
+    def test_invalidation_releases_capture_immediately_outside_writer_locks(self):
+        from utils.execution_context_capture import active_capture
+
+        registration = self.register()
+        self.dequeue(1)
+        current = active_capture()
+        pool = registration.writer.context_budget
+        self.assertGreater(pool.charged_bytes, 0)
+        registration.writer.invalidate()
+        self.assertEqual(pool.charged_bytes, 0)
+        self.assertFalse(current[0].valid(current[1]))
+
+    def test_replayed_older_accepted_dequeue_cannot_revoke_current_binding(self):
+        from utils.execution_context_capture import active_capture
+
+        registration = self.register()
+        old = self.dequeue(1)
+        self.dequeue(2)
+        current = active_capture()
+        registration._dequeue(old)
+        self.assertEqual(active_capture(), current)
+
+    def test_broken_finish_releases_active_capture(self):
+        from utils.execution_context_capture import active_capture
+
+        registration = self.register()
+        self.dequeue(1)
+
+        class Broken:
+            @property
+            def messages(self):
+                raise RuntimeError("broken status")
+
+        self.queue.task_done(1, {}, Broken())
+        self.assertEqual(registration.writer.context_budget.charged_bytes, 0)
+        self.assertIsNone(active_capture())
+
+    def test_finished_accepted_replay_preserves_new_same_uuid_attempt(self):
+        from utils.execution_context_capture import active_capture
+
+        registration = self.register()
+        old = self.dequeue(1)
+        self.queue.task_done(1, {}, status())
+        self.dequeue(2)
+        current = active_capture()
+        registration._dequeue(old)
+        self.assertEqual(active_capture(), current)
+        self.queue.task_done(2, {}, status())
+        self.drain(registration)
+        self.assertEqual(len(self.rows()), 2)
+
+    def test_observed_upstream_survives_downstream_failure_in_database(self):
+        from utils.execution_context_capture import record_runtime_context
+
+        g = {
+            "p": {
+                "class_type": "PromptManagerPair",
+                "inputs": {"text": "raw", "negative_text": ""},
+            },
+            "s": {
+                "class_type": "KSampler",
+                "inputs": {"positive": ["p", 0], "negative": ["p", 1]},
+            },
+        }
+        registration = self.register()
+        self.queue.results.append(((0, JOB, g, {}, ["s"]), 1))
+        self.queue.get()
+        host = types.ModuleType("comfy_execution.utils")
+        host.get_executing_context = lambda: SimpleNamespace(
+            prompt_id=JOB, node_id="p", list_index=0
+        )
+        with patch.dict(sys.modules, {"comfy_execution.utils": host}):
+            record_runtime_context(
+                "PromptManagerPair",
+                " raw ",
+                " pre ",
+                "",
+                "pre raw TRIGGER",
+                role="positive",
+            )
+            record_runtime_context("PromptManagerPair", "", "", "", "", role="negative")
+        self.queue.task_done(1, {}, status("execution_error"))
+        self.drain(registration)
+        row = self.rows()[0]
+        self.assertEqual(row["outcome"], "failed")
+        result = self.db.get_execution_contexts(row["run_id"])
+        self.assertEqual(result["state"], "complete")
+        self.assertEqual(
+            result["contexts"][0]["positive"],
+            {
+                "raw": " raw ",
+                "effective": "pre raw TRIGGER",
+                "prepend": " pre ",
+                "append": "",
+            },
+        )
+        self.assertEqual(result["contexts"][0]["negative"]["effective"], "")
+
+    def test_close_releases_capture_while_writer_is_blocked(self):
+        entered, release = threading.Event(), threading.Event()
+        self.releases.append(release)
+        original = self.db.write_execution_start
+
+        def blocked(command):
+            entered.set()
+            release.wait(3)
+            return original(command)
+
+        with patch.object(self.db, "write_execution_start", blocked):
+            registration = self.register()
+            self.dequeue(1)
+            self.assertTrue(entered.wait(1))
+            self.assertGreater(registration.writer.context_budget.charged_bytes, 0)
+            self.assertFalse(registration.writer.close(0))
+            self.assertEqual(registration.writer.context_budget.charged_bytes, 0)
+            release.set()
+
+    def test_reregistration_cannot_rebind_already_observed_queue_item(self):
+        from utils.execution_context_capture import active_capture
+
+        first = self.register()
+        self.dequeue(10)
+        self.queue.task_done(10, {}, status())
+        self.drain(first)
+        self.assertTrue(first.dispose())
+        second = self.register()
+        self.dequeue(10)
+        self.assertIsNone(active_capture())
+        self.queue.task_done(10, {}, status())
+        self.drain(second)
         self.assertEqual(len(self.rows()), 1)
