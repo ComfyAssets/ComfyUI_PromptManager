@@ -12,6 +12,9 @@ import sys
 import tempfile
 import threading
 import unittest
+from contextlib import closing
+from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -156,6 +159,151 @@ class TestVerifyDatabaseFile(BackupTestCase):
 
 
 class TestRestoreFromFile(BackupTestCase):
+    def test_incompatible_wal_restore_preserves_other_owner_and_allows_retry(
+        self,
+    ) -> None:
+        from database.execution_history import subscribe_history_restore
+
+        self._save(self.db, "keep live")
+        live = self.db.model.get_connection()
+        self.assertEqual(live.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+        self.assertEqual(live.execute("PRAGMA page_size").fetchone()[0], 4096)
+        epoch = self.db.get_execution_epoch()
+        compatible = self._make_source_db(["compatible retry"])
+        source_path = str(Path(self.tmpdir) / "large-pages.db")
+        with closing(sqlite3.connect(source_path)) as conn:
+            conn.execute("PRAGMA page_size=8192")
+            conn.execute("VACUUM")
+        source = PromptDatabase(source_path)
+        try:
+            self._save(source, "incompatible source")
+            self.assertEqual(
+                source.model.get_connection().execute("PRAGMA page_size").fetchone()[0],
+                8192,
+            )
+        finally:
+            source.close_all()
+        original_source = Path(source_path).read_bytes()
+        notices = []
+        self.addCleanup(
+            subscribe_history_restore(self.path, lambda: notices.append(True))
+        )
+        unrelated = PromptDatabase(str(Path(self.tmpdir) / "unrelated.db"))
+        self.addCleanup(unrelated.close_all)
+        self._save(unrelated, "unrelated")
+        unrelated_connection = unrelated.model.get_connection()
+        bystander = PromptDatabase(self.path)
+        self.addCleanup(bystander.close_all)
+        ready, release, refused = (threading.Event() for _ in range(3))
+        results = {}
+
+        def hold_reader_then_write() -> None:
+            try:
+                conn = bystander.model.get_connection()
+                conn.execute("BEGIN")
+                results["before"] = conn.execute("SELECT text FROM prompts").fetchone()[
+                    0
+                ]
+                ready.set()
+                if not release.wait(10):
+                    raise TimeoutError("Restore did not release held reader")
+                results["held"] = conn.execute("SELECT text FROM prompts").fetchone()[0]
+                conn.rollback()
+                # Never write through the original unsafe fallback during RED.
+                if refused.is_set():
+                    self._save(bystander, "other owner still writes")
+                    results["after"] = conn.execute(
+                        "SELECT text FROM prompts ORDER BY id"
+                    ).fetchall()
+            except Exception as exc:
+                results["error"] = exc
+            finally:
+                ready.set()
+                bystander.close()
+
+        worker = threading.Thread(target=hold_reader_then_write)
+        worker.start()
+        try:
+            self.assertTrue(ready.wait(10), "Held reader did not start")
+            self.assertNotIn("error", results)
+            with self.assertRaises(sqlite3.OperationalError):
+                try:
+                    self.db.model.restore_from_file(source_path)
+                except sqlite3.OperationalError:
+                    refused.set()
+                    raise
+        finally:
+            release.set()
+            worker.join(10)
+
+        self.assertFalse(worker.is_alive(), "Held reader did not finish")
+        self.assertNotIn("error", results)
+        self.assertEqual(results["before"], "keep live")
+        self.assertEqual(results["held"], "keep live")
+        self.assertEqual(
+            [row[0] for row in results["after"]],
+            ["keep live", "other owner still writes"],
+        )
+        self.assertEqual(self.db.get_execution_epoch(), epoch)
+        self.assertEqual(notices, [])
+        self.assertEqual(_texts(self.path), ["keep live", "other owner still writes"])
+        self._save(self.db, "restoring owner still writes")
+        self.assertEqual(live.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+        self.assertEqual(
+            unrelated_connection.execute("SELECT text FROM prompts").fetchone()[0],
+            "unrelated",
+        )
+        self.assertEqual(Path(source_path).read_bytes(), original_source)
+        backups = list(Path(self.tmpdir).glob("prompts.db.backup_*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(_texts(str(backups[0])), ["keep live"])
+        for path in (source_path, str(backups[0])):
+            with closing(sqlite3.connect(path)) as conn:
+                self.assertEqual(
+                    conn.execute("PRAGMA integrity_check").fetchone()[0], "ok"
+                )
+
+        self.db.model.restore_from_file(compatible)
+        self.assertEqual(_texts(self.path), ["compatible retry"])
+        self.assertNotEqual(self.db.get_execution_epoch(), epoch)
+        self.assertEqual(notices, [True])
+
+    def test_online_operational_error_preserves_live_data_and_closes_source(
+        self,
+    ) -> None:
+        self._save(self.db, "keep live")
+        source = self._make_source_db(["do not publish"])
+        epoch = self.db.get_execution_epoch()
+        live = self.db.model.get_connection()
+        connect = sqlite3.connect
+        failed_sources = []
+        live_path = os.path.realpath(self.path)
+
+        class FailingLiveBackup(sqlite3.Connection):
+            def backup(self, target: sqlite3.Connection, *args, **kwargs) -> None:
+                target_path = target.execute("PRAGMA database_list").fetchone()[2]
+                if os.path.realpath(target_path) == live_path:
+                    failed_sources.append(self)
+                    raise sqlite3.OperationalError("injected live backup I/O failure")
+                super().backup(target, *args, **kwargs)
+
+        def connect_with_failure(*args, **kwargs) -> sqlite3.Connection:
+            return connect(*args, **kwargs, factory=FailingLiveBackup)
+
+        with patch("database.models.sqlite3.connect", side_effect=connect_with_failure):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.db.model.restore_from_file(source)
+
+        self.assertEqual(_texts(self.path), ["keep live"])
+        self.assertEqual(self.db.get_execution_epoch(), epoch)
+        self.assertEqual(
+            live.execute("SELECT text FROM prompts").fetchone()[0], "keep live"
+        )
+        self.assertEqual(_texts(source), ["do not publish"])
+        self.assertEqual(len(failed_sources), 1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            failed_sources[0].execute("SELECT 1")
+
     def test_restore_replaces_content_and_backs_up_the_old_database(self):
         self._save(self.db, "old prompt")
         src = self._make_source_db(["restored one", "restored two"])

@@ -1425,6 +1425,78 @@ class TestBackupRestoreContract(AdminAPITestCase):
                 conn.execute("SELECT COUNT(*) FROM prompts").fetchone()[0], 1
             )
 
+    async def test_incompatible_wal_restore_returns_failure_without_publication(
+        self,
+    ) -> None:
+        import sqlite3
+        from contextlib import closing
+
+        from database.execution_history import subscribe_history_restore
+
+        self.api.db.save_prompt(text="keep live", prompt_hash="live")
+        previous = self.api.db
+        live = previous.model.get_connection()
+        epoch = previous.get_execution_epoch()
+        self.assertEqual(live.execute("PRAGMA page_size").fetchone()[0], 4096)
+        self.assertEqual(live.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+        compatible = self._snapshot_upload()
+        source_path = Path(self.tmpdir) / "large-pages.db"
+        with closing(sqlite3.connect(source_path)) as conn:
+            conn.execute("PRAGMA page_size=8192")
+            conn.execute("VACUUM")
+        source = PromptDatabase(str(source_path))
+        try:
+            source.save_prompt(text="do not publish", prompt_hash="source")
+            self.assertEqual(
+                source.model.get_connection().execute("PRAGMA page_size").fetchone()[0],
+                8192,
+            )
+        finally:
+            source.close_all()
+        upload = source_path.read_bytes()
+        notices = []
+        self.addCleanup(
+            subscribe_history_restore(
+                previous.model.db_path, lambda: notices.append(True)
+            )
+        )
+
+        resp = await self._restore("database_file", upload)
+
+        body = await resp.text()
+        self.assertEqual(resp.status, 500, body)
+        data = json.loads(body)
+        self.assertFalse(data["success"])
+        self.assertIn("Failed to restore database", data["error"])
+        self.assertLess(len(data["error"]), 300)
+        self.assertNotIn(self.tmpdir, body)
+        self.assertNotIn("/tmp/", body)
+        self.assertNotIn("backup_created", data)
+        self.assertIs(self.api.db, previous)
+        self.assertEqual(previous.get_execution_epoch(), epoch)
+        self.assertEqual(notices, [])
+        self.assertEqual(
+            live.execute("SELECT text FROM prompts").fetchone()[0], "keep live"
+        )
+        previous.save_prompt(text="still writable", prompt_hash="after")
+        self.assertEqual(source_path.read_bytes(), upload)
+        backups = list(Path(self.tmpdir).glob("prompts.db.backup_*"))
+        self.assertEqual(len(backups), 1)
+        with closing(sqlite3.connect(backups[0])) as conn:
+            self.assertEqual(
+                conn.execute("SELECT text FROM prompts").fetchone()[0], "keep live"
+            )
+            self.assertEqual(conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+
+        retry = await self._restore("database_file", compatible)
+        self.assertEqual(retry.status, 200, await retry.text())
+        self.assertTrue((await retry.json())["success"])
+        self.assertEqual(notices, [True])
+        self.assertNotEqual(self.api.db.get_execution_epoch(), epoch)
+        self.assertEqual(
+            [row["text"] for row in self.api.db.search_prompts()], ["keep live"]
+        )
+
     async def test_restore_backup_created_is_a_public_path(self):
         self.api.db.save_prompt(text="restored", prompt_hash="h1")
         resp = await self._restore("database_file", self._snapshot_upload())

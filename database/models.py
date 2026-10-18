@@ -6,7 +6,6 @@ import contextlib
 import datetime
 import json
 import math
-import shutil
 import sqlite3
 import os
 import threading
@@ -1061,29 +1060,17 @@ class PromptModel:
         PromptModel instances that share the file (nodes, image monitor,
         queue hook, API) simply see the new pages on their next statement.
         Nothing is swapped underneath open handles and no -wal/-shm file has
-        to be deleted, which also keeps Windows happy. When SQLite refuses
-        (page sizes differ while the target is in WAL mode) fall back to a
-        file copy with every connection of this instance closed first.
+        to be deleted, which also keeps Windows happy. If SQLite refuses
+        replacement (for example, incompatible page sizes in WAL mode),
+        propagate the error rather than copy files under other open owners.
         """
         source = sqlite3.connect(
             Path(src_path).resolve().as_uri() + "?mode=ro", uri=True
         )
         try:
-            try:
-                source.backup(self.get_connection())
-                return
-            except sqlite3.OperationalError as e:
-                self.logger.warning(
-                    f"Online restore failed ({e}); falling back to a file copy"
-                )
+            source.backup(self.get_connection())
         finally:
             source.close()
-        self.close_all()
-        shutil.copy2(src_path, self.db_path)
-        for suffix in ("-wal", "-shm"):
-            stale = self.db_path + suffix
-            if os.path.exists(stale):
-                os.remove(stale)
 
     def restore_from_file(self, src_path: str) -> str:
         """
@@ -1094,6 +1081,8 @@ class PromptModel:
         ``<db_path>.backup_<YYYYmmdd_HHMMSS>`` (WAL content included), and the
         staged pages replace the live pages through SQLite's backup API.
         Migration failures never replace live content or modify the source.
+        An online replacement failure leaves the live database intact and
+        propagates; the completed safety backup remains available.
 
         Args:
             src_path: SQLite file to restore
@@ -1104,7 +1093,7 @@ class PromptModel:
 
         Raises:
             RuntimeError: If the previous database could not be backed up
-            OSError: If the restored file could not be copied into place
+            sqlite3.OperationalError: If SQLite refuses online replacement
         """
         ok, reason = self.verify_database_file(src_path)
         if not ok:
