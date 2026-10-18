@@ -166,3 +166,185 @@ test('rejected and removed-before-dequeue jobs create no persisted attempts', as
         }
     } finally { await control(request, 'release'); }
 });
+
+function recipeGraph({ text = 'context positive', negative = '', kind = 'PromptManagerPair', prepend = '', append = '', dynamic = false } = {}) {
+    const graph = {
+        '10': { class_type: 'PMHistoryInputs', inputs: {} },
+        '20': { class_type: kind, inputs: { text: dynamic ? ['11', 0] : text,
+            prepend_text: prepend, append_text: append, ...(kind === 'PromptManagerText' ? {} : { clip: ['10', 0] }),
+            ...(kind === 'PromptManagerPair' ? { negative_text: negative } : {}) } },
+        '30': { class_type: 'CLIPTextEncode', inputs: { text: negative, clip: ['10', 0] } },
+        '40': { class_type: 'KSampler', inputs: { model: ['10', 1], latent_image: ['10', 2],
+            positive: ['20', 0], negative: kind === 'PromptManagerPair' ? ['20', 1] : ['30', 0],
+            seed: 1, steps: 1, cfg: 1, sampler_name: 'euler', scheduler: 'normal', denoise: 1 } },
+        '50': { class_type: 'PMHistoryOutput', inputs: { value: ['40', 0] } },
+    };
+    if (kind === 'PromptManagerText') {
+        graph['31'] = { class_type: 'CLIPTextEncode', inputs: { text: ['20', 0], clip: ['10', 0] } };
+        graph['40'].inputs.positive = ['31', 0];
+    }
+    if (dynamic) graph['11'] = { class_type: 'PMHistoryCached', inputs: { value: text } };
+    return graph;
+}
+
+async function capture(execution, id, outcome = 'succeeded') {
+    const [run] = await rows(execution, id, [outcome]);
+    let result;
+    await expect.poll(async () => {
+        result = await readExecutionRuns(execution.databasePath, id);
+        return result.captures[run.run_id].state;
+    }, { timeout: 10000, message: 'Background writer persisted context finalization' }).not.toBe('not_captured');
+    return result.captures[run.run_id];
+}
+
+test('actual PM A,A,B jobs persist two combinations and one identical positive snapshot', async ({ execution }) => {
+    const captures = [];
+    const positiveSnapshotIds = [];
+    for (const negative of ['negative A', 'negative A', 'negative B']) {
+        const id = await submit(execution.request, recipeGraph({ negative }));
+        await history(execution.request, id);
+        captures.push(await capture(execution, id));
+        const persisted = await readExecutionRuns(execution.databasePath, id);
+        positiveSnapshotIds.push(persisted.snapshotIds[persisted.rows[0].run_id][0].positive_snapshot_id);
+    }
+    expect(new Set(positiveSnapshotIds).size).toBe(1);
+    expect(captures.map(value => value.state)).toEqual(['complete', 'complete', 'complete']);
+    const contexts = captures.map(value => value.contexts[0]);
+    expect(new Set(contexts.map(value => value.context_id)).size).toBe(2);
+    expect(new Set(contexts.map(value => JSON.stringify(value.positive))).size).toBe(1);
+    expect(contexts[0].evidence.positive.effective.source).toBe('runtime_return');
+    expect(contexts[1].evidence.positive.effective.source).toBe('host_cache_output');
+    expect(contexts[1].evidence.positive.raw.source).toBe('graph_literal');
+    expect(contexts[1].evidence.role_provenance).toBe('inferred');
+    expect(contexts[2].negative.raw).toBe('negative B');
+});
+
+test('fresh registered PM variants preserve exact raw whitespace and known empty negative', async ({ execution }) => {
+    for (const kind of ['PromptManager', 'PromptManagerFocused', 'PromptManagerSplit', 'PromptManagerPair', 'PromptManagerText']) {
+        const graph = recipeGraph({ kind, text: `  ${kind} e\u0301\n`, prepend: ' pre \t', append: '\n post ' });
+        const id = await submit(execution.request, graph);
+        await history(execution.request, id);
+        const value = (await capture(execution, id)).contexts[0];
+        expect(value.positive).toEqual({ raw: `  ${kind} e\u0301\n`, prepend: ' pre \t', append: '\n post ', effective: `pre   ${kind} e\u0301\n post` });
+        expect(value.negative.raw).toBe('');
+        expect(value.negative.effective).toBe('');
+        expect(value.evidence.positive.raw).toMatchObject({ provenance: 'recorded', source: 'runtime_return' });
+    }
+});
+
+test('fully cached text uses old effective output after external trigger configuration changes', async ({ execution }) => {
+    const request = execution.request;
+    const configure = suffix => request.post('/pm_execution_fixture/injection', { data: { suffix } });
+    try {
+        expect((await configure(' trigger-A')).ok()).toBe(true);
+        const graph = recipeGraph({ text: 'cached trigger recipe', negative: 'trigger negative' });
+        const first = await submit(request, graph);
+        await history(request, first);
+        const original = (await capture(execution, first)).contexts[0];
+        expect(original.positive.effective).toBe('cached trigger recipe trigger-A');
+        expect((await configure(' trigger-B')).ok()).toBe(true);
+        const second = await submit(request, graph);
+        const item = await history(request, second);
+        expect(item.status.messages.find(([kind]) => kind === 'execution_cached')[1].nodes).toEqual(expect.arrayContaining(['20', '40', '50']));
+        const repeated = (await capture(execution, second)).contexts[0];
+        expect(repeated.context_id).toBe(original.context_id);
+        expect(repeated.positive.effective).toBe(original.positive.effective);
+        expect(repeated.evidence.positive.effective.source).toBe('host_cache_output');
+    } finally { expect((await configure('')).ok()).toBe(true); }
+});
+
+test('crossed Pair and Text negative roles remain independent declared contexts', async ({ execution }) => {
+    const graph = recipeGraph({ text: 'pair one positive', negative: 'pair one negative' });
+    graph['21'] = { class_type: 'PromptManagerPair', inputs: { text: 'pair two positive', negative_text: 'pair two negative', clip: ['10', 0] } };
+    graph['22'] = { class_type: 'PromptManagerText', inputs: { text: 'text negative role' } };
+    graph['32'] = { class_type: 'CLIPTextEncode', inputs: { text: ['22', 0], clip: ['10', 0] } };
+    graph['40'].inputs.negative = ['21', 1];
+    graph['41'] = structuredClone(graph['40']);
+    graph['41'].inputs.positive = ['21', 0];
+    graph['41'].inputs.negative = ['32', 0];
+    graph['51'] = { class_type: 'PMHistoryOutput', inputs: { value: ['41', 0] } };
+    const id = await submit(execution.request, graph);
+    await history(execution.request, id);
+    const result = await capture(execution, id);
+    expect(result.contexts.map(value => [value.anchor_id, value.positive.raw, value.negative.raw])).toEqual([
+        ['40', 'pair one positive', 'pair two negative'], ['41', 'pair two positive', 'text negative role'],
+    ]);
+    for (const value of result.contexts) expect(value.evidence.negative.effective.source).toBe('runtime_return');
+});
+
+test('successful source capture survives downstream failure and real interruption', async ({ execution }) => {
+    const request = execution.request;
+    for (const mode of ['failure', 'gate']) {
+        const graph = recipeGraph({ text: `source before ${mode}` });
+        graph['50'].inputs.mode = mode;
+        if (mode === 'gate') await control(request, 'hold');
+        try {
+            const id = await submit(request, graph);
+            if (mode === 'gate') {
+                await entered(request);
+                expect((await request.post('/interrupt', { data: {} })).ok()).toBe(true);
+            }
+            await history(request, id, mode === 'gate' ? 'execution_interrupted' : 'execution_error');
+            const result = await capture(execution, id, mode === 'gate' ? 'interrupted' : 'failed');
+            expect(result.contexts[0].positive.effective).toBe(`source before ${mode}`);
+            expect(result.contexts[0].evidence.positive.effective.source).toBe('runtime_return');
+        } finally { await control(request, 'release'); }
+    }
+});
+
+test('cached dynamic raw stays unknown while literal affixes and effective cache text survive', async ({ execution }) => {
+    const graph = recipeGraph({ dynamic: true, text: 'runtime dynamic recipe', prepend: ' pre ', append: ' post ' });
+    const first = await submit(execution.request, graph);
+    await history(execution.request, first);
+    expect((await capture(execution, first)).contexts[0].positive.raw).toBe('runtime dynamic recipe');
+    const second = await submit(execution.request, graph);
+    await history(execution.request, second);
+    const value = (await capture(execution, second)).contexts[0];
+    expect(value.positive).toEqual({ raw: null, prepend: ' pre ', append: ' post ', effective: 'pre runtime dynamic recipe post' });
+    expect(value.evidence.positive.raw.provenance).toBe('unknown');
+    expect(value.evidence.positive.effective.source).toBe('host_cache_output');
+});
+
+test('unsupported conditioning transforms and duplicate list invocations preserve uncertainty', async ({ execution }) => {
+    const transformed = recipeGraph({ text: 'unsupported transformed recipe' });
+    transformed['35'] = { class_type: 'PMHistoryTransform', inputs: { conditioning: ['20', 0] } };
+    transformed['40'].inputs.positive = ['35', 0];
+    const unsupported = await submit(execution.request, transformed);
+    await history(execution.request, unsupported);
+    const unknown = await capture(execution, unsupported);
+    expect(unknown.state).toBe('partial');
+    expect(unknown.contexts[0].positive.effective).toBeNull();
+    const graph = recipeGraph({ text: 'duplicate runtime list' });
+    graph['11'] = { class_type: 'PMHistoryList', inputs: { value: 'duplicate runtime list' } };
+    graph['20'].inputs.text = ['11', 0];
+    const id = await submit(execution.request, graph);
+    await history(execution.request, id);
+    const result = await capture(execution, id);
+    expect(result.state).toBe('ambiguous');
+    expect(result.reason).toBe('multiple_samples');
+    expect(result.contexts[0].positive.effective).toBeNull();
+});
+
+test('real executor Classic LRU RAM and disabled caches preserve honest evidence and usage', async ({ execution }) => {
+    const request = execution.request;
+    for (const mode of ['CLASSIC', 'LRU', 'RAM_PRESSURE', 'NONE']) {
+        expect((await request.post('/pm_execution_fixture/cache', { data: { mode } })).ok()).toBe(true);
+        const graph = recipeGraph({ text: `cache mode ${mode}`, negative: `cache mode negative ${mode}` });
+        const results = [];
+        for (let index = 0; index < 2; index++) {
+            const id = await submit(request, graph);
+            await history(request, id);
+            results.push(await capture(execution, id));
+            const persisted = await readExecutionRuns(execution.databasePath, id);
+            const [run] = persisted.rows;
+            expect(persisted.usage[run.run_id]).toEqual([
+                { role: 'positive', run_count: index + 1 },
+                { role: 'negative', run_count: 0 },
+                { role: 'pair', run_count: index + 1 },
+            ]);
+        }
+        expect(results[0].state).toBe('complete');
+        expect(results[1].contexts[0].context_id).toBe(results[0].contexts[0].context_id);
+        expect(results[1].contexts[0].evidence.positive.effective.source).toBe(mode === 'NONE' ? 'runtime_return' : 'host_cache_output');
+    }
+});

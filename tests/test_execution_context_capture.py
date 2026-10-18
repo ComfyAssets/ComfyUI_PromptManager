@@ -373,6 +373,76 @@ class CaptureTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_writer_restore_or_close_revokes_callback_paused_during_encoding(self):
+        import asyncio
+
+        from utils.execution_history_writer import HistoryWriter
+
+        for action in ("invalidate", "close"):
+            with self.subTest(action=action):
+                pool = ContextBudget()
+                current = [HistoryWriterStatus(EPOCH, True, 0, 0, True, 3)]
+                manager = capture.ContextCapture(10, lambda: current[0], pool)
+                self.addCleanup(manager.revoke_all)
+                writer = HistoryWriter(
+                    lambda: self.fail("This callback test must not open storage"),
+                    context_budget=pool,
+                    on_invalidation=manager.revoke_all,
+                )
+                self.addCleanup(writer.close)
+                self.host_context()
+
+                async def scenario():
+                    old = manager.begin(self.start, 3, graph(), None)
+                    manager.observe(
+                        old, SourceRef("p", "PromptManagerPair", 0), 0, snapshot()
+                    )
+                    entered, release = asyncio.Event(), asyncio.Event()
+
+                    async def encoding_return():
+                        entered.set()
+                        await release.wait()
+                        capture.record_runtime_context(
+                            "PromptManagerPair", "late", "", "", "late", role="positive"
+                        )
+
+                    task = asyncio.create_task(encoding_return())
+                    await entered.wait()
+                    self.assertGreater(pool.charged_bytes, 0)
+                    if action == "invalidate":
+                        writer.invalidate()
+                    else:
+                        self.assertTrue(writer.close())
+                    self.assertEqual(pool.charged_bytes, 0)
+                    self.assertIsNone(capture.active_capture())
+                    new_epoch = "44444444-4444-4444-8444-444444444444"
+                    current[0] = HistoryWriterStatus(new_epoch, True, 0, 0, True, 4)
+                    new = manager.begin(
+                        replace(
+                            self.start,
+                            run_id=JOB,
+                            queue_item_id=2,
+                            storage_epoch=new_epoch,
+                        ),
+                        4,
+                        graph(),
+                        None,
+                    )
+                    release.set()
+                    await task
+                    self.assertIsNone(manager.seal(old).bundle)
+                    sealed = manager.seal(new)
+                    try:
+                        self.assertIsNone(
+                            sealed.bundle.contexts[0].positive.effective.value
+                        )
+                    finally:
+                        if sealed.lease:
+                            sealed.lease.release()
+                    self.assertEqual(pool.charged_bytes, 0)
+
+                asyncio.run(scenario())
+
     def test_oversized_runtime_field_is_unknown_without_erasing_other_fields(self):
         cap = self.begin()
         self.host_context()

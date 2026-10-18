@@ -3,6 +3,9 @@
 import threading
 import time
 
+import nodes
+import execution
+
 from aiohttp import web
 import comfy.model_management
 from server import PromptServer
@@ -69,3 +72,129 @@ NODE_CLASS_MAPPINGS = {
     "PMHistoryFailure": PMHistoryFailure,
     "PMHistoryGate": PMHistoryGate,
 }
+
+# Only external inference is replaced; PM classes and host execution remain real.
+
+
+class _Clip:
+    def tokenize(self, text: str) -> str:
+        return text
+
+    def encode_from_tokens_scheduled(self, tokens: str) -> list:
+        return [[tokens, {}]]
+
+
+class PMHistoryInputs:
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {"required": {}}
+
+    RETURN_TYPES = ("CLIP", "MODEL", "LATENT")
+    FUNCTION = "execute"
+    CATEGORY = "testing/execution-history"
+
+    def execute(self) -> tuple:
+        return (_Clip(), object(), {"samples": "owned deterministic latent"})
+
+
+class PMHistoryOutput:
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {"value": ("LATENT",)},
+            "optional": {"mode": (["normal", "failure", "gate"],)},
+        }
+
+    RETURN_TYPES = ()
+    FUNCTION = "execute"
+    CATEGORY = "testing/execution-history"
+    OUTPUT_NODE = True
+
+    def execute(self, value: dict, mode: str = "normal") -> tuple:
+        if mode == "failure":
+            raise ValueError("owned downstream failure")
+        if mode == "gate":
+            PMHistoryGate().execute("owned downstream gate")
+        return ()
+
+
+def _sample(self: object, **kwargs: object) -> tuple:
+    return (kwargs["latent_image"],)
+
+
+nodes.KSampler.sample = _sample
+NODE_CLASS_MAPPINGS.update(
+    {"PMHistoryInputs": PMHistoryInputs, "PMHistoryOutput": PMHistoryOutput}
+)
+
+
+class PMHistoryList(PMHistoryCached):
+    OUTPUT_IS_LIST = (True,)
+
+    def execute(self, value: str) -> tuple:
+        return ([value, value],)
+
+
+class PMHistoryTransform:
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {"required": {"conditioning": ("CONDITIONING",)}}
+
+    RETURN_TYPES = ("CONDITIONING",)
+    FUNCTION = "execute"
+    CATEGORY = "testing/execution-history"
+
+    def execute(self, conditioning: list) -> tuple:
+        return (conditioning,)
+
+
+NODE_CLASS_MAPPINGS.update(
+    {"PMHistoryList": PMHistoryList, "PMHistoryTransform": PMHistoryTransform}
+)
+
+_INJECTION_ORIGINALS = {}
+
+
+@PromptServer.instance.routes.post("/pm_execution_fixture/injection")
+async def injection(request: web.Request) -> web.Response:
+    suffix = (await request.json())["suffix"]
+    if not isinstance(suffix, str) or len(suffix) > 128:
+        raise web.HTTPBadRequest()
+    for name in ("PromptManager", "PromptManagerText"):
+        cls = nodes.NODE_CLASS_MAPPINGS[name]
+        if name not in _INJECTION_ORIGINALS:
+            _INJECTION_ORIGINALS[name] = cls._inject_lora_trigger_words
+        cls._inject_lora_trigger_words = (
+            (lambda self, text: text + suffix) if suffix else _INJECTION_ORIGINALS[name]
+        )
+    return web.json_response({"configured": True})
+
+
+# Apply a requested host cache configuration on its own worker before execution.
+# Retain only the mode scalar; never retain the worker/executor/cache objects.
+
+_CACHE_MODE = None
+_EXECUTE = execution.PromptExecutor.execute
+
+
+def _execute_with_cache_mode(self: object, *args: object, **kwargs: object) -> object:
+    global _CACHE_MODE
+    if _CACHE_MODE is not None:
+        self.cache_type = execution.CacheType[_CACHE_MODE]
+        self.cache_args = {**self.cache_args, "lru": 100, "ram": 0}
+        self.reset()
+        _CACHE_MODE = None
+    return _EXECUTE(self, *args, **kwargs)
+
+
+execution.PromptExecutor.execute = _execute_with_cache_mode
+
+
+@PromptServer.instance.routes.post("/pm_execution_fixture/cache")
+async def cache_mode(request: web.Request) -> web.Response:
+    global _CACHE_MODE
+    mode = (await request.json())["mode"]
+    if mode not in ("CLASSIC", "LRU", "RAM_PRESSURE", "NONE"):
+        raise web.HTTPBadRequest()
+    _CACHE_MODE = mode
+    return web.json_response({"configured": True})

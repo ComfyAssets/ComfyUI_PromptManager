@@ -200,10 +200,10 @@ loading a workflow or queueing generation.
 
 ## Durable execution ledger
 
-`npm run --prefix tools/vendor test:executions` adds ten real execution cases
-(five each in Classic and Nodes 2.0) to the existing 78 stock host cases and six
-pack compatibility cases. Run these suites serially because they share report
-cleanup and owned host resources. Use the same pinned disposable `PM_COMFY_ROOT`,
+`npm run --prefix tools/vendor test:executions` runs 26 real execution cases
+(13 each in Classic and Nodes 2.0, retaining the original ten ledger cases),
+alongside the existing 78 stock host cases and six pack compatibility cases. Run
+these suites serially because they share report cleanup and owned host resources. Use the same pinned disposable `PM_COMFY_ROOT`,
 `PM_TEST_PYTHON` and Playwright browser installation as `test:comfyui`:
 
 ```sh
@@ -218,7 +218,11 @@ server. Each renderer worker launches a CPU/offline host with independent
 configuration, database, user and output directories. The shared launcher installs
 tracked snapshots of PromptManager and a tiny temporary Git-tracked fixture pack.
 Only that owned test pack provides cached output, deliberate failure, an
-interruptible queue gate and gate-control routes; production has no test nodes or
+interruptible queue gate, deterministic CLIP/model/latent inputs and control routes.
+It replaces external sampler inference and trigger injection only inside the
+disposable host; real registered PromptManager classes, queue, executor and cache
+remain active. Its cache control resets the real executor on its worker to exercise
+Classic, LRU, RAM-pressure and disabled caching; production has no test nodes or
 endpoints. Cleanup always releases the gate, stops the host and removes both
 owned directories. Logs and Playwright failures appear under
 `tools/vendor/test-results/executions/` and the existing CI artifact upload.
@@ -230,8 +234,10 @@ removal before dequeue. Actual host history is checked alongside finite polling
 of SQLite after the background writer. The read helper uses SQLite read-only
 mode, exact UUID job/session filters and a 256-row limit; absent ledger schema is
 explicit, while missing/corrupt databases and other read errors fail the suite.
-Sensitive sentinels in graph inputs, extra data and error messages must never
-appear in any stored row.
+Sensitive diagnostic and extra-data sentinels must never appear in lifecycle
+rows. Exact prompt fields are deliberately persisted only in context snapshots.
+The same read-only helper calls the internal `get_execution_contexts` reader for
+requested run IDs and inspects their snapshot identities and current usage counts.
 
 For a meaningful historical failure, create a separate disposable detached
 checkout at `fdba6fd0126a8a40cbd6f3e50ed4c5de8991efd4` and pass its path to
@@ -253,5 +259,34 @@ before restarting an existing deployment.
 
 The ledger records only new dequeued jobs and observed outcomes. Existing
 counters, prompts, pairs and image links are preserved, with no reconstructed old
-runs. Prompt contexts, output associations and the chronological timeline remain
-future work under #209. Deploying the Python changes requires a ComfyUI restart.
+runs. Schema v2 migrates automatically when the configured database opens, adding
+immutable prompt-context tables without backfilling old runs. The internal reader
+returns `not_captured` for preexisting runs; a new capture can instead be complete,
+partial, ambiguous or unavailable. Keep the existing database backup/restore
+procedure: restored history changes storage epoch, and old library navigation
+hints must never be rebound to unrelated current rows.
+
+Context cases verify A,A,B as three jobs/two combinations/one positive snapshot
+when every positive field matches; all five registered PM variants; exact raw
+whitespace and Unicode; known empty negatives; Text negative roles and crossed
+pairs; fully cached repeats after trigger configuration changes; successful source
+text before downstream failure/interruption; unknown cached dynamic raw; unsupported
+transforms and duplicate list invocation ambiguity. Fresh values use
+`runtime_return`, cached effective STRING outputs use `host_cache_output`, and
+submitted literals use graph inference. SQL NULL means unknown; empty text is
+known. Text is never trimmed or normalized by capture. Cache availability and
+inferred sampler roles prove neither sampler execution nor consumption, and list
+indices do not identify generated images. External trigger configuration changes
+must not rewrite the effective text of an existing cached result. The cache matrix
+also checks that positive/pair usage increments once per dequeued job while a
+negative-only component retains its existing zero standalone-use count.
+
+Fault injection for restore fencing, inherited async capability revocation, queued
+finalization, epoch and generation revocation, provider-local cache entries, eviction/reset, malformed or
+oversized payloads and missing host interfaces lives in the focused Python
+`test_execution*.py` suites. These use disposable storage and mocked host interfaces;
+they are distinct from the pinned real executor/cache checks above. No output-file
+associations or chronological timeline are introduced. Deploying the Python changes
+requires a ComfyUI restart. After restart, queue three new jobs A,A,B with identical
+positive fields and two negative recipes; existing counters should advance as usual,
+and internal context inspection should find three attempts and two combinations.
