@@ -1,6 +1,8 @@
 """Exact successful host callbacks persist independently bounded output evidence."""
 
 from dataclasses import replace
+import os
+from pathlib import Path
 import threading
 import sys
 from types import SimpleNamespace
@@ -309,21 +311,53 @@ class OutputHooksTests(fixtures.unittest.TestCase):
         self.assertEqual(registration.writer.context_budget.charged_bytes, 0)
 
     def test_default_adapter_uses_configured_output_and_temp_namespaces(self):
-        folder_paths = SimpleNamespace(
-            get_output_directory=lambda: "/output", get_temp_directory=lambda: "/temp"
+        native_root = Path(self.directory.name)
+        cases = (
+            (
+                os.name,
+                str(native_root / "output"),
+                str(native_root / "temp"),
+                "windows" if os.name == "nt" else "posix",
+            ),
+            ("posix", "/configured", "/configured", "posix"),
+            ("nt", r"D:\configured", r"D:\configured", "windows"),
         )
-        with patch.dict(sys.modules, {"folder_paths": folder_paths}):
-            registration = HistoryRegistration(
-                self.queue, fixtures.JOB, lambda: self.db
+        for item, (platform, output_root, temp_root, style) in enumerate(cases):
+            folder_paths = SimpleNamespace(
+                get_output_directory=lambda: output_root,
+                get_temp_directory=lambda: temp_root,
             )
-            self.registrations.append(registration)
-            self.wait_for(lambda: registration.writer.status().accepting)
-            self.dequeue(0)
-            self.queue.task_done(0, history(), fixtures.status())
-            self.drain(registration)
-        self.assertEqual(self.outputs(0)["state"], "complete")
-        self.assertEqual(len(self.outputs(0)["references"][0]["root_key"]), 64)
-        self.assertEqual(registration._roots, {})
+            with (
+                self.subTest(platform=platform, root=output_root),
+                patch.dict(sys.modules, {"folder_paths": folder_paths}),
+                patch("utils.execution_history.os", SimpleNamespace(name=platform)),
+            ):
+                registration = HistoryRegistration(
+                    self.queue, fixtures.JOB, lambda: self.db
+                )
+                self.registrations.append(registration)
+                self.wait_for(lambda: registration.writer.status().accepting)
+                self.dequeue(item)
+                payload = history()
+                payload["outputs"]["save"]["images"].append(
+                    {"filename": "a.png", "subfolder": "", "type": "temp"}
+                )
+                self.queue.task_done(item, payload, fixtures.status())
+                self.drain(registration)
+                evidence = self.outputs(item)
+                self.assertEqual(evidence["state"], "complete")
+                references = evidence["references"]
+                self.assertEqual(len(references[0]["root_key"]), 64)
+                self.assertEqual(len(references[1]["root_key"]), 64)
+                self.assertEqual([r["path_style"] for r in references], [style] * 2)
+                self.assertEqual(
+                    [r["folder_type"] for r in references], ["output", "temp"]
+                )
+                self.assertNotEqual(
+                    references[0]["root_key"], references[1]["root_key"]
+                )
+                self.assertEqual(registration._roots, {})
+                self.assertTrue(registration.dispose())
 
     def test_sealed_context_is_discarded_before_output_reservation(self):
         pool = ContextBudget(1048576)

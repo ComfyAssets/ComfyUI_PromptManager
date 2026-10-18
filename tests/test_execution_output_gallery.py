@@ -1,5 +1,7 @@
 """Mutable metadata galleries never own or retarget frozen output references."""
 
+from pathlib import PurePosixPath, PureWindowsPath
+
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
@@ -18,11 +20,11 @@ class OutputGalleryTests(AdminAPITestCase):
         db = self.api.db
         start = self.start(db, item)
         db.write_execution_start(start)
-        key = snapshot_output_roots(
-            "posix", str(root or self.output_dir), None
-        ).output_key
+        output_root = root or self.output_dir
+        style = "windows" if isinstance(output_root, PureWindowsPath) else "posix"
+        key = snapshot_output_roots(style, str(output_root), None).output_key
         db.write_execution_outputs_for_finish(
-            self.finish(start), bundle(filename, root=key)
+            self.finish(start), bundle(filename, root=key, path_style=style)
         )
         return start.run_id, db.get_execution_outputs(start.run_id)
 
@@ -47,6 +49,20 @@ class OutputGalleryTests(AdminAPITestCase):
                 "image_prompt_pairs",
             )
         }
+
+    def test_capture_matches_root_path_style_on_each_platform(self) -> None:
+        roots = (
+            (PurePosixPath("/output"), "posix"),
+            (PureWindowsPath(r"D:\output"), "windows"),
+        )
+        for item, (root, style) in enumerate(roots):
+            with self.subTest(style=style):
+                run, evidence = self.capture(item=item, root=root)
+                self.assertEqual(evidence["state"], "complete")
+                reference = evidence["references"][0]
+                self.assertEqual(reference["path_style"], style)
+                self.assertEqual(len(reference["root_key"]), 64)
+                self.assert_evidence(run, evidence)
 
     def test_metadata_disabled_or_malformed_still_captures_without_gallery_rows(self):
         for item, metadata in enumerate(({}, {"prompt": "{malformed"})):

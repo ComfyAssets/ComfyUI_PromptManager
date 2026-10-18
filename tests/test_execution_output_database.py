@@ -17,9 +17,11 @@ except ImportError:
     import test_execution_history_database as history_tests
 
 
-def bundle(filename="first.png", *, root="a" * 64, node="9", ordinal=0):
+def bundle(
+    filename="first.png", *, root="a" * 64, node="9", ordinal=0, path_style="posix"
+):
     return OutputBundle(
-        (OutputReference(node, ordinal, "output", "", filename, "posix", root),),
+        (OutputReference(node, ordinal, "output", "", filename, path_style, root),),
         "complete" if root else "partial",
         "reported" if root else "root_unavailable",
     )
