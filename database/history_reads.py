@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 import hashlib
 import json
+import re
 import sqlite3
 from typing import Iterator
 
@@ -32,6 +33,63 @@ class WindowPosition:
 class OutputPosition:
     capture_fingerprint: str
     after: tuple[str, int]
+
+
+_DIGEST = re.compile(r"[0-9a-f]{64}")
+_UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+
+
+def _valid_digest(value: object) -> bool:
+    return type(value) is str and _DIGEST.fullmatch(value) is not None
+
+
+def _valid_run_key(value: object) -> bool:
+    return (
+        type(value) is tuple
+        and len(value) == 4
+        and all(type(value[i]) is int and 0 <= value[i] <= 2**63 - 1 for i in (0, 2))
+        and all(
+            type(value[i]) is str and _UUID.fullmatch(value[i]) is not None
+            for i in (1, 3)
+        )
+    )
+
+
+def _valid_coordinate(value: object) -> bool:
+    if type(value) is not tuple or len(value) != 2:
+        return False
+    node, ordinal = value
+    if not (
+        type(node) is str
+        and 1 <= len(node) <= 128
+        and "\0" not in node
+        and type(ordinal) is int
+        and 0 <= ordinal <= 255
+    ):
+        return False
+    try:
+        return len(node.encode("utf-8")) <= 512
+    except UnicodeError:
+        return False
+
+
+def _validate_window_position(position: WindowPosition | None) -> None:
+    if position is not None and not (
+        type(position) is WindowPosition
+        and _valid_digest(position.raw_text_id)
+        and _valid_run_key(position.upper)
+        and _valid_run_key(position.before)
+    ):
+        raise ValueError("Invalid history window position")
+
+
+def _validate_output_position(position: OutputPosition | None) -> None:
+    if position is not None and not (
+        type(position) is OutputPosition
+        and _valid_digest(position.capture_fingerprint)
+        and _valid_coordinate(position.after)
+    ):
+        raise ValueError("Invalid history output position")
 
 
 _snapshots: ContextVar[tuple] = ContextVar("history_read_snapshots", default=())
@@ -180,6 +238,7 @@ class HistoryReadOperations:
     ) -> dict | None:
         conn = self._history_connection()
         _limit(limit)
+        _validate_window_position(after)
         saved = conn.execute(
             "SELECT CASE WHEN typeof(p.text)='text' AND "
             "length(CAST(p.text AS BLOB))<=65536 THEN p.text ELSE NULL END AS text "
@@ -399,6 +458,7 @@ class HistoryReadOperations:
     ) -> dict | None:
         conn = self._history_connection()
         _limit(limit)
+        _validate_output_position(after)
         # Validate header/orphans even when the requested parent does not exist.
         capture, count = _output_header(conn, run_id)
         if self.get_execution_run(run_id) is None:

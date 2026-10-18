@@ -659,3 +659,175 @@ class HistoryReadTests(unittest.TestCase):
         self.assertEqual(_snapshots.get(), previous)
         with db.recorded_history_snapshot():
             self.assertIsNone(db.get_history_run("missing"))
+
+    def assert_position_rejected_before_sql(self, db, read):
+        trace = []
+        conn = db.model.get_connection()
+        conn.set_trace_callback(trace.append)
+        try:
+            with self.assertRaises(Exception) as raised:
+                read()
+            self.assertIs(type(raised.exception), ValueError)
+            self.assertEqual(trace, [])
+        finally:
+            conn.set_trace_callback(None)
+
+    def test_malformed_output_fingerprint_is_not_capture_drift(self):
+        from database.history_reads import OutputPosition
+
+        db = self.database()
+        start = self.capture(db, output=outputs())
+        with db.recorded_history_snapshot():
+            self.assertEqual(
+                db.list_history_outputs(start.run_id)["retained_occurrence_count"], 1
+            )
+            self.assert_position_rejected_before_sql(
+                db,
+                lambda: db.list_history_outputs(
+                    start.run_id, after=OutputPosition("not-a-sha256", ("9", 0))
+                ),
+            )
+
+    def test_malformed_output_coordinate_does_not_reach_sql(self):
+        from database.history_reads import OutputPosition
+
+        db = self.database()
+        start = self.capture(db, output=outputs())
+        with db.recorded_history_snapshot():
+            fingerprint = db.list_history_outputs(start.run_id)["capture_fingerprint"]
+            self.assert_position_rejected_before_sql(
+                db,
+                lambda: db.list_history_outputs(
+                    start.run_id, after=OutputPosition(fingerprint, ("9",))
+                ),
+            )
+
+    def test_malformed_window_key_does_not_reach_sql(self):
+        from database.history_reads import WindowPosition
+
+        db = self.database()
+        self.saved(db)
+        self.capture(db)
+        with db.recorded_history_snapshot():
+            page = db.list_history_window(1)
+            self.assertEqual(page["recorded_run_count"], 1)
+            self.assert_position_rejected_before_sql(
+                db,
+                lambda: db.list_history_window(
+                    1, after=WindowPosition(page["group"]["raw_text_id"], (1,), (1,))
+                ),
+            )
+
+    def test_malformed_position_scalars_arity_and_bounds(self):
+        from database.history_reads import OutputPosition, WindowPosition
+
+        db = self.database()
+        self.saved(db)
+        start = self.capture(db, output=outputs())
+        with db.recorded_history_snapshot():
+            raw_id = db.list_history_window(1)["group"]["raw_text_id"]
+            fingerprint = db.list_history_outputs(start.run_id)["capture_fingerprint"]
+            key = (1, start.session_id, 0, start.run_id)
+            bad_digests = (None, 1, "a" * 63, "A" * 64, "g" * 64, "a" * 64 + "\0")
+            bad_keys = (None, (), (1,), (*key, 1), list(key))
+            for index in (0, 2):
+                for scalar in (None, True, 1.5, "1", -1, 2**63):
+                    bad_keys += (key[:index] + (scalar,) + key[index + 1 :],)
+            for index in (1, 3):
+                for scalar in (
+                    None,
+                    1,
+                    "x" * 36,
+                    "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+                    start.run_id + "\0",
+                ):
+                    bad_keys += (key[:index] + (scalar,) + key[index + 1 :],)
+            windows = [WindowPosition(digest, key, key) for digest in bad_digests]
+            for bad in bad_keys:
+                windows.extend(
+                    (WindowPosition(raw_id, bad, key), WindowPosition(raw_id, key, bad))
+                )
+            windows.extend(
+                ({}, (raw_id, key, key), OutputPosition(fingerprint, ("9", 0)))
+            )
+            bad_coordinates = (
+                None,
+                (),
+                ("9",),
+                ("9", 0, 1),
+                ["9", 0],
+                (None, 0),
+                (9, 0),
+                ("", 0),
+                ("x" * 129, 0),
+                ("😀" * 129, 0),
+                ("nul\0node", 0),
+                ("\ud800", 0),
+                ("9", None),
+                ("9", True),
+                ("9", 1.5),
+                ("9", "0"),
+                ("9", -1),
+                ("9", 256),
+                ("9", 2**63),
+            )
+            output_positions = [
+                OutputPosition(digest, ("9", 0)) for digest in bad_digests
+            ]
+            output_positions.extend(
+                OutputPosition(fingerprint, coordinate)
+                for coordinate in bad_coordinates
+            )
+            output_positions.extend(
+                ({}, (fingerprint, ("9", 0)), WindowPosition(raw_id, key, key))
+            )
+            for position in windows:
+                with self.subTest(window=position):
+                    self.assert_position_rejected_before_sql(
+                        db, lambda: db.list_history_window(1, after=position)
+                    )
+            for position in output_positions:
+                with self.subTest(output=position):
+                    self.assert_position_rejected_before_sql(
+                        db,
+                        lambda: db.list_history_outputs(start.run_id, after=position),
+                    )
+
+    def test_position_boundary_controls_preserve_binary_coordinates_and_large_keys(
+        self,
+    ):
+        from database.history_reads import (
+            HistoryCaptureChanged,
+            OutputPosition,
+            WindowPosition,
+        )
+
+        db = self.database()
+        self.saved(db)
+        node = "😀" * 128
+        ref = replace(outputs().references[0], output_node_id=node, image_ordinal=255)
+        start = self.capture(
+            db, time=2**63 - 1, output=replace(outputs(), references=(ref,))
+        )
+        with db.recorded_history_snapshot():
+            page = db.list_history_window(1)
+            raw_id = page["group"]["raw_text_id"]
+            key = (2**63 - 1, start.session_id, 2**63 - 1, start.run_id)
+            older = db.list_history_window(1, after=WindowPosition(raw_id, key, key))
+            self.assertEqual(older["recorded_run_count"], 1)
+            self.assertEqual(older["items"][0]["run_id"], start.run_id)
+            output = db.list_history_outputs(start.run_id)
+            fingerprint = output["capture_fingerprint"]
+            end = db.list_history_outputs(
+                start.run_id, after=OutputPosition(fingerprint, (node, 255))
+            )
+            self.assertEqual(end["items"], [])
+            self.assertFalse(end["has_more"])
+            self.assertIsNone(end["next_position"])
+            with self.assertRaises(ValueError) as mismatch:
+                db.list_history_window(1, after=WindowPosition("0" * 64, key, key))
+            self.assertIs(type(mismatch.exception), ValueError)
+            with self.assertRaises(HistoryCaptureChanged):
+                db.list_history_outputs(
+                    start.run_id, after=OutputPosition("0" * 64, (node, 0))
+                )
