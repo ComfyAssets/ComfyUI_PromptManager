@@ -101,7 +101,7 @@ export function mountFileInspector(container, {sender, parentScope, inline = fal
             status.setAttribute('role', state.error ? 'alert' : 'status'); container.append(status);
             if (state.error && state.refreshRequired) {
                 if (onRefresh) {
-                    const refresh = createButton('Refresh image collection');
+                    const refresh = createButton(state.code === 'history-changed' ? 'Reload recorded history' : ['candidate-stale', 'capture-changed'].includes(state.code) ? 'Reload reported outputs' : 'Refresh image collection');
                     contentScope.listen(refresh, 'click', onRefresh); container.append(refresh);
                 } else container.append(el('p', 'Reopen this file from a refreshed image collection.', 'muted'));
             } else if (state.error && onRetry) {
@@ -161,7 +161,13 @@ export function mountFileInspector(container, {sender, parentScope, inline = fal
             inner.append(explanation);
         }
         const provenance = disclosure('File & provenance');
-        provenance.append(el('p', 'Current file at this source; historical bytes are not verified.', 'muted'));
+        provenance.append(el('p', record.identity.kind === 'reported-location' ? 'Current file at the reported location · identity unverified' : 'Current file at this source; historical bytes are not verified.', 'muted'));
+        if (record.identity.kind === 'reported-location') {
+            const occurrence = record.identity.occurrence;
+            provenance.append(definitionList([
+                ['Recorded run', occurrence.run_id], ['Output node', occurrence.output_node_id], ['Image ordinal', String(occurrence.image_ordinal)],
+            ], 'file-occurrence'));
+        }
         if (file) provenance.append(definitionList([
             ['Source', file.source_label], ['Path', record.identity.path], ['Size', formatBytes(file.size)],
             ['Dimensions', file.width && file.height ? `${file.width} × ${file.height}` : null],

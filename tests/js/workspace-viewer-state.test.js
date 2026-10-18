@@ -108,3 +108,12 @@ test('slideshow cannot start on video one entry or media error', () => {
     }
     const {view,pending}=timedSession();view.failed(view.state.key);view.play?.();assert.equal(view.state.phase,'error');assert.equal(pending.size,0);view.dispose();
 });
+
+test('explicit occurrence session retains video pause and timer invalidation with location keys',async()=>{
+    const history=await import('../../web/js/workspace/history-media.mjs');
+    const run='22222222-2222-2222-2222-222222222222',epoch='11111111-1111-1111-1111-111111111111',scope='a'.repeat(64);
+    const items=['c','d'].map((key,index)=>{const query=new URLSearchParams({node:String(index),ordinal:'0',epoch,current_scope:scope}),base=`/prompt_manager/history/runs/${run}/output/current`;return {kind:'reported-location',occurrence:{run_id:run,output_node_id:String(index),image_ordinal:0},reference:{folder_type:'output',subfolder:'',filename:'a.png',path_style:'posix',root_key:'b'.repeat(64)},history_epoch:epoch,current_scope:scope,location_key:key.repeat(64),filename:'a.png',is_video:index===1,url:`${base}/media?${query}`,thumbnail_url:`${base}/thumbnail?${query}`,inspection_url:`${base}/inspection?${query}`};});
+    const timers=[],pending=new Set();let callbacks=0;
+    const view=session({adapter:history.reportedLocationAdapter,items,initialKey:'c'.repeat(64),onChange:()=>callbacks++,setTimer:fn=>{timers.push(fn);pending.add(fn);return fn;},clearTimer:fn=>pending.delete(fn)});
+    view.play();view.ready('c'.repeat(64));assert.equal(pending.size,1);timers[0]();assert.equal(view.state.key,'d'.repeat(64));assert.equal(view.state.phase,'paused-video');view.stop();view.navigate(-1);view.ready('c'.repeat(64));assert.equal(view.state.requested,false);view.dispose();const count=callbacks;timers[0]();view.ready('d'.repeat(64));assert.equal(callbacks,count);
+});

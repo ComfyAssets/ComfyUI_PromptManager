@@ -324,3 +324,20 @@ test('invalid attempted selections abort pending reads and suppress late results
         controller.dispose();
     }
 });
+
+test('explicit rooted adapter preserves the strict default identity and download contract', () => {
+    assert.ok(module.rootedFileAdapter, 'the default rooted adapter is exported');
+    const a = module.rootedFileAdapter, entry = image();
+    assert.equal(a.key(entry), '0:folder/a #%.png'); assert.equal(a.scope(entry), scopeA);
+    assert.equal(a.inspectionPath(entry), module.inspectPath(entry));
+    assert.deepEqual(a.originalDownload(entry), module.originalMediaDownload(entry));
+    assert.deepEqual(a.toRecord(envelope(), entry, extractGenerationFacts), module.toInspectionRecord(envelope(), entry, extractGenerationFacts));
+    assert.throws(() => a.validate({kind:'reported-location',path:'a.png'}), TypeError);
+});
+
+test('rooted controller keeps legacy descriptors with ignored noncloneable fields source compatible', async () => {
+    const {api,requests}=pendingApi(),controller=module.createInspectionController({api,extractFacts:extractGenerationFacts});
+    const selected={...image(),ignoredCallback(){}};
+    let pending;assert.doesNotThrow(()=>{pending=controller.select(selected);});
+    requests[0].resolve(envelope());await pending;assert.equal(controller.state.record.identity.key,'0:folder/a #%.png');controller.dispose();
+});

@@ -48,3 +48,9 @@ test('metadata export preserves representation formats and omits private carrier
     assert.equal(value.metadata?.record_formats?.workflow,'reserialized-json');assert.equal(value.metadata.raw.workflow,rawWorkflow);assert.ok(!download.bodyText.includes('SECRET'));
     assert.equal(value.metadata.representations.workflow,'Reserialized container JSON; numeric spelling/precision may differ');
 });
+
+test('reported location metadata export carries exact occurrence without assigning historical ownership',async()=>{
+    const {inspectionDownloads}=await load(),source=record();
+    source.identity={kind:'reported-location',key:'b'.repeat(64),path:'folder/a.png',occurrence:{run_id:'22222222-2222-2222-2222-222222222222',output_node_id:'𐀀',image_ordinal:255},history_epoch:'11111111-1111-1111-1111-111111111111',current_scope:'c'.repeat(64),reference:{folder_type:'temp',subfolder:'folder',filename:'a.png',path_style:'posix',root_key:null}};
+    const value=JSON.parse(inspectionDownloads(source).metadata.bodyText);assert.deepEqual(value.identity,source.identity);assert.equal(value.identity.root_index,undefined);assert.equal(value.context_id,undefined);assert.equal(value.file_identity,undefined);assert.deepEqual(value.prompts,source.prompts);
+});
