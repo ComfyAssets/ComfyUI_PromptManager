@@ -145,6 +145,256 @@ test('long content and zoom keep grouped navigation reachable', async ({ page, r
     }
 });
 
+test('Appearance label and control fit the narrow shell at 200 percent zoom', async ({ page, request }, testInfo) => {
+    await request.post('/__test__/reset', { data: { workspace_visual: true } });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${workspace}#/images`);
+    await expect(page.locator('article[data-image-key]')).toHaveCount(24);
+    await page.evaluate(() => { document.documentElement.style.zoom = '2'; });
+    const preference = page.getByRole('combobox', { name: 'Appearance', exact: true });
+    const bounds = await preference.evaluate(select => {
+        const field = select.closest('label');
+        return { intendedWrapper: field.classList.contains('workspace-appearance'),
+            boxes: [field, field.querySelector('.ca-field-label'), select].map(node => {
+                const box = node.getBoundingClientRect(); return { left: box.left, right: box.right, width: box.width };
+            }), width: document.documentElement.clientWidth };
+    });
+    for (const box of bounds.boxes) {
+        expect(box.width).toBeGreaterThan(0);
+        expect(box.left).toBeGreaterThanOrEqual(-1);
+        expect(box.right).toBeLessThanOrEqual(bounds.width + 1);
+    }
+    expect(bounds.intendedWrapper).toBe(true);
+    for (const theme of ['follow', 'light', 'dark']) {
+        await preference.selectOption(theme); await expect(preference).toHaveValue(theme);
+    }
+    await preference.focus(); await expect(preference).toBeFocused();
+    await noOverflow(page);
+    await attachEvidence(page, testInfo, 'zoom-shell-390', false);
+});
+
+async function containedImageContent(page) {
+    return page.locator('article[data-image-key]').evaluateAll(nodes => {
+        const failures = [];
+        for (const card of nodes) {
+            const outer = card.getBoundingClientRect();
+            for (const selector of ['.image-card-footer', 'strong', 'small', '.image-card-footer button']) {
+                const node = card.querySelector(selector), box = node.getBoundingClientRect();
+                if (box.width <= 0 || box.height <= 0 || box.left < outer.left - 1 || box.right > outer.right + 1 ||
+                    box.top < outer.top - 1 || box.bottom > outer.bottom + 1 ||
+                    (selector === 'small' && node.scrollHeight > node.clientHeight + 1)) {
+                    failures.push({ key: card.dataset.imageKey, selector,
+                        card: { left: outer.left, right: outer.right, top: outer.top, bottom: outer.bottom },
+                        content: { left: box.left, right: box.right, top: box.top, bottom: box.bottom } });
+                }
+            }
+            const action = card.querySelector('.image-card-footer button').getBoundingClientRect();
+            const range = document.createRange(); range.selectNodeContents(card.querySelector('small'));
+            for (const text of range.getClientRects()) {
+                if (Math.min(text.right, action.right) - Math.max(text.left, action.left) > .5 &&
+                    Math.min(text.bottom, action.bottom) - Math.max(text.top, action.top) > .5) {
+                    failures.push({ key: card.dataset.imageKey, selector: 'facts/action overlap',
+                        text: { left: text.left, right: text.right, top: text.top, bottom: text.bottom },
+                        action: { left: action.left, right: action.right, top: action.top, bottom: action.bottom } });
+                }
+            }
+        }
+        return failures;
+    });
+}
+
+for (const [width, height] of [[390, 844], [1600, 1100]]) for (const layout of ['Grid', 'List', 'Masonry']) {
+    test(`${layout} contains real card text and keyboard actions at ${width}px with 200 percent zoom`, async ({ page, request }, testInfo) => {
+        await request.post('/__test__/reset', { data: { workspace_visual: true } });
+        await page.setViewportSize({ width, height }); await page.goto(`${workspace}#/images`);
+        const cards = page.locator('article[data-image-key]');
+        await expect(cards).toHaveCount(24);
+        await page.getByRole('button', { name: layout, exact: true }).click();
+        const firstKey = await cards.first().getAttribute('data-image-key');
+        for (const zoom of [1, 2]) {
+            await page.evaluate(zoom => { document.documentElement.style.zoom = String(zoom); }, zoom);
+            for (const density of ['comfortable', 'large', 'compact']) {
+                await page.getByRole('combobox', { name: 'Thumbnail size', exact: true }).selectOption(density);
+                await expect.poll(() => containedImageContent(page)).toEqual([]);
+                await orderedMedia(page);
+                const columns = await cards.evaluateAll(nodes => {
+                    const top = nodes[0].getBoundingClientRect().top;
+                    return nodes.filter(node => Math.abs(node.getBoundingClientRect().top - top) < 1).length;
+                });
+                if (zoom === 1) expect(columns).toBe(layout === 'List' ? 1 : width === 390 || density === 'large' ? 2 : density === 'compact' ? 4 : 3);
+                else expect(columns).toBe(layout === 'List' || width === 390 ? 1 : density === 'large' ? 2 : density === 'compact' ? 4 : 3);
+                if (zoom === 1 && layout === 'List') await expect(cards.first()).toHaveCSS('height', '97px');
+                await cards.first().locator('.image-open').focus(); await page.keyboard.press('ArrowDown');
+                await expect(cards.nth(columns).locator('.image-open')).toBeFocused();
+                await page.keyboard.press('ArrowUp'); await expect(cards.first().locator('.image-open')).toBeFocused();
+                expect(await cards.first().getAttribute('data-image-key')).toBe(firstKey);
+            }
+            const longCard = cards.filter({ hasText: 'a-very-long-geometric-composition-' });
+            const filename = await longCard.locator('strong').textContent();
+            expect(filename).toMatch(/layered-context-.*\.png/);
+            await longCard.locator('.image-open').focus(); await page.keyboard.press('Enter');
+            await expect(page.locator('.image-details h2')).toHaveText(filename);
+            const fullPreview = page.getByRole('button', { name: 'Open full preview', exact: true });
+            await fullPreview.focus(); await expect(fullPreview).toBeFocused(); await page.keyboard.press('Enter');
+            await expect(page.getByRole('dialog', { name: 'Image preview', exact: true })).toBeVisible();
+            await expect(page.locator('.image-preview > header h2')).toHaveText(filename);
+            await page.keyboard.press('Escape');
+            await longCard.locator('.image-open').focus(); await page.keyboard.press('Tab');
+            await expect(longCard.getByRole('button', { name: `Preview ${filename}`, exact: true })).toBeFocused();
+            await page.keyboard.press('Enter'); await expect(page.locator('dialog[open]')).toHaveCount(1);
+            await page.keyboard.press('Escape');
+            await expect.poll(() => containedImageContent(page)).toEqual([]);
+            await orderedMedia(page);
+            await page.evaluate(() => scrollTo(0, 0));
+            await attachEvidence(page, testInfo, `zoom-${layout.toLowerCase()}-${width}-${zoom}`, false);
+        }
+    });
+}
+
+test('zoomed virtual Images keeps the visible real media mounted during native scrolling', async ({ page, request }) => {
+    await page.addInitScript(() => { window.IntersectionObserver = undefined; });
+    await request.post('/__test__/reset', { data: { extra_images: 200 } });
+    await page.setViewportSize({ width: 390, height: 844 }); await page.goto(`${workspace}#/images`);
+    const cards = page.locator('article[data-image-key]');
+    await expect(cards).toHaveCount(40);
+    await page.evaluate(() => { document.documentElement.style.zoom = '2'; });
+    await expect.poll(() => cards.nth(1).evaluate(node => node.offsetLeft)).toBe(0);
+    const stride = await cards.first().evaluate(node => node.getBoundingClientRect().height + 26);
+    const more = page.getByRole('button', { name: 'Load more images', exact: true });
+    for (const loaded of [80, 120, 160, 200, 202]) {
+        await more.click(); await expect(page.locator('.image-toolbar')).toContainText(`${loaded} of 202 images`);
+    }
+    await expect.poll(() => cards.count()).toBeLessThan(120);
+    await page.evaluate(stride => {
+        const grid = document.querySelector('.image-grid');
+        scrollTo(0, grid.getBoundingClientRect().top + scrollY + stride * 100 - 120);
+    }, stride);
+    await expect(page.locator('article[data-index="100"]')).toBeVisible();
+    await expect(page.locator('article[data-index="101"]')).toHaveCount(1);
+    const visible = page.locator('article[data-index="100"]');
+    await visible.locator('.image-open').focus(); await page.keyboard.press('ArrowDown');
+    await expect(page.locator('article[data-index="101"] .image-open')).toBeFocused();
+    await page.keyboard.press('ArrowUp'); await expect(visible.locator('.image-open')).toBeFocused();
+    await expect(visible).toBeInViewport();
+    await expect.poll(() => containedImageContent(page)).toEqual([]);
+    await orderedMedia(page);
+    await expect.poll(() => cards.count()).toBeLessThan(120);
+});
+
+test('supplemental extreme zoom grows real footers preserves the visible anchor and resets reservations', async ({ page, request }) => {
+    await request.post('/__test__/reset', { data: { workspace_visual: true } });
+    await page.setViewportSize({ width: 390, height: 844 }); await page.goto(`${workspace}#/images`);
+    const cards = page.locator('article[data-image-key]'), grid = page.locator('.image-grid');
+    await expect(cards).toHaveCount(24);
+    await page.evaluate(() => { document.documentElement.style.zoom = '2'; });
+    await expect.poll(() => cards.nth(1).evaluate(node => node.offsetLeft)).toBe(0);
+    const selected = cards.nth(16), key = await selected.getAttribute('data-image-key');
+    await selected.locator('.image-open').click(); await selected.locator('.image-open').focus();
+    const filename = await selected.locator('strong').textContent();
+    await selected.evaluate(node => scrollBy(0, node.getBoundingClientRect().top - 120));
+    await page.evaluate(() => {
+        const grid = document.querySelector('.image-grid'), footers = [...grid.querySelectorAll('.image-card-footer')];
+        const nativeHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight').get;
+        const descriptors = footers.map(node => [node, Object.getOwnPropertyDescriptor(node, 'offsetHeight')]);
+        const restore = () => { for (const [node, descriptor] of descriptors) {
+            if (descriptor) Object.defineProperty(node, 'offsetHeight', descriptor); else delete node.offsetHeight;
+        } };
+        window.footerMeasurementProbe = { before: null, restore };
+        for (const footer of footers) Object.defineProperty(footer, 'offsetHeight', { configurable: true, get() {
+            const height = nativeHeight.call(this);
+            if (document.documentElement.style.zoom === '4' && grid.style.getPropertyValue('--image-footer-height') === '54px' &&
+                Math.abs(Number.parseFloat(this.closest('.image-card').style.width) - Number.parseFloat(getComputedStyle(grid).width)) < .01) {
+                const top = visualViewport?.offsetTop || 0, bottom = top + (visualViewport?.height || innerHeight);
+                const first = [...grid.children].find(node => { const box = node.getBoundingClientRect(); return box.bottom > top && box.top < bottom; });
+                window.footerMeasurementProbe.before = first ? { index: Number(first.dataset.index), key: first.dataset.imageKey,
+                    top: first.getBoundingClientRect().top - top } : null;
+                restore();
+            }
+            return height;
+        } });
+        document.documentElement.style.zoom = '4';
+        const box = grid.getBoundingClientRect();
+        // The approved initial reservation is 54px with 4:3 media and a 13px row gap.
+        const stride = (box.width / 4 - 2) * .75 + 54 + 2 + 13;
+        // Place row eight inside the 52px scaled gap so the preceding row is not visible.
+        const index = 8;
+        scrollTo(0, box.top + scrollY + index * stride * 4 - 16);
+    });
+    try {
+        await expect.poll(() => page.evaluate(() => window.footerMeasurementProbe.before?.index)).toBe(8);
+        const anchor = await page.evaluate(() => window.footerMeasurementProbe.before);
+        await expect.poll(() => grid.evaluate(node => Number.parseFloat(node.style.getPropertyValue('--image-footer-height')))).toBeGreaterThan(54);
+        await expect.poll(() => containedImageContent(page)).toEqual([]);
+        const visibleAnchor = page.locator(`article[data-index="${anchor.index}"]`);
+        const anchorTop = await visibleAnchor.evaluate(node => node.getBoundingClientRect().top - (visualViewport?.offsetTop || 0));
+        expect(Math.abs(anchorTop - anchor.top)).toBeLessThanOrEqual(2);
+        await expect(page.locator(`article[data-image-key="${key}"]`)).toHaveClass(/selected/);
+        await expect(selected.locator('.image-open')).toBeFocused();
+        await expect(page.locator('.image-details h2')).toHaveText(filename);
+        const mutations = await grid.evaluate(async node => {
+            let changes = 0;
+            const observer = new MutationObserver(records => { changes += records.length; });
+            observer.observe(node, { subtree: true, attributes: true, attributeFilter: ['style'] });
+            for (let frame = 0; frame < 6; frame++) await new Promise(requestAnimationFrame);
+            observer.disconnect(); return changes;
+        });
+        expect(mutations).toBe(0);
+        await page.getByRole('button', { name: 'List', exact: true }).click();
+        await expect.poll(() => containedImageContent(page)).toEqual([]);
+        expect(await cards.first().evaluate(node => node.offsetHeight)).toBeGreaterThan(97);
+        await page.getByRole('searchbox', { name: 'Search filenames', exact: true }).fill('no-real-media-match');
+        await expect(cards).toHaveCount(0);
+        expect(await grid.evaluate(node => Number.parseFloat(node.style.getPropertyValue('--image-footer-height')))).toBe(54);
+        await page.getByRole('searchbox', { name: 'Search filenames', exact: true }).fill('');
+        await expect(cards).toHaveCount(24);
+        await expect.poll(() => grid.evaluate(node => Number.parseFloat(node.style.getPropertyValue('--image-footer-height')))).toBeGreaterThan(54);
+        const extremeFooter = await grid.evaluate(node => Number.parseFloat(node.style.getPropertyValue('--image-footer-height')));
+        await page.evaluate(() => { document.documentElement.style.zoom = '2'; });
+        await expect.poll(() => grid.evaluate(node => Number.parseFloat(node.style.getPropertyValue('--image-footer-height')))).toBeLessThan(extremeFooter);
+        await expect(cards.first()).toHaveCSS('height', '97px');
+        await expect.poll(() => containedImageContent(page)).toEqual([]);
+        await page.getByRole('button', { name: 'Grid', exact: true }).click();
+        await expect.poll(() => grid.evaluate(node => Number.parseFloat(node.style.getPropertyValue('--image-footer-height')))).toBe(54);
+        await orderedMedia(page);
+    } finally { await page.evaluate(() => {
+        window.footerMeasurementProbe?.restore(); delete window.footerMeasurementProbe;
+    }); }
+});
+
+test('supplemental wrapped real footer reservation survives append without moving the visible card', async ({ page, request }) => {
+    await page.addInitScript(() => { window.IntersectionObserver = undefined; });
+    await request.post('/__test__/reset', { data: { extra_images: 200 } });
+    await page.setViewportSize({ width: 390, height: 844 }); await page.goto(`${workspace}#/images`);
+    const cards = page.locator('article[data-image-key]'), grid = page.locator('.image-grid');
+    await expect(cards).toHaveCount(40);
+    await cards.first().locator('.image-open').click();
+    const selectedKey = await cards.first().getAttribute('data-image-key');
+    await page.evaluate(() => { document.documentElement.style.zoom = '4'; });
+    await expect.poll(() => grid.evaluate(node => Number.parseFloat(node.style.getPropertyValue('--image-footer-height')))).toBeGreaterThan(54);
+    let release, pending = false;
+    const held = new Promise(resolve => { release = resolve; });
+    await page.route('**/images/output?**', async route => {
+        if (new URL(route.request().url()).searchParams.has('cursor')) { pending = true; await held; }
+        await route.continue();
+    });
+    try {
+        const more = page.getByRole('button', { name: 'Load more images', exact: true });
+        await more.click(); await expect.poll(() => pending).toBe(true);
+        const anchor = await cards.evaluateAll(nodes => {
+            const top = visualViewport?.offsetTop || 0, bottom = top + (visualViewport?.height || innerHeight);
+            const node = nodes.find(node => { const box = node.getBoundingClientRect(); return box.bottom > top && box.top < bottom; });
+            return node ? { key: node.dataset.imageKey, top: node.getBoundingClientRect().top - top } : null;
+        });
+        expect(anchor).not.toBeNull();
+        release(); await expect(page.locator('.image-toolbar')).toContainText('80 of 202 images');
+        await expect(cards).toHaveCount(80);
+        await expect.poll(async () => Math.abs(await page.locator(`article[data-image-key="${anchor.key}"]`).evaluate(node => node.getBoundingClientRect().top - (visualViewport?.offsetTop || 0)) - anchor.top)).toBeLessThanOrEqual(1);
+        await expect(page.locator(`article[data-image-key="${selectedKey}"]`)).toHaveClass(/selected/);
+        await expect(more).toBeFocused();
+        await expect.poll(() => containedImageContent(page)).toEqual([]);
+    } finally { release(); }
+});
+
 test('Library visual evidence keeps natural cards and returns from real history in both themes',async({browser,browserName,request},testInfo)=>{
     await request.post('/__test__/reset',{data:{workspace_visual:true}});
     for(const [width,height] of [[1600,1100],[390,844]]) for(const theme of ['dark','light']) {

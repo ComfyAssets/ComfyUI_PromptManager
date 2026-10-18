@@ -34,7 +34,9 @@ function mountWorkspace() {
     const theme = mountWorkspaceTheme({ root: document.body, scope });
     const preference = createSelect([['follow', 'Follow ComfyUI'], ['light', 'Light'], ['dark', 'Dark']], '');
     preference.value = theme.preference;
-    appearance.replaceChildren(createField('Appearance', preference, 'workspace-appearance'));
+    const appearanceField = createField('Appearance', preference, 'workspace-appearance');
+    appearanceField.classList.add('workspace-appearance');
+    appearance.replaceChildren(appearanceField);
     scope.listen(preference, 'change', () => theme.setPreference(preference.value));
     const icons = { images: 'images', library: 'library', tags: 'tags', inspect: 'upload', overview: 'overview', system: 'settings' };
     const groups = [['primary', 'WORKSPACE', ['images', 'library', 'tags', 'inspect']], ['tools', 'TOOLS', ['overview', 'system']]];

@@ -29,8 +29,9 @@ nav [aria-current="page"] { color: var(--ca-focus); background: var(--workspace-
 .connection-dot { inline-size: 6px; block-size: 6px; border-radius: 50%; background: var(--ca-muted); flex: 0 0 auto; }
 .workspace-body { min-inline-size: 0; display: flex; flex-direction: column; }
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; block-size: 68px; padding-inline: 30px; border-block-end: 1px solid var(--ca-line); font-size: 12px; }
-.workspace-appearance { display: flex; align-items: center; gap: 7px; font-size: 11px; }
-.ca-tools .workspace-appearance select { font-size: 11px; }
+#appearance-control { min-inline-size: 0; max-inline-size: 100%; }
+.ca-tools .workspace-appearance { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; min-inline-size: 0; max-inline-size: 100%; font-size: 11px; }
+.ca-tools .workspace-appearance select { min-inline-size: 0; max-inline-size: 100%; font-size: 11px; }
 .muted { color: var(--ca-muted); }
 main { flex: 1; padding: 30px; inline-size: 100%; max-inline-size: 1900px; min-inline-size: 0; margin-inline: auto; }
 h1 { font-size: 28px; line-height: 1.3; letter-spacing: -0.7px; margin: 0; font-weight: 620; overflow-wrap: anywhere; }

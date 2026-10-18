@@ -32,7 +32,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     let density = visit?.density || 'comfortable';
     let metrics = workspaceImageMetrics(window.innerWidth, density);
     let layout = visit?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer, viewer;
-    let state, geometry = { positions: [], height: 0, maxHeight: 0 }, optionsRequest;
+    let state, geometry = { positions: [], height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest;
     const rendered = new Map();
     const itemIndexes = new Map();
     const filters = { root: 'all', q: '', subfolder: '', media: 'all', sort: 'newest', ...visit?.filters };
@@ -243,11 +243,14 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
 
     function renderVisible() {
         if (!state || scope.signal.aborted) return;
-        const top = Math.max(0, -grid.getBoundingClientRect().top);
+        const bounds = grid.getBoundingClientRect();
+        const scale = bounds.width / Number.parseFloat(getComputedStyle(grid).width) || 1;
+        const top = Math.max(0, -bounds.top / scale);
+        const viewportHeight = window.innerHeight / scale;
         const active = document.activeElement?.closest('article[data-image-key]')?.dataset.imageKey;
         const focused = active ? itemIndexes.get(active) ?? -1 : -1;
         const indexes = state.items.length <= 120 ? state.items.map((_, index) => index) :
-            visibleImages(geometry.positions, top, window.innerHeight, focused, geometry.maxHeight);
+            visibleImages(geometry.positions, top, viewportHeight, focused, geometry.maxHeight);
         const keep = new Set(indexes.map(index => imageKey(state.items[index])));
         for (const [key, card] of rendered) if (!keep.has(key)) {
             for (const video of card.querySelectorAll('video')) releaseVideo(video);
@@ -265,6 +268,19 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             const card = rendered.get(imageKey(state.items[index]));
             if (previous ? previous.nextElementSibling !== card : grid.firstElementChild !== card) grid.insertBefore(card, previous ? previous.nextElementSibling : grid.firstChild);
             previous = card;
+        }
+        // Natural footer measurements and absolute reservations share unzoomed CSS units.
+        const footerHeight = Math.max(metrics.footerHeight, ...[...rendered.values()].map(card => card.querySelector('.image-card-footer').offsetHeight));
+        if (footerHeight > metrics.footerHeight) {
+            const anchor = indexes.find(index => geometry.positions[index].y + geometry.positions[index].height >= top && geometry.positions[index].y <= top + viewportHeight);
+            const anchorTop = anchor === undefined ? 0 : geometry.positions[anchor].y;
+            metrics = {...metrics, footerHeight, listHeight: Math.max(metrics.listHeight, footerHeight + 2)};
+            updateGeometry();
+            for (const index of indexes) positionCard(rendered.get(imageKey(state.items[index])), index);
+            // A later mounted footer must not move the current visible card.
+            const correction = anchor === undefined ? 0 : geometry.positions[anchor].y - anchorTop;
+            if (top > 0 && correction) window.scrollBy(0, correction * scale);
+            scheduleVisible();
         }
     }
     function positionCard(card, index) {
@@ -306,14 +322,25 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         }
     });
     function scheduleVisible() { if (!frame) frame = requestAnimationFrame(() => { frame = 0; renderVisible(); }); }
+    function updateGeometry() {
+        geometry = layoutImages(state.items, galleryWidth, layout, 240, metrics);
+        grid.style.height = `${geometry.height}px`;
+        grid.style.setProperty('--image-footer-height', `${metrics.footerHeight}px`);
+    }
     function updateLayout() {
         if (!state || scope.signal.aborted) return;
-        grid.dataset.layout = layout;
         cancelAnimationFrame(frame); frame = 0;
-        metrics = workspaceImageMetrics(window.innerWidth, density);
+        const width = Number.parseFloat(getComputedStyle(grid).width);
+        const retained = state.items.length && width === galleryWidth && grid.dataset.layout === layout && grid.dataset.density === density ? metrics : null;
+        galleryWidth = width;
+        metrics = workspaceImageMetrics(window.innerWidth, density, galleryWidth);
+        if (retained) {
+            metrics.footerHeight = retained.footerHeight;
+            metrics.listHeight = retained.listHeight;
+        }
+        grid.dataset.layout = layout;
         grid.dataset.density = density;
-        geometry = layoutImages(state.items, grid.clientWidth, layout, 240, metrics);
-        grid.style.height = `${geometry.height}px`;
+        updateGeometry();
         renderVisible();
     }
     let resizeFrame = 0, observedWidth;

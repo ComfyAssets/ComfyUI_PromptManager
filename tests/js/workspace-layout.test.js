@@ -119,3 +119,19 @@ test('masonry uses real finite proportions and falls back for invalid dimensions
     assert.equal(positions[1].height,(positions[1].width-2)/10+56);
     for (const position of positions) assert.ok(Number.isFinite(position.height));
 });
+
+test('gallery width limits density columns without changing ordinary workspace geometry', async () => {
+    const {workspaceImageMetrics, layoutImages} = await source;
+    for (const [viewport, width, density, columns] of [
+        [1600,990,'comfortable',3], [1600,990,'compact',4],
+        [951,428,'compact',3], [390,362,'comfortable',2],
+        [1600,190,'comfortable',1], [1600,190,'compact',1],
+        [390,167,'large',1], [390,167,'compact',1], [390,69.5,'comfortable',1], [390,0,'comfortable',1],
+    ]) {
+        const metrics = workspaceImageMetrics(viewport,density,width);
+        assert.equal(metrics.columns,columns,`${viewport}/${width}/${density}`);
+        const {positions} = layoutImages(Array(8).fill({}),width,'grid',240,metrics);
+        assert.equal(positions[columns].x,0);
+        assert.ok(positions[columns].y > 0);
+    }
+});

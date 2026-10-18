@@ -1,9 +1,11 @@
-export function workspaceImageMetrics(viewportWidth, density = 'comfortable') {
+export function workspaceImageMetrics(viewportWidth, density = 'comfortable', availableWidth = Infinity) {
     if (!['comfortable', 'large', 'compact'].includes(density)) throw new TypeError('Unknown thumbnail density');
     const columns = viewportWidth <= 700 || density === 'large' ? 2 :
         density === 'compact' ? (viewportWidth >= 1700 ? 5 : viewportWidth <= 1250 ? 3 : 4) :
             viewportWidth >= 1700 ? 4 : viewportWidth <= 1250 ? 2 : 3;
-    return {columns, gap:13, footerHeight:54, listHeight:97};
+    const gap = 13, minimumCardWidth = 120;
+    const fittingColumns = Math.max(1, Math.floor((availableWidth + gap) / (minimumCardWidth + gap)));
+    return {columns: Math.min(columns, fittingColumns), gap, footerHeight:54, listHeight:97};
 }
 
 export function layoutImages(images, width, mode, minWidth = 240, metrics = {}) {
