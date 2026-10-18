@@ -98,6 +98,26 @@ BUNDLE_STATES = frozenset(
     {"complete", "partial", "ambiguous", "unavailable", "conflicting"}
 )
 
+CAPTURE_REASONS = frozenset(
+    {
+        "",
+        "captured",
+        "partial",
+        "unavailable",
+        "unsupported",
+        "ambiguous",
+        "limit_reached",
+        "missing",
+        "conflicting",
+        "no_supported_context",
+        "budget_exhausted",
+        "invalid_evidence",
+        "multiple_samples",
+        "source_transformed",
+        "field_limit",
+        "graph_limit",
+    }
+)
 UNKNOWN_REASONS = frozenset(
     {"unavailable", "unsupported", "ambiguous", "limit_reached", "missing"}
 )

@@ -87,14 +87,14 @@ class HistoryRestoreTests(unittest.TestCase):
         source = str(Path(self.temp.name) / "old.db")
         with closing(sqlite3.connect(source)) as conn, conn:
             conn.execute(
-                "CREATE TABLE prompts (id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                " text TEXT NOT NULL, created_at TIMESTAMP, updated_at TIMESTAMP,"
-                " category TEXT, tags TEXT, rating INTEGER, notes TEXT,"
-                " hash TEXT UNIQUE, workflow_name TEXT)"
+                "CREATE TABLE prompts (id INTEGER PRIMARY KEY AUTOINCREMENT, text "
+                "TEXT NOT NULL, created_at TIMESTAMP, updated_at TIMESTAMP, "
+                "category TEXT, tags TEXT, rating INTEGER, notes TEXT, hash TEXT "
+                "UNIQUE, workflow_name TEXT)"
             )
             conn.execute(
-                "INSERT INTO prompts(id,text,created_at) "
-                "VALUES(7,'old prompt','2020-01-01')"
+                "INSERT INTO prompts(id,text,created_at) VALUES(7,'old "
+                "prompt','2020-01-01')"
             )
         original = Path(source).read_bytes()
         self.assertEqual(PromptModel.verify_database_file(source), (True, "ok"))
@@ -112,6 +112,89 @@ class HistoryRestoreTests(unittest.TestCase):
             ),
             (7, "old prompt"),
         )
+
+    def test_wal_and_old_backup_staging_leave_source_unchanged(self):
+        from database.execution_context_schema import TABLE_COLUMNS
+
+        source = str(Path(self.temp.name) / "v1.db")
+        old = self.database(source)
+        start = self.start(old)
+        old.write_execution_start(start)
+        with old.model.get_connection() as conn:
+            conn.execute("INSERT INTO prompts(id,text,run_count) VALUES(7,'old',19)")
+            for table in reversed(TABLE_COLUMNS):
+                conn.execute(f"DROP TABLE {table}")
+            sql = (
+                conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE "
+                    "name='execution_history_metadata'"
+                )
+                .fetchone()[0]
+                .replace("schema_version = 2", "schema_version = 1")
+            )
+            conn.execute("DROP TABLE execution_history_metadata")
+            conn.execute(sql)
+            conn.execute(
+                "INSERT INTO execution_history_metadata VALUES(1,1,?)",
+                (start.storage_epoch,),
+            )
+        conn.execute("PRAGMA wal_autocheckpoint=0")
+        with conn:
+            conn.execute("UPDATE prompts SET run_count=31 WHERE id=7")
+        source_bytes = Path(source).read_bytes()
+        wal_bytes = Path(source + "-wal").read_bytes()
+        self.assertEqual(PromptModel.verify_database_file(source), (True, "ok"))
+        live = self.database()
+        live.model.restore_from_file(source)
+        self.assertEqual(Path(source).read_bytes(), source_bytes)
+        self.assertEqual(Path(source + "-wal").read_bytes(), wal_bytes)
+        self.assertEqual(live.get_execution_run(start.run_id)["record_version"], 1)
+        self.assertEqual(
+            live.model.get_connection()
+            .execute("SELECT run_count FROM prompts WHERE id=7")
+            .fetchone()[0],
+            31,
+        )
+        self.assertEqual(
+            live.model.get_connection()
+            .execute("SELECT COUNT(*) FROM execution_run_contexts")
+            .fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            conn.execute(
+                "SELECT schema_version FROM execution_history_metadata"
+            ).fetchone()[0],
+            1,
+        )
+
+    def test_malformed_v2_context_restore_keeps_live_database_unchanged(self):
+        live = self.database()
+        start = self.start(live)
+        live.write_execution_start(start)
+        with live.model.get_connection() as conn:
+            conn.execute("INSERT INTO prompts(text,run_count) VALUES('kept',19)")
+        before = "\n".join(live.model.get_connection().iterdump())
+        for mutation in (
+            "DROP TABLE execution_context_capture",
+            "CREATE UNIQUE INDEX bad_context_unique ON "
+            "execution_context_texts(text_value)",
+            "INSERT INTO execution_context_texts VALUES('"
+            + "0" * 64
+            + "','wrong fingerprint')",
+        ):
+            with self.subTest(mutation=mutation):
+                source = str(Path(self.temp.name) / "bad-context.db")
+                self.assertTrue(live.model.backup_database(source))
+                with closing(sqlite3.connect(source)) as conn, conn:
+                    conn.execute(mutation)
+                original = Path(source).read_bytes()
+                with self.assertRaises(ValueError):
+                    live.model.restore_from_file(source)
+                self.assertEqual(
+                    "\n".join(live.model.get_connection().iterdump()), before
+                )
+                self.assertEqual(Path(source).read_bytes(), original)
 
     def test_failed_staging_rotation_keeps_live_epoch_and_never_notifies(self):
         from database.execution_history import subscribe_history_restore
@@ -189,17 +272,17 @@ class HistoryRestoreTests(unittest.TestCase):
                         )
                         conn.execute("DROP TABLE old_runs")
                         conn.execute(
-                            "CREATE UNIQUE INDEX idx_execution_runs_identity "
-                            "ON execution_runs(session_id, queue_item_id)"
+                            "CREATE UNIQUE INDEX idx_execution_runs_identity ON "
+                            "execution_runs(session_id, queue_item_id)"
                         )
                         conn.execute(
-                            "CREATE INDEX idx_execution_runs_observed "
-                            "ON execution_runs(observed_dequeue_at, run_id)"
+                            "CREATE INDEX idx_execution_runs_observed ON "
+                            "execution_runs(observed_dequeue_at, run_id)"
                         )
                     else:
                         conn.execute(
-                            "CREATE UNIQUE INDEX unexpected_job_uniqueness "
-                            "ON execution_runs(job_id)"
+                            "CREATE UNIQUE INDEX unexpected_job_uniqueness ON "
+                            "execution_runs(job_id)"
                         )
                 original = Path(source).read_bytes()
                 with self.assertRaisesRegex(ValueError, "uniqu"):

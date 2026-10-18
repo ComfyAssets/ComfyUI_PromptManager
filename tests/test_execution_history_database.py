@@ -95,6 +95,10 @@ class HistoryDatabaseTests(unittest.TestCase):
         for pre_pair in (False, True):
             with self.subTest(pre_pair=pre_pair):
                 with conn:
+                    from database.execution_context_schema import TABLE_COLUMNS
+
+                    for table in reversed(TABLE_COLUMNS):
+                        conn.execute(f"DROP TABLE {table}")
                     conn.execute("DROP TABLE execution_runs")
                     conn.execute("DROP TABLE execution_history_metadata")
                 if pre_pair:
@@ -232,7 +236,7 @@ class HistoryDatabaseTests(unittest.TestCase):
                             else:
                                 conn.execute(
                                     "INSERT INTO execution_history_metadata "
-                                    "VALUES(1,1,?)",
+                                    "VALUES(1,2,?)",
                                     (epoch,),
                                 )
                         else:
@@ -432,7 +436,7 @@ class HistoryDatabaseTests(unittest.TestCase):
             "sql=replace(sql, 'queue_item_id >= 0', 'queue_item_id >= -1') "
             "WHERE name='execution_runs'; PRAGMA writable_schema=OFF",
             "PRAGMA ignore_check_constraints=ON; "
-            "UPDATE execution_history_metadata SET schema_version=2",
+            "UPDATE execution_history_metadata SET schema_version=3",
             "PRAGMA writable_schema=ON; UPDATE sqlite_master SET "
             "sql=replace(sql, \"'observed'\", \"'OBSERVED'\") "
             "WHERE name='execution_runs'; PRAGMA writable_schema=OFF",
