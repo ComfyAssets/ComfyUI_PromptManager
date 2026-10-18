@@ -4,7 +4,18 @@ import argparse
 import json
 from pathlib import Path
 import sqlite3
+import sys
+from types import SimpleNamespace
 from uuid import UUID
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from database.execution_contexts import ExecutionContextOperations  # noqa: E402
+from database.execution_history import ExecutionHistoryOperations  # noqa: E402
+
+
+class _ReadOnlyHistory(ExecutionContextOperations, ExecutionHistoryOperations):
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.model = SimpleNamespace(get_connection=lambda: connection)
 
 
 def read_runs(database: str, job_id: str, session_id: str | None = None) -> dict:
@@ -30,7 +41,45 @@ def read_runs(database: str, job_id: str, session_id: str | None = None) -> dict
         ).fetchall()
         if len(rows) > 256:
             raise ValueError("Execution query exceeds the 256-row bound")
-        return {"schemaAvailable": True, "rows": [dict(row) for row in rows]}
+        reader = _ReadOnlyHistory(connection)
+        captures = {
+            row["run_id"]: reader.get_execution_contexts(row["run_id"]) for row in rows
+        }
+        usage = {}
+        snapshot_ids = {}
+        for run_id, capture in captures.items():
+            usage[run_id] = []
+            snapshot_ids[run_id] = []
+            for context in capture["contexts"]:
+                for role in ("positive", "negative"):
+                    prompt_id = context[f"{role}_prompt_id"]
+                    if prompt_id is not None:
+                        count = connection.execute(
+                            "SELECT run_count FROM prompts WHERE id=?", (prompt_id,)
+                        ).fetchone()[0]
+                        usage[run_id].append({"role": role, "run_count": count})
+                pair_id = context["pair_id"]
+                if pair_id is not None:
+                    count = connection.execute(
+                        "SELECT run_count FROM prompt_pairs WHERE id=?", (pair_id,)
+                    ).fetchone()[0]
+                    usage[run_id].append({"role": "pair", "run_count": count})
+                snapshot_ids[run_id].append(
+                    dict(
+                        connection.execute(
+                            "SELECT positive_snapshot_id,negative_snapshot_id "
+                            "FROM execution_contexts WHERE context_id=?",
+                            (context["context_id"],),
+                        ).fetchone()
+                    )
+                )
+        return {
+            "schemaAvailable": True,
+            "rows": [dict(row) for row in rows],
+            "captures": captures,
+            "usage": usage,
+            "snapshotIds": snapshot_ids,
+        }
 
 
 if __name__ == "__main__":

@@ -91,23 +91,113 @@ test('read-only ledger helper distinguishes absent schema from missing, corrupt 
     const session = '20000000-0000-4000-8000-000000000001';
     execFileSync(python, ['-c', 'import sqlite3,sys; sqlite3.connect(sys.argv[1]).close()', database]);
     assert.deepEqual(await readExecutionRuns(database, job), { schemaAvailable: false, rows: [] });
-    execFileSync(python, ['-c', `import sqlite3,sys
-c=sqlite3.connect(sys.argv[1])
-c.execute('CREATE TABLE execution_runs (run_id TEXT, job_id TEXT, session_id TEXT, outcome TEXT)')
-c.executemany('INSERT INTO execution_runs VALUES (?,?,?,?)', [('first',sys.argv[2],sys.argv[3],'succeeded'),('other','30000000-0000-4000-8000-000000000001',sys.argv[3],'failed')])
-c.commit()`, database, job, session]);
+    const runId = '50000000-0000-4000-8000-000000000001';
+    const otherSession = '40000000-0000-4000-8000-000000000001';
+    const epoch = execFileSync(python, ['-c', `import sys
+from database.operations import PromptDatabase
+from utils.execution_history_events import RunStart, make_finish
+from utils.execution_contexts import ContextBundle, PromptSnapshot, RecipeContext, TextEvidence
+from types import SimpleNamespace
+
+db = PromptDatabase(sys.argv[1])
+try:
+    epoch = db.get_execution_epoch()
+    c = db.model.get_connection()
+    with c:
+        c.executemany("INSERT INTO prompts(id,text,run_count) VALUES(?,?,?)",
+                      [(7, ' positive ', 19), (8, 'negative', 23)])
+        c.execute("INSERT INTO prompt_pairs(id,positive_prompt_id,negative_prompt_id,run_count) VALUES(2,7,8,31)")
+    for index, (job, session) in enumerate([
+        (sys.argv[2], sys.argv[3]),
+        ('30000000-0000-4000-8000-000000000001', sys.argv[3]),
+        (sys.argv[2], sys.argv[4]),
+    ], 1):
+        run_id = '50000000-0000-4000-8000-%012d' % index
+        db.write_execution_start(RunStart(run_id, session, index, job, epoch, 100))
+        db.write_execution_finish(make_finish(session, index, epoch,
+            SimpleNamespace(messages=[('execution_success', {'prompt_id': job})]), 200))
+    def snapshot(raw):
+        def known(value):
+            return TextEvidence(value, 'recorded', 'runtime_return', None)
+        return PromptSnapshot(known(raw), known(raw), known(''), known(''))
+    db.write_execution_contexts(sys.argv[5], epoch, ContextBundle(
+        (RecipeContext('4', snapshot(' positive '), snapshot('negative'), 'inferred'),),
+        'complete', 'captured'))
+    print(epoch)
+finally:
+    db.close_all()
+`, database, job, session, otherSession, runId], { cwd: new URL('../../', import.meta.url), encoding: 'utf8' }).trim();
     const before = await readFile(database);
-    assert.deepEqual(await readExecutionRuns(database, job, session), { schemaAvailable: true, rows: [
-        { run_id: 'first', job_id: job, session_id: session, outcome: 'succeeded' },
+    const result = await readExecutionRuns(database, job, session);
+    assert.equal(result.schemaAvailable, true);
+    assert.deepEqual(result.rows, [{
+        run_id: runId, job_id: job, session_id: session, queue_item_id: 1,
+        storage_epoch: epoch, record_version: 1, observed_dequeue_at: 100,
+        observed_callback_at: 200, executor_started_at: null, terminal_event_at: null,
+        outcome: 'succeeded', reason: 'terminal_success', diagnostics_omitted: 0,
+        node_id: null, node_type: null, exception_type: null,
+    }]);
+    assert.deepEqual(Object.keys(result.captures), [runId]);
+    const capture = result.captures[runId];
+    assert.equal(capture.contexts.length, 1);
+    const contextId = capture.contexts[0].context_id;
+    assert.match(contextId, /^[a-f0-9]{64}$/);
+    const recorded = { provenance: 'recorded', source: 'runtime_return', reason: null };
+    const evidence = { raw: recorded, effective: recorded, prepend: recorded, append: recorded };
+    assert.deepEqual(capture, {
+        state: 'complete', reason: 'captured', format_version: 1, contexts: [{
+            anchor_id: '4', context_id: contextId,
+            positive: { raw: ' positive ', effective: ' positive ', prepend: '', append: '' },
+            negative: { raw: 'negative', effective: 'negative', prepend: '', append: '' },
+            evidence: { format_version: 1, role_provenance: 'inferred', positive: evidence, negative: evidence },
+            positive_prompt_id: 7, negative_prompt_id: 8, pair_id: 2, reference_epoch: epoch,
+        }],
+    });
+    assert.deepEqual(result.usage, { [runId]: [
+        { role: 'positive', run_count: 19 }, { role: 'negative', run_count: 23 }, { role: 'pair', run_count: 31 },
     ] });
-    assert.deepEqual((await readExecutionRuns(database, job, '40000000-0000-4000-8000-000000000001')).rows, []);
+    assert.deepEqual(Object.keys(result.snapshotIds), [runId]);
+    assert.equal(result.snapshotIds[runId].length, 1);
+    assert.deepEqual(Object.keys(result.snapshotIds[runId][0]).sort(), ['negative_snapshot_id', 'positive_snapshot_id']);
+    const { positive_snapshot_id: positiveId, negative_snapshot_id: negativeId } = result.snapshotIds[runId][0];
+    assert.equal(positiveId, 'd2d716108f66314e127fe87bb81327426d2a148e341a8ca1f7cf6a0b0df2ce8c');
+    assert.equal(negativeId, '07db4923fea7f8d00d1a94a902e0b85137471178b5e7bb67ad664ef3370770ed');
+    const unfiltered = await readExecutionRuns(database, job);
+    assert.deepEqual(unfiltered.rows.map(row => row.session_id), [session, otherSession]);
+    const uncapturedId = '50000000-0000-4000-8000-000000000003';
+    assert.deepEqual(unfiltered.captures[uncapturedId], {
+        state: 'not_captured', reason: 'missing', format_version: null, contexts: [],
+    });
+    assert.deepEqual(unfiltered.usage[uncapturedId], []);
+    assert.deepEqual(unfiltered.snapshotIds[uncapturedId], []);
+    assert.deepEqual(await readExecutionRuns(database, job, '60000000-0000-4000-8000-000000000001'), {
+        schemaAvailable: true, rows: [], captures: {}, usage: {}, snapshotIds: {},
+    });
     assert.deepEqual(await readFile(database), before);
     await assert.rejects(readExecutionRuns(database, "' OR 1=1 --"));
-    execFileSync(python, ['-c', `import sqlite3,sys
-c=sqlite3.connect(sys.argv[1])
-c.executemany('INSERT INTO execution_runs VALUES (?,?,?,?)', [(str(i),sys.argv[2],sys.argv[3],'succeeded') for i in range(256)])
-c.commit()`, database, job, session]);
+    await assert.rejects(readExecutionRuns(database, job, "' OR 1=1 --"));
+    const addRuns = (start, stop) => execFileSync(python, ['-c', `import sys
+from database.operations import PromptDatabase
+from utils.execution_history_events import RunStart
+
+db = PromptDatabase(sys.argv[1])
+try:
+    epoch = db.get_execution_epoch()
+    for index in range(int(sys.argv[4]), int(sys.argv[5])):
+        run_id = '70000000-0000-4000-8000-%012d' % index
+        db.write_execution_start(RunStart(run_id, sys.argv[3], index, sys.argv[2], epoch, 100))
+finally:
+    db.close_all()
+`, database, job, session, String(start), String(stop)], { cwd: new URL('../../', import.meta.url) });
+    addRuns(4, 258);
+    assert.equal((await readExecutionRuns(database, job)).rows.length, 256);
+    addRuns(258, 259);
     await assert.rejects(readExecutionRuns(database, job), /bound|256/);
+    execFileSync(python, ['-c', `import sqlite3,sys
+with sqlite3.connect(sys.argv[1]) as c:
+    c.execute('DROP TABLE execution_context_capture')
+`, database]);
+    await assert.rejects(readExecutionRuns(database, job, otherSession), /no such table: execution_context_capture/);
     await assert.rejects(readExecutionRuns(join(directory, 'missing.db'), job));
     await writeFile(database, 'corrupt database');
     await assert.rejects(readExecutionRuns(database, job));

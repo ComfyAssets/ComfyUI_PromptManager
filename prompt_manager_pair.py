@@ -5,6 +5,11 @@ import json
 import time
 from typing import Any, Dict, Optional, Tuple
 
+if __package__:
+    from .utils.execution_context_capture import record_runtime_context
+else:
+    from utils.execution_context_capture import record_runtime_context
+
 try:
     from .prompt_manager import IO, InputTypeDict, PromptManagerFocused
     from .utils.hashing import generate_prompt_hash
@@ -204,7 +209,19 @@ class PromptManagerPair(PromptManagerFocused):
             )
         except Exception as error:
             self.logger.warning(f"Could not register paired metadata: {error}")
-        return positive_conditioning, negative_conditioning, positive, negative_text
+        result = positive_conditioning, negative_conditioning, positive, negative_text
+        record_runtime_context(
+            type(self).__name__,
+            text,
+            prepend_text,
+            append_text,
+            positive,
+            role="positive",
+        )
+        record_runtime_context(
+            type(self).__name__, negative_text, "", "", negative_text, role="negative"
+        )
+        return result
 
     @classmethod
     def IS_CHANGED(

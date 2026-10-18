@@ -6,6 +6,11 @@ with persistent prompt storage and search capabilities.
 import time
 from typing import Any, Dict, Optional, Tuple
 
+if __package__:
+    from .utils.execution_context_capture import record_runtime_context
+else:
+    from utils.execution_context_capture import record_runtime_context
+
 try:
     from comfy.comfy_types import IO, ComfyNodeABC, InputTypeDict
 except ImportError:
@@ -256,7 +261,11 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
         )
 
         self.logger.info(f"CLIP encoding completed, text: {repr(encoding_text)[:80]}")
-        return (conditioning, encoding_text)
+        result = (conditioning, encoding_text)
+        record_runtime_context(
+            type(self).__name__, text, prepend_text, append_text, encoding_text
+        )
+        return result
 
     @classmethod
     def IS_CHANGED(

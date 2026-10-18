@@ -1,11 +1,13 @@
 """A bounded, single-worker transport for best-effort execution history."""
 
+from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 import math
 import queue
 import threading
 import time
-from typing import Callable
+from typing import Callable, Iterator
 
 try:
     from ..database import PromptDatabase
@@ -20,7 +22,14 @@ except ImportError:
         subscribe_history_restore,
     )
 
-from .execution_history_events import RunCommand, RunStart, encode_command
+from .execution_context_budget import (
+    SHARED_CONTEXT_BUDGET,
+    ContextBudget,
+    PayloadLease,
+    SealedContext,
+)
+from .execution_contexts import ContextBundle, bundle_payload_size
+from .execution_history_events import RunCommand, RunFinish, RunStart, encode_command
 from .logging_config import get_logger
 
 _logger = get_logger("prompt_manager.execution_history_writer")
@@ -36,6 +45,13 @@ class HistoryWriterStatus:
     pending: int
     recording_gaps: int
     alive: bool
+    capture_generation: int
+
+
+@dataclass(frozen=True)
+class _Finalization:
+    command: RunFinish
+    context: SealedContext
 
 
 class HistoryWriter:
@@ -46,12 +62,21 @@ class HistoryWriter:
         db_factory: Callable[[], PromptDatabase],
         *,
         clock: Callable[[], float] = time.monotonic,
+        context_budget: ContextBudget | None = None,
+        on_invalidation: Callable[[], None] | None = None,
     ) -> None:
+        self.context_budget = (
+            SHARED_CONTEXT_BUDGET if context_budget is None else context_budget
+        )
+        self._on_invalidation = on_invalidation
         self._db_factory = db_factory
         self._clock = clock
+        self._context_commit_gate = threading.Lock()
         self._lock = threading.Lock()
         self._wake = threading.Event()
-        self._queue: queue.Queue[RunCommand] = queue.Queue(maxsize=_MAX_PENDING)
+        self._queue: queue.Queue[RunCommand | _Finalization] = queue.Queue(
+            maxsize=_MAX_PENDING
+        )
         self._thread: threading.Thread | None = None
         self._epoch: str | None = None
         self._accepting = False
@@ -94,6 +119,69 @@ class HistoryWriter:
         self._wake.set()
         return accepted
 
+    @staticmethod
+    def _release_context(context: SealedContext) -> None:
+        if isinstance(context, SealedContext) and type(context.lease) is PayloadLease:
+            context.lease.release()
+
+    def _consume_context_locked(self, context: SealedContext) -> SealedContext:
+        try:
+            if type(context) is not SealedContext:
+                raise ValueError("Invalid sealed context")
+            context.validate_header()
+            if context.bundle is None:
+                if context.lease is not None:
+                    raise ValueError("Unexpected payload lease")
+                return context
+            size = bundle_payload_size(context.bundle)
+            if (
+                context.capture_generation != self._generation
+                or context.capture_generation is None
+                or type(context.lease) is not PayloadLease
+                or context.lease._pool is not self.context_budget
+                or context.lease.byte_count < size
+                or context.state != context.bundle.state
+                or context.reason != context.bundle.reason
+            ):
+                raise ValueError("Invalid context ownership or generation")
+            owner = context.lease.transfer()
+            return SealedContext(
+                context.bundle,
+                owner,
+                context.state,
+                context.reason,
+                context.capture_generation,
+            )
+        except ValueError:
+            self._release_context(context)
+            return SealedContext(None, None, "unavailable", "invalid_evidence")
+
+    def submit_finalization(self, command: RunFinish, context: SealedContext) -> bool:
+        try:
+            if type(command) is not RunFinish:
+                raise ValueError("Finalization requires finish")
+            encode_command(command)
+        except ValueError:
+            self._release_context(context)
+            self.record_gap()
+            return False
+        with self._lock:
+            if (
+                not self._accepting
+                or command.storage_epoch != self._epoch
+                or self._pending >= _MAX_PENDING
+            ):
+                self._release_context(context)
+                self._record_gap_locked()
+                accepted = False
+            else:
+                owned = self._consume_context_locked(context)
+                self._queue.put_nowait(_Finalization(command, owned))
+                self._pending += 1
+                accepted = True
+        self._wake.set()
+        return accepted
+
     def _record_gap_locked(self) -> None:
         self._gaps = min(_MAX_GAPS, self._gaps + 1)
 
@@ -103,13 +191,36 @@ class HistoryWriter:
             self._record_gap_locked()
         self._wake.set()
 
+    @contextmanager
+    def _context_generation_guard(
+        self, generation: int, epoch: str, capture_generation: int | None
+    ) -> Iterator[bool]:
+        with self._context_commit_gate:
+            with self._lock:
+                current = (
+                    generation == self._generation
+                    and epoch == self._epoch
+                    and (capture_generation is None or capture_generation == generation)
+                )
+            yield current
+
+    def _notify_invalidation(self) -> None:
+        if self._on_invalidation is not None:
+            try:
+                self._on_invalidation()
+            except Exception:
+                # Observer failure must not block revocation of stale captures.
+                pass
+
     def invalidate(self) -> None:
-        with self._lock:
-            self._accepting = False
-            self._epoch = None
-            self._generation += 1
-            self._next_probe = self._clock() + _PROBE_INTERVAL
-            self._discard_locked()
+        with self._context_commit_gate:
+            with self._lock:
+                self._accepting = False
+                self._epoch = None
+                self._generation += 1
+                self._next_probe = self._clock() + _PROBE_INTERVAL
+                self._discard_locked()
+        self._notify_invalidation()
         self._wake.set()
 
     def status(self) -> HistoryWriterStatus:
@@ -120,6 +231,7 @@ class HistoryWriter:
                 self._pending,
                 self._gaps,
                 self._thread is not None and self._thread.is_alive(),
+                self._generation,
             )
 
     def close(self, timeout: float = 2.0) -> bool:
@@ -132,17 +244,31 @@ class HistoryWriter:
                 self._close_deadline = deadline
                 self._accepting = False
             thread = self._thread
+        self._notify_invalidation()
         self._wake.set()
         if thread is not None:
-            thread.join(max(0.0, deadline - time.monotonic()))
+            while thread.is_alive():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                thread.join(remaining)
+                if thread.is_alive():
+                    remaining = deadline - time.monotonic()
+                    if remaining > 0:
+                        time.sleep(min(remaining, 0.001))
+        with self._lock:
+            if self._closing and time.monotonic() >= self._close_deadline:
+                self._discard_locked()
         return thread is None or not thread.is_alive()
 
     def _discard_locked(self) -> None:
         while True:
             try:
-                self._queue.get_nowait()
+                item = self._queue.get_nowait()
             except queue.Empty:
                 return
+            if isinstance(item, _Finalization):
+                self._release_context(item.context)
             self._pending -= 1
             self._record_gap_locked()
 
@@ -200,6 +326,10 @@ class HistoryWriter:
                             self._record_gap_locked()
                 if command is not None:
                     failed = False
+                    context = None
+                    if isinstance(command, _Finalization):
+                        context = command.context
+                        command = command.command
                     try:
                         # Restore may have reopened this thread's managed connection.
                         db.model.get_connection().execute("PRAGMA busy_timeout=250")
@@ -207,12 +337,49 @@ class HistoryWriter:
                             db.write_execution_start(command)
                         else:
                             db.write_execution_finish(command)
+                        if context is not None:
+                            with self._lock:
+                                current = (
+                                    generation == self._generation
+                                    and command.storage_epoch == self._epoch
+                                    and (
+                                        context.capture_generation is None
+                                        or context.capture_generation
+                                        == self._generation
+                                    )
+                                )
+                            if current:
+                                try:
+                                    db.write_execution_contexts_for_finish(
+                                        command,
+                                        (
+                                            context.bundle
+                                            if context.bundle is not None
+                                            else ContextBundle(
+                                                (), context.state, context.reason
+                                            )
+                                        ),
+                                        generation_guard=partial(
+                                            self._context_generation_guard,
+                                            generation,
+                                            command.storage_epoch,
+                                            context.capture_generation,
+                                        ),
+                                    )
+                                except ValueError:
+                                    # Validation/collision cannot revoke the outcome.
+                                    with self._lock:
+                                        self._record_gap_locked()
                     except HistoryEpochChanged:
                         # The exception's storage_epoch is only a hint; readiness
                         # comes from a later probe and never replays this command.
                         failed = True
                     except Exception:
                         failed = True
+                    finally:
+                        if context is not None:
+                            self._release_context(context)
+                            context = None
                     with self._lock:
                         self._pending -= 1
                         if failed:
@@ -222,6 +389,8 @@ class HistoryWriter:
                             self._generation += 1
                             self._next_probe = self._clock() + _PROBE_INTERVAL
                             self._discard_locked()
+                    if failed:
+                        self._notify_invalidation()
                 with self._lock:
                     gaps = self._gaps
                     has_work = self._epoch is not None and not self._queue.empty()
@@ -239,6 +408,7 @@ class HistoryWriter:
                 self._accepting = False
                 self._epoch = None
                 self._discard_locked()
+            self._notify_invalidation()
             if unsubscribe is not None:
                 unsubscribe()
             if db is not None:

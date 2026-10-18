@@ -326,3 +326,23 @@ class TestPairExecution(unittest.TestCase):
             record_pair_execution(extra, "1", **kwargs)
             with self.assertRaises(ExecutionEvidenceError):
                 read_pair_execution(extra, "1")
+
+    def test_png_evidence_cannot_populate_unobserved_attempt(self):
+        from utils.execution_context_capture import ContextCapture
+        from utils.execution_context_budget import ContextBudget
+        from utils.execution_history_events import RunStart
+        from utils.execution_history_writer import HistoryWriterStatus
+
+        identity = "11111111-1111-4111-8111-111111111111"
+        self.execute()
+        state = HistoryWriterStatus(identity, True, 0, 0, True, 1)
+        manager = ContextCapture(1, lambda: state, ContextBudget())
+        self.addCleanup(manager.revoke_all)
+        cap = manager.begin(
+            RunStart(identity, identity, 1, identity, identity, 0), 1, graph(), None
+        )
+        sealed = manager.seal(cap)
+        if sealed.lease:
+            self.addCleanup(sealed.lease.release)
+        self.assertIsNone(sealed.bundle.contexts[0].positive.effective.value)
+        self.assertIsNone(sealed.bundle.contexts[0].negative.effective.value)

@@ -27,7 +27,10 @@ test('execution script discovers only the new matrix and preserves all 78 stock 
     const executions = list('tools/vendor/playwright.execution.config.mjs');
     assert.match(executions, /\[classic-start\]/);
     assert.match(executions, /\[nodes2-start\]/);
-    assert.match(executions, /Total: 10 tests in 1 file/);
+    assert.match(executions, /Total: 26 tests in 1 file/);
+    for (const project of ['classic-start', 'nodes2-start']) {
+        assert.equal(executions.split('\n').filter(line => line.includes(`[${project}]`)).length, 13);
+    }
     assert.doesNotMatch(executions, /prompt-manager.spec/);
 });
 

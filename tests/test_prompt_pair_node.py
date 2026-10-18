@@ -158,3 +158,45 @@ class TestPromptPairNode(unittest.TestCase):
         )
         result = self.node.encode_prompt(self.clip, "cat", negative_text="blur")
         self.assertEqual(result[2:], ("cat LORA", "blur"))
+
+    def test_failed_negative_encoding_cannot_publish_positive_runtime_proof(self):
+        from contextlib import ExitStack
+        import sys
+        import types
+        from utils.execution_context_capture import ContextCapture
+        from utils.execution_context_budget import ContextBudget
+        from utils.execution_history_events import RunStart
+        from utils.execution_history_writer import HistoryWriterStatus
+        from unittest.mock import patch
+
+        identity = "11111111-1111-4111-8111-111111111111"
+        state = HistoryWriterStatus(identity, True, 0, 0, True, 1)
+        budget = ContextBudget()
+        manager = ContextCapture(1, lambda: state, budget)
+        self.addCleanup(manager.revoke_all)
+        cap = manager.begin(
+            RunStart(identity, identity, 1, identity, identity, 0),
+            1,
+            pair_graph(),
+            None,
+        )
+        host = types.ModuleType("comfy_execution.utils")
+        host.get_executing_context = lambda: types.SimpleNamespace(
+            prompt_id=identity, node_id="1", list_index=0
+        )
+        self.clip.encode_from_tokens_scheduled.side_effect = [
+            ("conditioning", "cat LORA"),
+            RuntimeError("negative failed"),
+        ]
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.dict(sys.modules, {"comfy_execution.utils": host})
+            )
+            with self.assertRaisesRegex(RuntimeError, "negative failed"):
+                self.node.encode_prompt(self.clip, "cat", negative_text="blur")
+        sealed = manager.seal(cap)
+        if sealed.lease:
+            self.addCleanup(sealed.lease.release)
+        self.assertIsNone(sealed.bundle.contexts[0].positive.effective.value)
+        self.assertIsNone(sealed.bundle.contexts[0].negative.effective.value)
+        self.assertEqual(self.db.list_prompt_pairs()["total"], 0)
