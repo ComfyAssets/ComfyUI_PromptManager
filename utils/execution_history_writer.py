@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
+import json
 import math
 import queue
 import threading
@@ -28,7 +29,9 @@ from .execution_context_budget import (
     PayloadLease,
     SealedContext,
 )
-from .execution_contexts import ContextBundle, bundle_payload_size
+from .execution_contexts import MAX_ATTEMPT_BYTES, ContextBundle, bundle_payload_size
+from .execution_output_capture import SealedOutputs
+from .execution_outputs import MAX_BUNDLE_BYTES, OutputBundle, output_payload_size
 from .execution_history_events import RunCommand, RunFinish, RunStart, encode_command
 from .logging_config import get_logger
 
@@ -52,6 +55,7 @@ class HistoryWriterStatus:
 class _Finalization:
     command: RunFinish
     context: SealedContext
+    outputs: SealedOutputs | None = None
 
 
 class HistoryWriter:
@@ -120,11 +124,17 @@ class HistoryWriter:
         return accepted
 
     @staticmethod
-    def _release_context(context: SealedContext) -> None:
-        if isinstance(context, SealedContext) and type(context.lease) is PayloadLease:
-            context.lease.release()
+    def _release_payload(payload: SealedContext | SealedOutputs | None) -> None:
+        if type(payload) in (SealedContext, SealedOutputs):
+            lease = payload.lease
+            if type(lease) is PayloadLease:
+                try:
+                    lease.release()
+                except (AttributeError, TypeError, ValueError):
+                    pass
 
     def _consume_context_locked(self, context: SealedContext) -> SealedContext:
+        owner = None
         try:
             if type(context) is not SealedContext:
                 raise ValueError("Invalid sealed context")
@@ -139,7 +149,7 @@ class HistoryWriter:
                 or context.capture_generation is None
                 or type(context.lease) is not PayloadLease
                 or context.lease._pool is not self.context_budget
-                or context.lease.byte_count < size
+                or not size <= context.lease.byte_count <= MAX_ATTEMPT_BYTES
                 or context.state != context.bundle.state
                 or context.reason != context.bundle.reason
             ):
@@ -152,17 +162,66 @@ class HistoryWriter:
                 context.reason,
                 context.capture_generation,
             )
-        except ValueError:
-            self._release_context(context)
+        except Exception:
+            if owner is not None:
+                owner.release()
+            self._release_payload(context)
             return SealedContext(None, None, "unavailable", "invalid_evidence")
 
-    def submit_finalization(self, command: RunFinish, context: SealedContext) -> bool:
+    def _consume_outputs_locked(
+        self, outputs: SealedOutputs, context_bytes: int
+    ) -> SealedOutputs:
+        reason = "invalid_evidence"
+        owner = None
+        try:
+            if type(outputs) is not SealedOutputs:
+                raise ValueError("Invalid sealed outputs")
+            outputs.validate_header()
+            if outputs.bundle is None:
+                if outputs.lease is not None:
+                    raise ValueError("Unexpected output lease")
+                return outputs
+            size = output_payload_size(outputs.bundle)
+            if (
+                outputs.capture_generation != self._generation
+                or outputs.capture_generation is None
+                or type(outputs.lease) is not PayloadLease
+                or outputs.lease._pool is not self.context_budget
+                or not size <= outputs.lease.byte_count <= MAX_BUNDLE_BYTES
+                or outputs.state != outputs.bundle.state
+                or outputs.reason != outputs.bundle.reason
+            ):
+                raise ValueError("Invalid output ownership or generation")
+            if outputs.lease.byte_count + context_bytes > MAX_ATTEMPT_BYTES:
+                reason = "budget_exhausted"
+                raise ValueError("Combined payload limit")
+            owner = outputs.lease.transfer()
+            return SealedOutputs(
+                outputs.bundle,
+                owner,
+                outputs.state,
+                outputs.reason,
+                outputs.capture_generation,
+            )
+        except Exception:
+            if owner is not None:
+                owner.release()
+            self._release_payload(outputs)
+            return SealedOutputs(None, None, "unavailable", reason)
+
+    def submit_finalization(
+        self,
+        command: RunFinish,
+        context: SealedContext,
+        outputs: SealedOutputs | None = None,
+    ) -> bool:
         try:
             if type(command) is not RunFinish:
                 raise ValueError("Finalization requires finish")
             encode_command(command)
         except ValueError:
-            self._release_context(context)
+            self._release_payload(context)
+            self._release_payload(outputs)
             self.record_gap()
             return False
         with self._lock:
@@ -171,12 +230,48 @@ class HistoryWriter:
                 or command.storage_epoch != self._epoch
                 or self._pending >= _MAX_PENDING
             ):
-                self._release_context(context)
+                self._release_payload(context)
+                self._release_payload(outputs)
                 self._record_gap_locked()
                 accepted = False
             else:
                 owned = self._consume_context_locked(context)
-                self._queue.put_nowait(_Finalization(command, owned))
+                owned_outputs = None
+                try:
+                    owned_outputs = (
+                        self._consume_outputs_locked(
+                            outputs, owned.lease.byte_count if owned.lease else 0
+                        )
+                        if outputs is not None
+                        else None
+                    )
+                    header = json.dumps(
+                        [
+                            [payload.state, payload.reason, payload.capture_generation]
+                            for payload in (owned, owned_outputs)
+                            if payload is not None
+                        ],
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    if len(header) > 256:
+                        self._release_payload(owned)
+                        self._release_payload(owned_outputs)
+                        owned = SealedContext(
+                            None, None, "unavailable", "invalid_evidence"
+                        )
+                        owned_outputs = (
+                            SealedOutputs(None, None, "unavailable", "invalid_evidence")
+                            if outputs is not None
+                            else None
+                        )
+                    self._queue.put_nowait(_Finalization(command, owned, owned_outputs))
+                except Exception:
+                    self._release_payload(owned)
+                    self._release_payload(owned_outputs)
+                    self._release_payload(outputs)
+                    self._record_gap_locked()
+                    self._wake.set()
+                    return False
                 self._pending += 1
                 accepted = True
         self._wake.set()
@@ -268,7 +363,8 @@ class HistoryWriter:
             except queue.Empty:
                 return
             if isinstance(item, _Finalization):
-                self._release_context(item.context)
+                self._release_payload(item.context)
+                self._release_payload(item.outputs)
             self._pending -= 1
             self._record_gap_locked()
 
@@ -326,9 +422,9 @@ class HistoryWriter:
                             self._record_gap_locked()
                 if command is not None:
                     failed = False
-                    context = None
+                    context = outputs = None
                     if isinstance(command, _Finalization):
-                        context = command.context
+                        context, outputs = command.context, command.outputs
                         command = command.command
                     try:
                         # Restore may have reopened this thread's managed connection.
@@ -337,37 +433,50 @@ class HistoryWriter:
                             db.write_execution_start(command)
                         else:
                             db.write_execution_finish(command)
-                        if context is not None:
+                        for payload, bundle_type, write in (
+                            (
+                                context,
+                                ContextBundle,
+                                db.write_execution_contexts_for_finish,
+                            ),
+                            (
+                                outputs,
+                                OutputBundle,
+                                db.write_execution_outputs_for_finish,
+                            ),
+                        ):
+                            if payload is None:
+                                continue
                             with self._lock:
                                 current = (
                                     generation == self._generation
                                     and command.storage_epoch == self._epoch
                                     and (
-                                        context.capture_generation is None
-                                        or context.capture_generation
-                                        == self._generation
+                                        payload.capture_generation is None
+                                        or payload.capture_generation == generation
                                     )
                                 )
                             if current:
                                 try:
-                                    db.write_execution_contexts_for_finish(
+                                    write(
                                         command,
                                         (
-                                            context.bundle
-                                            if context.bundle is not None
-                                            else ContextBundle(
-                                                (), context.state, context.reason
+                                            payload.bundle
+                                            if payload.bundle is not None
+                                            else bundle_type(
+                                                (), payload.state, payload.reason
                                             )
                                         ),
                                         generation_guard=partial(
                                             self._context_generation_guard,
                                             generation,
                                             command.storage_epoch,
-                                            context.capture_generation,
+                                            payload.capture_generation,
                                         ),
                                     )
                                 except ValueError:
-                                    # Validation/collision cannot revoke the outcome.
+                                    # One supplemental omission cannot revoke earlier
+                                    # commits or suppress independent valid evidence.
                                     with self._lock:
                                         self._record_gap_locked()
                     except HistoryEpochChanged:
@@ -377,9 +486,9 @@ class HistoryWriter:
                     except Exception:
                         failed = True
                     finally:
-                        if context is not None:
-                            self._release_context(context)
-                            context = None
+                        self._release_payload(context)
+                        self._release_payload(outputs)
+                        context = outputs = None
                     with self._lock:
                         self._pending -= 1
                         if failed:
