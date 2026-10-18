@@ -214,5 +214,11 @@
     "branches": 80,
     "functions": 93,
     "statements": 94
+  },
+  "workspace/icons.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
   }
 }

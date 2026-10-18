@@ -1,7 +1,3 @@
-.sidebar { position: sticky; inset-block-start: 0; block-size: 100dvh; align-self: start; }
-.brand-mark { position: relative; }
-.brand-mark small { position: absolute; inset-inline-end: 4px; inset-block-end: 2px; font-size: 9px; color: white; }
-main.images-main { max-inline-size: none; padding: 28px; }
 .image-filters { display: flex; flex-wrap: wrap; gap: 12px; padding: 16px; border: 1px solid var(--ca-line); border-radius: 9px; background: var(--ca-surface); }
 .image-filters .ca-field { display: flex; flex: 1 1 140px; flex-direction: column; align-items: stretch; gap: 5px; }
 .image-filters .ca-field:first-child { flex: 3 1 260px; }
@@ -44,10 +40,8 @@ main.images-main { max-inline-size: none; padding: 28px; }
 .image-preview-stage .viewer-container { inline-size: 100% !important; block-size: 100% !important; }
 @media (max-width: 1150px) {
     .image-workspace { grid-template-columns: minmax(0, 1fr) 250px; gap: 16px; }
-    main.images-main { padding: 24px 18px; }
 }
 @media (max-width: 780px) {
-    .sidebar { position: static; block-size: auto; }
     .image-workspace { grid-template-columns: minmax(0, 1fr); }
     .image-details { position: static; max-block-size: none; }
     .image-details > :where(img, video) { max-block-size: 280px; }

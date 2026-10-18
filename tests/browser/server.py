@@ -14,6 +14,8 @@ from aiohttp import web
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
+from tests.browser.workspace_visual_fixture import seed_workspace_visual
+
 
 class TestModel:
     default_prompt = "Describe the image"
@@ -223,6 +225,7 @@ def create_app(root: Path) -> web.Application:
     @routes.post("/__test__/reset")
     async def reset(request: web.Request) -> web.Response:
         data = await request.json() if request.can_read_body else {}
+        workspace_visual = data.get("workspace_visual", False)
         extra = data.get("extra_images", 0)
         include_video = data.get("include_video", False)
         prompt_inspector = data.get("prompt_inspector", False)
@@ -230,7 +233,22 @@ def create_app(root: Path) -> web.Application:
         extra_prompts = data.get("extra_prompts", 0)
         extra_variants = data.get("extra_variants", 0)
         if (
-            isinstance(extra, bool)
+            not isinstance(workspace_visual, bool)
+            or (
+                workspace_visual
+                and any(
+                    key in data
+                    for key in (
+                        "extra_images",
+                        "include_video",
+                        "prompt_inspector",
+                        "native_library",
+                        "extra_prompts",
+                        "extra_variants",
+                    )
+                )
+            )
+            or isinstance(extra, bool)
             or not isinstance(extra, int)
             or not 0 <= extra <= 200
             or not isinstance(include_video, bool)
@@ -244,6 +262,9 @@ def create_app(root: Path) -> web.Application:
             or not 0 <= extra_variants <= 200
         ):
             raise web.HTTPBadRequest()
+        if workspace_visual:
+            await api._run_in_executor(seed_workspace_visual, api, root)
+            return web.json_response({"success": True})
         await api._run_in_executor(
             seed,
             extra,
