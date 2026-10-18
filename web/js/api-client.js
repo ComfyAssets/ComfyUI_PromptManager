@@ -15,11 +15,23 @@
     "use strict";
 
     class ApiError extends Error {
-        constructor(status, message, code = null) {
+        constructor(status, message, code = null, recovery = null) {
             super(message);
             this.name = "ApiError";
             this.status = status;
             this.code = typeof code === "string" && /^[a-z0-9-]{1,64}$/.test(code) ? code : null;
+            this.recovery = null;
+            if (recovery && typeof recovery === "object" && !Array.isArray(recovery)) {
+                const keys = Object.keys(recovery);
+                if (keys.length === 1 && keys[0] === "action" &&
+                    ["refresh-history", "reload-outputs", "retry-read"].includes(recovery.action)) {
+                    this.recovery = { action: recovery.action };
+                } else if (keys.length === 2 && keys.includes("action") && keys.includes("limit") &&
+                    recovery.action === "smaller-limit" && Number.isInteger(recovery.limit) &&
+                    recovery.limit >= 1 && recovery.limit <= 100) {
+                    this.recovery = { action: "smaller-limit", limit: recovery.limit };
+                }
+            }
         }
     }
 
@@ -63,11 +75,11 @@
 
             const serverMessage = data && typeof data === "object" ? data.error || data.message : undefined;
             if (!response.ok) {
-                throw new ApiError(response.status, serverMessage || response.statusText || `HTTP ${response.status}`, data?.code);
+                throw new ApiError(response.status, serverMessage || response.statusText || `HTTP ${response.status}`, data?.code, data?.recovery);
             }
             if (!parsed) throw new ApiError(response.status, "Invalid JSON response");
             if (data && typeof data === "object" && data.success === false) {
-                throw new ApiError(response.status, serverMessage || "Request failed", data.code);
+                throw new ApiError(response.status, serverMessage || "Request failed", data.code, data.recovery);
             }
             return data;
         }

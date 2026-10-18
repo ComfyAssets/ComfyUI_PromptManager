@@ -24,6 +24,7 @@ from PIL import Image
 from .prompts import PromptRoutesMixin
 from .pairs import PairRoutesMixin
 from .library import LibraryRoutesMixin
+from .history import HistoryRoutesMixin
 from .images import ImageRoutesMixin
 from .admin import AdminRoutesMixin
 from .logging_routes import LoggingRoutesMixin
@@ -245,6 +246,7 @@ async def _gzip_middleware(request, handler):
 class PromptManagerAPI(
     PairRoutesMixin,
     LibraryRoutesMixin,
+    HistoryRoutesMixin,
     PromptRoutesMixin,
     ImageRoutesMixin,
     AdminRoutesMixin,
@@ -273,6 +275,8 @@ class PromptManagerAPI(
         self.logger.info("Initializing PromptManager API")
 
         self.db = db if db is not None else PromptDatabase()
+        self._history_read_fence = None
+        self._history_reads_closed = False
         self._cached_output_dir = None  # Lazy-cached by _find_comfyui_output_dir()
         self._html_cache = {}  # Cached HTML file contents keyed by path
         self._gallery_cache = {}  # dict: path_str -> (files, timestamp)
@@ -402,6 +406,7 @@ class PromptManagerAPI(
 
         self._register_pair_routes(routes)
         self._register_library_routes(routes)
+        self._register_history_routes(routes)
         self._register_prompt_routes(routes)
         self._register_image_routes(routes)
         self._register_admin_routes(routes)
