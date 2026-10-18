@@ -1,5 +1,33 @@
 import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 
+test('inspection facts survive actual API to browser transport', async ({ page, request }) => {
+    await expect(await request.post('/__test__/reset', { data: { full_inspector: true } })).toBeOK();
+    await page.goto('/prompt_manager/workspace');
+    const result = await page.evaluate(async () => {
+        if (typeof window.ComfyMetadata?.extractGenerationFacts !== 'function') return { missingFactsExport: true };
+        const { inspectPath, toInspectionRecord } = await import('/prompt_manager/js/workspace/inspection-state.mjs');
+        const { createApiClient } = window.ApiClient;
+        const api = createApiClient();
+        const collection = await api.get('/prompt_manager/images/output?mode=workspace&subfolder=inspector&limit=40');
+        const records = {};
+        for (const name of ['complete', 'ambiguous', 'workflow-only', 'control-heavy']) {
+            const image = collection.images.find(entry => entry.root_index === 0 && entry.path === `inspector/${name}.png`);
+            const envelope = await api.get(inspectPath(image));
+            records[name] = toInspectionRecord(envelope, image, window.ComfyMetadata.extractGenerationFacts);
+        }
+        return records;
+    });
+    expect(result.missingFactsExport).toBeUndefined();
+    const complete = result.complete;
+    expect(Object.values(complete.generation).map(fact => fact.value)).toEqual(['9007199254740993', '28', '6.5', 'dpmpp_2m', 'karras', 'fixture-model.safetensors']);
+    expect(Object.values(complete.generation).every(fact => fact.source === 'api-graph' && fact.evidence === 'configuration')).toBe(true);
+    expect(Object.values(result.ambiguous.generation).every(fact => fact.status === 'ambiguous' && fact.value === null)).toBe(true);
+    expect(result['workflow-only'].generation.seed).toMatchObject({ status: 'known', value: '9007199254740993', source: 'workflow', evidence: 'configuration' });
+    expect(result['workflow-only'].prompts.positive.source).toBe('saved-association');
+    expect(Object.values(result['control-heavy'].generation).every(fact => fact.status === 'unresolved' && fact.value === null && fact.reason === 'projection-limited')).toBe(true);
+    await expect(await request.post('/__test__/reset')).toBeOK();
+});
+
 test('inspection wire preserves exact rooted envelope', async ({ request }) => {
     for (const data of [
         { full_inspector: 'true' }, { full_inspector: 1 },

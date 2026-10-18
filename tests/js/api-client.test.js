@@ -113,6 +113,31 @@ test("a 2xx body with success:false throws ApiError", async () => {
     await assert.rejects(pending, (err) => err instanceof ApiError && err.status === 200 && err.message === "Nope");
 });
 
+test("ApiError preserves only a bounded machine code without changing status or message", async () => {
+    assert.equal(new ApiError(409, "unchanged").code, null);
+    for (const [code, expected] of [
+        ["source-changed", "source-changed"], ["a".repeat(64), "a".repeat(64)],
+        [undefined, null], [null, null], [4, null], [{ code: "x" }, null],
+        ["", null], ["Source-changed", null], ["source_changed", null],
+        ["source-changed\n", null], ["a".repeat(65), null],
+    ]) {
+        for (const status of [409, 200]) {
+            const api = createApiClient(async () => jsonResponse(status, {
+                success: false, error: "unchanged", code, private: "never expose",
+            }));
+            await assert.rejects(api.get("/x"), error => {
+                assert.ok(error instanceof ApiError);
+                assert.equal(error.status, status);
+                assert.equal(error.message, "unchanged");
+                assert.equal(error.code, expected);
+                assert.equal(error.private, undefined);
+                assert.equal(error.body, undefined);
+                return true;
+            });
+        }
+    }
+});
+
 test("a 2xx body that is not JSON throws ApiError", async () => {
     const fetch = fakeFetch();
     const api = createApiClient(fetch);

@@ -1,7 +1,158 @@
 // Run with: node --test tests/js/
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { extractGenerationParams } = require("../../web/js/comfy-metadata.js");
+const { extractGenerationParams, extractGenerationFacts } = require("../../web/js/comfy-metadata.js");
+
+const parsedFactGraph = value => ({ status: "parsed", value });
+const absentFactGraph = () => ({ status: "absent", value: null });
+const factFields = ["seed", "steps", "cfg", "sampler", "scheduler", "model"];
+function factsFor(graph, extra = {}) {
+    assert.equal(typeof extractGenerationFacts, "function", "the conservative facts contract is exported");
+    return extractGenerationFacts({ prompt_graph: parsedFactGraph(graph), workflow_graph: absentFactGraph(), metadataStatus: "available", ...extra });
+}
+function factGraph(inputs = {}) {
+    return {
+        s: { class_type: "KSampler", inputs: { seed: "9007199254740993", steps: 28, cfg: "6.5000000000000000001", sampler_name: "dpmpp_2m", scheduler: "karras", model: ["model", 0], ...inputs } },
+        model: { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "model.safetensors" } },
+    };
+}
+
+test("facts keep unsafe seed and decimal strings exact", () => {
+    const facts = factsFor(factGraph());
+    assert.deepEqual(Object.keys(facts), factFields);
+    assert.deepEqual(factFields.map(field => facts[field].value), ["9007199254740993", "28", "6.5000000000000000001", "dpmpp_2m", "karras", "model.safetensors"]);
+    for (const fact of Object.values(facts)) assert.deepEqual(fact, {
+        status: "known", value: fact.value, source: "api-graph", evidence: "configuration", reason: null, sampler_id: "s",
+    });
+    const zero = factsFor(factGraph({ seed: 0, cfg: "0", steps: "1" }));
+    assert.equal(zero.seed.value, "0"); assert.equal(zero.cfg.value, "0");
+    for (const inputs of [{ seed: 9007199254740992 }, { seed: "1.5" }, { steps: "0" }, { cfg: "NaN" }, { cfg: {} }, { cfg: true }]) {
+        const key = Object.keys(inputs)[0];
+        assert.equal(factsFor(factGraph(inputs))[key].status, "unresolved");
+    }
+});
+
+test("facts do not choose equal sampler branches or unrelated model", () => {
+    const graph = factGraph(); graph.other = structuredClone(graph.s);
+    const ambiguous = factsFor(graph);
+    assert.ok(Object.values(ambiguous).every(fact => fact.status === "ambiguous" && fact.value === null));
+    const selected = factsFor(graph, { resolution: { state: "resolved", sampler_id: "other" } });
+    assert.equal(selected.seed.sampler_id, "other");
+    const unrelated = factsFor(factGraph({ model: ["missing", 0] }));
+    assert.equal(unrelated.model.status, "unresolved");
+    assert.equal(unrelated.model.value, null);
+    assert.equal(factsFor({ only: graph.model }).seed.status, "unresolved");
+});
+
+test("facts respect named scalar outputs and custom scheduler paths", () => {
+    const graph = factGraph({ seed: ["primitive", 0], steps: ["settings", 2], cfg: ["settings", 3], sampler_name: ["settings", 0], scheduler: ["settings", 1], model: ["lora", 0] });
+    graph.primitive = { class_type: "PrimitiveInt", inputs: { value: "0" } };
+    graph.settings = { class_type: "SamplerCombo", inputs: { sampler_name: "euler", scheduler: "normal", steps: "50", cfg: "0" } };
+    graph.lora = { class_type: "LoraLoader", inputs: { lora_name: "style", model: ["model", 0] } };
+    assert.deepEqual(factFields.map(field => factsFor(graph)[field].value), ["0", "50", "0", "euler", "normal", "model.safetensors"]);
+    graph.settings = { class_type: "UnknownSettings", inputs: { first: 20, second: 30 } };
+    assert.equal(factsFor(graph).steps.status, "unresolved");
+    const custom = {
+        s: { class_type: "SamplerCustomAdvanced", inputs: { guider: ["g", 0], noise: ["n", 0], sampler: ["k", 0], sigmas: ["sigmas", 0] } },
+        g: { class_type: "CFGGuider", inputs: { model: ["m", 0], cfg: "4.0000000000000001" } },
+        n: { class_type: "RandomNoise", inputs: { noise_seed: "9007199254740993" } },
+        k: { class_type: "KSamplerSelect", inputs: { sampler_name: "euler" } },
+        sigmas: { class_type: "BasicScheduler", inputs: { steps: 22, scheduler: "karras" } },
+        m: { class_type: "UNETLoader", inputs: { unet_name: "flux.safetensors" } },
+    };
+    assert.deepEqual(factFields.map(field => factsFor(custom)[field].value), ["9007199254740993", "22", "4.0000000000000001", "euler", "karras", "flux.safetensors"]);
+    custom.s = { class_type: "SamplerCustom", inputs: { model: ["m", 0], cfg: 0, noise_seed: 0, sampler: ["k", 0], sigmas: ["sigmas", 0] } };
+    assert.deepEqual([factsFor(custom).seed.value, factsFor(custom).steps.value, factsFor(custom).cfg.value], ["0", "22", "0"]);
+    custom.sigmas.inputs = { steps: 22 };
+    assert.equal(factsFor(custom).scheduler.status, "not-recorded");
+    assert.equal(factsFor(custom).sampler.value, "euler");
+});
+
+test("workflow-only facts are configuration without creating sendable roles", () => {
+    const workflow = { nodes: [
+        { id: 1, type: "UNETLoader", widgets_values: ["flux.safetensors", "default"] },
+        { id: 2, type: "SetNode", widgets_values: ["model"], inputs: [{ name: "MODEL", link: 1 }] },
+        { id: 3, type: "GetNode", widgets_values: ["model"] },
+        { id: 4, type: "KSamplerAdvanced", widgets_values: ["enable", "9007199254740993", "fixed", 28, "6.5000000000000000001", "euler", "normal", 0, 28, "disable"], inputs: [{ name: "model", link: 2 }] },
+    ], links: [[1, 1, 0, 2, 0, "MODEL"], [2, 3, 0, 4, 0, "MODEL"]] };
+    const facts = factsFor(null, { prompt_graph: absentFactGraph(), workflow_graph: parsedFactGraph(workflow) });
+    assert.deepEqual(factFields.map(field => facts[field].value), ["9007199254740993", "28", "6.5000000000000000001", "euler", "normal", "flux.safetensors"]);
+    assert.ok(Object.values(facts).every(fact => fact.source === "workflow" && fact.evidence === "configuration"));
+    assert.equal(facts.positive, undefined);
+    workflow.nodes.push({ ...workflow.nodes[3] });
+    assert.ok(Object.values(factsFor(null, { prompt_graph: absentFactGraph(), workflow_graph: parsedFactGraph(workflow) })).every(fact => fact.status === "unresolved"));
+});
+
+test("limited projection stays unresolved", () => {
+    for (const extra of [
+        { prompt_graph: { status: "limited", value: null } },
+        { prompt_graph: absentFactGraph(), workflow_graph: { status: "limited", value: null } },
+        { prompt_graph: absentFactGraph(), metadataStatus: "limited", parameters: null },
+    ]) {
+        const facts = factsFor(null, extra);
+        assert.ok(Object.values(facts).every(fact => fact.status === "unresolved" && fact.value === null && fact.reason === "projection-limited"));
+    }
+    const unreadable = factsFor(null, { prompt_graph: absentFactGraph(), metadataStatus: "unreadable" });
+    assert.equal(unreadable.seed.reason, "metadata-unreadable");
+    const absent = factsFor(null, { prompt_graph: absentFactGraph(), metadataStatus: "absent" });
+    assert.equal(absent.seed.status, "not-recorded");
+});
+
+test("facts preserve exact video-projected decimals without reading reserialized raw", () => {
+    const graph = factGraph();
+    const facts = factsFor(graph, { recordFormats: { prompt: "reserialized-json" }, raw: { prompt: '{"s":{"inputs":{"seed":9007199254740992,"cfg":6.5}}}' } });
+    assert.equal(facts.seed.value, "9007199254740993");
+    assert.equal(facts.cfg.value, "6.5000000000000000001");
+    assert.equal(factsFor(factGraph({ cfg: "1E+1000000000" })).cfg.value, "1E+1000000000");
+});
+
+test("nontext parameters remain unresolved", () => {
+    const parameters = "A portrait\nNegative prompt: blur\nSteps: 28, Sampler: Euler, Schedule type: Karras, CFG scale: 6.5000000000000000001, Seed: 9007199254740993, Model: model";
+    const base = { prompt_graph: absentFactGraph(), parameters };
+    for (const format of [undefined, "reserialized-json", "invalid"]) {
+        const facts = factsFor(null, { ...base, recordFormats: format ? { parameters: format } : {} });
+        assert.ok(Object.values(facts).every(fact => fact.status === "unresolved" && fact.value === null));
+    }
+    const facts = factsFor(null, { ...base, recordFormats: { parameters: "original-text" } });
+    assert.deepEqual(factFields.map(field => facts[field].value), ["9007199254740993", "28", "6.5000000000000000001", "Euler", "Karras", "model"]);
+    assert.ok(Object.values(facts).every(fact => fact.source === "embedded-parameters" && fact.evidence === "embedded-parameters"));
+    for (const invalid of [parameters + "\nSteps: 5, Seed: 2", parameters + ", Seed: 1", parameters + "\ntrailing", parameters.replace("Seed: 9007199254740993", "Seed: -1"), parameters.replace("Karras", "invented"), parameters.replace("Negative prompt: blur", "Negative prompt: blur\nNegative prompt: again")]) {
+        assert.ok(Object.values(factsFor(null, { ...base, parameters: invalid, recordFormats: { parameters: "original-text" } })).some(fact => fact.status === "unresolved"));
+    }
+});
+
+test("malformed or unsupported API evidence blocks plausible workflow and parameter fallback", () => {
+    const workflow = { nodes: [{ id: 1, type: "KSampler", widgets_values: [42, "fixed", 20, 7, "euler", "normal"] }], links: [] };
+    const extra = { workflow_graph: parsedFactGraph(workflow), parameters: "portrait\nSteps: 20, Sampler: Euler, CFG scale: 7, Seed: 42", recordFormats: { parameters: "original-text" } };
+    for (const prompt_graph of [{ status: "malformed", value: null }, parsedFactGraph({ s: { class_type: "UnknownSampler", inputs: { seed: 99 } } }), parsedFactGraph({ s: { class_type: "KSampler", inputs: [] } })]) {
+        const facts = factsFor(null, { ...extra, prompt_graph });
+        assert.ok(Object.values(facts).every(fact => fact.status === "unresolved" && fact.value === null));
+        assert.ok(Object.values(facts).every(fact => fact.source !== "workflow" && fact.source !== "embedded-parameters"));
+    }
+});
+
+test("conservative facts bound cycles fan-out visits and link depth", () => {
+    const graph = factGraph({ seed: ["loop", 0], model: ["loop", 0] });
+    graph.loop = { class_type: "Unknown", inputs: { seed: ["loop", 0], model: ["loop", 0], a: ["loop", 0], b: ["loop", 0] } };
+    assert.equal(factsFor(graph).seed.status, "unresolved");
+    assert.equal(factsFor(graph).model.status, "unresolved");
+    const chain = depth => {
+        const value = factGraph({ seed: ["p0", 0] });
+        for (let index = 0; index < depth; index++) value[`p${index}`] = { class_type: "PrimitiveInt", inputs: { value: index === depth - 1 ? "42" : [`p${index + 1}`, 0] } };
+        return value;
+    };
+    assert.equal(factsFor(chain(64)).seed.value, "42");
+    assert.equal(factsFor(chain(65)).seed.status, "unresolved");
+    const custom = chain(64);
+    custom.s = { class_type: "SamplerCustomAdvanced", inputs: { noise: ["noise", 0] } };
+    custom.noise = { class_type: "RandomNoise", inputs: { noise_seed: ["p0", 0] } };
+    assert.equal(factsFor(custom).seed.status, "unresolved", "the provider itself consumes one of the 64 allowed links");
+    const large = factGraph();
+    for (let index = 0; index < 498; index++) large[`unused${index}`] = { class_type: "PrimitiveInt", inputs: { value: index } };
+    assert.equal(factsFor(large).seed.value, "9007199254740993");
+    large.extra = { class_type: "PrimitiveInt", inputs: { value: 1 } };
+    assert.equal(factsFor(large).seed.status, "unresolved");
+});
 
 // Same shape as the workflow attached to #75: PromptManager nodes are saved as
 // CLIPTextEncode with extra inputs, and the checkpoint loader is pysssss'.

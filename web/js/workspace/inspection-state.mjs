@@ -1,0 +1,231 @@
+import { imageKey } from './images-state.mjs';
+import { promptRoles } from './prompt-blocks.mjs';
+
+const SOURCE_CHANGED = 'The source changed. Refresh the image collection before inspecting this file.';
+const RECORD_KEYS = ['prompt', 'workflow', 'parameters', 'comfyassets_prompt_pairs'];
+const FACT_FIELDS = ['seed', 'steps', 'cfg', 'sampler', 'scheduler', 'model'];
+const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const validScope = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) && value.length === 64;
+
+export class InspectionSourceChangedError extends Error {
+    constructor() {
+        super(SOURCE_CHANGED);
+        this.name = 'InspectionSourceChangedError';
+        this.refreshRequired = true;
+    }
+}
+
+function descriptorScope(image) {
+    if (!Object.hasOwn(image, 'root_scope')) return null;
+    if (!validScope(image.root_scope)) throw new TypeError('Invalid inspection source scope');
+    return image.root_scope;
+}
+
+function validateIdentity(image) {
+    if (!object(image) || !Number.isSafeInteger(image.root_index) || image.root_index < 0 ||
+        typeof image.path !== 'string' || !image.path || image.path.includes('\\') || /^[a-z]:/i.test(image.path) || /[\x00-\x1f\x7f]/.test(image.path) ||
+        image.path.split('/').some(part => !part || part === '.' || part === '..')) throw new TypeError('Invalid inspection identity');
+    return descriptorScope(image);
+}
+
+export function inspectPath(image) {
+    const scope = validateIdentity(image);
+    const query = new URLSearchParams({ root: String(image.root_index) });
+    if (scope !== null) query.set('root_scope', scope);
+    return `/prompt_manager/images/inspect/${image.path.split('/').map(encodeURIComponent).join('/')}?${query}`;
+}
+
+function downloadFor(image, required) {
+    try {
+        if (typeof image.url !== 'string' || !image.url) throw new TypeError('Missing original media URL');
+        const location = globalThis.location || globalThis.window?.location;
+        const reference = new URL(location?.href || 'http://localhost/');
+        const resolveUrl = globalThis.window?.ApiClient?.resolveUrl || globalThis.ApiClient?.resolveUrl || (url => url);
+        const value = resolveUrl(image.url);
+        const url = new URL(value, reference);
+        const sameOrigin = 'Origin' in globalThis ?
+            globalThis.Origin.from(url).isSameOrigin(globalThis.Origin.from(reference)) :
+            url.origin !== 'null' && url.origin === reference.origin;
+        const expected = new URL(resolveUrl(`/prompt_manager/images/serve/${image.path.split('/').map(encodeURIComponent).join('/')}`), reference);
+        const scope = descriptorScope(image);
+        if (!sameOrigin || !['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash ||
+            url.pathname !== expected.pathname || url.searchParams.getAll('root').length !== 1 || url.searchParams.get('root') !== String(image.root_index) ||
+            url.searchParams.getAll('root_scope').length > 1 || (scope !== null && url.searchParams.get('root_scope') !== scope) ||
+            (url.searchParams.has('root_scope') && !validScope(url.searchParams.get('root_scope')))) throw new TypeError('Invalid original media identity');
+        return { url: value, filename: image.path.split('/').at(-1) };
+    } catch (error) {
+        if (required) throw new TypeError('Invalid original media identity', { cause: error });
+        return null;
+    }
+}
+
+function promptsFor(value) {
+    if (!object(value)) throw new TypeError('Invalid inspection prompts');
+    const confirmed = promptRoles(value);
+    for (const role of ['positive', 'negative']) {
+        const record = value[role];
+        if (record === undefined) continue;
+        if (!object(record) || typeof record.status !== 'string' ||
+            (record.text !== undefined && record.text !== null && typeof record.text !== 'string') ||
+            (record.status === 'resolved' && !Object.hasOwn(confirmed, role))) throw new TypeError('Invalid inspection role');
+    }
+    return value;
+}
+
+function fileFor(value) {
+    if (!object(value) || value.observation !== 'current-file' || typeof value.source_label !== 'string' ||
+        !['image', 'video'].includes(value.media_type) || typeof value.extension !== 'string' ||
+        (value.format !== null && typeof value.format !== 'string')) throw new TypeError('Invalid inspection file');
+    const file = { observation: value.observation, source_label: value.source_label, media_type: value.media_type, extension: value.extension, format: value.format };
+    for (const key of ['size', 'width', 'height', 'modified_time']) {
+        const item = value[key] ?? null;
+        if (item !== null && (typeof item !== 'number' || !Number.isFinite(item) ||
+            (['width', 'height'].includes(key) ? !Number.isSafeInteger(item) || item <= 0 : item < 0))) throw new TypeError('Invalid inspection file observation');
+        file[key] = item;
+    }
+    return file;
+}
+
+function graphFor(value) {
+    if (!object(value) || !['parsed', 'absent', 'malformed', 'limited'].includes(value.status) ||
+        (value.status === 'parsed' ? !object(value.value) : value.value !== null)) throw new TypeError('Invalid inspection graph');
+    return { status: value.status, value: value.value };
+}
+
+function metadataFor(value) {
+    if (!object(value) || !['available', 'absent', 'unreadable', 'limited'].includes(value.status) ||
+        ![null, 'response-size-limit'].includes(value.omitted_reason) || !object(value.raw) || !object(value.record_formats) ||
+        (value.parameters !== null && typeof value.parameters !== 'string')) throw new TypeError('Invalid inspection metadata');
+    const raw = {}, formats = {};
+    for (const [key, format] of Object.entries(value.record_formats)) {
+        if (!RECORD_KEYS.includes(key) || !['original-text', 'reserialized-json', 'invalid'].includes(format)) throw new TypeError('Invalid inspection record format');
+        formats[key] = format;
+    }
+    for (const [key, text] of Object.entries(value.raw)) {
+        if (!RECORD_KEYS.includes(key) || typeof text !== 'string' || !Object.hasOwn(formats, key) || formats[key] === 'invalid') throw new TypeError('Invalid inspection raw record');
+        raw[key] = text;
+    }
+    if (value.parameters !== (raw.parameters ?? null)) throw new TypeError('Invalid inspection parameters projection');
+    const prompt = graphFor(value.prompt_graph), workflow = graphFor(value.workflow_graph);
+    for (const [key, graph] of [['prompt', prompt], ['workflow', workflow]]) {
+        const hasRecord = Object.hasOwn(formats, key);
+        if ((formats[key] === 'invalid' && graph.status !== 'malformed') ||
+            hasRecord !== (graph.status !== 'absent')) throw new TypeError('Invalid graph representation provenance');
+    }
+    if ((value.status === 'limited') !== (value.omitted_reason === 'response-size-limit')) throw new TypeError('Invalid metadata omission status');
+    if (['absent', 'unreadable'].includes(value.status) && (Object.keys(raw).length || Object.keys(formats).length || prompt.status !== 'absent' || workflow.status !== 'absent')) throw new TypeError('Invalid unavailable metadata');
+    return { status: value.status, omitted_reason: value.omitted_reason, raw, record_formats: formats, prompt_graph: prompt, workflow_graph: workflow, parameters: value.parameters };
+}
+
+function libraryFor(value) {
+    if (!object(value) || !['linked', 'none', 'ambiguous', 'unavailable', 'limited'].includes(value.status) || value.scope !== 'saved-library' ||
+        !Array.isArray(value.tags) || value.tags.some(tag => typeof tag !== 'string') || ![null, 'pair', 'positive'].includes(value.metadata_scope)) throw new TypeError('Invalid inspection library');
+    const library = { status: value.status, scope: value.scope, tags: [...value.tags], metadata_scope: value.metadata_scope };
+    for (const key of ['positive_id', 'pair_id', 'title', 'category']) {
+        const item = value[key] ?? null;
+        if (item !== null && (key.endsWith('_id') ? !Number.isSafeInteger(item) || item <= 0 : typeof item !== 'string')) throw new TypeError('Invalid inspection library field');
+        library[key] = item;
+    }
+    return library;
+}
+
+function unavailableFacts() {
+    return Object.fromEntries(FACT_FIELDS.map(key => [key, { status: 'unresolved', value: null, source: null, evidence: null, reason: null, sampler_id: null }]));
+}
+
+export function toInspectionRecord(result, image, extractFacts = globalThis.ComfyMetadata?.extractGenerationFacts || globalThis.window?.ComfyMetadata?.extractGenerationFacts) {
+    const scope = validateIdentity(image);
+    if (scope !== null && (!object(result) || result.root_scope !== scope)) throw new InspectionSourceChangedError();
+    if (!object(result) || result.success === false) throw new TypeError('Invalid inspection response');
+    const legacy = result.inspection_version === undefined;
+    if (!legacy && result.inspection_version !== 1) throw new TypeError('Unsupported inspection version');
+    if (!legacy && result.success !== true) throw new TypeError('Invalid inspection success status');
+    if ((!legacy || result.image !== undefined) && (!object(result.image) || result.image.root_index !== image.root_index || result.image.path !== image.path || result.image.filename !== image.path.split('/').at(-1))) throw new TypeError('Mismatched inspection identity');
+    const record = {
+        identity: { kind: 'rooted-file', key: imageKey(image), root_index: image.root_index, path: image.path, root_scope: scope },
+        file: null, prompts: promptsFor(result.prompts), library: null, metadata: null,
+        generation: unavailableFacts(), historyTarget: null, download: downloadFor(image, !legacy || scope !== null),
+    };
+    if (legacy) return record;
+    const resolution = result.resolution;
+    if (!object(resolution) || !['resolved', 'absent', 'ambiguous', 'unresolved'].includes(resolution.state) ||
+        (resolution.sampler_id !== null && (typeof resolution.sampler_id !== 'string' || !resolution.sampler_id)) || typeof resolution.reason !== 'string') throw new TypeError('Invalid inspection resolution');
+    record.file = fileFor(result.file);
+    record.metadata = metadataFor(result.metadata);
+    record.library = libraryFor(result.library);
+    if (typeof extractFacts !== 'function') throw new TypeError('Inspection facts parser unavailable');
+    record.generation = extractFacts({ prompt_graph: record.metadata.prompt_graph, workflow_graph: record.metadata.workflow_graph,
+        parameters: record.metadata.parameters, recordFormats: record.metadata.record_formats, metadataStatus: record.metadata.status, resolution });
+    if (record.library.status === 'linked' && record.library.positive_id !== null) record.historyTarget = `#/library/${record.library.positive_id}`;
+    return record;
+}
+
+export function createInspectionLoader(api, onChange, { extractFacts } = {}) {
+    let request = null, disposed = false;
+    return {
+        async load(image) {
+            if (disposed) return;
+            request?.abort();
+            const current = request = new AbortController();
+            onChange({ loading: true });
+            try {
+                const result = await api.get(inspectPath(image), { signal: current.signal });
+                if (disposed || request !== current) return;
+                const record = toInspectionRecord(result, image, extractFacts);
+                onChange({ prompts: record.prompts, record });
+            } catch (error) {
+                if (disposed || request !== current) return;
+                if (error?.status === 409 && error.code === 'source-changed') error = new InspectionSourceChangedError();
+                const refreshRequired = error instanceof InspectionSourceChangedError;
+                onChange({ error: true, refreshRequired, message: refreshRequired ? SOURCE_CHANGED : 'Could not read details from this file.' });
+            }
+        },
+        dispose() { disposed = true; request?.abort(); request = null; },
+    };
+}
+
+const emptyState = () => ({ loading: false, error: false, record: null, prompts: undefined, message: '', refreshRequired: false });
+
+export function createInspectionController({ api, extractFacts }) {
+    let state = Object.freeze(emptyState()), current = null, pending = null, disposed = false;
+    const listeners = new Set();
+    function publish(update) {
+        if (disposed) return;
+        state = Object.freeze({ ...emptyState(), ...update });
+        for (const listener of listeners) listener(state);
+    }
+    const makeLoader = () => createInspectionLoader(api, publish, { extractFacts });
+    let loader = makeLoader();
+    function read(image) {
+        pending = loader.load(image);
+        return pending;
+    }
+    return {
+        get state() { return state; },
+        select(image) {
+            if (disposed) return;
+            const scope = validateIdentity(image), key = imageKey(image);
+            if (current?.key === key && current.scope === scope) return pending;
+            current = { key, scope, image: { ...image } };
+            return read(current.image);
+        },
+        retry() {
+            if (disposed || !current || state.refreshRequired) return;
+            return read(current.image);
+        },
+        clear() {
+            if (disposed) return;
+            loader.dispose(); loader = makeLoader(); current = null; pending = null;
+            publish({});
+        },
+        subscribe(listener) {
+            if (disposed) return () => {};
+            listeners.add(listener); listener(state);
+            return () => listeners.delete(listener);
+        },
+        dispose() {
+            if (disposed) return;
+            disposed = true; loader.dispose(); listeners.clear(); current = null; pending = null; state = Object.freeze(emptyState());
+        },
+    };
+}
