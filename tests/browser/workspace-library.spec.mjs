@@ -97,6 +97,25 @@ test('failed library reads retry while late search responses cannot overwrite ne
     await expect(cards(page)).toHaveCount(1);await expect(cards(page).first()).toContainText('Dog landscape');release();await expect(cards(page).first()).toContainText('Dog landscape');
 });
 
+test('refresh atomically discards old row geometry and renders changed parent data',async({page,request})=>{
+    await page.goto(route);await expect(cards(page)).toHaveCount(3);
+    const card=cards(page).filter({has:page.getByText('Dog landscape',{exact:true})});const id=await card.getAttribute('data-prompt-id');
+    await expect(await request.put(`/prompt_manager/prompts/${id}`,{data:{text:'Revised dog landscape'}})).toBeOK();
+    await expect(await request.put(`/prompt_manager/prompts/${id}/rating`,{data:{rating:5}})).toBeOK();
+    await page.evaluate(()=>{
+        const native=requestAnimationFrame;const held=[];let paused=true;window.releaseLibraryFrames=()=>{paused=false;window.requestAnimationFrame=native;for(const callback of held)callback();};
+        window.requestAnimationFrame=callback=>native(time=>{if(paused)held.push(()=>callback(time));else callback(time);});
+    });
+    try {
+        await page.getByRole('button',{name:'Refresh library',exact:true}).click();
+        await expect(page.locator('.library-status')).not.toHaveText('Loading prompt library…');
+    } finally {await page.evaluate(()=>window.releaseLibraryFrames());}
+    await expect(cards(page)).toHaveCount(3);
+    const changed=page.locator(`article[data-prompt-id="${id}"]`);await expect(changed).toContainText('Revised dog landscape');
+    await expect(changed.getByRole('img',{name:'Rated 5 out of 5',exact:true})).toHaveCount(1);
+    await expect(page.getByRole('button',{name:'Retry prompt library',exact:true})).toBeHidden();
+});
+
 test('returning from history restores library context and mobile content stays inside the viewport',async({page})=>{
     await page.setViewportSize({width:390,height:844});await page.goto(route);
     await page.getByRole('combobox',{name:'Category',exact:true}).selectOption('Animals');
@@ -108,6 +127,29 @@ test('returning from history restores library context and mobile content stays i
     await expect(page.getByRole('searchbox',{name:'Search prompts',exact:true})).toHaveValue('Cat portrait');await expect(cards(page)).toHaveCount(1);
     await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Overview',exact:true}).click();
     await expect(history(page)).toHaveCount(0);await expect(page.locator('dialog[open]')).toHaveCount(0);
+});
+
+test('empty shelf visits restore saved scroll without inventing a parent anchor',async({page})=>{
+    await page.setViewportSize({width:1600,height:300});await page.goto(route);
+    await page.getByRole('searchbox',{name:'Search prompts',exact:true}).fill('No matching saved positive');
+    await expect(cards(page)).toHaveCount(0);await expect(page.locator('.library-status')).toContainText('No matching prompts.');
+    await page.evaluate(()=>scrollTo(0,document.documentElement.scrollHeight));
+    await expect.poll(()=>page.evaluate(()=>scrollY)).toBeGreaterThan(0);
+    const position=await page.evaluate(()=>scrollY);
+    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Overview',exact:true}).evaluate(node=>node.click());
+    await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Prompt library',exact:true}).evaluate(node=>node.click());
+    await expect(page.getByRole('searchbox',{name:'Search prompts',exact:true})).toHaveValue('No matching saved positive');
+    await expect(cards(page)).toHaveCount(0);
+    await expect.poll(()=>page.evaluate(expected=>Math.abs(scrollY-expected),position)).toBeLessThanOrEqual(1);
+    const search=page.getByRole('searchbox',{name:'Search prompts',exact:true});await search.focus();await search.fill('Dog landscape');
+    await expect(cards(page)).toHaveCount(1);await expect(search).toBeFocused();
+    await page.evaluate(()=>scrollTo(0,0));await page.getByRole('button',{name:'Refresh library',exact:true}).click();await expect(cards(page)).toHaveCount(1);
+    expect(await page.evaluate(()=>scrollY)).toBe(0);
+    const anchor=await firstVisibleParent(page);expect(anchor).not.toBeNull();
+    await cards(page).getByRole('link',{name:'Explore history',exact:true}).evaluate(node=>node.click());await expect(history(page)).toBeVisible();
+    await page.setViewportSize({width:390,height:844});await page.getByRole('link',{name:'Back to library',exact:true}).click();
+    await retainedParent(page,anchor);await expect(page.getByRole('searchbox',{name:'Search prompts',exact:true})).toHaveValue('Dog landscape');
 });
 
 test('history detail failures retry and returning to the list ignores late detail responses',async({page})=>{
@@ -167,4 +209,219 @@ test('large variant histories append bounded pages without replacing the selecte
     await history(page).getByRole('button',{name:'Load more negative variants',exact:true}).click();await expect(variants).toHaveCount(45);
     await expect(history(page).getByRole('button',{name:'Select negative variant 1',exact:true})).toHaveAttribute('aria-pressed','true');
     await expect(saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre')).toHaveText(chosenNegative);
+});
+
+async function observeLibrary(page, hold=false) {
+    await page.addInitScript(({hold})=>{
+        const NativeResizeObserver=window.ResizeObserver;
+        const records=[];let holding=hold;
+        const raf=window.requestAnimationFrame.bind(window),cancel=window.cancelAnimationFrame.bind(window);
+        const pending=new Set(),heldFrames=new Map();let requested=0,mutations=0,unmounted=0,holdingFrames=false;
+        window.requestAnimationFrame=callback=>{requested++;const id=raf(time=>{const deliver=()=>{pending.delete(id);callback(time);};if(holdingFrames)heldFrames.set(id,deliver);else deliver();});pending.add(id);return id;};
+        window.cancelAnimationFrame=id=>{pending.delete(id);heldFrames.delete(id);cancel(id);};
+        window.ResizeObserver=class {
+            constructor(callback) {
+                const record={callback,targets:new Set(),entries:new Map(),latest:new Map(),disconnected:false};
+                record.native=new NativeResizeObserver(entries=>{
+                    const ready=[];
+                    for(const entry of entries) {
+                        if(entry.target.matches('.library-card')) {
+                            if(!entry.target.isConnected)unmounted++;
+                            record.latest.set(entry.target,entry);
+                            if(holding) {record.entries.set(entry.target,entry);continue;}
+                        }
+                        ready.push(entry);
+                    }
+                    if(ready.length)callback(ready,this);
+                });records.push(record);this.record=record;
+            }
+            observe(target,options){this.record.targets.add(target);this.record.native.observe(target,options);}
+            unobserve(target){this.record.targets.delete(target);this.record.entries.delete(target);this.record.latest.delete(target);this.record.native.unobserve(target);}
+            disconnect(){this.record.disconnected=true;this.record.targets.clear();this.record.entries.clear();this.record.native.disconnect();}
+        };
+        new MutationObserver(entries=>{mutations+=entries.filter(entry=>entry.target.matches('.library-card,.library-row,.library-row-spacer')).length;}).observe(document,{subtree:true,attributes:true,attributeFilter:['style']});
+        window.libraryObservation={
+            hold(){holding=true;},
+            release(){holding=false;for(const record of records){const entries=[...record.entries.values()].filter(entry=>record.targets.has(entry.target));record.entries.clear();if(entries.length)record.callback(entries,record.native);}},
+            holdFrames(){holdingFrames=true;},
+            releaseFrames(){holdingFrames=false;const callbacks=[...heldFrames.values()];heldFrames.clear();for(const callback of callbacks)callback();},
+            equal(){for(const record of records){const entries=[...record.latest.values()].filter(entry=>record.targets.has(entry.target));if(entries.length)record.callback(entries,record.native);}},
+            stats(){return {requested,pending:pending.size,heldFrames:heldFrames.size,measurements:records.reduce((sum,record)=>sum+record.entries.size,0),mutations,unmounted,targets:records.reduce((sum,record)=>sum+record.targets.size,0)};},
+        };
+    },{hold});
+}
+async function settleLibrary(page) {
+    await expect.poll(async()=>page.evaluate(()=>window.libraryObservation.stats().pending)).toBe(0);
+    await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,60)));
+    await expect.poll(async()=>page.evaluate(()=>window.libraryObservation.stats().pending)).toBe(0);
+}
+async function firstVisibleParent(page) {
+    return cards(page).evaluateAll(nodes=>{
+        const card=nodes.find(node=>{const box=node.getBoundingClientRect();return box.bottom>0&&box.top<innerHeight;});
+        return card?{id:card.dataset.promptId,offset:card.getBoundingClientRect().top}:null;
+    });
+}
+async function retainedParent(page, anchor) {
+    const card=page.locator(`article[data-prompt-id="${anchor.id}"]`);
+    await expect(card).toHaveCount(1);
+    await expect.poll(async()=>Math.abs(await card.evaluate(node=>node.getBoundingClientRect().top)-anchor.offset)).toBeLessThanOrEqual(2);
+}
+
+test('Library natural rows retain long prompt content without overflow',async({page,request})=>{
+    await request.post('/__test__/reset',{data:{workspace_visual:true}});
+    const data=await(await request.get('/prompt_manager/library')).json();
+    for(const [width,height] of [[1600,1100],[390,844]]) {
+        await page.setViewportSize({width,height});await page.goto(route);await expect(cards(page)).toHaveCount(6);
+        expect(await cards(page).filter({hasText:'A study in very long creative context'}).evaluate(node=>node.getBoundingClientRect().height)).toBeGreaterThan(560);
+        await expect(page.locator('.workspace-heading-copy > .intro')).toContainText('One positive.');
+        await expect(page.locator('.library-shelf > .intro')).toHaveCount(0);
+        for(const theme of ['dark','light']) {
+            await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+            await expect(page.locator('.prompt-positive h3').first()).toHaveCSS('color',theme==='dark'?'rgb(115, 221, 169)':'rgb(23, 107, 70)');
+        }
+        await expect(page.locator('.library-card-art').first()).toHaveCSS('height',width===1600?'170px':'150px');
+        await expect(page.locator('.library-card-content').first()).toHaveCSS('padding',width===1600?'18px':'15px');
+        await expect(page.locator('.library-grid')).toHaveCSS('gap','18px');
+        const long=cards(page).filter({hasText:'A study in very long creative context'});
+        const prompt=long.locator('.prompt-text');expect((await prompt.textContent()).length).toBeGreaterThan(1500);
+        expect(await long.evaluate(node=>node.getBoundingClientRect().height)).toBeGreaterThan(560);
+        for(const selector of ['.library-card-title','.library-card-prompts','.prompt-text','.library-card-content > .library-tags']) {
+            expect(await long.locator(selector).evaluate(node=>node.scrollHeight<=node.clientHeight+1)).toBe(true);
+        }
+        await prompt.focus();await expect(prompt).toBeFocused();
+        await long.getByRole('link',{name:'Explore history',exact:true}).scrollIntoViewIfNeeded();
+        await expect(long.getByRole('link',{name:'Explore history',exact:true})).toBeVisible();
+        for(const item of data.items) {
+            const card=page.locator(`article[data-prompt-id="${item.id}"]`);
+            await expect(card.getByRole('img',{name:item.rating?`Rated ${item.rating} out of 5`:'Unrated',exact:true})).toHaveCount(1);
+            await expect(card.locator('.library-card-content > .library-tags .library-chip')).toHaveText(item.tags);
+        }
+        expect(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+        await expect(page.locator('.library-shelf')).not.toContainText(/\b\d+ (?:tracked )?runs\b|Used today/i);
+        const boxes=await cards(page).evaluateAll(nodes=>nodes.map(node=>{const b=node.getBoundingClientRect();return {x:b.x,y:b.y,right:b.right,bottom:b.bottom};}));
+        for(let i=0;i<boxes.length;i++) for(const b of boxes.slice(i+1)) {const a=boxes[i];expect(a.right<=b.x+1||b.right<=a.x+1||a.bottom<=b.y+1||b.bottom<=a.y+1).toBe(true);}
+    }
+});
+
+test('row measurement preserves anchor after width invalidation and append',async({page,request})=>{
+    await request.post('/__test__/reset',{data:{native_library:true,extra_prompts:200}});
+    await observeLibrary(page,true);await page.addInitScript(()=>{window.IntersectionObserver=undefined;});
+    let release;const held=new Promise(resolve=>{release=resolve;});
+    await page.route('**/images/serve/**',async route=>{await held;await route.continue().catch(()=>{});});
+    try {
+        await page.setViewportSize({width:1600,height:1100});await page.goto(route);
+        const more=page.getByRole('button',{name:'Load more prompts',exact:true});
+        for(const count of [40,80,120]) {await expect(page.locator('.library-caption')).toContainText(`${count} of 203`);await more.evaluate(node=>node.click());}
+        await expect(page.locator('.library-caption')).toContainText('160 of 203');
+        await page.evaluate(()=>scrollTo(0,document.querySelector('.library-grid').getBoundingClientRect().top+scrollY+40*486+25));
+        await settleLibrary(page);const anchor=await firstVisibleParent(page);expect(anchor).not.toBeNull();
+        const pinned=cards(page).first();const pinnedId=await pinned.getAttribute('data-prompt-id');await pinned.locator('a').first().evaluate(node=>node.focus({preventScroll:true}));
+        await page.evaluate(()=>window.libraryObservation.release());await settleLibrary(page);await retainedParent(page,anchor);
+        expect(await cards(page).count()).toBeLessThan(80);await expect(page.locator(`article[data-prompt-id="${pinnedId}"] a`).first()).toBeFocused();
+        const after=await firstVisibleParent(page);release();await page.evaluate(async()=>{await Promise.all([...document.querySelectorAll('.library-card img')].map(image=>image.decode().catch(()=>{})));});await settleLibrary(page);await retainedParent(page,after);
+        await more.evaluate(node=>node.click());await expect(page.locator('.library-caption')).toContainText('200 of 203');await settleLibrary(page);await retainedParent(page,after);
+        await expect(page.locator(`article[data-prompt-id="${pinnedId}"] a`).first()).toBeFocused();
+        await page.setViewportSize({width:390,height:844});await settleLibrary(page);await retainedParent(page,after);
+        await expect(page.locator(`article[data-prompt-id="${pinnedId}"] a`).first()).toBeFocused();
+        expect(await cards(page).count()).toBeLessThan(80);
+        const ids=await cards(page).evaluateAll(nodes=>nodes.map(node=>node.dataset.promptId));expect(new Set(ids).size).toBe(ids.length);
+        for(const changedWidth of [false,true]) {
+            const before=await firstVisibleParent(page);
+            await page.locator(`article[data-prompt-id="${before.id}"] .library-history-link`).evaluate(node=>node.click());await expect(history(page)).toBeVisible();
+            if(changedWidth)await page.setViewportSize({width:1600,height:1100});
+            await page.getByRole('link',{name:'Back to library',exact:true}).click();await settleLibrary(page);await retainedParent(page,before);
+            expect(await cards(page).count()).toBeLessThan(80);
+        }
+        expect((await page.evaluate(()=>window.libraryObservation.stats())).unmounted).toBe(0);
+    } finally {release();}
+});
+
+test('queued row growth preserves newer native wheel movement and correction events',async({page,request},testInfo)=>{
+    await request.post('/__test__/reset',{data:{native_library:true,extra_prompts:200}});
+    await observeLibrary(page);await page.addInitScript(()=>{window.IntersectionObserver=undefined;});
+    await page.setViewportSize({width:1600,height:1100});await page.goto(route);
+    const more=page.getByRole('button',{name:'Load more prompts',exact:true});
+    for(const count of [40,80,120]) {await expect(page.locator('.library-caption')).toContainText(`${count} of 203`);await more.evaluate(node=>node.click());}
+    await expect(page.locator('.library-caption')).toContainText('160 of 203');
+    await page.evaluate(()=>scrollTo(0,document.querySelector('.library-grid').getBoundingClientRect().top+scrollY+20*486+25));
+    await settleLibrary(page);await page.mouse.move(1100,550);
+    const pinned=cards(page).first(),pinnedId=await pinned.getAttribute('data-prompt-id');await pinned.locator('a').first().evaluate(node=>node.focus({preventScroll:true}));
+    try {
+        // The same queued-frame wheel sequence is stable without changed measurements.
+        const control=await firstVisibleParent(page),controlY=await page.evaluate(()=>scrollY);
+        await page.evaluate(()=>window.libraryObservation.holdFrames());await page.mouse.wheel(0,160);
+        await expect.poll(()=>page.evaluate(()=>scrollY)).toBe(controlY+160);
+        await expect.poll(()=>page.evaluate(()=>window.libraryObservation.stats().heldFrames)).toBeGreaterThan(0);
+        await page.evaluate(()=>window.libraryObservation.releaseFrames());await settleLibrary(page);
+        expect(await page.evaluate(()=>scrollY)).toBe(controlY+160);await retainedParent(page,{...control,offset:control.offset-160});
+
+        const before=await firstVisibleParent(page),beforeY=await page.evaluate(()=>scrollY);
+        await page.evaluate(()=>{window.libraryObservation.hold();for(const content of document.querySelectorAll('.library-card-content'))content.style.paddingBlockEnd='45px';});
+        await expect.poll(()=>page.evaluate(()=>window.libraryObservation.stats().measurements)).toBeGreaterThan(0);
+        const parent=page.locator(`article[data-prompt-id="${before.id}"]`);
+        const growth=await parent.evaluate(node=>node.getBoundingClientRect().top)-before.offset;
+        expect(growth).toBeGreaterThan(0);expect(await page.evaluate(()=>scrollY)).toBe(beforeY);
+        await page.evaluate(()=>{window.libraryObservation.holdFrames();window.libraryObservation.release();});
+        await expect.poll(()=>page.evaluate(()=>window.libraryObservation.stats().heldFrames)).toBeGreaterThan(0);
+        await page.mouse.wheel(0,160);await expect.poll(()=>page.evaluate(()=>scrollY)).toBe(beforeY+160);
+        expect(await page.evaluate(()=>document.documentElement.scrollHeight-innerHeight-scrollY)).toBeGreaterThan(1000);
+        await page.evaluate(()=>window.libraryObservation.releaseFrames());await settleLibrary(page);
+        await testInfo.attach('queued-growth-wheel-geometry',{body:JSON.stringify({beforeY,offset:before.offset,growth,wheel:160,finalY:await page.evaluate(()=>scrollY),finalOffset:await parent.evaluate(node=>node.getBoundingClientRect().top)}),contentType:'application/json'});
+        await retainedParent(page,{...before,offset:before.offset-160});
+        expect(Math.abs(await page.evaluate(()=>scrollY)-(beforeY+160+growth))).toBeLessThanOrEqual(2);
+
+        // The correction's own native scroll event must not become new user motion.
+        const corrected=await firstVisibleParent(page);
+        await page.evaluate(()=>{window.libraryObservation.hold();for(const content of document.querySelectorAll('.library-card-content'))content.style.paddingBlockEnd='65px';});
+        await expect.poll(()=>page.evaluate(()=>window.libraryObservation.stats().measurements)).toBeGreaterThan(0);
+        await page.evaluate(()=>window.libraryObservation.release());await settleLibrary(page);await retainedParent(page,corrected);
+        await expect(page.locator(`article[data-prompt-id="${pinnedId}"] a`).first()).toBeFocused();
+        const ids=await cards(page).evaluateAll(nodes=>nodes.map(node=>node.dataset.promptId));expect(ids.length).toBeLessThan(80);expect(new Set(ids).size).toBe(ids.length);
+        await page.evaluate(()=>window.libraryObservation.holdFrames());await page.mouse.wheel(0,160);
+        await expect.poll(()=>page.evaluate(()=>window.libraryObservation.stats().heldFrames)).toBeGreaterThan(0);
+        await page.evaluate(()=>{location.hash='#/overview';});await expect(cards(page)).toHaveCount(0);
+        expect((await page.evaluate(()=>window.libraryObservation.stats())).targets).toBe(0);
+        expect((await page.evaluate(()=>window.libraryObservation.stats())).pending).toBe(0);
+        expect((await page.evaluate(()=>window.libraryObservation.stats())).heldFrames).toBe(0);
+        expect((await page.evaluate(()=>window.libraryObservation.stats())).unmounted).toBe(0);
+    } finally {await page.evaluate(()=>{window.libraryObservation.release();window.libraryObservation.releaseFrames();});}
+});
+
+test('unchanged row observations settle without resize feedback',async({page,request,browserName})=>{
+    await request.post('/__test__/reset',{data:{native_library:true,extra_prompts:200}});
+    await observeLibrary(page);await page.addInitScript(()=>{window.IntersectionObserver=undefined;});
+    let session,breakpoint;
+    try {
+        if(browserName==='chromium') {
+            session=await page.context().newCDPSession(page);await session.send('Debugger.enable');
+            await page.addInitScript(()=>{window.libraryLayoutCalls=0;});
+            const scripts=[];session.on('Debugger.scriptParsed',script=>scripts.push(script));
+            await page.goto(route);await expect(cards(page).first()).toBeVisible();await settleLibrary(page);
+            const script=scripts.find(script=>script.url.endsWith('/workspace/library-layout.mjs'));expect(script).toBeTruthy();
+            const {scriptSource}=await session.send('Debugger.getScriptSource',{scriptId:script.scriptId});
+            const lines=scriptSource.split('\n');const start=lines.findIndex(line=>line.includes('export function layoutLibraryRows('));expect(start).toBeGreaterThanOrEqual(0);
+            const possible=await session.send('Debugger.getPossibleBreakpoints',{start:{scriptId:script.scriptId,lineNumber:start},end:{scriptId:script.scriptId,lineNumber:start+3},restrictToFunction:false});
+            const location=possible.locations.find(location=>location.lineNumber>start);expect(location).toBeTruthy();
+            breakpoint=(await session.send('Debugger.setBreakpoint',{location,condition:'(window.libraryLayoutCalls++, false)'})).breakpointId;
+        } else {await page.goto(route);await expect(cards(page).first()).toBeVisible();await settleLibrary(page);}
+        const more=page.getByRole('button',{name:'Load more prompts',exact:true});
+        for(const count of [40,80,120]) {await expect(page.locator('.library-caption')).toContainText(`${count} of 203`);await more.evaluate(node=>node.click());}
+        await expect(page.locator('.library-caption')).toContainText('160 of 203');await settleLibrary(page);
+        if(session)expect(await page.evaluate(()=>window.libraryLayoutCalls)).toBeGreaterThan(0);
+        const before=await page.evaluate(()=>({stats:window.libraryObservation.stats(),calls:window.libraryLayoutCalls}));
+        await page.evaluate(()=>{for(let i=0;i<12;i++){window.libraryObservation.equal();dispatchEvent(new Event('scroll'));}});await settleLibrary(page);
+        const after=await page.evaluate(()=>({stats:window.libraryObservation.stats(),calls:window.libraryLayoutCalls}));
+        expect(after.stats.requested-before.stats.requested).toBeLessThanOrEqual(1);expect(after.stats.mutations).toBe(before.stats.mutations);if(session)expect(after.calls).toBe(before.calls);
+        for(let i=0;i<3;i++) {await page.evaluate(()=>scrollBy(0,1));await settleLibrary(page);}
+        if(session)expect(await page.evaluate(()=>window.libraryLayoutCalls)).toBe(after.calls);
+        const equalBefore=await page.evaluate(()=>window.libraryObservation.stats().requested);await page.evaluate(()=>{for(let i=0;i<12;i++)window.libraryObservation.equal();});await settleLibrary(page);
+        expect((await page.evaluate(()=>window.libraryObservation.stats())).requested).toBe(equalBefore);
+        await page.evaluate(()=>{window.libraryObservation.hold();for(const content of document.querySelectorAll('.library-card-content'))content.style.paddingBlockEnd='35px';});await settleLibrary(page);
+        const calls=await page.evaluate(()=>window.libraryLayoutCalls);await page.evaluate(()=>window.libraryObservation.release());await settleLibrary(page);
+        if(session)expect(await page.evaluate(()=>window.libraryLayoutCalls)-calls).toBe(1);
+        await page.evaluate(()=>{dispatchEvent(new Event('scroll'));location.hash='#/overview';});await expect(cards(page)).toHaveCount(0);await settleLibrary(page);
+        expect((await page.evaluate(()=>window.libraryObservation.stats())).targets).toBe(0);
+        expect((await page.evaluate(()=>window.libraryObservation.stats())).pending).toBe(0);
+        expect((await page.evaluate(()=>window.libraryObservation.stats())).unmounted).toBe(0);
+    } finally {if(breakpoint)await session.send('Debugger.removeBreakpoint',{breakpointId:breakpoint});if(session)await session.detach();}
 });

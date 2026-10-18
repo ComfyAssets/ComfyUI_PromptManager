@@ -13,6 +13,17 @@ const routes = [
     ['system', 'System', '/prompt_manager/admin'],
 ];
 
+async function countAppearanceWrites(page) {
+    await page.evaluate(() => {
+        window.__appearanceChanges = 0;
+        const original = Storage.prototype.setItem;
+        Storage.prototype.setItem = function (...args) {
+            if (args[0] === 'pm_workspace_theme') window.__appearanceChanges++;
+            return original.apply(this, args);
+        };
+    });
+}
+
 test.beforeEach(async ({ page, request, browserName }) => {
     await startCoverage(page, browserName);
     await expect(await request.post('/__test__/reset')).toBeOK();
@@ -191,7 +202,13 @@ test('leaving a loading overview prevents its delayed result from replacing the 
     await finished;
     await expect(page.locator('#workspace-main h1')).toHaveText('Images');
     await expect(page.locator('#workspace-main')).not.toContainText('999');
+    await expect(page.locator('.workspace-nav-primary')).toHaveCount(1);
+    await expect(page.locator('.workspace-nav-tools')).toHaveCount(1);
+    await expect(page.getByRole('combobox', { name: 'Appearance', exact: true })).toHaveCount(1);
     await expect(page.locator('#workspace-main a[href="/prompt_manager/gallery"]')).toBeVisible();
+    await countAppearanceWrites(page);
+    await page.getByRole('combobox', { name: 'Appearance', exact: true }).selectOption('light');
+    expect(await page.evaluate(() => window.__appearanceChanges)).toBe(1);
 });
 
 test('cached-page restoration remounts one working shell and refreshes its data', async ({ page }) => {
@@ -211,8 +228,13 @@ test('cached-page restoration remounts one working shell and refreshes its data'
     expect(reads).toBe(3);
     const navigation = page.getByRole('navigation', { name: 'Workspace', exact: true });
     await expect(navigation.getByRole('link')).toHaveCount(routes.length);
+    await expect(page.locator('.workspace-nav-primary')).toHaveCount(1);
+    await expect(page.locator('.workspace-nav-tools')).toHaveCount(1);
+    await expect(page.getByRole('combobox', { name: 'Appearance', exact: true })).toHaveCount(1);
+    await countAppearanceWrites(page);
     await navigation.getByRole('link', { name: 'Images', exact: true }).click();
     await expect(page.locator('#workspace-main h1')).toHaveText('Images');
     await page.getByRole('combobox', { name: 'Appearance' }).selectOption('light');
     await expect(page.locator('body')).toHaveAttribute('data-ca-theme', 'light');
+    expect(await page.evaluate(() => window.__appearanceChanges)).toBe(1);
 });

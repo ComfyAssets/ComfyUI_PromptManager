@@ -17,7 +17,13 @@ test.afterEach(async ({ page, browserName }) => {
     expect(page.imageErrors).toEqual([]);
 });
 
-test('native Images keeps colliding filenames distinct and inspects the selected source', async ({ page, request }) => {
+test('native Images keeps colliding filenames distinct and inspects the selected source', async ({ page, request }, testInfo) => {
+    await page.setViewportSize({width:1600,height:1100});
+    async function capture(name) {
+        await page.evaluate(async()=>{await document.fonts.ready;await Promise.all([...document.images].map(image=>image.decode().catch(()=>{})));});
+        const path=testInfo.outputPath(`${name}.png`);await page.screenshot({path});
+        await testInfo.attach(name,{path,contentType:'image/png'});
+    }
     const snapshot = await (await request.get('/prompt_manager/stats')).json();
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(2);
@@ -29,8 +35,17 @@ test('native Images keeps colliding filenames distinct and inspects the selected
     await expect(details(page)).toContainText('same.png');
     await expect(details(page)).toContainText('shared/same.png');
     await expect(details(page)).toContainText(/input/i);
+    await capture('after-images-source-collision-input-1600');
     await cards(page).first().getByRole('button', { name: 'Open same.png', exact: true }).click();
     await expect(details(page)).toContainText(/output/i);
+    await capture('after-images-source-collision-output-1600');
+    await page.setViewportSize({width:390,height:844});
+    for (const [index,source] of [[1,'input'],[0,'output']]) {
+        await cards(page).nth(index).getByRole('button',{name:'Open same.png',exact:true}).click();
+        await expect(details(page)).toContainText(new RegExp(source,'i'));
+        await details(page).scrollIntoViewIfNeeded();
+        await capture(`after-images-source-collision-${source}-390`);
+    }
     expect((await (await request.get('/prompt_manager/stats')).json()).stats).toEqual(snapshot.stats);
 });
 
@@ -479,4 +494,65 @@ test('leaving during Refresh cancels it without replacing the next workspace', a
     release();
     await expect(page.getByRole('heading', { name: 'Continue creating', exact: true })).toBeVisible();
     await expect(page.getByText('Images could not be refreshed. Try Refresh again.', { exact: true })).toHaveCount(0);
+});
+
+
+test('Images uses approved geometry while keeping real controls', async ({page,request}) => {
+    await request.post('/__test__/reset',{data:{workspace_visual:true}});
+    await page.setViewportSize({width:1600,height:1100});
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(24);
+    await expect(page.locator('.workspace-heading-copy > .intro')).toHaveCount(1);
+    await expect(details(page)).toHaveCSS('width','310px');
+    await expect(page.locator('.image-workspace')).toHaveCSS('column-gap','22px');
+    for (const label of ['Source','Folder','Media','Sort','Thumbnail size']) await expect(page.getByRole('combobox',{name:label,exact:true})).toBeVisible();
+    await expect(page.getByRole('searchbox',{name:'Search filenames',exact:true})).toHaveAttribute('placeholder',/filename or folder/);
+    await expect(page.getByRole('link',{name:'Group by positive prompt',exact:true})).toHaveAttribute('href','#/library');
+    const geometry = await cards(page).evaluateAll(nodes=>nodes.slice(0,4).map(node=>{
+        const box=node.getBoundingClientRect(),media=node.querySelector('.image-open').getBoundingClientRect();
+        return {x:box.x,y:box.y,right:box.right,bottom:box.bottom,width:box.width,mediaWidth:media.width,mediaHeight:media.height};
+    }));
+    expect(geometry[1].x-geometry[0].right).toBeCloseTo(13,0);
+    expect(geometry[3].y-geometry[0].bottom).toBeCloseTo(13,0);
+    expect(geometry[3].x).toBeCloseTo(geometry[0].x,0);
+    expect(geometry[0].mediaWidth/geometry[0].mediaHeight).toBeCloseTo(4/3,2);
+    expect((await page.locator('.image-toolbar').boundingBox()).y).toBeLessThan(geometry[0].y);
+    await expect(cards(page).first()).toHaveCSS('outline-style','solid');
+    const cover=details(page).locator(':scope > img');
+    await expect(cover).toHaveCSS('height','150px');
+    expect(await details(page).evaluate(node=>node.firstElementChild.tagName)).toBe('IMG');
+    await page.setViewportSize({width:390,height:844});
+    await expect.poll(()=>cards(page).nth(1).evaluate(node=>node.offsetTop)).toBe(0);
+    await expect.poll(()=>cards(page).nth(2).evaluate(node=>node.offsetTop)).toBeGreaterThan(0);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+});
+
+test('density changes and resize preserve identity focus and selection', async ({page,request}) => {
+    await request.post('/__test__/reset',{data:{workspace_visual:true}});
+    await page.setViewportSize({width:1600,height:1100});await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(24);
+    const first=cards(page).first();await first.evaluate(node=>{window.originalImageCard=node;});
+    await first.getByRole('button',{name:/^Open /}).click();
+    const key=await first.getAttribute('data-image-key');
+    let imageReads=0;page.on('request',request=>{if(request.url().includes('/images/output?')) imageReads++;});
+    for (const layout of ['Grid','List','Masonry']) for (const [density,columns] of [['comfortable',3],['large',2],['compact',4]]) {
+        await page.getByRole('button',{name:layout,exact:true}).click();
+        await page.getByRole('combobox',{name:'Thumbnail size',exact:true}).selectOption(density);
+        await first.getByRole('button',{name:/^Open /}).focus();await page.keyboard.press('ArrowDown');
+        await expect(cards(page).nth(layout==='List'?1:columns).getByRole('button',{name:/^Open /})).toBeFocused();
+        await expect(first).toHaveClass(/selected/);
+        expect(await first.evaluate(node=>node===window.originalImageCard)).toBe(true);
+    }
+    expect(imageReads).toBe(0);
+    await page.evaluate(()=>{location.hash='#/overview';});await expect(page.locator('h1')).toHaveText('Overview');
+    await page.evaluate(()=>{location.hash='#/images';});await expect(page.getByRole('combobox',{name:'Thumbnail size',exact:true})).toHaveValue('compact');
+    await expect(page.locator(`article[data-image-key="${key}"]`)).toHaveClass(/selected/);
+    await page.getByRole('button',{name:'Grid',exact:true}).click();
+    for (const [width,columns] of [[951,3],[950,3],[700,2],[390,2]]) {
+        await page.setViewportSize({width,height:844});
+        await expect.poll(()=>cards(page).nth(columns).evaluate(node=>node.offsetLeft)).toBe(0);
+        await first.getByRole('button',{name:/^Open /}).focus();await page.keyboard.press('ArrowDown');
+        await expect(cards(page).nth(columns).getByRole('button',{name:/^Open /})).toBeFocused();
+        expect(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+    }
 });

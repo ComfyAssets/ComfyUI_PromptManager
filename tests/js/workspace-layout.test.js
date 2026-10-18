@@ -75,6 +75,63 @@ test('binary-searched windows handle boundaries, empty collections and focus wit
 test('reported maximum height keeps unusually tall custom layouts inside the virtual window',async()=>{
     const {layoutImages,visibleImages}=await source;
     const geometry=layoutImages([{}, {}, {}],10000,'grid',20000);
-    assert.equal(geometry.maxHeight,7572);
+    assert.equal(geometry.maxHeight,7554.5);
     assert.deepEqual(visibleImages(geometry.positions,6000,200,-1,geometry.maxHeight),[0]);
+});
+
+
+test('approved workspace densities share viewport metrics and reject unknown values', async () => {
+    const {workspaceImageMetrics, layoutImages} = await source;
+    assert.equal(typeof workspaceImageMetrics, 'function', 'workspace density metrics must be exported');
+    for (const [width, expected] of [[1600,[3,2,4]], [1250,[2,2,3]], [950,[2,2,3]], [700,[2,2,2]], [390,[2,2,2]], [1700,[4,2,5]]]) {
+        assert.deepEqual(['comfortable','large','compact'].map(density => workspaceImageMetrics(width,density).columns), expected);
+        for (const density of ['comfortable','large','compact']) {
+            const metrics = workspaceImageMetrics(width,density);
+            assert.deepEqual(metrics, {columns: expected[['comfortable','large','compact'].indexOf(density)], gap:13, footerHeight:54, listHeight:97});
+            assert.equal(layoutImages([{},{}],990,'list',240,metrics).positions[1].x,0);
+        }
+    }
+    assert.throws(() => workspaceImageMetrics(1600,'unknown'), TypeError);
+    assert.deepEqual(workspaceImageMetrics(1600),workspaceImageMetrics(1600,'comfortable'));
+});
+
+test('approved grid uses inner media at four to three and explicit columns with thirteen pixel gaps', async () => {
+    const {workspaceImageMetrics,layoutImages} = await source;
+    assert.equal(typeof workspaceImageMetrics,'function');
+    const metrics = workspaceImageMetrics(1600);
+    const {positions} = layoutImages(Array(4).fill({}),990,'grid',240,metrics);
+    assert.equal(positions[1].x-positions[0].width,13);
+    assert.equal(positions[3].x,0);
+    assert.equal(positions[3].y-positions[0].height,13);
+    assert.equal(positions[0].height-54-2,(positions[0].width-2)*.75);
+    assert.equal(layoutImages([{}],990,'list',240,metrics).height,97);
+    const custom=layoutImages([{}],990,'grid',240,{columns:2,gap:20,footerHeight:60,listHeight:100});
+    assert.equal(custom.positions[0].width,485);
+    assert.equal(custom.height,(485-2)*.75+62);
+    assert.equal(layoutImages([{}],990,'list',240,{listHeight:100}).height,100);
+});
+
+test('masonry uses real finite proportions and falls back for invalid dimensions', async () => {
+    const {layoutImages}=await source;
+    const images=[{width:100,height:1000},{width:1000,height:100},{width:Infinity,height:10},{width:10,height:NaN}];
+    const {positions}=layoutImages(images,990,'masonry',240,{columns:3});
+    assert.equal(positions[0].height,(positions[0].width-2)*10+56);
+    assert.equal(positions[1].height,(positions[1].width-2)/10+56);
+    for (const position of positions) assert.ok(Number.isFinite(position.height));
+});
+
+test('gallery width limits density columns without changing ordinary workspace geometry', async () => {
+    const {workspaceImageMetrics, layoutImages} = await source;
+    for (const [viewport, width, density, columns] of [
+        [1600,990,'comfortable',3], [1600,990,'compact',4],
+        [951,428,'compact',3], [390,362,'comfortable',2],
+        [1600,190,'comfortable',1], [1600,190,'compact',1],
+        [390,167,'large',1], [390,167,'compact',1], [390,69.5,'comfortable',1], [390,0,'comfortable',1],
+    ]) {
+        const metrics = workspaceImageMetrics(viewport,density,width);
+        assert.equal(metrics.columns,columns,`${viewport}/${width}/${density}`);
+        const {positions} = layoutImages(Array(8).fill({}),width,'grid',240,metrics);
+        assert.equal(positions[columns].x,0);
+        assert.ok(positions[columns].y > 0);
+    }
 });

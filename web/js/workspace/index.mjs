@@ -4,6 +4,7 @@ import { routes, mountRouter, summarizeStats } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
 import { mountImages } from './images.mjs';
 import { mountLibrary } from './library.mjs';
+import { createWorkspaceIcon } from './icons.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
 
@@ -33,13 +34,24 @@ function mountWorkspace() {
     const theme = mountWorkspaceTheme({ root: document.body, scope });
     const preference = createSelect([['follow', 'Follow ComfyUI'], ['light', 'Light'], ['dark', 'Dark']], '');
     preference.value = theme.preference;
-    appearance.replaceChildren(createField('Appearance', preference, 'workspace-appearance'));
+    const appearanceField = createField('Appearance', preference, 'workspace-appearance');
+    appearanceField.classList.add('workspace-appearance');
+    appearance.replaceChildren(appearanceField);
     scope.listen(preference, 'change', () => theme.setPreference(preference.value));
-    nav.replaceChildren(...routes.map(route => {
-        const link = element('a', route.label);
-        link.href = `#/${route.id}`;
-        link.dataset.route = route.id;
-        return link;
+    const icons = { images: 'images', library: 'library', tags: 'tags', inspect: 'upload', overview: 'overview', system: 'settings' };
+    const groups = [['primary', 'WORKSPACE', ['images', 'library', 'tags', 'inspect']], ['tools', 'TOOLS', ['overview', 'system']]];
+    nav.replaceChildren(...groups.map(([name, label, ids]) => {
+        const group = element('div', undefined, `workspace-nav-${name}`);
+        group.append(element('p', label, 'sidebar-label'));
+        for (const id of ids) {
+            const route = routes.find(item => item.id === id);
+            const link = element('a');
+            link.append(createWorkspaceIcon(icons[id]), element('span', route.label));
+            link.href = `#/${route.id}`;
+            link.dataset.route = route.id;
+            group.append(link);
+        }
+        return group;
     }));
     let viewScope;
     let firstRender = true;
@@ -49,13 +61,17 @@ function mountWorkspace() {
         viewScope?.dispose();
         viewScope = createScope();
         const view = viewScope;
-        for (const link of nav.children) {
+        for (const link of nav.querySelectorAll('[data-route]')) {
             if (link.dataset.route === route.id) link.setAttribute('aria-current', 'page');
             else link.removeAttribute('aria-current');
         }
         document.title = `${route.label} · Prompt Manager`;
         const heading = element('h1', route.label);
-        main.replaceChildren(element('p', 'YOUR CREATIVE LIBRARY', 'eyebrow'), heading);
+        const headingCopy = element('div', undefined, 'workspace-heading-copy');
+        headingCopy.append(heading);
+        const headingRegion = element('header', undefined, 'workspace-heading');
+        headingRegion.append(headingCopy);
+        main.replaceChildren(headingRegion);
         if (!firstRender) main.focus();
         firstRender = false;
         document.getElementById('workspace-breadcrumb').textContent = route.label;
@@ -68,7 +84,7 @@ function mountWorkspace() {
             return;
         }
         if (route.id !== 'overview') {
-            main.append(element('p', route.description, 'intro'));
+            headingCopy.append(element('p', route.description, 'intro'));
             const panel = element('section', undefined, 'panel handoff');
             panel.append(element('h2', 'Your current tools are ready'),
                 element('p', 'This workspace is being introduced in stages. Continue in the existing tool with your saved data.'),
@@ -76,7 +92,7 @@ function mountWorkspace() {
             main.append(panel);
             return;
         }
-        main.append(element('p', 'A home for your prompts, images and creative history.', 'intro'));
+        headingCopy.append(element('p', 'A home for your prompts, images and creative history.', 'intro'));
         const stats = element('section', undefined, 'overview-stats');
         stats.setAttribute('aria-label', 'Library statistics');
         main.append(stats);

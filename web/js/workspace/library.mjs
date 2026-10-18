@@ -2,7 +2,9 @@ import {createScope,createButton,createField,createSelect} from '../shared/toolk
 import {createPromptSender} from './prompt-sender.mjs';
 import {mountPromptBlocks} from './prompt-inspector.mjs';
 import {mountImages} from './images.mjs';
-import {createLibraryStream,createLibraryDetail,libraryPromptRoles,libraryWindow} from './library-state.mjs';
+import {createLibraryStream,createLibraryDetail,libraryPromptRoles} from './library-state.mjs';
+import {layoutLibraryRows,visibleLibraryRows} from './library-layout.mjs';
+import {createWorkspaceIcon} from './icons.mjs';
 
 let shelfVisit=null;
 const variantSelections=new Map();
@@ -11,17 +13,15 @@ function el(tag,text,className) {
 }
 function link(text,href,className) {const node=el('a',text,className);node.href=href;return node;}
 function title(text) {const first=text.split('\n')[0].trim();return first.length>80?`${first.slice(0,80)}…`:first;}
-function branchIcon() {
-    const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');svg.setAttribute('fill','none');svg.setAttribute('stroke','currentColor');svg.setAttribute('stroke-width','1.8');
-    const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d','M6 8v8m0-4h6a6 6 0 0 0 6-6M9 5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm0 14a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM21 3a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z');svg.append(path);return svg;
-}
 
 export function mountLibrary(main,api,parentScope,{positiveId}={}) {
     const scope=createScope();parentScope.cleanup(()=>scope.dispose());
-    main.classList.add('library-main');scope.cleanup(()=>main.classList.remove('library-main'));
+    main.classList.add('library-main');
     const sender=createPromptSender({scope});
-    if(positiveId!==undefined) {mountHistory();return;}
-    mountShelf();
+    if(positiveId!==undefined) mountHistory();
+    else mountShelf();
+    // Save the visit before removing the class that defines the shelf's scroll range.
+    scope.cleanup(()=>main.classList.remove('library-main'));
 
     function mountShelf() {
         const visit=shelfVisit;const filters={text:'',category:'',tags:[],sort:'newest',...visit?.filters};
@@ -41,10 +41,17 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         const continuation=el('div',undefined,'library-continuation');
         const more=createButton('Load more prompts');const retry=createButton('Retry prompt library');retry.hidden=true;
         const legacy=link('Current prompt library',window.ApiClient.resolveUrl('/prompt_manager/admin'),'workspace-link');
-        continuation.append(message,retry,more);section.append(introduction,toolbar,optionsStatus,legacy,caption,grid,continuation);main.append(section);
-        const cards=new Map();let state,frame=0,loadFrame=0,observer,optionsRequest,focusOverride=-1,restoreFrame=0;
+        (main.querySelector('.workspace-heading-copy') || section).append(introduction);
+        continuation.append(message,retry,more);section.append(toolbar,optionsStatus,caption,grid,continuation,legacy);main.append(section);
+        const cards=new Map(), rowNodes=new Map(), spacers=new Map(), heights=new Map(), pendingMeasurements=new Map();
+        let state,frame=0,loadFrame=0,observer,optionsRequest,focusOverride=-1;
         const columns=()=>window.innerWidth>=1700?3:window.innerWidth<=700?1:2;
-        function removeCard(card) {card.blocks.dispose();card.node.remove();}
+        const readInlineSize=()=>Math.round(grid.getBoundingClientRect().width*64)/64;
+        let inlineSize=readInlineSize(), columnCount=columns(), layout={rows:[],height:0}, dirty=true, items, indexesById=new Map();
+        let anchor=visit?.layout?.anchor || null, pendingAnchor=anchor, observedScrollY=window.scrollY;
+        let restoreScrollY=Number.isFinite(visit?.scrollY) && visit.scrollY>=0?visit.scrollY:null;
+        if(visit?.layout?.inlineSize===inlineSize && visit.layout.columns===columnCount) for(const [id,height] of visit.layout.heights) heights.set(id,height);
+        function removeCard(card) {measurementObserver?.unobserve(card.node);pendingMeasurements.delete(Number(card.node.dataset.promptId));card.blocks.dispose();card.node.remove();}
         function cardFor(item,index) {
             const article=el('article',undefined,'library-card');article.dataset.promptId=item.id;article.setAttribute('role','listitem');
             const art=el('div',undefined,'library-card-art');art.setAttribute('aria-hidden','true');
@@ -65,38 +72,106 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             const stats=el('div',undefined,'library-card-meta');stats.append(el('span',item.variant_count?`${item.variant_count} saved negative variants`:'No saved negatives','library-chip library-chip-negative'),el('span',`${item.image_count} linked images`));
             const vocabulary=el('div',undefined,'library-tags');for(const tag of item.tags || []) vocabulary.append(el('span',tag,'library-chip'));
             content.append(heading,prompts,stats,vocabulary);
-            const footer=el('footer',undefined,'library-card-footer');footer.append(el('span',item.rating?`${item.rating} / 5`:'Unrated','muted'));
-            const history=link('',`#/library/${item.id}`,'library-history-link');history.append(branchIcon(),el('span','Explore history'));footer.append(history);
+            const footer=el('footer',undefined,'library-card-footer');
+            const rating=el('span',item.rating?'★'.repeat(item.rating)+'☆'.repeat(5-item.rating):'Unrated','library-rating');rating.setAttribute('role','img');rating.setAttribute('aria-label',item.rating?`Rated ${item.rating} out of 5`:'Unrated');footer.append(rating);
+            const history=link('',`#/library/${item.id}`,'library-history-link');history.append(createWorkspaceIcon('branch'),el('span','Explore history'));footer.append(history);
             article.append(art,content,footer);article.dataset.index=index;return {node:article,blocks};
         }
-        function renderWindow() {
-            if(!state || scope.signal.aborted) return;
-            const active=document.activeElement?.closest('article[data-prompt-id]');
-            const focused=focusOverride>=0?focusOverride:active?Number(active.dataset.index):-1;
-            const size=columns();const top=Math.max(0,-grid.getBoundingClientRect().top);
-            const indexes=libraryWindow(state.items.length,size,top,window.innerHeight,focused);const keep=new Set(indexes.map(index=>state.items[index].id));
-            for(const [id,card] of cards) if(!keep.has(id)) {removeCard(card);cards.delete(id);}
-            const children=[];let previousRow=-1;
-            for(const index of indexes) {
-                const row=Math.floor(index/size);
-                if(index%size===0 && row>previousRow+1) {
-                    const gap=el('div',undefined,'library-row-spacer');gap.setAttribute('aria-hidden','true');gap.style.blockSize=`${(row-previousRow-1)*578-18}px`;children.push(gap);
-                }
-                let card=cards.get(state.items[index].id);
-                if(!card) {card=cardFor(state.items[index],index);cards.set(state.items[index].id,card);}
-                card.node.setAttribute('aria-posinset',index+1);card.node.setAttribute('aria-setsize',state.total);children.push(card.node);previousRow=row;
+        function captureAnchor() {
+            // Mounted rows can already differ from estimates before their observer batch.
+            for(const row of grid.children) {
+                if(!row.classList.contains('library-row'))continue;
+                const bounds=row.getBoundingClientRect();
+                if(bounds.bottom>0 && bounds.top<window.innerHeight)return {id:Number(row.firstElementChild.dataset.promptId),offset:bounds.top};
             }
-            const remaining=Math.ceil(state.items.length/size)-previousRow-1;
-            if(remaining>0) {const gap=el('div',undefined,'library-row-spacer');gap.setAttribute('aria-hidden','true');gap.style.blockSize=`${remaining*578-18}px`;children.push(gap);}
-            // Remove obsolete spacers first: moving a focused card past an old spacer loses focus.
-            for(const child of [...grid.children]) if(!children.includes(child)) child.remove();
-            let previous=null;
-            for(const child of children) {if(previous?previous.nextElementSibling!==child:grid.firstElementChild!==child) grid.insertBefore(child,previous?previous.nextElementSibling:grid.firstChild);previous=child;}
+            return null;
         }
-        const schedule=()=>{if(!frame) frame=requestAnimationFrame(()=>{frame=0;renderWindow();});};
+        function reconcileScroll() {
+            const delta=window.scrollY-observedScrollY;observedScrollY=window.scrollY;
+            if(!delta)return;
+            // Keep pending height compensation while honoring movement since it was queued.
+            if(pendingAnchor)pendingAnchor={...pendingAnchor,offset:pendingAnchor.offset-delta};
+            else anchor=captureAnchor();
+        }
+        function spacer(key,height) {
+            let node=spacers.get(key);
+            if(!node) {node=el('div',undefined,'library-row-spacer');node.setAttribute('aria-hidden','true');spacers.set(key,node);}
+            const size=`${height}px`;if(node.style.blockSize!==size)node.style.blockSize=size;
+            return node;
+        }
+        function renderWindow(topOverride) {
+            if(!state || scope.signal.aborted) return;
+            const active=document.activeElement, activeCard=active?.closest('article[data-prompt-id]');
+            const focused=focusOverride>=0?focusOverride:activeCard?Number(activeCard.dataset.index):-1;
+            const top=topOverride??Math.max(0,-grid.getBoundingClientRect().top);
+            const visible=state.items.length<=120?layout.rows.map((_,index)=>index):visibleLibraryRows(layout.rows,top,window.innerHeight,focused);
+            const keep=new Set(), children=[];let previous=-1;
+            for(const rowIndex of visible) {
+                const row=layout.rows[rowIndex];
+                if(rowIndex>previous+1) {
+                    const end=previous<0?0:layout.rows[previous].top+layout.rows[previous].height+18;
+                    children.push(spacer(`${previous}:${rowIndex}`,row.top-end-18));
+                }
+                let rowNode=rowNodes.get(rowIndex);
+                if(!rowNode) {rowNode=el('div',undefined,'library-row');rowNode.setAttribute('role','presentation');rowNodes.set(rowIndex,rowNode);}
+                if(!rowNode.isConnected)grid.append(rowNode);
+                for(let index=row.first;index<=row.last;index++) {
+                    const item=state.items[index];keep.add(item.id);let card=cards.get(item.id);
+                    if(!card) {card=cardFor(item,index);cards.set(item.id,card);rowNode.append(card.node);measurementObserver?.observe(card.node);}
+                    else if(card.node.parentElement!==rowNode)rowNode.append(card.node);
+                    card.node.dataset.index=index;card.node.setAttribute('aria-posinset',index+1);card.node.setAttribute('aria-setsize',state.total);
+                }
+                children.push(rowNode);previous=rowIndex;
+            }
+            for(const [id,card] of cards) if(!keep.has(id)) {removeCard(card);cards.delete(id);}
+            if(previous>=0 && previous<layout.rows.length-1) {const end=layout.rows[previous].top+layout.rows[previous].height;children.push(spacer(`${previous}:end`,layout.height-end-18));}
+            for(const child of [...grid.children]) if(!children.includes(child)) child.remove();
+            let sibling=null;
+            for(const child of children) {if(sibling?sibling.nextElementSibling!==child:grid.firstElementChild!==child)grid.insertBefore(child,sibling?sibling.nextElementSibling:grid.firstChild);sibling=child;}
+            for(const [key,node] of rowNodes)if(!node.isConnected)rowNodes.delete(key);
+            for(const [key,node] of spacers)if(!node.isConnected)spacers.delete(key);
+            if(activeCard && active.isConnected && document.activeElement!==active)active.focus({preventScroll:true});
+        }
+        function flush() {
+            frame=0;if(scope.signal.aborted)return;
+            reconcileScroll();
+            const width=readInlineSize(), size=columns();
+            if(width!==inlineSize || size!==columnCount) {pendingAnchor ||= anchor;inlineSize=width;columnCount=size;heights.clear();dirty=true;}
+            for(const [id,measurement] of pendingMeasurements) {
+                if(measurement.width===inlineSize && indexesById.has(id) && Math.abs((heights.get(id)??0)-measurement.height)>.5) {heights.set(id,measurement.height);dirty=true;}
+            }
+            pendingMeasurements.clear();
+            const restore=dirty?(pendingAnchor || anchor):null;
+            if(dirty) {layout=layoutLibraryRows(state.items.map(item=>heights.get(item.id)??null),columnCount,{estimate:columnCount===1?448:468});dirty=false;}
+            const index=restore?indexesById.get(restore.id):undefined;
+            const target=index===undefined?undefined:Math.max(0,layout.rows[Math.floor(index/columnCount)].top-restore.offset);
+            renderWindow(target);
+            const card=index===undefined?null:cards.get(restore.id);
+            if(card) {
+                const delta=card.node.getBoundingClientRect().top-restore.offset;if(Math.abs(delta)>.5)window.scrollBy(0,delta);
+                anchor=restore;
+            } else {
+                if(restoreScrollY!==null)window.scrollTo(0,restoreScrollY);
+                anchor=captureAnchor();
+            }
+            // Read the actual clamped result now; its later scroll event is not new motion.
+            observedScrollY=window.scrollY;
+            restoreScrollY=null;pendingAnchor=null;scheduleLoad();
+        }
+        const schedule=()=>{if(!frame)frame=requestAnimationFrame(flush);};
+        const measurementObserver=typeof ResizeObserver==='function'?new ResizeObserver(entries=>{
+            const width=readInlineSize();let changed=width!==inlineSize || columns()!==columnCount;
+            for(const entry of entries) {
+                const id=Number(entry.target.dataset.promptId);if(!cards.has(id) || cards.get(id).node!==entry.target)continue;
+                const height=entry.borderBoxSize?.[0]?.blockSize ?? entry.target.getBoundingClientRect().height;
+                if(Number.isFinite(height) && height>0 && (width!==inlineSize || Math.abs((pendingMeasurements.get(id)?.height??heights.get(id)??0)-height)>.5)) {pendingMeasurements.set(id,{height,width});changed=true;}
+            }
+            if(changed) {pendingAnchor ||= anchor;schedule();}
+        }):null;
+        measurementObserver?.observe(grid);
         function focusCard(index,last=false) {
             if(index<0 || index>=state.items.length) return;
-            focusOverride=index;renderWindow();const card=cards.get(state.items[index].id).node;
+            if(dirty) {cancelAnimationFrame(frame);flush();}focusOverride=index;renderWindow();const card=cards.get(state.items[index].id).node;
             const controls=card.querySelectorAll('a,button');(last?controls[controls.length-1]:controls[0]).focus();card.scrollIntoView({block:'nearest'});focusOverride=-1;renderWindow();
         }
         scope.listen(grid,'keydown',event=>{
@@ -110,18 +185,26 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             }
         });
         function render(next) {
+            if(items!==next.items) {
+                pendingAnchor ||= captureAnchor();items=next.items;indexesById=new Map(items.map((item,index)=>[item.id,index]));dirty=true;
+                if(!items.length) {
+                    anchor=null;pendingAnchor=null;heights.clear();layout={rows:[],height:0};
+                    for(const card of cards.values())removeCard(card);
+                    cards.clear();rowNodes.clear();spacers.clear();grid.replaceChildren();
+                }
+            }
             state=next;
             caption.textContent=`${next.items.length} of ${next.total} positive prompts · Images are grouped by positive prompt`;
             message.textContent=next.error?'Prompt library could not be loaded. Retry or refresh.':next.loading?'Loading prompt library…':!next.items.length?'No matching prompts. Try changing the filters.':!next.hasMore?'You’re all caught up.':'';
             message.setAttribute('role',next.error?'alert':'status');retry.hidden=!next.error;more.hidden=!next.hasMore || !!next.error;more.setAttribute('aria-disabled',String(next.loading));
-            renderWindow();scheduleLoad();
+            schedule();scheduleLoad();
         }
         const stream=createLibraryStream({api,onChange:render,restore:visit?{filters,state:visit.state}:undefined});
         function maybeLoad() {
             if(!observer || !state?.hasMore || state.loading || state.error || scope.signal.aborted) return;
             const bounds=continuation.getBoundingClientRect();if(bounds.top<=window.innerHeight+250 && bounds.bottom>=0) stream.loadMore();
         }
-        function scheduleLoad() {if(!loadFrame) loadFrame=requestAnimationFrame(()=>{loadFrame=0;maybeLoad();});}
+        function scheduleLoad() {if(observer && !loadFrame) loadFrame=requestAnimationFrame(()=>{loadFrame=0;maybeLoad();});}
         if(typeof IntersectionObserver==='function') {observer=new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting)) maybeLoad();},{rootMargin:'250px'});observer.observe(continuation);}
         async function loadCategories() {
             optionsRequest?.abort();const request=optionsRequest=new AbortController();
@@ -130,14 +213,16 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 const values=[...new Set([...data.categories,filters.category].filter(Boolean))];category.replaceChildren(new Option('All categories',''),...values.map(value=>new Option(value,value)));category.value=filters.category;optionsStatus.hidden=true;
             } catch {if(!scope.signal.aborted && optionsRequest===request) {optionsStatus.textContent='Categories could not be loaded. Refresh library to retry.';optionsStatus.hidden=false;}}
         }
-        const reset=()=>stream.reset(filters);
+        const reset=()=>{restoreScrollY=null;return stream.reset(filters);};
         scope.listen(search,'input',scope.debounce(()=>{filters.text=search.value.trim();reset();},200));
         scope.listen(tags,'input',scope.debounce(()=>{filters.tags=[...new Set(tags.value.split(',').map(tag=>tag.trim()).filter(Boolean))];reset();},200));
         scope.listen(category,'change',()=>{filters.category=category.value;reset();});scope.listen(sort,'change',()=>{filters.sort=sort.value;reset();});
         scope.listen(refresh,'click',()=>{loadCategories();reset();});scope.listen(more,'click',()=>stream.loadMore());scope.listen(retry,'click',()=>stream.loadMore());
-        scope.listen(window,'scroll',schedule);scope.listen(window,'resize',schedule);
-        scope.cleanup(()=>{shelfVisit=state?{filters:{...filters,tags:[...filters.tags]},state,scrollY:window.scrollY}:null;stream.dispose();optionsRequest?.abort();observer?.disconnect();cancelAnimationFrame(frame);cancelAnimationFrame(loadFrame);cancelAnimationFrame(restoreFrame);for(const card of cards.values()) removeCard(card);cards.clear();});
-        loadCategories();if(visit) {render(stream.state);restoreFrame=requestAnimationFrame(()=>{if(!scope.signal.aborted) {window.scrollTo(0,visit.scrollY);renderWindow();scheduleLoad();}});if(visit.state.loading || visit.state.error) stream.loadMore();} else reset();
+        scope.listen(window,'scroll',()=>{reconcileScroll();schedule();});
+        // Mobile viewport resizing can adjust scroll before delivering its resize event.
+        scope.listen(window,'resize',()=>{pendingAnchor ||= anchor;observedScrollY=window.scrollY;schedule();});
+        scope.cleanup(()=>{shelfVisit=state?{filters:{...filters,tags:[...filters.tags]},state,scrollY:window.scrollY,layout:{inlineSize,columns:columnCount,heights:[...heights],anchor:pendingAnchor || anchor || captureAnchor()}}:null;stream.dispose();optionsRequest?.abort();observer?.disconnect();measurementObserver?.disconnect();cancelAnimationFrame(frame);cancelAnimationFrame(loadFrame);for(const card of cards.values())removeCard(card);cards.clear();});
+        loadCategories();if(visit) {render(stream.state);if(visit.state.loading || visit.state.error)stream.loadMore();} else reset();
     }
 
     function mountHistory() {
