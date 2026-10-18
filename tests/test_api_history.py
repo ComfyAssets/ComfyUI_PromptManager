@@ -191,6 +191,58 @@ class HistoryAPITests(ImageAPITestCase):
         self.assertEqual(uncaptured["contexts"], [])
         self.assertIsNone(uncaptured["output_summary"]["retained_occurrence_count"])
 
+    async def test_window_and_exact_run_publish_boolean_diagnostics_from_sqlite(
+        self,
+    ) -> None:
+        positive = self._save_prompt("positive")
+        starts = []
+        for item, omitted in enumerate((False, True)):
+            start = make_start(
+                SESSION,
+                ((0, JOB, {}, {}), item),
+                self.api.db.get_execution_epoch(),
+                item,
+            )
+            self.api.db.write_execution_start(start)
+            finish = make_finish(
+                SESSION,
+                item,
+                start.storage_epoch,
+                SimpleNamespace(
+                    messages=[
+                        (
+                            "execution_success",
+                            {
+                                "prompt_id": JOB,
+                                "timestamp": item,
+                                "node_type": object() if omitted else None,
+                            },
+                        )
+                    ]
+                ),
+                item,
+            )
+            self.api.db.write_execution_finish(finish)
+            self.api.db.write_execution_contexts(
+                start.run_id, start.storage_epoch, bundle()
+            )
+            self.assertEqual(
+                self.api.db.get_execution_run(start.run_id)["diagnostics_omitted"],
+                int(omitted),
+            )
+            starts.append(start)
+        response, window = await self.window(positive)
+        self.assertEqual(response.status, 200, window)
+        for start, omitted in zip(starts, (False, True)):
+            with self.subTest(omitted=omitted):
+                summary = next(
+                    row for row in window["items"] if row["run_id"] == start.run_id
+                )
+                self.assertIs(summary["diagnostics_omitted"], omitted)
+                response, detail = await self.detail(start.run_id)
+                self.assertEqual(response.status, 200, detail)
+                self.assertIs(detail["run"]["diagnostics_omitted"], omitted)
+
     async def test_missing_and_invalid_ids_epochs_and_duplicate_queries(self):
         response, body = await self.window(999999)
         self.assert_error(response, body, 404, "not-found")

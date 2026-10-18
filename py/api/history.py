@@ -354,6 +354,7 @@ def _close_prepared_result(task: asyncio.Task) -> None:
 
 
 def _wire_run(run: dict) -> None:
+    run["diagnostics_omitted"] = bool(run["diagnostics_omitted"])
     for key in _RUN_DECIMALS:
         if run[key] is not None:
             run[key] = str(run[key])

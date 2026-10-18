@@ -16,6 +16,7 @@ from PIL.PngImagePlugin import PngInfo
 
 from tests.browser.workspace_visual_fixture import seed_workspace_visual
 from tests.browser.workspace_inspector_fixture import seed_workspace_inspector
+from tests.browser.workspace_history_fixture import seed_workspace_history
 
 
 class TestModel:
@@ -226,6 +227,27 @@ def create_app(root: Path) -> web.Application:
     @routes.post("/__test__/reset")
     async def reset(request: web.Request) -> web.Response:
         data = await request.json() if request.can_read_body else {}
+        if not isinstance(data, dict):
+            raise web.HTTPBadRequest()
+        chronological_history = data.get("chronological_history", False)
+        history_runs = data.get("history_runs", 0)
+        if (
+            not isinstance(chronological_history, bool)
+            or isinstance(history_runs, bool)
+            or not isinstance(history_runs, int)
+            or not 0 <= history_runs <= 1200
+            or (not chronological_history and "history_runs" in data)
+            or (
+                chronological_history
+                and set(data) - {"chronological_history", "history_runs"}
+            )
+        ):
+            raise web.HTTPBadRequest()
+        if chronological_history:
+            manifest = await api._run_in_executor(
+                lambda: seed_workspace_history(api, root, history_runs=history_runs)
+            )
+            return web.json_response({"success": True, **manifest})
         workspace_visual = data.get("workspace_visual", False)
         full_inspector = data.get("full_inspector", False)
         extra = data.get("extra_images", 0)

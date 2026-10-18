@@ -5,9 +5,11 @@ import {mountImages} from './images.mjs';
 import {createLibraryStream,createLibraryDetail,libraryPromptRoles} from './library-state.mjs';
 import {layoutLibraryRows,visibleLibraryRows} from './library-layout.mjs';
 import {createWorkspaceIcon} from './icons.mjs';
+import {mountRecordedHistory} from './history.mjs';
 
 let shelfVisit=null;
 const variantSelections=new Map();
+const historyVisits=new Map();
 function el(tag,text,className) {
     const node=document.createElement(tag);if(text!==undefined) node.textContent=text;if(className) node.className=className;return node;
 }
@@ -242,27 +244,37 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             }
             detail=state.detail;main.querySelector('h1').textContent=title(detail.positive.text);
             const subtitle=el('p','One positive prompt. Reusable negative variants. One shared gallery.','intro');
-            const summary=el('article',undefined,'library-surface');summary.append(el('span',detail.positive.category || 'Uncategorized','library-chip'));
+            const summary=el('article',undefined,'library-surface');const categoryChip=el('span',detail.positive.category || 'Uncategorized','library-chip');summary.append(categoryChip);
             const promptContainer=el('div');promptContainer.setAttribute('role','region');promptContainer.setAttribute('aria-label','Saved prompt texts');summary.append(promptContainer);
+            const parentStatus=el('p','','library-parent-status muted');parentStatus.hidden=true;parentStatus.setAttribute('role','status');
+            const retryParent=createButton('Retry saved Library details'),reloadSaved=createButton('Reload saved Library view');retryParent.hidden=reloadSaved.hidden=true;summary.append(parentStatus,retryParent,reloadSaved);
+            const ownerText=detail.positive.text;let savedReadState='current',parentRequest,parentGeneration=0;
+            contentScope.cleanup(()=>{parentGeneration++;parentRequest?.abort();});
             const all=createButton('All images for this positive');
             const variants=el('section',undefined,'library-surface library-variants');variants.setAttribute('aria-label','Saved negative variants');
             variants.append(el('h2','Negative variants'),el('p','Choose a saved negative to inspect its full text and filter the shared gallery.','muted'));
-            const branches=el('div',undefined,'library-branches');branches.append(el('p','+ Positive prompt · unchanged','library-positive-lane'));
+            const branches=el('div',undefined,'library-branches');branches.append(el('p','Positive prompt · unchanged','library-positive-lane'));
             const choices=[];
             const variantCount=el('p','','muted');variantCount.setAttribute('role','status');
             const variantError=el('p','','muted');variantError.setAttribute('role','alert');variantError.hidden=true;
             const more=createButton('Load more negative variants');const retry=createButton('Retry negative variants');retry.hidden=true;
-            contentScope.listen(more,'click',()=>loader.loadMore());contentScope.listen(retry,'click',()=>loader.loadMore());
+            contentScope.listen(more,'click',()=>{if(savedReadState==='current')loader.loadMore();});contentScope.listen(retry,'click',()=>{if(savedReadState==='current')loader.loadMore();});
             updateBranches=state=>{
                 const known=new Set(choices.map(choice=>choice.variant.id));
                 for(const [index,variant] of detail.variants.entries()) if(!known.has(variant.id)) {
-                    const lane=el('div',undefined,'library-variant-lane');const button=createButton('−','library-variant-dot');button.setAttribute('aria-label',`Select negative variant ${index+1}`);
+                    const lane=el('div',undefined,'library-variant-lane');lane.style.setProperty('--lane-offset',`${38+index*47}px`);const button=createButton('−','library-variant-dot');button.setAttribute('aria-label',`Select negative variant ${index+1}`);
                     button.setAttribute('aria-pressed',String(variantSelections.get(positiveId)===variant.id));
-                    lane.append(button,el('span',`${variant.title || (variant.explicit_empty?'Explicitly empty negative':`Negative variant ${index+1}`)} · ${variant.image_count} linked images`));branches.append(lane);choices.push({button,variant});
+                    const label=el('span');lane.append(button,label);branches.append(lane);choices.push({button,variant,label});
                     contentScope.listen(button,'click',()=>select(variant.id));
                 }
+                for(const [index,choice] of choices.entries()) {
+                    choice.variant=detail.variants.find(variant=>variant.id===choice.variant.id) || choice.variant;
+                    const variant=choice.variant;choice.label.textContent=`${variant.title || (variant.explicit_empty?'Explicitly empty negative':`Negative variant ${index+1}`)} · ${variant.image_count} linked images`;
+                    choice.button.disabled=savedReadState!=='current';
+                }
                 variantCount.textContent=`${detail.variants.length} of ${detail.variant_total} saved negative variants`;
-                more.hidden=!detail.variants_has_more || !!state.variantsError;more.setAttribute('aria-disabled',String(state.loadingVariants));retry.hidden=!state.variantsError;
+                more.hidden=!detail.variants_has_more || !!state.variantsError;more.setAttribute('aria-disabled',String(state.loadingVariants || savedReadState!=='current'));retry.hidden=!state.variantsError;
+                more.disabled=retry.disabled=savedReadState!=='current';all.disabled=savedReadState!=='current';
                 variantError.hidden=!state.variantsError;variantError.textContent=state.variantsError?'Negative variants could not be loaded. Retry to continue.':'';
             };
             updateBranches(state);
@@ -271,11 +283,51 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             const context=el('p','','library-variant-context');context.setAttribute('role','status');
             const gallery=el('section',undefined,'library-shared-gallery');gallery.setAttribute('aria-label','Shared gallery');gallery.append(el('h2','Shared gallery'),context);
             const images=el('div',undefined,'library-linked-images');gallery.append(images);let activePairId;
-            body.append(subtitle,summary,variants,gallery);
+            const recorded=el('div',undefined,'library-recorded-container');
+            body.append(subtitle,summary,variants,recorded,gallery);
+            function setParentState(parent) {
+                if(contentScope.signal.aborted || (!parent.loading && !parent.error && !parent.detail)) return;
+                parentStatus.hidden=false;parentStatus.setAttribute('role',parent.error?'alert':'status');retryParent.hidden=true;reloadSaved.hidden=true;
+                if(parent.loading) {savedReadState='validating';parentStatus.textContent='Revalidating saved Library details…';}
+                else if(parent.error) {savedReadState='error';parentStatus.textContent='Saved Library details could not be revalidated. The saved selection and gallery have been retained.';retryParent.hidden=false;}
+                else {
+                    const fresh=parent.detail;
+                    if(fresh.positive.id!==positiveId || fresh.positive.text!==ownerText) {
+                        savedReadState='stale';parentStatus.textContent='Saved Library owner changed. This view retains the previous prompt and gallery. Reload the saved Library view to inspect current data.';reloadSaved.hidden=false;
+                    } else {
+                        const observed=new Map(fresh.variants.map(variant=>[variant.id,variant]));const loaded=new Set(detail.variants.map(variant=>variant.id));const additional=fresh.variants.some(variant=>!loaded.has(variant.id));let changed=false,unobserved=false;
+                        const variants=detail.variants.map(variant=>{
+                            const current=observed.get(variant.id);
+                            if(!current) {unobserved=true;return variant;}
+                            if(current.negative_text!==variant.negative_text || current.explicit_empty!==variant.explicit_empty) {changed=true;return variant;}
+                            return {...variant,...current};
+                        });
+                        detail={...detail,positive:fresh.positive,variants};categoryChip.textContent=fresh.positive.category || 'Uncategorized';
+                        savedReadState=changed || unobserved || additional?'stale':'current';
+                        parentStatus.textContent=changed?'A saved negative changed identity. This view retains its previous selection and gallery. Reload the saved Library view to inspect current data.':unobserved?(fresh.variants_has_more?'Some loaded saved negatives were not observed in this bounded revalidation page. Reload the saved Library view to validate them.':'Some loaded saved negatives were not present in the revalidation result. This view retains its previous selection and gallery.'):additional?'Saved Library choices changed. This view retains its previous selection and gallery. Reload the saved Library view to inspect current choices.':'Saved Library details revalidated.';
+                        reloadSaved.hidden=savedReadState==='current';
+                    }
+                }
+                updateBranches(loader.state);blocks?.setState({prompts:libraryPromptRoles(detail,variantSelections.get(positiveId)??null),actionsEnabled:savedReadState==='current'});
+            }
+            async function retrySavedParent() {
+                parentRequest?.abort();const request=parentRequest=new AbortController(),generation=++parentGeneration;setParentState({loading:true});
+                try {
+                    const fresh=await api.get(`/prompt_manager/library/${positiveId}?variant_limit=40`,{signal:request.signal});
+                    if(contentScope.signal.aborted || generation!==parentGeneration) return;
+                    if(!fresh?.positive || !Number.isSafeInteger(fresh.positive.id) || typeof fresh.positive.text!=='string' || !Array.isArray(fresh.variants) || fresh.variants.some(variant=>!Number.isSafeInteger(variant.id) || typeof variant.negative_text!=='string' || typeof variant.explicit_empty!=='boolean' || variant.explicit_empty!==(variant.negative_text===''))) throw new TypeError('Invalid saved Library details');
+                    setParentState({detail:fresh});
+                } catch(error) {if(!contentScope.signal.aborted && generation===parentGeneration)setParentState({error});}
+            }
+            contentScope.listen(retryParent,'click',retrySavedParent);contentScope.listen(reloadSaved,'click',()=>{variantSelections.delete(positiveId);loader.load(positiveId);});
+            if(!historyVisits.has(positiveId)) historyVisits.set(positiveId,{});
+            mountRecordedHistory(recorded,{api,positiveId,parentScope:contentScope,sender,visit:historyVisits.get(positiveId),onParentRevalidate:parent=>{
+                if(contentScope.signal.aborted) return;parentGeneration++;parentRequest?.abort();setParentState(parent);
+            }});
             blocks=mountPromptBlocks(promptContainer,{prompts:libraryPromptRoles(detail),sender,parentScope:contentScope});
             function select(pairId) {
-                if(galleryScope && activePairId===pairId) return;activePairId=pairId;
-                variantSelections.set(positiveId,pairId);blocks.update(libraryPromptRoles(detail,pairId));
+                if(savedReadState!=='current' || (galleryScope && activePairId===pairId)) return;activePairId=pairId;
+                variantSelections.set(positiveId,pairId);blocks.setState({prompts:libraryPromptRoles(detail,pairId),actionsEnabled:true});
                 for(const choice of choices) choice.button.setAttribute('aria-pressed',String(choice.variant.id===pairId));all.setAttribute('aria-pressed',String(pairId===null));
                 context.textContent=pairId===null?'All images for this positive, including unassigned images. Choose a saved negative variant to inspect or send it.':`Negative variant ${detail.variants.findIndex(variant=>variant.id===pairId)+1} · same positive prompt`;
                 galleryScope?.dispose();galleryScope=createScope();images.replaceChildren();

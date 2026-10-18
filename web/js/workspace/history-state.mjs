@@ -157,6 +157,21 @@ const emptyRun = () => ({detail:null, loading:false, error:null});
 const emptyOutputs = () => ({items:[], capture:null, capture_fingerprint:null, retained_occurrence_count:null, list_status:null, next_cursor:null, has_more:false, loading:false, error:null});
 const emptySelection = mode => ({run_id:null, anchor_id:null, context_id:null, mode, receipt:null});
 
+/** Fixed run positions; an off-screen focused column remains in semantic order. */
+export function visibleHistoryColumns(count, left, width, focusedIndex = -1) {
+    requireValue(Number.isSafeInteger(count) && count >= 0, 'Invalid history column count');
+    if (count <= 120) return Array.from({length:count}, (_, index) => index);
+    const start = Math.max(0, Math.floor((Number.isFinite(left) ? Math.max(0, left) : 0) / 64) - 3);
+    const right = (Number.isFinite(left) ? Math.max(0, left) : 0) + (Number.isFinite(width) ? Math.max(1, width) : 1);
+    const end = Math.min(count - 1, Math.ceil(right / 64) - 1 + 3);
+    const result = [];
+    for (let index = start; index <= end; index++) result.push(index);
+    if (Number.isSafeInteger(focusedIndex) && focusedIndex >= 0 && focusedIndex < count && !result.includes(focusedIndex)) {
+        result.push(focusedIndex);result.sort((a, b) => a - b);
+    }
+    return result;
+}
+
 export function createHistoryController({api, positiveId, onChange = () => {}, restore}) {
     requireValue(id(positiveId), 'Invalid saved positive ID');
     const intent = {search:typeof restore?.search === 'string' ? restore.search : '', scrollTop:typeof restore?.scrollTop === 'number' && Number.isFinite(restore.scrollTop) ? Math.max(0, restore.scrollTop) : 0};
