@@ -99,9 +99,14 @@ the baseline updater. Raise floors with `npm run --prefix tools/vendor
 coverage:update`; it reruns the suites and cannot lower an existing floor.
 Review baseline changes like code changes.
 
-The `viewerjs` check runs on every PR, including backend-only changes. GitHub
-artifacts named `frontend-test-reports` contain HTML coverage, a JSON summary,
-and failure screenshots/traces. Open traces with Playwright's `show-trace` tool.
+The `viewerjs` check runs on every PR, including backend-only changes. It is an
+aggregate job that passes only when the `frontend coverage (chromium and touch)`
+job and both `page workflows (firefox)` and `page workflows (webkit)` jobs
+succeed; the browsers run on separate runners in parallel. GitHub artifacts
+named `frontend-test-reports` contain HTML coverage, a JSON summary, and the
+Chromium/touch failure screenshots/traces; `browser-traces-firefox` and
+`browser-traces-webkit` hold the other browsers' traces. Open traces with
+Playwright's `show-trace` tool.
 
 The real-host suite covers both Classic and Nodes 2.0 startup, switching both
 ways, actual database prompt selection, execution-text serialization, workflow
