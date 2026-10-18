@@ -19,9 +19,9 @@ export default defineConfig({
         gracefulShutdown: { signal: 'SIGTERM', timeout: 5000 },
     },
     projects: [
-        { name: 'chromium', use: { browserName: 'chromium' } },
-        { name: 'firefox', use: { browserName: 'firefox' } },
-        { name: 'webkit', use: { browserName: 'webkit' } },
-        { name: 'touch', use: { ...devices['Pixel 7'], browserName: 'chromium' } },
+        { name: 'chromium', outputDir: './test-results/workflows/chromium', use: { browserName: 'chromium' } },
+        { name: 'firefox', outputDir: './test-results/workflows/firefox', use: { browserName: 'firefox' } },
+        { name: 'webkit', outputDir: './test-results/workflows/webkit', use: { browserName: 'webkit' } },
+        { name: 'touch', outputDir: './test-results/workflows/touch', use: { ...devices['Pixel 7'], browserName: 'chromium' } },
     ],
 });
