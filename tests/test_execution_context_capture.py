@@ -73,6 +73,31 @@ class CaptureTests(unittest.TestCase):
             self.addCleanup(result.lease.release)
         return result
 
+    def test_unexpected_projection_error_releases_payload_but_keeps_capability(self):
+        with patch.object(
+            capture, "project_contexts", side_effect=RuntimeError("private")
+        ):
+            cap = self.begin()
+        self.assertTrue(self.manager.valid(cap))
+        self.assertEqual(self.pool.charged_bytes, 0)
+        result = self.seal(cap)
+        self.assertEqual(
+            (result.state, result.reason), ("unavailable", "invalid_evidence")
+        )
+        self.assertEqual(self.pool.charged_bytes, 0)
+
+    def test_unexpected_seal_error_discards_popped_attempt_and_lease(self):
+        cap = self.begin()
+        with patch.object(
+            capture, "bundle_payload_size", side_effect=RuntimeError("private")
+        ):
+            result = self.seal(cap)
+        self.assertEqual(
+            (result.state, result.reason), ("unavailable", "invalid_evidence")
+        )
+        self.assertFalse(self.manager.valid(cap))
+        self.assertEqual(self.pool.charged_bytes, 0)
+
     def test_runtime_keeps_raw_affix_whitespace_and_injected_effective_text(self):
         cap = self.begin()
         self.manager.observe(cap, SourceRef("p", "PromptManagerPair", 0), 0, snapshot())
