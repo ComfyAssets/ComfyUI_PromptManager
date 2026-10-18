@@ -554,22 +554,24 @@ test('collection viewer keeps nested dialog focus and route cleanup',async({page
 test('collection viewer matches approved responsive frame',async({page,request},testInfo)=>{
     await page.setViewportSize({width:1600,height:1100});await fullFixture(page,request);await openCollection(page);
     const modal=mediaDialog(page),body=modal.locator('.image-preview-body'),rail=modal.locator('.image-preview-details');
+    // Absolute gallery cards relayout through ResizeObserver and rAF after resize or CSS zoom.
+    const settleViewport=width=>expect.poll(()=>page.evaluate(()=>({inner:innerWidth,client:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth})),{message:`Images gallery relayout settles the ${width}px viewport`}).toEqual({inner:width,client:width,scroll:width});
+    await settleViewport(1600);
     for(const theme of ['dark','light']) {
         await page.evaluate(theme=>{const preference=document.getElementById('workspace-appearance');preference.value=theme;preference.dispatchEvent(new Event('change'));},theme);
         const geometry=await modal.evaluate(node=>{const style=getComputedStyle(node),box=node.getBoundingClientRect(),rail=node.querySelector('.image-preview-details').getBoundingClientRect();return{width:box.width,height:box.height,padding:style.padding,radius:style.borderRadius,rail:rail.width,gap:getComputedStyle(node.querySelector('.image-preview-body')).columnGap};});
         expect(geometry).toEqual({width:1500,height:940,padding:'18px',radius:'9px',rail:340,gap:'20px'});
         await page.screenshot({path:testInfo.outputPath(`viewer-${theme}-1600.png`)});
     }
-    for(const [width,expected] of [[1200,300],[900,270]]) {await page.setViewportSize({width,height:1000});await expect(rail).toHaveCSS('width',`${expected}px`);}
-    await page.setViewportSize({width:390,height:844});expect(await modal.evaluate(node=>node.getBoundingClientRect().width)).toBeCloseTo(356,1);
+    for(const [width,expected] of [[1200,300],[900,270]]) {await page.setViewportSize({width,height:1000});await settleViewport(width);await expect(rail).toHaveCSS('width',`${expected}px`);}
+    await page.setViewportSize({width:390,height:844});await settleViewport(390);expect(await modal.evaluate(node=>node.getBoundingClientRect().width)).toBeCloseTo(356,1);
     for(const [width,expected]of [[840,806],[850,816],[860,825.6]]) {
-        await page.setViewportSize({width,height:1000});expect(await modal.evaluate(node=>node.getBoundingClientRect().width)).toBeCloseTo(expected,1);
+        await page.setViewportSize({width,height:1000});await settleViewport(width);expect(await modal.evaluate(node=>node.getBoundingClientRect().width)).toBeCloseTo(expected,1);
     }
-    await page.setViewportSize({width:390,height:844});
+    await page.setViewportSize({width:390,height:844});await settleViewport(390);
     for(const zoom of [1,2]) {
         await page.evaluate(zoom=>{document.documentElement.style.zoom=String(zoom);},zoom);
-        // Absolute gallery cards relayout through ResizeObserver and rAF after CSS zoom.
-        await expect.poll(()=>page.evaluate(()=>({inner:innerWidth,client:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth})),{message:'Images gallery relayout settles the 390px viewport after CSS zoom'}).toEqual({inner:390,client:390,scroll:390});
+        await settleViewport(390);
         expect(await modal.evaluate(node=>node.getBoundingClientRect().width)).toBeCloseTo(zoom===1?356:322,1);
         expect(await modal.evaluate(node=>{const box=node.getBoundingClientRect();return box.top>=0&&box.bottom<=innerHeight+1;})).toBe(true);
         await expect.poll(()=>modal.evaluate(node=>node.scrollWidth<=node.clientWidth+1)).toBe(true);
@@ -587,10 +589,10 @@ test('collection viewer matches approved responsive frame',async({page,request},
     expect(await modal.evaluate(node=>node.getBoundingClientRect().width)).toBeCloseTo(322,1);await expect.poll(()=>modal.evaluate(node=>node.scrollWidth<=node.clientWidth+1)).toBe(true);
     await testInfo.attach('wider-font-footer-geometry',{body:JSON.stringify({footer,modal:await modal.evaluate(node=>({width:node.getBoundingClientRect().width,scrollWidth:node.scrollWidth,clientWidth:node.clientWidth}))}),contentType:'application/json'});
     await page.screenshot({path:testInfo.outputPath('viewer-mobile-wider-font-2x.png')});
-    await modal.getByRole('button',{name:'Close preview',exact:true}).click();await page.evaluate(()=>{document.documentElement.style.zoom='1';});
+    await modal.getByRole('button',{name:'Close preview',exact:true}).click();await page.evaluate(()=>{document.documentElement.style.zoom='1';});await settleViewport(390);
     const longFiles=await(await request.get('/prompt_manager/images/output?mode=workspace&q=a-very-long&limit=40')).json();const long=longFiles.images[0];
     await page.locator(`article[data-image-key="${long.root_index}:${long.path}"] .image-open`).click();await openCollection(page);
-    await page.evaluate(()=>{document.documentElement.style.zoom='2';});await modal.evaluate(node=>{node.scrollTop=0;});
+    await page.evaluate(()=>{document.documentElement.style.zoom='2';});await settleViewport(390);await modal.evaluate(node=>{node.scrollTop=0;});
     await expect(modal.getByRole('button',{name:'Close preview',exact:true})).toBeInViewport();
 });
 
