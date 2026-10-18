@@ -488,7 +488,7 @@ class HistoryWriter:
                     finally:
                         self._release_payload(context)
                         self._release_payload(outputs)
-                        context = outputs = None
+                        context = outputs = payload = None
                     with self._lock:
                         self._pending -= 1
                         if failed:

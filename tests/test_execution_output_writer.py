@@ -3,10 +3,12 @@
 from contextlib import nullcontext
 from dataclasses import replace
 from copy import copy
+import gc
 import os
 import sqlite3
 import threading
 import time
+import weakref
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -58,6 +60,96 @@ class OutputWriterTests(fixtures.unittest.TestCase):
             writer.submit_finalization(self.finish_command(start), context, outputs)
         )
         return context, outputs
+
+    def assert_idle_bundles_collectible(
+        self,
+        method: str | None = None,
+        error_type: type[Exception] = ValueError,
+        context_state: str = "complete",
+        output_state: str = "complete",
+        accepting: bool = True,
+    ) -> None:
+        writer = HistoryWriter(
+            lambda: self.db, clock=self.clock, context_budget=ContextBudget()
+        )
+        self.writers.append(writer)
+        writer.start()
+        self.wait_for(lambda: writer.status().accepting)
+        start = self.start_command(len(self.writers))
+        self.db.write_execution_start(start)
+        context = self.sealed(writer, "x" * 30000)
+        roots = snapshot_output_roots("posix", "/output", "/temp")
+        image = dict(filename="x" * 1024, subfolder="x" * 2048, type="output")
+        tail = dict(filename="x", subfolder="x" * 1470, type="output")
+        outputs = seal_outputs(
+            {"outputs": {"😀" * 128: {"images": [image] * 34 + [tail]}}},
+            roots,
+            roots,
+            budget=writer.context_budget,
+            capture_generation=writer.status().capture_generation,
+            context_bytes=context.lease.byte_count,
+        )
+        self.assertEqual(outputs.lease.byte_count, 131072)
+        references = (weakref.ref(context.bundle), weakref.ref(outputs.bundle))
+
+        def reject(_command: object, _bundle: object, **_kwargs: object) -> None:
+            raise error_type("supplement rejected")
+
+        write_patch = patch.object(self.db, method, reject) if method else nullcontext()
+        try:
+            with write_patch:
+                self.assertTrue(
+                    writer.submit_finalization(
+                        self.finish_command(start), context, outputs
+                    )
+                )
+                del context, outputs
+                self.wait_for(lambda: writer.status().pending == 0)
+                gc.collect()
+                self.assertTrue(writer.status().alive)
+                self.assertEqual(writer.status().pending, 0)
+                self.assertEqual(writer.context_budget.charged_bytes, 0)
+                self.assertFalse(
+                    any(reference() is not None for reference in references),
+                    "idle worker retained a bundle after releasing its payload lease",
+                )
+            self.assertEqual(writer.status().accepting, accepting)
+            self.assertEqual(
+                self.db.get_execution_run(start.run_id)["outcome"], "succeeded"
+            )
+            self.assertEqual(
+                self.db.get_execution_contexts(start.run_id)["state"], context_state
+            )
+            self.assertEqual(
+                self.db.get_execution_outputs(start.run_id)["state"], output_state
+            )
+        finally:
+            self.assertTrue(writer.close(2))
+            self.assertFalse(writer.status().alive)
+
+    def test_successful_finalization_releases_bundles_while_worker_is_idle(
+        self,
+    ) -> None:
+        self.assert_idle_bundles_collectible()
+
+    def test_validation_omission_releases_bundles_while_worker_is_idle(self) -> None:
+        for method, context_state, output_state in (
+            ("write_execution_contexts_for_finish", "not_captured", "complete"),
+            ("write_execution_outputs_for_finish", "complete", "not_captured"),
+        ):
+            with self.subTest(method=method):
+                self.assert_idle_bundles_collectible(
+                    method, context_state=context_state, output_state=output_state
+                )
+
+    def test_early_storage_failure_releases_bundles_while_worker_is_idle(self) -> None:
+        self.assert_idle_bundles_collectible(
+            "write_execution_contexts_for_finish",
+            sqlite3.OperationalError,
+            context_state="not_captured",
+            output_state="not_captured",
+            accepting=False,
+        )
 
     def test_fifo_outcome_context_outputs_commit_and_custom_parent_identity(self):
         writer = self.writer()
