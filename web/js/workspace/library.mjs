@@ -48,7 +48,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         const columns=()=>window.innerWidth>=1700?3:window.innerWidth<=700?1:2;
         const readInlineSize=()=>Math.round(grid.getBoundingClientRect().width*64)/64;
         let inlineSize=readInlineSize(), columnCount=columns(), layout={rows:[],height:0}, dirty=true, items, indexesById=new Map();
-        let anchor=visit?.layout?.anchor || null, pendingAnchor=anchor, correctedScrollY=null;
+        let anchor=visit?.layout?.anchor || null, pendingAnchor=anchor, observedScrollY=window.scrollY;
         let restoreScrollY=Number.isFinite(visit?.scrollY) && visit.scrollY>=0?visit.scrollY:null;
         if(visit?.layout?.inlineSize===inlineSize && visit.layout.columns===columnCount) for(const [id,height] of visit.layout.heights) heights.set(id,height);
         function removeCard(card) {measurementObserver?.unobserve(card.node);pendingMeasurements.delete(Number(card.node.dataset.promptId));card.blocks.dispose();card.node.remove();}
@@ -85,6 +85,13 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 if(bounds.bottom>0 && bounds.top<window.innerHeight)return {id:Number(row.firstElementChild.dataset.promptId),offset:bounds.top};
             }
             return null;
+        }
+        function reconcileScroll() {
+            const delta=window.scrollY-observedScrollY;observedScrollY=window.scrollY;
+            if(!delta)return;
+            // Keep pending height compensation while honoring movement since it was queued.
+            if(pendingAnchor)pendingAnchor={...pendingAnchor,offset:pendingAnchor.offset-delta};
+            else anchor=captureAnchor();
         }
         function spacer(key,height) {
             let node=spacers.get(key);
@@ -127,6 +134,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         }
         function flush() {
             frame=0;if(scope.signal.aborted)return;
+            reconcileScroll();
             const width=readInlineSize(), size=columns();
             if(width!==inlineSize || size!==columnCount) {pendingAnchor ||= anchor;inlineSize=width;columnCount=size;heights.clear();dirty=true;}
             for(const [id,measurement] of pendingMeasurements) {
@@ -140,12 +148,14 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             renderWindow(target);
             const card=index===undefined?null:cards.get(restore.id);
             if(card) {
-                const delta=card.node.getBoundingClientRect().top-restore.offset;if(Math.abs(delta)>.5){window.scrollBy(0,delta);correctedScrollY=window.scrollY;}
+                const delta=card.node.getBoundingClientRect().top-restore.offset;if(Math.abs(delta)>.5)window.scrollBy(0,delta);
                 anchor=restore;
             } else {
-                if(restoreScrollY!==null) {window.scrollTo(0,restoreScrollY);correctedScrollY=window.scrollY;}
+                if(restoreScrollY!==null)window.scrollTo(0,restoreScrollY);
                 anchor=captureAnchor();
             }
+            // Read the actual clamped result now; its later scroll event is not new motion.
+            observedScrollY=window.scrollY;
             restoreScrollY=null;pendingAnchor=null;scheduleLoad();
         }
         const schedule=()=>{if(!frame)frame=requestAnimationFrame(flush);};
@@ -208,7 +218,9 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         scope.listen(tags,'input',scope.debounce(()=>{filters.tags=[...new Set(tags.value.split(',').map(tag=>tag.trim()).filter(Boolean))];reset();},200));
         scope.listen(category,'change',()=>{filters.category=category.value;reset();});scope.listen(sort,'change',()=>{filters.sort=sort.value;reset();});
         scope.listen(refresh,'click',()=>{loadCategories();reset();});scope.listen(more,'click',()=>stream.loadMore());scope.listen(retry,'click',()=>stream.loadMore());
-        scope.listen(window,'scroll',()=>{if(window.scrollY===correctedScrollY)correctedScrollY=null;else if(!pendingAnchor)anchor=captureAnchor();schedule();});scope.listen(window,'resize',()=>{pendingAnchor ||= anchor;schedule();});
+        scope.listen(window,'scroll',()=>{reconcileScroll();schedule();});
+        // Mobile viewport resizing can adjust scroll before delivering its resize event.
+        scope.listen(window,'resize',()=>{pendingAnchor ||= anchor;observedScrollY=window.scrollY;schedule();});
         scope.cleanup(()=>{shelfVisit=state?{filters:{...filters,tags:[...filters.tags]},state,scrollY:window.scrollY,layout:{inlineSize,columns:columnCount,heights:[...heights],anchor:pendingAnchor || anchor || captureAnchor()}}:null;stream.dispose();optionsRequest?.abort();observer?.disconnect();measurementObserver?.disconnect();cancelAnimationFrame(frame);cancelAnimationFrame(loadFrame);for(const card of cards.values())removeCard(card);cards.clear();});
         loadCategories();if(visit) {render(stream.state);if(visit.state.loading || visit.state.error)stream.loadMore();} else reset();
     }

@@ -216,9 +216,9 @@ async function observeLibrary(page, hold=false) {
         const NativeResizeObserver=window.ResizeObserver;
         const records=[];let holding=hold;
         const raf=window.requestAnimationFrame.bind(window),cancel=window.cancelAnimationFrame.bind(window);
-        const pending=new Set();let requested=0,mutations=0,unmounted=0;
-        window.requestAnimationFrame=callback=>{requested++;const id=raf(time=>{pending.delete(id);callback(time);});pending.add(id);return id;};
-        window.cancelAnimationFrame=id=>{pending.delete(id);cancel(id);};
+        const pending=new Set(),heldFrames=new Map();let requested=0,mutations=0,unmounted=0,holdingFrames=false;
+        window.requestAnimationFrame=callback=>{requested++;const id=raf(time=>{const deliver=()=>{pending.delete(id);callback(time);};if(holdingFrames)heldFrames.set(id,deliver);else deliver();});pending.add(id);return id;};
+        window.cancelAnimationFrame=id=>{pending.delete(id);heldFrames.delete(id);cancel(id);};
         window.ResizeObserver=class {
             constructor(callback) {
                 const record={callback,targets:new Set(),entries:new Map(),latest:new Map(),disconnected:false};
@@ -243,8 +243,10 @@ async function observeLibrary(page, hold=false) {
         window.libraryObservation={
             hold(){holding=true;},
             release(){holding=false;for(const record of records){const entries=[...record.entries.values()].filter(entry=>record.targets.has(entry.target));record.entries.clear();if(entries.length)record.callback(entries,record.native);}},
+            holdFrames(){holdingFrames=true;},
+            releaseFrames(){holdingFrames=false;const callbacks=[...heldFrames.values()];heldFrames.clear();for(const callback of callbacks)callback();},
             equal(){for(const record of records){const entries=[...record.latest.values()].filter(entry=>record.targets.has(entry.target));if(entries.length)record.callback(entries,record.native);}},
-            stats(){return {requested,pending:pending.size,mutations,unmounted,targets:records.reduce((sum,record)=>sum+record.targets.size,0)};},
+            stats(){return {requested,pending:pending.size,heldFrames:heldFrames.size,measurements:records.reduce((sum,record)=>sum+record.entries.size,0),mutations,unmounted,targets:records.reduce((sum,record)=>sum+record.targets.size,0)};},
         };
     },{hold});
 }
@@ -332,6 +334,57 @@ test('row measurement preserves anchor after width invalidation and append',asyn
         }
         expect((await page.evaluate(()=>window.libraryObservation.stats())).unmounted).toBe(0);
     } finally {release();}
+});
+
+test('queued row growth preserves newer native wheel movement and correction events',async({page,request},testInfo)=>{
+    await request.post('/__test__/reset',{data:{native_library:true,extra_prompts:200}});
+    await observeLibrary(page);await page.addInitScript(()=>{window.IntersectionObserver=undefined;});
+    await page.setViewportSize({width:1600,height:1100});await page.goto(route);
+    const more=page.getByRole('button',{name:'Load more prompts',exact:true});
+    for(const count of [40,80,120]) {await expect(page.locator('.library-caption')).toContainText(`${count} of 203`);await more.evaluate(node=>node.click());}
+    await expect(page.locator('.library-caption')).toContainText('160 of 203');
+    await page.evaluate(()=>scrollTo(0,document.querySelector('.library-grid').getBoundingClientRect().top+scrollY+20*486+25));
+    await settleLibrary(page);await page.mouse.move(1100,550);
+    const pinned=cards(page).first(),pinnedId=await pinned.getAttribute('data-prompt-id');await pinned.locator('a').first().evaluate(node=>node.focus({preventScroll:true}));
+    try {
+        // The same queued-frame wheel sequence is stable without changed measurements.
+        const control=await firstVisibleParent(page),controlY=await page.evaluate(()=>scrollY);
+        await page.evaluate(()=>window.libraryObservation.holdFrames());await page.mouse.wheel(0,160);
+        await expect.poll(()=>page.evaluate(()=>scrollY)).toBe(controlY+160);
+        await expect.poll(()=>page.evaluate(()=>window.libraryObservation.stats().heldFrames)).toBeGreaterThan(0);
+        await page.evaluate(()=>window.libraryObservation.releaseFrames());await settleLibrary(page);
+        expect(await page.evaluate(()=>scrollY)).toBe(controlY+160);await retainedParent(page,{...control,offset:control.offset-160});
+
+        const before=await firstVisibleParent(page),beforeY=await page.evaluate(()=>scrollY);
+        await page.evaluate(()=>{window.libraryObservation.hold();for(const content of document.querySelectorAll('.library-card-content'))content.style.paddingBlockEnd='45px';});
+        await expect.poll(()=>page.evaluate(()=>window.libraryObservation.stats().measurements)).toBeGreaterThan(0);
+        const parent=page.locator(`article[data-prompt-id="${before.id}"]`);
+        const growth=await parent.evaluate(node=>node.getBoundingClientRect().top)-before.offset;
+        expect(growth).toBeGreaterThan(0);expect(await page.evaluate(()=>scrollY)).toBe(beforeY);
+        await page.evaluate(()=>{window.libraryObservation.holdFrames();window.libraryObservation.release();});
+        await expect.poll(()=>page.evaluate(()=>window.libraryObservation.stats().heldFrames)).toBeGreaterThan(0);
+        await page.mouse.wheel(0,160);await expect.poll(()=>page.evaluate(()=>scrollY)).toBe(beforeY+160);
+        expect(await page.evaluate(()=>document.documentElement.scrollHeight-innerHeight-scrollY)).toBeGreaterThan(1000);
+        await page.evaluate(()=>window.libraryObservation.releaseFrames());await settleLibrary(page);
+        await testInfo.attach('queued-growth-wheel-geometry',{body:JSON.stringify({beforeY,offset:before.offset,growth,wheel:160,finalY:await page.evaluate(()=>scrollY),finalOffset:await parent.evaluate(node=>node.getBoundingClientRect().top)}),contentType:'application/json'});
+        await retainedParent(page,{...before,offset:before.offset-160});
+        expect(Math.abs(await page.evaluate(()=>scrollY)-(beforeY+160+growth))).toBeLessThanOrEqual(2);
+
+        // The correction's own native scroll event must not become new user motion.
+        const corrected=await firstVisibleParent(page);
+        await page.evaluate(()=>{window.libraryObservation.hold();for(const content of document.querySelectorAll('.library-card-content'))content.style.paddingBlockEnd='65px';});
+        await expect.poll(()=>page.evaluate(()=>window.libraryObservation.stats().measurements)).toBeGreaterThan(0);
+        await page.evaluate(()=>window.libraryObservation.release());await settleLibrary(page);await retainedParent(page,corrected);
+        await expect(page.locator(`article[data-prompt-id="${pinnedId}"] a`).first()).toBeFocused();
+        const ids=await cards(page).evaluateAll(nodes=>nodes.map(node=>node.dataset.promptId));expect(ids.length).toBeLessThan(80);expect(new Set(ids).size).toBe(ids.length);
+        await page.evaluate(()=>window.libraryObservation.holdFrames());await page.mouse.wheel(0,160);
+        await expect.poll(()=>page.evaluate(()=>window.libraryObservation.stats().heldFrames)).toBeGreaterThan(0);
+        await page.evaluate(()=>{location.hash='#/overview';});await expect(cards(page)).toHaveCount(0);
+        expect((await page.evaluate(()=>window.libraryObservation.stats())).targets).toBe(0);
+        expect((await page.evaluate(()=>window.libraryObservation.stats())).pending).toBe(0);
+        expect((await page.evaluate(()=>window.libraryObservation.stats())).heldFrames).toBe(0);
+        expect((await page.evaluate(()=>window.libraryObservation.stats())).unmounted).toBe(0);
+    } finally {await page.evaluate(()=>{window.libraryObservation.release();window.libraryObservation.releaseFrames();});}
 });
 
 test('unchanged row observations settle without resize feedback',async({page,request,browserName})=>{
