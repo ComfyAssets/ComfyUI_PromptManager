@@ -97,6 +97,66 @@ test('a short visible batch automatically continues until the sentinel is filled
     await expect(page.getByRole('button', { name: 'Load more images', exact: true })).toBeHidden();
 });
 
+for (const embedded of [false, true]) {
+    for (const close of ['Close', 'Escape', 'parent abort']) {
+        test(`viewer closure resumes native continuation after a short pending page: ${embedded ? 'embedded' : 'Images'} ${close}`, async ({ page, request }, testInfo) => {
+            await expect(await request.post('/__test__/reset', { data: { extra_images: 80 } })).toBeOK();
+            const data = await (await request.get('/prompt_manager/images/output?limit=200')).json();
+            await page.setViewportSize({ width: 1600, height: 1100 });
+            await page.route('**/prompt_manager/workspace', async route => {
+                const response = await route.fetch();
+                const html = (await response.text()).replace('<script type="module" src="js/workspace/index.mjs"></script>', '');
+                await route.fulfill({ response, body: html });
+            });
+            await page.goto('/prompt_manager/workspace');
+            await page.evaluate(async ({ images, embedded }) => {
+                const { mountImages } = await import('/prompt_manager/js/workspace/images.mjs');
+                const { createScope } = await import('/prompt_manager/js/shared/toolkit/core.js');
+                window.ApiClient = { resolveUrl: value => value };
+                const fixture = window.continuationFixture = { reads: [], scope: createScope() };
+                const api = { get: async (url, options) => (await fetch(url, options)).json() };
+                const fetchPage = ({ parameters }) => {
+                    fixture.reads.push(parameters.get('cursor'));
+                    if (fixture.reads.length === 1) return { images: images.slice(0, 40), total: 80, has_more: true, next_cursor: 'next-0' };
+                    if (fixture.reads.length === 2) return new Promise(resolve => {
+                        fixture.finishPage = () => resolve({ images: [], total: 80, has_more: true, next_cursor: 'next-1' });
+                    });
+                    return { images: images.slice(40, 80), total: 80, has_more: false, next_cursor: null };
+                };
+                mountImages(document.querySelector('#workspace-main'), api, fixture.scope, { embedded, fetchPage });
+            }, { images: data.images, embedded });
+            await expect(cards(page)).toHaveCount(40);
+            expect(await page.evaluate(() => window.continuationFixture.reads)).toEqual([null]);
+            await page.locator('.image-continuation').scrollIntoViewIfNeeded();
+            await expect.poll(() => page.evaluate(() => window.continuationFixture.reads)).toEqual([null, 'next-0']);
+            const key = await cards(page).last().getAttribute('data-image-key');
+            const preview = page.locator(`article[data-image-key="${key}"]`).getByRole('button', { name: /^Preview / });
+            await preview.click();
+            const viewer = page.getByRole('dialog', { name: 'Image preview', exact: true });
+            await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
+            await page.evaluate(() => window.continuationFixture.finishPage());
+            await expect(page.getByRole('button', { name: 'Load more images', exact: true })).toHaveAttribute('aria-disabled', 'false');
+            await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+            expect(await page.evaluate(() => ({ reads: window.continuationFixture.reads, nativeObserver: typeof IntersectionObserver, visible: document.querySelector('.image-continuation').getBoundingClientRect().top <= innerHeight })))
+                .toEqual({ reads: [null, 'next-0'], nativeObserver: 'function', visible: true });
+            if (close === 'parent abort') await page.evaluate(() => window.continuationFixture.scope.dispose());
+            else if (close === 'Close') await viewer.getByRole('button', { name: 'Close preview', exact: true }).click();
+            else await page.keyboard.press('Escape');
+            await expect(viewer).toHaveCount(0);
+            if (close !== 'parent abort') {
+                await expect(preview).toBeFocused();
+                await expect.poll(() => page.evaluate(() => window.continuationFixture.reads)).toEqual([null, 'next-0', 'next-1']);
+                await expect(page.locator('.image-toolbar')).toContainText(embedded ? '80 loaded' : '80 of 80');
+            }
+            await page.evaluate(() => window.continuationFixture.scope.dispose());
+            await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+            const reads = await page.evaluate(() => window.continuationFixture.reads);
+            expect(reads).toEqual(close === 'parent abort' ? [null, 'next-0'] : [null, 'next-0', 'next-1']);
+            await testInfo.attach('native-continuation-reads', { body: JSON.stringify({ embedded, close, reads }), contentType: 'application/json' });
+        });
+    }
+}
+
 test('source, folder and media filters operate on real backend records', async ({ page, request }) => {
     await expect(await request.post('/__test__/reset', { data: { extra_images: 3 } })).toBeOK();
     await page.goto(workspace);

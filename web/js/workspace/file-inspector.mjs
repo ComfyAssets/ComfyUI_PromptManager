@@ -13,7 +13,7 @@ const REPRESENTATIONS = {
     invalid: 'Invalid container record; text is unavailable',
 };
 const FACTS = [['seed', 'Seed'], ['steps', 'Steps'], ['cfg', 'CFG'], ['sampler', 'Sampler'], ['scheduler', 'Scheduler'], ['model', 'Model']];
-const FACT_SOURCES = {'api-graph': 'Saved API graph', workflow: 'Saved workflow', 'embedded-parameters': 'Embedded generation parameters'};
+const FACT_SOURCES = {'api-graph': 'Embedded API configuration', workflow: 'Saved workflow configuration', 'embedded-parameters': 'Embedded generation parameters'};
 
 function safeFilename(value) {
     return String(value || 'file').replace(/[\\/\x00-\x1f\x7f<>:"|?*]/g, '_').replace(/^\.+|[. ]+$/g, '') || 'file';

@@ -136,12 +136,11 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     main.append(body);
     const mediaViewer = createMediaViewer({container:main,parentScope:scope,inspectionController:inspection,sender,
         onSelect:image => {if (selection !== imageKey(image)) inspect(image);else inspection.select(image);},
-        onRefresh:refreshInspectionCollection,onRestoreFocus:image => {
+        onRefresh:refreshInspectionCollection,onClose:scheduleLoad,onRestoreFocus:image => {
             const index = state?.items.findIndex(entry => imageKey(entry) === imageKey(image));
             if (index >= 0) focusImage(index);else collectionHeading.focus({preventScroll:true});
         }});
     scope.cleanup(() => mediaViewer.dispose());
-    main.addEventListener('close',event => {if (event.target.matches('.image-preview')) scheduleLoad();},{capture:true,signal:scope.signal});
 
     function mediaElement(image, lazy = false) {
         const video = image.is_video && !image.thumbnail_url;
@@ -348,7 +347,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (bounds.top <= window.innerHeight + 250 && bounds.bottom >= 0) stream.loadMore();
     }
     function scheduleLoad() {
-        if (!loadFrame) loadFrame = requestAnimationFrame(() => { loadFrame = 0; maybeLoad(); });
+        if (!scope.signal.aborted && !loadFrame) loadFrame = requestAnimationFrame(() => { loadFrame = 0; maybeLoad(); });
     }
     if (typeof IntersectionObserver === 'function') {
         observer = new IntersectionObserver(entries => {

@@ -113,4 +113,3 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
     render({prompts});
     return {update:prompts => render({prompts}), setState:render, dispose:() => scope.dispose()};
 }
-

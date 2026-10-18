@@ -17,7 +17,7 @@ function element(tag, className, text) {
     return node;
 }
 
-export function createMediaViewer({container,parentScope,inspectionController,sender,onSelect,onRefresh,onRestoreFocus}) {
+export function createMediaViewer({container,parentScope,inspectionController,sender,onSelect,onRefresh,onRestoreFocus,onClose}) {
     const scope = createScope();
     let active = null, retryVersion = 0;
     const dispose = () => scope.dispose();
@@ -83,6 +83,7 @@ export function createMediaViewer({container,parentScope,inspectionController,se
                 if (trigger?.isConnected) trigger.focus({preventScroll:true});
                 else onRestoreFocus?.(entry);
             }
+            if (!scope.signal.aborted) onClose?.();
         }
         active = {close:closeViewer,stop:() => session.stop()};
         local.cleanup(() => {

@@ -93,7 +93,7 @@ async function downloadText(page,action) {
     const fs=await import('node:fs/promises');return {name:download.suggestedFilename(),text:await fs.readFile(await download.path(),'utf8')};
 }
 
-test('full inspector shows six facts and scoped provenance',async({page,request})=>{
+test('full inspector shows six facts and scoped provenance',async({page,request},testInfo)=>{
     await page.setViewportSize({width:1600,height:1100});await fullFixture(page,request);const panel=inspector(page);
     await expect(panel.getByRole('heading',{name:'Inspector recipe',exact:true})).toBeVisible();await expect(panel.locator('.file-format')).toHaveText('PNG');await expect(panel.locator('.file-name')).toHaveText('complete.png');
     await expect(panel.locator('.file-evidence')).toHaveText('Workflow prompt evidence');
@@ -110,10 +110,21 @@ test('full inspector shows six facts and scoped provenance',async({page,request}
     await panel.getByText('File & provenance',{exact:true}).click();
     await expect(panel).toContainText('Current file at this source; historical bytes are not verified.');await expect(panel).toContainText('Saved association; not verified against current file');
     await expect(panel).toContainText('Configuration evidence');await expect(panel.getByRole('link',{name:'Prompt history',exact:true})).toHaveAttribute('href',/^#\/library\/\d+$/);
+    await expect(panel.getByText('Seed: Configuration evidence · Embedded API configuration',{exact:true})).toBeVisible();
+    if (testInfo.project.name === 'chromium') {
+        await panel.getByText('Seed: Configuration evidence · Embedded API configuration',{exact:true}).scrollIntoViewIfNeeded();
+        const path=testInfo.outputPath('configuration-api-source.png');await page.screenshot({path});await testInfo.attach('configuration-api-source',{path,contentType:'image/png'});
+    }
     await expect(panel).not.toContainText(/Run:|Original file unchanged|Execution recorded/);
     await selectFile(page,'empty.png');await expect(panel.locator('.file-format')).toHaveText('PNG');await expect(panel.getByRole('heading',{name:'empty.png',exact:true})).toBeVisible();
     await expect(panel.getByRole('button',{name:'Send negative prompt',exact:true})).toHaveCount(0);await expect(panel).toContainText('Not recorded in this file.');await expect(panel.getByRole('link',{name:'Prompt history',exact:true})).toHaveCount(0);
     await selectFile(page,'explicit-empty.png');await expect(panel).toContainText('Empty negative prompt');await expect(panel.getByRole('button',{name:'Send prompt pair',exact:true})).toHaveCount(1);
+    await selectFile(page,'workflow-only.png');await panel.getByText('File & provenance',{exact:true}).click();
+    await expect(panel.getByText('Seed: Configuration evidence · Saved workflow configuration',{exact:true})).toBeVisible();
+    if (testInfo.project.name === 'chromium') {
+        await panel.getByText('Seed: Configuration evidence · Saved workflow configuration',{exact:true}).scrollIntoViewIfNeeded();
+        const path=testInfo.outputPath('configuration-workflow-source.png');await page.screenshot({path});await testInfo.attach('configuration-workflow-source',{path,contentType:'image/png'});
+    }
 });
 
 test('full inspector preserves long role text and exact sends',async({page,request,context})=>{
