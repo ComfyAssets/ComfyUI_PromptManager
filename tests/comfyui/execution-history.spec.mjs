@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 import { test, readExecutionRuns } from './execution-fixture.mjs';
+import { installHostHooks } from './host-fixture.mjs';
 
 const sensitive = ['PM_SECRET_PROMPT_209', 'PM_SECRET_TOKEN_209', 'PM_SECRET_TRACE_209'];
 const cached = value => ({ '1': { class_type: 'PMHistoryCached', inputs: { value } } });
@@ -194,8 +195,84 @@ async function capture(execution, id, outcome = 'succeeded') {
         result = await readExecutionRuns(execution.databasePath, id);
         return result.captures[run.run_id].state;
     }, { timeout: 10000, message: 'Background writer persisted context finalization' }).not.toBe('not_captured');
+    const response = await execution.request.get(`/prompt_manager/history/runs/${run.run_id}`);
+    expect(response.ok()).toBe(true);expect(response.headers()['cache-control']).toBe('no-store');
+    const detail = await response.json();
+    const fields = contexts => contexts.map(({ anchor_id, context_id, positive, negative, evidence }) => ({ anchor_id, context_id, positive, negative, evidence }));
+    expect(fields(detail.contexts)).toEqual(fields(result.captures[run.run_id].contexts));
+    expect(detail.run).toMatchObject({ run_id: run.run_id, outcome, queue_item_id: String(run.queue_item_id) });
     return result.captures[run.run_id];
 }
+
+test.describe('public chronological history with the actual acknowledged host bridge', () => {
+    test.beforeEach(async ({ execution }) => { expect(execution.databasePath).toBeTruthy(); });
+    installHostHooks(test, ['PromptManagerPair']);
+
+    test('three actual attempts expose two contexts and send exact frozen roles through both renderer switches and reload', async ({ execution, page, context }, testInfo) => {
+        test.setTimeout(120000);
+        const positive = `public chronology ${testInfo.project.name} ${randomUUID()}\n猫`, attempts = [];
+        for (const negative of ['negative A', 'negative A', 'negative B']) {
+            const graph = recipeGraph({ text: positive, negative, prepend: ' pre ', append: ' post ' });
+            graph['60'] = { class_type: 'PMHistoryImages', inputs: { value: 128, batch: 2, latent: ['40', 0] } };
+            graph['70'] = { class_type: 'SaveImage', inputs: { images: ['60', 0], filename_prefix: 'chronology/public' } };
+            graph['71'] = { class_type: 'PreviewImage', inputs: { images: ['60', 0] } };
+            const id = await submit(execution.request, graph);
+            await history(execution.request, id);const frozen = await capture(execution, id);
+            const persisted = await readExecutionRuns(execution.databasePath, id);attempts.push({ row: persisted.rows[0], context: frozen.contexts[0] });
+        }
+        const positiveId = attempts[0].context.positive_prompt_id;
+        const response = await execution.request.get(`/prompt_manager/library/${positiveId}/history`);expect(response.ok()).toBe(true);const window = await response.json();
+        expect(window.recorded_run_count).toBe(3);expect(window.items.map(item => item.run_id)).toEqual(attempts.map(item => item.row.run_id));
+        expect(window.context_summaries).toHaveLength(2);expect(new Set(attempts.map(item => item.context.positive.raw))).toEqual(new Set([positive]));
+        expect(attempts.map(item => item.context.evidence.positive.effective.source)).toEqual(['runtime_return', 'host_cache_output', 'runtime_return']);
+        const workspace = await context.newPage();const errors = [];workspace.on('pageerror', error => errors.push(error.message));
+        try {
+            const destination = await page.evaluate(async () => {const { app } = await import('/scripts/app.js');const node = LiteGraph.createNode('PromptManagerPair');app.graph.add(node);return node.id;});
+            for (const renderer of [testInfo.project.metadata.initialRenderer, !testInfo.project.metadata.initialRenderer, testInfo.project.metadata.initialRenderer]) {
+                await page.evaluate(async renderer => {const { app } = await import('/scripts/app.js');await app.ui.settings.setSettingValue('Comfy.VueNodes.Enabled', renderer);await app.loadGraphData(app.graph.serialize());}, renderer);
+                await expect.poll(() => page.evaluate(() => LiteGraph.vueNodesMode)).toBe(renderer);
+                await workspace.goto(`/prompt_manager/workspace#/library/${positiveId}`);
+                const recorded = workspace.getByRole('region', { name: 'Recorded executions', exact: true });await expect(recorded.locator('[data-context-branch]')).toHaveCount(2);
+                await recorded.locator(`button[data-run-id="${attempts[0].row.run_id}"]`).click();
+                const run = workspace.getByRole('dialog', { name: 'Recorded run', exact: true });await expect(run).toBeVisible();
+                await expect(run.locator('[data-receipt]')).toHaveCount(4);
+                await run.getByRole('button', { name: 'View current file', exact: true }).first().click();
+                const viewer = workspace.getByRole('dialog', { name: 'Image preview', exact: true });await expect(viewer).toBeVisible();
+                await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
+                await workspace.keyboard.press('Escape');await expect(run).toBeVisible();
+                const frozen = attempts[0].context;
+                for (const mode of ['Raw', 'Effective']) {
+                    await run.getByRole('button', { name: mode, exact: true }).click();
+                    for (const [role, value] of [['Positive', frozen.positive[mode.toLowerCase()]], ['Negative', frozen.negative[mode.toLowerCase()]]]) expect(await run.getByRole('region', { name: `${role} prompt`, exact: true }).locator('pre').evaluate(node => node.textContent)).toBe(value);
+                    await page.evaluate(async id => {const { app } = await import('/scripts/app.js');const node = app.graph.getNodeById(id);node.widgets.find(w => w.name === 'text').value = 'Before send';window.chronologyEffects = { queue: 0, load: 0 };window.chronologyOriginals = {};for (const [method, key] of [['queuePrompt', 'queue'], ['loadGraphData', 'load']]) {const original = app[method];window.chronologyOriginals[method] = original;app[method] = function(...args) {window.chronologyEffects[key]++;return original.apply(this, args);};}}, destination);
+                    try {
+                        await run.getByRole('button', { name: 'Send prompt pair', exact: true }).click();const sender = workspace.getByRole('dialog', { name: 'Send to ComfyUI', exact: true });
+                        const hosts = sender.getByRole('combobox', { name: 'ComfyUI window', exact: true });await expect(hosts.locator('option')).toHaveCount(2);await hosts.selectOption({ index: 1 });
+                        await sender.getByRole('combobox', { name: 'Destination node', exact: true }).selectOption({ index: 1 });await sender.getByRole('button', { name: 'Preview changes', exact: true }).click();
+                        await sender.getByRole('button', { name: 'Apply to ComfyUI', exact: true }).click();await expect(sender).toContainText('Sent to ComfyUI.');
+                        const applied = await page.evaluate(async id => {const { app } = await import('/scripts/app.js');const node = app.graph.getNodeById(id);return { positive: node.widgets.find(w => w.name === 'text').value, negative: node.widgets.find(w => w.name === 'negative_text').value, effects: window.chronologyEffects };}, destination);
+                        expect(applied).toEqual({ positive: frozen.positive[mode.toLowerCase()], negative: frozen.negative[mode.toLowerCase()], effects: { queue: 0, load: 0 } });
+                        await workspace.keyboard.press('Escape');await expect(run).toBeVisible();
+                    } finally {await page.evaluate(async () => {const { app } = await import('/scripts/app.js');Object.assign(app, window.chronologyOriginals);});}
+                }
+                await workspace.keyboard.press('Escape');await expect(recorded).toBeVisible();
+            }
+            const versions = await (await execution.request.get('/system_stats')).json();await testInfo.attach('chronology-runtime.json', { body: JSON.stringify(versions.system, null, 2), contentType: 'application/json' });
+            expect(errors).toEqual([]);
+        } finally {await workspace.close();}
+    });
+});
+
+test('a cached dynamic unknown positive stays readable by run UUID and outside the known raw Library scope', async ({ execution }) => {
+    const text = `unknown positive ${randomUUID()}`, graph = recipeGraph({ text, dynamic: true });
+    const first = await submit(execution.request, graph);await history(execution.request, first);const known = (await capture(execution, first)).contexts[0];
+    const second = await submit(execution.request, graph);await history(execution.request, second);const unknown = (await capture(execution, second)).contexts[0];
+    expect(unknown.positive.raw).toBeNull();expect(unknown.positive.effective).toBe(known.positive.effective);
+    const result = await readExecutionRuns(execution.databasePath, second), runId = result.rows[0].run_id;
+    const detail = await execution.request.get(`/prompt_manager/history/runs/${runId}`);expect(detail.ok()).toBe(true);expect((await detail.json()).contexts[0].positive.raw).toBeNull();
+    const response = await execution.request.get(`/prompt_manager/library/${known.positive_prompt_id}/history`);expect(response.ok()).toBe(true);const window = await response.json();
+    expect(window.recorded_run_count).toBe(1);expect(window.items.map(item => item.run_id)).not.toContain(runId);
+});
 
 test('actual PM A,A,B jobs persist two combinations and one identical positive snapshot', async ({ execution }) => {
     const captures = [];

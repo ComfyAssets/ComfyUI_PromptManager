@@ -16,6 +16,127 @@ test.beforeEach(async({page,request,browserName})=>{
 });
 test.afterEach(async({page,browserName})=>{await saveCoverage(page,browserName);expect(page.historyErrors).toEqual([]);});
 
+const command=async(request,data)=>{const response=await request.post('/__test__/history/commands',{data});await expect(response).toBeOK();return response.json();};
+const restoreSnapshot=async(request,bytes)=>{const response=await request.post('/prompt_manager/restore',{multipart:{database_file:{name:'history.db',mimeType:'application/octet-stream',buffer:bytes}}});await expect(response).toBeOK();expect((await response.json()).success).toBe(true);};
+const historyRead=async(request,id)=>{const response=await request.get(`/prompt_manager/library/${id}/history`);await expect(response).toBeOK();return response.json();};
+const frozenContexts=contexts=>contexts.map(({navigation,positive_prompt_id,negative_prompt_id,pair_id,...frozen})=>frozen);
+const immutableReceipts=items=>items.map(({current_candidate,...receipt})=>receipt);
+
+test('owned history commands validate fixed boundaries and expire after ordinary reset',async({request})=>{
+    for(const data of [{}, {action:'arm',boundary:'arbitrary'}, {action:'replace-file',path:'/tmp/other'}, {action:'release',extra:true}, {action:'restore'}]) expect((await request.post('/__test__/history/commands',{data})).status()).toBe(400);
+    await command(request,{action:'arm',boundary:'window'});await command(request,{action:'release'});
+    await expect(await request.post('/__test__/reset')).toBeOK();
+    expect((await request.post('/__test__/history/commands',{data:{action:'replace-file'}})).status()).toBe(409);
+    expect((await request.get('/__test__/history/snapshot')).status()).toBe(409);
+});
+
+for(const boundary of ['window','detail','candidate','inspection','media']) test(`real restore rejects in-flight ${boundary} publication and all old epoch URLs`,async({request,page})=>{
+    const f=page.fixture,window=await historyRead(request,f.detail_id),epoch=window.history_epoch;
+    const base=`/prompt_manager/history/runs/${f.runs.shared}`;
+    const detail=await(await request.get(`${base}?epoch=${epoch}`)).json();
+    const firstWindow=await(await request.get(`/prompt_manager/library/${f.detail_id}/history?limit=1`)).json();expect(firstWindow.next_cursor).toBeTruthy();
+    const outputs=await(await request.get(`${base}/outputs?epoch=${epoch}&limit=1`)).json();
+    const allOutputs=await(await request.get(`${base}/outputs?epoch=${epoch}`)).json();
+    const media=outputs.items[0].current_candidate.media;
+    const snapshot=await request.get('/__test__/history/snapshot');await expect(snapshot).toBeOK();
+    const bytes=await snapshot.body();
+    const target={window:`/prompt_manager/library/${f.detail_id}/history?limit=1`,detail:`${base}?epoch=${epoch}`,candidate:`${base}/outputs?epoch=${epoch}`,inspection:media.inspection_url,media:media.url}[boundary];
+    await command(request,{action:'arm',boundary});const pending=request.get(target);
+    try {
+        await expect.poll(async()=> (await(await request.get('/__test__/history/checkpoint')).json()).entered).toBe(true);
+        await restoreSnapshot(request,bytes);
+    } finally {await command(request,{action:'release'});}
+    const retired=await pending;expect(retired.status()).toBe(409);expect((await retired.json()).code).toBe('history-changed');
+    for(const url of [`/prompt_manager/library/${f.detail_id}/history?limit=1&cursor=${encodeURIComponent(firstWindow.next_cursor)}`,`${base}?epoch=${epoch}`,`${base}/outputs?epoch=${epoch}`,`${base}/outputs?epoch=${epoch}&cursor=${encodeURIComponent(outputs.next_cursor)}`,media.url,media.thumbnail_url,media.inspection_url]) {
+        const response=await request.get(url);expect(response.status()).toBe(409);expect((await response.json()).code).toBe('history-changed');
+    }
+    const fresh=await historyRead(request,f.detail_id);expect(fresh.history_epoch).not.toBe(epoch);
+    const after=await(await request.get(`${base}?epoch=${fresh.history_epoch}`)).json();expect(frozenContexts(after.contexts)).toEqual(frozenContexts(detail.contexts));
+    for(const context of after.contexts) {expect(context.positive_prompt_id).toBeNull();expect(context.navigation).toEqual({positive_available:false,negative_available:false,pair_available:false});}
+    const freshOutputs=await(await request.get(`${base}/outputs?epoch=${fresh.history_epoch}`)).json();
+    expect(immutableReceipts(freshOutputs.items)).toEqual(immutableReceipts(allOutputs.items));
+    expect(freshOutputs.items).toHaveLength(5);await expect(await request.get(`/prompt_manager/library/${f.detail_id}`)).toBeOK();
+});
+
+test('same-path replacement is current content and a during-inspection change is rejected',async({page,request})=>{
+    const f=page.fixture,window=await historyRead(request,f.detail_id),base=`/prompt_manager/history/runs/${f.runs.shared}`;
+    const before=await(await request.get(`${base}/outputs?epoch=${window.history_epoch}`)).json(),media=before.items[0].current_candidate.media;
+    const original=await request.get(media.url);expect(original.headers()['cache-control']).toBe('no-store');const bytes=await original.body();
+    await command(request,{action:'arm',boundary:'inspection'});const pending=request.get(media.inspection_url);
+    try {
+        await expect.poll(async()=> (await(await request.get('/__test__/history/checkpoint')).json()).entered).toBe(true);
+        await command(request,{action:'replace-file'});
+    } finally {await command(request,{action:'release'});}
+    const changed=await pending;expect(changed.status()).toBe(409);expect((await changed.json()).code).toBe('candidate-stale');
+    const after=await(await request.get(`${base}/outputs?epoch=${window.history_epoch}`)).json();expect(immutableReceipts(after.items)).toEqual(immutableReceipts(before.items));
+    const current=await request.get(after.items[0].current_candidate.media.url);await expect(current).toBeOK();expect(await current.body()).not.toEqual(bytes);
+    for(const field of ['url','thumbnail_url','inspection_url'])expect((await request.get(after.items[0].current_candidate.media[field])).headers()['cache-control']).toBe('no-store');
+    expect(after.items[0]).toMatchObject({file_identity:'unverified',newly_generated:'unknown',context_membership:'unknown'});
+});
+
+test('root reconfiguration rejects in-flight candidates and every old scope URL without changing receipts',async({page,request})=>{
+    const f=page.fixture,window=await historyRead(request,f.detail_id),base=`/prompt_manager/history/runs/${f.runs.shared}`;
+    await open(page,f.detail_id);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
+    const before=await(await request.get(`${base}/outputs?epoch=${window.history_epoch}`)).json(),media=before.items[0].current_candidate.media;
+    await command(request,{action:'arm',boundary:'candidate'});const pending=request.get(`${base}/outputs?epoch=${window.history_epoch}`);
+    try {
+        await expect.poll(async()=> (await(await request.get('/__test__/history/checkpoint')).json()).entered).toBe(true);
+        await command(request,{action:'reconfigure-root'});
+    } finally {await command(request,{action:'release'});}
+    expect((await pending).status()).toBe(409);
+    for(const field of ['url','thumbnail_url','inspection_url']) {const response=await request.get(media[field]);expect(response.status()).toBe(409);expect((await response.json()).code).toBe('candidate-stale');}
+    const after=await(await request.get(`${base}/outputs?epoch=${window.history_epoch}`)).json();expect(immutableReceipts(after.items)).toEqual(immutableReceipts(before.items));
+    expect(after.items[0].current_candidate).toMatchObject({status:'unavailable',reason:'namespace_mismatch'});
+    await marker(page,f.runs.shared).click();await expect(dialog(page)).toContainText('namespace_mismatch');
+    await page.keyboard.press('Escape');await expect(saved(page)).toBeVisible();await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
+});
+
+test('archive delete merge and prune preserve frozen evidence without repairing original saved hints',async({page,request})=>{
+    const f=page.fixture,window=await historyRead(request,f.detail_id),base=`/prompt_manager/history/runs/${f.runs.shared}?epoch=${window.history_epoch}`;
+    const before=await(await request.get(base)).json(),outputs=await(await request.get(`/prompt_manager/history/runs/${f.runs.shared}/outputs?epoch=${window.history_epoch}`)).json();
+    const details=await(await request.get(`/prompt_manager/library/${f.detail_id}`)).json();
+    await expect(await request.patch(`/prompt_manager/pairs/${f.saved_pair}`,{data:{archived:true}})).toBeOK();
+    expect(frozenContexts((await(await request.get(base)).json()).contexts)).toEqual(frozenContexts(before.contexts));
+    await expect(await request.delete(`/prompt_manager/images/${f.detail_image_id}`)).toBeOK();
+    for(const pair of details.variants)await expect(await request.delete(`/prompt_manager/pairs/${pair.id}`)).toBeOK();
+    const text=details.positive.text;
+    expect(f.merge_duplicate_id).not.toBe(f.detail_id);
+    const merge=await request.post('/prompt_manager/cleanup');await expect(merge).toBeOK();expect((await merge.json()).duplicates_removed).toBeGreaterThan(0);
+    await expect(await request.delete(`/prompt_manager/delete/${f.detail_id}`)).toBeOK();
+    await expect(await request.post('/prompt_manager/pairs',{data:{positive_text:text,negative_text:'replacement saved negative'}})).toBeOK();
+    const prune=await request.post('/prompt_manager/maintenance',{data:{operations:['prune_orphaned_prompts']}});await expect(prune).toBeOK();expect((await prune.json()).all_successful).toBe(true);
+    const after=await(await request.get(base)).json();expect(frozenContexts(after.contexts)).toEqual(frozenContexts(before.contexts));
+    for(const context of after.contexts) {expect(context.navigation.positive_available).toBe(false);expect(context.positive_prompt_id).toBeNull();}
+    const receipts=await(await request.get(`/prompt_manager/history/runs/${f.runs.shared}/outputs?epoch=${window.history_epoch}`)).json();expect(immutableReceipts(receipts.items)).toEqual(immutableReceipts(outputs.items));
+});
+
+test('actual restore with reused numeric owner rejects stale history and offers explicit saved recovery',async({page,request})=>{
+    const f=page.fixture;await open(page,f.detail_id);const original=await exact(saved(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('pre'));
+    const source=await request.get('/__test__/history/reused-snapshot');await expect(source).toBeOK();await restoreSnapshot(request,await source.body());
+    await marker(page,f.runs.shared).click();await expect(dialog(page)).toContainText('Recorded evidence changed');await page.keyboard.press('Escape');
+    await expect(page.locator('.library-parent-status')).toContainText('changed');expect(await exact(saved(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('pre'))).toBe(original);
+    await expect(recorded(page).getByRole('button',{name:'Reload recorded history',exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'Reload saved Library view',exact:true}).click();await expect(saved(page)).toContainText('Restored owner with reused numeric ID');
+    expect((await request.get(`/prompt_manager/history/runs/${f.runs.shared}`)).status()).toBe(404);
+});
+
+for(const outcome of ['success','error'])test(`delayed actual old browser ${outcome} cannot repaint after restore and route return`,async({page,request})=>{
+    const f=page.fixture;await open(page,f.detail_id);const snapshot=await request.get('/__test__/history/snapshot');const bytes=await snapshot.body();
+    let entered,release;const started=new Promise(resolve=>{entered=resolve;}),held=new Promise(resolve=>{release=resolve;});
+    await page.route(new RegExp(`/history/runs/${f.runs.shared}\\?`),async route=>{
+        if(outcome==='error')await restoreSnapshot(request,bytes);
+        const response=await route.fetch();expect(response.status()).toBe(outcome==='success'?200:409);entered();await held;
+        await route.fulfill({response}).catch(()=>{});
+    });
+    try {
+        await marker(page,f.runs.shared).click();await started;if(outcome==='success')await restoreSnapshot(request,bytes);
+        await page.evaluate(()=>{location.hash='#/overview';});await expect(page.locator('#workspace-main h1')).toHaveText('Overview');release();
+        await page.unroute(new RegExp(`/history/runs/${f.runs.shared}\\?`));await open(page,f.detail_id);
+        await expect(recorded(page).locator('button[data-run-id]').first()).toBeEnabled();await expect(page.locator('dialog[open]')).toHaveCount(0);
+        await marker(page,f.runs.empty).click();await expect(dialog(page)).toContainText(f.runs.empty);await page.keyboard.press('Escape');await expect(saved(page)).toBeVisible();
+    } finally {release();}
+});
+
 test('strict reset seeds real A,A,B positions, two contexts and independently selected saved gallery',async({page,request})=>{
     for(const data of [{chronological_history:'true'},{chronological_history:true,native_library:true},{chronological_history:true,full_inspector:false},{chronological_history:true,extra_images:0},{chronological_history:true,history_runs:true},{chronological_history:true,unknown:1},{history_runs:1}])
         expect((await request.post('/__test__/reset',{data})).status()).toBe(400);
@@ -203,6 +324,20 @@ test('coarse-pointer markers expose 44px targets while retaining the small repea
         expect(await buttons.evaluateAll(nodes=>nodes.every(node=>node.getBoundingClientRect().width>=44&&node.getBoundingClientRect().height>=44))).toBe(true);
         const repeat=marker(page,f.aab[1]);expect(await repeat.evaluate(node=>({width:getComputedStyle(node,'::before').width,height:getComputedStyle(node,'::before').height}))).toEqual({width:'12px',height:'12px'});
         await repeat.tap();await expect(dialog(page)).toContainText(f.aab[1]);await dialog(page).getByRole('button',{name:'Close recorded run',exact:true}).tap();await expect(dialog(page)).toHaveCount(0);
+    } finally {await context.close();}
+});
+
+test('coarse recorded toolbar and disclosure expose 44px targets and real touch actions',async({browser,browserName,request},testInfo)=>{
+    const context=await browser.newContext({viewport:{width:390,height:844},hasTouch:true,isMobile:browserName!=='firefox'});const page=await context.newPage();
+    try {
+        const reset=await request.post('/__test__/reset',{data:{chronological_history:true}});const f=await reset.json();await open(page,f.positive_id);
+        expect(await page.evaluate(()=>matchMedia('(pointer: coarse)').matches)).toBe(true);
+        const controls=recorded(page).locator('.history-toolbar button:visible,.history-scope summary');
+        const sizes=await controls.evaluateAll(nodes=>nodes.map(node=>({label:node.textContent,width:node.getBoundingClientRect().width,height:node.getBoundingClientRect().height})));
+        await testInfo.attach('coarse-recorded-controls.json',{body:JSON.stringify(sizes,null,2),contentType:'application/json'});
+        for(const control of sizes) {expect.soft(control.width,control.label).toBeGreaterThanOrEqual(44);expect.soft(control.height,control.label).toBeGreaterThanOrEqual(44);}
+        await recorded(page).getByText('Recorded history scope',{exact:true}).tap();await expect(recorded(page).locator('.history-scope')).toHaveAttribute('open','');
+        await recorded(page).getByRole('button',{name:'Refresh history',exact:true}).tap();await expect(recorded(page).locator('button[data-run-id]')).toHaveCount(3);
     } finally {await context.close();}
 });
 

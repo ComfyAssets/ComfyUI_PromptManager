@@ -253,7 +253,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             const all=createButton('All images for this positive');
             const variants=el('section',undefined,'library-surface library-variants');variants.setAttribute('aria-label','Saved negative variants');
             variants.append(el('h2','Negative variants'),el('p','Choose a saved negative to inspect its full text and filter the shared gallery.','muted'));
-            const branches=el('div',undefined,'library-branches');branches.append(el('p','Positive prompt · unchanged','library-positive-lane'));
+            const branches=el('div',undefined,'library-branches');const positiveLane=el('p',undefined,'library-positive-lane');positiveLane.append(el('span','Positive prompt · unchanged'));branches.append(positiveLane);
             const choices=[];
             const variantCount=el('p','','muted');variantCount.setAttribute('role','status');
             const variantError=el('p','','muted');variantError.setAttribute('role','alert');variantError.hidden=true;
@@ -279,7 +279,9 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             };
             updateBranches(state);
             if(!detail.variants.length) branches.append(el('p','No saved negative variants. Existing image associations remain available.','muted'));
-            const note=el('p','Saved combinations, not an execution timeline.','muted');variants.append(branches,variantCount,variantError,more,retry,note,all);
+            const note=el('p','Saved combinations, not an execution timeline.','muted');
+            const variantFooter=el('div',undefined,'library-variant-footer'),variantSummary=el('div',undefined,'library-variant-summary');variantSummary.append(variantCount,note);variantFooter.append(variantSummary,all);
+            variants.append(branches,variantError,more,retry,variantFooter);
             const context=el('p','','library-variant-context');context.setAttribute('role','status');
             const gallery=el('section',undefined,'library-shared-gallery');gallery.setAttribute('aria-label','Shared gallery');gallery.append(el('h2','Shared gallery'),context);
             const images=el('div',undefined,'library-linked-images');gallery.append(images);let activePairId;

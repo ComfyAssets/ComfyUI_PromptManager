@@ -18,8 +18,23 @@ from tests.browser.workspace_visual_fixture import seed_workspace_visual
 from tests.browser.workspace_inspector_fixture import seed_workspace_inspector
 from tests.browser.workspace_history_fixture import (
     capture_workspace_history_zero_outputs,
+    register_workspace_history_commands,
     seed_workspace_history,
 )
+
+CANONICAL_ROOT = Path(__file__).resolve().parents[2]
+CANONICAL_ASSETS = {
+    "/__test__/canonical/workspace": (
+        "docs/concepts/workspace/index.html",
+        "text/html",
+    ),
+    "/workspace/app.js": ("docs/concepts/workspace/app.js", "text/javascript"),
+    "/workspace/style.css": ("docs/concepts/workspace/style.css", "text/css"),
+    "/toolkit/core.js": ("web/js/shared/toolkit/core.js", "text/javascript"),
+    "/toolkit/controls.css": ("web/js/shared/toolkit/controls.css", "text/css"),
+    "/vendor/viewer.js": ("web/lib/viewerjs/viewer.min.js", "text/javascript"),
+    "/vendor/viewer.css": ("web/lib/viewerjs/viewer.min.css", "text/css"),
+}
 
 
 class TestModel:
@@ -84,6 +99,18 @@ def create_app(root: Path) -> web.Application:
     autotag.get_autotag_service = lambda: model
     api = PromptManagerAPI()
     api.add_routes(routes)
+    history_commands = register_workspace_history_commands(routes, api, root)
+
+    async def canonical_asset(request: web.Request) -> web.Response:
+        filename, content_type = CANONICAL_ASSETS[request.path]
+        return web.Response(
+            body=(CANONICAL_ROOT / filename).read_bytes(),
+            content_type=content_type,
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
+    for path in CANONICAL_ASSETS:
+        routes.get(path)(canonical_asset)
 
     def seed(
         extra_images: int = 0,
@@ -270,6 +297,7 @@ def create_app(root: Path) -> web.Application:
             )
             history_fixture = manifest
             return web.json_response({"success": True, **manifest})
+        history_commands.reset()
         workspace_visual = data.get("workspace_visual", False)
         full_inspector = data.get("full_inspector", False)
         extra = data.get("extra_images", 0)

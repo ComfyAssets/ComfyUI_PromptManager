@@ -1,4 +1,7 @@
 import { writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { captureCanonicalState, historyGeometry, compareCanonicalHistory, nativeDialogState, exerciseCurrentPairSend } from './history-canonical-comparison.mjs';
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 
@@ -42,6 +45,94 @@ test.beforeEach(async ({ page, request, browserName }) => {
     await expect(await request.post('/__test__/reset')).toBeOK();
 });
 test.afterEach(async ({ page, browserName }) => { await saveCoverage(page, browserName); });
+
+test('canonical history assets are the exact immutable approved source', async ({ request }) => {
+    const assets = [
+        ['/__test__/canonical/workspace', 'docs/concepts/workspace/index.html', 'd84712c7284bb232919a1ed9b154575c8ac574f63b2404a4ac4bc06cbf323c03'],
+        ['/workspace/app.js', 'docs/concepts/workspace/app.js', 'e33e7652da12a68cd3fe31e94d77d680aa439b6434ceee94f21cc4ce8883263e'],
+        ['/workspace/style.css', 'docs/concepts/workspace/style.css', '2c479ca1a2ddbbd14a550eae27dd731c326ccdb91fe9ddc87e2b81cd5298fce8'],
+    ];
+    for (const [url, source, sha256] of assets) {
+        const response = await request.get(url);await expect(response).toBeOK();
+        const bytes = await response.body();
+        expect(bytes).toEqual(await readFile(new URL(`../../${source}`, import.meta.url)));
+        expect(createHash('sha256').update(bytes).digest('hex')).toBe(sha256);
+        expect(response.headers()['cache-control']).toBe('no-store');
+        expect(response.headers()['x-content-type-options']).toBe('nosniff');
+    }
+    for (const url of ['/workspace/missing.js', '/__test__/canonical/server.py', '/toolkit/missing.js', '/vendor/missing.js']) {
+        expect((await request.get(url)).status()).toBe(404);
+    }
+});
+
+for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['dark', 'light']) {
+    test(`canonical chronological history ${width} ${theme}`, async ({ page, request }, testInfo) => {
+        await page.setViewportSize({ width, height });
+        await page.goto('/__test__/canonical/workspace#prompt/alpine');
+        await page.getByRole('combobox', { name: 'Theme', exact: true }).selectOption(theme);
+        await expect(page.locator('.timeline')).toBeVisible();
+        const referenceDot = page.getByRole('button', { name: 'Select negative Quality baseline', exact: true });
+        await referenceDot.focus();await page.keyboard.press('Enter');
+        await expect(page.getByRole('button', { name: 'Select negative Quality baseline', exact: true })).toHaveAttribute('aria-pressed', 'true');
+        const reference = await historyGeometry(page, false);
+        for (const [name, selector] of [['saved', '.surface'], ['branches', '.timeline-panel'], ['gallery', '.history-gallery']]) {
+            await captureCanonicalState(page, testInfo, `concept-${name}-${width}-${theme}`, selector);
+        }
+        await page.getByRole('button', { name: 'Show repeat run for Quality baseline', exact: true }).click();
+        await expect(page.getByRole('dialog', { name: 'Repeat run', exact: true })).toBeVisible();
+        expect(await page.locator('#modal').evaluate(node => node.matches(':modal'))).toBe(true);
+        reference.runDialog = await nativeDialogState(page.locator('#modal'));
+        await captureCanonicalState(page, testInfo, `concept-run-${width}-${theme}`, '#modal');
+        await page.keyboard.press('Escape');await expect(page.locator('#modal')).not.toBeVisible();
+        await page.locator('.history-gallery .image-open').first().click();
+        await expect(page.locator('#viewer-dialog')).toBeVisible();
+        await expect(page.locator('#viewer-dialog')).toHaveAccessibleName('Alpine observatory · alpine_00001.png');
+        await captureCanonicalState(page, testInfo, `concept-viewer-${width}-${theme}`, '#viewer-dialog');
+        await page.keyboard.press('Escape');
+
+        const reset = await request.post('/__test__/reset', { data: { chronological_history: true } });await expect(reset).toBeOK();const fixture = await reset.json();
+        await page.goto(`${workspace}#/library/${fixture.canonical_id}`);
+        await page.getByRole('combobox', { name: 'Appearance', exact: true }).selectOption(theme);
+        const details = await (await request.get(`/prompt_manager/library/${fixture.canonical_id}`)).json();
+        const index = details.variants.findIndex(variant => variant.id === fixture.canonical_pair);
+        const choice = page.getByRole('button', { name: `Select negative variant ${index + 1}`, exact: true });
+        await choice.focus();await page.keyboard.press('Enter');await expect(choice).toHaveAttribute('aria-pressed', 'true');
+        const actual = await historyGeometry(page, true);
+        const roles = page.getByRole('region', { name: 'Saved prompt texts', exact: true });
+        const positive = roles.getByRole('region', { name: 'Positive prompt', exact: true });
+        expect(await positive.evaluate(node => node.nextElementSibling?.getAttribute('aria-label'))).toBe('Negative prompt');
+        for (const name of ['Copy positive prompt', 'Send positive prompt', 'Copy negative prompt', 'Send negative prompt', 'Send prompt pair']) await expect(roles.getByRole('button', { name, exact: true })).toBeVisible();
+        await expect(page.locator('.library-shared-gallery article[data-image-key]')).toHaveCount(2);
+        await page.locator('.library-shared-gallery .image-open').first().click();
+        await expect(page.getByRole('region', { name: 'Image details', exact: true })).toContainText('canonical-alt.png');
+        await page.getByRole('button', { name: 'Open full preview', exact: true }).click();
+        await expect(page.getByRole('dialog', { name: 'Image preview', exact: true })).toBeVisible();await page.keyboard.press('Escape');
+        for (const [name, selector] of [['saved', '.library-surface'], ['branches', '.library-variants'], ['gallery', '.library-shared-gallery'], ['chronology', '.recorded-history']]) {
+            await captureCanonicalState(page, testInfo, `production-${name}-${width}-${theme}`, selector);
+        }
+        const run = page.locator(`button[data-run-id="${fixture.canonical_run}"][data-anchor-id="10"]`);
+        await run.focus();await page.keyboard.press('Enter');
+        const runDialog = page.getByRole('dialog', { name: 'Recorded run', exact: true });
+        await expect(runDialog.locator('[data-receipt]')).toHaveCount(2);
+        expect(await runDialog.evaluate(node => node.matches(':modal') && node.contains(document.activeElement))).toBe(true);
+        actual.runDialog = await nativeDialogState(runDialog);
+        for (const name of ['Raw', 'Effective', 'Close recorded run', 'Send prompt pair']) await expect(runDialog.getByRole('button', { name, exact: true })).toBeVisible();
+        await captureCanonicalState(page, testInfo, `production-run-${width}-${theme}`, '.recorded-run-dialog');
+        const view = runDialog.getByRole('button', { name: 'View current file', exact: true }).first();await view.click();
+        const viewer = page.getByRole('dialog', { name: 'Image preview', exact: true });await expect(viewer).toBeVisible();
+        await expect(viewer.getByRole('region', { name: 'Positive prompt', exact: true })).toContainText(fixture.canonical_positive);
+        await expect(viewer.getByRole('region', { name: 'Negative prompt', exact: true })).toContainText(fixture.canonical_negative);
+        for (const name of ['Copy positive prompt', 'Send positive prompt', 'Copy negative prompt', 'Send negative prompt', 'Send prompt pair']) await expect(viewer.getByRole('button', { name, exact: true })).toBeVisible();
+        await expect(viewer).toContainText('42001');await expect(viewer).toContainText('720');await expect(viewer).toContainText('480');
+        const currentPositive = viewer.getByRole('region', { name: 'Positive prompt', exact: true });
+        await currentPositive.getByRole('button', { name: 'Copy positive prompt', exact: true }).click();
+        await expect(currentPositive.getByRole('status')).toContainText(/Copied\.|Copy unavailable/);
+        await exerciseCurrentPairSend(page, { positive: fixture.canonical_positive, negative: fixture.canonical_negative });
+        await captureCanonicalState(page, testInfo, `production-viewer-${width}-${theme}`, 'dialog.image-preview');
+        await page.keyboard.press('Escape');await expect(view).toBeFocused();await page.keyboard.press('Escape');await expect(run).toBeFocused();
+        await compareCanonicalHistory(reference, actual, testInfo);
+    });
+}
 
 test('visual fixture exposes real stable media and library records', async ({ request }) => {
     expect((await request.post('/__test__/reset', { data: { workspace_visual: 'true' } })).status()).toBe(400);

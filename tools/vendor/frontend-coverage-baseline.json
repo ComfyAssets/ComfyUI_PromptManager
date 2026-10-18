@@ -7,7 +7,13 @@
   },
   "api-client.js": {
     "lines": 98,
-    "branches": 94,
+    "branches": 95,
+    "functions": 98,
+    "statements": 98
+  },
+  "classic-node.js": {
+    "lines": 98,
+    "branches": 79,
     "functions": 98,
     "statements": 98
   },
@@ -22,6 +28,12 @@
     "branches": 98,
     "functions": 98,
     "statements": 98
+  },
+  "focused-node.js": {
+    "lines": 97,
+    "branches": 87,
+    "functions": 90,
+    "statements": 97
   },
   "gallery-settings.js": {
     "lines": 98,
@@ -53,9 +65,33 @@
     "functions": 98,
     "statements": 98
   },
+  "metadata-autocomplete.js": {
+    "lines": 98,
+    "branches": 82,
+    "functions": 85,
+    "statements": 98
+  },
   "png-metadata.js": {
     "lines": 98,
     "branches": 90,
+    "functions": 98,
+    "statements": 98
+  },
+  "prompt-bridge-adapter.js": {
+    "lines": 98,
+    "branches": 93,
+    "functions": 98,
+    "statements": 98
+  },
+  "prompt-bridge-host.js": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
+  },
+  "prompt-library.js": {
+    "lines": 98,
+    "branches": 94,
     "functions": 98,
     "statements": 98
   },
@@ -66,10 +102,28 @@
     "statements": 98
   },
   "scan-progress.js": {
-    "lines": 97,
-    "branches": 91,
+    "lines": 98,
+    "branches": 98,
     "functions": 98,
-    "statements": 97
+    "statements": 98
+  },
+  "shared/toolkit/core.js": {
+    "lines": 98,
+    "branches": 96,
+    "functions": 98,
+    "statements": 98
+  },
+  "shared/toolkit/prompt-bridge.js": {
+    "lines": 98,
+    "branches": 94,
+    "functions": 98,
+    "statements": 98
+  },
+  "shared/toolkit/suggestions.js": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
   },
   "sse-stream.js": {
     "lines": 98,
@@ -101,57 +155,33 @@
     "functions": 98,
     "statements": 98
   },
-  "classic-node.js": {
-    "lines": 98,
-    "branches": 79,
-    "functions": 98,
-    "statements": 98
-  },
-  "shared/toolkit/core.js": {
-    "lines": 98,
-    "branches": 96,
-    "functions": 98,
-    "statements": 98
-  },
-  "focused-node.js": {
+  "workspace/file-inspector.mjs": {
     "lines": 95,
-    "branches": 73,
-    "functions": 87,
+    "branches": 92,
+    "functions": 88,
     "statements": 95
   },
-  "prompt-library.js": {
+  "workspace/history-media.mjs": {
     "lines": 98,
     "branches": 86,
     "functions": 98,
     "statements": 98
   },
-  "metadata-autocomplete.js": {
-    "lines": 98,
-    "branches": 81,
-    "functions": 85,
-    "statements": 98
+  "workspace/history-state.mjs": {
+    "lines": 97,
+    "branches": 91,
+    "functions": 96,
+    "statements": 97
   },
-  "shared/toolkit/suggestions.js": {
+  "workspace/history.mjs": {
+    "lines": 96,
+    "branches": 87,
+    "functions": 98,
+    "statements": 96
+  },
+  "workspace/icons.mjs": {
     "lines": 98,
     "branches": 98,
-    "functions": 98,
-    "statements": 98
-  },
-  "workspace/index.mjs": {
-    "lines": 98,
-    "branches": 92,
-    "functions": 98,
-    "statements": 98
-  },
-  "workspace/state.mjs": {
-    "lines": 98,
-    "branches": 98,
-    "functions": 98,
-    "statements": 98
-  },
-  "workspace/theme.mjs": {
-    "lines": 98,
-    "branches": 93,
     "functions": 98,
     "statements": 98
   },
@@ -169,37 +199,25 @@
   },
   "workspace/images.mjs": {
     "lines": 97,
-    "branches": 87,
+    "branches": 88,
     "functions": 98,
     "statements": 97
   },
-  "prompt-bridge-adapter.js": {
+  "workspace/index.mjs": {
+    "lines": 98,
+    "branches": 95,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/inspection-state.mjs": {
     "lines": 98,
     "branches": 93,
     "functions": 98,
     "statements": 98
   },
-  "prompt-bridge-host.js": {
+  "workspace/library-layout.mjs": {
     "lines": 98,
     "branches": 98,
-    "functions": 98,
-    "statements": 98
-  },
-  "shared/toolkit/prompt-bridge.js": {
-    "lines": 98,
-    "branches": 93,
-    "functions": 98,
-    "statements": 98
-  },
-  "workspace/prompt-inspector.mjs": {
-    "lines": 98,
-    "branches": 98,
-    "functions": 98,
-    "statements": 98
-  },
-  "workspace/prompt-sender.mjs": {
-    "lines": 98,
-    "branches": 89,
     "functions": 98,
     "statements": 98
   },
@@ -210,34 +228,10 @@
     "statements": 98
   },
   "workspace/library.mjs": {
-    "lines": 94,
-    "branches": 80,
-    "functions": 93,
-    "statements": 94
-  },
-  "workspace/icons.mjs": {
-    "lines": 98,
-    "branches": 98,
-    "functions": 98,
-    "statements": 98
-  },
-  "workspace/library-layout.mjs": {
-    "lines": 98,
-    "branches": 98,
-    "functions": 98,
-    "statements": 98
-  },
-  "workspace/file-inspector.mjs": {
     "lines": 95,
-    "branches": 92,
-    "functions": 88,
+    "branches": 84,
+    "functions": 94,
     "statements": 95
-  },
-  "workspace/inspection-state.mjs": {
-    "lines": 98,
-    "branches": 93,
-    "functions": 98,
-    "statements": 98
   },
   "workspace/media-viewer.mjs": {
     "lines": 98,
@@ -246,10 +240,40 @@
     "statements": 98
   },
   "workspace/prompt-blocks.mjs": {
-    "lines": 88,
-    "branches": 88,
+    "lines": 89,
+    "branches": 89,
     "functions": 98,
-    "statements": 88
+    "statements": 89
+  },
+  "workspace/prompt-inspector.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/prompt-sender.mjs": {
+    "lines": 98,
+    "branches": 91,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/recorded-run.mjs": {
+    "lines": 95,
+    "branches": 83,
+    "functions": 71,
+    "statements": 95
+  },
+  "workspace/state.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/theme.mjs": {
+    "lines": 98,
+    "branches": 93,
+    "functions": 98,
+    "statements": 98
   },
   "workspace/viewer-state.mjs": {
     "lines": 98,

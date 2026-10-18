@@ -33,6 +33,24 @@ async function persisted(execution, id, outcomes) {
     }, { timeout: 15000, message: 'Exact attempts and final output evidence reach SQLite' }).toEqual({
         outcomes, states: outcomes.map(() => 'complete'),
     });
+    for (const row of result.rows) {
+        const detailResponse = await execution.request.get(`/prompt_manager/history/runs/${row.run_id}`);
+        expect(detailResponse.ok()).toBe(true);
+        const detail = await detailResponse.json();
+        expect(detail.run).toMatchObject({ run_id: row.run_id, outcome: row.outcome, queue_item_id: String(row.queue_item_id) });
+        const response = await execution.request.get(`/prompt_manager/history/runs/${row.run_id}/outputs?epoch=${detail.history_epoch}`);
+        expect(response.ok()).toBe(true);expect(response.headers()['cache-control']).toBe('no-store');
+        const publicOutputs = await response.json(), captured = result.outputs[row.run_id];
+        expect(publicOutputs.capture).toMatchObject({ state: captured.state, reason: captured.reason, source: captured.source });
+        expect(publicOutputs.retained_occurrence_count).toBe(captured.references.length);
+        expect(publicOutputs.items.map(item => ({ ...item.occurrence, ...item.reference })).map(({ run_id, ...reference }) => reference)).toEqual(
+            captured.references.map(({ output_node_id, image_ordinal, folder_type, subfolder, filename, path_style, root_key }) =>
+                ({ output_node_id, image_ordinal, folder_type, subfolder, filename, path_style, root_key })));
+        for (const item of publicOutputs.items) {
+            expect(item).toMatchObject({ file_identity: 'unverified', newly_generated: 'unknown', context_membership: 'unknown' });
+            expect(item.current_candidate.evidence_class).toBe('locator_candidate');
+        }
+    }
     return result;
 }
 

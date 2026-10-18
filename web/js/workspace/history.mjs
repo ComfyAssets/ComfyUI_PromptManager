@@ -43,7 +43,7 @@ export function mountRecordedHistory(container, {api, positiveId, parentScope, s
     const timeline = el('div', undefined, 'history-timeline');timeline.setAttribute('aria-label', 'Chronological branch timeline');
     const canvas = el('div', undefined, 'history-canvas');
     const edge = el('span', undefined, 'history-earlier-edge');edge.setAttribute('aria-hidden', 'true');
-    const positive = el('div', 'Positive raw text · unchanged', 'history-positive-lane');positive.setAttribute('aria-hidden', 'true');
+    const positive = el('div', undefined, 'history-positive-lane');positive.append(el('span', 'Positive raw text · unchanged'));positive.setAttribute('aria-hidden', 'true');
     const branches = el('div', undefined, 'history-context-branches');branches.setAttribute('aria-hidden', 'true');
     const positions = el('ol', undefined, 'history-run-list');positions.setAttribute('aria-label', 'Recorded run positions');
     canvas.append(edge, positive, branches, positions);timeline.append(canvas);
