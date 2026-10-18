@@ -247,7 +247,15 @@ class HistoryWriter:
         self._notify_invalidation()
         self._wake.set()
         if thread is not None:
-            thread.join(max(0.0, deadline - time.monotonic()))
+            while thread.is_alive():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                thread.join(remaining)
+                if thread.is_alive():
+                    remaining = deadline - time.monotonic()
+                    if remaining > 0:
+                        time.sleep(min(remaining, 0.001))
         with self._lock:
             if self._closing and time.monotonic() >= self._close_deadline:
                 self._discard_locked()

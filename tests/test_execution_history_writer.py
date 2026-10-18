@@ -1,6 +1,7 @@
 """Real-thread, disposable-database coverage for the bounded history writer."""
 
 from dataclasses import FrozenInstanceError, replace
+from contextlib import nullcontext
 import logging
 import os
 import sqlite3
@@ -301,6 +302,12 @@ class HistoryWriterTests(unittest.TestCase):
         )
 
     def test_bounded_close_keeps_inflight_charge_and_releases_queued(self):
+        self.check_bounded_close_payloads()
+
+    def test_early_join_return_still_waits_for_deadline_and_releases_queued(self):
+        self.check_bounded_close_payloads(early_join=True)
+
+    def check_bounded_close_payloads(self, early_join=False):
         from utils.execution_context_budget import ContextBudget
 
         pool = ContextBudget(1000)
@@ -330,9 +337,41 @@ class HistoryWriterTests(unittest.TestCase):
                     self.finish_command(start), self.sealed(writer)
                 )
             )
-            before = time.monotonic()
-            self.assertFalse(writer.close(0.02))
-            self.assertLess(time.monotonic() - before, 0.2)
+            native_join = writer._thread.join
+            close_clock = ManualClock()
+
+            def return_early(timeout):
+                # Keep the real worker blocked while simulating an early native join.
+                self.assertTrue(writer.status().alive)
+                self.assertFalse(writer.submit(self.finish_command(start)))
+                native_join(0)
+                close_clock.advance(min(timeout, 0.004))
+
+            def yield_wait(delay):
+                self.assertGreater(delay, 0)
+                self.assertLessEqual(delay, 0.001)
+                close_clock.advance(delay)
+
+            clock = (
+                patch(
+                    "utils.execution_history_writer.time",
+                    SimpleNamespace(monotonic=close_clock, sleep=yield_wait),
+                )
+                if early_join
+                else nullcontext()
+            )
+            join = (
+                patch.object(writer._thread, "join", return_early)
+                if early_join
+                else nullcontext()
+            )
+            with clock, join:
+                monotonic = close_clock if early_join else time.monotonic
+                before = monotonic()
+                self.assertFalse(writer.close(0.02))
+                elapsed = monotonic() - before
+            self.assertGreaterEqual(elapsed, 0.02)
+            self.assertLess(elapsed, 0.2)
             self.assertEqual(pool.charged_bytes, charge)
             replacement = HistoryWriter(lambda: self.db, context_budget=pool)
             self.writers.append(replacement)
@@ -340,6 +379,30 @@ class HistoryWriterTests(unittest.TestCase):
             release.set()
             self.wait_for(lambda: not writer.status().alive)
         self.assertEqual(pool.charged_bytes, 0)
+
+    def test_close_drain_exits_without_sleeping_after_worker_join(self):
+        writer = self.writer()
+        clock = ManualClock()
+        native_join = writer._thread.join
+
+        def join(timeout):
+            native_join(3)
+            self.assertFalse(writer._thread.is_alive())
+            clock.advance(0.001)
+
+        def sleep(delay):
+            self.fail("Close slept after the worker exited")
+
+        with (
+            patch(
+                "utils.execution_history_writer.time",
+                SimpleNamespace(monotonic=clock, sleep=sleep),
+            ),
+            patch.object(writer._thread, "join", join),
+        ):
+            self.assertTrue(writer.close(0.02))
+        self.assertLess(clock(), 0.02)
+        self.assertFalse(writer.status().alive)
 
     def test_same_epoch_invalidation_between_transactions_drops_payload(self):
         writer = self.writer()
