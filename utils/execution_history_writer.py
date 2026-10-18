@@ -131,6 +131,7 @@ class HistoryWriter:
                 try:
                     lease.release()
                 except (AttributeError, TypeError, ValueError):
+                    # Invalid leases may lack reservations; keep independent evidence.
                     pass
 
     def _consume_context_locked(self, context: SealedContext) -> SealedContext:
