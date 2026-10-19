@@ -337,6 +337,12 @@ class _GraphResolver:
         # one is "tainted" and never memoized, since it depends on the choice.
         self.choices: dict = {}
         self.tainted = False
+        # Latent-walk outcome per sampler (inspection): ``(error or None, visit
+        # cost)``. It never depends on selector choices, so one walk serves every
+        # branch run; ``latent_charged`` holds the samplers already paid for by
+        # the current candidate.
+        self.latent_walks: dict = {}
+        self.latent_charged: set = set()
         # ``semantics`` (inspection) names the samplers and guiders it follows.
         self.semantics = semantics
         if semantics is None:
@@ -928,6 +934,7 @@ class _GraphResolver:
 
     def pair(self, sampler_id: str) -> dict:
         self.budget.reset(self.per_candidate_visits)
+        self.latent_charged = set()
         if not self.legacy and self.budget.total <= 0:
             return _result(
                 "unresolved",
@@ -1174,7 +1181,7 @@ class _GraphResolver:
                 if self.semantics is None:
                     self.latent_source(inputs[latent], set(), 0)
                 else:
-                    self.latent_stages(sampler_id, inputs[latent])
+                    self.latent_checked(sampler_id, inputs[latent])
             guider_id, depth = None, 0
             conditioning = entry["conditioning"]
             absent_reason = "Negative input is absent"
@@ -1233,6 +1240,34 @@ class _GraphResolver:
             self.latent_source(inputs["value"], seen, depth + 1)
             return
         raise self.unsupported("Unsupported latent ancestry", node_id)
+
+    def latent_checked(self, sampler_id: str, value: Any) -> None:
+        """``latent_stages`` once per sampler per resolution.
+
+        A candidate reusing another candidate's walk is charged its visit cost
+        (as the text memo does), so outcomes stay independent of order; branch
+        runs of one candidate share its allowance and pay once. A walk that ran
+        out of work is never reused, since it depends on the remaining budget.
+        """
+        if sampler_id in self.latent_walks:
+            error, cost = self.latent_walks[sampler_id]
+            if sampler_id not in self.latent_charged:
+                self.budget.charge(cost)
+                self.latent_charged.add(sampler_id)
+        else:
+            before = self.budget.allowance
+            try:
+                self.latent_stages(sampler_id, value)
+                error = None
+            except _Unresolved as raised:
+                if raised.code == "work-limit":
+                    raise
+                error = raised
+            self.latent_walks[sampler_id] = (error, before - self.budget.allowance)
+            self.latent_charged.add(sampler_id)
+        if error is not None:
+            node = dict(error.node) if error.node is not None else None
+            raise _Unresolved(str(error), error.code, node)
 
     def latent_stages(self, origin: str, value: Any) -> None:
         """Semantics table: is there an earlier sampler in the latent ancestry?

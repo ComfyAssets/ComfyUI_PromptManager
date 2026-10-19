@@ -2870,6 +2870,133 @@ class TestBreadthFirstWalkWork(unittest.TestCase):
         self.assertLessEqual(queued, count + 1)
 
 
+def _wan_selector_graph(width: int, selectors: int, latent_origin: bool) -> dict:
+    """Review I-3: WanImageToVideo over ``width``-input joins and LoRAs, with
+    ``selectors`` diverging runtime selectors on the positive side."""
+    source = _latent_from(None)
+    source["50"] = {"class_type": "LoadImage", "inputs": {"image": "a.png"}}
+    clip = ["4", 1]
+    for index in range(5):
+        model = ["4", 0] if index == 0 else [f"lo{index - 1}", 0]
+        source[f"lo{index}"] = {
+            "class_type": "LoraLoader",
+            "inputs": {"model": model, "clip": clip, "lora_name": f"l{index}"},
+        }
+        clip = [f"lo{index}", 1]
+    ends = []
+    for prefix, text in (("P", "pos"), ("N", "neg")):
+        parts = {}
+        for index in range(width):
+            source[f"{prefix}l{index}"] = _multiline(f"{text} {index}", False)
+            parts[f"string_{index + 1}"] = [f"{prefix}l{index}", 0]
+        source[f"{prefix}j"] = _join(width, " ", **parts)
+        source[f"{prefix}e"] = {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": [f"{prefix}j", 0], "clip": clip},
+        }
+        ends.append(f"{prefix}e")
+    previous = ends[0]
+    for index in range(selectors):
+        source[f"alt{index}"] = _encoded(f"alternative {index}")
+        source[f"ie{index}"] = {
+            "class_type": "ImageExists",
+            "inputs": {"image": ["50", 0]},
+        }
+        source[f"sel{index}"] = _if_else(
+            [f"ie{index}", 1], [previous, 0], [f"alt{index}", 0]
+        )
+        previous = f"sel{index}"
+    source["5"] = {
+        "class_type": "WanImageToVideo",
+        "inputs": {
+            "positive": [previous, 0],
+            "negative": [ends[1], 0],
+            "vae": ["4", 2],
+            "start_image": ["50", 0],
+            "width": 832,
+            "height": 480,
+        },
+    }
+    source["3"]["inputs"].update(positive=["5", 0], negative=["5", 1])
+    if latent_origin:
+        source["3"]["inputs"]["latent_image"] = ["5", 2]
+    else:
+        source["5x"] = {"class_type": "EmptyHunyuanLatentVideo", "inputs": {}}
+        source["3"]["inputs"]["latent_image"] = ["5x", 0]
+    return source
+
+
+class TestLatentWalkReuse(unittest.TestCase):
+    """Review I-3: one latent walk per sampler per resolution, reuse charged."""
+
+    def counted(self, source: dict) -> tuple:
+        walks, visits = [], []
+        walk, spend = resolver._GraphResolver.latent_stages, resolver._Budget.spend
+
+        def counted_walk(self, *args):
+            walks.append(args[0])
+            return walk(self, *args)
+
+        def counted_spend(self):
+            visits.append(1)
+            return spend(self)
+
+        with (
+            mock.patch.object(resolver._GraphResolver, "latent_stages", counted_walk),
+            mock.patch.object(resolver._Budget, "spend", counted_spend),
+        ):
+            result = _inspect(source)
+        return result, len(walks), len(visits)
+
+    def test_selector_runs_reuse_one_latent_walk(self):
+        result, walks, visits = self.counted(_wan_selector_graph(100, 3, True))
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(len(result["candidates"]), 8)
+        self.assertEqual(walks, 1)
+        separate, _, baseline = self.counted(_wan_selector_graph(100, 3, False))
+        self.assertEqual(_outcomes(separate).keys(), _outcomes(result).keys())
+        # One walk over the conditioning subgraph on top of the text tracing.
+        self.assertLess(visits, baseline + 300)
+
+    def test_reused_walk_cost_is_charged_to_each_candidate(self):
+        # Two samplers share one latent origin: the second candidate is charged
+        # the walk's cost, so its outcome does not depend on tracing order.
+        source = _latent_from(
+            {
+                "class_type": "VAEEncode",
+                "inputs": {"pixels": ["50", 0], "vae": ["4", 2]},
+            },
+            {"50": {"class_type": "LoadImage", "inputs": {"image": "a.png"}}},
+        )
+        source["41"] = {"class_type": "KSampler", "inputs": dict(source["3"]["inputs"])}
+        source["42"] = {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["41", 0], "vae": ["4", 2]},
+        }
+        source["43"] = {
+            "class_type": "SaveImage",
+            "inputs": {"filename_prefix": "b", "images": ["42", 0]},
+        }
+        # Both candidates share the latent walk's cached cost.
+        full = _inspect(source)
+        self.assertEqual(
+            [item["state"] for item in full["candidates"]], ["resolved", "resolved"]
+        )
+        for budget in range(1, 12):
+            with self.subTest(max_visits=budget):
+                both = _inspect(source, max_visits=budget)
+                states = [
+                    (item["state"], item["reason_code"]) for item in both["candidates"]
+                ]
+                alone = [
+                    _inspect(source, max_visits=budget, output_node_id=anchor)
+                    for anchor in ("9", "43")
+                ]
+                self.assertEqual(
+                    states, [(item["state"], item["reason_code"]) for item in alone]
+                )
+
+
 REPO = Path(__file__).resolve().parents[1]
 SEMANTICS_UNAVAILABLE = "Inspection node semantics are unavailable"
 
