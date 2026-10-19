@@ -398,6 +398,15 @@ class HistoryRestoreTests(unittest.TestCase):
         live.model.restore_from_file(source)
         self.assertEqual(Path(source).read_bytes(), source_bytes)
         self.assertEqual(Path(source + "-wal").read_bytes(), wal_bytes)
+        self.assertEqual(
+            [
+                r[1]
+                for r in live.model.get_connection().execute(
+                    "PRAGMA table_info(prompt_library_state)"
+                )
+            ],
+            ["prompt_id", "title"],
+        )
         self.assertEqual(live.get_execution_run(start.run_id)["record_version"], 1)
         self.assertEqual(
             live.model.get_connection()
