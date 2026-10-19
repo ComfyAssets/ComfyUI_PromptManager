@@ -18,6 +18,11 @@ from utils.prompt_inspector import (
 )
 from utils.pair_execution import EXECUTION_KEY
 
+try:
+    from tests import inspection_parity as parity
+except ImportError:  # pragma: no cover - discover -s tests puts tests/ first
+    import inspection_parity as parity
+
 CAP = 8 * 1024 * 1024
 IMAGE = {"root_index": 0, "path": "image.png", "filename": "image.png"}
 PROMPTS = {
@@ -134,15 +139,23 @@ class TestInspectionResponse(unittest.TestCase):
             self.assertEqual(result["metadata"]["raw"], read.metadata)
             self.assertEqual(result["prompts"], PROMPTS)
 
-    def test_graph_node_limit_counts_nodes_not_json_fields(self):
-        for count, status in ((500, "parsed"), (501, "limited")):
+    def test_graph_ceiling_is_limited(self):
+        # f27: the 20,000-node backstop, built at test time. Prompt nodes count
+        # top-level API nodes; workflow nodes include subgraph definitions.
+        for count, status in ((20_000, "parsed"), (20_001, "limited")):
             prompt = graph_text(count)
+            half = count // 2
             workflow = json.dumps(
                 {
                     "nodes": [
                         {"id": i, "type": "Primitive", "widgets_values": [1, True]}
-                        for i in range(count)
-                    ]
+                        for i in range(count - half)
+                    ],
+                    "definitions": {
+                        "subgraphs": [
+                            {"id": "sg", "nodes": [{"id": i} for i in range(half)]}
+                        ]
+                    },
                 }
             )
             for read in (
@@ -162,11 +175,236 @@ class TestInspectionResponse(unittest.TestCase):
             ):
                 result = json.loads(encode(read))
                 for key in ("prompt_graph", "workflow_graph"):
-                    self.assertEqual(result["metadata"][key]["status"], status)
-                    if status == "limited":
-                        self.assertIsNone(result["metadata"][key]["value"])
+                    with self.subTest(count=count, key=key):
+                        self.assertEqual(result["metadata"][key]["status"], status)
+                        if status == "limited":
+                            self.assertIsNone(result["metadata"][key]["value"])
                 self.assertEqual(result["metadata"]["raw"], read.metadata)
                 self.assertEqual(result["prompts"], PROMPTS)
+
+    def test_prompt_graph_with_600_executable_nodes_is_parsed(self):
+        graph = parity.build("f03")["prompt"]
+        for index in range(100):
+            graph[f"{700 + index}"] = {
+                "class_type": "PrimitiveInt",
+                "inputs": {"value": index},
+            }
+        self.assertGreater(len(graph), 600)
+        text = json.dumps(graph)
+        result = json.loads(encode(inspection({"prompt": text})))
+        projected = result["metadata"]["prompt_graph"]
+        self.assertEqual(projected["status"], "parsed")
+        self.assertEqual(len(projected["value"]), len(graph))
+        self.assertEqual(projected["value"]["3"]["inputs"]["seed"], 42)
+        self.assertEqual(projected["value"]["3"]["inputs"]["cfg"], "6.5")
+        self.assertEqual(result["metadata"]["raw"]["prompt"], text)
+
+    def test_workflow_with_513_ui_nodes_is_parsed_and_downloadable(self):
+        path = parity.fixture_path("f02")
+        chunks = dict(parity.read_text_chunks(path))
+        self.assertGreater(len(json.loads(chunks["workflow"])["nodes"]), 513)
+        result = json.loads(encode(read_inspection_file(path)))
+        metadata = result["metadata"]
+        self.assertEqual(metadata["workflow_graph"]["status"], "parsed")
+        self.assertEqual(
+            metadata["workflow_graph"]["value"]["nodes"],
+            json.loads(chunks["workflow"])["nodes"],
+        )
+        self.assertEqual(metadata["prompt_graph"]["status"], "parsed")
+        # The download is the original record text, byte for byte.
+        self.assertEqual(metadata["raw"]["workflow"], chunks["workflow"])
+        self.assertEqual(metadata["record_formats"]["workflow"], "original-text")
+
+    def test_nan_is_changed_and_meta_keep_prompt_graph_parsed(self):
+        path = parity.fixture_path("f14")
+        chunks = dict(parity.read_text_chunks(path))
+        self.assertIn("NaN", chunks["prompt"])
+        source = parity.build("f14")["prompt"]
+        result = json.loads(encode(read_inspection_file(path)))
+        metadata = result["metadata"]
+        graph = metadata["prompt_graph"]
+        self.assertEqual(graph["status"], "parsed")
+        self.assertEqual(set(graph["value"]), set(source))
+        for node_id, node in graph["value"].items():
+            self.assertEqual(set(node), {"class_type", "inputs"})
+            self.assertEqual(node["class_type"], source[node_id]["class_type"])
+        inputs = graph["value"]["3"]["inputs"]
+        expected = dict(source["3"]["inputs"], cfg="6.5", denoise="1.0")
+        self.assertEqual(inputs, expected)
+        self.assertEqual(graph["value"]["4"]["inputs"], source["4"]["inputs"])
+        self.assertNotIn("_meta", json.dumps(graph))
+        self.assertNotIn("is_changed", json.dumps(graph))
+        # Raw records are never modified: the NaN stays in the download.
+        self.assertEqual(metadata["raw"]["prompt"], chunks["prompt"])
+        self.assertEqual(metadata["workflow_graph"]["status"], "parsed")
+
+    def test_nonfinite_inside_inputs_projects_null(self):
+        prompt = (
+            '{"3":{"class_type":"KSampler","inputs":{"cfg":NaN,"seed":1,'
+            '"denoise":-Infinity,"list":[Infinity,0.5]},"is_changed":[NaN],'
+            '"_meta":{"title":"K","weight":Infinity}},"9":{"value":NaN}}'
+        )
+        workflow = (
+            '{"nodes":[{"id":1,"widgets_values":[NaN,1.5,"x"],'
+            '"extra":{"v":Infinity}}],"extra":{"ds":{"scale":-Infinity}}}'
+        )
+        for read in (
+            inspection({"prompt": prompt, "workflow": workflow}),
+            inspection(
+                {"prompt": prompt, "workflow": workflow},
+                formats={
+                    "prompt": "reserialized-json",
+                    "workflow": "reserialized-json",
+                },
+                carrier='{"prompt":'
+                + prompt
+                + ',"workflow":'
+                + json.dumps(workflow)
+                + ',"other":{"x":NaN}}',
+            ),
+        ):
+            result = json.loads(encode(read))
+            graph = result["metadata"]["prompt_graph"]
+            self.assertEqual(graph["status"], "parsed")
+            self.assertEqual(
+                graph["value"],
+                {
+                    "3": {
+                        "class_type": "KSampler",
+                        "inputs": {
+                            "cfg": None,
+                            "seed": 1,
+                            "denoise": None,
+                            "list": [None, "0.5"],
+                        },
+                    },
+                    "9": {},
+                },
+            )
+            flow = result["metadata"]["workflow_graph"]
+            self.assertEqual(flow["status"], "parsed")
+            self.assertEqual(
+                flow["value"],
+                {
+                    "nodes": [
+                        {
+                            "id": 1,
+                            "widgets_values": [None, "1.5", "x"],
+                            "extra": {"v": None},
+                        }
+                    ],
+                    "extra": {"ds": {"scale": None}},
+                },
+            )
+            self.assertEqual(result["metadata"]["raw"], read.metadata)
+            self.assertEqual(result["prompts"], PROMPTS)
+
+    def test_prompt_projection_keeps_odd_node_shapes_and_rejects_non_objects(self):
+        prompt = '{"1":[NaN,2],"2":"text","3":{"inputs":{"a":1}},"4":{"_meta":{}}}'
+        expected = {"1": [None, 2], "2": "text", "3": {"inputs": {"a": 1}}, "4": {}}
+        carrier_cases = (
+            ('{"prompt":' + prompt + "}", "parsed"),
+            ('{"prompt":[1],"workflow":{"nodes":[]}}', "malformed"),
+            ('{"prompt":' + json.dumps(prompt) + "}", "parsed"),
+            ("[]", "malformed"),
+        )
+        result = json.loads(encode(inspection({"prompt": prompt})))
+        self.assertEqual(
+            result["metadata"]["prompt_graph"], {"status": "parsed", "value": expected}
+        )
+        for carrier, status in carrier_cases:
+            with self.subTest(carrier=carrier):
+                result = json.loads(
+                    encode(
+                        inspection(
+                            {"prompt": prompt},
+                            formats={"prompt": "reserialized-json"},
+                            carrier=carrier,
+                        )
+                    )
+                )
+                graph = result["metadata"]["prompt_graph"]
+                self.assertEqual(graph["status"], status)
+                self.assertEqual(
+                    graph["value"], expected if status == "parsed" else None
+                )
+
+    def test_exact_numbers_survive_tolerance(self):
+        prompt = (
+            '{"3":{"class_type":"KSampler","inputs":{"seed":1152921504606846976,'
+            '"steps":1e3,"cfg":0.1,"denoise":1e0,"exact":6.5000000000000000001,'
+            '"negative_seed":-1152921504606846976,"safe":9007199254740991},'
+            '"is_changed":[NaN]}}'
+        )
+        workflow = (
+            '{"nodes":[{"id":1,"widgets_values":[1152921504606846976,1e3,0.1,NaN]}]}'
+        )
+        result = json.loads(
+            encode(inspection({"prompt": prompt, "workflow": workflow}))
+        )
+        for key in ("prompt_graph", "workflow_graph"):
+            self.assertEqual(result["metadata"][key]["status"], "parsed")
+        inputs = result["metadata"]["prompt_graph"]["value"]["3"]["inputs"]
+        self.assertEqual(
+            inputs,
+            {
+                "seed": str(2**60),
+                "steps": "1E+3",
+                "cfg": "0.1",
+                "denoise": "1",
+                "exact": "6.5000000000000000001",
+                "negative_seed": str(-(2**60)),
+                "safe": 9007199254740991,
+            },
+        )
+        self.assertEqual(inputs["seed"], "1152921504606846976")
+        widgets = result["metadata"]["workflow_graph"]["value"]["nodes"][0]
+        self.assertEqual(
+            widgets["widgets_values"], ["1152921504606846976", "1E+3", "0.1", None]
+        )
+
+    def test_duplicate_json_keys_still_malformed(self):
+        for prompt, workflow in (
+            ('{"1":{},"1":{}}', '{"nodes":[],"nodes":[]}'),
+            (
+                '{"1":{"class_type":"A","inputs":{},"_meta":{"t":1,"t":2}}}',
+                '{"nodes":[{"id":1,"extra":{"a":NaN,"a":NaN}}]}',
+            ),
+            (
+                '{"1":{"class_type":"A","inputs":{"x":NaN,"x":1}}}',
+                '{"nodes":[{"id":1,"id":2}]}',
+            ),
+        ):
+            with self.subTest(prompt=prompt):
+                result = json.loads(
+                    encode(inspection({"prompt": prompt, "workflow": workflow}))
+                )
+                for key in ("prompt_graph", "workflow_graph"):
+                    self.assertEqual(
+                        result["metadata"][key], {"status": "malformed", "value": None}
+                    )
+                self.assertEqual(
+                    result["metadata"]["raw"], {"prompt": prompt, "workflow": workflow}
+                )
+        valid = '{"1":{"class_type":"A","inputs":{}}}'
+        for carrier in (
+            '{"prompt":' + valid + ',"prompt":' + valid + "}",
+            '{"prompt":' + valid + ',"other":{"a":1,"a":2}}',
+        ):
+            with self.subTest(carrier=carrier):
+                result = json.loads(
+                    encode(
+                        inspection(
+                            {"prompt": valid},
+                            formats={"prompt": "reserialized-json"},
+                            carrier=carrier,
+                        )
+                    )
+                )
+                self.assertEqual(
+                    result["metadata"]["prompt_graph"],
+                    {"status": "malformed", "value": None},
+                )
 
     def test_strict_projection_depth_is_separate_from_semantic_link_depth(self):
         for depth in (64, 65):
@@ -238,8 +476,6 @@ class TestInspectionResponse(unittest.TestCase):
     def test_strict_malformed_records_preserve_original_raw_and_roles(self):
         for text in (
             '{"1":{},"1":{}}',
-            '{"1":{"value":NaN}}',
-            '{"1":{"value":Infinity}}',
             "{broken",
             "[]",
             "42",

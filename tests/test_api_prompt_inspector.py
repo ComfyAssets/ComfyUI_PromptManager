@@ -988,7 +988,6 @@ class TestPromptInspector(ImageAPITestCase):
         source = json.dumps(graph())
         for suffix, expected in (
             (',"duplicate":1,"duplicate":2', "malformed"),
-            (',"nonfinite":NaN', "malformed"),
             (',"depth":' + "[" * 64 + "0" + "]" * 64, "limited"),
         ):
             _, result = await self.video_inspect(
@@ -1001,6 +1000,25 @@ class TestPromptInspector(ImageAPITestCase):
             )
             self.assertIsNone(result["metadata"]["prompt_graph"]["value"])
             self.assertEqual(result["metadata"]["workflow_graph"]["status"], expected)
+
+    async def test_video_carrier_nonfinite_outside_graph_inputs_is_tolerated(self):
+        # ComfyUI quirks: NaN in an unrelated carrier field, in ``is_changed`` and
+        # in ``_meta`` are validated and dropped; they never reach the projection.
+        source = graph()
+        source["3"]["is_changed"] = ["NAN_MARKER"]
+        source["3"]["_meta"] = {"title": "K", "weight": "NAN_MARKER"}
+        text = json.dumps(source).replace('"NAN_MARKER"', "NaN")
+        _, result = await self.video_inspect(
+            '{"prompt":' + text + ',"workflow":{"nodes":[]},"nonfinite":NaN}'
+        )
+        self.assertEqual(result["prompts"]["positive"], self.side("portrait"))
+        prompt_graph = result["metadata"]["prompt_graph"]
+        self.assertEqual(prompt_graph["status"], "parsed")
+        self.assertEqual(set(prompt_graph["value"]["3"]), {"class_type", "inputs"})
+        self.assertEqual(
+            result["metadata"]["workflow_graph"],
+            {"status": "parsed", "value": {"nodes": []}},
+        )
 
     async def test_video_numeric_role_text_never_becomes_sendable(self):
         source = graph(positive=123)

@@ -3,7 +3,7 @@
 import json
 import math
 from decimal import Decimal, InvalidOperation
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from .prompt_inspector import InspectionRead
@@ -15,6 +15,12 @@ _RECORD_KEYS = frozenset(
     {"prompt", "workflow", "parameters", "comfyassets_prompt_pairs"}
 )
 _FORMATS = frozenset({"original-text", "reserialized-json", "invalid"})
+_PROMPT_NODE_KEYS = frozenset({"class_type", "inputs"})
+MAX_PROJECTION_DEPTH = 64
+# Backstop, not an expected outcome: executable API nodes for a prompt; UI nodes
+# including subgraph definitions for a workflow.
+GRAPH_NODE_CEILING = 20_000
+ProjectionKind = Literal["prompt", "workflow", "carrier"]
 
 
 class _ProjectionLimit(ValueError):
@@ -30,23 +36,27 @@ def _pairs(items: list[tuple]) -> dict:
     return result
 
 
-def _nonfinite(value: str) -> None:
-    raise ValueError("Nonfinite JSON number")
+class _Nonfinite:
+    """A parsed ``NaN``/``Infinity`` literal: never a fact, projected as null."""
 
 
-def _normalize(
-    value: object, depth: int = 1, *, retain: bool = True, carrier: bool = False
-) -> object:
-    """Walk bounded source once; unrelated carrier fields are only validated."""
+_NONFINITE = _Nonfinite()
+
+
+def _nonfinite(value: str) -> _Nonfinite:
+    return _NONFINITE
+
+
+def _normalize(value: object, depth: int = 1, *, retain: bool = True) -> object:
+    """Walk bounded source once; unretained values are only validated as JSON."""
     if isinstance(value, (dict, list)):
-        if depth > 64:
+        if depth > MAX_PROJECTION_DEPTH:
             raise _ProjectionLimit()
         if isinstance(value, dict):
             result = {} if retain else None
             for key, child in value.items():
-                keep = retain and (not carrier or key in ("prompt", "workflow"))
-                normalized = _normalize(child, depth + 1, retain=keep)
-                if keep:
+                normalized = _normalize(child, depth + 1, retain=retain)
+                if retain:
                     result[key] = normalized
         else:
             result = [] if retain else None
@@ -55,17 +65,65 @@ def _normalize(
                 if retain:
                     result.append(normalized)
         return result
+    if not retain or value is _NONFINITE:
+        return None
     if isinstance(value, Decimal):
         if not value.is_finite():
             raise ValueError("Nonfinite JSON number")
         # str keeps large exponents compact and never rounds through a float.
-        return str(value) if retain else None
+        return str(value)
     if type(value) is int and abs(value) > _MAX_SAFE_INTEGER:
-        return str(value) if retain else None
-    return value if retain else None
+        return str(value)
+    return value
 
 
-def _strict_projection(text: str, *, carrier: bool = False) -> object:
+def _project_prompt(tree: object, depth: int = 1) -> dict:
+    """Each API node keeps exactly ``class_type`` and ``inputs``.
+
+    Other node keys (``_meta``, ``is_changed``, future keys) are validated and
+    dropped, so a nonfinite value there never reaches the projection.
+    """
+    if not isinstance(tree, dict):
+        raise ValueError("Prompt graph must be an object of nodes")
+    if depth + 1 > MAX_PROJECTION_DEPTH:  # the root and its node objects
+        raise _ProjectionLimit()
+    result = {}
+    for node_id, node in tree.items():
+        if not isinstance(node, dict):
+            result[node_id] = _normalize(node, depth + 1)
+            continue
+        projected = {}
+        for key, child in node.items():
+            keep = key in _PROMPT_NODE_KEYS
+            normalized = _normalize(child, depth + 2, retain=keep)
+            if keep:
+                projected[key] = normalized
+        result[node_id] = projected
+    return result
+
+
+def _project(tree: object, kind: str, depth: int = 1) -> object:
+    if kind == "prompt":
+        return _project_prompt(tree, depth)
+    if kind == "workflow":
+        return _normalize(tree, depth)
+    if not isinstance(tree, dict):
+        raise ValueError("Malformed carrier")
+    result = {}
+    for key, member in tree.items():
+        if key not in ("prompt", "workflow"):
+            _normalize(member, depth + 1, retain=False)
+        elif isinstance(member, str):
+            result[key] = member  # projected by its own kind when read
+        elif key == "prompt" and not isinstance(member, dict):
+            result[key] = _normalize(member, depth + 1)
+        else:
+            result[key] = _project(member, key, depth + 1)
+    return result
+
+
+def _strict_projection(text: str, *, kind: ProjectionKind) -> object:
+    """Parse exactly (Decimal, no duplicate keys) and project by record kind."""
     try:
         tree = json.loads(
             text,
@@ -73,20 +131,30 @@ def _strict_projection(text: str, *, carrier: bool = False) -> object:
             object_pairs_hook=_pairs,
             parse_constant=_nonfinite,
         )
-        if carrier and not isinstance(tree, dict):
-            raise ValueError("Malformed carrier")
-        return _normalize(tree, carrier=carrier)
+        return _project(tree, kind)
     except RecursionError:
         raise _ProjectionLimit() from None
     except InvalidOperation:
         raise ValueError("JSON decimal exceeds supported range") from None
 
 
+def _node_count(value: dict, *, workflow: bool) -> int:
+    if not workflow:
+        return len(value)
+    nodes = value.get("nodes")
+    count = len(nodes) if isinstance(nodes, list) else 0
+    definitions = value.get("definitions")
+    subgraphs = definitions.get("subgraphs") if isinstance(definitions, dict) else None
+    for subgraph in subgraphs if isinstance(subgraphs, list) else ():
+        inner = subgraph.get("nodes") if isinstance(subgraph, dict) else None
+        count += len(inner) if isinstance(inner, list) else 0
+    return count
+
+
 def _graph(value: object, *, workflow: bool = False) -> dict:
     if not isinstance(value, dict):
         return {"status": "malformed", "value": None}
-    nodes = value.get("nodes") if workflow else value
-    if isinstance(nodes, (dict, list)) and len(nodes) > 500:
+    if _node_count(value, workflow=workflow) > GRAPH_NODE_CEILING:
         return {"status": "limited", "value": None}
     return {"status": "parsed", "value": value}
 
@@ -124,7 +192,7 @@ def _metadata(inspection: "InspectionRead | None") -> dict:
     carrier, failed = None, None
     if inspection is not None and inspection.video_carrier_text is not None:
         try:
-            carrier = _strict_projection(inspection.video_carrier_text, carrier=True)
+            carrier = _strict_projection(inspection.video_carrier_text, kind="carrier")
         except _ProjectionLimit:
             failed = "limited"
         except (ValueError, TypeError, OverflowError):
@@ -141,11 +209,11 @@ def _metadata(inspection: "InspectionRead | None") -> dict:
                     if carrier is not None:
                         value = carrier.get(key)
                         if isinstance(value, str):
-                            value = _strict_projection(value)
+                            value = _strict_projection(value, kind=key)
                     elif formats.get(key) == "reserialized-json":
                         raise _ProjectionLimit()
                     else:
-                        value = _strict_projection(raw[key])
+                        value = _strict_projection(raw[key], kind=key)
                     graph = _graph(value, workflow=key == "workflow")
                 except _ProjectionLimit:
                     graph["status"] = "limited"

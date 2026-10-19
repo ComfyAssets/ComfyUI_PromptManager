@@ -771,28 +771,28 @@
       "candidate_count": 0,
       "facts": {
         "seed": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "42"
         },
         "steps": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "25"
         },
         "cfg": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "6.5"
         },
         "sampler": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "euler"
         },
         "scheduler": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "normal"
         },
         "model": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "sdxl_base.safetensors"
         }
       }
     }
