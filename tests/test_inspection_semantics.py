@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import MappingProxyType
+from unittest import mock
 
 from utils import inspection_semantics as semantics
 from utils.inspection_semantics import SemanticsError, load_semantics
@@ -342,8 +343,13 @@ class SpecEntriesTest(unittest.TestCase):
             },
         )
 
-    def test_module_loads_the_table_once_at_import(self):
-        self.assertEqual(semantics.SEMANTICS, load_semantics())
+    def test_table_is_loaded_lazily_and_once(self):
+        # Importing the module reads nothing; the inspection path asks for it.
+        self.assertFalse(hasattr(semantics, "SEMANTICS"))
+        semantics.get_semantics.cache_clear()
+        first = semantics.get_semantics()
+        self.assertIs(first, semantics.get_semantics())
+        self.assertEqual(first, load_semantics())
 
     def test_loaded_table_is_frozen(self):
         table = load_semantics()
@@ -547,6 +553,37 @@ class ValidationTest(_TableCase):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaises(SemanticsError):
                 load_semantics(Path(root) / "missing.json")
+
+    def test_oversized_table_is_rejected_before_parsing(self):
+        text = json.dumps(_minimal()) + " " * semantics.MAX_TABLE_BYTES
+        with self.assertRaises(SemanticsError) as caught:
+            self.load_text(text)
+        self.assertIn("exceeds", str(caught.exception))
+
+    def test_deeply_nested_table_is_a_semantics_error(self):
+        # Past the nesting bound, and far past the interpreter's recursion limit.
+        for depth in (semantics.MAX_NESTING + 1, 100_000):
+            with self.subTest(depth=depth):
+                nested = "[" * depth + "]" * depth
+                text = json.dumps(_minimal()).replace(
+                    '"selectors": {}', '"selectors": ' + nested
+                )
+                with self.assertRaises(SemanticsError) as caught:
+                    self.load_text(text)
+                self.assertIn("nest", str(caught.exception))
+        self.assertGreater(semantics.MAX_NESTING, _depth(json.loads(TABLE.read_text())))
+        # Whichever interpreter limit the parser hits, it is a SemanticsError.
+        with mock.patch.object(semantics.json, "loads", side_effect=RecursionError):
+            with self.assertRaises(SemanticsError) as caught:
+                self.load_doc(_minimal())
+        self.assertIn("nests deeper", str(caught.exception))
+
+
+def _depth(value, level=1):
+    children = value.values() if isinstance(value, dict) else value
+    if not isinstance(value, (dict, list)):
+        return level - 1
+    return max([level] + [_depth(item, level + 1) for item in children])
 
 
 if __name__ == "__main__":

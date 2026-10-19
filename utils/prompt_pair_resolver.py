@@ -13,7 +13,8 @@ Future nodes can register declarative ``OutputAdapter`` entries by
 Effective text uses a unique bounded execution record for traced paired nodes
 when available; cached graph-only results remain explicitly inferred.
 The resolver has no
-ComfyUI, database, configuration or filesystem dependencies.
+ComfyUI, database or configuration dependencies; its only file read is the
+inspection profile's node semantics table (``utils.inspection_semantics``).
 
 Two ``ResolverProfile`` values exist. ``DEFAULT_PROFILE`` (ingestion: scan, live
 monitor, admin import) keeps the historical behavior exactly, including the
@@ -23,13 +24,18 @@ shared by every candidate and attribution walk, a node ceiling backstop, and
 bounds on built provenance and text. It also names why a result is not resolved
 (``reason_code``, and ``node`` for the first unsupported node), and a prompt graph
 without a supported sampler is ``unresolved`` (``no-sampler``), never ``absent``.
+When the semantics table cannot be loaded, inspection of a prompt graph is
+``unresolved`` with a fixed reason; ingestion never loads the table.
 """
 
+import logging
 import re
 from dataclasses import dataclass, replace
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .pair_execution import ExecutionEvidenceError, read_pair_execution
+
+_LOGGER = logging.getLogger("prompt_manager.prompt_pair_resolver")
 
 
 @dataclass(frozen=True)
@@ -80,7 +86,9 @@ class ResolverProfile:
     bounds linear work across the whole resolution: input keys validated or
     scanned, characters stripped or joined, and provenance entries copied, each
     charged before the work is done. ``None`` disables each bound.
-    ``semantics`` and ``selection`` are reserved for later slices and stay off.
+    ``semantics`` reads the declarative node table (inspection only; loaded
+    lazily so the default profile never imports it). ``selection`` is reserved
+    for a later slice and stays off.
     """
 
     name: str
@@ -118,6 +126,7 @@ INSPECTION_PROFILE = ResolverProfile(
     max_text_length=100_000,
     node_ceiling=20_000,
     legacy_node_gate=None,
+    semantics=True,
     max_path_entries=64 * 20_000,
     max_built_chars=16 * 100_000,
     # About four passes over the 2 MiB role-record budget.
@@ -714,6 +723,24 @@ def resolve_prompt_pair(
     return _legacy_result(result) if profile.legacy else result
 
 
+_SEMANTICS_UNAVAILABLE = "Inspection node semantics are unavailable"
+
+
+def _inspection_semantics() -> Optional[Any]:
+    """The validated node table, or ``None`` when it cannot be loaded.
+
+    Imported here, not at module level: ingestion (the default profile) must
+    keep working whatever state the table file is in.
+    """
+    from .inspection_semantics import SemanticsError, get_semantics
+
+    try:
+        return get_semantics()
+    except SemanticsError as error:
+        _LOGGER.error("Inspection node semantics table is unusable: %s", error)
+        return None
+
+
 def _limit_result(profile: ResolverProfile, graph: dict) -> Optional[Dict[str, Any]]:
     if profile.legacy:
         if (
@@ -763,6 +790,11 @@ def _resolve(
     limited = _limit_result(profile, graph)
     if limited is not None:
         return limited
+    semantics = None
+    if profile.semantics:
+        semantics = _inspection_semantics()
+        if semantics is None:
+            return _result("unresolved", reason=_SEMANTICS_UNAVAILABLE)
     normalized = {str(node_id): node for node_id, node in graph.items()}
     if len(normalized) != len(graph):
         return _result(

@@ -1,9 +1,15 @@
 """Conservative prompt-pair resolution contracts, independent of ComfyUI."""
 
 import random
+import subprocess  # nosec B404 - fixed interpreter command, no shell
+import sys
+import tempfile
 import unittest
 from dataclasses import replace
+from pathlib import Path
+from unittest import mock
 
+from utils import inspection_semantics
 from utils import prompt_pair_resolver as resolver
 from utils.prompt_pair_resolver import OutputAdapter, resolve_prompt_pair
 
@@ -1041,6 +1047,98 @@ class TestResolverProfiles(unittest.TestCase):
         # A memo hit charges its unfolded cost: the 2^k unfolded visits exhaust
         # the 2,000 allowance (per-entry paths never outgrow the allowance).
         self.assertEqual(result["reason"], "Resolution visit limit reached")
+
+
+REPO = Path(__file__).resolve().parents[1]
+SEMANTICS_UNAVAILABLE = "Inspection node semantics are unavailable"
+
+
+class TestSemanticsIsolation(unittest.TestCase):
+    """Only inspection reads the semantics table; a bad table never breaks ingestion."""
+
+    def resolve_with_table(self, text: str, *values):
+        # Windows: the table is written and closed before it is read or removed.
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "semantics.json"
+            path.write_text(text, encoding="utf-8")
+            inspection_semantics.get_semantics.cache_clear()
+            try:
+                with (
+                    mock.patch.object(inspection_semantics, "SEMANTICS_PATH", path),
+                    mock.patch.object(resolver, "_LOGGER") as logger,
+                ):
+                    self.logged = logger.error.call_args_list
+                    return [
+                        resolve_prompt_pair(value, profile=profile)
+                        for value in values
+                        for profile in (
+                            resolver.DEFAULT_PROFILE,
+                            resolver.INSPECTION_PROFILE,
+                        )
+                    ]
+            finally:
+                inspection_semantics.get_semantics.cache_clear()
+
+    def test_corrupt_table_leaves_default_resolution_working(self):
+        for text in ("{not json", "[" * 100_000, "{}"):
+            with self.subTest(text=text[:10]):
+                default, inspected = self.resolve_with_table(text, graph())
+                self.assertEqual(default["state"], "resolved")
+                self.assertEqual(default["positive"]["text"], "portrait")
+                self.assertEqual(inspected["state"], "unresolved")
+                self.assertEqual(inspected["reason"], SEMANTICS_UNAVAILABLE)
+                self.assertIsNone(inspected["reason_code"])
+                self.assertIsNone(inspected["positive"])
+                self.assertEqual(len(self.logged), 1)
+
+    def test_corrupt_table_only_affects_graph_inspection(self):
+        parameters = {"parameters": "cat\nNegative prompt: dog\nSteps: 1, Sampler: x"}
+        results = self.resolve_with_table("{not json", parameters, {})
+        self.assertEqual([item["state"] for item in results[:2]], ["resolved"] * 2)
+        self.assertEqual([item["state"] for item in results[2:]], ["absent"] * 2)
+        self.assertEqual(self.logged, [])
+
+    def test_corrupt_table_is_a_clear_inspector_outcome(self):
+        from utils.prompt_inspector import inspect_prompt_evidence
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "semantics.json"
+            path.write_text("{not json", encoding="utf-8")
+            inspection_semantics.get_semantics.cache_clear()
+            try:
+                with (
+                    mock.patch.object(inspection_semantics, "SEMANTICS_PATH", path),
+                    self.assertLogs("prompt_manager.prompt_pair_resolver", "ERROR"),
+                ):
+                    evidence = inspect_prompt_evidence({"prompt": graph()})
+            finally:
+                inspection_semantics.get_semantics.cache_clear()
+        self.assertEqual(evidence["resolution"]["state"], "unresolved")
+        self.assertEqual(evidence["resolution"]["reason"], SEMANTICS_UNAVAILABLE)
+        self.assertEqual(
+            [evidence["prompts"][role]["status"] for role in ("positive", "negative")],
+            ["unresolved", "unresolved"],
+        )
+
+    def test_default_resolution_never_imports_the_semantics_table(self):
+        code = (
+            "import sys\n"
+            "from utils.prompt_pair_resolver import resolve_prompt_pair\n"
+            "graph = {'1': {'class_type': 'CLIPTextEncode', 'inputs': {'text': 'a'}},"
+            " '3': {'class_type': 'KSampler',"
+            " 'inputs': {'positive': ['1', 0], 'negative': ['1', 0]}}}\n"
+            "assert resolve_prompt_pair(graph)['state'] == 'resolved'\n"
+            "assert 'utils.inspection_semantics' not in sys.modules\n"
+        )
+        # Fixed interpreter and literal code, no shell.
+        completed = subprocess.run(  # nosec B603
+            [sys.executable, "-c", code],
+            cwd=REPO,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr.decode("utf-8"))
 
 
 if __name__ == "__main__":

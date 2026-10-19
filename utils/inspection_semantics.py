@@ -6,15 +6,19 @@ slot)`` pairs) to a named strategy from the closed ``STRATEGIES`` set plus the
 exact input names that strategy reads. Code implements each strategy; adding a
 node that reuses one is a data-only change.
 
-Only the inspection resolver profile consumes this table. The default
-(ingestion) profile never reads it. The table is validated once at import and an
-invalid table raises ``SemanticsError`` so a bad edit fails loudly instead of
-silently changing what the inspector resolves. Every class appears in exactly
-one category; classes that are not listed stay ``unsupported-node``.
+Only the inspection resolver profile consumes this table, through
+``get_semantics()``, which reads and validates it on first use and caches only a
+valid result. Importing this module reads nothing, and the default (ingestion)
+profile never imports it, so a missing or bad table can never break ingestion.
+An invalid table raises ``SemanticsError`` so a bad edit fails loudly instead of
+silently changing what the inspector resolves. The file is bounded in size and
+nesting before it is validated. Every class appears in exactly one category;
+classes that are not listed stay ``unsupported-node``.
 """
 
 import json
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Dict, FrozenSet, Mapping, Optional, Tuple, Union
@@ -23,6 +27,9 @@ SEMANTICS_PATH = (
     Path(__file__).resolve().parents[1] / "web" / "js" / "inspection-semantics.json"
 )
 SCHEMA_VERSION = 1
+# The real table is a few KiB and four levels deep; these only reject nonsense.
+MAX_TABLE_BYTES = 1024 * 1024
+MAX_NESTING = 8
 _NAME_LENGTH = 128
 # Comfy output slots are small; this only rejects nonsense, never a real node.
 _MAX_SLOT = 255
@@ -364,6 +371,19 @@ def _facts(doc: dict) -> Mapping[str, Any]:
     return _freeze(facts)
 
 
+def _check_nesting(doc: Any) -> None:
+    """Reject containers nested deeper than ``MAX_NESTING`` (iterative walk)."""
+    stack = [(doc, 1)]
+    while stack:
+        value, level = stack.pop()
+        if not isinstance(value, (dict, list)):
+            continue
+        if level > MAX_NESTING:
+            raise SemanticsError(f"semantics table nests deeper than {MAX_NESTING}")
+        items = value.values() if isinstance(value, dict) else value
+        stack.extend((item, level + 1) for item in items)
+
+
 def _validate(doc: Any) -> Semantics:
     if not isinstance(doc, dict):
         raise SemanticsError("semantics table must be an object")
@@ -388,17 +408,30 @@ def load_semantics(path: Optional[Union[str, Path]] = None) -> Semantics:
     """Read and validate a semantics table; ``SemanticsError`` on any problem."""
     source = Path(path) if path is not None else SEMANTICS_PATH
     try:
-        text = source.read_text(encoding="utf-8")
+        with source.open("rb") as stream:
+            data = stream.read(MAX_TABLE_BYTES + 1)
+        if len(data) > MAX_TABLE_BYTES:
+            raise SemanticsError(
+                f"semantics table {source.name} exceeds {MAX_TABLE_BYTES} bytes"
+            )
         doc = json.loads(
-            text,
+            data.decode("utf-8"),
             object_pairs_hook=_reject_duplicate_keys,
             parse_constant=_reject_constant,
         )
     except SemanticsError:
         raise
+    except RecursionError:
+        raise SemanticsError(
+            f"semantics table {source.name} nests deeper than {MAX_NESTING}"
+        ) from None
     except (OSError, UnicodeDecodeError, ValueError) as error:
         raise SemanticsError(f"cannot read semantics table {source.name}: {error}")
+    _check_nesting(doc)
     return _validate(doc)
 
 
-SEMANTICS = load_semantics()
+@lru_cache(maxsize=1)
+def get_semantics() -> Semantics:
+    """The repository table, loaded on first use; failures are not cached."""
+    return load_semantics()
