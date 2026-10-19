@@ -13,12 +13,11 @@ one ``_pair_transaction`` that recomputes the owner projection and requires the
 preview's ``impact_token``; only rows carrying the exact source change.
 """
 
-import hashlib
-import json
 import sqlite3
 
 from .library import _ELIGIBLE, _limit
 from .library_commands import _TOKEN, LibraryCommandError, _validate_epoch
+from .library_tokens import canonical_token
 from .models import utc_now_iso
 
 try:
@@ -132,14 +131,7 @@ def category_impact_token(
         "components": sorted([int(i), bool(flag)] for i, flag in components),
         "pairs": sorted([int(i), bool(flag)] for i, flag in pairs),
     }
-    payload = json.dumps(
-        preimage,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    )
-    return hashlib.sha256((_CATEGORY_DOMAIN + payload).encode("utf-8")).hexdigest()
+    return canonical_token(_CATEGORY_DOMAIN, preimage)
 
 
 def _validate_category_change(source: object, target: object) -> str:

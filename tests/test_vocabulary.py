@@ -775,5 +775,31 @@ class TestVocabularyCategoryCommands(unittest.TestCase):
         self.assertFalse(self.db.model.get_connection().in_transaction)
 
 
+class TestSharedTokenHashing(unittest.TestCase):
+    def test_both_tokens_keep_their_previous_values(self):
+        from database.library_tokens import library_edit_token
+        from database.vocabulary import category_impact_token
+
+        record = {
+            "id": 3,
+            "text": "t",
+            "title": None,
+            "category": "c",
+            "notes": "",
+            "rating": 0,
+            "tags": ["b", "a", "a"],
+        }
+        self.assertEqual(
+            library_edit_token("e", record),
+            "32534d4c92e4e9a7d8e31c30ecdbb07563703b5bd7ed216a8d2066c0dc44332b",
+        )
+        self.assertEqual(
+            category_impact_token(
+                "e", "S", "T", True, [(1, True), (2, False)], [(5, False)]
+            ),
+            "cefe7f6a5544b7f6a203f5527810899c6af568aa7abc1b75adffbfb5ae6251ae",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
