@@ -268,6 +268,10 @@ def _link(value: Any) -> bool:
     )
 
 
+def _or_empty(value: Any) -> Any:
+    return "" if value is None else value
+
+
 def _result(
     state: str,
     positive: Optional[dict] = None,
@@ -614,11 +618,12 @@ class _GraphResolver:
         text = text.strip()
         storage_text = text
         if adapter.comma:
+            # ``if prepend_text:`` skipped a missing or null part (07a5af3).
             before, before_path, _ = self.text(
-                inputs.get("prepend_text", ""), "string", depth + 1
+                _or_empty(inputs.get("prepend_text")), "string", depth + 1
             )
             after, after_path, _ = self.text(
-                inputs.get("append_text", ""), "string", depth + 1
+                _or_empty(inputs.get("append_text")), "string", depth + 1
             )
             self.scan(len(before) + len(after) + len(before_path) + len(after_path))
             before, after = before.strip(), after.strip()
@@ -1706,39 +1711,84 @@ def _resolve(
     return resolver.pair(sampler_ids[0])
 
 
+# Bounds for walking a UI workflow's subgraph instances (R1 only).
+_MAX_SUBGRAPH_DEPTH = 8
+_MAX_WORKFLOW_NODES = 100_000
+
+
+def _subgraph_nodes(workflow: dict) -> Dict[str, list]:
+    """Subgraph definition ID to its node list (malformed entries are skipped)."""
+    definitions = workflow.get("definitions")
+    subgraphs = definitions.get("subgraphs") if isinstance(definitions, dict) else None
+    found: Dict[str, list] = {}
+    for subgraph in subgraphs if isinstance(subgraphs, list) else ():
+        if isinstance(subgraph, dict) and isinstance(subgraph.get("id"), str):
+            nodes = subgraph.get("nodes")
+            if isinstance(nodes, list):
+                found[subgraph["id"]] = nodes
+    return found
+
+
+def _widget_text(values: Any) -> Optional[str]:
+    """A PromptManager node's text widget: the first value, or ``text`` by name."""
+    if isinstance(values, list) and values and isinstance(values[0], str):
+        return values[0]
+    if isinstance(values, dict) and isinstance(values.get("text"), str):
+        return values["text"]
+    return None
+
+
+def _prompt_manager_widgets(workflow: Any) -> Dict[str, str]:
+    """API node ID to widget text for every PromptManager node that runs.
+
+    Nodes inside a subgraph run as ``"<instance>:<inner>"`` API IDs (nested
+    instances chain their IDs); a definition without an instance runs nothing.
+    The walk is bounded in depth and in nodes visited.
+    """
+    nodes = workflow.get("nodes") if isinstance(workflow, dict) else None
+    if not isinstance(nodes, list):
+        return {}
+    subgraphs = _subgraph_nodes(workflow)
+    widgets: Dict[str, str] = {}
+    stack, visited = [(nodes, "", 0)], 0
+    while stack:
+        members, prefix, depth = stack.pop()
+        for node in members:
+            visited += 1
+            if visited > _MAX_WORKFLOW_NODES:
+                return widgets
+            if not isinstance(node, dict):
+                continue
+            kind, node_id = node.get("type"), node.get("id")
+            if not isinstance(node_id, (str, int)) or isinstance(node_id, bool):
+                continue
+            api_id = f"{prefix}{node_id}"
+            if kind in subgraphs and depth < _MAX_SUBGRAPH_DEPTH:
+                stack.append((subgraphs[kind], api_id + ":", depth + 1))
+                continue
+            text = _widget_text(node.get("widgets_values"))
+            if (
+                isinstance(kind, str)
+                and kind != "PromptManagerPair"
+                and "promptmanager" in kind.lower()
+                and text is not None
+            ):
+                widgets[api_id] = text
+    return widgets
+
+
 def _overwritten_prompt_nodes(workflow: Any, graph: dict) -> frozenset:
     """API node IDs whose saved PromptManager text is another node's (R1).
 
     The pre-3.2.3 signature (comfy-metadata.js ``createContext``): two or more
     workflow nodes of a PromptManager type other than ``PromptManagerPair``
-    share one API ``text`` while their first widget values differ. Their API
-    class may have been rewritten to ``CLIPTextEncode``, so nodes are matched by
-    ID. Unlike the legacy viewer, the widget text is never substituted: it was
-    not recorded as executed, so these nodes are refused instead.
+    share one API ``text`` while their text widgets differ. Their API class may
+    have been rewritten to ``CLIPTextEncode``, so nodes are matched by ID,
+    including nodes inside subgraphs (unlike the legacy viewer). The widget
+    text is never substituted: it was not recorded as executed, so these nodes
+    are refused instead.
     """
-    nodes = workflow.get("nodes") if isinstance(workflow, dict) else None
-    if not isinstance(nodes, list):
-        return frozenset()
-    widgets: Dict[str, str] = {}
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        kind, values, node_id = (
-            node.get("type"),
-            node.get("widgets_values"),
-            node.get("id"),
-        )
-        if (
-            isinstance(kind, str)
-            and kind != "PromptManagerPair"
-            and "promptmanager" in kind.lower()
-            and isinstance(values, list)
-            and values
-            and isinstance(values[0], str)
-            and isinstance(node_id, (str, int))
-            and not isinstance(node_id, bool)
-        ):
-            widgets[str(node_id)] = values[0]
+    widgets = _prompt_manager_widgets(workflow)
     by_text: Dict[str, list] = {}
     for node_id, widget in widgets.items():
         node = graph.get(node_id)
