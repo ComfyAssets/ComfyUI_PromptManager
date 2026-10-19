@@ -45,6 +45,9 @@ ROLE_RECORDS = frozenset({"prompt", "parameters"})
 FACTS_KNOWN_TARGET = 4
 TOP_CLASSES = 20
 BASELINE_P99_MS = 520
+# H8 compares p99 with twice the baseline p99; below this floor a tiny baseline
+# (a few ms on fixtures) would only measure scheduler noise.
+H8_FLOOR_MS = 50
 P99_FACTOR = 2
 MAX_MS = 5000
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -126,12 +129,19 @@ def _start_node(node: str | None, code_dir: Path):
     )
 
 
+def _close_node(process) -> None:
+    for stream in (process.stdin, process.stdout):
+        try:
+            stream.close()
+        except OSError:  # the pipe of an exited harness
+            pass
+    process.wait()
+
+
 def _stop_node() -> None:
     process, _STATE.node = _STATE.node, None
     if process is not None:
-        process.stdin.close()
-        process.wait()
-        process.stdout.close()
+        _close_node(process)
 
 
 def _init_worker(code_dir: str, node: str | None) -> None:
@@ -152,6 +162,7 @@ def _facts(body: bytes) -> dict:
         line = b""
     if not line:
         _STATE.node = None
+        _close_node(process)
         return {"facts": None, "facts_error": "node-exited"}
     facts = json.loads(line)
     if "error" in facts:
@@ -186,6 +197,8 @@ def _texts(side_pair: dict) -> tuple:
 
 
 def _resolution(response: dict) -> dict:
+    # ``candidates`` (and so H2) only appears with the selection slice (PR3);
+    # PR1 responses carry none, so H2 is vacuous until then.
     resolution = response["resolution"]
     candidates = resolution.get("candidates") or []
     node = resolution.get("node")
@@ -445,7 +458,9 @@ def _h8(rows: list, baseline: list | None, cap: int) -> dict:
     timings = [row["ms"] for row in rows if "ms" in row]
     p99, peak = percentile(timings, 0.99), max(timings, default=None)
     base = percentile([row["ms"] for row in baseline or () if "ms" in row], 0.99)
-    limit = P99_FACTOR * (base if base is not None else BASELINE_P99_MS)
+    limit = max(
+        P99_FACTOR * (base if base is not None else BASELINE_P99_MS), H8_FLOOR_MS
+    )
     over_cap = sum(1 for row in rows if row.get("over_cap"))
     failed = (p99 or 0) > limit or (peak or 0) >= MAX_MS or over_cap
     return {
@@ -456,6 +471,27 @@ def _h8(rows: list, baseline: list | None, cap: int) -> dict:
     }
 
 
+def _h3(rows: list) -> dict:
+    limited = sum(
+        1
+        for row in rows
+        if row.get("read_error") is None and "projection-limited" in _fact_reasons(row)
+    )
+    # Facts that were never computed cannot pass: count them as failures.
+    missing = sum(1 for row in rows if row.get("facts_error") or row.get("error"))
+    detail = f"projection-limited {limited}, facts not computed {missing}"
+    return _counted(limited + missing, detail)
+
+
+def _harness(rows: list) -> dict:
+    """The tool's own failures, kept apart from inspector outcomes: an unreadable
+    or unsupported file is a row with ``read_error``/``state``, not an ``error``."""
+    crashed = sum(1 for row in rows if row.get("error"))
+    no_facts = sum(1 for row in rows if row.get("facts_error"))
+    detail = f"inspection exceptions {crashed}, facts not computed {no_facts}"
+    return _counted(crashed + no_facts, detail)
+
+
 def invariants(rows: list, baseline: list | None, cap: int) -> dict:
     """H1 to H8 from the design; H7 is informational until the video slice."""
     videos = [row for row in rows if row["ext"] == ".mp4"]
@@ -463,14 +499,7 @@ def invariants(rows: list, baseline: list | None, cap: int) -> dict:
     return {
         "H1": _h1(rows, baseline),
         "H2": _counted(sum(1 for row in rows if row.get("h2"))),
-        "H3": _counted(
-            sum(
-                1
-                for row in rows
-                if row.get("read_error") is None
-                and "projection-limited" in _fact_reasons(row)
-            ),
-        ),
+        "H3": _h3(rows),
         "H4": _counted(
             sum(1 for row in rows if row.get("malformed_cause") == "non-input")
         ),
@@ -484,6 +513,7 @@ def invariants(rows: list, baseline: list | None, cap: int) -> dict:
             f"{with_records} of {len(videos)}",
         },
         "H8": _h8(rows, baseline, cap),
+        "harness": _harness(rows),
     }
 
 
@@ -570,6 +600,10 @@ def format_report(report: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _by_id(row: dict) -> str:
+    return row["id"]
+
+
 def _load_baseline(path: str | None) -> list | None:
     if path is None:
         return None
@@ -607,6 +641,8 @@ def _run(args) -> int:
     try:
         if not args.root.is_dir():
             raise Refused("--root is not a directory")
+        if args.node and shutil.which(args.node) is None:
+            raise Refused("--node is not an executable")
         _check_outputs(args)
         _STATE.code = _load_code(args.code)
         baseline = _load_baseline(args.baseline)
@@ -617,10 +653,9 @@ def _run(args) -> int:
         (path, rel, args.with_paths)
         for path, rel in media_files(args.root, _STATE.code.extensions)
     ]
-    rows = []
+    rows = sorted(_rows(tasks, args.workers, args.code, args.node), key=_by_id)
     with open(args.out, "w", encoding="utf-8", newline="\n") as out:
-        for row in _rows(tasks, args.workers, args.code, args.node):
-            rows.append(row)
+        for row in rows:
             out.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
     report = build_report(rows, baseline, _STATE.code.cap)
     text = format_report(report)

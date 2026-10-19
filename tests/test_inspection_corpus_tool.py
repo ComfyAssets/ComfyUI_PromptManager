@@ -19,6 +19,7 @@ import unittest
 import zlib
 from collections import Counter
 from pathlib import Path
+from unittest import mock
 
 from tools import inspection_corpus as corpus
 
@@ -101,7 +102,8 @@ class CorpusToolTest(unittest.TestCase):
 
         code, printed = self._run("--out", str(out), "--summary", str(summary))
 
-        self.assertEqual(code, corpus.EXIT_OK, printed)
+        expected_code = corpus.EXIT_OK if self.node else corpus.EXIT_INVARIANT_FAILED
+        self.assertEqual(code, expected_code, printed)
         self.assertEqual(_snapshot(self.root), before)
         expected = _expected()
         rows = self._rows(out)
@@ -115,6 +117,10 @@ class CorpusToolTest(unittest.TestCase):
         self.assertEqual(report["reason_codes"], codes)
         self.assertEqual(report["selection_kinds"], Counter({"null": len(expected)}))
         self.assertEqual(report["harness_errors"], Counter())
+        # An unreadable file is an inspector outcome, not a harness error.
+        self.assertEqual(report["metadata_status"]["unreadable"], 1)
+        if self.node is not None:
+            self.assertEqual(report["invariants"]["harness"]["status"], "PASS")
         for name in ("H2", "H3", "H4", "H5", "H6", "H8"):
             self.assertEqual(report["invariants"][name]["status"], "PASS", name)
         self.assertEqual(report["invariants"]["H1"]["status"], "N/A")
@@ -223,6 +229,8 @@ class CorpusToolTest(unittest.TestCase):
             )
 
         self.assertEqual(stable(parallel), stable(single))
+        ids = [row["id"] for row in self._rows(parallel)]
+        self.assertEqual(ids, sorted(ids))
 
     def test_symlinks_and_other_files_are_not_read(self):
         outside = self.base / "outside.png"
@@ -248,13 +256,42 @@ class CorpusToolTest(unittest.TestCase):
                 with contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(corpus.main(arguments), corpus.EXIT_REFUSED)
 
-    def test_without_node_facts_are_reported_unavailable(self):
+    def test_without_node_facts_fail_h3_and_the_run(self):
         out = self.base / "out.jsonl"
         code, printed = self._run("--out", str(out), "--node", "")
-        self.assertEqual(code, corpus.EXIT_OK)
+        self.assertEqual(code, corpus.EXIT_INVARIANT_FAILED)
         rows = self._rows(out)
         self.assertTrue(all(row["facts_error"] == "node-unavailable" for row in rows))
         self.assertIn(f"facts errors: node-unavailable {len(rows)}", printed)
+        self.assertIn(f"  H3 FAIL {len(rows)}", printed)
+        self.assertIn(f"  harness FAIL {len(rows)}", printed)
+
+    def test_a_node_that_exits_fails_the_run(self):
+        false = shutil.which("false")
+        if false is None:  # pragma: no cover - Windows has no false binary
+            self.skipTest("no false binary")
+        code, printed = self._run("--out", str(self.base / "o.jsonl"), "--node", false)
+        self.assertEqual(code, corpus.EXIT_INVARIANT_FAILED)
+        self.assertIn("node-exited", printed)
+        self.assertIsNone(corpus._STATE.node)
+
+    def test_a_missing_node_binary_is_refused(self):
+        missing = str(self.base / "no-such-node")
+        code, printed = self._run(
+            "--out", str(self.base / "o.jsonl"), "--node", missing
+        )
+        self.assertEqual(code, corpus.EXIT_REFUSED)
+        self.assertIn("--node", printed)
+
+    def test_harness_exceptions_fail_the_run(self):
+        out = self.base / "out.jsonl"
+        with mock.patch.object(corpus, "_observe", side_effect=RuntimeError("boom")):
+            code, printed = self._run("--out", str(out))
+        self.assertEqual(code, corpus.EXIT_INVARIANT_FAILED)
+        rows = self._rows(out)
+        self.assertEqual({row["error"] for row in rows}, {"RuntimeError"})
+        self.assertIn(f"  harness FAIL {len(rows)}", printed)
+        self.assertNotIn("boom", out.read_text("utf-8") + printed)
 
 
 class CorpusHelpersTest(unittest.TestCase):
@@ -299,12 +336,15 @@ class CorpusHelpersTest(unittest.TestCase):
         self.assertEqual(corpus.invariants(fast, None, 8)["H8"]["status"], "PASS")
         for rows in (
             [{"id": "a", "ext": ".png", "ms": corpus.MAX_MS}],
-            [{"id": "a", "ext": ".png", "ms": 3.0}],
+            [{"id": "a", "ext": ".png", "ms": corpus.H8_FLOOR_MS + 1}],
             [{"id": "a", "ext": ".png", "ms": 1.0, "over_cap": True}],
         ):
             with self.subTest(rows=rows):
                 result = corpus.invariants(rows, fast, 8)["H8"]
                 self.assertEqual(result["status"], "FAIL")
+        # A tiny baseline p99 cannot make H8 flap below the floor.
+        noisy = [{"id": "a", "ext": ".png", "ms": 3.0}]
+        self.assertEqual(corpus.invariants(noisy, fast, 8)["H8"]["status"], "PASS")
 
     def test_h5_excludes_negative_only_absence(self):
         def row(positive, state):

@@ -216,10 +216,14 @@ profile, including its 500-node gate.
 invariants H1 to H8. It runs the inspection route pipeline and the workspace JS facts
 of `--code` (default: its own tree), opens media only for reading, follows no
 symlinks, imports no database, and refuses `--out`/`--summary` inside the root or a
-code tree. Its rows and summary hold counts, statuses and SHA-256 digests of resolved
-role texts, never file names or prompt text unless `--with-paths` is given. Run it
-on the base commit first and pass that JSONL as `--baseline` for H1 and H8; it exits
-1 when an invariant fails. Never point it at a live install's folders from an
+code tree. Its rows hold statuses, sizes, timings and SHA-256 digests of resolved
+role texts, never file names or prompt text unless `--with-paths` is given; digests
+of short prompts can still be guessed, so the JSONL stays local and only the
+aggregate summary goes into a PR body. Run it on the base commit first and pass that
+JSONL as `--baseline` for H1 and H8 (2x the baseline p99, never below 50 ms). It
+exits 1 when an invariant fails, including the `harness` line: a tool exception or
+facts that were not computed (no Node.js) fail the run. Unreadable or unsupported
+files are inspector outcomes, not harness errors. Never point it at a live install's folders from an
 automated job. Installing the Python inspection/source-scope changes requires a
 maintainer ComfyUI restart. Automated tests use disposable hosts and never restart
 the running personal ComfyUI.
