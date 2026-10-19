@@ -170,14 +170,14 @@
   "workspace/history-state.mjs": {
     "lines": 97,
     "branches": 91,
-    "functions": 96,
+    "functions": 98,
     "statements": 97
   },
   "workspace/history.mjs": {
-    "lines": 96,
+    "lines": 97,
     "branches": 87,
     "functions": 98,
-    "statements": 96
+    "statements": 97
   },
   "workspace/icons.mjs": {
     "lines": 98,
@@ -217,13 +217,13 @@
   },
   "workspace/library-editor-state.mjs": {
     "lines": 96,
-    "branches": 91,
+    "branches": 92,
     "functions": 98,
     "statements": 96
   },
   "workspace/library-editor.mjs": {
     "lines": 98,
-    "branches": 88,
+    "branches": 93,
     "functions": 92,
     "statements": 98
   },
@@ -235,19 +235,25 @@
   },
   "workspace/library-state.mjs": {
     "lines": 98,
-    "branches": 94,
+    "branches": 95,
     "functions": 98,
     "statements": 98
   },
   "workspace/library.mjs": {
     "lines": 95,
     "branches": 84,
-    "functions": 94,
+    "functions": 96,
     "statements": 95
   },
   "workspace/media-viewer.mjs": {
     "lines": 98,
     "branches": 93,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/plural.mjs": {
+    "lines": 98,
+    "branches": 98,
     "functions": 98,
     "statements": 98
   },
@@ -272,7 +278,7 @@
   "workspace/recorded-run.mjs": {
     "lines": 95,
     "branches": 83,
-    "functions": 71,
+    "functions": 77,
     "statements": 95
   },
   "workspace/state.mjs": {

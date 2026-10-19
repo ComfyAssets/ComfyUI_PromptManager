@@ -612,6 +612,8 @@ test('embedded history gallery keeps the history heading and disposes its layout
         await expect(page.getByRole('region',{name:'Prompt history',exact:true})).toBeVisible();
         await expect(page.locator('h1')).not.toHaveText('Prompt library');
         const title=await page.locator('h1').textContent();expect(title).not.toBe('Images');
+        // History opens on its first negative variant (concept navigate: state.variant = 0); the layout contract uses the whole gallery.
+        await page.getByRole('button',{name:'All images for this positive',exact:true}).click();
         await expect(page.locator('article[data-image-key]').first()).toBeVisible();
         for (const layout of ['List','Masonry','Grid']) {
             await page.getByRole('button',{name:layout,exact:true}).click();await orderedMedia(page);

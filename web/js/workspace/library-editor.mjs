@@ -21,6 +21,9 @@ const REVIEW = 'Loaded the latest saved values. Review your entries, then save.'
 const REVIEW_ARCHIVE = 'Loaded the latest saved values. Review them, then archive.';
 const TOAST_MS = 6500;
 const REFRESH = ['Reload Library', 'refresh'];
+// The concept has no discard confirmation (its Cancel and × simply close), so the state says it inline:
+// every exit (Reload Library, Cancel, × or Escape) drops the draft.
+const DISCARDS = 'Leaving this dialog discards your entries.';
 let toastTimer;
 
 /** Show one outcome in the shared workspace toast (role="status"); it clears itself like the concept's. */
@@ -42,7 +45,8 @@ function el(tag, text, className) {
 /**
  * Inline state copy and its one recovery action; `archive` selects the pair-archive
  * wording. After a restore only New prompt may re-read: every other mode names an
- * owner by its old numeric ID, so it offers only the Library refresh exit.
+ * owner by its old numeric ID, so it offers only the Library refresh exit, which
+ * discards the draft.
  */
 function statusOf(state, archive, mode = null) {
     const nothing = archive ? 'Nothing was archived.' : 'Nothing was saved.';
@@ -54,7 +58,8 @@ function statusOf(state, archive, mode = null) {
     case 'write-error': return {text: `${archive ? 'Not archived' : 'Not saved'}: ${message} Your entries are kept.`};
     case 'conflict': return {text: archive ? 'This negative variant changed since it was loaded. Reload it and review it before archiving.'
         : 'This prompt changed since it was loaded. Reload it and review your entries before saving.', action: ['Reload', 'reload']};
-    case 'storage-changed': return {text: `Prompt storage was restored since this dialog opened. ${nothing}`, action: mode === 'new' ? ['Reload Library state', 'reload'] : REFRESH};
+    case 'storage-changed': return mode === 'new' ? {text: `Prompt storage was restored since this dialog opened. ${nothing}`, action: ['Reload Library state', 'reload']}
+        : {text: `Prompt storage was restored since this dialog opened. ${nothing}${archive ? '' : ` ${DISCARDS}`}`, action: REFRESH};
     case 'unknown-outcome': return {text: archive ? 'Archive could not be confirmed. Retry sends the same archive once.'
         : mode === 'metadata' ? 'Save could not be confirmed. Your entries are kept; Retry reloads the latest saved values for review and sends nothing.'
             : 'Save could not be confirmed. Your entries are kept; Retry sends the same save once.', action: ['Retry', 'retryUnconfirmed']};
@@ -86,11 +91,24 @@ function setChildren(parent, nodes) {
     if (current.length !== nodes.length || current.some((node, index) => node !== nodes[index])) parent.replaceChildren(...nodes);
 }
 
-/** A button that held focus when saving began gets it back after a failed or conflicting write (disabling drops focus to the body). */
-function restoreFocus(button, state) {
-    if (!button || state.phase === 'saving') return button;
-    if (state.phase !== 'complete' && button.isConnected && !button.disabled && (!document.activeElement || document.activeElement === document.body)) button.focus();
+/** Saving or re-reading disables or removes the focused action; focus would drop to the body. */
+const SETTLING = new Set(['saving', 'initializing']);
+const restoredStorage = state => state.phase === 'storage-changed' || (state.phase === 'saved-refresh-error' && state.error?.code === 'storage-changed');
+/**
+ * The action that held focus when a write or re-read began gets it back once that
+ * settles; when it is gone or disabled (Save after an unconfirmed write), focus moves
+ * to the first usable fallback, the recovery action first, and never to the body.
+ */
+function restoreFocus(button, state, fallbacks) {
+    if (!button || SETTLING.has(state.phase)) return button;
+    if (state.phase !== 'complete' && (!document.activeElement || document.activeElement === document.body)) {
+        [button, ...fallbacks].find(node => node?.isConnected && !node.disabled)?.focus();
+    }
     return null;
+}
+/** Remember a focused dialog action while the phase settles. */
+function settlingFocus(actions, state, current) {
+    return SETTLING.has(state.phase) && actions.contains(document.activeElement) ? document.activeElement : current;
 }
 
 function field(label, control, id) {
@@ -246,9 +264,11 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
                 categories.replaceChildren(...datalist('', state.categories).children);
             }
             const saving = state.phase === 'saving';
-            if (saving && document.activeElement === save) refocus = save;
+            refocus = settlingFocus(actions, state, refocus);
             save.disabled = !SUBMITTABLE.has(state.phase);
-            cancel.disabled = close.disabled = revise.disabled = saving;
+            cancel.disabled = close.disabled = saving;
+            // After a restore the numeric IDs may name another prompt; only the Library reload exit stays.
+            revise.disabled = saving || restoredStorage(state);
             const pairProblem = readOnly && !state.pair && pairId === null ? NO_PAIR : state.pair?.archived ? ALREADY_ARCHIVED : null;
             archive.disabled = !SUBMITTABLE.has(state.phase) || !state.pair || state.pair.archived;
             const status = statusOf(state, false, mode);
@@ -257,7 +277,7 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
             else archive.removeAttribute('aria-describedby');
             const retry = recoveryButton(recovery, status?.action, views.signal);
             setChildren(actions, [...(retry ? [retry] : []), ...(readOnly ? [revise, archive] : []), cancel, save]);
-            refocus = restoreFocus(refocus, state);
+            refocus = restoreFocus(refocus, state, [retry, save]);
             if (state.phase === 'complete') finish();
         }
 
@@ -322,11 +342,11 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
             const retry = recoveryButton(recovery, status?.action, views.signal) ?? (readFailed ? reread : null);
             links.hidden = !counted;
             const saving = state.phase === 'saving';
-            if (saving && document.activeElement === confirm) refocus = confirm;
+            refocus = settlingFocus(actions, state, refocus);
             confirm.disabled = !counted || !SUBMITTABLE.has(state.phase);
             cancel.disabled = close.disabled = saving;
             setChildren(actions, [...(retry ? [retry] : []), cancel, confirm]);
-            refocus = restoreFocus(refocus, state);
+            refocus = restoreFocus(refocus, state, [retry, confirm]);
             if (state.phase === 'complete') finish();
         }
 

@@ -144,8 +144,10 @@ function createMetadata(draft) {
     return {title: draft.title.trim(), category: draft.category.trim() || UNCATEGORIZED, tags: parseTags(draft.tags),
         rating: draft.rating, notes: draft.notes};
 }
+// A blank category is stored as NULL; "Uncategorized" is only the UI's label for it.
+const categoryKey = value => (stored(value) === UNCATEGORIZED ? '' : stored(value));
 function sameMetadata(sent, owner) {
-    return sent.title === stored(owner.title) && sent.category === stored(owner.category) && sameTags(sent.tags, owner.tags) &&
+    return sent.title === stored(owner.title) && categoryKey(sent.category) === categoryKey(owner.category) && sameTags(sent.tags, owner.tags) &&
         sent.rating === owner.rating && sent.notes === (owner.notes ?? '');
 }
 function draftProblem(mode, draft) {

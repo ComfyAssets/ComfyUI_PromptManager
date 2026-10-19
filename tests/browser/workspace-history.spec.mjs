@@ -9,6 +9,8 @@ const dialog=page=>page.getByRole('dialog',{name:'Recorded run',exact:true});
 const saved=page=>page.getByRole('region',{name:'Saved prompt texts',exact:true});
 const gallery=page=>page.getByRole('region',{name:'Shared gallery',exact:true});
 const open=async(page,id)=>{await page.goto(`/prompt_manager/workspace#/library/${id}`);await expect(recorded(page)).toBeVisible();};
+// A history opens on its first negative variant, as in the concept; these contracts start from the whole shared gallery.
+const showAllImages=async page=>{const all=page.getByRole('button',{name:'All images for this positive',exact:true});await all.click();await expect(all).toHaveAttribute('aria-pressed','true');};
 const marker=(page,id,anchor='10')=>recorded(page).locator(`button[data-run-id="${id}"][data-anchor-id="${anchor}"]`);
 const exact=async locator=>locator.evaluate(node=>node.textContent);
 
@@ -91,7 +93,7 @@ test('same-path replacement is current content and a during-inspection change is
 
 test('root reconfiguration rejects in-flight candidates and every old scope URL without changing receipts',async({page,request})=>{
     const f=page.fixture,window=await historyRead(request,f.detail_id),base=`/prompt_manager/history/runs/${f.runs.shared}`;
-    await open(page,f.detail_id);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
+    await open(page,f.detail_id);await showAllImages(page);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
     const before=await(await request.get(`${base}/outputs?epoch=${window.history_epoch}`)).json(),media=before.items[0].current_candidate.media;
     await command(request,{action:'arm',boundary:'candidate'});const pending=request.get(`${base}/outputs?epoch=${window.history_epoch}`);
     try {
@@ -395,7 +397,7 @@ test('history, run and output failures retry their own reads and route exit igno
     const f=page.fixture;let windowFailure=true,runFailure=true,outputFailure=true;
     await page.route(/\/library\/\d+\/history\?/,async route=>windowFailure?route.fulfill({status:503,json:{success:false}}):route.continue());
     await page.goto(`/prompt_manager/workspace#/library/${f.detail_id}`);await expect(recorded(page).getByRole('button',{name:'Retry recorded history',exact:true})).toBeVisible();
-    await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);windowFailure=false;await recorded(page).getByRole('button',{name:'Retry recorded history',exact:true}).click();
+    await showAllImages(page);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);windowFailure=false;await recorded(page).getByRole('button',{name:'Retry recorded history',exact:true}).click();
     await page.route(/\/history\/runs\/[^/]+\?/,async route=>runFailure?route.fulfill({status:503,json:{success:false}}):route.continue());
     await page.route(/\/history\/runs\/[^/]+\/outputs\?/,async route=>outputFailure?route.fulfill({status:503,json:{success:false}}):route.continue());
     await marker(page,f.runs.shared).click();await expect(dialog(page).getByRole('button',{name:'Retry run details',exact:true})).toBeVisible();runFailure=false;await dialog(page).getByRole('button',{name:'Retry run details',exact:true}).click();
@@ -520,7 +522,7 @@ test('capture recovery reloads only reported outputs while retaining frozen run 
 });
 
 test('history epoch recovery reports saved-parent read failures and retries without resetting the gallery',async({page})=>{
-    const f=page.fixture;await open(page,f.detail_id);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
+    const f=page.fixture;await open(page,f.detail_id);await showAllImages(page);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
     let parentFailure=true,galleryReads=0;page.on('request',request=>{if(new URL(request.url()).pathname===`/prompt_manager/library/${f.detail_id}/images`)galleryReads++;});
     await page.route(new RegExp(`/prompt_manager/library/${f.detail_id}(?:\\?|$)`),async route=>parentFailure?route.fulfill({status:503,json:{success:false,error:'Unavailable'}}):route.continue());
     await page.route(/\/history\/runs\/[^/]+\/outputs\?/,async route=>route.fulfill({status:409,json:{success:false,history_version:1,code:'history-changed',error:'History changed',recovery:{action:'refresh-history'}}}));
@@ -531,7 +533,7 @@ test('history epoch recovery reports saved-parent read failures and retries with
 });
 
 test('changed saved-owner identity is disclosed without silently relabeling or rebinding the existing gallery',async({page,request})=>{
-    const f=page.fixture;await open(page,f.detail_id);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
+    const f=page.fixture;await open(page,f.detail_id);await showAllImages(page);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
     const positive=saved(page).getByRole('region',{name:'Positive prompt',exact:true});const original=await exact(positive.locator('pre'));
     const cards=gallery(page).locator('article[data-image-key]');await cards.first().evaluate(node=>{window.savedGalleryCard=node;});let galleryReads=0;
     page.on('request',request=>{if(new URL(request.url()).pathname===`/prompt_manager/library/${f.detail_id}/images`)galleryReads++;});

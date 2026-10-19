@@ -6,6 +6,7 @@ import { createInspectionController } from './inspection-state.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 import { createMediaViewer } from './media-viewer.mjs';
+import { noun } from './plural.mjs';
 
 function el(tag, text, className) {
     const element = document.createElement(tag);
@@ -322,7 +323,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             for (let index = state?.items.length || 0; index < next.items.length; index++) itemIndexes.set(imageKey(next.items[index]), index);
         }
         state = next;
-        count.textContent = embedded ? `${next.loaded.toLocaleString()} loaded · ${next.total.toLocaleString()} linked images` : `${next.loaded.toLocaleString()} of ${next.total.toLocaleString()} images`;
+        count.textContent = embedded ? `${next.loaded.toLocaleString()} loaded · ${next.total.toLocaleString()} ${noun(next.total, 'linked image')}` : `${next.loaded.toLocaleString()} of ${next.total.toLocaleString()} ${noun(next.total, 'image')}`;
         if (changed) updateLayout();
         message.textContent = recovering ? 'Images paused until sources and folders are available.' : next.error ? 'Images could not be loaded. Retry or refresh the collection.' : next.loading ? 'Loading images…' : '';
         if (next.error) message.setAttribute('role', 'alert'); else message.setAttribute('role', 'status');
