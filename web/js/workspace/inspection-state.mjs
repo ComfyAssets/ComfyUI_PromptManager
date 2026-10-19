@@ -4,6 +4,11 @@ import { promptRoles } from './prompt-blocks.mjs';
 const SOURCE_CHANGED = 'The source changed. Refresh the image collection before inspecting this file.';
 const RECORD_KEYS = ['prompt', 'workflow', 'parameters', 'comfyassets_prompt_pairs'];
 const FACT_FIELDS = ['seed', 'steps', 'cfg', 'sampler', 'scheduler', 'model'];
+// `invalid` and `limited` records carry no text. Only a workflow can be `limited`:
+// role records over their budget fail the whole read on the server.
+const RECORD_FORMATS = ['original-text', 'reserialized-json', 'invalid', 'limited'];
+const TEXTLESS_FORMATS = ['invalid', 'limited'];
+const REASON_CODES = ['work-limit', 'depth-limit', 'text-limit', 'graph-ceiling', 'unsupported-node', 'runtime-value', 'composite', 'no-sampler', 'malformed', 'multistage-differs'];
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const validScope = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) && value.length === 64;
 
@@ -103,28 +108,41 @@ function metadataFor(value) {
         (value.parameters !== null && typeof value.parameters !== 'string')) throw new TypeError('Invalid inspection metadata');
     const raw = {}, formats = {};
     for (const [key, format] of Object.entries(value.record_formats)) {
-        if (!RECORD_KEYS.includes(key) || !['original-text', 'reserialized-json', 'invalid'].includes(format)) throw new TypeError('Invalid inspection record format');
+        if (!RECORD_KEYS.includes(key) || !RECORD_FORMATS.includes(format) || (format === 'limited' && key !== 'workflow')) throw new TypeError('Invalid inspection record format');
         formats[key] = format;
     }
     for (const [key, text] of Object.entries(value.raw)) {
-        if (!RECORD_KEYS.includes(key) || typeof text !== 'string' || !Object.hasOwn(formats, key) || formats[key] === 'invalid') throw new TypeError('Invalid inspection raw record');
+        if (!RECORD_KEYS.includes(key) || typeof text !== 'string' || !Object.hasOwn(formats, key) || TEXTLESS_FORMATS.includes(formats[key])) throw new TypeError('Invalid inspection raw record');
         raw[key] = text;
     }
     if (value.parameters !== (raw.parameters ?? null)) throw new TypeError('Invalid inspection parameters projection');
     const prompt = graphFor(value.prompt_graph), workflow = graphFor(value.workflow_graph);
     const wholeRawOmitted = value.status === 'limited';
     if (wholeRawOmitted && (Object.keys(raw).length || value.parameters !== null)) throw new TypeError('Invalid atomic raw omission');
-    if (!wholeRawOmitted && Object.entries(formats).some(([key, format]) => format !== 'invalid' && !Object.hasOwn(raw, key))) throw new TypeError('Missing represented raw record');
-    const invalidGraphOmitted = [['prompt', prompt], ['workflow', workflow]].some(([key, graph]) => formats[key] === 'invalid' && graph.status === 'limited');
+    if (!wholeRawOmitted && Object.entries(formats).some(([key, format]) => !TEXTLESS_FORMATS.includes(format) && !Object.hasOwn(raw, key))) throw new TypeError('Missing represented raw record');
+    // The response budget omits the workflow graph, then the prompt graph, then all raw.
+    // An invalid record's graph is otherwise malformed, so a limited one marks omission.
+    const promptGraphOmitted = formats.prompt === 'invalid' && prompt.status === 'limited';
     for (const [key, graph] of [['prompt', prompt], ['workflow', workflow]]) {
         const hasRecord = Object.hasOwn(formats, key);
         if ((formats[key] === 'invalid' && !['malformed', 'limited'].includes(graph.status)) ||
+            (formats[key] === 'limited' && graph.status !== 'limited') ||
             hasRecord !== (graph.status !== 'absent')) throw new TypeError('Invalid graph representation provenance');
-        if (hasRecord && (wholeRawOmitted || invalidGraphOmitted) && graph.status !== 'limited') throw new TypeError('Invalid atomic graph omission');
+        if (hasRecord && (wholeRawOmitted || (promptGraphOmitted && key === 'workflow')) && graph.status !== 'limited') throw new TypeError('Invalid atomic graph omission');
     }
     if ((value.status === 'limited') !== (value.omitted_reason === 'response-size-limit')) throw new TypeError('Invalid metadata omission status');
     if (['absent', 'unreadable'].includes(value.status) && (Object.keys(raw).length || Object.keys(formats).length || prompt.status !== 'absent' || workflow.status !== 'absent')) throw new TypeError('Invalid unavailable metadata');
     return { status: value.status, omitted_reason: value.omitted_reason, raw, record_formats: formats, prompt_graph: prompt, workflow_graph: workflow, parameters: value.parameters };
+}
+
+function resolutionFor(value) {
+    if (!object(value) || !['resolved', 'absent', 'ambiguous', 'unresolved'].includes(value.state) ||
+        (value.sampler_id !== null && (typeof value.sampler_id !== 'string' || !value.sampler_id)) || typeof value.reason !== 'string') throw new TypeError('Invalid inspection resolution');
+    const code = value.reason_code ?? null, node = value.node ?? null;
+    // Codes explain a non-resolved outcome; a blocking node is named only with its code.
+    if ((code !== null && (!REASON_CODES.includes(code) || ['resolved', 'absent'].includes(value.state))) ||
+        (node !== null && (code === null || !object(node) || typeof node.id !== 'string' || (node.class_type !== null && typeof node.class_type !== 'string')))) throw new TypeError('Invalid inspection resolution reason');
+    return value;
 }
 
 function libraryFor(value) {
@@ -163,9 +181,7 @@ export function projectInspectionPayload(result, identity, download, extractFact
         generation: unavailableFacts(), historyTarget: null, download,
     };
     if (legacy) return record;
-    const resolution = result.resolution;
-    if (!object(resolution) || !['resolved', 'absent', 'ambiguous', 'unresolved'].includes(resolution.state) ||
-        (resolution.sampler_id !== null && (typeof resolution.sampler_id !== 'string' || !resolution.sampler_id)) || typeof resolution.reason !== 'string') throw new TypeError('Invalid inspection resolution');
+    const resolution = resolutionFor(result.resolution);
     record.file = fileFor(result.file);
     record.metadata = metadataFor(result.metadata);
     record.library = libraryFor(result.library);
