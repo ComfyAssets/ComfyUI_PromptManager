@@ -221,6 +221,12 @@
     "functions": 98,
     "statements": 96
   },
+  "workspace/library-editor.mjs": {
+    "lines": 98,
+    "branches": 88,
+    "functions": 92,
+    "statements": 98
+  },
   "workspace/library-layout.mjs": {
     "lines": 98,
     "branches": 98,
