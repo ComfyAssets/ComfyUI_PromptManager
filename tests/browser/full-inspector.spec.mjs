@@ -153,6 +153,21 @@ test('full inspector downloads actual bounded evidence',async({page,request})=>{
     await panel.getByText('File & provenance',{exact:true}).click();await expect(panel.getByRole('link',{name:'Download original',exact:true})).toHaveAttribute('href',/root=0&root_scope=[a-f0-9]{64}/);
 });
 
+test('full inspector labels a limited workflow record without hiding prompt facts',async({page,request})=>{
+    // The server marks a workflow over its 4 MiB read budget `limited`: no raw text, a limited graph.
+    await page.route('**/images/inspect/inspector/complete.png?*',async route=>{const response=await route.fetch();const data=await response.json();data.metadata.record_formats.workflow='limited';delete data.metadata.raw.workflow;data.metadata.workflow_graph={status:'limited',value:null};await route.fulfill({response,json:data});});
+    await fullFixture(page,request);const panel=inspector(page);
+    await expect(panel.locator('.generation-facts dd')).toHaveText(['9007199254740993','28','6.5','dpmpp_2m','karras','fixture-model.safetensors']);
+    await expect(panel.getByRole('button',{name:'Send prompt pair',exact:true})).toBeVisible();
+    await panel.getByText('Workflow & raw metadata',{exact:true}).click();
+    await expect(panel.getByText('Record exceeds inspection limits; text is unavailable',{exact:true})).toBeVisible();await expect(panel.locator('pre code')).toHaveCount(1);
+    const workflow=panel.getByRole('button',{name:'Download workflow JSON',exact:true});await expect(workflow).toHaveAttribute('aria-disabled','true');
+    await expect(workflow).toHaveAccessibleDescription('Workflow exceeds inspection limits. Download the original file to inspect it externally.');
+    let downloads=0;const count=()=>downloads++;page.on('download',count);await workflow.focus();await page.keyboard.press('Enter');expect(downloads).toBe(0);page.off('download',count);
+    const metadata=JSON.parse((await downloadText(page,panel.getByRole('button',{name:'Download metadata JSON',exact:true}))).text);
+    expect(metadata.metadata.record_formats.workflow).toBe('limited');expect(metadata.metadata.raw.workflow).toBeUndefined();expect(metadata.metadata.representations.workflow).toBe('Record exceeds inspection limits; text is unavailable');
+});
+
 test('full inspector rejects stale shared action state',async({page,request})=>{
     let reads=0,stale=false;await page.route('**/images/inspect/**',route=>{reads++;return stale?route.fulfill({status:409,json:{success:false,code:'source-changed',error:'Source changed'}}):route.continue();});
     await fullFixture(page,request);const panel=inspector(page);await expect(panel.getByRole('button',{name:'Send prompt pair',exact:true})).toBeVisible();const before=reads;

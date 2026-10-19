@@ -144,14 +144,25 @@ class OutputDatabaseTests(unittest.TestCase):
         finish = self.finish(start)
         peers = [self.database() for _ in range(4)]
         barrier = Barrier(len(peers))
+        hold = history_tests.FirstWriterHold()
+
+        @contextmanager
+        def held_open():
+            hold()
+            yield True
 
         def write(index):
-            barrier.wait(timeout=5)
+            barrier.wait(timeout=60)
             return peers[index].write_execution_outputs_for_finish(
-                finish, bundle("first.png" if index % 2 else "second.png")
+                finish,
+                bundle("first.png" if index % 2 else "second.png"),
+                generation_guard=held_open,
             )
 
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with (
+            history_tests.queued_writer_budget(),
+            ThreadPoolExecutor(max_workers=4) as executor,
+        ):
             self.assertEqual(list(executor.map(write, range(4))), [True] * 4)
         capture = db.get_execution_outputs(start.run_id)
         self.assertEqual(

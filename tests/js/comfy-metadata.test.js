@@ -380,11 +380,33 @@ test("conservative facts bound cycles fan-out visits and link depth", () => {
     custom.s = { class_type: "SamplerCustomAdvanced", inputs: { noise: ["noise", 0] } };
     custom.noise = { class_type: "RandomNoise", inputs: { noise_seed: ["p0", 0] } };
     assert.equal(factsFor(custom).seed.status, "unresolved", "the provider itself consumes one of the 64 allowed links");
+});
+
+// Spec section 10: graph size is not a facts bound. Only the per-lookup visit
+// set (MAX_VISITS) and the projection's 20,000-node ceiling (`limited`) bound work.
+test("facts resolve on a parsed 600-node graph with one KSampler", () => {
     const large = factGraph();
-    for (let index = 0; index < 498; index++) large[`unused${index}`] = { class_type: "PrimitiveInt", inputs: { value: index } };
-    assert.equal(factsFor(large).seed.value, "9007199254740993");
-    large.extra = { class_type: "PrimitiveInt", inputs: { value: 1 } };
-    assert.equal(factsFor(large).seed.status, "unresolved");
+    for (let index = 0; index < 598; index++) large[`unused${index}`] = { class_type: "PrimitiveInt", inputs: { value: index } };
+    assert.equal(Object.keys(large).length, 600);
+    const facts = factsFor(large);
+    for (const [field, value] of [["seed", "9007199254740993"], ["steps", "28"], ["cfg", "6.5000000000000000001"]]) {
+        assert.equal(facts[field].status, "known", field);
+        assert.equal(facts[field].value, value);
+        assert.equal(facts[field].reason, null);
+    }
+});
+
+test("workflow facts are not gated by UI node count", () => {
+    const nodes = [
+        { id: 1, type: "CheckpointLoaderSimple", widgets_values: ["wide.safetensors"] },
+        { id: 2, type: "KSampler", widgets_values: [42, "fixed", 20, "7", "euler", "normal"], inputs: [{ name: "model", link: 1 }] },
+    ];
+    for (let index = 0; index < 598; index++) nodes.push({ id: `note${index}`, type: "Note", widgets_values: [`note ${index}`] });
+    const workflow = { nodes, links: [[1, 1, 0, 2, 0, "MODEL"]] };
+    const facts = factsFor(null, { prompt_graph: absentFactGraph(), workflow_graph: parsedFactGraph(workflow) });
+    assert.deepEqual(factFields.map(field => facts[field].status), Array(6).fill("known"));
+    assert.deepEqual(factFields.map(field => facts[field].value), ["42", "20", "7", "euler", "normal", "wide.safetensors"]);
+    assert.ok(Object.values(facts).every(fact => fact.source === "workflow" && fact.reason === null));
 });
 
 // Same shape as the workflow attached to #75: PromptManager nodes are saved as

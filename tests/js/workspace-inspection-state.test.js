@@ -136,11 +136,92 @@ test('record rejects contradictory omission provenance before extracting facts',
         data => { data.metadata.record_formats.workflow = 'original-text'; data.metadata.workflow_graph = { status: 'parsed', value: { nodes: [] } }; },
         data => { Object.assign(data.metadata, { status: 'limited', omitted_reason: 'response-size-limit', raw: {}, prompt_graph: { status: 'limited', value: null } }); data.metadata.record_formats.workflow = 'invalid'; data.metadata.workflow_graph = { status: 'malformed', value: null }; },
         data => { data.metadata.record_formats.workflow = 'invalid'; data.metadata.raw.workflow = 'null'; data.metadata.workflow_graph = { status: 'limited', value: null }; },
-        data => { data.metadata.record_formats.workflow = 'invalid'; data.metadata.workflow_graph = { status: 'limited', value: null }; },
+        // The response budget omits the workflow graph before the prompt graph, so an
+        // omitted invalid prompt graph means the workflow graph was omitted too.
+        data => { data.metadata.record_formats.prompt = 'invalid'; data.metadata.raw = {}; data.metadata.prompt_graph = { status: 'limited', value: null }; data.metadata.record_formats.workflow = 'original-text'; data.metadata.raw.workflow = '{"nodes":[]}'; data.metadata.workflow_graph = { status: 'parsed', value: { nodes: [] } }; },
     ]) {
         const data = envelope(); mutate(data); let extractions = 0;
         assert.throws(() => toRecord(data, image(), () => { extractions++; return extractGenerationFacts({}); }), TypeError);
         assert.equal(extractions, 0, 'contradictory transport cannot produce known facts');
+    }
+});
+
+function limitedWorkflow(data = envelope()) {
+    data.metadata.record_formats.workflow = 'limited';
+    data.metadata.workflow_graph = { status: 'limited', value: null };
+    return data;
+}
+
+test('record accepts limited workflow format without raw and with a limited graph', () => {
+    const toRecord = contract('toInspectionRecord');
+    const record = toRecord(limitedWorkflow(), image(), extractGenerationFacts);
+    assert.deepEqual(record.metadata.record_formats, { prompt: 'reserialized-json', workflow: 'limited' });
+    assert.deepEqual(record.metadata.raw, { prompt: '{"rounded":"raw copy"}' });
+    assert.deepEqual(record.metadata.workflow_graph, { status: 'limited', value: null });
+    assert.equal(record.metadata.status, 'available');
+    assert.equal(record.generation.seed.value, '9007199254740993', 'a limited workflow never hides prompt-graph facts');
+    const workflowOnly = limitedWorkflow();
+    Object.assign(workflowOnly.metadata, { raw: {}, record_formats: { workflow: 'limited' }, prompt_graph: { status: 'absent', value: null } });
+    const facts = toRecord(workflowOnly, image(), extractGenerationFacts).generation;
+    assert.ok(Object.values(facts).every(fact => fact.status === 'unresolved' && fact.reason === 'projection-limited'));
+    const omitted = limitedWorkflow();
+    Object.assign(omitted.metadata, { raw: {}, parameters: null, status: 'limited', omitted_reason: 'response-size-limit', prompt_graph: { status: 'limited', value: null } });
+    assert.deepEqual(toRecord(omitted, image(), extractGenerationFacts).metadata.record_formats, { prompt: 'reserialized-json', workflow: 'limited' });
+});
+
+test('record rejects limited format with raw present', () => {
+    const toRecord = contract('toInspectionRecord');
+    for (const mutate of [
+        data => { data.metadata.raw.workflow = '{"nodes":[]}'; },
+        data => { data.metadata.workflow_graph = { status: 'parsed', value: { nodes: [] } }; },
+        data => { data.metadata.workflow_graph = { status: 'malformed', value: null }; },
+        data => { data.metadata.workflow_graph = { status: 'absent', value: null }; },
+        // Role records fail closed on the server: they are never limited.
+        data => { data.metadata.record_formats.prompt = 'limited'; delete data.metadata.raw.prompt; data.metadata.prompt_graph = { status: 'limited', value: null }; },
+        data => { data.metadata.record_formats.parameters = 'limited'; },
+    ]) {
+        const data = limitedWorkflow(); mutate(data); let extractions = 0;
+        assert.throws(() => toRecord(data, image(), () => { extractions++; return extractGenerationFacts({}); }), TypeError);
+        assert.equal(extractions, 0);
+    }
+});
+
+test('record accepts the workflow-first response omission of an invalid workflow record', () => {
+    const data = envelope();
+    data.metadata.record_formats.workflow = 'invalid';
+    data.metadata.workflow_graph = { status: 'limited', value: null };
+    const record = contract('toInspectionRecord')(data, image(), extractGenerationFacts);
+    assert.deepEqual(record.metadata.prompt_graph.status, 'parsed', 'prompt evidence outlives workflow evidence');
+    assert.equal(record.generation.seed.value, '9007199254740993');
+});
+
+test('record accepts closed reason codes and rejects contradictory ones', () => {
+    const toRecord = contract('toInspectionRecord');
+    const codes = ['work-limit', 'depth-limit', 'text-limit', 'graph-ceiling', 'unsupported-node', 'runtime-value', 'composite', 'no-sampler', 'malformed', 'multistage-differs'];
+    for (const reason_code of codes) {
+        const data = envelope(); Object.assign(data.resolution, { state: 'unresolved', reason_code, node: null });
+        assert.doesNotThrow(() => toRecord(data, image(), extractGenerationFacts), reason_code);
+    }
+    const node = envelope(); Object.assign(node.resolution, { state: 'unresolved', reason_code: 'unsupported-node', node: { id: '7', class_type: 'LoRAfromText' } });
+    assert.doesNotThrow(() => toRecord(node, image(), extractGenerationFacts));
+    node.resolution.node.class_type = null; // the server names a non-string class as null
+    assert.doesNotThrow(() => toRecord(node, image(), extractGenerationFacts));
+    for (const state of ['resolved', 'absent', 'ambiguous', 'unresolved']) {
+        const data = envelope(); Object.assign(data.resolution, { state, reason_code: null, node: null });
+        assert.doesNotThrow(() => toRecord(data, image(), extractGenerationFacts), state);
+    }
+    for (const change of [
+        { state: 'unresolved', reason_code: 'guess' }, { state: 'unresolved', reason_code: 1 },
+        { state: 'resolved', reason_code: 'work-limit' }, { state: 'absent', reason_code: 'no-sampler' },
+        { state: 'unresolved', reason_code: null, node: { id: '7', class_type: 'X' } },
+        { state: 'unresolved', reason_code: 'unsupported-node', node: { id: 7, class_type: 'X' } },
+        { state: 'unresolved', reason_code: 'unsupported-node', node: { id: '7' } },
+        { state: 'unresolved', reason_code: 'unsupported-node', node: { id: '7', class_type: 7 } },
+        { state: 'unresolved', reason_code: 'unsupported-node', node: 'X' },
+    ]) {
+        const data = envelope(); Object.assign(data.resolution, change); let extractions = 0;
+        assert.throws(() => toRecord(data, image(), () => { extractions++; return extractGenerationFacts({}); }), TypeError, JSON.stringify(change));
+        assert.equal(extractions, 0);
     }
 });
 

@@ -7,8 +7,10 @@ from PIL import Image, PngImagePlugin
 
 try:
     from test_api_images import ImageAPITestCase, make_png
+    import inspection_parity as parity
 except ImportError:
     from tests.test_api_images import ImageAPITestCase, make_png
+    from tests import inspection_parity as parity
 
 from utils.pair_execution import EXECUTION_KEY, record_pair_execution
 from database.pair_ingestion import ingest_resolved_pair
@@ -311,7 +313,9 @@ class TestPromptInspector(ImageAPITestCase):
         cases = [base[:-1], base[:30]]
         index = base.index(b"tEXt")
         broken = bytearray(base)
-        broken[index + 8] ^= 1
+        # Corrupt the retained record's body: its CRC is checked. (A corrupt
+        # keyword names an unretained chunk, which is skipped unchecked.)
+        broken[index + 4 + len(b"prompt\0") + 1] ^= 1
         cases.append(bytes(broken))
         for kind, payload in (
             (b"tEXt", b"prompt\0{}"),
@@ -713,17 +717,93 @@ class TestPromptInspector(ImageAPITestCase):
         self.assertLessEqual(len(await response.read()), 8 * 1024 * 1024)
         self.assertNotIn(str(self.comfy_dir), json.dumps(result))
 
-    async def test_workflow_raw_uses_same_aggregate_budget_and_read(self):
-        from utils.prompt_inspector import MAX_METADATA_BYTES
+    async def test_workflow_has_its_own_budget_and_never_hides_prompts(self):
+        from utils.prompt_inspector import ROLE_METADATA_BYTES, WORKFLOW_METADATA_BYTES
 
         path = self.output_dir / "image.png"
-        png(path, prompt=json.dumps(graph()), workflow="x" * MAX_METADATA_BYTES)
+        # Over the role budget, within the workflow budget: fully readable.
+        workflow = "x" * ROLE_METADATA_BYTES
+        png(path, prompt=json.dumps(graph()), workflow=workflow)
         response, result = await self.inspect()
         self.assertEqual(response.status, 200)
-        self.assertEqual(result.get("metadata", {}).get("status"), "unreadable")
-        self.assertEqual(result["prompts"]["positive"]["status"], "unresolved")
-        self.assertEqual(result["metadata"]["raw"], {})
-        self.assertEqual(result["metadata"]["record_formats"], {})
+        self.assertEqual(result["metadata"]["status"], "available")
+        self.assertEqual(result["prompts"]["positive"], self.side("portrait"))
+        self.assertEqual(result["metadata"]["raw"]["workflow"], workflow)
+        self.assertEqual(result["metadata"]["workflow_graph"]["status"], "malformed")
+        # Over the workflow budget: only the workflow is limited.
+        png(
+            path,
+            prompt=json.dumps(graph()),
+            workflow="x" * (WORKFLOW_METADATA_BYTES + 1),
+        )
+        response, result = await self.inspect()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(result["metadata"]["status"], "available")
+        self.assertEqual(result["prompts"]["positive"], self.side("portrait"))
+        self.assertEqual(result["prompts"]["negative"], self.side("blurry"))
+        self.assertEqual(
+            result["metadata"]["record_formats"],
+            {"prompt": "original-text", "workflow": "limited"},
+        )
+        self.assertEqual(set(result["metadata"]["raw"]), {"prompt"})
+        self.assertEqual(
+            result["metadata"]["workflow_graph"], {"status": "limited", "value": None}
+        )
+        self.assertEqual(result["metadata"]["prompt_graph"]["status"], "parsed")
+
+    def parity_fixture(self, name):
+        path = self.output_dir / f"{name}.png"
+        parity.write_png(path, parity.build(name))
+        return path
+
+    async def test_inspect_route_resolves_506_node_graph(self):
+        # f03: 506 executable nodes. The default (ingestion) profile's 500-node
+        # gate reports "Resolution limit reached"; the inspection profile bounds
+        # work instead of graph size, so the route resolves the pair.
+        self.parity_fixture("f03")
+        response, result = await self.inspect("f03.png")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            result["prompts"],
+            {"positive": self.side(parity.POS), "negative": self.side(parity.NEG)},
+        )
+        self.assertEqual(result["resolution"]["state"], "resolved")
+        self.assertIsNone(result["resolution"]["reason_code"])
+        self.assertIsNone(result["resolution"]["node"])
+        self.assertEqual(result["metadata"]["prompt_graph"]["status"], "parsed")
+
+    async def test_inspect_route_reports_no_sampler_instead_of_absent(self):
+        # f17: a BasicGuider-only prompt graph is a record, never "not recorded".
+        self.parity_fixture("f17")
+        response, result = await self.inspect("f17.png")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            {role: side["status"] for role, side in result["prompts"].items()},
+            {"positive": "unresolved", "negative": "unresolved"},
+        )
+        self.assertEqual(result["resolution"]["state"], "unresolved")
+        self.assertEqual(result["resolution"]["reason_code"], "no-sampler")
+        self.assertEqual(
+            result["resolution"]["reason"],
+            "No supported sampler pair found (saw SamplerCustomAdvanced)",
+        )
+
+    async def test_inspect_route_exposes_reason_code_and_blocking_node(self):
+        self.parity_fixture("f06a")
+        _, result = await self.inspect("f06a.png")
+        resolution = result["resolution"]
+        self.assertEqual(resolution["state"], "unresolved")
+        self.assertEqual(resolution["reason_code"], "unsupported-node")
+        self.assertEqual(set(resolution["node"]), {"id", "class_type"})
+        self.assertIsInstance(resolution["node"]["class_type"], str)
+        png(self.output_dir / "image.png", prompt="{broken")
+        _, result = await self.inspect()
+        self.assertEqual(result["resolution"]["reason_code"], "malformed")
+        make_png(self.output_dir / "image.png")
+        _, result = await self.inspect()
+        self.assertEqual(result["resolution"]["state"], "absent")
+        self.assertIsNone(result["resolution"]["reason_code"])
+        self.assertIsNone(result["resolution"]["node"])
 
     async def test_workflow_only_keeps_existing_role_uncertainty(self):
         path = png(self.output_dir / "image.png", workflow={"nodes": []})
@@ -988,7 +1068,6 @@ class TestPromptInspector(ImageAPITestCase):
         source = json.dumps(graph())
         for suffix, expected in (
             (',"duplicate":1,"duplicate":2', "malformed"),
-            (',"nonfinite":NaN', "malformed"),
             (',"depth":' + "[" * 64 + "0" + "]" * 64, "limited"),
         ):
             _, result = await self.video_inspect(
@@ -1001,6 +1080,25 @@ class TestPromptInspector(ImageAPITestCase):
             )
             self.assertIsNone(result["metadata"]["prompt_graph"]["value"])
             self.assertEqual(result["metadata"]["workflow_graph"]["status"], expected)
+
+    async def test_video_carrier_nonfinite_outside_graph_inputs_is_tolerated(self):
+        # ComfyUI quirks: NaN in an unrelated carrier field, in ``is_changed`` and
+        # in ``_meta`` are validated and dropped; they never reach the projection.
+        source = graph()
+        source["3"]["is_changed"] = ["NAN_MARKER"]
+        source["3"]["_meta"] = {"title": "K", "weight": "NAN_MARKER"}
+        text = json.dumps(source).replace('"NAN_MARKER"', "NaN")
+        _, result = await self.video_inspect(
+            '{"prompt":' + text + ',"workflow":{"nodes":[]},"nonfinite":NaN}'
+        )
+        self.assertEqual(result["prompts"]["positive"], self.side("portrait"))
+        prompt_graph = result["metadata"]["prompt_graph"]
+        self.assertEqual(prompt_graph["status"], "parsed")
+        self.assertEqual(set(prompt_graph["value"]["3"]), {"class_type", "inputs"})
+        self.assertEqual(
+            result["metadata"]["workflow_graph"],
+            {"status": "parsed", "value": {"nodes": []}},
+        )
 
     async def test_video_numeric_role_text_never_becomes_sendable(self):
         source = graph(positive=123)

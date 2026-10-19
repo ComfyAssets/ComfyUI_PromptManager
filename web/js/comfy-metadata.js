@@ -469,8 +469,9 @@
 
     function graphFacts(graph, source, resolution) {
         if (!object(graph)) return factSet("unresolved", source);
+        // Graph size is not a bound: each lookup is bounded by its MAX_VISITS seen-set,
+        // and the server's node ceiling arrives as a `limited` projection.
         const entries = Object.entries(graph);
-        if (entries.length > MAX_VISITS) return factSet("unresolved", source, "projection-limited");
         if (entries.some(([, node]) => !object(node) || !object(node.inputs) || typeof node.class_type !== "string")) return factSet("unresolved", source);
         const candidates = entries.filter(([, node]) => GENERATION_SAMPLERS.has(node.class_type));
         const selected = candidates.find(([id]) => typeof resolution?.sampler_id === "string" && id === resolution.sampler_id);
@@ -560,7 +561,6 @@
             if (record.status === "limited") return factSet("unresolved", source, "projection-limited");
             if (record.status !== "parsed") return factSet("unresolved", source);
             if (source === "workflow") {
-                if (record.value?.nodes?.length > MAX_VISITS) return factSet("unresolved", source, "projection-limited");
                 if (!validFactWorkflow(record.value)) return factSet("unresolved", source);
                 return graphFacts(workflowToGraph(record.value, true), source, null);
             }
