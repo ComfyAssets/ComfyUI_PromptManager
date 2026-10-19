@@ -866,3 +866,25 @@ test('long and error states retain footer focus and reflow',async({page})=>{
     await page.keyboard.press('Escape');await expect(dialog).toHaveCount(0);
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
 });
+
+// Task A2: the editor dialogs keep matching the concept on the concept base stylesheet, with library-editor.css retired.
+const CONCEPT_BASE=['js/shared/toolkit/controls.css','lib/viewerjs/viewer.min.css','js/workspace/concept.css',
+    'js/workspace/images.css','js/workspace/library.css','js/workspace/inspector.css','js/workspace/workspace.css'];
+for(const [width,height,theme] of [[1600,1100,'dark'],[390,844,'light']])test(`concept base keeps the tags screen and editor dialogs equal to the concept ${width} ${theme}`,async({page})=>{
+    await page.setViewportSize({width,height});const f=page.fixture;const references={};
+    for(const mode of Object.keys(conceptModes)) {
+        const [hash,openMode]=conceptModes[mode];
+        await page.goto('about:blank');await page.goto(`/__test__/canonical/workspace#${hash}`);
+        await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);await openMode(page);await expect(page.locator('#modal')).toBeVisible();
+        if(mode==='revision')await page.locator('#modal-close').focus();
+        references[mode]=mapConcept(await page.locator('#modal').evaluate(inventoryOf));
+    }
+    await mountEditor(page,theme);
+    expect(await page.evaluate(()=>[...document.styleSheets].filter(sheet=>sheet.href).map(sheet=>new URL(sheet.href).pathname.replace(/^\/prompt_manager\//,'')))).toEqual(CONCEPT_BASE);
+    const options={new:{mode:'new'},metadata:{mode:'metadata',positiveId:f.positive_id,pairId:f.pair_id},revision:{mode:'revision',positiveId:f.positive_id,pairId:f.pair_id},negative:{mode:'negative',positiveId:f.positive_id}};
+    for(const mode of Object.keys(conceptModes)) {
+        const dialog=await openEditor(page,options[mode]);await ready(dialog);
+        expect(diffInventory(references[mode],await dialog.evaluate(inventoryOf)),`${mode} dialog`).toEqual([]);
+        await page.keyboard.press('Escape');await expect(dialog).toHaveCount(0);
+    }
+});

@@ -70,14 +70,24 @@ test('only workspace.html loads workspace CSS', () => {
     assert.ok(offenders.every(path => path === 'web/workspace.html'), `unexpected consumers: ${offenders.join(', ')}`);
 });
 
-// Turned on by Task A2, which rewrites workspace.html to the concept order.
-test('workspace.html loads controls, viewer, concept, overlay in order', { todo: 'Task A2 rewrites workspace.html' }, () => {
+// Task A2 order: the concept's own order (toolkit, Viewer.js, concept) with the page stylesheets that their own PRs
+// retire, then the production overlay last.
+test('workspace.html loads controls, viewer, concept, page CSS and the overlay in order', () => {
     const html = readFileSync(join(root, 'web/workspace.html'), 'utf8');
     const hrefs = [...html.matchAll(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/g)].map(match => match[1]);
     assert.deepEqual(hrefs, [
         'js/shared/toolkit/controls.css',
         'lib/viewerjs/viewer.min.css',
         'js/workspace/concept.css',
+        'js/workspace/images.css',
+        'js/workspace/library.css',
+        'js/workspace/inspector.css',
         'js/workspace/workspace.css',
     ]);
+});
+
+test('the retired shell, vocabulary and editor stylesheets stay deleted', () => {
+    for (const name of ['style.css', 'vocabulary.css', 'library-editor.css']) {
+        assert.equal(existsSync(join(root, 'web/js/workspace', name)), false, `web/js/workspace/${name} must not come back`);
+    }
 });

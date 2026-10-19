@@ -239,3 +239,48 @@ test('cached-page restoration remounts one working shell and refreshes its data'
     await expect(page.locator('body')).toHaveAttribute('data-ca-theme', 'light');
     expect(await page.evaluate(() => window.__appearanceChanges)).toBe(1);
 });
+
+// Task A2: the Overview and handoff panels use the concept's `.surface` (style.css 709-722) and `.small` from the
+// concept base stylesheet, not the retired shell sheet (18px h2, 11px panel radius).
+const surfaceStyle = node => {
+    const style = getComputedStyle(node);
+    const heading = getComputedStyle(node.querySelector(':scope > h2'));
+    const intro = node.querySelector(':scope > p');
+    return {
+        padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
+        radius: style.borderTopLeftRadius, border: `${style.borderTopWidth} ${style.borderTopStyle}`,
+        background: style.backgroundColor,
+        h2: { fontSize: heading.fontSize, fontWeight: heading.fontWeight, marginTop: heading.marginTop, marginBottom: heading.marginBottom },
+        intro: intro && { fontSize: getComputedStyle(intro).fontSize, marginTop: getComputedStyle(intro).marginTop },
+    };
+};
+const SURFACE = {
+    padding: ['22px', '22px', '22px', '22px'], radius: '7px', border: '1px solid',
+    h2: { fontSize: '17px', fontWeight: '600', marginTop: '0px', marginBottom: '0px' },
+    intro: { fontSize: '12px', marginTop: '7px' },
+};
+
+for (const width of [1600, 390]) test(`overview and handoff render with concept surfaces ${width}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${workspace}#/overview`);
+    const main = page.locator('#workspace-main');
+    await expect(statistic(page, 'Prompts')).toHaveText('2');
+    const tools = main.locator('section.surface').filter({ has: page.getByRole('heading', { level: 2, name: 'Continue creating', exact: true }) });
+    await expect(tools).toHaveCount(1);
+    const surface = await tools.evaluate(surfaceStyle);
+    expect(surface).toMatchObject(SURFACE);
+    expect(surface.background).not.toBe('rgba(0, 0, 0, 0)');
+    await expect(main.locator('.panel')).toHaveCount(0);
+    const card = tools.locator('.tool-card').first();
+    await expect(card.locator('p.small')).toHaveCount(1);
+    expect(await card.locator('p.small').evaluate(node => getComputedStyle(node).fontSize)).toBe('12px');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+    await page.getByRole('navigation', { name: 'Workspace', exact: true }).getByRole('link', { name: 'System', exact: true }).click();
+    const handoff = main.locator('section.handoff');
+    await expect(handoff).toHaveClass(/\bsurface\b/);
+    expect(await handoff.evaluate(surfaceStyle)).toMatchObject(SURFACE);
+    await expect(handoff.locator('a[href="/prompt_manager/admin"]')).toBeVisible();
+    await expect(main.locator('.panel')).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});

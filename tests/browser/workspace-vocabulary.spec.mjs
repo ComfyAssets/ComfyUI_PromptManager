@@ -791,3 +791,29 @@ test('mutation check: the comparison reports a changed surface padding and a cha
     expect(dialogPaths).toContain('fields.0.control.color');
     await page.keyboard.press('Escape');
 });
+
+// Task A2: the workspace loads the verbatim concept stylesheet as its base and one overlay last; the screen and its
+// dialogs must stay equal to the concept with the retired vocabulary and editor sheets gone.
+const CONCEPT_BASE=['js/shared/toolkit/controls.css','lib/viewerjs/viewer.min.css','js/workspace/concept.css',
+    'js/workspace/images.css','js/workspace/library.css','js/workspace/inspector.css','js/workspace/workspace.css'];
+const loadedSheets=page=>page.evaluate(()=>[...document.styleSheets].filter(sheet=>sheet.href).map(sheet=>new URL(sheet.href).pathname.replace(/^\/prompt_manager\//,'')));
+for(const [width,height,theme] of [[1600,1100,'dark'],[390,844,'light']])test(`concept base keeps the tags screen and editor dialogs equal to the concept ${width} ${theme}`,async({page})=>{
+    await page.setViewportSize({width,height});
+    const donors=await conceptDonors(page,theme);
+    // Park the pointer: donor clicks leave it over a heading or row button, and a hover background is not compared.
+    await openConceptTags(page,theme,'no-preference');await page.mouse.move(0,0);const reference=await pageOf(page,false);
+    const dialogs={};
+    for(const mode of Object.keys(conceptDialogs)) {
+        await openConceptTags(page,theme,'no-preference');await conceptDialogs[mode](page);
+        await expect(page.locator('#modal')).toBeVisible();dialogs[mode]=await page.locator('#modal').evaluate(inventoryOf);
+    }
+    await openProductionTags(page,theme,'no-preference');await page.mouse.move(0,0);
+    expect(await loadedSheets(page)).toEqual(CONCEPT_BASE);
+    const {diff,extra}=comparePage(reference,await pageOf(page,true));
+    expect(diff).toEqual([]);expect(extra).toEqual(fixtureOnly());
+    for(const mode of Object.keys(productionDialogs)) {
+        const box=await productionDialogs[mode](page);
+        expect(diffInventory(mapVocabularyDialog(mode,dialogs[mode],donors),await box.evaluate(inventoryOf)),`${mode} dialog`).toEqual([]);
+        await page.keyboard.press('Escape');await expect(box).toHaveCount(0);
+    }
+});

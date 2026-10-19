@@ -93,7 +93,7 @@ function mountWorkspace() {
         }
         if (isHandoff(route)) {
             headingCopy.append(element('p', route.description, 'intro'));
-            const panel = element('section', undefined, 'panel handoff');
+            const panel = element('section', undefined, 'surface handoff');
             panel.append(element('h2', 'Your current tools are ready'),
                 element('p', 'This workspace is being introduced in stages. Continue in the existing tool with your saved data.'),
                 legacyLink(route));
@@ -104,12 +104,12 @@ function mountWorkspace() {
         const stats = element('section', undefined, 'overview-stats');
         stats.setAttribute('aria-label', 'Library statistics');
         main.append(stats);
-        const tools = element('section', undefined, 'panel');
+        const tools = element('section', undefined, 'surface');
         tools.append(element('h2', 'Continue creating'), element('p', 'Your existing tools remain available while the new workspaces take shape.'));
         const cards = element('div', undefined, 'tool-grid');
         for (const target of routes.filter(item => item.href)) {
             const card = element('article', undefined, 'tool-card');
-            card.append(element('h3', target.label), element('p', target.description), legacyLink(target));
+            card.append(element('h3', target.label), element('p', target.description, 'small'), legacyLink(target));
             cards.append(card);
         }
         tools.append(cards);
@@ -124,7 +124,7 @@ function mountWorkspace() {
                 const values = summarizeStats(result.stats);
                 const list = element('dl', undefined, 'stat-grid');
                 for (const [label, count] of values) {
-                    const stat = element('div', undefined, 'panel stat');
+                    const stat = element('div', undefined, 'stat');
                     stat.append(element('dt', label), element('dd', count.toLocaleString()));
                     list.append(stat);
                 }
