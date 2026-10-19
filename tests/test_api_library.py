@@ -830,6 +830,35 @@ class TestLibraryAPI(ImageAPITestCase):
         self.assertIsInstance(result["error"], str)
         self.assertNotIn("positive", result)
 
+    async def test_full_export_download_rejects_queries_and_keeps_legacy_formats(self):
+        self.api.db.save_prompt_pair("Cat", "Blur")
+        self._save_prompt("Solo")
+        response = await self.client.get("/prompt_manager/library/export")
+        document = await response.json()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            response.headers["Content-Disposition"],
+            'attachment; filename="prompt-manager-library-v1.json"',
+        )
+        self.assertEqual(
+            (document["schema_version"], document["kind"]),
+            (1, "prompt-manager-library"),
+        )
+        solo = next(o for o in document["owners"] if o["positive_text"] == "Solo")
+        self.assertEqual(solo["variants"], [])
+        for query in ("?limit=1", "?x", "?archive=all"):
+            rejected = await self.client.get("/prompt_manager/library/export" + query)
+            self.assertEqual(rejected.status, 400)
+            self.assertNotIn("Content-Disposition", rejected.headers)
+        legacy = await self.client.get("/prompt_manager/pairs/export")
+        self.assertEqual((await legacy.json())["kind"], "prompt-manager-pairs")
+        self.assertEqual(
+            legacy.headers["Content-Disposition"],
+            'attachment; filename="prompt-pairs.json"',
+        )
+        positive = (await self.client.get("/prompt_manager/library")).status
+        self.assertEqual(positive, 200)
+
 
 class TestNameCursorBudget(unittest.TestCase):
     def test_lru_byte_budget_scope_and_oversize_keys_are_bounded(self):

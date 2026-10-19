@@ -214,6 +214,7 @@ class LibraryRoutesMixin:
     def _register_library_routes(self, routes: web.RouteTableDef) -> None:
         routes.get("/prompt_manager/library")(self.list_library)
         routes.get("/prompt_manager/library/options")(self.get_library_options)
+        routes.get("/prompt_manager/library/export")(self.export_library)
         routes.get("/prompt_manager/library/{positive_id}")(self.get_library_positive)
         routes.patch("/prompt_manager/library/{positive_id}")(
             self.update_library_parent
@@ -424,3 +425,17 @@ class LibraryRoutesMixin:
         if result is None:
             return _command_error(404, "Positive prompt not found")
         return web.json_response({"success": True, **result})
+
+    @pair_response
+    async def export_library(self, request: web.Request) -> web.Response:
+        if request.query_string:
+            raise ValueError("Library export accepts no query parameters")
+        document = await self._run_in_executor(self.db.export_library)
+        return web.json_response(
+            document,
+            headers={
+                "Content-Disposition": (
+                    'attachment; filename="prompt-manager-library-v1.json"'
+                )
+            },
+        )

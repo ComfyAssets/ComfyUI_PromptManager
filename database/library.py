@@ -478,3 +478,65 @@ class LibraryOperations:
                 after=after,
                 archive=archive,
             )
+
+    def export_library(self) -> dict:
+        """Read every portable owner and pair from one snapshot, writing nothing.
+
+        Local IDs order the rows internally and never appear in the document.
+        """
+        with self.library_snapshot() as (conn, _epoch, _ceiling):
+            owners = {}
+            order = []
+            for row in conn.execute(
+                "SELECT p.id,p.text,ls.title,p.category,p.rating,p.notes FROM "
+                + _FROM
+                + " WHERE "
+                + _ELIGIBLE
+                + " ORDER BY p.id"
+            ):
+                owners[row["id"]] = {
+                    "positive_text": row["text"],
+                    "title": row["title"],
+                    "category": row["category"],
+                    "tags": [],
+                    "rating": row["rating"],
+                    "notes": row["notes"],
+                    "variants": [],
+                }
+                order.append(row["id"])
+            for row in conn.execute(
+                "SELECT pt.prompt_id,t.name FROM prompt_tags pt "
+                "JOIN tags t ON t.id=pt.tag_id ORDER BY pt.prompt_id,t.name"
+            ):
+                if row["prompt_id"] in owners:
+                    owners[row["prompt_id"]]["tags"].append(row["name"])
+            variants = {}
+            for row in conn.execute(
+                "SELECT pp.id,pp.positive_prompt_id,"
+                "COALESCE(n.text,'') AS negative_text,"
+                "pp.title,pp.category,pp.rating,pp.notes,pp.archived "
+                "FROM prompt_pairs pp "
+                "LEFT JOIN prompts n ON n.id=pp.negative_prompt_id "
+                "ORDER BY pp.id"
+            ):
+                variant = {
+                    "negative_text": row["negative_text"],
+                    "title": row["title"],
+                    "category": row["category"],
+                    "tags": [],
+                    "rating": row["rating"],
+                    "notes": row["notes"],
+                    "archived": bool(row["archived"]),
+                }
+                variants[row["id"]] = variant
+                owners[row["positive_prompt_id"]]["variants"].append(variant)
+            for row in conn.execute(
+                "SELECT pt.pair_id,t.name FROM prompt_pair_tags pt "
+                "JOIN tags t ON t.id=pt.tag_id ORDER BY pt.pair_id,t.name"
+            ):
+                variants[row["pair_id"]]["tags"].append(row["name"])
+            return {
+                "schema_version": 1,
+                "kind": "prompt-manager-library",
+                "owners": [owners[key] for key in order],
+            }

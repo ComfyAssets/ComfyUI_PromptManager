@@ -1,5 +1,6 @@
 """Grouped library reads retain component roles and association semantics."""
 
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -1336,3 +1337,127 @@ class TestLibrary(unittest.TestCase):
                             run()
                     self.assertFalse(self.db.model.get_connection().in_transaction)
                     self.assertEqual(self.storage(), before)
+
+    def test_full_library_portable_export_preserves_independent_owners(self):
+        from contextlib import contextmanager
+        from unittest.mock import patch
+
+        pair = self.db.save_prompt_pair(
+            "Cat", "Blur", title="Pair", category="PC", tags=["z", "a"], rating=3
+        )
+        empty = self.db.save_prompt_pair("Cat", "", notes="note")
+        self.db.archive_prompt_pair(empty)
+        dual = self.db.save_prompt_pair("Blur", "Noise")
+        positive = self.db.get_prompt_pair(pair)["positive_prompt_id"]
+        self.db.update_prompt_metadata(
+            positive, category="Owner", tags=["t"], rating=5, notes="owner note"
+        )
+        negative_only = self.db.get_prompt_pair(dual)["negative_prompt_id"]
+        self.db.update_prompt_metadata(negative_only, category="Hidden")
+        self.save("Solo", category="S")
+        before = self.db.get_prompt_pair(pair)
+        epoch = self.db.get_execution_epoch()
+        original = self.db.library_snapshot
+
+        @contextmanager
+        def racing(*args, **kwargs):
+            with original(*args, **kwargs) as snapshot:
+                writer = sqlite3.connect(self.db.model.db_path)
+                try:
+                    writer.execute(
+                        "UPDATE prompts SET category='Raced' WHERE id=?", (positive,)
+                    )
+                    writer.execute(
+                        "UPDATE prompt_pairs SET title='Raced' WHERE id=?", (pair,)
+                    )
+                    writer.commit()
+                finally:
+                    writer.close()
+                yield snapshot
+
+        statements = []
+        connection = self.db.model.get_connection()
+        connection.set_trace_callback(statements.append)
+        try:
+            with patch.object(self.db, "library_snapshot", racing):
+                doc = self.db.export_library()
+        finally:
+            connection.set_trace_callback(None)
+        self.assertEqual(
+            (doc["schema_version"], doc["kind"]), (1, "prompt-manager-library")
+        )
+        by_text = {owner["positive_text"]: owner for owner in doc["owners"]}
+        self.assertEqual(set(by_text), {"Cat", "Blur", "Solo"})
+        self.assertNotIn("Noise", by_text)
+        for owner in doc["owners"]:
+            self.assertEqual(
+                set(owner),
+                {
+                    "positive_text",
+                    "title",
+                    "category",
+                    "tags",
+                    "rating",
+                    "notes",
+                    "variants",
+                },
+            )
+            for variant in owner["variants"]:
+                self.assertEqual(
+                    set(variant),
+                    {
+                        "negative_text",
+                        "title",
+                        "category",
+                        "tags",
+                        "rating",
+                        "notes",
+                        "archived",
+                    },
+                )
+        cat = by_text["Cat"]
+        self.assertEqual(
+            (cat["category"], cat["tags"], cat["rating"]), ("Owner", ["t"], 5)
+        )
+        first, second = cat["variants"]
+        self.assertEqual(
+            (first["negative_text"], first["title"], first["category"]),
+            ("Blur", "Pair", "PC"),
+        )
+        self.assertEqual(
+            (first["tags"], first["rating"], first["archived"]), (["a", "z"], 3, False)
+        )
+        self.assertEqual(second["negative_text"], "")
+        self.assertTrue(second["archived"])
+        self.assertEqual(second["notes"], "note")
+        self.assertEqual(by_text["Solo"]["variants"], [])
+        self.assertEqual(by_text["Solo"]["category"], "S")
+        self.assertEqual(by_text["Blur"]["variants"][0]["negative_text"], "Noise")
+        self.assertNotIn("Raced", json.dumps(doc))
+        self.assertEqual(self.db.get_prompt_pair(pair)["title"], "Raced")
+        self.assertNotEqual(before["title"], "Raced")
+        self.assertEqual(self.db.get_execution_epoch(), epoch)
+        writes = [
+            q
+            for q in statements
+            if q.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))
+        ]
+        self.assertEqual(writes, [])
+
+    def test_export_uses_one_snapshot_and_never_writes(self):
+        self.db.save_prompt_pair("Cat", "Blur")
+        connection = self.db.model.get_connection()
+        statements = []
+        connection.set_trace_callback(statements.append)
+        try:
+            self.db.export_library()
+        finally:
+            connection.set_trace_callback(None)
+        self.assertEqual(statements.count("BEGIN"), 1)
+        self.assertEqual(statements.count("ROLLBACK"), 1)
+        self.assertNotIn("COMMIT", statements)
+        self.assertFalse(connection.in_transaction)
+        self.assertEqual(
+            self.db.export_library()["owners"][0]["variants"][0]["negative_text"],
+            "Blur",
+        )
