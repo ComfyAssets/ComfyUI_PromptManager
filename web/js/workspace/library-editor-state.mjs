@@ -198,7 +198,8 @@ export function createLibraryEditorController({api, mode, positiveId = null, pai
     let disposed = false, generation = 0, reads = null, started = null, review = false;
     let seed = blankDraft(), pending = null, commit = null;
     let state = freeze({phase: 'initializing', draft: blankDraft(), baseline: null, receipt: null, error: null,
-        reviewRequired: false, epoch: null, owner: null, pair: null, categories: [], outcome: null, reconciled: null, unchanged: false});
+        reviewRequired: false, epoch: null, owner: null, pair: null, pairRead: 'none', pairReadError: null, categories: [], outcome: null,
+        reconciled: null, unchanged: false});
     const emit = patch => {if (disposed) return; state = freeze({...state, ...patch}); onChange(state);};
 
     /** Start a read that supersedes every older one; current() is false once stale. */
@@ -222,7 +223,8 @@ export function createLibraryEditorController({api, mode, positiveId = null, pai
             const draft = keepDraft ? overlay(next, state.draft, seed) : next;
             seed = next;
             emit({phase: 'ready', draft, baseline: baselineOf(snapshot.owner), epoch: snapshot.epoch, owner: snapshot.owner,
-                pair: snapshot.pair, categories: snapshot.categories, error: null, reviewRequired: review && keepDraft});
+                pair: snapshot.pair, pairRead: snapshot.pair ? 'fresh' : 'none', pairReadError: null, categories: snapshot.categories,
+                error: null, reviewRequired: review && keepDraft});
         } catch (error) {
             if (read.current()) emit({phase: 'initialization-error', error});
         }
@@ -336,6 +338,23 @@ export function createLibraryEditorController({api, mode, positiveId = null, pai
             await send(freeze(next));
         },
         setArchive,
+        /**
+         * Re-read the selected pair (for example its linked counts) through the same
+         * exact-ID read and owner check as initialization. A failure keeps the
+         * previous pair and is reported as `pairRead: 'error'` with `pairReadError`.
+         */
+        async refreshPair() {
+            if (disposed || !existing || !state.pair || !SUBMITTABLE.has(state.phase)) return;
+            const read = beginRead();
+            emit({pairRead: 'reading', pairReadError: null});
+            try {
+                const pair = await readPair(api, state.pair.id, read.signal);
+                validatePair(pair, state.owner);
+                if (read.current()) emit({pair, pairRead: 'fresh'});
+            } catch (error) {
+                if (read.current()) emit({pairRead: 'error', pairReadError: error});
+            }
+        },
         async reloadOwner({keepDraft} = {}) {
             if (typeof keepDraft !== 'boolean') throw new TypeError('reloadOwner needs keepDraft');
             if (disposed || !RELOADABLE.has(state.phase)) return;

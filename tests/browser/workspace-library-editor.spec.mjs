@@ -163,6 +163,29 @@ test('archive confirms the selected pair with fresh counts and writes only on co
     await expect.poll(()=>page.evaluate(()=>window.editorEvents.reconciled.at(-1)?.commit.kind)).toBe('archive-pair');
 });
 
+test('an archive conflict offers an explicit Reload that re-reads and never replays the archive',async({page,request})=>{
+    const f=page.fixture;await mountEditor(page);
+    let conflicted=false;
+    await page.route(`**/prompt_manager/pairs/${f.pair_id}`,route=>{
+        if(route.request().method()!=='PATCH'||conflicted)return route.continue();
+        conflicted=true;return route.fulfill({status:409,contentType:'application/json',body:'{"success":false,"error":"changed","code":"metadata-conflict"}'});
+    });
+    const dialog=await openEditor(page,{mode:'metadata',positiveId:f.positive_id,pairId:f.pair_id});await ready(dialog);
+    await button(dialog,'Archive…').click();await expect(button(dialog,'Archive')).toBeEnabled();
+    await button(dialog,'Archive').click();
+    await expect(note(dialog)).toHaveText('This negative variant changed since it was loaded. Reload it and review it before archiving.');
+    await expect(button(dialog,'Archive')).toBeDisabled();expect(page.writes).toHaveLength(1);
+    expect(await actionNames(dialog)).toEqual(['Reload','Cancel','Archive']);
+    await button(dialog,'Reload').click();
+    await expect(note(dialog)).toHaveText('Loaded the latest saved values. Review them, then archive.');
+    await expect(dialog).toContainText('1 image and 2 recorded runs stay linked.');
+    await expect(dialog.getByRole('region',{name:'Negative prompt',exact:true})).toContainText(f.selected_negative);
+    expect(page.writes).toHaveLength(1);expect((await pairRead(request,f.pair_id)).archived).toBe(false);
+    await button(dialog,'Archive').click();await expect(dialog).toHaveCount(0);
+    expect(page.writes.map(write=>`${write.method} ${write.url}`)).toEqual([`PATCH /prompt_manager/pairs/${f.pair_id}`,`PATCH /prompt_manager/pairs/${f.pair_id}`]);
+    expect((await pairRead(request,f.pair_id)).archived).toBe(true);
+});
+
 test('cancel and busy submit have honest write counts',async({page})=>{
     const f=page.fixture;await mountEditor(page);
     let dialog=await openEditor(page,{mode:'metadata',positiveId:f.positive_id,pairId:f.pair_id});await ready(dialog);

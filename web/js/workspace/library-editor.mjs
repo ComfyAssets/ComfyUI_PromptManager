@@ -18,6 +18,7 @@ const NEGATIVE_HELP = 'Leave empty for an explicitly empty negative. The positiv
 const NO_PAIR = 'Archive needs a selected saved negative variant.';
 const ALREADY_ARCHIVED = 'This negative variant is already archived.';
 const REVIEW = 'Loaded the latest saved values. Review your entries, then save.';
+const REVIEW_ARCHIVE = 'Loaded the latest saved values. Review them, then archive.';
 const TOAST_MS = 6500;
 let toastTimer;
 
@@ -37,7 +38,7 @@ function el(tag, text, className) {
     return node;
 }
 
-/** Inline state copy and its one recovery action; `verb` names the write in progress. */
+/** Inline state copy and its one recovery action; `archive` selects the pair-archive wording. */
 function statusOf(state, archive) {
     const save = archive ? 'archive' : 'save';
     const nothing = archive ? 'Nothing was archived.' : 'Nothing was saved.';
@@ -47,12 +48,13 @@ function statusOf(state, archive) {
     case 'initialization-error': return {text: `The latest saved values could not be loaded. ${nothing}`, action: ['Retry', 'retryInitialization']};
     case 'saving': return {text: archive ? 'Archiving… The dialog stays open until the server answers.' : 'Saving… The dialog stays open until the server answers.'};
     case 'write-error': return {text: `${archive ? 'Not archived' : 'Not saved'}: ${message} Your entries are kept.`};
-    case 'conflict': return {text: 'This prompt changed since it was loaded. Reload it and review your entries before saving.', action: archive ? null : ['Reload', 'reload']};
+    case 'conflict': return {text: archive ? 'This negative variant changed since it was loaded. Reload it and review it before archiving.'
+        : 'This prompt changed since it was loaded. Reload it and review your entries before saving.', action: ['Reload', 'reload']};
     case 'storage-changed': return {text: `Prompt storage was restored since this dialog opened. ${nothing}`, action: archive ? null : ['Reload Library state', 'reload']};
     case 'unknown-outcome': return {text: archive ? 'Archive could not be confirmed. Retry sends the same archive once.'
         : 'Save could not be confirmed. Your entries are kept; Retry sends the same save once.', action: ['Retry', 'retryUnconfirmed']};
     case 'saved-refresh-error': return {text: archive ? 'Archived; Library refresh failed.' : 'Saved; Library refresh failed.', action: ['Retry refresh', 'retryReconciliation']};
-    case 'ready': return message ? {text: message} : state.reviewRequired ? {text: REVIEW} : null;
+    case 'ready': return message ? {text: message} : state.reviewRequired ? {text: archive ? REVIEW_ARCHIVE : REVIEW} : null;
     default: return null;
     }
 }
@@ -252,45 +254,37 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
     /** Swap the open Edit dialog to the pair archive confirmation, reusing its controller. */
     function archiveView() {
         const {controller, trigger} = session;
-        const owner = controller.state.owner, pair = controller.state.pair;
         session.views.abort();
         const views = new AbortController();
         const block = el('section', undefined, 'prompt-block prompt-negative');
         block.setAttribute('aria-label', 'Negative prompt');
         const blockHeading = el('div', undefined, 'prompt-block-heading');
         blockHeading.append(el('h3', 'Negative prompt'));
-        block.append(blockHeading, pair.negative_text === '' ? el('p', 'Empty negative prompt', 'prompt-empty') : el('pre', pair.negative_text, 'prompt-text'));
+        const negative = el('div');
+        block.append(blockHeading, negative);
         const links = el('p', undefined, 'small');
         const restore = el('p', 'You can restore it from Show archived in Negative variants.', 'small');
         const line = statusLine(), recovery = new Map();
         const actions = el('div', undefined, 'dialog-actions');
         const reread = createButton('Retry');
-        reread.addEventListener('click', () => count(), {signal: views.signal});
+        reread.addEventListener('click', () => controller.refreshPair(), {signal: views.signal});
         const cancel = createButton('Cancel'), confirm = createButton('Archive', 'danger');
         cancel.addEventListener('click', () => finish(), {signal: views.signal});
         confirm.addEventListener('click', () => controller.setArchive(true), {signal: views.signal});
-        let counted = false, readFailed = false;
-
-        async function count() {
-            counted = readFailed = false;
-            render(controller.state);
-            try {
-                const result = await api.get(`/prompt_manager/pairs/${pair.id}`, {signal: views.signal, cache: 'no-store'});
-                const fresh = result?.pair;
-                if (views.signal.aborted) return;
-                if (!fresh || fresh.id !== pair.id || fresh.positive_prompt_id !== owner.id ||
-                    !Number.isSafeInteger(fresh.image_count) || !Number.isSafeInteger(fresh.run_count)) throw new TypeError('Invalid saved negative variant');
-                const images = fresh.image_count, runs = fresh.run_count;
-                links.textContent = `${images} image${images === 1 ? '' : 's'} and ${runs} recorded run${runs === 1 ? '' : 's'} stay linked.`;
-                counted = true;
-            } catch {
-                if (views.signal.aborted) return;
-                readFailed = true;
-            }
-            render(controller.state);
-        }
+        let shownNegative = null;
 
         function render(state) {
+            const {pair} = state;
+            if (pair && pair.negative_text !== shownNegative) {
+                shownNegative = pair.negative_text;
+                negative.replaceChildren(shownNegative === '' ? el('p', 'Empty negative prompt', 'prompt-empty') : el('pre', shownNegative, 'prompt-text'));
+            }
+            // Counts come only from the controller's fresh exact-ID pair read.
+            const counted = state.pairRead === 'fresh' && Boolean(pair), readFailed = state.pairRead === 'error';
+            if (counted) {
+                const images = pair.image_count, runs = pair.run_count;
+                links.textContent = `${images} image${images === 1 ? '' : 's'} and ${runs} recorded run${runs === 1 ? '' : 's'} stay linked.`;
+            }
             const status = statusOf(state, true);
             line.set(status?.text ?? (readFailed ? 'Linked images and recorded runs could not be read. Nothing was archived.'
                 : counted ? null : 'Checking linked images and recorded runs…'));
@@ -306,7 +300,8 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
         body.replaceChildren(block, links, restore, line.note, actions);
         session = {controller, trigger, views, render};
         show('Archive negative variant');
-        count();
+        controller.refreshPair();
+        render(controller.state);
     }
 
     function open({mode, positiveId = null, pairId = null, trigger = null, draft = null}) {

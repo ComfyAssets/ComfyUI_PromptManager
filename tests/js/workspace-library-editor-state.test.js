@@ -665,3 +665,62 @@ test('unconfirmed pair archive retry is fenced against restored storage', async 
     assert.equal(controller.state.error.code, 'storage-changed');
     controller.dispose();
 });
+
+test('refreshPair re-reads the selected pair through the owner check and reports failures without changing it', async () => {
+    const { createLibraryEditorController } = await source;
+    let selected = pair();
+    let fail = null;
+    const server = harness(call => {
+        if (fail && call.method === 'GET' && call.url.startsWith('/prompt_manager/pairs/31')) return fail();
+        return library({ selected })(call);
+    });
+    const controller = createLibraryEditorController({ api: server.api, mode: 'metadata', positiveId: 7, pairId: 31 });
+    assert.equal(typeof controller.refreshPair, 'function', 'refreshPair export');
+    await controller.initialize();
+    assert.equal(controller.state.pairRead, 'fresh');
+
+    selected = pair({ image_count: 5, run_count: 9 });
+    const pending = controller.refreshPair();
+    assert.equal(controller.state.pairRead, 'reading');
+    await pending;
+    assert.equal(controller.state.pairRead, 'fresh');
+    assert.equal(controller.state.pair.image_count, 5);
+    assert.equal(controller.state.pair.run_count, 9);
+    assert.equal(controller.state.pairReadError, null);
+    const pairReads = server.calls.filter(call => call.url.startsWith('/prompt_manager/pairs/31'));
+    assert.equal(pairReads.at(-1).init.cache, 'no-store');
+
+    for (const [name, answer] of [
+        ['other owner text', () => response(200, { success: true, pair: pair({ image_count: 77, positive_text: 'someone else' }) })],
+        ['other owner id', () => response(200, { success: true, pair: pair({ image_count: 77, positive_prompt_id: 8 }) })],
+        ['failed read', () => response(500, { success: false, error: 'down' })],
+        ['success false', () => response(200, { success: false, error: 'gone' })],
+    ]) {
+        fail = answer;
+        await controller.refreshPair();
+        assert.equal(controller.state.pairRead, 'error', name);
+        assert.ok(controller.state.pairReadError instanceof Error, name);
+        assert.equal(controller.state.pair.image_count, 5, name);
+        assert.equal(controller.state.phase, 'ready', name);
+    }
+    assert.equal(server.writes().length, 0);
+    controller.dispose();
+});
+
+test('refreshPair is inert without a selected pair, while busy and after dispose', async () => {
+    const { createLibraryEditorController } = await source;
+    const server = harness(library());
+    const none = createLibraryEditorController({ api: server.api, mode: 'metadata', positiveId: 7 });
+    await none.initialize();
+    const before = server.calls.length;
+    await none.refreshPair();
+    assert.equal(server.calls.length, before);
+    assert.equal(none.state.pairRead, 'none');
+    none.dispose();
+    const disposed = createLibraryEditorController({ api: server.api, mode: 'metadata', positiveId: 7, pairId: 31 });
+    await disposed.initialize();
+    disposed.dispose();
+    const count = server.calls.length;
+    await disposed.refreshPair();
+    assert.equal(server.calls.length, count);
+});
