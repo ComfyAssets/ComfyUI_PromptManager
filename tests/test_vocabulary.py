@@ -1,5 +1,7 @@
 """Bounded vocabulary reads count exactly what Library Browse shows."""
 
+import re
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -468,6 +470,309 @@ class TestVocabularyTagCommands(unittest.TestCase):
                 "delete_vocabulary_tag", tag_id, expected_epoch=self.epoch, name="moody"
             )
         self.assertEqual(caught.exception.code, "vocabulary-conflict")
+
+
+_OLD_STAMP = "2000-01-01T00:00:00+00:00"
+_DML = re.compile(r"\s*(INSERT|UPDATE|DELETE|REPLACE)\b", re.IGNORECASE)
+
+
+class TestVocabularyCategoryCommands(unittest.TestCase):
+    """Category preview and token-guarded rename/consolidation."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.db = PromptDatabase(str(Path(self.temp.name) / "categories.db"))
+        self.epoch = self.db.get_execution_epoch()
+
+    def tearDown(self):
+        try:
+            self.db.close_all()
+        finally:
+            self.temp.cleanup()
+
+    def command(self, method_name, /, **options):
+        method = getattr(self.db, method_name, None)
+        self.assertTrue(callable(method), f"PromptDatabase.{method_name} is missing")
+        return method(**options)
+
+    def preview(self, source="Scenery", target="Landscape"):
+        return self.command(
+            "preview_vocabulary_category",
+            expected_epoch=self.epoch,
+            source=source,
+            target=target,
+        )
+
+    def apply(self, token, source="Scenery", target="Landscape"):
+        return self.command(
+            "apply_vocabulary_category",
+            expected_epoch=self.epoch,
+            source=source,
+            target=target,
+            impact_token=token,
+        )
+
+    def save(self, text, **metadata):
+        return self.db.save_prompt(
+            text, prompt_hash=generate_prompt_hash(text), **metadata
+        )
+
+    def owners(self, source="Scenery"):
+        """2 eligible, 1 negative-only component; 2 active, 1 archived pair."""
+        first = self.save("Parent one", category=source)
+        second = self.save("Parent two", category=source)
+        negative = self.save("Legacy blur", category=source)
+        self.db.save_prompt_pair("Negative owner", "Legacy blur")
+        active = [
+            self.db.save_prompt_pair(
+                f"Active {n}",
+                f"Noise {n}",
+                category=source,
+                title=f"Title {n}",
+                tags=[f"tag-{n}"],
+                rating=n,
+                notes=f"Notes {n}",
+            )
+            for n in (1, 2)
+        ]
+        archived = self.db.save_prompt_pair(
+            "Archived sky", "Archived noise", category=source, title="Kept"
+        )
+        self.db.archive_prompt_pair(archived)
+        return [first, second], negative, active, archived
+
+    def age_rows(self):
+        with self.db.model.get_connection() as conn:
+            conn.execute("UPDATE prompts SET updated_at=?", (_OLD_STAMP,))
+            conn.execute("UPDATE prompt_pairs SET updated_at=?", (_OLD_STAMP,))
+
+    def rows(self, table):
+        with self.db.model.get_connection() as conn:
+            return {
+                row["id"]: dict(row)
+                for row in conn.execute(f"SELECT * FROM {table} ORDER BY id")
+            }
+
+    def snapshot(self):
+        return self.rows("prompts"), self.rows("prompt_pairs")
+
+    def traced(self, call):
+        statements = []
+        original = self.db.model.get_connection
+
+        def trace_connection():
+            connection = original()
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(
+            self.db.model, "get_connection", side_effect=trace_connection
+        ):
+            result = call()
+        conn = original()
+        conn.set_trace_callback(None)
+        return result, statements
+
+    def test_preview_counts_every_owner_type(self):
+        self.owners()
+        self.save("Elsewhere", category="Other")
+        before = self.snapshot()
+        result, statements = self.traced(self.preview)
+        self.assertEqual(
+            set(result),
+            {
+                "library_epoch",
+                "source",
+                "target",
+                "target_exists",
+                "impact",
+                "impact_token",
+            },
+        )
+        self.assertEqual(result["library_epoch"], self.epoch)
+        self.assertEqual((result["source"], result["target"]), ("Scenery", "Landscape"))
+        self.assertEqual(
+            result["impact"],
+            {
+                "positive_prompts": 2,
+                "other_prompts": 1,
+                "negative_variants": 2,
+                "archived_negative_variants": 1,
+            },
+        )
+        self.assertFalse(result["target_exists"])
+        self.assertRegex(result["impact_token"], r"\A[0-9a-f]{64}\Z")
+        self.assertEqual([q for q in statements if _DML.match(q)], [])
+        self.assertEqual(self.snapshot(), before)
+        trimmed = self.preview(target="  Other  ")
+        self.assertEqual(trimmed["target"], "Other")
+        self.assertTrue(trimmed["target_exists"])
+        self.assertNotEqual(trimmed["impact_token"], result["impact_token"])
+        self.assertEqual(self.preview(), result)
+
+    def test_apply_renames_exact_value_on_components_and_all_pairs(self):
+        components, negative, active, archived = self.owners()
+        variant = self.save("Padded", category=" Scenery ")
+        bystander = self.save("Bystander", category="Other")
+        self.age_rows()
+        prompts_before, pairs_before = self.snapshot()
+        preview = self.preview()
+        receipt = self.apply(preview["impact_token"])
+        self.assertEqual(
+            receipt,
+            {
+                "library_epoch": self.epoch,
+                "source": "Scenery",
+                "target": "Landscape",
+                "consolidated": False,
+                "impact": preview["impact"],
+            },
+        )
+        prompts_after, pairs_after = self.snapshot()
+        changed_prompts = {*components, negative}
+        changed_pairs = {*active, archived}
+        for table_before, table_after, changed in (
+            (prompts_before, prompts_after, changed_prompts),
+            (pairs_before, pairs_after, changed_pairs),
+        ):
+            self.assertNotIn("Scenery", [r["category"] for r in table_after.values()])
+            self.assertEqual(set(table_after), set(table_before))
+            for row_id, row in table_after.items():
+                old = table_before[row_id]
+                if row_id in changed:
+                    self.assertEqual(row["category"], "Landscape")
+                    self.assertNotEqual(row["updated_at"], _OLD_STAMP)
+                    expected = {**old, "category": "Landscape"}
+                    expected["updated_at"] = row["updated_at"]
+                    self.assertEqual(row, expected)
+                else:
+                    self.assertEqual(row, old)
+        self.assertEqual(prompts_after[variant]["category"], " Scenery ")
+        self.assertEqual(prompts_after[bystander]["category"], "Other")
+        for pair_id in active:
+            pair = self.db.get_prompt_pair(pair_id)
+            self.assertEqual(pair["category"], "Landscape")
+            self.assertEqual(len(pair["tags"]), 1)
+        self.assertEqual(pairs_after[archived]["archived"], 1)
+        self.assertEqual(pairs_after[archived]["title"], "Kept")
+        # Consolidating into an existing value reports it.
+        merge = self.preview(source=" Scenery ", target="Other")
+        self.assertTrue(merge["target_exists"])
+        receipt = self.apply(merge["impact_token"], source=" Scenery ", target="Other")
+        self.assertTrue(receipt["consolidated"])
+        self.assertEqual(
+            receipt["impact"],
+            {
+                "positive_prompts": 1,
+                "other_prompts": 0,
+                "negative_variants": 0,
+                "archived_negative_variants": 0,
+            },
+        )
+        self.assertEqual(self.rows("prompts")[variant]["category"], "Other")
+
+    def test_token_changes_with_membership_eligibility_archive_and_target_presence(
+        self,
+    ):
+        components, negative, active, _archived = self.owners()
+
+        def add_owner():
+            self.save("Late owner", category="Scenery")
+
+        def archive_pair():
+            self.db.archive_prompt_pair(active[0])
+
+        def promote_negative():
+            with self.db.model.get_connection() as conn:
+                conn.execute(
+                    "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                    (negative, "Promoted"),
+                )
+
+        def create_target():
+            self.save("Target owner", category="Landscape")
+
+        for mutate in (add_owner, archive_pair, promote_negative, create_target):
+            with self.subTest(mutate.__name__):
+                token = self.preview()["impact_token"]
+                mutate()
+                before = self.snapshot()
+                changes = self.db.model.get_connection().total_changes
+                with self.assertRaises(LibraryCommandError) as caught:
+                    self.apply(token)
+                self.assertEqual(caught.exception.code, "vocabulary-conflict")
+                self.assertEqual(caught.exception.epoch, self.epoch)
+                self.assertEqual(self.db.model.get_connection().total_changes, changes)
+                self.assertEqual(self.snapshot(), before)
+        token = self.preview()["impact_token"]
+        with self.db.model.get_connection() as conn:
+            conn.execute(
+                "UPDATE prompts SET notes='edited' WHERE id=?", (components[0],)
+            )
+        self.assertTrue(self.apply(token)["consolidated"])
+        self.assertEqual(self.rows("prompts")[components[0]]["category"], "Landscape")
+
+    def test_category_command_guards(self):
+        self.owners()
+        before = self.snapshot()
+        stale = "00000000-0000-4000-8000-000000000000"
+        token = self.preview()["impact_token"]
+        with self.assertRaises(LibraryCommandError) as caught:
+            self.command(
+                "preview_vocabulary_category",
+                expected_epoch=stale,
+                source="Scenery",
+                target="Landscape",
+            )
+        self.assertEqual(caught.exception.code, "storage-changed")
+        self.assertEqual(caught.exception.epoch, self.epoch)
+        with self.assertRaises(LibraryCommandError) as caught:
+            self.command(
+                "apply_vocabulary_category",
+                expected_epoch=stale,
+                source="Scenery",
+                target="Landscape",
+                impact_token=token,
+            )
+        self.assertEqual(caught.exception.code, "storage-changed")
+        for source in ("Missing", "scenery", " Scenery"):
+            with self.assertRaises(LibraryCommandError) as caught:
+                self.preview(source=source)
+            self.assertEqual(caught.exception.code, "vocabulary-conflict")
+        for source, target in (
+            ("Scenery", ""),
+            ("Scenery", "   "),
+            ("Scenery", "x" * 101),
+            ("Scenery", "bad\x01"),
+            ("Scenery", "Scenery"),
+            ("Scenery", " Scenery "),
+            ("Scenery", None),
+            ("Scenery", 7),
+            (None, "Landscape"),
+            ("", "Landscape"),
+            ("   ", "Landscape"),
+        ):
+            with self.assertRaises(ValueError, msg=(source, target)):
+                self.preview(source=source, target=target)
+        for bad in ("", "A" * 64, token[:-1], None, 7):
+            with self.assertRaises(ValueError):
+                self.apply(bad)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_category_apply_failure_rolls_back(self):
+        self.owners()
+        token = self.preview()["impact_token"]
+        with self.db.model.get_connection() as conn:
+            conn.execute(
+                "CREATE TRIGGER abort_pairs BEFORE UPDATE ON prompt_pairs "
+                "BEGIN SELECT RAISE(ABORT, 'boom'); END"
+            )
+        before = self.snapshot()
+        with self.assertRaises(sqlite3.Error):
+            self.apply(token)
+        self.assertEqual(self.snapshot(), before)
+        self.assertIn("Scenery", [r["category"] for r in before[0].values()])
+        self.assertFalse(self.db.model.get_connection().in_transaction)
 
 
 if __name__ == "__main__":

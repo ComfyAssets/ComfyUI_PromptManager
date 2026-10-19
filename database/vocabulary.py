@@ -7,17 +7,26 @@ directly or through one active saved pair, which is exactly what
 Tag commands run in one ``_pair_transaction``: the storage epoch is checked
 first, then the exact ``{id, name}`` identity, and the receipt is read on the
 same connection before commit. Owner rows and their timestamps never change.
+
+Category consolidation is previewed in one ``library_snapshot`` and applied in
+one ``_pair_transaction`` that recomputes the owner projection and requires the
+preview's ``impact_token``; only rows carrying the exact source change.
 """
 
+import hashlib
+import json
 import sqlite3
 
 from .library import _ELIGIBLE, _limit
-from .library_commands import LibraryCommandError, _validate_epoch
+from .library_commands import _TOKEN, LibraryCommandError, _validate_epoch
+from .models import utc_now_iso
 
 try:
-    from ..utils.validators import validate_tags
+    from ..utils.validators import validate_category, validate_tags
 except ImportError:
-    from utils.validators import validate_tags
+    from utils.validators import validate_category, validate_tags
+
+_CATEGORY_DOMAIN = "prompt-manager-vocabulary-category:v1\n"
 
 
 def _tag_rows(page: str) -> str:
@@ -85,6 +94,72 @@ _CATEGORY_GROUPS = (
     "grouped AS (SELECT value,MIN(pid) AS first_pid,"
     "COUNT(DISTINCT pid) AS prompt_count FROM owners GROUP BY value) "
 )
+
+
+# Every owner of one exact category value, in id order, with the flag the
+# impact counts split on.
+_CATEGORY_COMPONENTS = (
+    "SELECT p.id," + _ELIGIBLE + " AS eligible FROM prompts p "
+    "WHERE p.category=? ORDER BY p.id"
+)
+_CATEGORY_PAIRS = "SELECT id,archived FROM prompt_pairs WHERE category=? ORDER BY id"
+_CATEGORY_EXISTS = (
+    "SELECT EXISTS(SELECT 1 FROM prompts WHERE category=:v)"
+    " OR EXISTS(SELECT 1 FROM prompt_pairs WHERE category=:v)"
+)
+
+# Pairs after components, so a failing pair update rolls both back.
+_CATEGORY_UPDATES = (
+    "UPDATE prompts SET category=?,updated_at=? WHERE category=?",
+    "UPDATE prompt_pairs SET category=?,updated_at=? WHERE category=?",
+)
+
+
+def category_impact_token(
+    epoch: str,
+    source: str,
+    target: str,
+    target_exists: bool,
+    components: list,
+    pairs: list,
+) -> str:
+    """Hash a category projection like ``library_edit_token`` (no secret)."""
+    preimage = {
+        "epoch": epoch,
+        "source": source,
+        "target": target,
+        "target_exists": bool(target_exists),
+        "components": sorted([int(i), bool(flag)] for i, flag in components),
+        "pairs": sorted([int(i), bool(flag)] for i, flag in pairs),
+    }
+    payload = json.dumps(
+        preimage,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return hashlib.sha256((_CATEGORY_DOMAIN + payload).encode("utf-8")).hexdigest()
+
+
+def _validate_category_change(source: object, target: object) -> str:
+    """Check the exact source and return the trimmed, different target."""
+    if not isinstance(source, str) or not source.strip():
+        raise ValueError("source must be a nonblank category value")
+    if not isinstance(target, str):
+        raise ValueError("Category must be a string")
+    validate_category(target)
+    target = target.strip()
+    if not target:
+        raise ValueError("New category name cannot be blank")
+    if target == source:
+        raise ValueError("New category name must differ from the current one")
+    return target
+
+
+def _validate_impact_token(impact_token: object) -> None:
+    if not isinstance(impact_token, str) or not _TOKEN.fullmatch(impact_token):
+        raise ValueError("impact_token must be 64 lowercase hexadecimal characters")
 
 
 def _tag_after(after: object) -> int:
@@ -219,6 +294,82 @@ class VocabularyOperations:
                 return None
             row = conn.execute(_TAG_IMPACT, {"tag": tag_id}).fetchone()
             return {"library_epoch": epoch, "impact": dict(row)}
+
+    @staticmethod
+    def _category_projection(
+        conn: sqlite3.Connection, epoch: str, source: str, target: str
+    ) -> dict:
+        """Owners of ``source``, impact counts and the token over them."""
+        components = [
+            [row[0], bool(row[1])]
+            for row in conn.execute(_CATEGORY_COMPONENTS, (source,))
+        ]
+        pairs = [
+            [row[0], bool(row[1])] for row in conn.execute(_CATEGORY_PAIRS, (source,))
+        ]
+        if not components and not pairs:
+            raise LibraryCommandError("vocabulary-conflict", epoch)
+        target_exists = bool(
+            conn.execute(_CATEGORY_EXISTS, {"v": target}).fetchone()[0]
+        )
+        eligible = sum(flag for _id, flag in components)
+        archived = sum(flag for _id, flag in pairs)
+        return {
+            "target_exists": target_exists,
+            "impact": {
+                "positive_prompts": eligible,
+                "other_prompts": len(components) - eligible,
+                "negative_variants": len(pairs) - archived,
+                "archived_negative_variants": archived,
+            },
+            "impact_token": category_impact_token(
+                epoch, source, target, target_exists, components, pairs
+            ),
+        }
+
+    def preview_vocabulary_category(
+        self, *, expected_epoch: str, source: str, target: str
+    ) -> dict:
+        """Read-only impact of renaming the exact ``source`` to ``target``."""
+        _validate_epoch(expected_epoch)
+        target = _validate_category_change(source, target)
+        with self.library_snapshot() as (conn, epoch, _ceiling):
+            if epoch != expected_epoch:
+                raise LibraryCommandError("storage-changed", epoch)
+            projection = self._category_projection(conn, epoch, source, target)
+            return {
+                "library_epoch": epoch,
+                "source": source,
+                "target": target,
+                **projection,
+            }
+
+    def apply_vocabulary_category(
+        self, *, expected_epoch: str, source: str, target: str, impact_token: str
+    ) -> dict:
+        """Set the exact ``source`` to ``target`` on every component and pair.
+
+        The recomputed projection must still match the preview's token; a
+        mismatch is ``vocabulary-conflict`` with nothing written.
+        """
+        _validate_epoch(expected_epoch)
+        target = _validate_category_change(source, target)
+        _validate_impact_token(impact_token)
+        with self._pair_transaction() as conn:
+            epoch = self._library_epoch(conn, expected_epoch)
+            projection = self._category_projection(conn, epoch, source, target)
+            if projection["impact_token"] != impact_token:
+                raise LibraryCommandError("vocabulary-conflict", epoch)
+            stamp = utc_now_iso()
+            for statement in _CATEGORY_UPDATES:
+                conn.execute(statement, (target, stamp, source))
+            return {
+                "library_epoch": epoch,
+                "source": source,
+                "target": target,
+                "consolidated": projection["target_exists"],
+                "impact": projection["impact"],
+            }
 
     def _vocabulary_tags(
         self,

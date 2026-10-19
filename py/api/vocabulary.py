@@ -1,4 +1,5 @@
-"""Native vocabulary: bounded, signed-cursor reads and guarded tag commands."""
+"""Native vocabulary: bounded, signed-cursor reads and guarded tag and
+category commands."""
 
 from aiohttp import web
 
@@ -15,6 +16,8 @@ _DEFAULT_LIMIT = 100
 _CREATE_TAG_FIELDS = frozenset({"expected_epoch", "name"})
 _RENAME_TAG_FIELDS = frozenset({"expected_epoch", "name", "new_name"})
 _DELETE_TAG_FIELDS = frozenset({"expected_epoch", "name"})
+_PREVIEW_CATEGORY_FIELDS = frozenset({"expected_epoch", "source", "target"})
+_APPLY_CATEGORY_FIELDS = _PREVIEW_CATEGORY_FIELDS | {"impact_token"}
 
 
 def _tag_id(request: web.Request) -> int:
@@ -49,6 +52,12 @@ class VocabularyRoutesMixin:
         )
         routes.get("/prompt_manager/vocabulary/categories")(
             self.list_vocabulary_categories
+        )
+        routes.post("/prompt_manager/vocabulary/categories/preview")(
+            self.preview_vocabulary_category
+        )
+        routes.post("/prompt_manager/vocabulary/categories/apply")(
+            self.apply_vocabulary_category
         )
 
     async def _vocabulary_page(
@@ -129,4 +138,27 @@ class VocabularyRoutesMixin:
             return web.json_response(
                 {"success": False, "error": "Tag not found"}, status=404
             )
+        return web.json_response({"success": True, **result})
+
+    @library_command_response
+    async def preview_vocabulary_category(self, request: web.Request) -> web.Response:
+        body = await _command_body(request, _PREVIEW_CATEGORY_FIELDS)
+        result = await self._run_in_executor(
+            self.db.preview_vocabulary_category,
+            expected_epoch=body["expected_epoch"],
+            source=body["source"],
+            target=body["target"],
+        )
+        return web.json_response({"success": True, **result})
+
+    @library_command_response
+    async def apply_vocabulary_category(self, request: web.Request) -> web.Response:
+        body = await _command_body(request, _APPLY_CATEGORY_FIELDS)
+        result = await self._run_in_executor(
+            self.db.apply_vocabulary_category,
+            expected_epoch=body["expected_epoch"],
+            source=body["source"],
+            target=body["target"],
+            impact_token=body["impact_token"],
+        )
         return web.json_response({"success": True, **result})

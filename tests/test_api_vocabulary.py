@@ -372,6 +372,130 @@ class TestVocabularyAPI(ImageAPITestCase):
         self.assertIsNone(result["code"])
         self.assertNotIn("secret", result["error"])
 
+    def category_rows(self):
+        with self.api.db.model.get_connection() as conn:
+            return [
+                conn.execute("SELECT * FROM prompts ORDER BY id").fetchall(),
+                conn.execute("SELECT * FROM prompt_pairs ORDER BY id").fetchall(),
+            ]
+
+    async def test_category_routes_preview_then_apply(self):
+        epoch = self.api.db.get_execution_epoch()
+        parent = self._save_prompt("Parent", category="Scenery")
+        pair = self.api.db.save_prompt_pair("Pair", "Noise", category="Scenery")
+        body = {"expected_epoch": epoch, "source": "Scenery", "target": " Land "}
+        response, preview = await self.send("POST", "categories/preview", body)
+        self.assertEqual(response.status, 200, preview)
+        impact = {
+            "positive_prompts": 1,
+            "other_prompts": 0,
+            "negative_variants": 1,
+            "archived_negative_variants": 0,
+        }
+        self.assertEqual(
+            preview,
+            {
+                "success": True,
+                "library_epoch": epoch,
+                "source": "Scenery",
+                "target": "Land",
+                "target_exists": False,
+                "impact": impact,
+                "impact_token": preview["impact_token"],
+            },
+        )
+        response, applied = await self.send(
+            "POST",
+            "categories/apply",
+            {**body, "impact_token": preview["impact_token"]},
+        )
+        self.assertEqual(response.status, 200, applied)
+        self.assertEqual(
+            applied,
+            {
+                "success": True,
+                "library_epoch": epoch,
+                "source": "Scenery",
+                "target": "Land",
+                "consolidated": False,
+                "impact": impact,
+            },
+        )
+        self.assertEqual(self.api.db.get_prompt_by_id(parent)["category"], "Land")
+        self.assertEqual(self.api.db.get_prompt_pair(pair)["category"], "Land")
+        response, replay = await self.send(
+            "POST",
+            "categories/apply",
+            {**body, "impact_token": preview["impact_token"]},
+        )
+        self.assertEqual(response.status, 409)
+        self.assertEqual(replay["code"], "vocabulary-conflict")
+
+    async def test_preview_validation(self):
+        epoch = self.api.db.get_execution_epoch()
+        self._save_prompt("Owner", category="Scenery")
+        conflict = "This tag or category changed since it was loaded; review it first"
+        _, preview = await self.send(
+            "POST",
+            "categories/preview",
+            {"expected_epoch": epoch, "source": "Scenery", "target": "Land"},
+        )
+        token = preview["impact_token"]
+        before = self.category_rows()
+        response, result = await self.send(
+            "POST",
+            "categories/preview",
+            {"expected_epoch": epoch, "source": "Missing", "target": "Land"},
+        )
+        self.assertEqual(response.status, 409)
+        self.assertEqual(
+            result,
+            {
+                "success": False,
+                "code": "vocabulary-conflict",
+                "error": conflict,
+                "library_epoch": epoch,
+            },
+        )
+        bad_previews = [
+            {"expected_epoch": epoch, "source": "Scenery", "target": target}
+            for target in ("", "   ", "x" * 101, "bad\x01", "Scenery", 7, None)
+        ] + [
+            {"expected_epoch": epoch, "source": 7, "target": "Land"},
+            {"expected_epoch": epoch, "source": "Scenery"},
+            {"expected_epoch": epoch, "source": "Scenery", "target": "L", "x": 1},
+            {"expected_epoch": "nope", "source": "Scenery", "target": "Land"},
+            ["Scenery"],
+        ]
+        for body in bad_previews:
+            response, result = await self.send("POST", "categories/preview", body)
+            self.assertEqual(response.status, 400, body)
+            self.assertEqual(result["success"], False)
+            self.assertIsNone(result["code"])
+        apply_body = {"expected_epoch": epoch, "source": "Scenery", "target": "Land"}
+        for body in (
+            apply_body,
+            {**apply_body, "impact_token": token, "extra": 1},
+            {**apply_body, "impact_token": "A" * 64},
+            {**apply_body, "impact_token": 7},
+            {**apply_body, "target": "Scenery", "impact_token": token},
+        ):
+            response, result = await self.send("POST", "categories/apply", body)
+            self.assertEqual(response.status, 400, body)
+            self.assertIsNone(result["code"])
+        stale = "00000000-0000-4000-8000-000000000000"
+        for path, extra in (
+            ("categories/preview", {}),
+            ("categories/apply", {"impact_token": token}),
+        ):
+            response, result = await self.send(
+                "POST", path, {**apply_body, "expected_epoch": stale, **extra}
+            )
+            self.assertEqual(response.status, 409, path)
+            self.assertEqual(result["code"], "storage-changed")
+            self.assertEqual(result["library_epoch"], epoch)
+        self.assertEqual(self.category_rows(), before)
+
 
 if __name__ == "__main__":
     unittest.main()
