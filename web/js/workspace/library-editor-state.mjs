@@ -36,6 +36,8 @@ function freeze(value) {
 function storageChanged() {
     return Object.assign(new Error('Prompt storage was restored; refresh the library'), {code: 'storage-changed'});
 }
+// Duck-typed by name: this ES module cannot import the UMD api-client.js, and a
+// browser page may load a different ApiError class instance than the Node tests.
 function isApiError(error) {return error instanceof Error && error.name === 'ApiError' && Number.isInteger(error.status);}
 
 function validateParent(value, positiveId) {
@@ -281,24 +283,36 @@ export function createLibraryEditorController({api, mode, positiveId = null, pai
         }
     }
 
-    async function setArchive(value) {
-        if (typeof value !== 'boolean') throw new TypeError('Archive state must be a boolean');
-        if (disposed || !existing || !SUBMITTABLE.has(state.phase)) return;
-        if (!state.pair) {emit({error: new Error('Choose a saved negative variant first.')}); return;}
+    /**
+     * The pair route has no epoch guard, so every pair write, first or retried,
+     * first confirms with a fresh read that storage was not restored since
+     * `next.epoch`. A failed check read keeps `failurePhase` and writes nothing.
+     */
+    async function sendFencedPair(next, failurePhase) {
         emit({phase: 'saving', error: null});
-        // The pair route has no epoch guard, so confirm storage was not restored first.
         const read = beginRead();
         let current;
         try {
             current = await readOptions(api, read.signal);
         } catch (error) {
-            if (read.current()) emit({phase: 'write-error', error});
+            if (read.current()) emit({phase: failurePhase, error});
             return;
         }
         if (!read.current()) return;
-        if (current.library_epoch !== state.epoch) {emit({phase: 'storage-changed', error: storageChanged()}); return;}
-        await send(freeze({kind: value ? 'archive-pair' : 'restore-pair', method: 'patch',
-            url: `/prompt_manager/pairs/${state.pair.id}`, body: {archived: value}, epoch: state.epoch}));
+        if (current.library_epoch !== next.epoch) {
+            pending = null;
+            emit({phase: 'storage-changed', error: storageChanged()});
+            return;
+        }
+        await send(next);
+    }
+
+    async function setArchive(value) {
+        if (typeof value !== 'boolean') throw new TypeError('Archive state must be a boolean');
+        if (disposed || !existing || !SUBMITTABLE.has(state.phase)) return;
+        if (!state.pair) {emit({error: new Error('Choose a saved negative variant first.')}); return;}
+        await sendFencedPair(freeze({kind: value ? 'archive-pair' : 'restore-pair', method: 'patch',
+            url: `/prompt_manager/pairs/${state.pair.id}`, body: {archived: value}, epoch: state.epoch}), 'write-error');
     }
 
     return {
@@ -338,6 +352,11 @@ export function createLibraryEditorController({api, mode, positiveId = null, pai
         /** Explicit user action only: resend the identical unconfirmed payload once. */
         async retryUnconfirmed() {
             if (disposed || state.phase !== 'unknown-outcome' || !pending) return;
+            if (pending.kind === 'archive-pair' || pending.kind === 'restore-pair') {
+                // The outcome stays unknown if the fence read itself fails.
+                await sendFencedPair(pending, 'unknown-outcome');
+                return;
+            }
             if (pending.kind !== 'metadata') {await send(pending); return;}
             // A metadata retry needs the current owner reviewed, never a replayed token.
             pending = null;

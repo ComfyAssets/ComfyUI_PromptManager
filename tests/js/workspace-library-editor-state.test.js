@@ -645,3 +645,23 @@ test('reconcileLibraryReceipt reads detail, options and the verified pair', asyn
     await assert.rejects(reconcileLibraryReceipt(moved.api, { kind: 'add-negative', receipt }, {}), TypeError);
     await assert.rejects(reconcileLibraryReceipt(server.api, { kind: 'archive', receipt }, {}), TypeError);
 });
+
+test('unconfirmed pair archive retry is fenced against restored storage', async () => {
+    const { createLibraryEditorController } = await source;
+    assert.equal(typeof createLibraryEditorController, 'function', 'controller export');
+    let epoch = EPOCH;
+    const server = harness(call => library({ epoch, write: () => {
+        epoch = RESTORED;
+        return Promise.reject(new TypeError('Failed to fetch'));
+    } })(call));
+    const controller = createLibraryEditorController({ api: server.api, mode: 'metadata', positiveId: 7, pairId: 31 });
+    await controller.initialize();
+    await controller.setArchive(true);
+    assert.equal(controller.state.phase, 'unknown-outcome');
+    assert.equal(server.writes().length, 1);
+    await controller.retryUnconfirmed();
+    assert.equal(server.writes().length, 1, 'a restored database cannot take the retried pair write');
+    assert.equal(controller.state.phase, 'storage-changed');
+    assert.equal(controller.state.error.code, 'storage-changed');
+    controller.dispose();
+});
