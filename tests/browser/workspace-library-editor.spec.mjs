@@ -445,6 +445,11 @@ async function openHistory(page,id) {
 async function selectPair(page,name) {
     const dot=variantsPanel(page).getByRole('button',{name,exact:true});await dot.click();await expect(dot).toHaveAttribute('aria-pressed','true');
 }
+/** In-app navigation away and back, as the concept's hash router does (app.js navigate: state.variant = 0). */
+async function leaveAndReturn(page,id) {
+    await page.getByRole('button',{name:'← Prompt library',exact:true}).click();await expect(page.locator('#workspace-main h1')).toHaveText('Prompt library');
+    await page.evaluate(id=>{location.hash=`#/library/${id}`;},id);await expect(variantsPanel(page)).toBeVisible();await expect(pressedVariant(page)).toHaveCount(1);
+}
 const laneLabel=(page,text)=>variantsPanel(page).locator('.library-variant-lane').filter({hasText:text});
 
 test('library heading offers Export then + New prompt, and New opens the saved prompt history',async({page,request})=>{
@@ -503,6 +508,18 @@ test('history heading follows the concept and sends the selected saved pair',asy
     expect(page.writes).toHaveLength(0);
 });
 
+test('returning to a history opens on the first negative, forgetting a clicked variant or All images',async({page})=>{
+    const f=page.fixture;await openHistory(page,f.positive_id);
+    await expect(pressedVariant(page)).toHaveAccessibleName('Select negative variant 1');
+    await selectPair(page,'Select negative variant 2');
+    await leaveAndReturn(page,f.positive_id);await expect(pressedVariant(page)).toHaveAccessibleName('Select negative variant 1');
+    const all=variantsPanel(page).getByRole('button',{name:'All images for this positive',exact:true});
+    await all.click();await expect(all).toHaveAttribute('aria-pressed','true');await expect(pressedVariant(page)).toHaveCount(0);
+    await leaveAndReturn(page,f.positive_id);
+    await expect(pressedVariant(page)).toHaveAccessibleName('Select negative variant 1');await expect(all).toHaveAttribute('aria-pressed','false');
+    await expect(headingActions(page).locator('button.send')).toBeEnabled();expect(page.writes).toHaveLength(0);
+});
+
 test('add negative re-renders history with the saved or reused pair selected',async({page})=>{
     const f=page.fixture;await openHistory(page,f.positive_id);
     const add=variantsPanel(page).getByRole('button',{name:'+ Add negative',exact:true});
@@ -516,6 +533,8 @@ test('add negative re-renders history with the saved or reused pair selected',as
     await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre')).toHaveText(f.selected_negative);
     await expect(laneLabel(page,/· 1 linked image$/)).toHaveCount(1);
     await expect(pressedVariant(page)).toHaveAccessibleName('Select negative variant 3');
+    // The saved selection applies to that save only; returning opens on the first negative, as in the concept.
+    await leaveAndReturn(page,f.positive_id);await expect(pressedVariant(page)).toHaveAccessibleName('Select negative variant 1');
     expect(page.writes.map(write=>write.url)).toEqual([`/prompt_manager/library/${f.positive_id}/variants`,`/prompt_manager/library/${f.positive_id}/variants`]);
 });
 

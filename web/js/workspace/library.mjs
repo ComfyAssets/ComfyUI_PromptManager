@@ -14,7 +14,8 @@ import {countOf} from './plural.mjs';
 let shelfVisit=null;
 // Every confirmed receipt advances this; a shelf mounted before it never restores its cached stream.
 let writeGeneration=0, focusHeadingOnMount=false, savedParentId=null;
-const variantSelections=new Map();
+// The pair one reconciled save names, taken once by the history it opens (the concept selects it after a save, app.js 986).
+const savedSelections=new Map();
 const historyVisits=new Map();
 // Exact-ID pair reads for selections outside the bounded variant page; never merged into it.
 const selectedPairs=new Map();
@@ -40,13 +41,13 @@ export function invalidateLibraryAfterWrite(commit) {
     writeGeneration++;
     if(shelfVisit) shelfVisit={filters:shelfVisit.filters,anchor:shelfVisit.layout?.anchor ?? shelfVisit.anchor ?? null};
 }
-/** Remember the selection a reconciled save names, so the destination history opens on it. */
+/** Remember the selection a reconciled save names, so the destination history opens on it once. */
 export function rememberLibraryResult(result) {
     const positive=result?.detail?.positive, kind=result?.commit?.kind;
     if(!positive || !Number.isSafeInteger(positive.id) || !Array.isArray(result.detail.variants) || typeof kind!=='string') throw new TypeError('Invalid reconciled Library result');
     if(kind==='create') savedParentId=positive.id;
     if(!result.pair || kind==='archive-pair') return;
-    variantSelections.set(positive.id,result.pair.id);
+    savedSelections.set(positive.id,result.pair.id);
     if(result.detail.variants.some(variant=>variant.id===result.pair.id)) selectedPairs.delete(positive.id);
     else selectedPairs.set(positive.id,result.pair);
     if(result.pair.archived) archivedVisible.set(positive.id,true);
@@ -67,6 +68,10 @@ function outcomeMessage(result,outcome) {
             :'Saved as a new negative variant of an existing prompt.';
     if(receipt.pair.archived) return 'This combination is an archived negative variant. It stays archived; restore it from Show archived in Negative variants.';
     return 'This prompt pair already exists. Showing the saved version.';
+}
+/** Take the saved selection for one positive; it never outlives the visit that consumes it. */
+function takeSavedSelection(positiveId) {
+    const pairId=savedSelections.get(positiveId);savedSelections.delete(positiveId);return pairId ?? null;
 }
 function rememberUnappliedMetadata(result,{outcome,draft}={}) {
     if(result.commit.kind!=='create' || !outcome?.metadataNotApplied || !draft) return;
@@ -345,6 +350,10 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         send.append(createWorkspaceIcon('send'),el('span','Send to ComfyUI'));send.disabled=true;actions.append(back,edit,send);
         let blocks,galleryScope,detail,contentScope,updateBranches,updateParent,current=null;
         scope.cleanup(()=>{blocks?.dispose();galleryScope?.dispose();contentScope?.dispose();});
+        // Every visit opens on the first negative, as the concept's navigate() does (app.js 1149: state.variant = 0);
+        // only the pair a save just named is selected instead. A verified pair outside the page belongs to that save.
+        let pendingSelection=takeSavedSelection(positiveId);
+        if(selectedPairs.get(positiveId)?.id!==pendingSelection) selectedPairs.delete(positiveId);
         const loader=createLibraryDetail({api,onChange:render});scope.cleanup(()=>loader.dispose());
         const editor=createLibraryEditor({api,parentScope:scope,onCommitted:invalidateLibraryAfterWrite,onReconciled:reconciled,onRefreshRequired:reloadView});
         scope.listen(back,'click',()=>{window.location.hash='#/library';});
@@ -358,13 +367,14 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             const message=outcomeMessage(result,context?.outcome),id=result.detail.positive.id;
             if(message) showWorkspaceToast(message);
             if(id!==positiveId) {focusHeadingOnMount=true;window.location.hash=`#/library/${id}`;return;}
+            pendingSelection=takeSavedSelection(positiveId);
             if(current) current.apply(result);else loader.load(positiveId);
             focusHeading(main);
         }
         /** Explicit exit after restored storage: dispose the recorded view, then remount with a fresh visit. */
         function reloadView() {
             writeGeneration++;shelfVisit=shelfVisit && {filters:shelfVisit.filters,anchor:null};
-            variantSelections.delete(positiveId);selectedPairs.delete(positiveId);metadataDrafts.delete(positiveId);
+            pendingSelection=null;savedSelections.delete(positiveId);selectedPairs.delete(positiveId);metadataDrafts.delete(positiveId);
             current=null;contentScope?.dispose();contentScope=null;historyVisits.delete(positiveId);
             loader.load(positiveId);focusHeading(main);
         }
@@ -513,7 +523,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                         reloadSaved.hidden=savedReadState==='current';
                     }
                 }
-                updateBranches(loader.state);blocks?.setState({prompts:rolesFor(variantSelections.get(positiveId)??null),actionsEnabled:savedReadState==='current'});updateSend();
+                updateBranches(loader.state);blocks?.setState({prompts:rolesFor(activePairId ?? null),actionsEnabled:savedReadState==='current'});updateSend();
             }
             async function retrySavedParent() {
                 parentRequest?.abort();const request=parentRequest=new AbortController(),generation=++parentGeneration;setParentState({loading:true});
@@ -524,7 +534,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                     setParentState({detail:fresh});
                 } catch(error) {if(!content.signal.aborted && generation===parentGeneration)setParentState({error});}
             }
-            content.listen(retryParent,'click',retrySavedParent);content.listen(reloadSaved,'click',()=>{variantSelections.delete(positiveId);loader.load(positiveId);});
+            content.listen(retryParent,'click',retrySavedParent);content.listen(reloadSaved,'click',()=>{pendingSelection=null;loader.load(positiveId);});
             if(!historyVisits.has(positiveId)) historyVisits.set(positiveId,{});
             mountRecordedHistory(recorded,{api,positiveId,parentScope:content,sender,visit:historyVisits.get(positiveId),onParentRevalidate:parent=>{
                 if(content.signal.aborted) return;parentGeneration++;parentRequest?.abort();setParentState(parent);
@@ -534,7 +544,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             function select(pairId,{force=false}={}) {
                 if(savedReadState!=='current' || (!force && galleryScope && activePairId===pairId)) return;
                 if(pairId!==null && !recordFor(pairId)) pairId=null;
-                activePairId=pairId;variantSelections.set(positiveId,pairId);blocks.setState({prompts:rolesFor(pairId),actionsEnabled:true});
+                activePairId=pairId;blocks.setState({prompts:rolesFor(pairId),actionsEnabled:true});
                 for(const lane of lanes.values()) lane.button.setAttribute('aria-pressed',String(lane.entry.variant.id===pairId));all.setAttribute('aria-pressed',String(pairId===null));
                 const index=detail.variants.findIndex(variant=>variant.id===pairId),archived=pairId!==null && archivedSelection(pairId);
                 const lane=[...lanes.values()].find(item=>item.entry.variant.id===pairId);
@@ -566,7 +576,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 if(restoringPairs.has(pairId)) return;
                 restoringPairs.add(pairId);showRestoreProblem('');button.disabled=true;
                 const controller=createLibraryEditorController({api,mode:'metadata',positiveId,pairId,onCommitted:invalidateLibraryAfterWrite,onReconciled:result=>{
-                    rememberLibraryResult(result);apply(result);
+                    rememberLibraryResult(result);pendingSelection=takeSavedSelection(positiveId);apply(result);
                     const dot=[...lanes.values()].find(lane=>lane.entry.kind!=='archived' && lane.entry.variant.id===pairId)?.button;dot?.focus();
                 }});
                 content.cleanup(()=>controller.dispose());
@@ -607,10 +617,10 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             }
             current={activePairId:()=>activePairId ?? null,sendRoles:()=>{const roles=activePairId===null || activePairId===undefined?{}:promptRoles(rolesFor(activePairId));return Object.hasOwn(roles,'positive') && Object.hasOwn(roles,'negative')?roles:null;},apply};
             content.listen(all,'click',()=>select(null));
-            const remembered=variantSelections.get(positiveId),outside=selectedPairs.get(positiveId);
+            const remembered=pendingSelection,outside=selectedPairs.get(positiveId);pendingSelection=null;
             if(outside?.archived && outside.id===remembered && !archivedShown) {archivedShown=true;archivedVisible.set(positiveId,true);}
             if(archivedShown) archivedLoader.load(positiveId);
-            // Without a remembered saved pair, open on the first negative variant, as the concept does (app.js navigate: state.variant = 0).
+            // Open on the first negative variant (concept navigate: state.variant = 0) unless a save just named a pair.
             let initial=detail.variants[0]?.id ?? null;
             if(detail.variants.some(variant=>variant.id===remembered)) initial=remembered;
             else if(outside && outside.id===remembered) {try {libraryPromptRoles(detail,remembered,outside);initial=remembered;} catch {selectedPairs.delete(positiveId);}}
