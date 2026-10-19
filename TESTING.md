@@ -254,7 +254,8 @@ EmptyHunyuanLatentVideo, SetLatentNoiseMask, InpaintModelConditioning or
 WanImageToVideo slot 2). An earlier sampler (img2img from a decode, hires fix) stays
 `unresolved` "Multistage sampler ancestry is ambiguous" until stage texts are
 compared; an unlisted node with sampler-shaped inputs (positive, negative, guider,
-latent_image, a pipe, video embeds or custom-sampler parts) is `unsupported-node`
+latent_image, a pipe, video embeds, custom-sampler parts, or a `model` link together
+with conditioning, neg_conditioning, samples or latent) is `unsupported-node`
 naming it, here and in a detailer's image ancestry; a latent that is not a link or
 reaches its own sampler is `malformed`; running out of budget is `work-limit` or
 `depth-limit`, never single stage. Each sampler's walk runs once per resolution;

@@ -2683,6 +2683,103 @@ class TestLatentAncestry(unittest.TestCase):
         )
         self.assertEqual(_inspect(source)["state"], "resolved")
 
+    def test_unlisted_model_driven_samplers_in_the_ancestry_are_unsupported(self):
+        # Re-review I-1b: a sampler linking ``model`` with conditioning or a
+        # latent under other names (XlabsSampler, generic video samplers).
+        xlabs = _latent_from(None)
+        xlabs["3"]["inputs"]["positive"] = ["62", 0]
+        xlabs.update(
+            {
+                "62": parity._enc(OTHER),
+                "30": {
+                    "class_type": "CLIPTextEncodeFlux",
+                    "inputs": {
+                        "clip": ["4", 1],
+                        "t5xxl": "first stage",
+                        "clip_l": "first stage",
+                        "guidance": 3.5,
+                    },
+                },
+                "31": parity._enc("neg"),
+                "22": {
+                    "class_type": "XlabsSampler",
+                    "inputs": {
+                        "model": ["4", 0],
+                        "conditioning": ["30", 0],
+                        "neg_conditioning": ["31", 0],
+                        "noise_seed": 1,
+                    },
+                },
+                "28": {
+                    "class_type": "VAEDecode",
+                    "inputs": {"samples": ["22", 0], "vae": ["4", 2]},
+                },
+                "23": {
+                    "class_type": "VAEEncode",
+                    "inputs": {"pixels": ["28", 0], "vae": ["4", 2]},
+                },
+            }
+        )
+        xlabs["3"]["inputs"]["latent_image"] = ["23", 0]
+        video = _latent_from(None)
+        video.update(
+            {
+                "40": {"class_type": "EmptyLatentImage", "inputs": {}},
+                "22": {
+                    "class_type": "SomeVideoSampler",
+                    "inputs": {"model": ["4", 0], "samples": ["40", 0], "seed": 1},
+                },
+                "23": {
+                    "class_type": "LatentUpscale",
+                    "inputs": {"samples": ["22", 0], "width": 768, "height": 768},
+                },
+            }
+        )
+        video["3"]["inputs"]["latent_image"] = ["23", 0]
+        reference = _latent_from(None)
+        reference.update(
+            {
+                "22": {
+                    "class_type": "MysteryLatentStage",
+                    "inputs": {"model": ["4", 0], "latent": ["5", 0]},
+                },
+            }
+        )
+        reference["3"]["inputs"]["latent_image"] = ["22", 0]
+        cases = {
+            "XlabsSampler": (xlabs, "22"),
+            "SomeVideoSampler": (video, "22"),
+            "MysteryLatentStage": (reference, "22"),
+        }
+        for class_type, (source, node_id) in cases.items():
+            with self.subTest(case=class_type):
+                result = _inspect(source)
+                self.assertEqual(result["state"], "unresolved")
+                self.assertEqual(result["reason_code"], "unsupported-node")
+                self.assertEqual(
+                    result["node"], {"id": node_id, "class_type": class_type}
+                )
+                self.assertIsNone(result["positive"])
+        # ``model`` alone (ModelSampling*) or with ``clip`` (LoraLoader) is a
+        # model patch, never a stage.
+        patched = _latent_from(
+            {
+                "class_type": "MysteryLatentFromModel",
+                "inputs": {"model": ["41", 0], "vae": ["4", 2]},
+            },
+            {
+                "40": {
+                    "class_type": "LoraLoader",
+                    "inputs": {"model": ["4", 0], "clip": ["4", 1]},
+                },
+                "41": {
+                    "class_type": "ModelSamplingFlux",
+                    "inputs": {"model": ["40", 0], "max_shift": 1.15},
+                },
+            },
+        )
+        self.assertEqual(_inspect(patched)["state"], "resolved")
+
     def test_unlisted_stage_in_a_detailer_image_ancestry_is_unsupported(self):
         # Review M-1: the detailer's upstream-stage walk uses the same rule.
         source = _detailed(same_prompt=True)

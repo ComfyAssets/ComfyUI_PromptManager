@@ -170,6 +170,10 @@ _STAGE_SHAPED_INPUTS = _SAMPLER_LIKE_INPUTS + (
     "text_embeds",
     "hyvid_embeds",
 )
+# With a linked ``model``, any of these makes an unlisted node a possible stage
+# (XlabsSampler's ``conditioning``, video samplers' ``samples``). ``model`` alone
+# (ModelSampling*) or with ``clip`` (LoraLoader) is a model patch.
+_MODEL_STAGE_INPUTS = ("conditioning", "neg_conditioning", "samples", "latent")
 _NO_SAMPLER_NAMES = 3
 _CLASS_NAME_LENGTH = 64
 
@@ -1031,8 +1035,12 @@ class _GraphResolver:
 
     def stage_shaped(self, name: str, inputs: dict) -> bool:
         """An unlisted node that may itself be a sampler stage."""
-        return name not in self.semantics.all_classes and any(
-            _link(inputs.get(key)) for key in _STAGE_SHAPED_INPUTS
+        if name in self.semantics.all_classes:
+            return False
+        if any(_link(inputs.get(key)) for key in _STAGE_SHAPED_INPUTS):
+            return True
+        return _link(inputs.get("model")) and any(
+            _link(inputs.get(key)) for key in _MODEL_STAGE_INPUTS
         )
 
     def upstream_stages(self, origin: str, value: Any) -> list:
