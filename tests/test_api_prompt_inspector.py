@@ -311,7 +311,9 @@ class TestPromptInspector(ImageAPITestCase):
         cases = [base[:-1], base[:30]]
         index = base.index(b"tEXt")
         broken = bytearray(base)
-        broken[index + 8] ^= 1
+        # Corrupt the retained record's body: its CRC is checked. (A corrupt
+        # keyword names an unretained chunk, which is skipped unchecked.)
+        broken[index + 4 + len(b"prompt\0") + 1] ^= 1
         cases.append(bytes(broken))
         for kind, payload in (
             (b"tEXt", b"prompt\0{}"),
@@ -713,17 +715,39 @@ class TestPromptInspector(ImageAPITestCase):
         self.assertLessEqual(len(await response.read()), 8 * 1024 * 1024)
         self.assertNotIn(str(self.comfy_dir), json.dumps(result))
 
-    async def test_workflow_raw_uses_same_aggregate_budget_and_read(self):
-        from utils.prompt_inspector import MAX_METADATA_BYTES
+    async def test_workflow_has_its_own_budget_and_never_hides_prompts(self):
+        from utils.prompt_inspector import ROLE_METADATA_BYTES, WORKFLOW_METADATA_BYTES
 
         path = self.output_dir / "image.png"
-        png(path, prompt=json.dumps(graph()), workflow="x" * MAX_METADATA_BYTES)
+        # Over the role budget, within the workflow budget: fully readable.
+        workflow = "x" * ROLE_METADATA_BYTES
+        png(path, prompt=json.dumps(graph()), workflow=workflow)
         response, result = await self.inspect()
         self.assertEqual(response.status, 200)
-        self.assertEqual(result.get("metadata", {}).get("status"), "unreadable")
-        self.assertEqual(result["prompts"]["positive"]["status"], "unresolved")
-        self.assertEqual(result["metadata"]["raw"], {})
-        self.assertEqual(result["metadata"]["record_formats"], {})
+        self.assertEqual(result["metadata"]["status"], "available")
+        self.assertEqual(result["prompts"]["positive"], self.side("portrait"))
+        self.assertEqual(result["metadata"]["raw"]["workflow"], workflow)
+        self.assertEqual(result["metadata"]["workflow_graph"]["status"], "malformed")
+        # Over the workflow budget: only the workflow is limited.
+        png(
+            path,
+            prompt=json.dumps(graph()),
+            workflow="x" * (WORKFLOW_METADATA_BYTES + 1),
+        )
+        response, result = await self.inspect()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(result["metadata"]["status"], "available")
+        self.assertEqual(result["prompts"]["positive"], self.side("portrait"))
+        self.assertEqual(result["prompts"]["negative"], self.side("blurry"))
+        self.assertEqual(
+            result["metadata"]["record_formats"],
+            {"prompt": "original-text", "workflow": "limited"},
+        )
+        self.assertEqual(set(result["metadata"]["raw"]), {"prompt"})
+        self.assertEqual(
+            result["metadata"]["workflow_graph"], {"status": "limited", "value": None}
+        )
+        self.assertEqual(result["metadata"]["prompt_graph"]["status"], "parsed")
 
     async def test_workflow_only_keeps_existing_role_uncertainty(self):
         path = png(self.output_dir / "image.png", workflow={"nodes": []})

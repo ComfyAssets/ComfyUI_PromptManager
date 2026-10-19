@@ -173,38 +173,38 @@
     "profile": "inspection",
     "anchor": null,
     "expect": {
-      "metadata_status": "unreadable",
-      "state": "unresolved",
-      "reason": "Media metadata could not be read",
+      "metadata_status": "available",
+      "state": "resolved",
+      "reason": "",
       "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "42"
         },
         "steps": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "25"
         },
         "cfg": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "6.5"
         },
         "sampler": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "euler"
         },
         "scheduler": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "normal"
         },
         "model": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "sdxl_base.safetensors"
         }
       }
     }
@@ -803,38 +803,38 @@
     "profile": "inspection",
     "anchor": null,
     "expect": {
-      "metadata_status": "unreadable",
-      "state": "unresolved",
-      "reason": "Media metadata could not be read",
+      "metadata_status": "available",
+      "state": "resolved",
+      "reason": "",
       "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "42"
         },
         "steps": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "25"
         },
         "cfg": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "6.5"
         },
         "sampler": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "euler"
         },
         "scheduler": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "normal"
         },
         "model": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "sdxl_base.safetensors"
         }
       }
     }

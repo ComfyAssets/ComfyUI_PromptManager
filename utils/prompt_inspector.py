@@ -1,12 +1,13 @@
 """Read prompt evidence without inference, indexing, or decoding image pixels."""
 
+import hashlib
 import io
 import json
 import struct
 import subprocess  # nosec B404
 import threading
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from typing import Any
 
@@ -16,11 +17,19 @@ from .pair_execution import EXECUTION_KEY
 from .prompt_pair_resolver import DEFAULT_PROFILE, ResolverProfile, resolve_prompt_pair
 from .video_metadata import ffprobe_path, is_video_path
 
-MAX_METADATA_BYTES = 2 * 1024 * 1024
+# Role records (prompt, parameters, the pair execution record) share one
+# budget, encoded and decoded: roles cannot be trusted from a partial record,
+# so exceeding it fails the whole read. A workflow has its own budget; past it
+# only the workflow is ``limited``. Other text chunks are never retained.
+ROLE_METADATA_BYTES = 2 * 1024 * 1024
+WORKFLOW_METADATA_BYTES = 4 * 1024 * 1024
+MAX_METADATA_BYTES = ROLE_METADATA_BYTES  # video stdout bound, unchanged here
+MAX_KEYWORD_BYTES = 80  # a 1-79 byte PNG keyword plus its NUL separator
 MAX_HEADER_BYTES = 8 * 1024 * 1024
 MAX_PNG_CHUNKS = 10_000
 _ROLE_METADATA_KEYS = frozenset({"prompt", "parameters", EXECUTION_KEY})
 _METADATA_KEYS = _ROLE_METADATA_KEYS | {"workflow"}
+_TEXT_CHUNKS = (b"tEXt", b"zTXt", b"iTXt")
 _SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -38,6 +47,8 @@ class InspectionRead:
     format: str | None
     width: int | None
     height: int | None
+    # Records present but over their budget: no text, format ``limited``.
+    limited_records: frozenset[str] = dataclass_field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -47,24 +58,33 @@ class _VideoInspection:
     carrier_text: str | None
 
 
-def _inflate(data: bytes) -> bytes:
+def _inflate(data: bytes, limit: int) -> bytes | None:
+    """Inflate at most ``limit + 1`` bytes; ``None`` when the output is over limit."""
     inflater = zlib.decompressobj()
-    result = inflater.decompress(data, MAX_METADATA_BYTES + 1)
-    if len(result) > MAX_METADATA_BYTES or not inflater.eof or inflater.unused_data:
+    result = inflater.decompress(data, limit + 1)
+    if len(result) > limit:
+        return None
+    if not inflater.eof or inflater.unused_data:
         raise MetadataReadError("Compressed metadata is invalid or exceeds limits")
     return result
 
 
-def _png_text(kind: bytes, data: bytes) -> tuple[str, str]:
-    keyword, separator, body = data.partition(b"\0")
+def _keyword(prefix: bytes) -> str:
+    keyword, separator, _ = prefix.partition(b"\0")
     if not separator or not 1 <= len(keyword) <= 79:
         raise MetadataReadError("Malformed PNG text metadata")
-    key = keyword.decode("latin-1")
+    return keyword.decode("latin-1")
+
+
+def _png_text(kind: bytes, data: bytes, limit: int) -> tuple[str, str | None]:
+    """Decode one retained text chunk; ``None`` text when it inflates past limit."""
+    _, _, body = data.partition(b"\0")
+    key = _keyword(data[:MAX_KEYWORD_BYTES])
     encoding = "latin-1"
     if kind == b"zTXt":
         if not body or body[0] != 0:
             raise MetadataReadError("Unsupported PNG text compression")
-        body = _inflate(body[1:])
+        body = _inflate(body[1:], limit)
     elif kind == b"iTXt":
         if len(body) < 2 or body[0] not in (0, 1):
             raise MetadataReadError("Malformed international PNG metadata")
@@ -74,21 +94,80 @@ def _png_text(kind: bytes, data: bytes) -> tuple[str, str]:
             raise MetadataReadError("Malformed international PNG metadata")
         fields[0].decode("ascii")
         fields[1].decode("utf-8")
-        body = _inflate(fields[2]) if flag else fields[2]
+        body = _inflate(fields[2], limit) if flag else fields[2]
         encoding = "utf-8"
+    if body is None:
+        return key, None
     if b"\0" in body:
         raise MetadataReadError("Malformed PNG text metadata")
     return key, body.decode(encoding)
 
 
-def _png_metadata(stream: Any, size: int) -> tuple[dict, int, int]:
-    """CRC-check text and structural chunks, seeking past compressed pixels.
+class _PngRecords:
+    """Retained records with per-class budgets and byte-identical duplicates."""
+
+    def __init__(self) -> None:
+        self.found: dict[str, str] = {}
+        self.limited: set[str] = set()
+        self.digests: dict[str, tuple[int, bytes]] = {}
+        self.role_encoded = self.role_decoded = 0
+
+    def skip(self, key: str, length: int) -> bool:
+        """Decide from the keyword and length alone whether to seek past a chunk."""
+        if key not in _METADATA_KEYS or key in self.limited:
+            return True  # never retained, or a duplicate of a limited workflow
+        if key in self.digests:
+            if self.digests[key][0] != length:
+                raise MetadataReadError("Duplicate prompt metadata")
+            return False  # same length: read and compare bytes
+        if key == "workflow":
+            if length > WORKFLOW_METADATA_BYTES:
+                self.limited.add(key)
+                return True
+            return False
+        self.role_encoded += length
+        if self.role_encoded > ROLE_METADATA_BYTES:
+            raise MetadataReadError("Metadata exceeds inspection limits")
+        return False
+
+    def add(self, kind: bytes, data: bytes) -> None:
+        key = _keyword(data[:MAX_KEYWORD_BYTES])
+        digest = hashlib.sha256(kind + data).digest()
+        if key in self.digests:
+            if self.digests[key][1] != digest:
+                raise MetadataReadError("Duplicate prompt metadata")
+            return
+        self.digests[key] = (len(data), digest)
+        workflow = key == "workflow"
+        limit = (
+            WORKFLOW_METADATA_BYTES
+            if workflow
+            else ROLE_METADATA_BYTES - self.role_decoded
+        )
+        _, value = _png_text(kind, data, limit)
+        size = None if value is None else len(value.encode("utf-8"))
+        if workflow:
+            if size is None or size > WORKFLOW_METADATA_BYTES:
+                self.limited.add(key)
+                return
+        else:
+            self.role_decoded += limit + 1 if size is None else size
+            if self.role_decoded > ROLE_METADATA_BYTES:
+                raise MetadataReadError("Metadata exceeds inspection limits")
+        self.found[key] = value
+
+
+def _png_metadata(stream: Any, size: int) -> tuple[dict, frozenset, int, int]:
+    """CRC-check retained text and structural chunks, seeking past everything else.
 
     PNG text chunks may follow IDAT. Pillow's ``.text`` loads pixels to find
-    them; this bounded reader instead follows the W3C PNG chunk layout.
-    IDAT checksums/pixel validity are deliberately outside metadata inspection.
+    them; this bounded reader instead follows the W3C PNG chunk layout. A text
+    chunk's keyword is read first (at most ``MAX_KEYWORD_BYTES``); chunks that
+    are not retained, or are over their budget, are skipped by length, so their
+    bytes are never held in memory or checksummed. IDAT checksums/pixel
+    validity are deliberately outside metadata inspection.
     """
-    found, compressed_size, expanded_size = {}, 0, 0
+    records = _PngRecords()
     saw_header = saw_pixels = False
     for index in range(MAX_PNG_CHUNKS):
         header = stream.read(8)
@@ -99,34 +178,32 @@ def _png_metadata(stream: Any, size: int) -> tuple[dict, int, int]:
             raise MetadataReadError("Incomplete PNG chunk")
         if index == 0 and (kind != b"IHDR" or length != 13):
             raise MetadataReadError("Missing PNG header")
-        if kind in (b"tEXt", b"zTXt", b"iTXt", b"IHDR", b"IEND"):
-            compressed_size += length
-            if compressed_size > MAX_METADATA_BYTES:
-                raise MetadataReadError("Metadata exceeds inspection limits")
-            data, checksum = stream.read(length), stream.read(4)
-            if zlib.crc32(kind + data) != int.from_bytes(checksum, "big"):
-                raise MetadataReadError("PNG metadata checksum mismatch")
-            if kind == b"IHDR":
-                if saw_header or not all(struct.unpack(">II", data[:8])):
-                    raise MetadataReadError("Malformed PNG header")
-                saw_header = True
-                width, height = struct.unpack(">II", data[:8])
-            elif kind == b"IEND":
-                if length or not saw_pixels:
-                    raise MetadataReadError("Incomplete PNG image")
-                return found, width, height
-            else:
-                key, value = _png_text(kind, data)
-                expanded_size += len(value.encode("utf-8"))
-                if expanded_size > MAX_METADATA_BYTES:
-                    raise MetadataReadError("Metadata exceeds inspection limits")
-                if key in _METADATA_KEYS:
-                    if key in found:
-                        raise MetadataReadError("Duplicate prompt metadata")
-                    found[key] = value
+        if kind in _TEXT_CHUNKS:
+            prefix = stream.read(min(length, MAX_KEYWORD_BYTES))
+            if records.skip(_keyword(prefix), length):
+                stream.seek(length - len(prefix) + 4, 1)
+                continue
+            data = prefix + stream.read(length - len(prefix))
+        elif kind in (b"IHDR", b"IEND"):
+            data = stream.read(length)
         else:
             saw_pixels |= kind == b"IDAT"
             stream.seek(length + 4, 1)
+            continue
+        checksum = stream.read(4)
+        if zlib.crc32(kind + data) != int.from_bytes(checksum, "big"):
+            raise MetadataReadError("PNG metadata checksum mismatch")
+        if kind == b"IHDR":
+            if saw_header or not all(struct.unpack(">II", data[:8])):
+                raise MetadataReadError("Malformed PNG header")
+            saw_header = True
+            width, height = struct.unpack(">II", data[:8])
+        elif kind == b"IEND":
+            if length or not saw_pixels:
+                raise MetadataReadError("Incomplete PNG image")
+            return records.found, frozenset(records.limited), width, height
+        else:
+            records.add(kind, data)
     raise MetadataReadError("PNG chunk count exceeds inspection limits")
 
 
@@ -222,7 +299,7 @@ def _video_metadata(path: Path) -> _VideoInspection:
 def read_inspection_file(path: Path) -> InspectionRead:
     """Read bounded metadata and header facts without decoding media pixels."""
     try:
-        formats, carrier = {}, None
+        formats, carrier, limited = {}, None, frozenset()
         format_name = width = height = None
         if is_video_path(path):
             video = _video_metadata(path)
@@ -235,7 +312,9 @@ def read_inspection_file(path: Path) -> InspectionRead:
             with path.open("rb") as stream:
                 signature = stream.read(8)
                 if signature == _SIGNATURE:
-                    metadata, width, height = _png_metadata(stream, path.stat().st_size)
+                    metadata, limited, width, height = _png_metadata(
+                        stream, path.stat().st_size
+                    )
                     format_name = "PNG"
                 else:
                     stream.seek(0)
@@ -243,7 +322,7 @@ def read_inspection_file(path: Path) -> InspectionRead:
                     with Image.open(io.BytesIO(header)) as image:
                         metadata = dict(image.info)
                         format_name, (width, height) = image.format, image.size
-        result, size = {}, 0
+        result, role_size, limited = {}, 0, set(limited)
         for key in _METADATA_KEYS:
             if key not in metadata:
                 continue
@@ -253,12 +332,28 @@ def read_inspection_file(path: Path) -> InspectionRead:
                 continue
             if not isinstance(value, str):
                 raise MetadataReadError("Malformed prompt metadata")
-            size += len(value.encode("utf-8", "surrogatepass"))
-            if size > MAX_METADATA_BYTES:
-                raise MetadataReadError("Metadata exceeds inspection limits")
+            size = len(value.encode("utf-8", "surrogatepass"))
+            if key == "workflow":
+                if size > WORKFLOW_METADATA_BYTES:
+                    limited.add(key)
+                    continue
+            else:
+                role_size += size
+                if role_size > ROLE_METADATA_BYTES:
+                    raise MetadataReadError("Metadata exceeds inspection limits")
             result[key] = value
             formats.setdefault(key, "original-text")
-        return InspectionRead(result, formats, carrier, format_name, width, height)
+        for key in limited:
+            formats[key] = "limited"
+        return InspectionRead(
+            result,
+            formats,
+            carrier,
+            format_name,
+            width,
+            height,
+            frozenset(limited),
+        )
     except MetadataReadError:
         raise
     except (

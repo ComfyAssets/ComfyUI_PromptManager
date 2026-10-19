@@ -14,7 +14,7 @@ _MAX_SAFE_INTEGER = 2**53 - 1
 _RECORD_KEYS = frozenset(
     {"prompt", "workflow", "parameters", "comfyassets_prompt_pairs"}
 )
-_FORMATS = frozenset({"original-text", "reserialized-json", "invalid"})
+_FORMATS = frozenset({"original-text", "reserialized-json", "invalid", "limited"})
 _PROMPT_NODE_KEYS = frozenset({"class_type", "inputs"})
 MAX_PROJECTION_DEPTH = 64
 # Backstop, not an expected outcome: executable API nodes for a prompt; UI nodes
@@ -160,15 +160,6 @@ def _graph(value: object, *, workflow: bool = False) -> dict:
 
 
 def _metadata(inspection: "InspectionRead | None") -> dict:
-    raw = (
-        {}
-        if inspection is None
-        else {
-            key: value
-            for key, value in inspection.metadata.items()
-            if key in _RECORD_KEYS and isinstance(value, str)
-        }
-    )
     formats = (
         {}
         if inspection is None
@@ -176,6 +167,22 @@ def _metadata(inspection: "InspectionRead | None") -> dict:
             key: value
             for key, value in inspection.record_formats.items()
             if key in _RECORD_KEYS and value in _FORMATS
+        }
+    )
+    if inspection is not None:
+        # A record over its read budget has no text: like ``invalid``, raw omits
+        # it, and its graph is ``limited`` rather than parsed from nothing.
+        for key in inspection.limited_records & _RECORD_KEYS:
+            formats[key] = "limited"
+    raw = (
+        {}
+        if inspection is None
+        else {
+            key: value
+            for key, value in inspection.metadata.items()
+            if key in _RECORD_KEYS
+            and isinstance(value, str)
+            and formats.get(key) != "limited"
         }
     )
     result = {
@@ -200,8 +207,8 @@ def _metadata(inspection: "InspectionRead | None") -> dict:
     for key, field in (("prompt", "prompt_graph"), ("workflow", "workflow_graph")):
         graph = {"status": "absent", "value": None}
         if key in raw or key in formats:
-            if failed:
-                graph["status"] = failed
+            if failed or formats.get(key) == "limited":
+                graph["status"] = failed or "limited"
             elif formats.get(key) == "invalid":
                 graph["status"] = "malformed"
             else:

@@ -2,10 +2,14 @@
 
 import io
 import json
+import struct
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+from PIL import Image
 
 from utils.inspection_response import encode_inspection_response
 from utils.prompt_inspector import (
@@ -20,8 +24,10 @@ from utils.pair_execution import EXECUTION_KEY
 
 try:
     from tests import inspection_parity as parity
+    from tests.open_handles import assert_closed
 except ImportError:  # pragma: no cover - discover -s tests puts tests/ first
     import inspection_parity as parity
+    from open_handles import assert_closed
 
 CAP = 8 * 1024 * 1024
 IMAGE = {"root_index": 0, "path": "image.png", "filename": "image.png"}
@@ -741,3 +747,400 @@ class TestInspectionResponse(unittest.TestCase):
         self.assertEqual(body["library"]["status"], "limited")
         self.assertNotIn("image", body)
         self.assertNotIn("root_scope", body)
+
+
+MIB = 1024 * 1024
+
+
+def _text_chunk(kind, keyword, body):
+    return parity._raw_chunk(kind, keyword.encode("latin-1") + b"\0" + body)
+
+
+def _png_with_chunks(path, chunks):
+    """A tiny real PNG with raw metadata chunks spliced before IEND, then closed."""
+    buffer = io.BytesIO()
+    with Image.new("RGB", (4, 4), (40, 80, 120)) as image:
+        image.save(buffer, format="PNG")
+    data = buffer.getvalue()
+    iend = data.rindex(b"IEND") - 4
+    with open(path, "wb") as stream:
+        stream.write(data[:iend])
+        for chunk in chunks:
+            stream.write(chunk)
+        stream.write(data[iend:])
+    return path
+
+
+class TestPerRecordBudgets(unittest.TestCase):
+    """Role records keep the 2 MiB budget; a workflow has its own 4 MiB budget."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.addCleanup(assert_closed, self, temporary.name)
+        self.directory = Path(temporary.name)
+
+    def prompt_chunk(self):
+        prompt = json.dumps(parity.build("f04")["prompt"]).encode("latin-1")
+        return _text_chunk(b"tEXt", "prompt", prompt)
+
+    def assert_prompts_resolved(self, read):
+        from utils.prompt_inspector import inspect_prompt_evidence
+        from utils.prompt_pair_resolver import INSPECTION_PROFILE
+
+        evidence = inspect_prompt_evidence(read.metadata, profile=INSPECTION_PROFILE)
+        self.assertEqual(evidence["resolution"]["state"], "resolved")
+        self.assertEqual(evidence["prompts"]["positive"]["text"], parity.POS)
+        self.assertEqual(evidence["prompts"]["negative"]["text"], parity.NEG)
+
+    def test_budget_constants(self):
+        from utils import prompt_inspector
+
+        self.assertEqual(prompt_inspector.ROLE_METADATA_BYTES, 2 * MIB)
+        self.assertEqual(prompt_inspector.WORKFLOW_METADATA_BYTES, 4 * MIB)
+        self.assertEqual(prompt_inspector.MAX_KEYWORD_BYTES, 80)
+        self.assertEqual(MAX_METADATA_BYTES, prompt_inspector.ROLE_METADATA_BYTES)
+        default = inspection({"prompt": "{}"})
+        self.assertEqual(default.limited_records, frozenset())
+
+    def test_f04_large_workflow_within_budget_no_longer_hides_prompts(self):
+        # f04's 2.5 MB workflow is over the old shared 2 MiB budget but within
+        # the 4 MiB workflow budget: everything is readable now.
+        path = self.directory / "f04.png"
+        parity.write_png(path, parity.build("f04"))
+        read = read_inspection_file(path)
+        self.assert_prompts_resolved(read)
+        metadata = json.loads(encode(read))["metadata"]
+        self.assertEqual(metadata["status"], "available")
+        self.assertEqual(metadata["record_formats"]["workflow"], "original-text")
+        self.assertEqual(metadata["workflow_graph"]["status"], "parsed")
+        self.assertEqual(metadata["prompt_graph"]["status"], "parsed")
+
+    def test_oversize_workflow_chunk_keeps_prompt_evidence(self):
+        from utils.prompt_inspector import WORKFLOW_METADATA_BYTES
+
+        built = parity.build("f04")  # f04's shape, its note grown past budget
+        built["workflow"]["nodes"][-1]["widgets_values"] = [
+            "A" * (WORKFLOW_METADATA_BYTES + 1)
+        ]
+        path = self.directory / "f04-oversize.png"
+        parity.write_png(path, built)
+        read = read_inspection_file(path)
+        self.assertNotIn("workflow", read.metadata)
+        self.assertEqual(read.limited_records, frozenset({"workflow"}))
+        self.assert_prompts_resolved(read)
+        metadata = json.loads(encode(read))["metadata"]
+        self.assertEqual(metadata["status"], "available")
+        self.assertEqual(
+            metadata["workflow_graph"], {"status": "limited", "value": None}
+        )
+        self.assertEqual(metadata["prompt_graph"]["status"], "parsed")
+        self.assertEqual(metadata["record_formats"]["workflow"], "limited")
+        self.assertEqual(metadata["record_formats"]["prompt"], "original-text")
+        self.assertNotIn("workflow", metadata["raw"])
+        self.assertIn("prompt", metadata["raw"])
+
+    def test_oversize_workflow_is_skipped_by_seek_not_read(self):
+        from utils.prompt_inspector import WORKFLOW_METADATA_BYTES
+
+        workflow = b"A" * (WORKFLOW_METADATA_BYTES + 1)
+        path = _png_with_chunks(
+            self.directory / "seek.png",
+            [_text_chunk(b"tEXt", "workflow", workflow), self.prompt_chunk()],
+        )
+        reads = self.tracked_reads(path)
+        self.assertLess(sum(reads), 64 * 1024)
+
+    def tracked_reads(self, path):
+        original_open = type(path).open
+        reads = []
+
+        def tracked_open(item, *args, **kwargs):
+            stream = original_open(item, *args, **kwargs)
+            original_read = stream.read
+
+            def read(size=-1):
+                value = original_read(size)
+                reads.append(len(value))
+                return value
+
+            stream.read = read
+            return stream
+
+        with patch.object(type(path), "open", tracked_open):
+            read = read_inspection_file(path)
+        self.assert_prompts_resolved(read)
+        return reads
+
+    def test_oversize_compressed_workflow_stops_inflating(self):
+        from utils import prompt_inspector
+
+        workflow = json.dumps({"nodes": [], "note": "A" * (6 * MIB)}).encode()
+        compressed = zlib.compress(workflow, 9)
+        self.assertLess(len(compressed), prompt_inspector.WORKFLOW_METADATA_BYTES)
+        produced = []
+        real = zlib.decompressobj
+
+        class Tracked:
+            def __init__(self):
+                self.inner = real()
+
+            def decompress(self, data, max_length=0):
+                self.assert_bounded(max_length)
+                value = self.inner.decompress(data, max_length)
+                produced.append(len(value))
+                return value
+
+            @staticmethod
+            def assert_bounded(max_length):
+                if not 0 < max_length <= prompt_inspector.WORKFLOW_METADATA_BYTES + 1:
+                    raise AssertionError(f"unbounded inflate: {max_length}")
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+        for kind, body in (
+            (b"zTXt", b"\0" + compressed),
+            (b"iTXt", b"\1\0\0\0" + compressed),
+        ):
+            with self.subTest(kind=kind):
+                produced.clear()
+                path = _png_with_chunks(
+                    self.directory / "compressed.png",
+                    [self.prompt_chunk(), _text_chunk(kind, "workflow", body)],
+                )
+                with patch.object(prompt_inspector.zlib, "decompressobj", Tracked):
+                    read = read_inspection_file(path)
+                self.assertTrue(produced)
+                self.assertLessEqual(
+                    max(produced), prompt_inspector.WORKFLOW_METADATA_BYTES + 1
+                )
+                self.assertEqual(read.limited_records, frozenset({"workflow"}))
+                self.assertEqual(read.record_formats["workflow"], "limited")
+                self.assertNotIn("workflow", read.metadata)
+                self.assert_prompts_resolved(read)
+
+    def test_compressed_workflow_over_budget_is_skipped(self):
+        from utils.prompt_inspector import WORKFLOW_METADATA_BYTES
+
+        body = b"\0" + bytes(range(256)) * (WORKFLOW_METADATA_BYTES // 256 + 1)
+        path = _png_with_chunks(
+            self.directory / "compressed-length.png",
+            [_text_chunk(b"zTXt", "workflow", body), self.prompt_chunk()],
+        )
+        read = read_inspection_file(path)
+        self.assertEqual(read.limited_records, frozenset({"workflow"}))
+        self.assert_prompts_resolved(read)
+
+    def test_role_records_over_budget_still_unreadable(self):
+        from utils.prompt_inspector import ROLE_METADATA_BYTES
+
+        prompt = self.prompt_chunk()
+        cases = {
+            "prompt-text": [
+                _text_chunk(b"tEXt", "prompt", b"x" * (ROLE_METADATA_BYTES + 1))
+            ],
+            "prompt-inflate": [
+                _text_chunk(
+                    b"zTXt",
+                    "prompt",
+                    b"\0" + zlib.compress(b"x" * (ROLE_METADATA_BYTES + 1)),
+                )
+            ],
+            "roles-together": [
+                prompt,
+                _text_chunk(b"tEXt", "parameters", b"x" * ROLE_METADATA_BYTES),
+            ],
+            "execution-record": [
+                prompt,
+                _text_chunk(b"tEXt", EXECUTION_KEY, b"x" * (ROLE_METADATA_BYTES + 1)),
+            ],
+        }
+        for name, chunks in cases.items():
+            with self.subTest(case=name):
+                path = _png_with_chunks(self.directory / f"{name}.png", chunks)
+                with self.assertRaisesRegex(
+                    MetadataReadError, "exceeds inspection limits"
+                ):
+                    read_inspection_file(path)
+
+    def test_role_budget_is_not_shared_with_workflow(self):
+        from utils.prompt_inspector import ROLE_METADATA_BYTES
+
+        path = _png_with_chunks(
+            self.directory / "shared.png",
+            [
+                self.prompt_chunk(),
+                _text_chunk(b"tEXt", "parameters", b"p" * (ROLE_METADATA_BYTES - 4096)),
+                _text_chunk(b"tEXt", "workflow", b"w" * (3 * MIB)),
+            ],
+        )
+        read = read_inspection_file(path)
+        self.assertEqual(read.limited_records, frozenset())
+        self.assertEqual(len(read.metadata["workflow"]), 3 * MIB)
+        self.assert_prompts_resolved(read)
+
+    def test_identical_duplicate_chunks_are_accepted(self):
+        path = parity.fixture_path("f15")
+        chunks = dict(parity.read_text_chunks(path))
+        read = read_inspection_file(path)
+        self.assertEqual(read.metadata["prompt"], chunks["prompt"])
+        self.assertEqual(read.metadata["workflow"], chunks["workflow"])
+        self.assert_prompts_resolved(read)
+        metadata = json.loads(encode(read))["metadata"]
+        self.assertEqual(metadata["prompt_graph"]["status"], "parsed")
+        self.assertEqual(metadata["workflow_graph"]["status"], "parsed")
+
+    def test_conflicting_duplicate_chunks_fail(self):
+        with self.assertRaisesRegex(MetadataReadError, "Duplicate prompt metadata"):
+            read_inspection_file(parity.fixture_path("f16"))
+        prompt = json.dumps(parity.build("f04")["prompt"]).encode("latin-1")
+        cases = {
+            # Same decoded text, different bytes on disk: not byte-identical.
+            "kind": [
+                self.prompt_chunk(),
+                _text_chunk(b"zTXt", "prompt", b"\0" + zlib.compress(prompt)),
+            ],
+            "length": [
+                self.prompt_chunk(),
+                _text_chunk(b"tEXt", "prompt", prompt + b" "),
+            ],
+            "same-length": [
+                self.prompt_chunk(),
+                _text_chunk(b"tEXt", "prompt", prompt.replace(b"red fox", b"red cat")),
+            ],
+            "workflow": [
+                self.prompt_chunk(),
+                _text_chunk(b"tEXt", "workflow", b'{"nodes": []}'),
+                _text_chunk(b"tEXt", "workflow", b'{"nodes": [1]}'),
+            ],
+        }
+        for name, chunks in cases.items():
+            with self.subTest(case=name):
+                path = _png_with_chunks(self.directory / f"{name}.png", chunks)
+                with self.assertRaisesRegex(
+                    MetadataReadError, "Duplicate prompt metadata"
+                ):
+                    read_inspection_file(path)
+
+    def test_duplicate_of_limited_workflow_stays_limited(self):
+        from utils.prompt_inspector import WORKFLOW_METADATA_BYTES
+
+        oversize = _text_chunk(
+            b"tEXt", "workflow", b"A" * (WORKFLOW_METADATA_BYTES + 1)
+        )
+        path = _png_with_chunks(
+            self.directory / "limited-twice.png",
+            [oversize, self.prompt_chunk(), oversize],
+        )
+        read = read_inspection_file(path)
+        self.assertEqual(read.limited_records, frozenset({"workflow"}))
+        self.assertNotIn("workflow", read.metadata)
+        self.assert_prompts_resolved(read)
+
+    def test_identical_duplicates_do_not_consume_role_budget(self):
+        from utils.prompt_inspector import ROLE_METADATA_BYTES
+
+        parameters = _text_chunk(
+            b"tEXt", "parameters", b"p" * (ROLE_METADATA_BYTES * 3 // 4)
+        )
+        path = _png_with_chunks(
+            self.directory / "repeat.png",
+            [self.prompt_chunk(), parameters, parameters],
+        )
+        read = read_inspection_file(path)
+        self.assertEqual(len(read.metadata["parameters"]), ROLE_METADATA_BYTES * 3 // 4)
+
+    def test_unretained_text_chunks_are_skipped_without_retention(self):
+        software = _text_chunk(b"tEXt", "Software", b"S" * (5 * MIB))
+        compressed = _text_chunk(b"zTXt", "Comment", b"\0" + b"not zlib at all")
+        path = _png_with_chunks(
+            self.directory / "software.png",
+            [software, compressed, self.prompt_chunk()],
+        )
+        reads = self.tracked_reads(path)
+        self.assertLess(sum(reads), 64 * 1024)
+        read = read_inspection_file(path)
+        self.assertEqual(set(read.metadata), {"prompt"})
+
+    def test_unretained_chunk_with_malformed_keyword_still_fails(self):
+        for body in (b"no-separator", b"k" * 100 + b"\0text", b"\0text"):
+            with self.subTest(body=body[:12]):
+                path = _png_with_chunks(
+                    self.directory / "keyword.png",
+                    [self.prompt_chunk(), parity._raw_chunk(b"tEXt", body)],
+                )
+                with self.assertRaisesRegex(MetadataReadError, "Malformed"):
+                    read_inspection_file(path)
+
+    def test_chunk_count_limit_unchanged(self):
+        from utils import prompt_inspector
+
+        self.assertEqual(prompt_inspector.MAX_PNG_CHUNKS, 10_000)
+        filler = _text_chunk(b"tEXt", "Comment", b"x")
+        for total, readable in ((10_000, True), (10_001, False)):
+            with self.subTest(total=total):
+                path = _png_with_chunks(self.directory / "count.png", [])
+                structural = self.chunk_count(path)
+                path = _png_with_chunks(
+                    self.directory / "count.png",
+                    [self.prompt_chunk()] + [filler] * (total - structural - 1),
+                )
+                self.assertEqual(self.chunk_count(path), total)
+                if readable:
+                    self.assert_prompts_resolved(read_inspection_file(path))
+                else:
+                    with self.assertRaisesRegex(MetadataReadError, "chunk count"):
+                        read_inspection_file(path)
+
+    @staticmethod
+    def chunk_count(path):
+        data, offset, count = path.read_bytes(), 8, 0
+        while offset < len(data):
+            (length,) = struct.unpack(">I", data[offset : offset + 4])
+            offset += 12 + length
+            count += 1
+        return count
+
+    def test_non_png_workflow_over_budget_is_limited_not_unreadable(self):
+        from utils.prompt_inspector import WORKFLOW_METADATA_BYTES
+
+        prompt = json.dumps(parity.build("f04")["prompt"])
+        metadata = {"prompt": prompt, "workflow": "w" * (WORKFLOW_METADATA_BYTES + 1)}
+        fake = MagicMock()
+        fake.__enter__.return_value = fake
+        fake.info, fake.format, fake.size = metadata, "WEBP", (4, 4)
+        path = self.directory / "image.webp"
+        path.write_bytes(b"RIFF0000WEBP")
+        with patch("utils.prompt_inspector.Image.open", return_value=fake):
+            read = read_inspection_file(path)
+        self.assertEqual(read.limited_records, frozenset({"workflow"}))
+        self.assertEqual(
+            read.record_formats, {"prompt": "original-text", "workflow": "limited"}
+        )
+        self.assert_prompts_resolved(read)
+
+    def test_limited_record_format_omits_raw_and_limits_graph(self):
+        read = InspectionRead(
+            metadata={"prompt": graph_text(), "workflow": "{}"},
+            record_formats={"prompt": "original-text", "workflow": "original-text"},
+            video_carrier_text=None,
+            format="PNG",
+            width=4,
+            height=4,
+            limited_records=frozenset({"workflow"}),
+        )
+        metadata = json.loads(encode(read))["metadata"]
+        self.assertEqual(metadata["record_formats"]["workflow"], "limited")
+        self.assertNotIn("workflow", metadata["raw"])
+        self.assertEqual(
+            metadata["workflow_graph"], {"status": "limited", "value": None}
+        )
+        self.assertEqual(metadata["prompt_graph"]["status"], "parsed")
+        only = InspectionRead({}, {"workflow": "limited"}, None, "PNG", 4, 4)
+        metadata = json.loads(encode(only))["metadata"]
+        self.assertEqual(metadata["status"], "available")
+        self.assertEqual(metadata["raw"], {})
+        self.assertEqual(metadata["record_formats"], {"workflow": "limited"})
+        self.assertEqual(metadata["workflow_graph"]["status"], "limited")
+        self.assertEqual(metadata["prompt_graph"]["status"], "absent")
