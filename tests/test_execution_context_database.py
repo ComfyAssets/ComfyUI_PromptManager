@@ -13,6 +13,8 @@ import unittest
 
 from database.execution_history import HistoryEpochChanged
 from database.execution_context_schema import context_schema_error
+from database.execution_contexts import LIVE_HINT_PROMPT_IDS_SQL
+from database.execution_history_schema import rotate_history_epoch
 from utils.execution_contexts import (
     ContextBundle,
     PromptSnapshot,
@@ -364,6 +366,101 @@ class ContextDatabaseTests(unittest.TestCase):
             self.assertEqual(after[key], original[key])
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM prompts").fetchone()[0], 0)
         self.assertIsNone(context_schema_error(conn))
+
+    def test_prune_keeps_prompts_referenced_by_recorded_runs(self):
+        db = self.database()
+        conn = db.model.get_connection()
+        with conn:
+            conn.execute(
+                "INSERT INTO prompts(id,text) VALUES(1,'positive'),(2,'negative'),"
+                "(3,'unreferenced')"
+            )
+        start = self.capture(db)
+        original = db.get_execution_contexts(start.run_id)["contexts"][0]
+        self.assertEqual(
+            (original["positive_prompt_id"], original["negative_prompt_id"]), (1, 2)
+        )
+        self.assertEqual(db.prune_orphaned_prompts(), 1)
+        self.assertEqual(
+            [row[0] for row in conn.execute("SELECT id FROM prompts ORDER BY id")],
+            [1, 2],
+        )
+        self.assertEqual(
+            db.get_execution_contexts(start.run_id)["contexts"][0], original
+        )
+        self.assertEqual(db.prune_orphaned_prompts(), 0)
+        db.update_prompt_text(2, "edited")
+        self.assertEqual(db.prune_orphaned_prompts(), 1)
+        self.assertEqual(
+            [row[0] for row in conn.execute("SELECT id FROM prompts")], [1]
+        )
+        self.assertIsNone(context_schema_error(conn))
+
+    def test_prune_ignores_hints_made_ambiguous_by_identical_text(self):
+        db = self.database()
+        conn = db.model.get_connection()
+        with conn:
+            conn.execute(
+                "INSERT INTO prompts(id,text) VALUES(1,'positive'),(2,'negative')"
+            )
+        start = self.capture(db)
+        context = db.get_execution_contexts(start.run_id)["contexts"][0]
+        self.assertEqual(context["negative_prompt_id"], 2)
+        with conn:
+            conn.execute("INSERT INTO prompts(id,text) VALUES(3,'negative')")
+        db.link_image_to_prompt(3, "/out/three.png")
+        context = db.get_execution_contexts(start.run_id)["contexts"][0]
+        self.assertEqual(
+            (context["positive_prompt_id"], context["negative_prompt_id"]), (1, None)
+        )
+        self.assertEqual(db.prune_orphaned_prompts(), 1)
+        self.assertEqual(
+            [row[0] for row in conn.execute("SELECT id FROM prompts ORDER BY id")],
+            [1, 3],
+        )
+        after = db.get_execution_contexts(start.run_id)["contexts"][0]
+        self.assertEqual(
+            (after["positive_prompt_id"], after["negative_prompt_id"]), (1, None)
+        )
+        self.assertEqual(db.prune_orphaned_prompts(), 0)
+
+    def test_live_hint_set_matches_reader_hints(self):
+        db = self.database()
+        conn = db.model.get_connection()
+        with conn:
+            conn.execute(
+                "INSERT INTO prompts(id,text) VALUES(1,'positive'),(2,'negative'),"
+                "(4,'other')"
+            )
+        runs = [self.capture(db, 0)]
+        runs.append(self.capture(db, 1, bundle(positive="other", negative="none")))
+
+        def assert_same():
+            reader = {
+                context[key]
+                for run in runs
+                for context in db.get_execution_contexts(run.run_id)["contexts"]
+                for key in ("positive_prompt_id", "negative_prompt_id")
+                if context[key] is not None
+            }
+            live = {row[0] for row in conn.execute(LIVE_HINT_PROMPT_IDS_SQL)}
+            self.assertEqual(live, reader)
+            return live
+
+        self.assertEqual(assert_same(), {1, 2, 4})
+        with conn:
+            conn.execute("INSERT INTO prompts(id,text) VALUES(3,'negative')")
+        self.assertEqual(assert_same(), {1, 4})
+        with conn:
+            conn.execute("DELETE FROM prompts WHERE id=3")
+        self.assertEqual(assert_same(), {1, 2, 4})
+        db.update_prompt_text(4, "Other")
+        self.assertEqual(assert_same(), {1, 2})
+        with conn:
+            conn.execute("INSERT INTO prompts(id,text) VALUES(5,'none')")
+        self.assertEqual(assert_same(), {1, 2})
+        rotate_history_epoch(conn)
+        self.assertEqual(assert_same(), set())
 
     def test_hints_require_exact_unique_raw_text_and_never_refresh(self):
         db = self.database()
