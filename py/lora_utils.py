@@ -541,7 +541,7 @@ def download_civitai_images(
         if not isinstance(url, str) or not is_civitai_url(url):
             continue
 
-        url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+        url_hash = hashlib.md5(url.encode(), usedforsecurity=False).hexdigest()[:12]
         local_path = lora_cache / f"{url_hash}.jpg"
 
         if local_path.exists():
