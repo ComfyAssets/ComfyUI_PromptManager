@@ -17,6 +17,10 @@
 .vocabulary-main caption { text-align: start; font-size: 13px; font-weight: 600; margin: 0 0 15px; }
 .vocabulary-main :where(th, td) { text-align: start; border-bottom: 1px solid var(--ca-line); padding: 13px 10px; }
 .vocabulary-main th { color: var(--ca-muted); font-size: 10px; font-weight: 500; }
+/* Long tag names wrap inside the Tag cell so the Actions column keeps its intrinsic width and no row action is clipped;
+   the minimum keeps short names (the concept's longest sample, "architecture", is about 5em) on one line, as the concept
+   shows, while Tag + Prompts + Images + Actions still fit a 390px screen. */
+.vocabulary-main td:first-child { overflow-wrap: anywhere; min-inline-size: calc(6em + 20px); }
 .vocabulary-main td .row-actions { justify-content: flex-end; }
 .vocabulary-main .empty { padding: 50px; text-align: center; border: 1px dashed var(--ca-line); border-radius: 6px; color: var(--ca-muted); }
 /* Never a scroll anchor: appended rows must push the end of the list away, not chain further pages. */

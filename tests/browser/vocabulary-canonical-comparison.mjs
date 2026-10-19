@@ -16,6 +16,8 @@ export function pageInventoryOf(main, production) {
     // Visible text of a cell, without visually hidden helper text (recorded separately).
     const shownText=node=>[...node.childNodes].filter(child=>!(child.classList?.contains('ca-visually-hidden'))).map(child=>child.textContent).join('').trim();
 
+    // Rendered line count of a cell's text, so a wrapped short name is reported even when the row height is unchanged.
+    const lines=node=>{const range=document.createRange();range.selectNodeContents(node);return new Set([...range.getClientRects()].map(rect=>px(rect.top))).size;};
     const heading=main.querySelector(production?':scope > .workspace-heading':':scope > .heading');
     const copy=production?heading.querySelector('.workspace-heading-copy'):heading.firstElementChild;
     const h1=copy.querySelector('h1'),subtitle=copy.querySelector('p'),actions=heading.querySelector('.heading-actions');
@@ -48,7 +50,7 @@ export function pageInventoryOf(main, production) {
             firstRowHeight:rows[0]?px(rows[0].getBoundingClientRect().height):null,
             rowActions:rows[0]?{...css(rows[0].querySelector('.row-actions'),'display','justifyContent','columnGap','flexWrap','alignItems'),
                 buttons:[...rows[0].querySelectorAll('.row-actions button')].map(buttonOf)}:null,
-            rows:rows.map(row=>{const cells=[...row.querySelectorAll('td')];return {cells:cells.length,tag:cells[0].textContent,prompts:cells[1].textContent,
+            rows:rows.map(row=>{const cells=[...row.querySelectorAll('td')];return {cells:cells.length,height:px(row.getBoundingClientRect().height),tagLines:lines(cells[0]),tag:cells[0].textContent,prompts:cells[1].textContent,
                 images:shownText(cells[2]),imagesHidden:cells[2].querySelector('.ca-visually-hidden')?.textContent??null,
                 actions:[...cells[3].querySelectorAll('.row-actions button')].map(node=>node.textContent.trim())};})},
         operations:operations.map(row=>{const h3=row.querySelector('h3'),p=row.querySelector('p'),rowActions=row.querySelector('.row-actions');return {

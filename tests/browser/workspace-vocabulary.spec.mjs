@@ -201,6 +201,22 @@ test('390px layout stacks without horizontal page scroll; table scrolls locally'
     expect(layout).toEqual({tracks:1,stacked:true,overflow:'auto',heading:'column',operation:'column',actions:true});
 });
 
+test('long tag names wrap at 390px so every row action stays fully visible',async({page,request})=>{
+    const name='an_extraordinarily_long_descriptive_vocabulary_x';expect(name.length).toBeGreaterThanOrEqual(40);expect(name.length).toBeLessThanOrEqual(50);
+    await expect(await request.post('/prompt_manager/vocabulary/tags',{data:{expected_epoch:manifest.epoch,name}})).toBeOK();
+    await page.setViewportSize({width:390,height:844});
+    await page.goto(route);await expect(rows(page)).toHaveCount(manifest.tags.length+1);await expect(tagRow(page,name)).toHaveCount(1);
+    const report=await table(page).evaluate(node=>{
+        const wrap=node.closest('.table-wrap'),box=wrap.getBoundingClientRect();
+        const clipped=[...node.querySelectorAll('tbody tr')].flatMap(row=>[...row.querySelectorAll('.row-actions button')]
+            .filter(item=>{const rect=item.getBoundingClientRect();return rect.left<box.left-0.5||rect.right>box.right+0.5;})
+            .map(item=>`${row.cells[0].textContent}: ${item.textContent}`));
+        return {overflow:wrap.scrollWidth<=wrap.clientWidth+1,clipped};
+    });
+    expect(report).toEqual({overflow:true,clipped:[]});
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+});
+
 // Dialogs: the editor's modal shell (concept simpleInput, app.js:1138-1143) with truthful outcomes.
 const dialog=page=>page.locator('dialog.vocabulary-dialog');
 const button=(scope,name)=>scope.getByRole('button',{name,exact:true});
