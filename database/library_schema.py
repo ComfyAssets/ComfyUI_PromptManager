@@ -51,11 +51,20 @@ def library_schema_error(
         return "Library state has invalid foreign key definitions"
     if conn.execute(f"PRAGMA foreign_key_check({TABLE})").fetchone():
         return "Library state contains foreign key violations"
+    # length() stops at an embedded NUL, so bound by bytes in SQL (characters
+    # never outnumber bytes, and UTF-8 uses at most 4 bytes per character) and
+    # count the few remaining candidates as decoded characters.
     if conn.execute(
         f"SELECT 1 FROM {TABLE} WHERE typeof(title) NOT IN ('null','text') "
-        f"OR length(title) > {MAX_TITLE_LENGTH} LIMIT 1"
+        f"OR length(CAST(title AS BLOB)) > {MAX_TITLE_LENGTH * 4} LIMIT 1"
     ).fetchone():
         return "Library state contains invalid titles"
+    for (raw,) in conn.execute(
+        f"SELECT CAST(title AS BLOB) FROM {TABLE} "
+        f"WHERE length(CAST(title AS BLOB)) > {MAX_TITLE_LENGTH}"
+    ):
+        if len(bytes(raw).decode("utf-8", "replace")) > MAX_TITLE_LENGTH:
+            return "Library state contains invalid titles"
     return None
 
 

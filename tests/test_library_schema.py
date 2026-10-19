@@ -203,6 +203,28 @@ class LibrarySchemaTests(unittest.TestCase):
             )
             self.assertEqual(PromptModel.verify_database_file(path)[0], True)
 
+    def test_title_length_is_measured_past_embedded_nuls(self):
+        self.require_module()
+        valid = INVALID_SCHEMAS["check"].replace(" CHECK(length(title) < 5)", "")
+        for name, title, ok in (
+            ("nul bypass", "x\0" + "y" * 10_000, False),
+            ("nul at bound", "x\0" + "y" * 9_998, True),
+            ("multibyte at bound", "\u00e9" * 10_000, True),
+            ("multibyte over bound", "\u00e9" * 10_001, False),
+        ):
+            with self.subTest(name):
+                path = self.build_invalid(
+                    name, valid, [(f"INSERT INTO {TABLE} VALUES(7,?)", (title,))]
+                )
+                with closing(sqlite3.connect(path)) as raw:
+                    error = library_schema_error(raw)
+                if ok:
+                    self.assertIsNone(error)
+                    self.assertTrue(PromptModel.verify_database_file(path)[0])
+                else:
+                    self.assertEqual(error, "Library state contains invalid titles")
+                    self.assertFalse(PromptModel.verify_database_file(path)[0])
+
     def test_install_failure_rolls_back_and_retries(self):
         self.require_module()
         with patch(
