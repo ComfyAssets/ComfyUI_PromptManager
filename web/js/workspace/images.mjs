@@ -322,7 +322,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             for (let index = state?.items.length || 0; index < next.items.length; index++) itemIndexes.set(imageKey(next.items[index]), index);
         }
         state = next;
-        count.textContent = embedded ? `${next.loaded.toLocaleString()} loaded · ${next.total.toLocaleString()} linked images` : `${next.loaded.toLocaleString()} of ${next.total.toLocaleString()} images`;
+        count.textContent = embedded ? `${next.loaded.toLocaleString()} loaded · ${next.total.toLocaleString()} linked image${next.total === 1 ? '' : 's'}` : `${next.loaded.toLocaleString()} of ${next.total.toLocaleString()} images`;
         if (changed) updateLayout();
         message.textContent = recovering ? 'Images paused until sources and folders are available.' : next.error ? 'Images could not be loaded. Retry or refresh the collection.' : next.loading ? 'Loading images…' : '';
         if (next.error) message.setAttribute('role', 'alert'); else message.setAttribute('role', 'status');

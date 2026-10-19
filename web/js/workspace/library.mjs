@@ -24,6 +24,8 @@ const ARCHIVED_MESSAGE='Archived. Find it under Show archived in Negative varian
 function el(tag,text,className) {
     const node=document.createElement(tag);if(text!==undefined) node.textContent=text;if(className) node.className=className;return node;
 }
+/** `1 linked image`, `2 linked images`. */
+function linkedImages(count) {return `${count} linked image${count===1?'':'s'}`;}
 function link(text,href,className) {const node=el('a',text,className);node.href=href;return node;}
 function title(text) {const first=text.split('\n')[0].trim();return first.length>80?`${first.slice(0,80)}…`:first;}
 /** The full stored title; the first-line fallback only when it is blank. */
@@ -52,16 +54,18 @@ export function rememberLibraryResult(result) {
 }
 /**
  * Toast copy from the receipt: the concept's save toast for New, Revision and Edit and its
- * Add-negative line (app.js 989, 1028); a reuse discloses what was not saved.
+ * Add-negative line (app.js 989, 1028); a reuse discloses what was not saved, and only
+ * when the controller found the entered parent metadata differs from the stored one.
  */
-function outcomeMessage(result) {
+function outcomeMessage(result,outcome) {
     const {kind,receipt}=result.commit;
     if(kind==='metadata') return 'Saved.';
     if(kind==='archive-pair') return ARCHIVED_MESSAGE;
     if(kind!=='create' && kind!=='add-negative') return null;
     if(receipt.positive_created) return 'Saved.';
     if(receipt.pair_created) return kind==='add-negative'?'Negative saved without adding another positive or gallery.'
-        :'Saved as a new negative variant of an existing prompt. The title, category, tags, rating and notes you entered were not applied.';
+        :outcome?.metadataNotApplied?'Saved as a new negative variant of an existing prompt. The title, category, tags, rating and notes you entered were not applied.'
+            :'Saved as a new negative variant of an existing prompt.';
     if(receipt.pair.archived) return 'This combination is an archived negative variant. It stays archived; restore it from Show archived in Negative variants.';
     return 'This prompt pair already exists. Showing the saved version.';
 }
@@ -73,7 +77,7 @@ function rememberUnappliedMetadata(result,{outcome,draft}={}) {
 function createNewPromptEditor(api,scope,main) {
     return createLibraryEditor({api,parentScope:scope,onCommitted:invalidateLibraryAfterWrite,onReconciled:(result,context)=>{
         rememberLibraryResult(result);rememberUnappliedMetadata(result,context);
-        const message=outcomeMessage(result);if(message) showWorkspaceToast(message);
+        const message=outcomeMessage(result,context?.outcome);if(message) showWorkspaceToast(message);
         const hash=`#/library/${result.detail.positive.id}`;
         if(window.location.hash===hash) focusHeading(main);else {focusHeadingOnMount=true;window.location.hash=hash;}
     }});
@@ -172,7 +176,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             heading.append(h2,el('span',item.category || 'Uncategorized','library-chip'));
             const prompts=el('div',undefined,'library-card-prompts');
             const blocks=mountPromptBlocks(prompts,{prompts:{positive:{status:'resolved',text:item.text,source:'library'}},sender,parentScope:scope,roles:['positive']});
-            const stats=el('div',undefined,'library-card-meta');stats.append(el('span',item.variant_count?`${item.variant_count} saved negative variants`:'No saved negatives','library-chip library-chip-negative'),el('span',`${item.image_count} linked images`));
+            const stats=el('div',undefined,'library-card-meta');stats.append(el('span',item.variant_count?`${item.variant_count} saved negative variants`:'No saved negatives','library-chip library-chip-negative'),el('span',linkedImages(item.image_count)));
             const vocabulary=el('div',undefined,'library-tags');for(const tag of item.tags || []) vocabulary.append(el('span',tag,'library-chip'));
             content.append(heading,prompts,stats,vocabulary);
             const footer=el('footer',undefined,'library-card-footer');
@@ -352,7 +356,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         scope.listen(send,'click',()=>{const roles=current?.sendRoles();if(roles)sender.open(roles,send);});
         function reconciled(result,context) {
             rememberLibraryResult(result);rememberUnappliedMetadata(result,context);
-            const message=outcomeMessage(result),id=result.detail.positive.id;
+            const message=outcomeMessage(result,context?.outcome),id=result.detail.positive.id;
             if(message) showWorkspaceToast(message);
             if(id!==positiveId) {focusHeadingOnMount=true;window.location.hash=`#/library/${id}`;return;}
             if(current) current.apply(result);else loader.load(positiveId);
@@ -445,7 +449,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                     lane.node.style.setProperty('--lane-offset',`${38+index*47}px`);
                     lane.button.setAttribute('aria-label',entry.kind==='separate'?'Select the saved negative variant outside the loaded list':`Select negative variant ${entry.number}`);
                     lane.button.setAttribute('aria-pressed',String(activePairId===entry.variant.id));lane.button.disabled=savedReadState!=='current';
-                    lane.text.textContent=`${name} · ${entry.variant.image_count} linked images${entry.kind==='archived'?' · Archived':''}`;
+                    lane.text.textContent=`${name} · ${linkedImages(entry.variant.image_count)}${entry.kind==='archived'?' · Archived':''}`;
                     if(lane.restore) {lane.restore.setAttribute('aria-label',`Restore ${name}`);lane.restore.disabled=savedReadState!=='current' || restoringPairs.has(entry.variant.id);}
                     if(previous.nextSibling!==lane.node) previous.after(lane.node);
                     previous=lane.node;
@@ -607,9 +611,10 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             const remembered=variantSelections.get(positiveId),outside=selectedPairs.get(positiveId);
             if(outside?.archived && outside.id===remembered && !archivedShown) {archivedShown=true;archivedVisible.set(positiveId,true);}
             if(archivedShown) archivedLoader.load(positiveId);
-            let initial=null;
+            // Without a remembered saved pair, open on the first negative variant, as the concept does (app.js navigate: state.variant = 0).
+            let initial=detail.variants[0]?.id ?? null;
             if(detail.variants.some(variant=>variant.id===remembered)) initial=remembered;
-            else if(outside?.id===remembered) {try {libraryPromptRoles(detail,remembered,outside);initial=remembered;} catch {selectedPairs.delete(positiveId);}}
+            else if(outside && outside.id===remembered) {try {libraryPromptRoles(detail,remembered,outside);initial=remembered;} catch {selectedPairs.delete(positiveId);}}
             updateBranches(state);select(initial);
         }
         loader.load(positiveId);

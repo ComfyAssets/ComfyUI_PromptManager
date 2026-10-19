@@ -37,7 +37,11 @@ test('library groups reusable negatives under one positive without exposing nega
 test('history displays the selected full negative beneath its positive and filters one shared physical gallery',async({page,request})=>{
     const rows=await(await request.get('/prompt_manager/library')).json();const cat=rows.items.find(item=>item.text==='Cat portrait');
     const data=await(await request.get(`/prompt_manager/library/${cat.id}`)).json();
-    await page.goto(route);await openHistory(page);await expect(media(page)).toHaveCount(3);
+    // The concept opens on the first negative variant and filters the gallery to it (app.js navigate: state.variant = 0).
+    await page.goto(route);await openHistory(page);
+    await expect(history(page).getByRole('button',{name:'Select negative variant 1',exact:true})).toHaveAttribute('aria-pressed','true');
+    await expect(media(page)).toHaveCount(['blurry, watermark','low quality'].includes(data.variants[0].negative_text)?1:0);
+    await expect(history(page).getByRole('button',{name:'All images for this positive',exact:true})).toHaveAttribute('aria-pressed','false');
     for(const negative of ['blurry, watermark','low quality','low contrast','']) {
         const index=data.variants.findIndex(variant=>variant.negative_text===negative);await selectVariant(page,index);
         const neg=saved(page).getByRole('region',{name:'Negative prompt',exact:true});
