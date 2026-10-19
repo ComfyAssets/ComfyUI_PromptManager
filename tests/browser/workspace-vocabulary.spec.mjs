@@ -307,8 +307,10 @@ test('manage categories previews real impact before applying',async({page,reques
     const source=field(box,'Category'),target=field(box,'Proposed new category name');
     await expect(source.locator('option')).toHaveText(CATEGORIES.map(([name])=>name));
     await expect(source).toHaveValue('Landscapes');
-    await expect(target).toHaveValue('');await expect(target).toHaveAttribute('required','');await expect(target).toHaveAttribute('list','categories');
-    expect(await box.locator('datalist#categories option').evaluateAll(nodes=>nodes.map(node=>node.value))).toEqual(CATEGORIES.map(([name])=>name));
+    await expect(target).toHaveValue('');await expect(target).toHaveAttribute('required','');await expect(target).toHaveAttribute('list','vocabulary-category-options');
+    // Its own id: the recipe editor's `datalist#categories` is a different list.
+    await expect(page.locator('datalist#categories')).toHaveCount(0);
+    expect(await box.locator('datalist#vocabulary-category-options option').evaluateAll(nodes=>nodes.map(node=>node.value))).toEqual(CATEGORIES.map(([name])=>name));
     expect(await actionNames(box)).toEqual(['Cancel','Preview']);
     await expect(button(box,'Preview')).toHaveClass(/ca-primary/);
     const impact=box.locator('p.small');await expect(impact).toBeHidden();
@@ -582,7 +584,7 @@ test('manage categories lists every category page without Load more',async({page
     const source=field(box,'Category');
     await expect(source.locator('option')).toHaveCount(154);
     await expect(source.locator('option').last()).toHaveText('bulk_category_0149');
-    expect(await box.locator('datalist#categories option').count()).toBe(154);
+    expect(await box.locator('datalist#vocabulary-category-options option').count()).toBe(154);
     await source.selectOption('bulk_category_0149');await field(box,'Proposed new category name').fill('Bulk renamed');
     await button(box,'Preview').click();
     await expect(box.locator('p.small')).toHaveText('“bulk_category_0149” is used by 1 positive prompt. Apply renames it to “Bulk renamed”.');

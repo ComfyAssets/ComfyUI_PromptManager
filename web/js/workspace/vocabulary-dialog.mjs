@@ -289,9 +289,10 @@ export function createVocabularyDialog({api, scope, createCommand, epoch, catego
         source.required = true;
         const target = el('input');
         target.required = true;
-        target.setAttribute('list', 'categories');
+        // Its own id: the recipe editor already owns `datalist#categories`.
+        target.setAttribute('list', 'vocabulary-category-options');
         const list = el('datalist');
-        list.id = 'categories';
+        list.id = 'vocabulary-category-options';
         const retry = createButton('Retry');
         retry.addEventListener('click', () => stream.loadMore(), {signal: views.signal});
         let drain = 'loading', shown = null;

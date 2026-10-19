@@ -97,7 +97,7 @@ export function mapVocabularyDialog(mode,reference,{filters,editor,categories}) 
             fields:[
                 // D9: a `Category` source select first, listing the stored categories (Manage loads every page, ruling: up to 1,000).
                 {...select,label:'Category',required:true,options:categories.map(value=>[value,value])},
-                // D9 / Task 8: the proposed name offers the `categories` datalist (no trailing commas: one value).
+                // D9 / Task 8: the proposed name offers a category datalist (no trailing commas: one value).
                 ...fields.map(item=>({...item,listed:true,commaOptions:false}))],
             // D9: the preview sentence is a `p.small`, empty and hidden until Preview.
             small:[{...filters.small[0],text:''}],
