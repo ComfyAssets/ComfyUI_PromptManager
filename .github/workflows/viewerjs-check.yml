@@ -11,9 +11,10 @@ permissions:
   contents: read
 
 jobs:
-  viewerjs:
+  frontend-coverage:
+    name: frontend coverage (chromium and touch)
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -30,12 +31,10 @@ jobs:
       - run: npm ci --prefix tools/vendor --ignore-scripts
       - run: npm run --prefix tools/vendor check
       - run: npm run --prefix tools/vendor test
-      - run: npx --prefix tools/vendor playwright install --with-deps chromium firefox webkit
+      - run: npx --prefix tools/vendor playwright install --with-deps chromium
       - name: Frontend unit, viewer, workflow, and coverage checks
         run: npm run --prefix tools/vendor test:coverage
-      - name: Firefox and WebKit page workflows
-        run: npm run --prefix tools/vendor test:workflows -- --project firefox --project webkit
-      - name: Upload browser traces and frontend coverage
+      - name: Upload frontend coverage and Chromium traces
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -45,3 +44,54 @@ jobs:
             coverage/js/
             !coverage/js/raw/**
           retention-days: 14
+
+  browser-workflows:
+    name: page workflows (${{ matrix.browser }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [firefox, webkit]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: python -m pip install -r requirements-dev.txt
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tools/vendor/package-lock.json
+      - run: npm ci --prefix tools/vendor --ignore-scripts
+      - run: npx --prefix tools/vendor playwright install --with-deps ${{ matrix.browser }}
+      - name: Page workflows in ${{ matrix.browser }}
+        run: npm run --prefix tools/vendor test:workflows -- --project ${{ matrix.browser }}
+      - name: Upload browser traces
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-traces-${{ matrix.browser }}
+          path: tools/vendor/test-results/
+          retention-days: 14
+
+  # Branch protection requires the exact context "viewerjs". This job keeps that
+  # name and fails unless every frontend job above succeeded, including when one
+  # was cancelled or skipped.
+  viewerjs:
+    needs: [frontend-coverage, browser-workflows]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every frontend job to succeed
+        env:
+          COVERAGE_RESULT: ${{ needs.frontend-coverage.result }}
+          WORKFLOWS_RESULT: ${{ needs.browser-workflows.result }}
+        run: |
+          echo "frontend-coverage: $COVERAGE_RESULT"
+          echo "browser-workflows: $WORKFLOWS_RESULT"
+          test "$COVERAGE_RESULT" = success && test "$WORKFLOWS_RESULT" = success
