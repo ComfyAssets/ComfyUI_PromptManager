@@ -604,16 +604,18 @@ Deploying this backend needs a ComfyUI restart (Python and route changes).
 ## Native vocabulary UI (#236)
 
 `#/tags` ("Tags & categories", page title "Tags") is a native workspace route; it no
-longer hands off to the legacy tag manager, which stays reachable from Overview's
-"Open existing tag manager" card for delete-by-search, AND/OR, untagged browsing and
-bulk actions. The screen consumes only the `/prompt_manager/vocabulary/*` routes above
-and adds no route, so PR B needs no ComfyUI restart: a browser refresh is enough.
+longer hands off to the legacy tag manager. That page stays reachable from Overview's
+"Open existing tag manager" card for tag search and sort, the untagged entry and
+multi-tag AND/OR browsing; bulk prompt actions (delete, tag, category) stay on the
+legacy admin page. The screen consumes only the `/prompt_manager/vocabulary/*` routes
+above and adds no route, so PR B needs no ComfyUI restart: a browser refresh is enough.
 
-Screen: a Tag vocabulary table (Tags, Prompts count, Images shown as "—" with hidden
-"Not available yet", Actions), a Categories panel, and an operations panel with Create
-tag and Manage category. Lists load 100 rows at a time, append when scrolled into view
-and keep `Load more tags` / `Load more categories` while more remain. Prompts counts are
-the Library Browse totals.
+Screen: a `+ Create tag` heading action, a Tag vocabulary table (columns Tag, Prompts,
+Images shown as "—" with hidden "Not available yet", and Actions with Browse and
+Rename / merge), and a Categories panel whose category rows end with the Manage
+category row (Review). Lists load 100 rows at a time, append when scrolled into view
+and keep `Load more tags` / `Load more categories` while more remain. Prompts counts
+are the Library Browse totals.
 
 Dialogs (`vocabulary-dialog.mjs`): **Create tag**, **Rename or merge tag** (renaming to
 an existing name merges; it carries a **Delete tag…** confirmation that names the
@@ -624,15 +626,18 @@ Guarded states, each exercised against the real server in
 `tests/browser/workspace-vocabulary.spec.mjs`: stale epoch (`storage-changed`) and
 `vocabulary-conflict` write nothing and re-read; an unknown outcome keeps the dialog
 open, re-reads and never resends a delete; an unconfirmed Delete offers Retry that only
-re-reads the impact; a failed list read shows Retry with "Nothing was changed."; a failed
-Load more keeps focus on the control; Manage categories reads up to 1,000 categories
-and says so when capped. **Browse** on a tag or category row opens Library filtered to
-that value; the Prompts count equals the number of cards Browse shows.
+re-reads the impact; a failed list read shows Retry with "Nothing was changed."; a
+failed Load more moves keyboard focus to its Retry; a write that lands after its dialog
+was force-closed or left with Back still re-reads the lists and drops the cached Library
+shelf; Manage categories reads up to 1,000 categories and says so when capped.
+**Browse** on a tag or category row opens Library with exactly that Tags or Category
+filter (the concept puts the name in the search text instead); the Prompts count equals
+the number of cards Browse shows.
 
 Test files: `tests/js/workspace-vocabulary-state.test.js` (strict parsing, stale and
-abort handling, sentences), `tests/js/workspace-state.test.js` (route/title),
-`tests/browser/workspace-vocabulary.spec.mjs` (screen, dialogs, Browse, mobile, the
-concept geometry/token/control comparison and its mutation check),
+abort handling, late writes after dispose, sentences), `tests/js/workspace-state.test.js`
+(route/title), `tests/browser/workspace-vocabulary.spec.mjs` (screen, dialogs, Browse,
+mobile, the concept geometry/token/control comparison and its mutation check),
 `tests/browser/vocabulary-canonical-comparison.mjs` (inventory mapping),
 `tests/browser/vocabulary-visual.spec.mjs` (paired capture artifacts) and the
 `focused node tag suggestions include a newly created tag` case in
@@ -642,16 +647,19 @@ concept geometry/token/control comparison and its mutation check),
 
 ```sh
 node --test tests/js/workspace-vocabulary-state.test.js tests/js/workspace-state.test.js
-PM_TEST_PORT=8767 npm run --prefix tools/vendor test:workflows -- \
+PM_TEST_PORT=8766 npm run --prefix tools/vendor test:workflows -- \
   workspace-vocabulary.spec.mjs vocabulary-visual.spec.mjs focused-node.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 ```
 
 Recorded deviations from the concept (maintainer acceptance): no Auto-tag images
-button and an Images "—" cell until the image-annotation slice; singular "1 positive
-prompt"; the production list appends fixture-only tags after the concept's sample tags.
-Paired concept/production captures for both themes and widths are attached as test
-artifacts; no PNG baseline is added until acceptance. Not compared: hover states and
-the dialog focus ring (the page-level keyboard ring and link ring offsets are asserted).
-No coverage floor was lowered; `vocabulary-state.mjs`, `vocabulary.mjs` and
-`vocabulary-dialog.mjs` have additive floors in `frontend-coverage-baseline.json`.
+button and an Images "—" cell until the image-annotation slice; bounded lists with
+Load more; title "Tags"; Manage categories adds a Category select and Preview before
+Apply; "Apply" instead of "Apply in prototype"; Delete tag… inside Rename or merge;
+Browse sets the exact filter; singular "1 positive prompt"; the production list appends
+fixture-only tags after the concept's sample tags. Paired concept/production captures
+for both themes and widths are attached as test artifacts; no PNG baseline is added
+until acceptance. Not compared: hover states and the dialog focus ring (the page-level
+keyboard ring and link ring offsets are asserted). No coverage floor was lowered;
+`vocabulary-state.mjs`, `vocabulary.mjs` and `vocabulary-dialog.mjs` have additive
+floors in `frontend-coverage-baseline.json`.
