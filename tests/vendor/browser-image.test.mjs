@@ -20,5 +20,11 @@ for (const name of ['frontend-coverage', 'browser-workflows']) {
         const body = job(name);
         assert.match(body, new RegExp(`^    container:\\n      image: mcr\\.microsoft\\.com/playwright:v${version.replaceAll('.', '\\.')}-noble$`, 'm'));
         assert.doesNotMatch(body, /playwright install/, 'browsers and their fonts come from the image, not a runner install');
+        // Toolcache interpreters are the runner's own builds: their entry points name host paths that do not exist in
+        // the container (setup-python failed with `spawn .../bin/pip ENOENT`). Use the image's Python and Node.
+        assert.doesNotMatch(body, /actions\/setup-(python|node)@/);
+        assert.match(body, /python3 -m venv --without-pip /, 'a user-space venv on the image Python (no ensurepip, no root)');
+        assert.match(body, /sha256sum -c/, 'the pip wheel that bootstraps the venv is checksum-pinned');
+        assert.match(body, /node --version \| grep -q '\^v24\\\.'/, 'the image Node is the Node 24 the project requires');
     });
 }
