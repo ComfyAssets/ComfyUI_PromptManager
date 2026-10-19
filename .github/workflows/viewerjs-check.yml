@@ -20,6 +20,12 @@ jobs:
   frontend-coverage:
     name: frontend coverage (chromium and touch)
     runs-on: ubuntu-latest
+    # Layout comparisons depend on the fonts each browser falls back to, so browser jobs run in the
+    # same pinned Playwright image as local runs (tag = @playwright/test in tools/vendor/package-lock.json;
+    # tests/vendor/browser-image.test.mjs checks it). Browsers and fonts come from the image.
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble
+      options: --user 1001
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
@@ -37,7 +43,6 @@ jobs:
       - run: npm ci --prefix tools/vendor --ignore-scripts
       - run: npm run --prefix tools/vendor check
       - run: npm run --prefix tools/vendor test
-      - run: npx --prefix tools/vendor playwright install --with-deps chromium
       - name: Frontend unit, viewer, workflow, and coverage checks
         run: npm run --prefix tools/vendor test:coverage
       - name: Upload frontend coverage and Chromium traces
@@ -54,6 +59,12 @@ jobs:
   browser-workflows:
     name: page workflows (${{ matrix.browser }})
     runs-on: ubuntu-latest
+    # Layout comparisons depend on the fonts each browser falls back to, so browser jobs run in the
+    # same pinned Playwright image as local runs (tag = @playwright/test in tools/vendor/package-lock.json;
+    # tests/vendor/browser-image.test.mjs checks it). Browsers and fonts come from the image.
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble
+      options: --user 1001
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -73,7 +84,6 @@ jobs:
           cache: npm
           cache-dependency-path: tools/vendor/package-lock.json
       - run: npm ci --prefix tools/vendor --ignore-scripts
-      - run: npx --prefix tools/vendor playwright install --with-deps ${{ matrix.browser }}
       - name: Page workflows in ${{ matrix.browser }}
         run: npm run --prefix tools/vendor test:workflows -- --project ${{ matrix.browser }}
       - name: Upload browser traces

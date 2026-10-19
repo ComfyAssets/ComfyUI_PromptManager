@@ -42,8 +42,18 @@ npm run --prefix tools/vendor test:workflows -- --project firefox --project webk
 `PM_TEST_PYTHON` selects the Python executable; `PM_TEST_PORT` selects the local
 port (default 8765). Set these environment variables when Python is outside PATH
 or the port is occupied. Test servers are never reused. On unsupported Linux
-distributions, browser system dependencies may need manual installation; CI uses
-Ubuntu. For a quick browser run, use `test:workflows -- --project chromium`.
+distributions, browser system dependencies may need manual installation. For a
+quick browser run, use `test:workflows -- --project chromium`.
+
+CI runs the browser jobs inside the pinned image
+`mcr.microsoft.com/playwright:v<@playwright/test version>-noble`
+(`tests/vendor/browser-image.test.mjs` keeps the tag in step with the lockfile).
+Concept comparisons measure geometry, and geometry follows the fonts a browser
+falls back to: the concept names Inter, which neither the image nor a stock
+runner ships. On a plain `ubuntu-latest` runner the fallback is DejaVu Sans,
+whose wider metrics make the concept's own Tags table overflow a 390px viewport,
+so the 390px comparisons are only meaningful in the pinned image. To reproduce CI,
+run the suites in that image.
 
 ## Managed real ComfyUI
 
