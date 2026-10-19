@@ -272,6 +272,7 @@ class TestVocabularyAPI(ImageAPITestCase):
             self.assertEqual(result["success"], False)
             self.assertIsNone(result["code"])
             self.assertIsInstance(result["error"], str)
+        self.assertEqual(self.tag_rows(), before)
         tag_id = self.api.db.create_vocabulary_tag("ok", expected_epoch=epoch)["tag"][
             "id"
         ]
