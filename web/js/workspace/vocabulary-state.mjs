@@ -139,6 +139,8 @@ function writePhase(error) {
 export function createVocabularyCommand({api, onChange = () => {}, onInvalidate = () => {}}) {
     let state = freeze({phase: 'idle', kind: null, error: null, preview: null, receipt: null});
     let disposed = false;
+    // Set when the dialog's inputs change while a category preview is in flight.
+    let stalePreview = false;
     const emit = patch => {state = freeze({...state, ...patch}); onChange(state);};
     const invalidate = () => onInvalidate(freeze({phase: state.phase, kind: state.kind, receipt: state.receipt}));
 
@@ -170,16 +172,19 @@ export function createVocabularyCommand({api, onChange = () => {}, onInvalidate 
 
     async function preview(body) {
         emit({phase: 'saving', kind: 'preview-category', error: null, preview: null, receipt: null});
+        stalePreview = false;
         try {
             const value = await api.post(`${BASE}/categories/preview`, body);
             requireValue(object(value) && value.success === true && value.library_epoch === body.expected_epoch &&
                 value.source === body.source && value.target === body.target.trim() && typeof value.target_exists === 'boolean' &&
                 validateImpact(value.impact) && hexToken(value.impact_token), 'Invalid category preview');
-            if (!disposed) emit({phase: 'previewed', preview: freeze({...value})});
+            // Inputs edited while it was pending: it describes values no longer on screen, so Preview is needed again.
+            if (!disposed) emit(stalePreview ? {phase: 'idle'} : {phase: 'previewed', preview: freeze({...value})});
         } catch (error) {
             if (disposed) return;
             // A preview writes nothing: only a restore or a changed category needs recovery.
             const phase = isApiError(error) && error.status === 409 && Object.hasOwn(RECOVERY, error.code) ? RECOVERY[error.code] : 'write-error';
+            if (phase === 'write-error' && stalePreview) {emit({phase: 'idle'}); return;}
             emit({phase, error});
             if (phase !== 'write-error') invalidate();
         }
@@ -220,9 +225,11 @@ export function createVocabularyCommand({api, onChange = () => {}, onInvalidate 
             return write('apply-category', 'post', `${BASE}/categories/apply`, {expected_epoch: shown.library_epoch,
                 source: shown.source, target: shown.target, impact_token: shown.impact_token});
         },
-        /** The user changed a dialog input: a shown preview no longer describes it. */
+        /** The user changed a dialog input: a shown or pending preview no longer describes it. */
         edit() {
-            if (!disposed && state.phase === 'previewed') emit({phase: 'idle', preview: null});
+            if (disposed) return;
+            if (state.phase === 'previewed') emit({phase: 'idle', preview: null});
+            else if (state.phase === 'saving' && state.kind === 'preview-category') stalePreview = true;
         },
         /** Explicit user recovery (after re-reading the lists); never resends anything. */
         reset() {

@@ -363,6 +363,45 @@ test('category preview shows real impact; editing its inputs returns to idle and
     assert.throws(() => command.previewCategory(3, 'Scenery', EPOCH), TypeError);
 });
 
+test('an edit while a preview is pending discards its late result so Apply cannot send the old values', async () => {
+    const {createVocabularyCommand} = await source;
+    const posts = [];
+    const pending = [];
+    const command = createVocabularyCommand({api: {post: (url, body) => {
+        posts.push({url, body});
+        return new Promise((resolve, reject) => pending.push({resolve, reject}));
+    }}});
+    const first = command.previewCategory('Landscapes', 'Scenery', EPOCH);
+    assert.equal(command.state.phase, 'saving');
+    command.edit();
+    assert.equal(command.state.phase, 'saving', 'the request is still in flight');
+    pending.shift().resolve(preview());
+    await first;
+    assert.equal(command.state.phase, 'idle', 'the late preview describes values no longer on screen');
+    assert.equal(command.state.preview, null);
+    await command.applyCategory(preview());
+    assert.equal(posts.length, 1, 'nothing is applied from a discarded preview');
+    // A fresh preview of the edited values is applicable as usual.
+    const second = command.previewCategory('Landscapes', 'Vistas', EPOCH);
+    pending.shift().resolve(preview({target: 'Vistas'}));
+    await second;
+    assert.equal(command.state.phase, 'previewed');
+    assert.equal(command.state.preview.target, 'Vistas');
+    // A discarded preview's plain failure is not shown either; a recovery outcome still is, since it describes storage.
+    command.edit();
+    const failed = command.previewCategory('Landscapes', 'Vistas', EPOCH);
+    command.edit();
+    pending.shift().reject(new TypeError('Failed to fetch'));
+    await failed;
+    assert.equal(command.state.phase, 'idle');
+    assert.equal(command.state.error, null);
+    const restored = command.previewCategory('Landscapes', 'Vistas', EPOCH);
+    command.edit();
+    pending.shift().reject(new ApiError(409, 'restored', 'storage-changed'));
+    await restored;
+    assert.equal(command.state.phase, 'storage-changed');
+});
+
 test('a token conflict on apply requires a new preview', async () => {
     const {createVocabularyCommand} = await source;
     const responses = [() => preview(), () => {throw new ApiError(409, 'changed', 'vocabulary-conflict');}, () => preview()];

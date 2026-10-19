@@ -349,6 +349,29 @@ test('manage categories previews real impact before applying',async({page,reques
     expect(after.prompts.filter(row=>row[2]==='Scenery')).toHaveLength(3);
 });
 
+test('an edit during a pending preview needs a new Preview; Apply never sends the old values',async({page,request})=>{
+    const writes=trackWrites(page);await openPage(page);const before=await snapshot(request);
+    let release;const held=new Promise(resolve=>{release=resolve;});
+    await page.route('**/prompt_manager/vocabulary/categories/preview',async route=>{await held;await route.continue();},{times:1});
+    const box=await openManage(page);
+    const source=field(box,'Category'),target=field(box,'Proposed new category name'),impact=box.locator('p.small');
+    await target.fill('Scenery');await button(box,'Preview').click();
+    await expect(button(box,'Preview')).toBeDisabled();
+    await target.fill('Vistas');await source.selectOption('Illustration');
+    release();
+    await expect.poll(()=>writes.length).toBe(1);
+    expect(writes[0]).toMatchObject({url:'/prompt_manager/vocabulary/categories/preview',body:{source:'Landscapes',target:'Scenery'}});
+    // The late "Landscapes → Scenery" preview no longer describes the form: no impact, no Apply.
+    await expect(button(box,'Preview')).toBeEnabled();
+    await expect(impact).toBeHidden();expect(await actionNames(box)).toEqual(['Cancel','Preview']);
+    await expect(target).toHaveValue('Vistas');await expect(source).toHaveValue('Illustration');
+    await button(box,'Preview').click();
+    await expect(impact).toHaveText('“Illustration” is used by 1 positive prompt. Apply renames it to “Vistas”.');
+    expect(writes.at(-1)).toMatchObject({url:'/prompt_manager/vocabulary/categories/preview',body:{source:'Illustration',target:'Vistas'}});
+    expect(writes.filter(write=>write.url.endsWith('/apply'))).toEqual([]);
+    expect(await snapshot(request)).toEqual(before);
+});
+
 test('delete tag confirms real impact and removes only the vocabulary name',async({page,request})=>{
     const writes=trackWrites(page);await openPage(page);const before=await snapshot(request);
     let box=await openRename(page,'cinematic');
