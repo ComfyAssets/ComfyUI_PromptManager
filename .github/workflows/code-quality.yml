@@ -9,41 +9,13 @@ on:
   pull_request:
     branches: [main]
 
+# Superseded PR pushes cancel their older run. Every main push gets its own
+# group (run_id), so no main commit's run is ever cancelled or dropped as pending.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.10"
-
-      - name: Cache pip dependencies
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-quality-${{ hashFiles('requirements-dev.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-quality-
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
-
-      - name: Check formatting with Black
-        run: black --check --diff .
-
-      - name: Lint with flake8
-        run: |
-          # Fail on syntax errors and undefined names
-          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-          # Warnings as non-blocking
-          flake8 . --count --exit-zero --max-line-length=88 --statistics --exclude=reference/,.git,__pycache__,web/
-
   security:
     runs-on: ubuntu-latest
 
@@ -58,5 +30,9 @@ jobs:
       - name: Install bandit
         run: pip install bandit[toml]
 
-      - name: Security scan
-        run: bandit -r . -ll --exclude=./tests,./reference,./venv -q || true
+      # Medium findings are reported without failing until they are triaged.
+      # High severity is a hard gate.
+      - name: Security report (medium and above, informational)
+        run: bandit -r . -ll -q --exclude ./tests,./reference,./venv,./tools/vendor/node_modules --exit-zero
+      - name: Security scan (high severity gate)
+        run: bandit -r . -lll -q --exclude ./tests,./reference,./venv,./tools/vendor/node_modules

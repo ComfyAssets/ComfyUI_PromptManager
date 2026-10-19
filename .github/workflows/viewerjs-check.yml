@@ -10,6 +10,12 @@ on:
 permissions:
   contents: read
 
+# Superseded PR pushes cancel their older run. Every main push gets its own
+# group (run_id), so no main commit's run is ever cancelled or dropped as pending.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   frontend-coverage:
     name: frontend coverage (chromium and touch)

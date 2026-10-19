@@ -386,7 +386,9 @@ def _output_image_entry(
             thumbnail_url += f"&root_scope={root_scope}"
 
     entry = {
-        "id": hashlib.sha1(str(media_path).encode("utf-8")).hexdigest()[:16],
+        "id": hashlib.sha1(
+            str(media_path).encode("utf-8"), usedforsecurity=False
+        ).hexdigest()[:16],
         "filename": media_path.name,
         "path": rel_path.as_posix(),
         "relative_path": str(rel_path),
