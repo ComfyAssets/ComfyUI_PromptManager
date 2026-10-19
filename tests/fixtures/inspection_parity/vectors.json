@@ -48,24 +48,24 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "ambiguous",
-      "reason": "Multiple sampler branches",
+      "state": "absent",
+      "reason": "Guider has no negative input",
       "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur, Scene 0: unique shot description soft winter light,",
+      "negative": "<absent>",
       "candidate_count": 0,
       "facts": {
         "seed": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "1000"
         },
         "steps": {
           "status": "known",
           "value": "20"
         },
         "cfg": {
-          "status": "unresolved",
+          "status": "not-recorded",
           "value": null
         },
         "sampler": {
@@ -73,8 +73,8 @@
           "value": "euler"
         },
         "scheduler": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "Flux2Scheduler"
         },
         "model": {
           "status": "known",

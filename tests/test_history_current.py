@@ -449,6 +449,46 @@ class CurrentLocationTests(unittest.TestCase):
                 )
         self.assertEqual(reads, [], "Unsupported media must not reach the parser")
 
+    def test_preview_files_in_the_host_temp_folder_keep_preview_only_stages(self):
+        # Saved raw image plus a FaceDetailer that only previews (Codex P2).
+        import json
+
+        from PIL import Image
+        from PIL.PngImagePlugin import PngInfo
+        from tests import inspection_parity as parity
+
+        service = self.module("py.api.inspection_service")
+        graph = parity.build("f19")["prompt"]
+        graph["9"]["class_type"] = "PreviewImage"
+        graph["14"] = {"class_type": "SaveImage", "inputs": {"images": ["8", 0]}}
+        info = PngInfo()
+        info.add_text("prompt", json.dumps(graph))
+        observed = {}
+        for name, folder in (("output", self.output), ("temp", self.temp)):
+            path = folder / "nested" / "same.png"
+            path.parent.mkdir()
+            with Image.new("RGB", (4, 4)) as image:
+                image.save(path, pnginfo=info)
+            observed[name] = service.inspect_current_file(
+                path, source_label=name, saved=None, library={"status": "none"}
+            )
+        saved = observed["output"]["prompts"]
+        self.assertEqual(saved["positive"]["status"], "resolved")
+        self.assertEqual(saved["positive"]["text"], parity.POS)
+        self.assertEqual(observed["output"]["resolution"]["sampler_id"], "3")
+        preview = observed["temp"]["prompts"]
+        self.assertEqual(preview["positive"]["status"], "ambiguous")
+        self.assertIsNone(preview["positive"]["text"])
+        # An unknown host temp folder treats the file as saved output.
+        self.host_temp = None
+        again = service.inspect_current_file(
+            self.output / "nested" / "same.png",
+            source_label="output",
+            saved=None,
+            library={"status": "none"},
+        )
+        self.assertEqual(again["prompts"]["positive"]["status"], "resolved")
+
 
 class HistoryImportTests(unittest.TestCase):
     def test_api_import_does_not_require_a_running_host_server(self):

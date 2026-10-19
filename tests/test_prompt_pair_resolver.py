@@ -1996,9 +1996,7 @@ class TestEncoderAndStringSemantics(unittest.TestCase):
         self.assertEqual(evidence["prompts"]["positive"]["status"], "unresolved")
         self.assertIsNone(evidence["prompts"]["positive"]["text"])
 
-    # TODO(PR3): flip with the f01b vector once output ancestry excludes the
-    # preview-only FaceDetailer (D19); the latent origin is accepted since 2.5.
-    @unittest.expectedFailure
+    # The preview-only FaceDetailer no longer competes with the saved branch.
     def test_f01b_single_flux2_branch_resolves_with_absent_negative(self):
         result = _inspect(parity.build("f01b")["prompt"])
         self.assertEqual(result["state"], "absent")
@@ -2387,6 +2385,106 @@ class TestDetailerStages(unittest.TestCase):
         source["9"]["inputs"]["images"] = [previous, 0]
         result = _inspect(source, output_node_id="9")
         self.assertEqual((result["state"], result["sampler_id"]), ("resolved", "d19"))
+
+    def test_a_preview_only_detailer_never_blocks_the_saved_branch(self):
+        # Codex P2: the detailer feeds only a PreviewImage; the raw image is saved.
+        source = _detailed()
+        source["9"]["class_type"] = "PreviewImage"
+        source["14"] = {"class_type": "SaveImage", "inputs": {"images": ["8", 0]}}
+        result = _inspect(source)
+        self.assertEqual((result["state"], result["sampler_id"]), ("resolved", "3"))
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        self.assertEqual(result["candidates"], [])
+        # Every non-file output counts as a preview, through any image chain.
+        for name in sorted(inspection_semantics.load_semantics().non_file_outputs):
+            with self.subTest(output=name):
+                source["15"] = {
+                    "class_type": "ImageScale",
+                    "inputs": {"image": ["50", 0]},
+                }
+                source["9"] = {"class_type": name, "inputs": {"images": ["15", 0]}}
+                self.assertEqual(_inspect(source)["sampler_id"], "3")
+
+    def test_a_preview_only_sampler_never_blocks_the_saved_sampler(self):
+        source = _detailed()
+        source["9"]["inputs"]["images"] = ["8", 0]
+        source["16"] = {"class_type": "VAEDecode", "inputs": {"samples": ["50", 0]}}
+        del source["50"]
+        source["50"] = {
+            "class_type": "KSampler",
+            "inputs": {**source["3"]["inputs"], "positive": ["10", 0]},
+        }
+        source["17"] = {"class_type": "PreviewImage", "inputs": {"images": ["16", 0]}}
+        result = _inspect(source)
+        self.assertEqual((result["state"], result["sampler_id"]), ("resolved", "3"))
+        # Ingestion keeps its historical answer (D1).
+        legacy = resolve_prompt_pair({"prompt": source})
+        self.assertEqual(legacy["state"], "ambiguous")
+
+    def test_stages_that_write_files_stay_candidates(self):
+        # Raw and detailed double saves both write files (the H1 exception).
+        source = _detailed()
+        source["14"] = {"class_type": "SaveImage", "inputs": {"images": ["8", 0]}}
+        source["15"] = {"class_type": "PreviewImage", "inputs": {"images": ["50", 0]}}
+        result = _inspect(source)
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(
+            sorted(item["sampler_id"] for item in result["candidates"]), ["3", "50"]
+        )
+        # A stage with no output at all is not known to be preview-only.
+        source = _detailed()
+        source["14"] = {"class_type": "SaveImage", "inputs": {"images": ["8", 0]}}
+        del source["9"]
+        self.assertEqual(_inspect(source)["state"], "ambiguous")
+
+    def test_when_every_stage_is_preview_only_none_is_dropped(self):
+        source = _detailed()
+        source["9"]["class_type"] = "PreviewImage"
+        source["14"] = {"class_type": "PreviewImage", "inputs": {"images": ["8", 0]}}
+        result = _inspect(source)
+        self.assertEqual(result["reason_code"], "multistage-differs")
+        self.assertEqual(len(result["candidates"]), 2)
+
+    def test_preview_files_keep_preview_only_stages(self):
+        # A preview file in the temp folder may be the preview stage's own output.
+        source = _detailed()
+        source["9"]["class_type"] = "PreviewImage"
+        source["14"] = {"class_type": "SaveImage", "inputs": {"images": ["8", 0]}}
+        result = resolve_prompt_pair(
+            {"prompt": source}, profile=resolver.PREVIEW_INSPECTION_PROFILE
+        )
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(len(result["candidates"]), 2)
+
+    def test_a_failed_preview_walk_keeps_every_stage(self):
+        source = _detailed()
+        source["9"]["class_type"] = "PreviewImage"
+        source["14"] = {"class_type": "SaveImage", "inputs": {"images": ["8", 0]}}
+        limit = resolver._Unresolved("Resolution work limit reached", "work-limit")
+        with mock.patch.object(
+            resolver._GraphResolver, "producers_of", side_effect=limit
+        ):
+            result = _inspect(source)
+        # More ambiguity, never a chosen prompt.
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(len(result["candidates"]), 2)
+        self.assertIsNone(result["positive"])
+
+    def test_preview_only_walks_are_linear_in_long_chains(self):
+        # 600 chained detailers ending in a preview, beside a saved raw image:
+        # one pass decides every stage, so the walk itself never runs out.
+        source = _detailed(same_prompt=True)
+        previous = "50"
+        for index in range(600):
+            source[f"d{index}"] = _detailer([previous, 0], ["6", 0])
+            previous = f"d{index}"
+        source["9"] = {
+            "class_type": "PreviewImage",
+            "inputs": {"images": [previous, 0]},
+        }
+        source["14"] = {"class_type": "SaveImage", "inputs": {"images": ["8", 0]}}
+        result = _inspect(source)
+        self.assertEqual((result["state"], result["sampler_id"]), ("resolved", "3"))
 
     def test_default_profile_keeps_the_upstream_sampler(self):
         # Ingestion is unchanged (D1): the detailer is not a sampler there.

@@ -129,6 +129,10 @@ class ResolverProfile:
     max_path_entries: Optional[int] = None
     max_built_chars: Optional[int] = None
     max_scanned_units: Optional[int] = None
+    # Unanchored inspection of a saved file drops stages whose outputs reach
+    # only non-file outputs (PreviewImage and the like): they cannot have
+    # written it. A preview file itself may be such a stage's output.
+    drop_preview_only_stages: bool = False
 
     @property
     def legacy(self) -> bool:
@@ -157,6 +161,11 @@ INSPECTION_PROFILE = ResolverProfile(
     max_built_chars=16 * 100_000,
     # About four passes over the 2 MiB role-record budget.
     max_scanned_units=8_000_000,
+    drop_preview_only_stages=True,
+)
+# Inspection of a file in the host temp folder (where previews are written).
+PREVIEW_INSPECTION_PROFILE = replace(
+    INSPECTION_PROFILE, name="inspection-preview", drop_preview_only_stages=False
 )
 # Without the semantics table every sampler reads its pair directly.
 _DIRECT_SAMPLER = {
@@ -345,6 +354,7 @@ class _GraphResolver:
         self.path_entries = profile.max_path_entries
         self.built_chars = profile.max_built_chars
         self.scanned = profile.max_scanned_units
+        self.drop_preview_only = profile.drop_preview_only_stages
         self.checked: dict = {}
         # Unfolded visit cost of each memo entry (inspection): a memo hit charges
         # it to the current candidate, so each candidate's outcome is independent
@@ -1159,7 +1169,11 @@ class _GraphResolver:
         A sampler whose output also reaches a terminal node other than a later
         stage or a preview stays a candidate of its own (the file may be its
         output). Any walk that fails or runs out of budget absorbs nothing.
+        With ``drop_preview_only_stages``, a stage whose outputs reach only
+        non-file outputs is dropped first, unless every stage is.
         """
+        if self.drop_preview_only:
+            sampler_ids = self.file_stages(sampler_ids)
         detailers = [
             node_id
             for node_id in sampler_ids
@@ -1185,6 +1199,69 @@ class _GraphResolver:
                 continue
         kept = [node_id for node_id in sampler_ids if node_id not in absorbed]
         return kept or sampler_ids
+
+    def file_stages(self, sampler_ids: list) -> list:
+        """Stages not proven preview-only; all of them when every one is.
+
+        A stage is preview-only when its outputs, followed through any later
+        stage, reach a non-file output and no other terminal node. A stage
+        without consumers is a terminal of its own and is kept. Two backward
+        passes over the graph decide every stage at once (linear work, charged
+        like ``consumers``); a pass that fails keeps every stage.
+        """
+        if len(sampler_ids) < 2:
+            return sampler_ids
+        try:
+            consumers = self.consumers()
+            previews = self.non_file_outputs()
+            terminals = [
+                node_id
+                for node_id, node in self.graph.items()
+                if isinstance(node, dict)
+                and node_id not in previews
+                and not consumers.get(node_id)
+            ]
+            to_file = self.producers_of(terminals, previews)
+            to_preview = self.producers_of(list(previews), previews)
+        except _Unresolved:
+            return sampler_ids
+        kept = [
+            node_id
+            for node_id in sampler_ids
+            if node_id in to_file or node_id not in to_preview
+        ]
+        return kept or sampler_ids
+
+    def non_file_outputs(self) -> set:
+        names = self.semantics.non_file_outputs
+        return {
+            node_id
+            for node_id, node in self.graph.items()
+            if isinstance(node, dict) and node.get("class_type") in names
+        }
+
+    def producers_of(self, starts: list, previews: set) -> set:
+        """Nodes whose output reaches one of ``starts``, never through a preview."""
+        found, queue = set(starts), deque(starts)
+        while queue:
+            node = self.graph[queue.popleft()]
+            inputs = node.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+            self.scan(len(inputs))
+            for value in inputs.values():
+                if not _link(value):
+                    continue
+                producer = str(value[0])
+                if (
+                    producer in found
+                    or producer in previews
+                    or not isinstance(self.graph.get(producer), dict)
+                ):
+                    continue
+                found.add(producer)
+                queue.append(producer)
+        return found
 
     def consumers(self) -> dict:
         """Reverse links: node ID to the IDs of nodes reading one of its outputs."""
@@ -1579,7 +1656,8 @@ def resolve_prompt_pair(
 
     Accepts ``{"prompt": api_graph, "parameters": optional_a1111_text}`` or a
     direct API graph. An optional saver/sampler node ID anchors branch selection.
-    Unanchored multiple samplers are ambiguous, even when their texts are equal.
+    Unanchored multiple samplers are ambiguous, even when their texts are equal
+    (the inspection profile first drops stages that only reach previews).
     ``profile`` selects the bounds; explicit ``max_*`` keywords override it.
     """
     profile = _profile_with(profile, max_visits, max_depth, max_text_length)

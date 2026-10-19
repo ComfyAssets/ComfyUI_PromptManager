@@ -623,13 +623,14 @@
     }
 
     /**
-     * Facts follow the server's resolution. Its `sampler_id` drives them only when
-     * resolved, or for an ambiguous result naming the final stage of a multistage
-     * chain (merged per field across the stages, independent of any selection: D5).
-     * Ambiguous without a named sampler (no candidates on the wire until PR3), and
-     * unresolved or absent over several listed samplers, merge the same way across
-     * every listed sampler and its stages. Otherwise (no resolution, or one listed
-     * sampler) exactly one listed sampler supplies them; several leave every field ambiguous.
+     * Facts follow the server's resolution. Its `sampler_id` drives them alone when
+     * resolved. Any other result naming a sampler (an ambiguous multistage chain, or an
+     * absent or unresolved prompt of the branch the server chose, e.g. after dropping a
+     * preview-only stage) merges per field across that sampler's stages, independent of
+     * any selection (D5). Ambiguous without a named sampler (no candidates on the wire
+     * until PR3), and unresolved or absent over several listed samplers, merge the same
+     * way across every listed sampler and its stages. Otherwise (no resolution, or one
+     * listed sampler) exactly one listed sampler supplies them; several leave every field ambiguous.
      */
     function graphFacts(graph, source, resolution) {
         if (!object(graph)) return factSet("unresolved", source);
@@ -640,7 +641,7 @@
         const ctx = createContext(graph, null, true);
         const state = object(resolution) ? resolution.state : undefined;
         const named = typeof resolution?.sampler_id === "string" ? resolution.sampler_id : null;
-        if ((state === "resolved" || state === "ambiguous") && named !== null) {
+        if (["resolved", "ambiguous", "absent", "unresolved"].includes(state) && named !== null) {
             if (!samplerEntry(graph, named)) return factSet("unresolved", source);
             if (state === "resolved") return samplerFacts(ctx, named, source);
             const stages = new Set();

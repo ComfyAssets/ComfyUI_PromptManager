@@ -300,6 +300,21 @@ test("unresolved and absent results over several stages merge facts per field", 
     assert.ok(factFields.every(field => single[field].status === "known" && single[field].sampler_id === "s"));
 });
 
+test("a named sampler limits absent and unresolved facts to its own stages", () => {
+    // Codex P2: the server dropped a preview-only detailer and named the saved sampler, so
+    // the detailer's settings never leak into the saved file's facts.
+    const graph = detailerFactGraph();
+    graph.save = { class_type: "SaveImage", inputs: { images: ["decode", 0] } };
+    graph.preview = { class_type: "PreviewImage", inputs: { images: ["d", 0] } };
+    const own = {
+        seed: ["known", "42"], steps: ["known", "25"], cfg: ["known", "6.5"],
+        sampler: ["known", "euler"], scheduler: ["known", "normal"], model: ["known", "model.safetensors"],
+    };
+    for (const state of ["absent", "unresolved"]) assert.deepEqual(statusValues(factsFor(graph, { resolution: { state, sampler_id: "s" } })), own, state);
+    // Without a named sampler every listed sampler still merges.
+    assert.equal(factsFor(graph, { resolution: { state: "absent", sampler_id: null } }).seed.status, "ambiguous");
+});
+
 test("stage walks follow only the resolver's links", () => {
     // Review M-2: `["eff", -1]` is not a link to the server, so it is not walked.
     for (const slot of [-1, 0.5, "0"]) {
