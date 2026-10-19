@@ -11,6 +11,7 @@ from typing import Optional, List, Dict, Any
 from .models import PromptModel, normalize_image_path, utc_now_iso
 from .pairs import PairDependencyError, PairOperations
 from .library import LibraryOperations
+from .library_commands import LibraryCommandOperations
 from .execution_history import ExecutionHistoryOperations
 from .execution_contexts import ExecutionContextOperations
 from .execution_outputs import ExecutionOutputOperations
@@ -158,6 +159,7 @@ def _coerce_file_info(metadata: Any) -> tuple:
 class PromptDatabase(
     PairOperations,
     LibraryOperations,
+    LibraryCommandOperations,
     ExecutionHistoryOperations,
     ExecutionContextOperations,
     ExecutionOutputOperations,

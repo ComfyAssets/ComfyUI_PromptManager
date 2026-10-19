@@ -10,6 +10,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
+from functools import wraps
 from pathlib import Path
 
 from aiohttp import web
@@ -19,8 +20,10 @@ from .pairs import pair_response
 
 try:
     from ...database.library import ARCHIVE_SCOPES
+    from ...database.library_commands import LibraryCommandError
 except ImportError:
     from database.library import ARCHIVE_SCOPES
+    from database.library_commands import LibraryCommandError
 
 _SECRET = os.urandom(32)
 
@@ -155,11 +158,48 @@ def _missing() -> web.Response:
     )
 
 
+_PARENT_PATCH_FIELDS = frozenset({"expected_epoch", "if_match", "metadata"})
+_COMMAND_MESSAGES = {
+    "metadata-conflict": "This prompt changed since it was loaded; review it first",
+    "storage-changed": "Prompt storage was restored; refresh the library",
+}
+
+
+def _command_error(status: int, error: str, code: str | None = None, **extra):
+    return web.json_response(
+        {"success": False, "code": code, "error": error, **extra}, status=status
+    )
+
+
+def library_command_response(handler: Callable) -> Callable:
+    """Native command envelope: ``{success:false,code,error}`` on every failure."""
+
+    @wraps(handler)
+    async def wrapped(self, request: web.Request) -> web.Response:
+        try:
+            return await handler(self, request)
+        except LibraryCommandError as exc:
+            extra = {"library_epoch": exc.epoch}
+            if exc.code == "metadata-conflict" and exc.positive is not None:
+                extra["positive"] = exc.positive
+            return _command_error(409, _COMMAND_MESSAGES[exc.code], exc.code, **extra)
+        except (ValueError, TypeError) as exc:
+            return _command_error(400, str(exc))
+        except Exception:
+            self.logger.exception("Library command failed")
+            return _command_error(500, "Library command failed")
+
+    return wrapped
+
+
 class LibraryRoutesMixin:
     def _register_library_routes(self, routes: web.RouteTableDef) -> None:
         routes.get("/prompt_manager/library")(self.list_library)
         routes.get("/prompt_manager/library/options")(self.get_library_options)
         routes.get("/prompt_manager/library/{positive_id}")(self.get_library_positive)
+        routes.patch("/prompt_manager/library/{positive_id}")(
+            self.update_library_parent
+        )
         routes.get("/prompt_manager/library/{positive_id}/images")(
             self.get_library_images
         )
@@ -319,4 +359,25 @@ class LibraryRoutesMixin:
         result["images"] = await self._run_in_executor(
             self._library_media, result["images"], roots
         )
+        return web.json_response({"success": True, **result})
+
+    @library_command_response
+    async def update_library_parent(self, request: web.Request) -> web.Response:
+        positive = _positive_id(request)
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("Expected a JSON object")
+        if set(body) != _PARENT_PATCH_FIELDS:
+            raise ValueError(
+                "Request must contain exactly expected_epoch, if_match and metadata"
+            )
+        result = await self._run_in_executor(
+            self.db.update_library_parent,
+            positive,
+            expected_epoch=body["expected_epoch"],
+            if_match=body["if_match"],
+            metadata=body["metadata"],
+        )
+        if result is None:
+            return _command_error(404, "Positive prompt not found")
         return web.json_response({"success": True, **result})

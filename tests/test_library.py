@@ -519,3 +519,329 @@ class TestLibrary(unittest.TestCase):
         with self.assertRaises(sqlite3.DatabaseError):
             self.db.get_library_options()
         self.assertFalse(connection.in_transaction)
+
+    # -- native parent metadata commands -------------------------------------
+
+    def current(self, positive):
+        detail = self.db.get_library_positive(positive)
+        return detail["library_epoch"], detail["positive"]["edit_token"]
+
+    def update(self, positive, metadata, *, epoch=None, token=None):
+        current_epoch, current_token = self.current(positive)
+        return self.db.update_library_parent(
+            positive,
+            expected_epoch=current_epoch if epoch is None else epoch,
+            if_match=current_token if token is None else token,
+            metadata=metadata,
+        )
+
+    def owner_state(self, positive):
+        connection = self.db.model.get_connection()
+        prompt = dict(
+            connection.execute(
+                "SELECT text,category,rating,notes,created_at,updated_at,"
+                "last_used_at,run_count FROM prompts WHERE id=?",
+                (positive,),
+            ).fetchone()
+        )
+        tags = [
+            row[0]
+            for row in connection.execute(
+                "SELECT t.name FROM prompt_tags pt JOIN tags t ON t.id=pt.tag_id "
+                "WHERE pt.prompt_id=? ORDER BY t.name",
+                (positive,),
+            )
+        ]
+        state = connection.execute(
+            "SELECT prompt_id,title FROM prompt_library_state WHERE prompt_id=?",
+            (positive,),
+        ).fetchone()
+        return prompt, tags, None if state is None else tuple(state)
+
+    def test_metadata_clear_omission_conflicts_and_legacy_invalidation(self):
+        from database.execution_history_schema import rotate_history_epoch
+        from database.library_commands import LibraryCommandError
+
+        positive = self.save("Cat", category="A", tags=["x", "y"], rating=3)
+        with self.db.model.get_connection() as connection:
+            connection.execute(
+                "UPDATE prompts SET notes='n',updated_at='2001-01-01' WHERE id=?",
+                (positive,),
+            )
+        first = self.db.save_prompt_pair(
+            "Cat", "Blur", title="P1", category="PC", tags=["pt"], rating=2, notes="a"
+        )
+        second = self.db.save_prompt_pair(
+            "Cat", "Noise", title="P2", category="QC", tags=["qt"], rating=5
+        )
+        self.db.record_prompt_pair_use(first, 3)
+        pairs_before = [self.db.get_prompt_pair(pair) for pair in (first, second)]
+        prompt_before, _tags, _state = self.owner_state(positive)
+        epoch, token = self.current(positive)
+
+        updated = self.update(
+            positive, {"title": "Portrait", "rating": None, "tags": [], "notes": ""}
+        )
+        self.assertEqual(updated["library_epoch"], epoch)
+        record = updated["positive"]
+        self.assertIsNone(updated["positive"]["rating"])
+        self.assertEqual(updated["positive"]["tags"], [])
+        self.assertEqual(
+            (record["title"], record["notes"], record["category"]),
+            ("Portrait", "", "A"),
+        )
+        self.assertNotIn("previews", record)
+        self.assertNotEqual(record["edit_token"], token)
+        self.assertEqual(record["variant_count"], 2)
+        fresh = self.db.get_library_positive(positive)["positive"]
+        self.assertEqual(record, {key: fresh[key] for key in record})
+        for pair_id, pair_before in zip((first, second), pairs_before):
+            self.assertEqual(self.db.get_prompt_pair(pair_id), pair_before)
+        prompt_after, tags, state = self.owner_state(positive)
+        self.assertEqual(tags, [])
+        self.assertEqual(state, (positive, "Portrait"))
+        self.assertNotEqual(prompt_after["updated_at"], prompt_before["updated_at"])
+        for key in ("text", "created_at", "last_used_at", "run_count"):
+            self.assertEqual(prompt_after[key], prompt_before[key])
+
+        cleared = self.update(positive, {"category": None, "title": ""})["positive"]
+        self.assertEqual((cleared["category"], cleared["title"]), (None, ""))
+        self.assertEqual(cleared["notes"], "")
+        tagged = self.update(positive, {"tags": [" b ", "b", "a", "a "]})
+        self.assertEqual(tagged["positive"]["tags"], ["a", "b"])
+        titled = self.update(positive, {"title": None})["positive"]
+        self.assertIsNone(titled["title"])
+
+        # Two clients read one token: the first change wins, the second conflicts.
+        epoch, shared = self.current(positive)
+        winner = self.update(positive, {"title": "First"}, token=shared)
+        before_conflict = self.owner_state(positive)
+        with self.assertRaises(LibraryCommandError) as caught:
+            self.update(positive, {"title": "Second"}, token=shared)
+        self.assertEqual(caught.exception.code, "metadata-conflict")
+        self.assertEqual(caught.exception.epoch, epoch)
+        self.assertEqual(caught.exception.positive, winner["positive"])
+        self.assertEqual(self.owner_state(positive), before_conflict)
+
+        # Legacy metadata and standalone text writes invalidate native tokens.
+        standalone = self.save("Dog")
+        for target, legacy in (
+            (positive, lambda: self.db.update_prompt_metadata(positive, category="L")),
+            (positive, lambda: self.db.update_prompt_rating(positive, 4)),
+            (standalone, lambda: self.db.update_prompt_text(standalone, "Dog 2")),
+        ):
+            with self.subTest(target=target):
+                _epoch, stale = self.current(target)
+                self.assertTrue(legacy())
+                with self.assertRaises(LibraryCommandError) as caught:
+                    self.update(target, {"notes": "late"}, token=stale)
+                self.assertEqual(caught.exception.code, "metadata-conflict")
+                self.assertNotEqual(caught.exception.positive["edit_token"], stale)
+
+        # A restore with identical content still rejects old epochs and tokens.
+        old_epoch, old_token = self.current(positive)
+        before_restore = self.owner_state(positive)
+        new_epoch = rotate_history_epoch(self.db.model.get_connection())
+        for epoch_value, token_value, code in (
+            (old_epoch, old_token, "storage-changed"),
+            (new_epoch, old_token, "metadata-conflict"),
+        ):
+            with self.subTest(code=code):
+                with self.assertRaises(LibraryCommandError) as caught:
+                    self.update(
+                        positive, {"title": "x"}, epoch=epoch_value, token=token_value
+                    )
+                self.assertEqual(caught.exception.code, code)
+                self.assertEqual(caught.exception.epoch, new_epoch)
+        with self.assertRaises(LibraryCommandError) as caught:
+            self.db.update_library_parent(
+                9999,
+                expected_epoch=old_epoch,
+                if_match=old_token,
+                metadata={"title": "x"},
+            )
+        self.assertEqual(caught.exception.code, "storage-changed")
+        self.assertIsNone(caught.exception.positive)
+        self.assertEqual(self.owner_state(positive), before_restore)
+
+        # Missing and negative-only owners are absent and never registered.
+        negative_only = self.db.get_prompt_pair(first)["negative_prompt_id"]
+        for missing in (9999, negative_only):
+            self.assertIsNone(
+                self.db.update_library_parent(
+                    missing,
+                    expected_epoch=new_epoch,
+                    if_match="0" * 64,
+                    metadata={"title": "x"},
+                )
+            )
+        self.assertIsNone(self.owner_state(negative_only)[2])
+
+    def test_first_unchanged_native_metadata_save_registers_parent_without_changing_payload(  # noqa: E501
+        self,
+    ):
+        kept = self.db.save_prompt_pair("Cat", "Blur", title="Pair")
+        positive = self.db.get_prompt_pair(kept)["positive_prompt_id"]
+        self.db.update_prompt_metadata(positive, category="A", tags=["t"])
+        before = self.db.get_library_positive(positive)["positive"]
+        owner_before = self.owner_state(positive)
+        self.assertIsNone(owner_before[2])
+        receipt = self.update(positive, {"category": "A", "title": None, "tags": ["t"]})
+        self.assertEqual(
+            receipt["positive"], {k: before[k] for k in receipt["positive"]}
+        )
+        prompt, tags, state = self.owner_state(positive)
+        self.assertEqual((prompt, tags), owner_before[:2])
+        self.assertEqual(state, (positive, None))
+
+        connection = self.db.model.get_connection()
+        statements = []
+        before_repeat = connection.total_changes
+        connection.set_trace_callback(statements.append)
+        try:
+            repeat = self.update(positive, {"category": "A", "rating": None})
+        finally:
+            connection.set_trace_callback(None)
+        self.assertEqual(connection.total_changes - before_repeat, 0)
+        writes = [
+            query
+            for query in statements
+            if query.lstrip().split()[0].upper() in {"INSERT", "UPDATE", "DELETE"}
+        ]
+        self.assertEqual(writes, [])
+        self.assertEqual(repeat["positive"], receipt["positive"])
+        self.assertEqual(self.owner_state(positive), (prompt, tags, state))
+
+        # The registered parent survives the loss of its last positive pair.
+        self.db.save_prompt_pair("Other", "Cat")
+        self.assertTrue(self.db.delete_prompt_pair(kept))
+        self.assertIn(positive, [row["id"] for row in self.db.list_library()["items"]])
+        self.assertEqual(
+            self.update(positive, {"title": "Kept"})["positive"]["title"], "Kept"
+        )
+
+    def test_pair_archive_and_restore_are_independent_of_parent_metadata(self):
+        first = self.db.save_prompt_pair("Cat", "Blur", title="P1", tags=["p"])
+        second = self.db.save_prompt_pair("Cat", "Noise")
+        positive = self.db.get_prompt_pair(first)["positive_prompt_id"]
+        _epoch, token = self.current(positive)
+        for pair in (first, second):
+            self.assertTrue(self.db.archive_prompt_pair(pair))
+        self.assertEqual(self.current(positive)[1], token)
+        pairs = [self.db.get_prompt_pair(pair) for pair in (first, second)]
+        record = self.update(positive, {"title": "Parent", "rating": 4})["positive"]
+        self.assertEqual((record["variant_count"], record["title"]), (0, "Parent"))
+        self.assertEqual([self.db.get_prompt_pair(p) for p in (first, second)], pairs)
+        self.assertTrue(all(pair["archived"] for pair in pairs))
+        self.assertTrue(self.db.archive_prompt_pair(first, archived=False))
+        detail = self.db.get_library_positive(positive)
+        self.assertEqual(detail["positive"]["edit_token"], record["edit_token"])
+        self.assertEqual(
+            (detail["positive"]["title"], detail["positive"]["rating"]), ("Parent", 4)
+        )
+        self.assertEqual([v["id"] for v in detail["variants"]], [first])
+        self.assertEqual(self.db.get_prompt_pair(first)["title"], "P1")
+
+    def test_retention_registration_rolls_back_with_command(self):
+        from contextlib import contextmanager
+        from unittest.mock import patch
+
+        from database.library_commands import LibraryCommandError
+
+        pair = self.db.save_prompt_pair("Cat", "Blur")
+        positive = self.db.get_prompt_pair(pair)["positive_prompt_id"]
+        self.db.update_prompt_metadata(positive, category="A", tags=["t"])
+        before = self.owner_state(positive)
+        self.assertIsNone(before[2])
+        epoch, token = self.current(positive)
+        original_parents = self.db._library_parents
+        original_transaction = self.db._pair_transaction
+        reads = []
+
+        def failing_receipt(*args, **kwargs):
+            reads.append(1)
+            if len(reads) > 1:
+                raise sqlite3.OperationalError("receipt failed")
+            return original_parents(*args, **kwargs)
+
+        def failing_state(conn, prompt_id):
+            conn.execute(
+                "INSERT INTO prompt_library_state(prompt_id) VALUES(?)", (prompt_id,)
+            )
+            raise sqlite3.OperationalError("state failed")
+
+        @contextmanager
+        def failing_commit():
+            with original_transaction() as conn:
+                yield conn
+                raise sqlite3.OperationalError("commit failed")
+
+        failures = (
+            (
+                "_sync_prompt_tags",
+                {"side_effect": sqlite3.OperationalError("tags failed")},
+            ),
+            ("_ensure_library_parent", {"side_effect": failing_state}),
+            ("_library_parents", {"side_effect": failing_receipt}),
+            ("_pair_transaction", {"new": failing_commit}),
+        )
+        for name, options in failures:
+            with self.subTest(failure=name):
+                reads.clear()
+                with patch.object(self.db, name, **options):
+                    with self.assertRaises(sqlite3.OperationalError):
+                        self.update(
+                            positive,
+                            {"title": "T", "category": "B", "tags": ["u"]},
+                            epoch=epoch,
+                            token=token,
+                        )
+                self.assertFalse(self.db.model.get_connection().in_transaction)
+                self.assertEqual(self.owner_state(positive), before)
+        for options, code in (
+            ({"token": "f" * 64}, "metadata-conflict"),
+            ({"epoch": "00000000-0000-4000-8000-000000000000"}, "storage-changed"),
+        ):
+            with self.subTest(code=code):
+                with self.assertRaises(LibraryCommandError) as caught:
+                    self.update(positive, {"category": "A"}, **options)
+                self.assertEqual(caught.exception.code, code)
+                self.assertEqual(self.owner_state(positive), before)
+        for metadata in ({}, {"text": "x"}, {"tags": None}, {"rating": True}):
+            with self.subTest(metadata=metadata):
+                with self.assertRaises(ValueError):
+                    self.update(positive, metadata)
+        self.assertEqual(self.owner_state(positive), before)
+        self.assertEqual(
+            self.update(positive, {"category": "B"})["positive"]["category"], "B"
+        )
+        self.assertEqual(self.owner_state(positive)[2], (positive, None))
+
+    def test_concurrent_same_token_saves_admit_exactly_one_change(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        from database.library_commands import LibraryCommandError
+
+        positive = self.save("Cat")
+        epoch, token = self.current(positive)
+
+        def save(index):
+            try:
+                self.db.update_library_parent(
+                    positive,
+                    expected_epoch=epoch,
+                    if_match=token,
+                    metadata={"title": f"Title {index}"},
+                )
+                return "ok"
+            except LibraryCommandError as error:
+                return error.code
+            finally:
+                self.db.close()
+
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            outcomes = list(executor.map(save, range(12)))
+        self.assertEqual(outcomes.count("ok"), 1)
+        self.assertEqual(outcomes.count("metadata-conflict"), 11)
+        title = self.db.get_library_positive(positive)["positive"]["title"]
+        self.assertEqual(title, f"Title {outcomes.index('ok')}")
