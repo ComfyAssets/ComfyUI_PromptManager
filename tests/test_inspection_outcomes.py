@@ -1,11 +1,15 @@
 """Non-resolved prompt outcomes carry one short, truthful line per role."""
 
+import ast
 import json
 import unittest
+from pathlib import Path
 from dataclasses import replace
 from unittest import mock
 
+from utils import prompt_pair_resolver
 from utils.inspection_outcomes import (
+    _UNCODED_LINES,
     CLASS_NAME_LENGTH,
     REASON_CODES,
     outcome_message,
@@ -349,6 +353,133 @@ class TestResolutionProjection(unittest.TestCase):
         self.assertEqual(body["prompts"], evidence["prompts"])
         self.assertIsNone(body["resolution"]["reason_code"])
         self.assertIsNone(body["resolution"]["node"])
+
+
+# Uncoded unresolved reasons only the default (ingestion) profile emits; the
+# inspector never shows them, so they need no line.
+_DEFAULT_PROFILE_ONLY = frozenset(
+    {"Cyclic or excessive latent ancestry", "Resolution limit reached"}
+)
+
+
+def _uncoded_unresolved_reasons() -> set:
+    """Every literal reason the resolver can return as unresolved without a code.
+
+    Reads the source: ``_Unresolved(reason)`` without a code, and
+    ``_result("unresolved", ..., reason=...)`` without ``reason_code``. A reason
+    is a string literal or a module constant naming one.
+    """
+    source = Path(prompt_pair_resolver.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    def literal(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            value = getattr(prompt_pair_resolver, node.id, None)
+            return value if isinstance(value, str) else None
+        return None
+
+    found = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        keywords = {item.arg: item.value for item in node.keywords}
+        if node.func.id == "_Unresolved":
+            if len(node.args) < 2 and "code" not in keywords and node.args:
+                reason = literal(node.args[0])
+                if reason is None:
+                    raise AssertionError(f"line {node.lineno}: unreadable reason")
+                found.add(reason)
+        elif node.func.id == "_result" and node.args:
+            state = literal(node.args[0])
+            coded = "reason_code" in keywords or len(node.args) > 6
+            reason = keywords.get(
+                "reason", node.args[4] if len(node.args) > 4 else None
+            )
+            if state == "unresolved" and not coded and reason is not None:
+                text = literal(reason)
+                if text is None:
+                    raise AssertionError(f"line {node.lineno}: unreadable reason")
+                found.add(text)
+    return found
+
+
+class TestEveryUncodedOutcomeHasALine(unittest.TestCase):
+    """Task 2.7 review M1: a new uncoded unresolved reason fails here."""
+
+    def test_resolver_reasons_without_a_code_have_a_line(self):
+        reasons = _uncoded_unresolved_reasons()
+        self.assertIn(EMPTY_POSITIVE_REASON, reasons, "the scan sees the source")
+        missing = reasons - set(_UNCODED_LINES) - _DEFAULT_PROFILE_ONLY
+        self.assertEqual(missing, set(), "add a code or a line in inspection_outcomes")
+        # The allowance names only reasons the source still emits.
+        self.assertLessEqual(_DEFAULT_PROFILE_ONLY, reasons)
+
+    def test_default_profile_only_reasons_are_coded_in_inspection(self):
+        # The limit outcome is uncoded only on the default profile.
+        source = {"prompt": {"1": {"class_type": "KSampler", "inputs": {}}}}
+        for limited in ({"max_depth": 0}, {"max_text_length": 0}):
+            with self.subTest(**limited):
+                default = prompt_pair_resolver.resolve_prompt_pair(source, **limited)
+                inspected = prompt_pair_resolver.resolve_prompt_pair(
+                    source, profile=INSPECTION_PROFILE, **limited
+                )
+                self.assertEqual(default["reason"], "Resolution limit reached")
+                self.assertIsNone(default["reason_code"])
+                self.assertEqual(inspected["reason"], "Resolution limit reached")
+                self.assertIsNotNone(inspected["reason_code"])
+
+
+class TestRoleMessageBound(unittest.TestCase):
+    """Task 2.7 review M4: the encoder bounds role lines as the client does."""
+
+    def encode(self, prompts: dict) -> dict:
+        return json.loads(
+            encode_inspection_response(
+                image={"root_index": 0, "path": "a.png", "filename": "a.png"},
+                root_scope="a" * 64,
+                file={
+                    "observation": "current-file",
+                    "source_label": "output",
+                    "media_type": "image",
+                    "extension": ".png",
+                    "size": 1,
+                    "modified_time": 1,
+                },
+                prompts=prompts,
+                resolution={"state": "unresolved", "reason": "x"},
+                inspection=None,
+                library={"status": "none", "tags": []},
+            )
+        )["prompts"]
+
+    def test_role_messages_are_bounded_text_on_unresolved_roles(self):
+        side = {"status": "unresolved", "text": None, "source": None}
+        prompts = self.encode(
+            {
+                "positive": {**side, "message": "x" * 600},
+                "negative": {**side, "message": "\U0001f600" * 300},
+            }
+        )
+        self.assertEqual(prompts["positive"]["message"], "x" * 512)
+        # The client counts UTF-16 code units.
+        self.assertLessEqual(
+            len(prompts["negative"]["message"].encode("utf-16-le")), 1024
+        )
+        self.assertEqual(prompts["negative"]["message"], "\U0001f600" * 256)
+        for message in ("", None, 7):
+            with self.subTest(message=message):
+                prompts = self.encode(
+                    {"positive": {**side, "message": message}, "negative": side}
+                )
+                self.assertNotIn("message", prompts["positive"])
+        resolved = {"status": "resolved", "text": "a", "source": "graph-inferred"}
+        prompts = self.encode(
+            {"positive": {**resolved, "message": "line"}, "negative": side}
+        )
+        self.assertNotIn("message", prompts["positive"])
+        self.assertEqual(prompts["negative"], side)
 
 
 if __name__ == "__main__":

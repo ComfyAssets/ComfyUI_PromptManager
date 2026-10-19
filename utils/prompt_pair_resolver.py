@@ -1394,7 +1394,53 @@ class _GraphResolver:
         raise _Unresolved("Output ancestry limit reached", code)
 
 
-def _parameters(value: Any, max_text_length: int) -> dict:
+_FOOTER = re.compile(r"(?m)^Steps:\s*\d+\s*,[^\n]*$")
+# Inspection also reads a footer of ``Steps: N`` alone (no other settings).
+_BARE_FOOTER = re.compile(r"(?m)^Steps:\s*\d+\s*$")
+# sd-dynamic-prompts writes these one-line records after the settings footer.
+_FOOTER_TRAILERS = ("Template:", "Negative Template:")
+
+
+def _trailer_lines(text: str) -> bool:
+    """Whether ``text`` after the footer is empty or only template records.
+
+    At most one ``Template:`` line, then at most one ``Negative Template:``
+    line; anything else (a multi-line template included) is not recognized.
+    """
+    lines = re.split(r"\r?\n|\r", text.strip()) if text.strip() else []
+    prefixes = [
+        next(
+            (
+                index
+                for index, name in enumerate(_FOOTER_TRAILERS)
+                if line.startswith(name)
+            ),
+            None,
+        )
+        for line in lines
+    ]
+    return None not in prefixes and prefixes == sorted(set(prefixes))
+
+
+def _footer(value: str, inspection: bool) -> Optional[re.Match]:
+    """The unique A1111 settings footer, or ``None``.
+
+    The default profile keeps the historical rule (one ``Steps: N, ...`` line,
+    and it is the last line). Inspection (R5) accepts a bare ``Steps: N``
+    footer when there is no full one, and template records after it.
+    """
+    footers = list(_FOOTER.finditer(value))
+    if inspection and not footers:
+        footers = list(_BARE_FOOTER.finditer(value))
+    if len(footers) != 1:
+        return None
+    rest = value[footers[0].end() :]
+    if inspection and _trailer_lines(rest):
+        return footers[0]
+    return None if rest.strip() else footers[0]
+
+
+def _parameters(value: Any, max_text_length: int, inspection: bool = False) -> dict:
     if not isinstance(value, str) or not value:
         return _result("absent", reason="No A1111 parameters")
     if len(value) > max_text_length:
@@ -1403,14 +1449,17 @@ def _parameters(value: Any, max_text_length: int) -> dict:
             reason="Parameters exceed the length limit",
             reason_code="text-limit",
         )
-    footers = list(re.finditer(r"(?m)^Steps:\s*\d+\s*,[^\n]*$", value))
-    if len(footers) != 1 or value[footers[0].end() :].strip():
+    footer = _footer(value, inspection)
+    if footer is None:
         return _result(
             "unresolved",
             reason="A1111 settings footer is not unique",
             reason_code="malformed",
         )
-    body = value[: footers[0].start()].rstrip("\r\n")
+    body = value[: footer.start()].rstrip("\r\n")
+    if inspection:
+        # R4: text that starts with the delimiter has an empty positive (#165).
+        body = "\n" + body
     delimiter = "\nNegative prompt:"
     if body.count(delimiter) > 1:
         return _result("ambiguous", reason="Multiple negative prompt delimiters")
@@ -1552,7 +1601,9 @@ def _resolve(
     if "prompt" in metadata:
         graph = metadata["prompt"]
     elif "parameters" in metadata:
-        return _parameters(metadata["parameters"], profile.max_text_length)
+        return _parameters(
+            metadata["parameters"], profile.max_text_length, not profile.legacy
+        )
     else:
         graph = metadata
     if not isinstance(graph, dict) or not graph:

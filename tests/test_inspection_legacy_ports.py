@@ -6,11 +6,22 @@ the rule from the parser reconciliation (R1, R3, ...) it ports. The default
 ``DEFAULT_PROFILE`` ignores it.
 """
 
+import io
 import json
+import tempfile
 import unittest
+import zlib
+from pathlib import Path
+
+from PIL import Image
 
 from utils import prompt_pair_resolver as resolver
-from utils.prompt_inspector import inspect_prompt_evidence
+from utils.prompt_inspector import (
+    DUPLICATE_ROLE_BYTES,
+    MetadataReadError,
+    inspect_prompt_evidence,
+    read_inspection_file,
+)
 from utils.prompt_pair_resolver import resolve_prompt_pair
 
 try:
@@ -272,6 +283,171 @@ class TestHistoricalPromptManagerNodes(unittest.TestCase):
         )
         self.assertEqual(result["state"], "unresolved")
         self.assertEqual(result["reason"], "Unsupported node semantics or output slot")
+
+
+FOOTER = "Steps: 20, Sampler: Euler, CFG scale: 7, Seed: 5"
+
+
+def _parameters(text: str, *, legacy: bool = False) -> dict:
+    profile = resolver.DEFAULT_PROFILE if legacy else resolver.INSPECTION_PROFILE
+    return resolve_prompt_pair({"parameters": text}, profile=profile)
+
+
+class TestA1111Text(unittest.TestCase):
+    """R4 and R5 (#165, py/api/__init__.py:738-750) for inspection."""
+
+    def test_text_starting_with_the_negative_delimiter_has_no_positive(self):
+        for text in (
+            f"Negative prompt: bad\n{FOOTER}",
+            f"\nNegative prompt: bad\n{FOOTER}",
+        ):
+            with self.subTest(text=text):
+                result = _parameters(text)
+                self.assertEqual(result["state"], "unresolved")
+                self.assertEqual(result["reason"], resolver.EMPTY_POSITIVE_REASON)
+                self.assertIsNone(result["positive"])
+        # Two delimiters, one at the start, are still two.
+        result = _parameters(f"Negative prompt: a\nNegative prompt: b\n{FOOTER}")
+        self.assertEqual(result["state"], "ambiguous")
+
+    def test_dynamic_prompts_template_lines_follow_the_footer(self):
+        base = f"a cat\nNegative prompt: bad\n{FOOTER}"
+        for trailer in (
+            "\nTemplate: a {cat|dog}",
+            "\nTemplate: a {cat|dog}\nNegative Template: bad",
+            "\nNegative Template: bad",
+            "\nTemplate: a {cat|dog}\nNegative Template: bad\n",
+        ):
+            with self.subTest(trailer=trailer):
+                result = _parameters(base + trailer)
+                self.assertEqual(result["state"], "resolved")
+                self.assertEqual(_texts(result), ("a cat", "bad"))
+        for trailer in (
+            "\nTemplate: a\nTemplate: b",
+            "\nNegative Template: bad\nTemplate: a",
+            "\nTemplate: a\nmore template text",
+            "\ntrailing",
+        ):
+            with self.subTest(trailer=trailer):
+                result = _parameters(base + trailer)
+                self.assertEqual(result["reason_code"], "malformed")
+
+    def test_footer_with_only_steps(self):
+        result = _parameters("a cat\nNegative prompt: bad\nSteps: 20")
+        self.assertEqual(_texts(result), ("a cat", "bad"))
+        result = _parameters("a cat\nSteps: 20\nTemplate: a {cat|dog}")
+        self.assertEqual((result["state"], _texts(result)[0]), ("absent", "a cat"))
+        # A full footer wins over a bare ``Steps: N`` line in the prompt text.
+        result = _parameters(f"a cat\nSteps: 3\nNegative prompt: bad\n{FOOTER}")
+        self.assertEqual(_texts(result), ("a cat\nSteps: 3", "bad"))
+        result = _parameters("a cat\nSteps: 3\nNegative prompt: bad\nSteps: 20")
+        self.assertEqual(result["reason_code"], "malformed")
+
+    def test_default_profile_keeps_the_historical_split(self):
+        result = _parameters(f"Negative prompt: bad\n{FOOTER}", legacy=True)
+        self.assertEqual(_texts(result), ("Negative prompt: bad", None))
+        for text in (
+            f"a cat\nNegative prompt: bad\n{FOOTER}\nTemplate: a {{cat|dog}}",
+            "a cat\nNegative prompt: bad\nSteps: 20",
+        ):
+            with self.subTest(text=text):
+                result = _parameters(text, legacy=True)
+                self.assertEqual(
+                    result["reason"], "A1111 settings footer is not unique"
+                )
+
+
+def _chunk(keyword: str, text: str, kind: bytes = b"tEXt") -> bytes:
+    body = text.encode("latin-1")
+    if kind == b"zTXt":
+        body = b"\0" + zlib.compress(body)
+    elif kind == b"iTXt":
+        body = b"\0\0\0\0" + text.encode("utf-8")
+    return parity._raw_chunk(kind, keyword.encode("latin-1") + b"\0" + body)
+
+
+def _batch(index: int, positive: str = "a cat", seed: int = 5) -> str:
+    return (
+        f"{positive}\nNegative prompt: bad\nSteps: 20, Sampler: Euler, "
+        f"CFG scale: 7, Seed: {seed}, Batch index: {index}, Batch size: 12"
+    )
+
+
+class TestBatchIndexDuplicates(unittest.TestCase):
+    """R3: an accumulating batch saver repeats ``parameters`` per batch item."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+
+    def png(self, chunks, name="batch.png"):
+        buffer = io.BytesIO()
+        with Image.new("RGB", (4, 4), (40, 80, 120)) as image:
+            image.save(buffer, format="PNG")
+        data = buffer.getvalue()
+        iend = data.rindex(b"IEND") - 4
+        path = self.directory / name
+        path.write_bytes(data[:iend] + b"".join(chunks) + data[iend:])
+        return path
+
+    def test_copies_differing_only_in_batch_index_read_as_the_last(self):
+        cases = {
+            "same length": [0, 1, 2],
+            "growing length": [8, 9, 10, 11],
+            "any order": [3, 0],
+            "repeat of an earlier copy": [0, 1, 0],
+        }
+        for label, indexes in cases.items():
+            with self.subTest(label):
+                path = self.png([_chunk("parameters", _batch(i)) for i in indexes])
+                read = read_inspection_file(path)
+                self.assertEqual(read.metadata["parameters"], _batch(indexes[-1]))
+                self.assertEqual(read.record_formats["parameters"], "original-text")
+                evidence = inspect_prompt_evidence(read.metadata)
+                self.assertEqual(evidence["resolution"]["state"], "resolved")
+                self.assertEqual(evidence["prompts"]["positive"]["text"], "a cat")
+        # Encodings may differ; the decoded copies are compared.
+        path = self.png(
+            [
+                _chunk("parameters", _batch(0)),
+                _chunk("parameters", _batch(1), b"zTXt"),
+                _chunk("parameters", _batch(2), b"iTXt"),
+            ]
+        )
+        self.assertEqual(read_inspection_file(path).metadata["parameters"], _batch(2))
+
+    def test_any_other_difference_is_still_a_conflict(self):
+        cases = {
+            "positive": [_batch(0), _batch(1, positive="a dog")],
+            "seed": [_batch(0), _batch(1, seed=6)],
+            "no batch index": [_batch(0), _batch(0).replace(", Batch index: 0", "")],
+            "two batch indexes": [_batch(0), _batch(1) + ", Batch index: 2"],
+            "prose": [_batch(0), _batch(1).replace("a cat", "a cat Batch index: 1")],
+        }
+        for label, texts in cases.items():
+            with self.subTest(label):
+                path = self.png([_chunk("parameters", text) for text in texts])
+                with self.assertRaisesRegex(
+                    MetadataReadError, "Duplicate prompt metadata"
+                ):
+                    read_inspection_file(path)
+        # The rule is only for ``parameters``: prompt graphs stay byte-identical.
+        prompt = json.dumps(parity.build("f02")["prompt"])
+        path = self.png([_chunk("prompt", prompt), _chunk("prompt", prompt + " ")])
+        with self.assertRaisesRegex(MetadataReadError, "Duplicate prompt metadata"):
+            read_inspection_file(path)
+
+    def test_decoded_copies_are_bounded(self):
+        # Small compressed copies must not decode unbounded text.
+        text = _batch(0) + "," + " " * (DUPLICATE_ROLE_BYTES // 8)
+        chunks = [
+            _chunk("parameters", text.replace("index: 0", f"index: {i}"), b"zTXt")
+            for i in range(10)
+        ]
+        path = self.png(chunks)
+        with self.assertRaisesRegex(MetadataReadError, "exceeds inspection limits"):
+            read_inspection_file(path)
 
 
 if __name__ == "__main__":

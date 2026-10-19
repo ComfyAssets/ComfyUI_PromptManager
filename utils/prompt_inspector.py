@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import re
 import struct
 import subprocess  # nosec B404
 import threading
@@ -41,6 +42,9 @@ MAX_PNG_CHUNKS = 10_000
 _ROLE_METADATA_KEYS = frozenset({"prompt", "parameters", EXECUTION_KEY})
 _METADATA_KEYS = _ROLE_METADATA_KEYS | {"workflow"}
 _TEXT_CHUNKS = (b"tEXt", b"zTXt", b"iTXt")
+# An accumulating batch saver writes one A1111 ``parameters`` record per batch
+# item, identical except this field (R3); Pillow keeps the last one.
+_BATCH_INDEX = re.compile(r"(?m)(?:^|(?<=, ))Batch index: \d+(?=, |$)")
 _SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -123,13 +127,14 @@ class _PngRecords:
         self.digests: dict[str, tuple[int, bytes]] = {}
         self.role_encoded = self.role_decoded = 0
         self.duplicate_workflow = self.duplicate_role = 0
+        self.duplicate_decoded = 0
 
     def skip(self, key: str, length: int) -> bool:
         """Decide from the keyword and length alone whether to seek past a chunk."""
         if key not in _METADATA_KEYS or key in self.limited:
             return True  # never retained, or a duplicate of a limited workflow
         if key in self.digests:
-            if self.digests[key][0] != length:
+            if self.digests[key][0] != length and key != "parameters":
                 raise MetadataReadError("Duplicate prompt metadata")
             if key == "workflow":
                 if self.duplicate_workflow + length > DUPLICATE_WORKFLOW_BYTES:
@@ -157,7 +162,11 @@ class _PngRecords:
         digest = hashlib.sha256(kind + data).digest()
         if key in self.digests:
             if self.digests[key][1] != digest:
-                raise MetadataReadError("Duplicate prompt metadata")
+                if key != "parameters":
+                    raise MetadataReadError("Duplicate prompt metadata")
+                self.batch_copy(kind, data)
+                # The kept copy is the last one; later repeats compare with it.
+                self.digests[key] = (len(data), digest)
             return
         self.digests[key] = (len(data), digest)
         workflow = key == "workflow"
@@ -177,6 +186,29 @@ class _PngRecords:
             if self.role_decoded > ROLE_METADATA_BYTES:
                 raise MetadataReadError("Metadata exceeds inspection limits")
         self.found[key] = value
+
+    def batch_copy(self, kind: bytes, data: bytes) -> None:
+        """Keep a later ``parameters`` copy that differs only in its batch index.
+
+        Each copy must carry exactly one ``Batch index: N`` settings field; any
+        other difference is still a conflict. Decoding every copy draws from the
+        duplicate role budget, so small compressed copies stay bounded.
+        """
+        _, value = _png_text(kind, data, ROLE_METADATA_BYTES)
+        size = ROLE_METADATA_BYTES + 1 if value is None else len(value.encode())
+        self.duplicate_decoded += size
+        if value is None or self.duplicate_decoded > DUPLICATE_ROLE_BYTES:
+            raise MetadataReadError("Metadata exceeds inspection limits")
+        kept = self.found["parameters"]
+        normalized = [
+            _BATCH_INDEX.subn("Batch index: #", text) for text in (kept, value)
+        ]
+        if normalized[0] != normalized[1] or normalized[0][1] != 1:
+            raise MetadataReadError("Duplicate prompt metadata")
+        self.role_decoded += max(0, size - len(kept.encode()))
+        if self.role_decoded > ROLE_METADATA_BYTES:
+            raise MetadataReadError("Metadata exceeds inspection limits")
+        self.found["parameters"] = value
 
 
 def _png_metadata(stream: Any, size: int) -> tuple[dict, frozenset, int, int]:

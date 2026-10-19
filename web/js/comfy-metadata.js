@@ -662,18 +662,51 @@
         return true;
     }
 
+    // The inspection resolver's `_footer` (Python): R5 also reads a bare `Steps: N`
+    // footer, and sd-dynamic-prompts' one-line template records after it.
+    const FOOTER_TRAILERS = ["Template:", "Negative Template:"];
+    function trailerLines(text) {
+        const lines = text.trim().split(/\r?\n|\r/).filter((line, index, all) => all.length > 1 || line);
+        const order = lines.map(line => FOOTER_TRAILERS.findIndex(name => line.startsWith(name)));
+        return !order.includes(-1) && order.every((value, index) => index === 0 || value > order[index - 1]);
+    }
+    function settingsFooter(parameters) {
+        let matches = [...parameters.matchAll(/^Steps:\s*\d+\s*,[^\n]*$/gm)];
+        if (!matches.length) matches = [...parameters.matchAll(/^Steps:\s*\d+\s*$/gm)];
+        if (matches.length !== 1) return null;
+        return trailerLines(parameters.slice(matches[0].index + matches[0][0].length)) ? matches[0] : null;
+    }
+    /** R10: split settings on commas outside A1111's quoted values; unbalanced quotes split as before. */
+    function settingsParts(line) {
+        const parts = [];
+        let start = 0, quoted = false;
+        for (let index = 0; index < line.length; index++) {
+            if (quoted && line[index] === "\\") index++;
+            else if (line[index] === '"') quoted = !quoted;
+            else if (line[index] === "," && !quoted) { parts.push(line.slice(start, index)); start = index + 1; }
+        }
+        if (quoted) return line.split(",");
+        parts.push(line.slice(start));
+        return parts;
+    }
+    function settingValue(value) {
+        if (!/^"(?:\\.|[^\\"])*"$/.test(value)) return value;
+        try { return JSON.parse(value); } catch { return value; }
+    }
+
     function parameterFacts(parameters) {
         const source = "embedded-parameters";
-        const matches = [...parameters.matchAll(/^Steps:\s*\d+\s*,[^\n]*$/gm)];
-        if (matches.length !== 1 || parameters.slice(matches[0].index + matches[0][0].length).trim()) return factSet("unresolved", source);
-        const body = parameters.slice(0, matches[0].index).replace(/[\r\n]+$/, "");
+        const footer = settingsFooter(parameters);
+        if (!footer) return factSet("unresolved", source);
+        // R4: like the resolver, text starting with the delimiter has an empty positive.
+        const body = "\n" + parameters.slice(0, footer.index).replace(/[\r\n]+$/, "");
         if (!body.split("\nNegative prompt:")[0].trim() || body.split("\nNegative prompt:").length > 2) return factSet("unresolved", source);
         const settings = new Map();
-        for (const part of matches[0][0].split(",")) {
+        for (const part of settingsParts(footer[0])) {
             const match = part.match(/^\s*([^:]+):\s*(.*?)\s*$/);
             if (!match) return factSet("unresolved", source);
             const [, key, value] = match;
-            settings.set(key, settings.has(key) ? null : value);
+            settings.set(key, settings.has(key) ? null : settingValue(value));
         }
         const keys = { seed: "Seed", steps: "Steps", cfg: "CFG scale", sampler: "Sampler", scheduler: "Schedule type", model: "Model" };
         return Object.fromEntries(FACT_FIELDS.map(field => {

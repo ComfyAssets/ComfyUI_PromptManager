@@ -3,9 +3,9 @@
 import json
 import math
 from decimal import Decimal, InvalidOperation
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
-from .inspection_outcomes import project_resolution
+from .inspection_outcomes import MESSAGE_LENGTH, project_resolution
 
 if TYPE_CHECKING:
     from .prompt_inspector import InspectionRead
@@ -314,6 +314,29 @@ def _library_projection(library: dict) -> dict:
     return result
 
 
+def _bounded_message(value: Any) -> Optional[str]:
+    """A role line as the client accepts it: 1 to 512 UTF-16 code units."""
+    if not isinstance(value, str) or not value:
+        return None
+    value = value[:MESSAGE_LENGTH]
+    while len(value.encode("utf-16-le", "surrogatepass")) > 2 * MESSAGE_LENGTH:
+        value = value[:-1]
+    return value
+
+
+def _bounded_messages(prompts: dict) -> dict:
+    """Keep a role ``message`` only as bounded text on a non-resolved role."""
+    bounded = {}
+    for role, side in prompts.items():
+        if isinstance(side, dict) and "message" in side:
+            side = {key: item for key, item in side.items() if key != "message"}
+            message = _bounded_message(prompts[role]["message"])
+            if message is not None and side.get("status") != "resolved":
+                side["message"] = message
+        bounded[role] = side
+    return bounded
+
+
 def _encode_inspection(
     *,
     identity: dict,
@@ -330,7 +353,7 @@ def _encode_inspection(
         "inspection_version": 1,
         **identity,
         "file": _file_projection(file, inspection),
-        "prompts": prompts,
+        "prompts": _bounded_messages(prompts),
         "resolution": project_resolution(resolution),
         "metadata": metadata,
         "library": _library_projection(library),

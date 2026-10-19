@@ -34,6 +34,8 @@ LIMIT_CODES = frozenset({"work-limit", "depth-limit", "text-limit", "graph-ceili
 NAMED_CODES = frozenset({"unsupported-node", "runtime-value", "composite"})
 # Bound for a node ID or class name on the wire and in a line.
 CLASS_NAME_LENGTH = 200
+# Bound for a role's line on the wire, in UTF-16 code units (the client's count).
+MESSAGE_LENGTH = 512
 UNREADABLE_METADATA_REASON = "Media metadata could not be read"
 _NODE_KEYS = frozenset({"id", "class_type"})
 
