@@ -2,6 +2,8 @@
 
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import closing
 from dataclasses import replace
@@ -12,6 +14,29 @@ from uuid import UUID
 from database.models import PromptModel
 from database.operations import PromptDatabase
 from utils.execution_history_events import make_finish, make_start
+
+# Longer than the 250 ms bounded writer wait, as a slow Windows commit can be.
+WRITER_HOLD_SECONDS = 0.5
+
+
+class FirstWriterHold:
+    """Keep the first write transaction that calls it open for a while.
+
+    Concurrent writer tests use it so the other peers really queue behind an
+    open BEGIN IMMEDIATE, instead of depending on how fast the host commits.
+    """
+
+    def __init__(self, seconds=WRITER_HOLD_SECONDS):
+        self.seconds = seconds
+        self._lock = threading.Lock()
+        self._held = False
+
+    def __call__(self):
+        with self._lock:
+            hold, self._held = not self._held, True
+        if hold:
+            time.sleep(self.seconds)
+
 
 SESSION = "11111111-1111-4111-8111-111111111111"
 JOB = "22222222-2222-4222-8222-222222222222"
