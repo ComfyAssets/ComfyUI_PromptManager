@@ -56,8 +56,9 @@
     function createApiClient(fetchImpl) {
         const doFetch = fetchImpl || ((...args) => globalThis.fetch(...args));
 
-        async function request(method, url, { body, signal } = {}) {
+        async function request(method, url, { body, signal, cache } = {}) {
             const init = { method, headers: {} };
+            if (cache !== undefined) init.cache = cache;
             if (body !== undefined) {
                 init.headers["Content-Type"] = "application/json";
                 init.body = JSON.stringify(body);
@@ -85,9 +86,11 @@
         }
 
         return {
-            get: (url, { signal } = {}) => request("GET", url, { signal }),
+            // cache is a fetch RequestCache mode such as "no-store"; omitted keeps the default.
+            get: (url, { signal, cache } = {}) => request("GET", url, { signal, cache }),
             post: (url, body, { signal } = {}) => request("POST", url, { body, signal }),
             put: (url, body, { signal } = {}) => request("PUT", url, { body, signal }),
+            patch: (url, body, { signal } = {}) => request("PATCH", url, { body, signal }),
             del: (url, { signal } = {}) => request("DELETE", url, { signal }),
         };
     }
