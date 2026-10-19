@@ -18,7 +18,8 @@
       "black and flake8",
       "frontend modules",
       "viewerjs",
-      "real ComfyUI compatibility"
+      "real ComfyUI compatibility",
+      "bandit (high severity)"
     ]
   },
   "enforce_admins": true,

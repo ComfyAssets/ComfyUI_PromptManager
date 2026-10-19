@@ -17,6 +17,7 @@ concurrency:
 
 jobs:
   security:
+    name: bandit (high severity)
     runs-on: ubuntu-latest
 
     steps:

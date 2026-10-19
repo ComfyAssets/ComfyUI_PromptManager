@@ -142,7 +142,8 @@ Before changing paths, SQLite, streams, restore or cleanup:
 ## Required merge checks
 
 `.github/branch-protection.json` records the required checks: all twelve Python/OS
-combinations, Python coverage, formatting, frontend modules, `viewerjs`, and `real ComfyUI compatibility`.
+combinations, Python coverage, formatting, frontend modules, `viewerjs`, `real ComfyUI compatibility`,
+and `bandit (high severity)`.
 The branch must be current with main, and administrators follow the same checks.
 It does not require an additional human approval.
 
