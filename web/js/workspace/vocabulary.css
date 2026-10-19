@@ -18,8 +18,8 @@
 .vocabulary-main :where(th, td) { text-align: start; border-bottom: 1px solid var(--ca-line); padding: 13px 10px; }
 .vocabulary-main th { color: var(--ca-muted); font-size: 10px; font-weight: 500; }
 /* Long tag names wrap inside the Tag cell so the Actions column keeps its intrinsic width and no row action is clipped;
-   the minimum keeps short names (the concept's longest sample, "architecture", is about 5em) on one line, as the concept
-   shows, while Tag + Prompts + Images + Actions still fit a 390px screen. */
+   on two-column screens the minimum keeps short names (the concept's longest sample, "architecture", is about 5em) on
+   one line, as the concept shows. */
 .vocabulary-main td:first-child { overflow-wrap: anywhere; min-inline-size: calc(6em + 20px); }
 .vocabulary-main td .row-actions { justify-content: flex-end; }
 .vocabulary-main .empty { padding: 50px; text-align: center; border: 1px dashed var(--ca-line); border-radius: 6px; color: var(--ca-muted); }
@@ -35,6 +35,12 @@
     .vocabulary-main .operation { align-items: flex-start; flex-direction: column; }
     .vocabulary-main .operation .row-actions { flex-wrap: wrap; }
     .vocabulary-main .table-wrap { margin-inline: -10px; }
+    /* One column: the fit must not depend on font metrics. The Tag column has no fixed minimum, and the Actions column
+       asks for no more than its stacked width (the concept's 390px rows stack Browse over Rename / merge), so all space
+       left after Prompts, Images and the stacked actions goes to the tag name. Short names stay on one line wherever the
+       concept's own table fits; with a wider fallback font the name wraps instead of pushing an action out of view. */
+    .vocabulary-main td:first-child { min-inline-size: 0; }
+    .vocabulary-main td .row-actions { inline-size: min-content; margin-inline-start: auto; }
 }
 @media (pointer: coarse) {
     .ca-tools .vocabulary-main .row-actions button, .ca-tools .vocabulary-main .vocabulary-continuation button { min-height: 40px; }

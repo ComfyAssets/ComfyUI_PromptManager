@@ -201,11 +201,12 @@ test('390px layout stacks without horizontal page scroll; table scrolls locally'
     expect(layout).toEqual({tracks:1,stacked:true,overflow:'auto',heading:'column',operation:'column',actions:true});
 });
 
-test('long tag names wrap at 390px so every row action stays fully visible',async({page,request})=>{
+async function expectEveryRowActionVisible(page,request,css) {
     const name='an_extraordinarily_long_descriptive_vocabulary_x';expect(name.length).toBeGreaterThanOrEqual(40);expect(name.length).toBeLessThanOrEqual(50);
     await expect(await request.post('/prompt_manager/vocabulary/tags',{data:{expected_epoch:manifest.epoch,name}})).toBeOK();
     await page.setViewportSize({width:390,height:844});
     await page.goto(route);await expect(rows(page)).toHaveCount(manifest.tags.length+1);await expect(tagRow(page,name)).toHaveCount(1);
+    if(css)await page.addStyleTag({content:css});
     const report=await table(page).evaluate(node=>{
         const wrap=node.closest('.table-wrap'),box=wrap.getBoundingClientRect();
         const clipped=[...node.querySelectorAll('tbody tr')].flatMap(row=>[...row.querySelectorAll('.row-actions button')]
@@ -215,7 +216,12 @@ test('long tag names wrap at 390px so every row action stays fully visible',asyn
     });
     expect(report).toEqual({overflow:true,clipped:[]});
     expect(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
-});
+}
+test('long tag names wrap at 390px so every row action stays fully visible',async({page,request})=>expectEveryRowActionVisible(page,request));
+// The fit must not depend on font metrics: CI's stock DejaVu Sans fallback is about 9% wider than the pinned image's
+// fallback, which pushed Rename / merge out of view. Wider letter spacing stands in for any wider fallback font.
+test('row actions stay fully visible at 390px with wider font metrics',async({page,request})=>
+    expectEveryRowActionVisible(page,request,'.vocabulary-main table{letter-spacing:1px}'));
 
 // Dialogs: the editor's modal shell (concept simpleInput, app.js:1138-1143) with truthful outcomes.
 const dialog=page=>page.locator('dialog.vocabulary-dialog');
