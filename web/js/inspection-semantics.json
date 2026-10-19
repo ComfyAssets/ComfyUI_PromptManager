@@ -144,6 +144,23 @@
     }
   },
   "non_file_outputs": ["PreviewImage", "PreviewAny", "SaveImageWebsocket", "Image Comparer (rgthree)"],
+  "stage_inputs": {
+    "shaped": [
+      "latent_image",
+      "guider",
+      "positive",
+      "negative",
+      "pipe",
+      "basic_pipe",
+      "detailer_pipe",
+      "sampler",
+      "sigmas",
+      "noise",
+      "text_embeds",
+      "hyvid_embeds"
+    ],
+    "with_model": ["conditioning", "neg_conditioning", "samples", "latent"]
+  },
   "facts": {
     "configuration_outputs": {
       "RandomNoise": { "kind": "noise", "fields": ["noise_seed"] },

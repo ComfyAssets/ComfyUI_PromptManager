@@ -67,8 +67,19 @@ _FACTS_TABLES = (
     "scalar_outputs",
 )
 _CATEGORIES = frozenset(
-    ("schema",) + _CLASS_CATEGORIES + _SLOT_CATEGORIES + _SET_CATEGORIES + ("facts",)
+    ("schema",)
+    + _CLASS_CATEGORIES
+    + _SLOT_CATEGORIES
+    + _SET_CATEGORIES
+    + ("stage_inputs", "facts")
 )
+# Input names that make an unlisted node a possible sampler stage in an ancestry
+# walk (``shaped``: pipes, video embeds and custom-sampler parts carry a prompt
+# without a ``positive`` link), and those that do so beside a linked ``model``
+# (``with_model``: XlabsSampler's ``conditioning``, video samplers' ``samples``).
+# ``model`` alone (ModelSampling*) or with ``clip`` (LoraLoader) is a model patch.
+# The resolver and comfy-metadata.js both read these lists.
+_STAGE_INPUT_LISTS = ("shaped", "with_model")
 _STRING_PARAMS = MappingProxyType(
     {
         "literal": frozenset(),
@@ -99,6 +110,7 @@ class Semantics:
     runtime: FrozenSet[str]
     savers: Mapping[str, Mapping[str, Any]]
     non_file_outputs: FrozenSet[str]
+    stage_inputs: Mapping[str, Tuple[str, ...]]
     facts: Mapping[str, Any]
     all_classes: FrozenSet[str]
 
@@ -351,6 +363,21 @@ def _string_map(table: Any, where: str, allowed: Optional[FrozenSet[str]]) -> No
             raise SemanticsError(f"{where}[{name!r}]: unknown kind {value!r}")
 
 
+def _stage_inputs(doc: dict) -> Mapping[str, Tuple[str, ...]]:
+    table = doc["stage_inputs"]
+    if not isinstance(table, dict) or set(table) != set(_STAGE_INPUT_LISTS):
+        raise SemanticsError(
+            f"stage_inputs must have exactly {list(_STAGE_INPUT_LISTS)}"
+        )
+    for key in _STAGE_INPUT_LISTS:
+        _names(table[key], f"stage_inputs.{key}")
+        if "model" in table[key]:
+            raise SemanticsError(f"stage_inputs.{key}: model is a patch input")
+    if set(table["shaped"]) & set(table["with_model"]):
+        raise SemanticsError("stage_inputs: an input is listed in both lists")
+    return _freeze(table)
+
+
 def _facts(doc: dict) -> Mapping[str, Any]:
     facts = doc["facts"]
     if not isinstance(facts, dict) or set(facts) != set(_FACTS_TABLES):
@@ -407,7 +434,12 @@ def _validate(doc: Any) -> Semantics:
         tables[category] = _slot_category(doc, category, owners)
     for category in _SET_CATEGORIES:
         tables[category] = _set_category(doc, category, owners)
-    return Semantics(facts=_facts(doc), all_classes=owners.classes(), **tables)
+    return Semantics(
+        stage_inputs=_stage_inputs(doc),
+        facts=_facts(doc),
+        all_classes=owners.classes(),
+        **tables,
+    )
 
 
 def load_semantics(path: Optional[Union[str, Path]] = None) -> Semantics:

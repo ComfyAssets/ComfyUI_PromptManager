@@ -1,6 +1,7 @@
 """Conservative prompt-pair resolution contracts, independent of ComfyUI."""
 
 import collections
+import json
 import random
 import subprocess  # nosec B404 - fixed interpreter command, no shell
 import sys
@@ -3123,6 +3124,37 @@ class TestSemanticsIsolation(unittest.TestCase):
                     ]
             finally:
                 inspection_semantics.get_semantics.cache_clear()
+
+    def test_stage_shaped_inputs_come_from_the_table(self):
+        # Review I-2: the stage-walk input lists live in the semantics table, so
+        # a key added there changes the inspection walk and never the default one.
+        source = _latent_from(None)
+        source.update(
+            {
+                "30": {"class_type": "MysteryEmbeds", "inputs": {}},
+                "31": {"class_type": "MysteryStage", "inputs": {"stage_x": ["30", 0]}},
+                "32": {
+                    "class_type": "VAEDecode",
+                    "inputs": {"samples": ["31", 0], "vae": ["4", 2]},
+                },
+                "23": {
+                    "class_type": "VAEEncode",
+                    "inputs": {"pixels": ["32", 0], "vae": ["4", 2]},
+                },
+            }
+        )
+        source["3"]["inputs"]["latent_image"] = ["23", 0]
+        table = json.loads(
+            (REPO / "web" / "js" / "inspection-semantics.json").read_text("utf-8")
+        )
+        plain_default, plain = self.resolve_with_table(json.dumps(table), source)
+        table["stage_inputs"]["shaped"].append("stage_x")
+        default, inspected = self.resolve_with_table(json.dumps(table), source)
+        self.assertEqual(plain["state"], "resolved")
+        self.assertEqual(inspected["state"], "unresolved")
+        self.assertEqual(inspected["reason_code"], "unsupported-node")
+        self.assertEqual(inspected["node"], {"id": "31", "class_type": "MysteryStage"})
+        self.assertEqual(default, plain_default)
 
     def test_corrupt_table_leaves_default_resolution_working(self):
         for text in ("{not json", "[" * 100_000, "{}"):

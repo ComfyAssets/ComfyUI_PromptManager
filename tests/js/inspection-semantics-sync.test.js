@@ -58,3 +58,18 @@ test("stage walk table classes equal every class in the semantics table", () => 
     for (const category of ["runtime", "non_file_outputs"]) semantics[category].forEach(name => classes.add(name));
     assert.deepStrictEqual([...metadata._tableClasses].sort(), [...classes].sort());
 });
+
+// Review I-2: one source for the stage-walk input lists (Python reads them there too).
+test("stage walk inputs equal semantics.stage_inputs", () => {
+    assert.equal(typeof semantics.stage_inputs, "object");
+    assert.equal(typeof metadata._stageInputs, "object", "comfy-metadata exposes its stage inputs for this test");
+    assert.deepStrictEqual(plain(metadata._stageInputs), semantics.stage_inputs);
+    assert.ok(Object.isFrozen(metadata._stageInputs));
+});
+
+// Review M-3: JS treats every samplers entry as a candidate; the server only these strategies.
+test("every samplers entry is a candidate strategy", () => {
+    for (const [name, entry] of Object.entries(semantics.samplers)) {
+        assert.ok(["ksampler", "custom-advanced", "detailer-stage"].includes(entry.strategy), name);
+    }
+});

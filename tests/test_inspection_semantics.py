@@ -55,6 +55,7 @@ def _minimal():
         "runtime": [],
         "savers": {},
         "non_file_outputs": [],
+        "stage_inputs": {"shaped": ["positive"], "with_model": ["samples"]},
         "facts": {
             "configuration_outputs": {},
             "model_outputs": {},
@@ -309,6 +310,35 @@ class SpecEntriesTest(unittest.TestCase):
         for name in ("PromptManager", "PromptManagerPair", "PromptManagerText"):
             self.assertNotIn(name, table.all_classes)
 
+    def test_stage_inputs_are_the_one_source_for_both_stage_walks(self):
+        # Review I-2: Python's resolver and comfy-metadata.js read these lists here.
+        stage_inputs = load_semantics().stage_inputs
+        self.assertEqual(
+            stage_inputs["shaped"],
+            (
+                "latent_image",
+                "guider",
+                "positive",
+                "negative",
+                "pipe",
+                "basic_pipe",
+                "detailer_pipe",
+                "sampler",
+                "sigmas",
+                "noise",
+                "text_embeds",
+                "hyvid_embeds",
+            ),
+        )
+        self.assertEqual(
+            stage_inputs["with_model"],
+            ("conditioning", "neg_conditioning", "samples", "latent"),
+        )
+        # The default profile's own sampler-shape names stay a subset of the table's.
+        from utils.prompt_pair_resolver import _SAMPLER_LIKE_INPUTS
+
+        self.assertLessEqual(set(_SAMPLER_LIKE_INPUTS), set(stage_inputs["shaped"]))
+
     def test_facts_section_mirrors_the_browser_tables(self):
         facts = load_semantics().facts
         self.assertEqual(
@@ -492,6 +522,13 @@ class ValidationTest(_TableCase):
                 lambda d: d["facts"]["scalar_outputs"].update(PrimitiveInt="int"),
                 "facts",
             ),
+            (lambda d: d.pop("stage_inputs"), "category"),
+            (lambda d: d["stage_inputs"].update(extra=["x"]), "stage_inputs"),
+            (lambda d: d["stage_inputs"].pop("with_model"), "stage_inputs"),
+            (lambda d: d["stage_inputs"].update(shaped=[]), "input name"),
+            (lambda d: d["stage_inputs"].update(shaped="pipe"), "input name"),
+            (lambda d: d["stage_inputs"].update(with_model=["positive"]), "both"),
+            (lambda d: d["stage_inputs"].update(shaped=["model"]), "model"),
             (
                 lambda d: d["facts"]["configuration_outputs"].update(
                     X={"kind": "sigmas", "fields": ["steps"], "type_fields": []}

@@ -202,10 +202,8 @@ test("facts use resolution.sampler_id for detailer-stage nodes", () => {
         seed: ["known", "42"], steps: ["ambiguous", null], cfg: ["ambiguous", null],
         sampler: ["known", "euler"], scheduler: ["known", "normal"], model: ["known", "model.safetensors"],
     });
-    // Without a named sampler, two samplers stay ambiguous (today's rules, now over the samplers table).
-    for (const resolution of [undefined, { state: "unresolved", sampler_id: "d" }]) {
-        assert.ok(Object.values(factsFor(detailerFactGraph(), { resolution })).every(fact => fact.status === "ambiguous"), JSON.stringify(resolution));
-    }
+    // Without a resolution, two samplers stay ambiguous (today's rules, now over the samplers table).
+    assert.ok(Object.values(factsFor(detailerFactGraph())).every(fact => fact.status === "ambiguous"));
     // A sampler_id the graph or the samplers table does not hold never falls back to a guess.
     for (const sampler_id of ["missing", "decode", "model", "__proto__"]) {
         for (const state of ["resolved", "ambiguous"]) {
@@ -274,6 +272,50 @@ test("stage walks fail on unlisted sampler-shaped nodes like the resolver", () =
         graph.d.inputs.image = ["hop", 0];
         assert.equal(factsFor(graph, { resolution: { state: "ambiguous", sampler_id: "d" } }).seed.status, "ambiguous", class_type);
     }
+});
+
+test("unresolved and absent results over several stages merge facts per field", () => {
+    // Review I-1: the run's settings are facts even when its prompt is not, e.g. an
+    // upstream prompt behind an unsupported node (LoRAfromText) leaves the server unresolved.
+    const merged = {
+        seed: ["ambiguous", null], steps: ["ambiguous", null], cfg: ["known", "6.5"],
+        sampler: ["known", "euler"], scheduler: ["known", "normal"], model: ["known", "model.safetensors"],
+    };
+    for (const resolution of [
+        { state: "unresolved", sampler_id: "d", reason_code: "unsupported-node" },
+        { state: "unresolved", sampler_id: null, reason_code: "malformed" },
+        { state: "absent", sampler_id: "d" },
+    ]) {
+        const facts = factsFor(detailerFactGraph(), { resolution });
+        assert.deepEqual(statusValues(facts), merged, JSON.stringify(resolution));
+        assert.ok(factFields.every(field => facts[field].sampler_id === null));
+    }
+    // A stage missing a field leaves it unresolved; a failed walk leaves everything unresolved.
+    const unrecorded = detailerFactGraph(); delete unrecorded.d.inputs.scheduler;
+    assert.equal(factsFor(unrecorded, { resolution: { state: "unresolved", sampler_id: "d" } }).scheduler.status, "unresolved");
+    const cyclic = detailerFactGraph(); cyclic.decode.inputs.samples = ["d", 0];
+    assert.ok(Object.values(factsFor(cyclic, { resolution: { state: "unresolved", sampler_id: "d" } })).every(fact => fact.status === "unresolved"));
+    // One listed sampler keeps today's rule: its own facts, attributed to it.
+    const single = factsFor(factGraph(), { resolution: { state: "unresolved", sampler_id: "s" } });
+    assert.ok(factFields.every(field => single[field].status === "known" && single[field].sampler_id === "s"));
+});
+
+test("stage walks follow only the resolver's links", () => {
+    // Review M-2: `["eff", -1]` is not a link to the server, so it is not walked.
+    for (const slot of [-1, 0.5, "0"]) {
+        const graph = detailerFactGraph();
+        graph.eff = { class_type: "KSampler (Efficient)", inputs: { positive: ["model", 0], model: ["model", 0] } };
+        graph.decode.inputs.extra = ["eff", slot];
+        assert.equal(factsFor(graph, { resolution: { state: "ambiguous", sampler_id: "d" } }).seed.status, "ambiguous", String(slot));
+        const shaped = detailerFactGraph();
+        shaped.eff = { class_type: "Unlisted", inputs: { positive: ["model", slot], image: ["decode", 0] } };
+        shaped.d.inputs.image = ["eff", 0];
+        assert.equal(factsFor(shaped, { resolution: { state: "ambiguous", sampler_id: "d" } }).seed.status, "ambiguous", `shaped ${slot}`);
+    }
+    const linked = detailerFactGraph();
+    linked.eff = { class_type: "KSampler (Efficient)", inputs: { positive: ["model", 0], model: ["model", 0] } };
+    linked.decode.inputs.extra = ["eff", 0];
+    assert.equal(factsFor(linked, { resolution: { state: "ambiguous", sampler_id: "d" } }).seed.status, "unresolved");
 });
 
 test("Flux2Scheduler provides steps and scheduler is its node type", () => {

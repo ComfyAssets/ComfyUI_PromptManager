@@ -157,23 +157,8 @@ _UNVERIFIABLE_CODES = frozenset({"unsupported-node", "runtime-value"})
 # JoinStringMulti's own ``inputcount`` range; anything else never executed.
 _MAX_JOIN_INPUTS = 1000
 _SAMPLER_LIKE_INPUTS = ("latent_image", "guider", "positive", "negative")
-# Inputs that make an unlisted node a possible sampler stage in an ancestry walk:
-# pipes (easy-use, Impact), video embeds and custom-sampler parts carry a prompt
-# without a ``positive`` link. ``model`` is not one (LoRA loaders are walked).
-_STAGE_SHAPED_INPUTS = _SAMPLER_LIKE_INPUTS + (
-    "pipe",
-    "basic_pipe",
-    "detailer_pipe",
-    "sampler",
-    "sigmas",
-    "noise",
-    "text_embeds",
-    "hyvid_embeds",
-)
-# With a linked ``model``, any of these makes an unlisted node a possible stage
-# (XlabsSampler's ``conditioning``, video samplers' ``samples``). ``model`` alone
-# (ModelSampling*) or with ``clip`` (LoraLoader) is a model patch.
-_MODEL_STAGE_INPUTS = ("conditioning", "neg_conditioning", "samples", "latent")
+# The stage-walk input lists (``stage_inputs``) live in the semantics table; the
+# default profile never reads them.
 _NO_SAMPLER_NAMES = 3
 _CLASS_NAME_LENGTH = 64
 
@@ -1037,10 +1022,11 @@ class _GraphResolver:
         """An unlisted node that may itself be a sampler stage."""
         if name in self.semantics.all_classes:
             return False
-        if any(_link(inputs.get(key)) for key in _STAGE_SHAPED_INPUTS):
+        stage_inputs = self.semantics.stage_inputs
+        if any(_link(inputs.get(key)) for key in stage_inputs["shaped"]):
             return True
         return _link(inputs.get("model")) and any(
-            _link(inputs.get(key)) for key in _MODEL_STAGE_INPUTS
+            _link(inputs.get(key)) for key in stage_inputs["with_model"]
         )
 
     def upstream_stages(self, origin: str, value: Any) -> list:

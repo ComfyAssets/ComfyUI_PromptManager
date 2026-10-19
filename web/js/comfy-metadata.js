@@ -415,7 +415,9 @@
         SamplerCustomAdvanced: { facts: "custom-advanced" },
         FaceDetailer: { facts: "ksampler", image_stage: "image" },
     });
-    // Stages merged for one ambiguous result: the resolver's candidate cap.
+    // Stages merged for one result: the resolver's candidate cap. Together with
+    // MAX_VISITS per candidate walk these are deliberately tighter than the server's
+    // budgets (2,000 visits, depth 64), so the JS walk always fails closed first.
     const MAX_STAGES = 32;
     // Every class the semantics table lists (the resolver's `all_classes`): a stage walk
     // passes these, and treats any other node shaped like a sampler as an unknown stage.
@@ -431,10 +433,12 @@
         "JoinStringMulti", "PromptSearchList", "PreviewImage", "PreviewAny", "SaveImageWebsocket",
         "Image Comparer (rgthree)",
     ]);
-    // The resolver's stage-shaped inputs (pipes, embeds, custom-sampler parts), and the
-    // ones that make a node with a linked `model` a stage rather than a model patch.
-    const STAGE_SHAPED_INPUTS = ["latent_image", "guider", "positive", "negative", "pipe", "basic_pipe", "detailer_pipe", "sampler", "sigmas", "noise", "text_embeds", "hyvid_embeds"];
-    const MODEL_STAGE_INPUTS = ["conditioning", "neg_conditioning", "samples", "latent"];
+    // The table's `stage_inputs` (the resolver reads the same lists): inputs that make an
+    // unlisted node a possible stage, and those that do so beside a linked `model`.
+    const STAGE_INPUTS = Object.freeze({
+        shaped: ["latent_image", "guider", "positive", "negative", "pipe", "basic_pipe", "detailer_pipe", "sampler", "sigmas", "noise", "text_embeds", "hyvid_embeds"],
+        with_model: ["conditioning", "neg_conditioning", "samples", "latent"],
+    });
     // Fixed output0 contracts from the pinned core node schemas, not input-name inference.
     const SCALAR_OUTPUTS = Object.freeze({
         PrimitiveInt: "number", PrimitiveFloat: "number",
@@ -505,14 +509,18 @@
 
     const samplerEntry = (graph, id) => (Object.hasOwn(graph, id) && Object.hasOwn(SAMPLERS, graph[id].class_type) ? SAMPLERS[graph[id].class_type] : undefined);
 
-    const linked = (inputs, key) => Object.hasOwn(inputs, key) && isLink(inputs[key]);
+    // The resolver's `_link`: an integer or string id and a non-negative integer slot.
+    // Stage walks use it so they cross exactly the server's edges; the legacy `isLink` stays.
+    const stageLink = value => Array.isArray(value) && value.length === 2 &&
+        (typeof value[0] === "string" || Number.isInteger(value[0])) && Number.isInteger(value[1]) && value[1] >= 0;
+    const linked = (inputs, key) => Object.hasOwn(inputs, key) && stageLink(inputs[key]);
     /** An unlisted node that may itself be a sampler stage: the walk cannot judge it. */
     const stageShaped = ({ class_type, inputs }) => !TABLE_CLASSES.has(class_type) &&
-        (STAGE_SHAPED_INPUTS.some(key => linked(inputs, key)) || (linked(inputs, "model") && MODEL_STAGE_INPUTS.some(key => linked(inputs, key))));
+        (STAGE_INPUTS.shaped.some(key => linked(inputs, key)) || (linked(inputs, "model") && STAGE_INPUTS.with_model.some(key => linked(inputs, key))));
 
     /** Samplers reached from a detailer's image input, breadth-first, stopping at listed samplers. */
     function upstreamStages(graph, origin, value, budget) {
-        if (!isLink(value)) return null;
+        if (!stageLink(value)) return null;
         const found = [], queue = [String(value[0])], queued = new Set(queue);
         for (let head = 0; head < queue.length; head++) {
             const id = queue[head];
@@ -520,7 +528,7 @@
             if (samplerEntry(graph, id)) { found.push(id); continue; }
             if (stageShaped(graph[id])) return null;
             for (const input of Object.values(graph[id].inputs)) {
-                const next = isLink(input) ? String(input[0]) : null;
+                const next = stageLink(input) ? String(input[0]) : null;
                 if (next !== null && !queued.has(next)) { queued.add(next); queue.push(next); }
             }
         }
@@ -533,6 +541,8 @@
      * below this one, so a cyclic chain fails instead of recursing. False when the chain
      * cannot be walked within the bounds.
      */
+    // `stages` is shared on purpose across one result's candidates: re-adding a stage is
+    // harmless, and MAX_STAGES caps the union, not each candidate.
     function collectStages(graph, id, later, stages, budget) {
         stages.add(id);
         if (stages.size > MAX_STAGES || later.size >= MAX_STAGES) return false;
@@ -597,9 +607,10 @@
      * Facts follow the server's resolution. Its `sampler_id` drives them only when
      * resolved, or for an ambiguous result naming the final stage of a multistage
      * chain (merged per field across the stages, independent of any selection: D5).
-     * Ambiguous without a named sampler (no candidates on the wire until PR3) merges
-     * the same way across every listed sampler and its stages. Otherwise exactly one
-     * listed sampler in the graph supplies them; several leave every field ambiguous.
+     * Ambiguous without a named sampler (no candidates on the wire until PR3), and
+     * unresolved or absent over several listed samplers, merge the same way across
+     * every listed sampler and its stages. Otherwise (no resolution, or one listed
+     * sampler) exactly one listed sampler supplies them; several leave every field ambiguous.
      */
     function graphFacts(graph, source, resolution) {
         if (!object(graph)) return factSet("unresolved", source);
@@ -618,7 +629,9 @@
             return mergeFacts([...stages].map(id => samplerFacts(ctx, id, source)), source);
         }
         const candidates = entries.filter(([id]) => samplerEntry(graph, id));
-        if (state === "ambiguous") {
+        // Review I-1: an unresolved or absent prompt does not make the run's settings
+        // unknown, so several listed samplers merge the same way.
+        if (state === "ambiguous" || ((state === "unresolved" || state === "absent") && candidates.length > 1)) {
             // The server's branches: every listed sampler, a detailer judged with its stages.
             const stages = new Set();
             if (!candidates.length || !candidates.every(([id]) => collectStages(graph, id, new Set(), stages, { visits: 0 }))) return factSet("unresolved", source);
@@ -704,6 +717,7 @@
     });
     Object.defineProperty(api, "_samplerTable", { value: SAMPLERS });
     Object.defineProperty(api, "_tableClasses", { value: TABLE_CLASSES });
+    Object.defineProperty(api, "_stageInputs", { value: STAGE_INPUTS });
     if (typeof module !== "undefined" && module.exports) module.exports = api;
     else root.ComfyMetadata = api;
 })(typeof window !== "undefined" ? window : globalThis);
