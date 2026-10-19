@@ -177,6 +177,46 @@ class TestTagSuggestions(DatabaseTestCase):
             [("asian", 3), ("portrait", 3), ("dog", 2), ("smile", 1), ("snow_day", 1)],
         )
 
+    def _add_unused(self, *names):
+        with self.db.model.get_connection() as conn:
+            for name in names:
+                conn.execute("INSERT INTO tags(name) VALUES(?)", (name,))
+
+    def test_no_context_appends_unused_names_at_zero_after_used(self):
+        self._add_unused("zz_unused", "asian_unused")
+        used = [
+            ("asian", 3),
+            ("portrait", 3),
+            ("dog", 2),
+            ("smile", 1),
+            ("snow_day", 1),
+        ]
+        self.assertEqual(
+            self._names("", []),
+            used + [("asian_unused", 0), ("zz_unused", 0)],
+        )
+        self.assertEqual(self._names("asian", []), [("asian", 3), ("asian_unused", 0)])
+
+    def test_context_suggestions_never_include_unused_names(self):
+        self._add_unused("zz_unused", "asian_unused")
+        self.assertEqual(
+            self._names("", ["asian"]), [("portrait", 2), ("dog", 1), ("smile", 1)]
+        )
+
+    def test_limit_counts_unused_rows_last(self):
+        self._add_unused("zz_unused", "asian_unused")
+        self.assertEqual(
+            self._names("", [], limit=6),
+            [
+                ("asian", 3),
+                ("portrait", 3),
+                ("dog", 2),
+                ("smile", 1),
+                ("snow_day", 1),
+                ("asian_unused", 0),
+            ],
+        )
+
     def test_prefix_is_case_insensitive_and_anchored_at_the_start(self):
         self.assertEqual(self._names("P", []), [("portrait", 3)])
         self.assertEqual(self._names("s", []), [("smile", 1), ("snow_day", 1)])
@@ -213,6 +253,11 @@ class TestTagJunctionTables(DatabaseTestCase):
         self._save("P2", tags=["b", "c"])
         all_tags = self.db.get_all_tags()
         self.assertEqual(sorted(all_tags), ["a", "b", "c"])
+
+    def test_get_all_tags_includes_unused_registry_rows(self):
+        pid = self._save("P1", tags=["a", "b"])
+        self.db.set_prompt_tags(pid, ["b"])
+        self.assertEqual(self.db.get_all_tags(), ["a", "b"])
 
     def test_get_tags_with_counts(self):
         self._save("P1", tags=["common", "rare"])

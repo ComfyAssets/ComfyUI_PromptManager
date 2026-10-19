@@ -721,18 +721,13 @@ class PromptDatabase(
 
     def get_all_tags(self) -> List[str]:
         """
-        Get all unique tags linked to a standalone prompt or reusable pair.
+        Get every tag in the shared vocabulary, including unused registry rows.
 
         Returns:
             Sorted list of tag names
         """
         with self.model.get_connection() as conn:
-            cursor = conn.execute(
-                "SELECT t.name AS tag FROM tags t WHERE "
-                "EXISTS(SELECT 1 FROM prompt_tags pt WHERE pt.tag_id=t.id) OR "
-                "EXISTS(SELECT 1 FROM prompt_pair_tags pp WHERE pp.tag_id=t.id) "
-                "ORDER BY t.name"
-            )
+            cursor = conn.execute("SELECT t.name AS tag FROM tags t ORDER BY t.name")
             return [row["tag"] for row in cursor.fetchall()]
 
     def get_tags_with_counts(
@@ -808,6 +803,8 @@ class PromptDatabase(
         counted over the prompts that carry every tag in ``with_tags``; the
         context tags themselves are left out. Counts include separate standalone
         and pair references, with owner types kept distinct. Ordered by count/name.
+        Without context, unused vocabulary rows are included last with count 0;
+        with context they never appear.
         """
         seen = set()
         context = []
@@ -839,8 +836,8 @@ class PromptDatabase(
             "WITH tag_refs(kind,owner_id,tag_id) AS ("
             "SELECT 'prompt',prompt_id,tag_id FROM prompt_tags UNION ALL "
             "SELECT 'pair',pair_id,tag_id FROM prompt_pair_tags) "
-            "SELECT t.name AS name, COUNT(*) AS count"
-            " FROM tag_refs pt JOIN tags t ON t.id = pt.tag_id"
+            "SELECT t.name AS name, COUNT(pt.tag_id) AS count"
+            " FROM tags t LEFT JOIN tag_refs pt ON t.id = pt.tag_id"
             f" WHERE {' AND '.join(where)}"
             " GROUP BY t.id"
             " ORDER BY count DESC, t.name COLLATE NOCASE ASC"
