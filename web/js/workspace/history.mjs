@@ -1,6 +1,7 @@
 import {createScope, createButton} from '../shared/toolkit/core.js';
 import {createHistoryController, visibleHistoryColumns} from './history-state.mjs';
 import {mountRecordedRun} from './recorded-run.mjs';
+import {countOf} from './plural.mjs';
 
 function el(tag, text, className) {
     const node = document.createElement(tag);
@@ -160,7 +161,7 @@ export function mountRecordedHistory(container, {api, positiveId, parentScope, s
                 if (index !== undefined) timeline.scrollLeft = Math.max(0, 38 + index * 64 - anchor.x);
             }
         }
-        count.textContent = window.group ? `${window.recorded_run_count} distinct recorded runs as of this read · ${window.items.length} loaded positions` : '';
+        count.textContent = window.group ? `${countOf(window.recorded_run_count, 'distinct recorded run')} as of this read · ${window.items.length} loaded positions` : '';
         const group = window.group;
         scopeText.textContent = group?.scope_status === 'uncapturable_text' ? 'This saved positive cannot be matched within frozen-text capture limits.' : 'Runs are grouped by exact frozen positive raw text, independently of saved pairs. Effective text, prepend/append composition and evidence can differ. Reported output locations do not establish context membership or historical file identity.';
         status.setAttribute('role', window.error || next.run.error ? 'alert' : 'status');

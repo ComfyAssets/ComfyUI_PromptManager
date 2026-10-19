@@ -9,6 +9,7 @@ import {createLibraryEditorController} from './library-editor-state.mjs';
 import {layoutLibraryRows,visibleLibraryRows} from './library-layout.mjs';
 import {createWorkspaceIcon} from './icons.mjs';
 import {mountRecordedHistory} from './history.mjs';
+import {countOf} from './plural.mjs';
 
 let shelfVisit=null;
 // Every confirmed receipt advances this; a shelf mounted before it never restores its cached stream.
@@ -24,8 +25,6 @@ const ARCHIVED_MESSAGE='Archived. Find it under Show archived in Negative varian
 function el(tag,text,className) {
     const node=document.createElement(tag);if(text!==undefined) node.textContent=text;if(className) node.className=className;return node;
 }
-/** `1 linked image`, `2 linked images`. */
-function linkedImages(count) {return `${count} linked image${count===1?'':'s'}`;}
 function link(text,href,className) {const node=el('a',text,className);node.href=href;return node;}
 function title(text) {const first=text.split('\n')[0].trim();return first.length>80?`${first.slice(0,80)}…`:first;}
 /** The full stored title; the first-line fallback only when it is blank. */
@@ -176,7 +175,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             heading.append(h2,el('span',item.category || 'Uncategorized','library-chip'));
             const prompts=el('div',undefined,'library-card-prompts');
             const blocks=mountPromptBlocks(prompts,{prompts:{positive:{status:'resolved',text:item.text,source:'library'}},sender,parentScope:scope,roles:['positive']});
-            const stats=el('div',undefined,'library-card-meta');stats.append(el('span',item.variant_count?`${item.variant_count} saved negative variants`:'No saved negatives','library-chip library-chip-negative'),el('span',linkedImages(item.image_count)));
+            const stats=el('div',undefined,'library-card-meta');stats.append(el('span',item.variant_count?countOf(item.variant_count,'saved negative variant'):'No saved negatives','library-chip library-chip-negative'),el('span',countOf(item.image_count,'linked image')));
             const vocabulary=el('div',undefined,'library-tags');for(const tag of item.tags || []) vocabulary.append(el('span',tag,'library-chip'));
             content.append(heading,prompts,stats,vocabulary);
             const footer=el('footer',undefined,'library-card-footer');
@@ -449,14 +448,14 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                     lane.node.style.setProperty('--lane-offset',`${38+index*47}px`);
                     lane.button.setAttribute('aria-label',entry.kind==='separate'?'Select the saved negative variant outside the loaded list':`Select negative variant ${entry.number}`);
                     lane.button.setAttribute('aria-pressed',String(activePairId===entry.variant.id));lane.button.disabled=savedReadState!=='current';
-                    lane.text.textContent=`${name} · ${linkedImages(entry.variant.image_count)}${entry.kind==='archived'?' · Archived':''}`;
+                    lane.text.textContent=`${name} · ${countOf(entry.variant.image_count,'linked image')}${entry.kind==='archived'?' · Archived':''}`;
                     if(lane.restore) {lane.restore.setAttribute('aria-label',`Restore ${name}`);lane.restore.disabled=savedReadState!=='current' || restoringPairs.has(entry.variant.id);}
                     if(previous.nextSibling!==lane.node) previous.after(lane.node);
                     previous=lane.node;
                 }
                 if(active?.isConnected && document.activeElement!==active) active.focus({preventScroll:true});
                 emptyNote.hidden=entries.length>0;
-                variantCount.textContent=`${detail.variants.length} of ${detail.variant_total} saved negative variants`;
+                variantCount.textContent=`${detail.variants.length} of ${countOf(detail.variant_total,'saved negative variant')}`;
                 const archivedState=archivedLoader.state,target=moreTarget();
                 const loadError=state.variantsError || (archivedShown && (archivedState.error || archivedState.variantsError));
                 more.hidden=!target || !!loadError;more.setAttribute('aria-disabled',String(state.loadingVariants || archivedState.loading || archivedState.loadingVariants || savedReadState!=='current'));retry.hidden=!loadError;

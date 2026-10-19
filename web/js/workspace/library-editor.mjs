@@ -21,8 +21,9 @@ const REVIEW = 'Loaded the latest saved values. Review your entries, then save.'
 const REVIEW_ARCHIVE = 'Loaded the latest saved values. Review them, then archive.';
 const TOAST_MS = 6500;
 const REFRESH = ['Reload Library', 'refresh'];
-// The concept has no discard confirmation (its Cancel and × simply close), so the exit states it inline.
-const DISCARDS = 'Reload Library closes this dialog and discards your entries.';
+// The concept has no discard confirmation (its Cancel and × simply close), so the state says it inline:
+// every exit (Reload Library, Cancel, × or Escape) drops the draft.
+const DISCARDS = 'Leaving this dialog discards your entries.';
 let toastTimer;
 
 /** Show one outcome in the shared workspace toast (role="status"); it clears itself like the concept's. */

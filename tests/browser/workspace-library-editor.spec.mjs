@@ -464,6 +464,10 @@ test('library heading offers Export then + New prompt, and New opens the saved p
     await expect(page.locator('#workspace-main h1')).toHaveText('Harbor at dawn');await expect(page.locator('#workspace-main h1')).toBeFocused();
     await expect(toast(page)).toHaveText('Saved.');
     await expect(pressedVariant(page)).toHaveCount(1);await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true})).toContainText('fog, noise');
+    // Exactly one saved negative is counted in the singular, in history and on the shelf card.
+    await expect(variantsPanel(page).getByText('1 of 1 saved negative variant',{exact:true})).toHaveCount(1);
+    await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
+    await expect(page.locator(`article[data-prompt-id="${created.id}"]`).getByText('1 saved negative variant',{exact:true})).toHaveCount(1);
     expect(page.writes.map(write=>`${write.method} ${write.url}`)).toEqual(['POST /prompt_manager/library']);
 });
 
@@ -586,7 +590,7 @@ test('restored storage after a confirmed save or before an archive offers an exp
     expect((await pairRead(request,f.pair_id)).archived).toBe(false);
 });
 
-const DISCARDS='Reload Library closes this dialog and discards your entries.';
+const DISCARDS='Leaving this dialog discards your entries.';
 test('restored storage before an Edit or Add negative save offers only the Library reload exit',async({page,request})=>{
     const f=page.fixture;const snapshot=await(await request.get('/__test__/library-editor/snapshot')).body();
     const restore=()=>request.post('/prompt_manager/restore',{multipart:{database_file:{name:'editor.db',mimeType:'application/octet-stream',buffer:snapshot}}});
