@@ -601,8 +601,13 @@ async function chromeOf(page,production) {
     const ring=await browse.evaluate(node=>{const style=getComputedStyle(node);return {visible:node.matches(':focus-visible'),
         outlineStyle:style.outlineStyle,outlineWidth:style.outlineWidth,outlineColor:style.outlineColor,outlineOffset:style.outlineOffset};});
     await page.keyboard.press('Tab');
+    const brandLink=page.locator('a.brand').first();await brandLink.focus();
+    const linkRing=await brandLink.evaluate(node=>{const style=getComputedStyle(node);return {visible:node.matches(':focus-visible'),
+        outlineStyle:style.outlineStyle,outlineWidth:style.outlineWidth,outlineOffset:style.outlineOffset};});
+    await page.keyboard.press('Tab');
+    await expect(page).toHaveTitle(/^Tags( · Prompt Manager( concept)?)?$/);
     return {breadcrumb:(await page.locator(production?'#workspace-breadcrumb':'#breadcrumb').textContent()).trim(),
-        title:(await page.title()).replace(/ · Prompt Manager( concept)?$/,''),ring};
+        title:(await page.title()).replace(/ · Prompt Manager( concept)?$/,''),ring,linkRing};
 }
 /** Concept rows are the concept's own sample tags; production appends the fixture-only tags after them (D4 creation order). */
 function comparePage(reference,actual) {
@@ -626,7 +631,7 @@ for(const [width,height] of SIZES)for(const theme of ['dark','light'])test(`tags
     const path=testInfo.outputPath('tags-geometry.json');await writeFile(path,JSON.stringify(result,null,2));
     await testInfo.attach('tags-geometry',{path,contentType:'application/json'});
     for(const [motion,{reference,diff,extra,referenceChrome,actualChrome}] of Object.entries(result)) {
-        expect.soft(referenceChrome,`${motion} concept chrome`).toMatchObject({breadcrumb:'Tags',title:'Tags',ring:{visible:true}});
+        expect.soft(referenceChrome,`${motion} concept chrome`).toMatchObject({breadcrumb:'Tags',title:'Tags',ring:{visible:true},linkRing:{outlineOffset:'3px'}});
         expect.soft(actualChrome,`${motion} breadcrumb, title and focus ring`).toEqual(referenceChrome);
         expect.soft(reference.heading.actions.buttons.map(item=>item.text),`${motion} concept heading actions`).toEqual(['+ Create tag','Auto-tag images']);
         expect.soft(reference.table.rows.map(row=>[row.tag,Number(row.prompts)]),`${motion} concept rows`).toEqual(CONCEPT_COUNTS);
