@@ -1,6 +1,6 @@
 import {createScope, createButton} from '../shared/toolkit/core.js';
 import {createViewerSession} from './viewer-state.mjs';
-import {originalMediaDownload} from './inspection-state.mjs';
+import {rootedFileAdapter} from './inspection-state.mjs';
 import {mountFileInspector} from './file-inspector.mjs';
 
 let viewerId = 0;
@@ -17,7 +17,7 @@ function element(tag, className, text) {
     return node;
 }
 
-export function createMediaViewer({container,parentScope,inspectionController,sender,onSelect,onRefresh,onRestoreFocus,onClose}) {
+export function createMediaViewer({container,parentScope,inspectionController,sender,onSelect,onRefresh,onRestoreFocus,onClose,adapter = rootedFileAdapter}) {
     const scope = createScope();
     let active = null, retryVersion = 0;
     const dispose = () => scope.dispose();
@@ -33,7 +33,7 @@ export function createMediaViewer({container,parentScope,inspectionController,se
         const {items,selectedKey,trigger = document.activeElement} = options;
         let mounted = false, initial, entry, currentKey, viewer = null, mediaScope = null, closed = false;
         let originalDownload = null, inspectionState = inspectionController.state;
-        const session = createViewerSession({items,initialKey:selectedKey,onChange:(state,selected) => {
+        const session = createViewerSession({adapter,items,initialKey:selectedKey,onChange:(state,selected) => {
             if (!mounted) { initial = [state,selected]; return; }
             update(state,selected);
         }});
@@ -109,7 +109,7 @@ export function createMediaViewer({container,parentScope,inspectionController,se
             const mediaLocal = mediaScope, key = session.state.key;
             const current = () => !local.signal.aborted && !mediaLocal.signal.aborted && session.state.key === key;
             let original;
-            try { original = originalMediaDownload(selected); }
+            try { original = adapter.originalDownload(selected); }
             catch { session.failed(key);return; }
             const url = new URL(original.url,window.location.href);
             url.searchParams.set('_pm_viewer',`${Date.now()}-${++retryVersion}`);
@@ -193,7 +193,7 @@ export function createMediaViewer({container,parentScope,inspectionController,se
             if (position.textContent !== label) position.textContent = label;
             if (currentKey !== state.key) {
                 currentKey = state.key;title.textContent = entry.filename;
-                try { originalDownload = originalMediaDownload(entry); } catch { originalDownload = null; }
+                try { originalDownload = adapter.originalDownload(entry); } catch { originalDownload = null; }
                 onSelect?.(entry);
                 rebuild(entry);
             }

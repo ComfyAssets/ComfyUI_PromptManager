@@ -20,41 +20,23 @@ from PIL import Image, UnidentifiedImageError
 from .prompts import bad_request, parse_page_params, publish_image_paths
 from .prompts import thumbnail_url_for
 from .prompts import safe_error_message as _safe_error
+from .inspection_service import (
+    CurrentFileChanged,
+    IMAGE_EXTENSIONS as _IMAGE_EXTENSIONS,
+    SERVABLE_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+    inspect_current_file,
+)
 
 try:
     from ...utils.parallel import map_parallel
     from ...utils.inspection_response import encode_inspection_response
-    from ...utils.prompt_inspector import (
-        MetadataReadError,
-        inspect_prompt_evidence,
-        read_inspection_file,
-    )
 except ImportError:
     from utils.parallel import map_parallel
     from utils.inspection_response import encode_inspection_response
-    from utils.prompt_inspector import (
-        MetadataReadError,
-        inspect_prompt_evidence,
-        read_inspection_file,
-    )
 
-# Only these file types are ever served by the image routes, regardless of
-# what sits inside an allowed directory (defence in depth for the gallery).
-IMAGE_EXTENSIONS = frozenset(
-    {
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".webp",
-        ".gif",
-        ".bmp",
-        ".tiff",
-        ".tif",
-        ".mp4",
-        ".webm",
-        ".mov",
-    }
-)
+
+IMAGE_EXTENSIONS = _IMAGE_EXTENSIONS
 
 
 def _public_path(path):
@@ -106,11 +88,7 @@ def _media_access_error(path, allowed_dirs):
 
 # Media types the gallery scans and thumbnails (a superset is never served).
 GALLERY_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
-VIDEO_EXTENSIONS = frozenset({".mp4", ".webm", ".avi", ".mov", ".mkv", ".m4v", ".wmv"})
 MEDIA_EXTENSIONS = GALLERY_IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
-# What the serve routes hand out: every image type above plus every video type
-# the gallery lists, so a card never points at a 403.
-SERVABLE_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
 # Caps on request-triggered filesystem work.
 MAX_SCAN_DEPTH = 12
@@ -1732,18 +1710,6 @@ class ImageRoutesMixin:
         try:
 
             def inspect() -> bytes | None:
-                before = path.stat()
-                try:
-                    inspection = read_inspection_file(path)
-                except MetadataReadError:
-                    inspection = None
-                try:
-                    after = path.stat()
-                except FileNotFoundError:
-                    return None
-                fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-                if any(getattr(before, key) != getattr(after, key) for key in fields):
-                    return None
                 saved, unavailable = None, False
                 try:
                     saved = self.db.get_image_prompt_info(
@@ -1752,25 +1718,17 @@ class ImageRoutesMixin:
                 except Exception:
                     unavailable = True
                     self.logger.warning("Saved inspection display could not be read")
-                if inspection is None:
-                    evidence = {
-                        "prompts": {
-                            role: {"status": "unresolved", "text": None, "source": None}
-                            for role in ("positive", "negative")
-                        },
-                        "resolution": {
-                            "state": "unresolved",
-                            "sampler_id": None,
-                            "reason": "Media metadata could not be read",
-                        },
-                    }
-                else:
-                    role_saved = (
-                        None
-                        if saved and saved.get("association_status") == "ambiguous"
-                        else saved
+                try:
+                    observed = inspect_current_file(
+                        path,
+                        source_label=_public_path(roots[index]),
+                        saved=saved,
+                        library=self._inspection_library(
+                            saved, unavailable=unavailable
+                        ),
                     )
-                    evidence = inspect_prompt_evidence(inspection.metadata, role_saved)
+                except CurrentFileChanged:
+                    return None
                 return encode_inspection_response(
                     image={
                         "root_index": index,
@@ -1778,25 +1736,7 @@ class ImageRoutesMixin:
                         "filename": path.name,
                     },
                     root_scope=root_scope,
-                    file={
-                        "observation": "current-file",
-                        "source_label": _public_path(roots[index]),
-                        "media_type": (
-                            "video"
-                            if path.suffix.lower() in VIDEO_EXTENSIONS
-                            else "image"
-                        ),
-                        "extension": path.suffix.lower(),
-                        "size": before.st_size,
-                        "modified_time": before.st_mtime,
-                        "format": None,
-                        "width": None,
-                        "height": None,
-                    },
-                    prompts=evidence["prompts"],
-                    resolution=evidence["resolution"],
-                    inspection=inspection,
-                    library=self._inspection_library(saved, unavailable=unavailable),
+                    **observed,
                 )
 
             body = await self._run_in_executor(inspect)

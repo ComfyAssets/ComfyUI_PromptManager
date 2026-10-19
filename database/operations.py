@@ -14,6 +14,7 @@ from .library import LibraryOperations
 from .execution_history import ExecutionHistoryOperations
 from .execution_contexts import ExecutionContextOperations
 from .execution_outputs import ExecutionOutputOperations
+from .history_reads import HistoryReadOperations
 
 # Import logging system
 try:
@@ -160,6 +161,7 @@ class PromptDatabase(
     ExecutionHistoryOperations,
     ExecutionContextOperations,
     ExecutionOutputOperations,
+    HistoryReadOperations,
 ):
     """Database operations class for managing prompts."""
 

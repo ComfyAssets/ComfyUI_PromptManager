@@ -110,6 +110,30 @@ not certify every existing feature, arbitrary host versions,
 GPU/model changes, cross-pack installation or visual design changes. Those still
 need targeted validation.
 
+## Windows portability preflight
+
+Before changing paths, SQLite, streams, restore or cleanup:
+
+- Follow the boundary's existing native canonical/identity contract;
+  `Path.resolve()` alone does not fold Windows case. Keep lexical aliases
+  distinct from resolved targets. Cover mixed case, drive and UNC spellings,
+  plus foreign-namespace denial with an allowed native control.
+  See Python's [normcase documentation](https://docs.python.org/3.13/library/os.path.html#os.path.normcase).
+- Close every owned database/model connection, worker and stream handle before
+  unlink or `TemporaryDirectory.cleanup()`. Await worker/stream retirement.
+  A SQLite [`with conn` manages transactions, not connection closure](https://docs.python.org/3.13/library/sqlite3.html#how-to-use-the-connection-context-manager),
+  and [`addCleanup` runs after teardown](https://docs.python.org/3.13/library/unittest.html#unittest.TestCase.addCleanup);
+  use explicit `finally` cleanup when teardown removes files first.
+- Windows can reject unlink of an open file; Unix can remove its directory entry
+  while the handle remains usable. Preserve the shared behavior assertions and
+  exercise the actual native branch, then prove handle release and successful
+  cleanup. Do not hide failures with blanket skips or retries.
+  See Python's [remove/unlink semantics](https://docs.python.org/3.13/library/os.html#os.remove).
+- Run native Windows CI early for these changes and include a Windows impact and
+  evidence note in the PR. All twelve OS/Python combinations and every applicable
+  exact-head check must pass before merge. Portable `ntpath`/`PureWindowsPath`
+  controls do not establish native filesystem, locking or cleanup success.
+
 ## Required merge checks
 
 `.github/branch-protection.json` records the required checks: all twelve Python/OS
@@ -226,8 +250,8 @@ loading a workflow or queueing generation.
 
 ## Durable execution ledger
 
-`npm run --prefix tools/vendor test:executions` runs 42 real execution cases
-(21 each in Classic and Nodes 2.0, retaining all 26 prior execution cases),
+`npm run --prefix tools/vendor test:executions` runs 46 real execution cases
+(23 each in Classic and Nodes 2.0, retaining all 42 prior execution cases),
 alongside the existing 78 stock host cases and six pack compatibility cases. Run
 these suites serially because they share report cleanup and owned host resources. Use the same pinned disposable `PM_COMFY_ROOT`,
 `PM_TEST_PYTHON` and Playwright browser installation as `test:comfyui`:
@@ -346,3 +370,128 @@ For a live output check after that manual restart:
 
 Automated checks use only managed disposable hosts. They never restart or upgrade
 the personal ComfyUI server.
+
+## Chronological Library history (#209)
+
+`#/library/{positive_id}` retains saved negative selection, the full selected
+negative directly beneath its positive, acknowledged role/pair sending, and one
+pair-filtered shared gallery. Recorded executions are a separate projection.
+Selecting an execution, anchor, Raw/Effective mode, or reported occurrence does
+not select a saved variant or refetch its gallery. A,A,B means three attempts,
+two frozen contexts, and one exact raw-positive group. Different composition or
+evidence can produce different frozen contexts despite equal-looking previews.
+
+The versioned public reads are:
+
+| Route | Meaning |
+| --- | --- |
+| `GET /prompt_manager/library/{positive_id}/history` | Exact frozen raw-positive group; compact chronological windows |
+| `GET /prompt_manager/history/runs/{run_id}` | Frozen fields, per-field provenance, capture and outcome for a known UUID |
+| `GET /prompt_manager/history/runs/{run_id}/outputs` | Ordered host-reported occurrences, including repeated locations |
+| `GET /prompt_manager/history/runs/{run_id}/output/current/{media,thumbnail,inspection}` | Authorized current file at that reported location, using the returned epoch/scope URL |
+
+Run and output reads accept the returned `epoch`; current-file routes require
+the returned epoch, current scope and occurrence coordinates. Run integers are
+decimal strings, preserving SQLite's full signed 64-bit values. Windows and
+receipt pages default to 40 with a 1–100 limit. Cursors are opaque, authenticated,
+scope-bound and capped at 4096 bytes. Run JSON has an 8 MiB UTF-8 limit and receipt
+pages a 1 MiB limit; exceeding a limit fails explicitly instead of truncating
+exact evidence. The unchanged capture limits remain 16 anchors/256 occurrences.
+
+A cursor freezes its upper ordering boundary, not an application-wide snapshot:
+each page has one SQLite read transaction and a count as of that read. Later
+pages can observe completed capture, deletion or other current changes. Newer
+runs require Refresh history. Unknown positive raw text cannot enter an exact
+Library group but remains readable through its known run UUID. Unknown (`null`),
+known empty (`""`) and whitespace are distinct. Complete-zero reported outputs
+means the host reported none; missing capture means unknown, and partial or
+conflicting capture remains incomplete. Receipts prove reported locations, not
+historical bytes, newly generated files or context-output ownership. Cached
+attempts can repeat exactly the same receipts.
+
+Each nonempty history page also returns an authenticated `resume_cursor`, including
+an exhausted page with no continuation. Re-entry uses `resume` instead of `cursor`
+to read from that prior upper boundary, then restores at most the prior number of
+40-run pages. It retains horizontal/vertical scroll and the visible anchor as
+in-memory visit intent. The API validates epoch and exact saved-text scope again;
+DTOs and current candidates are never saved as visit intent. Explicit Refresh
+loads the newest window/count and revalidates the selected run's exact raw-positive
+membership, context and receipt. A valid selection outside that window has an
+explicit label and **View selected run** control.
+
+Every receipt can be selected, including missing/error candidates. **Retry current
+availability** rereads its existing bounded output page; a reduced response limit
+may require several reads within that one already loaded page. Earlier rows,
+context/mode, exact selection and saved gallery remain. Recovery actions use the
+shared client's strict `smaller-limit`, `reload-outputs`, `retry-read` and
+`refresh-history` vocabulary. Active inspection epoch/identity failures immediately
+reach the owning history recovery, clearing stale recorded actions before reload.
+
+Restore acceptance depends on merged #223: incompatible online storage
+replacement must safely refuse without harming another owner's WAL/connection.
+History fencing does not repair unsafe replacement. For accepted replacement,
+the read transaction ends before a fresh-connection epoch check; the final
+epoch/generation validation is the publication linearization point. Browser
+generations also ignore late success/error callbacks after route/scope changes.
+Old cursors, epoch and current-scope URLs fail with bounded recovery instructions.
+Restored numeric IDs never repair an original navigation hint. Saved Library
+details are revalidated separately, and a changed owner requires explicit reload.
+
+Current media/thumbnail responses use an already-opened, validated canonical
+file handle, bounded streaming and `Cache-Control: no-store`, including HEAD and
+range behavior. Inspection is a current metadata observation with pre/post file
+facts, canonical reauthorization and a fresh scope/epoch check; it is not pinned
+historical bytes or an OS filesystem snapshot. A deterministic change during the
+metadata read is rejected. A later request can legitimately observe replacement
+bytes at the same path without changing the immutable receipt.
+
+The focused acceptance command retains all four projects:
+
+```sh
+PM_TEST_PORT=8766 npm run --prefix tools/vendor test:workflows -- \
+  workspace-history.spec.mjs workspace-visual.spec.mjs \
+  --project chromium --project touch --project firefox --project webkit
+npm run --prefix tools/vendor test:executions
+npm run --prefix tools/vendor test:comfyui
+npm run --prefix tools/vendor test:compat
+```
+
+Use the pinned disposable prerequisites above; managed suites run serially.
+The real execution helpers compare SQLite captures to these public routes for
+stock SaveImage/PreviewImage batches, multiple nodes, metadata disabled, cached
+headless repeats, partial failure and interruption. Additional cases verify the
+actual PM A,A,B group, unknown-positive exclusion, and exact frozen Raw/Effective
+pair sends through the acknowledged host bridge after Classic/Nodes 2.0 startup,
+both switches and workflow reload, without queuing or loading a workflow on send.
+All original 42 execution, 78 stock-host and six compatibility cases remain.
+
+The browser fixture uses actual APIs/SQLite/files, fixed owned backup snapshots,
+one-shot bounded publication barriers and fixed filesystem/configuration commands.
+Reset and cleanup release barriers, restore seams and revoke commands. It never
+attaches to a personal host. The canonical HTML and its six required assets are
+served from a fixed test-only allowlist; the original concept index/app/style
+bytes are hash-pinned and unmodified. At 1600×1100 and 390×844 in both themes,
+with fixed locale/UTC/reduced motion and ready fonts, tests capture unmasked
+concept/production PNG pairs and geometry, and pin actual branch padding,
+surfaces, 2px role lines, 57px rhythm, staggering, colors, selected focus and native
+dialog behavior. Controls and actions are checked independently of screenshots.
+Keyboard focus/return, coarse targets, 200% layout, route return and persisted
+page lifecycle recovery retain their separate behavioral tests.
+
+Initial production acceptance requires maintainer inspection of paired PNGs and
+geometry; never update snapshots automatically or mask content to bless a gap.
+Data-dependent text/images/counts and the clearly labeled saved/frozen/current
+distinctions are documented in the comparison helper. Broader Images card
+activation/Info/tag/favorite/select parity and shared Viewer stage/toolbar polish
+and shared role-block spacing/padding/glyph polish remain outside #209. The
+responsive production Viewer keeps its toolbar in the media panel and prompt details readable rather than reproducing the concept's
+mobile toolbar collision. These are explicit remaining visual differences, not
+a whole-application or full-gallery/Viewer pixel-parity claim.
+
+Preserve raw logs, failed traces, paired PNGs, geometry, runtime versions and
+source hashes before later managed commands clear their output directories.
+Frontend baseline updates are additive through `coverage:update` only after
+every previous metric floor and each new file's 80% line requirement pass; rerun
+the coverage gate using the committed baseline. Python retains its 85% combined
+statement/branch gate. Deploying the history Python changes requires a maintainer
+ComfyUI restart; automated acceptance never restarts the personal server.

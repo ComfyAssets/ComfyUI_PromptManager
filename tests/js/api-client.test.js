@@ -222,3 +222,34 @@ test("latestOnly: errors from the current call propagate, errors from superseded
     rejectFirst(new Error("old failure"));
     assert.equal(await first, STALE);
 });
+
+test("ApiError exposes only validated history recovery actions on all error paths", async () => {
+    const permitted = [null, { action: "refresh-history" }, { action: "reload-outputs" },
+        { action: "retry-read" }, { action: "smaller-limit", limit: 1 },
+        { action: "smaller-limit", limit: 100 }];
+    const denied = [undefined, false, "refresh-history", [], {}, { action: "unknown" },
+        { action: "refresh-history", private: "secret" }, { action: "retry-read", limit: 1 },
+        { action: "smaller-limit" }, { action: "smaller-limit", limit: 0 },
+        { action: "smaller-limit", limit: 101 }, { action: "smaller-limit", limit: true },
+        { action: "smaller-limit", limit: "1" }, { action: "smaller-limit", limit: 1.5 },
+        { action: "smaller-limit", limit: NaN }, { action: "smaller-limit", limit: Infinity },
+        { action: "smaller-limit", limit: 10, url: "/private" },
+        Object.assign(Object.create({ action: "retry-read" }), { private: "secret" })];
+    assert.equal(new ApiError(409, "old caller").recovery, null);
+    for (const recovery of permitted.concat(denied)) {
+        for (const status of [409, 200]) {
+            const api = createApiClient(async () => jsonResponse(status, {
+                success: false, error: "bounded", code: "history-changed", recovery,
+            }));
+            await assert.rejects(api.get("/x"), error => {
+                assert.ok(error instanceof ApiError);
+                assert.equal(error.code, "history-changed");
+                assert.deepEqual(error.recovery, permitted.includes(recovery) ? recovery : null);
+                if (recovery && permitted.includes(recovery)) {
+                    assert.notEqual(error.recovery, recovery, "server objects must be copied");
+                }
+                return true;
+            });
+        }
+    }
+});
