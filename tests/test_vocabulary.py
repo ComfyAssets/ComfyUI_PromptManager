@@ -156,6 +156,29 @@ class TestVocabularyReads(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.read("list_vocabulary_categories", after=after)
 
+    def test_category_paging_breaks_first_use_ties_by_value(self):
+        self.save("Shared owner", category="B")
+        self.db.save_prompt_pair(
+            "Shared owner", "Pair noise A", category="A", title="A pair"
+        )
+        self.db.save_prompt_pair(
+            "Shared owner", "Pair noise C", category="C", title="C pair"
+        )
+        pages, after = [], None
+        for _ in range(3):
+            page = self.read("list_vocabulary_categories", limit=1, after=after)
+            pages.append(page)
+            after = page["next_key"]
+        values = [row["value"] for page in pages for row in page["categories"]]
+        self.assertEqual(values, ["A", "B", "C"])
+        self.assertEqual([page["has_more"] for page in pages], [True, True, False])
+        for page in pages:
+            row = page["categories"][0]
+            self.assertEqual(
+                row["prompt_count"],
+                self.db.list_library(category=row["value"])["total"],
+            )
+
     def test_pages_are_bounded_and_continue_without_gaps(self):
         self.add_unused(*[f"tag-{index:03d}" for index in range(250)])
         pages, after = [], None

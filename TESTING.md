@@ -575,7 +575,8 @@ name), `PATCH tags/{id}` (rename), `POST tags/{id}/delete`, `GET tags/{id}/impac
 `expected_epoch`; tag commands also carry the exact `{id, name}` identity, and
 category apply carries the preview's `impact_token`.
 
-Error contract: validation failures are 400 with `code: null`. A stale epoch is 409
+Error contract: command validation failures are 400 with `code: null`; reads
+return `{success: false, error}` with no `code`, and impact on an unknown id is 404. A stale epoch is 409
 `storage-changed`; a changed or missing identity, or a changed category projection,
 is 409 `vocabulary-conflict` with a generic message. Both 409 bodies include the
 current `library_epoch`. Nothing is written on any refusal.
@@ -588,6 +589,11 @@ and owner deletion (`TestRetainedTags` in `tests/test_database_backup.py`). Rest
 rotates the epoch, so a pre-restore `expected_epoch` is refused with `storage-changed`.
 Owner rows and their timestamps never change on a tag command; a category apply only
 touches rows carrying the exact source.
+
+Two legacy routes change additively: `GET /tags` now lists unused registry tags, and
+`/tags/suggest` without context appends unused names at count 0. Unused tags become
+deletable only through the native Delete tag (vocabulary UI PR), not on the legacy
+tags page.
 
 Both token functions (`library_edit_token`, `category_impact_token`) share
 `canonical_token` in `database/library_tokens.py`; `TestSharedTokenHashing` pins their
