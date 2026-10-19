@@ -31,7 +31,6 @@ main.library-main { --library-positive: #73dda9; }
 .library-main .library-row-spacer { grid-column: 1 / -1; pointer-events: none; }
 .library-main .library-continuation { padding-block: 22px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .library-main .library-status { flex: 1 1 240px; color: var(--ca-muted); }
-.library-main .library-back { display: inline-block; margin-block: 0 12px; color: var(--ca-accent); }
 .library-main .library-surface { padding: 22px; background: var(--ca-surface); border: 1px solid var(--ca-line); border-radius: 7px; margin-block: 18px; }
 .library-main .library-branches { padding: 18px 20px; border: 1px solid var(--ca-line); border-radius: 6px; background: var(--ca-field); margin-block: 16px; }
 .library-main .library-positive-lane { padding-block-end: 12px; border-block-end: 2px solid var(--library-positive); color: var(--library-positive); font-size: 12px; }
@@ -57,6 +56,7 @@ main.library-main { --library-negative: #ff8c98; }
 .library-positive-lane > span, .history-positive-lane > span { position: absolute; inset-block-start: -25px; inset-inline-start: 38px; font-size: 10px; color: var(--library-positive); }
 .library-main .library-variants h2 { font-size: 14px; line-height: 1.5; margin: 0; }
 .library-main .library-variants > p.muted { font-size: 12px; line-height: 1.5; margin: 0 0 12px; }
+.library-main .library-panel-heading p.muted { font-size: 12px; line-height: 1.5; margin: 0; }
 .library-main .library-variants .library-branches { margin-block: 0; }
 .library-variant-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-block-start: 14px; }
 .library-variant-summary { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -122,3 +122,18 @@ main.library-main { --library-negative: #ff8c98; }
     .history-context-branch, .history-context-branch::before, .history-run-marker, .history-run-marker::before { border-color: CanvasText; }
     .history-run-marker[aria-pressed="true"] { outline-color: Highlight; }
 }
+
+/* Heading and panel actions follow the concept (style.css 283-300, 540-549, 1408-1414). */
+.workspace-heading .heading-actions, .library-main .row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ca-tools .workspace-heading .heading-actions button, .ca-tools .library-main .row-actions button { min-block-size: 32px; font-size: 12px; max-inline-size: 100%; white-space: normal; }
+.workspace-heading .heading-actions { min-inline-size: 0; max-inline-size: 100%; }
+.ca-tools .workspace-heading button.send { color: var(--ca-focus); border-color: var(--ca-line); display: inline-flex; align-items: center; gap: 6px; }
+.workspace-heading h1:focus { outline: none; }
+.workspace-heading h1:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
+.library-main .library-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-block-end: 12px; }
+@media (max-width: 700px) { .workspace-heading .heading-actions { inline-size: 100%; } }
+@media (pointer: coarse) { .ca-tools .workspace-heading .heading-actions button, .ca-tools .library-main .row-actions button { min-block-size: 40px; } }
+/* Archived pairs: the existing lane at reduced emphasis (the existing .6 disabled-marker opacity); text stays at full contrast. */
+.library-main .library-variant-archived::before, .ca-tools .library-main .library-variant-archived .library-variant-dot { opacity: .6; }
+.ca-tools .library-main .library-variant-restore { position: static; margin-inline-start: 8px; min-block-size: 24px; padding: 2px 8px; font-size: 10px; vertical-align: middle; }
+@media (pointer: coarse) { .ca-tools .library-main .library-variant-restore { min-block-size: 40px; } }

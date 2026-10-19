@@ -3,7 +3,7 @@ import { createButton, createField, createScope, createSelect } from '../shared/
 import { routes, mountRouter, summarizeStats } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
 import { mountImages } from './images.mjs';
-import { mountLibrary } from './library.mjs';
+import { mountLibrary, mountNewPromptAction } from './library.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
@@ -67,6 +67,8 @@ function mountWorkspace() {
         }
         document.title = `${route.label} · Prompt Manager`;
         const heading = element('h1', route.label);
+        // Focus target after a save, as the concept's page title.
+        heading.tabIndex = -1;
         const headingCopy = element('div', undefined, 'workspace-heading-copy');
         headingCopy.append(heading);
         const headingRegion = element('header', undefined, 'workspace-heading');
@@ -76,6 +78,7 @@ function mountWorkspace() {
         firstRender = false;
         document.getElementById('workspace-breadcrumb').textContent = route.label;
         if (route.id === 'images') {
+            mountNewPromptAction(main, api, view);
             mountImages(main, api, view);
             return;
         }

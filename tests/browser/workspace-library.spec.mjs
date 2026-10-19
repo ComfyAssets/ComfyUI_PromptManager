@@ -123,7 +123,7 @@ test('returning from history restores library context and mobile content stays i
     await openHistory(page);await selectVariant(page,0);
     await expect(saved(page).getByRole('region',{name:'Positive prompt',exact:true})).toContainText('Cat portrait');
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
-    await history(page).getByRole('link',{name:'Back to library',exact:true}).click();
+    await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
     await expect(page.getByRole('searchbox',{name:'Search prompts',exact:true})).toHaveValue('Cat portrait');await expect(cards(page)).toHaveCount(1);
     await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Overview',exact:true}).click();
     await expect(history(page)).toHaveCount(0);await expect(page.locator('dialog[open]')).toHaveCount(0);
@@ -148,7 +148,7 @@ test('empty shelf visits restore saved scroll without inventing a parent anchor'
     expect(await page.evaluate(()=>scrollY)).toBe(0);
     const anchor=await firstVisibleParent(page);expect(anchor).not.toBeNull();
     await cards(page).getByRole('link',{name:'Explore history',exact:true}).evaluate(node=>node.click());await expect(history(page)).toBeVisible();
-    await page.setViewportSize({width:390,height:844});await page.getByRole('link',{name:'Back to library',exact:true}).click();
+    await page.setViewportSize({width:390,height:844});await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
     await retainedParent(page,anchor);await expect(page.getByRole('searchbox',{name:'Search prompts',exact:true})).toHaveValue('Dog landscape');
 });
 
@@ -162,7 +162,7 @@ test('history detail failures retry and returning to the list ignores late detai
         await page.goto(route);await cards(page).filter({has:page.getByText('Cat portrait',{exact:true})}).getByRole('link',{name:'Explore history',exact:true}).click();
         await expect(page.getByRole('button',{name:'Retry prompt history',exact:true})).toBeVisible();
         fail=false;await page.getByRole('button',{name:'Retry prompt history',exact:true}).click();
-        await page.getByRole('link',{name:'Back to library',exact:true}).click();release();
+        await page.getByRole('button',{name:'← Prompt library',exact:true}).click();release();
         await expect(cards(page)).toHaveCount(3);await expect(history(page)).toHaveCount(0);
     } finally {release();}
 });
@@ -184,7 +184,7 @@ test('history shares real image metadata, vendored Viewer and the acknowledged p
         const recipe=await(await request.get(`/prompt_manager/library/${parentId}`)).json();
         await openHistory(page);await selectVariant(page,recipe.variants.findIndex(variant=>variant.negative_text==='blurry, watermark'));
         const chosenNegative=await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre').textContent();
-        await saved(page).getByRole('button',{name:'Send prompt pair',exact:true}).click();
+        await page.locator('.workspace-heading').getByRole('button',{name:'Send prompt pair to ComfyUI: Cat portrait',exact:true}).click();
         const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
         const hosts=sender.getByRole('combobox',{name:'ComfyUI window',exact:true});
         await expect(hosts.locator('option')).toHaveCount(2);await hosts.selectOption({label:'Library ComfyUI'});
@@ -331,7 +331,7 @@ test('row measurement preserves anchor after width invalidation and append',asyn
             const before=await firstVisibleParent(page);
             await page.locator(`article[data-prompt-id="${before.id}"] .library-history-link`).evaluate(node=>node.click());await expect(history(page)).toBeVisible();
             if(changedWidth)await page.setViewportSize({width:1600,height:1100});
-            await page.getByRole('link',{name:'Back to library',exact:true}).click();await settleLibrary(page);await retainedParent(page,before);
+            await page.getByRole('button',{name:'← Prompt library',exact:true}).click();await settleLibrary(page);await retainedParent(page,before);
             expect(await cards(page).count()).toBeLessThan(80);
         }
         expect((await page.evaluate(()=>window.libraryObservation.stats())).unmounted).toBe(0);

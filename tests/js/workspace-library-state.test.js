@@ -53,3 +53,29 @@ test('negative variants append continuously without losing selected identity, an
  const loader=createLibraryDetail({api:{get:async url=>{calls.push(url);count++;if(count===2)throw Error('offline');return {positive:item(1),variants:count===1?[v(9)]:[v(9),v(10)],variant_total:2,variants_has_more:count===1,variants_next_cursor:count===1?'next':null,unassigned_image_count:0};}},onChange:()=>{}});
  await loader.load(1);assert.equal(loader.state.detail.variants.length,1);await loader.loadMore();assert.match(loader.state.variantsError.message,/offline/);assert.equal(loader.state.detail.variants[0].id,9);await loader.loadMore();assert.deepEqual(loader.state.detail.variants.map(row=>row.id),[9,10]);assert.match(calls[1],/variant_cursor=next/);assert.equal(calls[1],calls[2]);assert.equal(await loader.loadMore(),0);loader.dispose();
 });
+test('a separately verified pair outside the loaded page supplies roles only when it belongs to the parent',async()=>{
+ const {libraryPromptRoles}=await source;const owner=item(1);const detail={positive:owner,variants:[{id:9,negative_text:'',explicit_empty:true}]};
+ const outside={id:70,positive_prompt_id:1,positive_text:owner.text,negative_text:'old, kept',archived:false};
+ assert.equal(libraryPromptRoles(detail,70,outside).negative.text,'old, kept');assert.equal(libraryPromptRoles(detail,9,outside).negative.text,'');
+ assert.throws(()=>libraryPromptRoles(detail,70,{...outside,positive_prompt_id:2}));assert.throws(()=>libraryPromptRoles(detail,70,{...outside,positive_text:'other'}));
+ assert.throws(()=>libraryPromptRoles(detail,71,outside));assert.throws(()=>libraryPromptRoles(detail,70,null));
+});
+test('accept replaces the detail with validated reconciled data and aborts the request it supersedes',async()=>{
+ const {createLibraryDetail}=await source;const pending=[],states=[];const loader=createLibraryDetail({api:{get:(url,{signal})=>new Promise((resolve,reject)=>pending.push({url,signal,resolve,reject}))},onChange:state=>states.push(state)});
+ assert.equal(typeof loader.accept,'function');
+ const first=loader.load(1);pending[0].resolve({positive:item(1),variants:[{id:9,negative_text:'a',explicit_empty:false}],variant_total:1,variants_has_more:false,variants_next_cursor:null});await first;
+ const more=loader.load(1);
+ loader.accept({positive:{...item(1),category:'Edited'},variants:[{id:10,negative_text:'b',explicit_empty:false}],variant_total:85,variants_has_more:true,variants_next_cursor:'next'});
+ assert.equal(pending[1].signal.aborted,true);pending[1].resolve({positive:item(1),variants:[],variant_total:0,variants_has_more:false,variants_next_cursor:null});await more;
+ assert.equal(loader.state.detail.positive.category,'Edited');assert.deepEqual(loader.state.detail.variants.map(row=>row.id),[10]);assert.equal(loader.state.loading,false);assert.equal(loader.state.error,null);
+ assert.throws(()=>loader.accept({positive:item(2),variants:[]}));assert.throws(()=>loader.accept({positive:item(1),variants:[{id:-1}]}));assert.equal(loader.state.detail.positive.category,'Edited');
+ assert.equal(pending.length,2);loader.dispose();assert.throws(()=>loader.accept({positive:item(1),variants:[]}));
+});
+test('archived variant reads use their own scope and cursor without changing the active default',async()=>{
+ const {createLibraryDetail}=await source;const urls=[];const v=id=>({id,negative_text:`n${id}`,explicit_empty:false,archived:true});let call=0;
+ const loader=createLibraryDetail({api:{get:async url=>{urls.push(url);call++;return {positive:item(1),variants:[v(call)],variant_total:2,variants_has_more:call===1,variants_next_cursor:call===1?'arch':null};}},onChange:()=>{},archive:'archived'});
+ await loader.load(1);await loader.loadMore();assert.deepEqual(loader.state.detail.variants.map(row=>row.id),[1,2]);
+ for(const url of urls)assert.equal(new URL(url,'https://x').searchParams.get('archive'),'archived');assert.equal(new URL(urls[1],'https://x').searchParams.get('variant_cursor'),'arch');
+ const active=[];const plain=createLibraryDetail({api:{get:async url=>{active.push(url);return {positive:item(1),variants:[]};}},onChange:()=>{}});await plain.load(1);assert.equal(new URL(active[0],'https://x').searchParams.has('archive'),false);
+ assert.throws(()=>createLibraryDetail({api:{},onChange:()=>{},archive:'parents'}));
+});

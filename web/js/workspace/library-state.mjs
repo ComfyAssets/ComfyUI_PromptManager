@@ -44,12 +44,23 @@ export function createLibraryStream({api,onChange=()=>{},restore}) {
         if(disposed) return 0;const next=parameters(filters,40);request?.abort();request=null;query=next;seen=new Set();emit({items:Object.freeze([]),total:0,cursor:null,hasMore:true,loading:false,error:null});return loadMore();
     },dispose(){disposed=true;request?.abort();request=null;}};
 }
-export function libraryPromptRoles(detail,pairId=null) {
-    const variant=pairId===null?null:detail.variants.find(item=>item.id===pairId);
+/**
+ * Saved roles for one selection. A pair outside the bounded variant page is
+ * passed separately as `selectedPair` (an exact-ID read) and must belong to the
+ * same positive; it never enters `detail.variants`.
+ */
+export function libraryPromptRoles(detail,pairId=null,selectedPair=null) {
+    let variant=pairId===null?null:detail.variants.find(item=>item.id===pairId);
+    if(pairId!==null && !variant && selectedPair?.id===pairId) {
+        if(selectedPair.positive_prompt_id!==detail.positive.id || selectedPair.positive_text!==detail.positive.text || typeof selectedPair.negative_text!=='string') throw new TypeError('Saved negative variant belongs to another prompt');
+        variant=selectedPair;
+    }
     if(pairId!==null && !variant) throw new TypeError('Saved negative variant is unavailable');
     return {positive:{status:'resolved',text:detail.positive.text,source:'library'},negative:variant?{status:'resolved',text:variant.negative_text,source:'library'}:{status:'unresolved',text:null,source:null,message:'Choose a saved negative variant to inspect or send it.'}};
 }
-export function createLibraryDetail({api,onChange}) {
+const ARCHIVE_SCOPES=new Set(['active','archived','all']);
+export function createLibraryDetail({api,onChange,archive='active'}) {
+    if(!ARCHIVE_SCOPES.has(archive)) throw new TypeError('Invalid archive scope');
     let request,disposed=false,id;
     let state=Object.freeze({detail:null,loading:false,error:null,loadingVariants:false,variantsError:null});
     const emit=patch=>{state=Object.freeze({...state,...patch});onChange(state);};
@@ -65,7 +76,7 @@ export function createLibraryDetail({api,onChange}) {
         emit(append?{loadingVariants:true,variantsError:null}:{detail:null,loading:true,error:null,loadingVariants:false,variantsError:null});
         try {
             if(!validId(id)) throw new TypeError('Invalid positive prompt');
-            const query=new URLSearchParams({variant_limit:'40'});if(cursor) query.set('variant_cursor',cursor);
+            const query=new URLSearchParams({variant_limit:'40'});if(archive!=='active') query.set('archive',archive);if(cursor) query.set('variant_cursor',cursor);
             const raw=await api.get(`/prompt_manager/library/${id}?${query}`,{signal:current.signal});
             if(disposed || request!==current) return 0;
             const detail=validate(raw);
@@ -76,7 +87,14 @@ export function createLibraryDetail({api,onChange}) {
             request=null;emit({detail,loading:false,error:null,loadingVariants:false,variantsError:null});return detail.variants.length-(append?previous.variants.length:0);
         } catch(error) {if(!disposed && request===current) {request=null;emit(append?{loadingVariants:false,variantsError:error}:{loading:false,error});}return 0;}
     }
-    return {get state(){return state;},load(value){id=value;return fetch(false);},loadMore(){return fetch(true);},dispose(){disposed=true;request?.abort();}};
+    /** Same-parent reconciliation: a validated authoritative detail replaces the current one and supersedes any read. */
+    function accept(detail) {
+        if(disposed) throw new TypeError('Prompt history is disposed');
+        const next=validate(detail);
+        request?.abort();request=null;
+        emit({detail:next,loading:false,error:null,loadingVariants:false,variantsError:null});
+    }
+    return {get state(){return state;},load(value){id=value;return fetch(false);},loadMore(){return fetch(true);},accept,dispose(){disposed=true;request?.abort();}};
 }
 
 export function libraryWindow(count,columns,top,height,focused=-1) {

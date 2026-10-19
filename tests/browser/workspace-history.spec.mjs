@@ -333,7 +333,7 @@ test('route reentry restores older timeline range and both scroll axes after 61 
     await marker(page,oldRun).click();await expect(dialog(page)).toContainText(oldRun);await dialog(page).getByRole('button',{name:'Effective',exact:true}).click();await page.keyboard.press('Escape');
     const timeline=recorded(page).locator('.history-timeline');await timeline.evaluate(node=>{node.scrollLeft=731;node.scrollTop=95;node.dispatchEvent(new Event('scroll'));});
     const scroll=await timeline.evaluate(node=>({left:node.scrollLeft,top:node.scrollTop}));expect(scroll.left).toBeGreaterThan(0);expect(scroll.top).toBeGreaterThan(0);
-    await page.getByRole('link',{name:'Back to library',exact:true}).evaluate(node=>node.click());await expect(recorded(page)).toHaveCount(0);await command(request,{action:'append-history-runs'});
+    await page.getByRole('button',{name:'← Prompt library',exact:true}).evaluate(node=>node.click());await expect(recorded(page)).toHaveCount(0);await command(request,{action:'append-history-runs'});
     let windowReads=0;page.on('request',request=>{if(/\/library\/\d+\/history$/.test(new URL(request.url()).pathname))windowReads++;});
     let release,entered;const held=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});
     await page.route(new RegExp(`/history/runs/${oldRun}\\?`),async route=>{const response=await route.fetch();entered();await held;await route.fulfill({response}).catch(()=>{});});
@@ -366,7 +366,7 @@ for(const [width,height] of [[1600,1100],[390,844]])for(const theme of ['dark','
     await marker(page,oldRun).click();await expect(dialog(page)).toContainText(oldRun);await dialog(page).getByRole('button',{name:'Effective',exact:true}).click();await page.keyboard.press('Escape');
     const timeline=recorded(page).locator('.history-timeline');await timeline.evaluate(node=>{node.scrollLeft=731;node.scrollTop=95;node.dispatchEvent(new Event('scroll'));});
     const before=await timeline.evaluate(node=>({left:node.scrollLeft,top:node.scrollTop}));await reviewCapture(page,testInfo,`range-before-${width}-${theme}`,timeline);
-    await page.getByRole('link',{name:'Back to library',exact:true}).evaluate(node=>node.click());await expect(recorded(page)).toHaveCount(0);await command(request,{action:'append-history-runs'});
+    await page.getByRole('button',{name:'← Prompt library',exact:true}).evaluate(node=>node.click());await expect(recorded(page)).toHaveCount(0);await command(request,{action:'append-history-runs'});
     await page.evaluate(id=>{location.hash=`#/library/${id}`;},range.positive_id);await expect(recorded(page)).toContainText('80 loaded positions');await expect(marker(page,oldRun)).toHaveAttribute('aria-disabled','false');await expect(marker(page,oldRun)).toHaveAttribute('aria-pressed','true');
     const after=await timeline.evaluate(node=>({left:node.scrollLeft,top:node.scrollTop}));expect(Math.abs(after.left-before.left)).toBeLessThanOrEqual(1);expect(Math.abs(after.top-before.top)).toBeLessThanOrEqual(1);
     expect(await recorded(page).locator('[data-history-run]').evaluateAll(nodes=>nodes.map(node=>node.dataset.historyRun))).toEqual(ids);
@@ -421,7 +421,7 @@ test('more than 1000 real runs retain sparse columns, focused identity and pixel
     await expect.poll(()=>recorded(page).locator('[data-history-run]').count()).toBeLessThanOrEqual(bound);
     expect(await recorded(page).locator('[data-run-id]').count()).toBeLessThanOrEqual(bound);
     expect(await page.evaluate(()=>window.retainedHistoryButton.isConnected&&document.activeElement===window.retainedHistoryButton)).toBe(true);
-    await page.getByRole('link',{name:'Back to library',exact:true}).evaluate(node=>node.click());await expect(recorded(page)).toHaveCount(0);
+    await page.getByRole('button',{name:'← Prompt library',exact:true}).evaluate(node=>node.click());await expect(recorded(page)).toHaveCount(0);
 });
 
 test('390px and 200 percent layout keeps scrolling inside timeline and coarse targets remain 44px',async({page})=>{
@@ -558,6 +558,24 @@ test('a bounded saved-parent prefix leaves previously loaded variants unverified
     await expect(page.locator('.library-parent-status')).toContainText('not observed in this bounded revalidation page');await expect(page.locator('.library-parent-status')).not.toContainText(/deleted|removed/i);
     await expect(choices.last()).toHaveAttribute('aria-pressed','true');expect(await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).textContent()).toBe(negative);
     await expect(page.getByRole('button',{name:'Reload saved Library view',exact:true})).toBeVisible();await expect(choices.last()).toBeDisabled();
+});
+
+test('an authoritative save after a stale revalidation makes the saved view current again',async({page,request})=>{
+    const f=page.fixture;const detail=await(await request.get(`/prompt_manager/library/${f.detail_id}`)).json();
+    for(let index=0;index<41;index++)await expect(await request.post('/prompt_manager/pairs',{data:{positive_text:detail.positive.text,negative_text:`Bounded negative ${index}`}})).toBeOK();
+    await open(page,f.detail_id);await page.getByRole('button',{name:'Load more negative variants',exact:true}).click();
+    const choices=page.getByRole('button',{name:/^Select negative variant /});await expect(choices).toHaveCount(43);await choices.last().click();
+    const negative=await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).textContent();
+    await page.route(/\/history\/runs\/[^/]+\/outputs\?/,async route=>route.fulfill({status:409,json:{success:false,history_version:1,code:'history-changed',error:'History changed',recovery:{action:'refresh-history'}}}));
+    await marker(page,f.runs.shared).click();await expect(dialog(page)).toContainText('Recorded evidence changed');await page.keyboard.press('Escape');
+    await expect(page.getByRole('button',{name:'Reload saved Library view',exact:true})).toBeVisible();await expect(choices.first()).toBeDisabled();
+    await page.getByRole('button',{name:'Edit metadata',exact:true}).click();const editor=page.locator('dialog.library-editor');
+    await expect(editor.getByRole('button',{name:'Save',exact:true})).toBeEnabled();await editor.getByLabel('Notes',{exact:true}).fill('Saved after stale revalidation');
+    await editor.getByRole('button',{name:'Save',exact:true}).click();await expect(editor).toHaveCount(0);
+    await expect(page.locator('.library-parent-status')).toBeHidden();await expect(page.getByRole('button',{name:'Reload saved Library view',exact:true})).toBeHidden();
+    await expect(choices.first()).toBeEnabled();await expect(page.locator('.library-variant-dot[aria-pressed="true"]')).toHaveCount(1);
+    expect(await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).textContent()).toBe(negative);
+    const names=await choices.evaluateAll(nodes=>nodes.map(node=>node.getAttribute('aria-label')));expect(new Set(names).size).toBe(names.length);
 });
 
 async function retainSavedSelection(page,request,fixture) {

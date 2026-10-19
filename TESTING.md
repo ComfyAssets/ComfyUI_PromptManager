@@ -258,7 +258,8 @@ loading a workflow or queueing generation.
 
 `npm run --prefix tools/vendor test:executions` runs 46 real execution cases
 (23 each in Classic and Nodes 2.0, retaining all 42 prior execution cases),
-alongside the existing 78 stock host cases and six pack compatibility cases. Run
+alongside the existing 80 stock host cases (the original 78 plus the native
+editor host case) and six pack compatibility cases. Run
 these suites serially because they share report cleanup and owned host resources. Use the same pinned disposable `PM_COMFY_ROOT`,
 `PM_TEST_PYTHON` and Playwright browser installation as `test:comfyui`:
 
@@ -310,7 +311,8 @@ both ways and workflow reload. PM usage counts retain their existing per-job
 behavior. References identify reported locators only: file identity is unverified,
 new generation and context membership are unknown, and temp references are
 transient. The stock suite excludes both execution files; discovery retains its
-78 cases and the six pack cases unchanged.
+80 cases (the original 78 plus the native editor host case) and the six pack
+cases unchanged.
 
 For a meaningful historical failure, create a separate disposable detached
 checkout at `fdba6fd0126a8a40cbd6f3e50ed4c5de8991efd4` and pass its path to
@@ -501,3 +503,65 @@ every previous metric floor and each new file's 80% line requirement pass; rerun
 the coverage gate using the committed baseline. Python retains its 85% combined
 statement/branch gate. Deploying the history Python changes requires a maintainer
 ComfyUI restart; automated acceptance never restarts the personal server.
+
+## Native recipe editor (#234)
+
+The Library page edits recipes in one native modal (`dialog.library-editor`)
+instead of sending users to the legacy dashboard. It is frontend only: it consumes
+the Library/pair routes, epoch tokens, null-clears and conflict codes defined by
+the backend change (#233) and does not add or change a route, so this section does
+not repeat them. The editor reads fresh, `no-store` state before it opens.
+
+The four dialog modes match the approved concept's shell: **New prompt**,
+**Edit recipe metadata**, **Create text revision** and **Add a negative variant**.
+Pair **Archive…** and **Restore** are one reviewed action with **Show archived**
+in the saved-variants list; archiving a pair never touches its positive prompt, its
+siblings, history or images. **Export** downloads the full v1 recipe export. A
+failed Save keeps focus inside the dialog and keeps every entry.
+
+Recovery is exercised against real failure responses, not mocks of the controller:
+
+- a **conflict** response keeps the draft and explains the newer saved state; a
+  **storage-changed** response writes nothing, and only New prompt re-reads in
+  place: every other dialog offers only **Reload Library**, because an old numeric
+  owner is never resolved after a restore;
+- an **unknown outcome** (no response) keeps the draft and offers an explicit
+  **Retry** that resends the identical request once, which the server
+  deduplicates; an Edit metadata retry instead reloads the latest saved values for
+  review and resends nothing;
+- a **confirmed receipt** whose follow-up refresh fails offers a read-only
+  refresh retry and never re-sends the write.
+
+The concept comparison (`library-editor-canonical-comparison.mjs`) inventories the
+concept dialog and the production dialog in the same browser: geometry, CSS tokens,
+colors and a control inventory (labels, field types, options, actions and their
+danger/primary classes). Only the documented differences (the prototype's Save
+label and demo note) are mapped. The mutation check proves the comparison fails when
+a token, label or control is changed, so it cannot pass vacuously.
+
+PNG baselines are intentionally absent: `toHaveScreenshot` is not used for the
+editor. Paired concept/production captures and the artifact-only states
+(`library-editor-visual.spec.mjs`) are attached as test artifacts for maintainer
+acceptance; a baseline is added only after the maintainer accepts them.
+
+Focused commands:
+
+```sh
+PM_TEST_PORT=8766 npm run --prefix tools/vendor test:workflows -- \
+  workspace-library-editor.spec.mjs library-editor-visual.spec.mjs \
+  --project chromium --project touch --project firefox --project webkit
+npm run --prefix tools/vendor test:comfyui   # library-sender.spec.mjs host regression
+```
+
+`native editor preview sends exact saved roles across renderer transitions` opens
+the real workspace, creates a prompt with an explicitly empty negative, and sends the
+selected pair through the acknowledged host bridge in Classic and Nodes 2.0, across
+both switches and a workflow reload. It asserts the actual widgets and serialized
+workflow, no queue or workflow load, unchanged history and pair metadata, and that
+a connected destination rejects the preview without changing either role. It needs
+the pinned disposable ComfyUI, so it runs in CI's "real ComfyUI compatibility" job.
+
+Deploying this change needs no Python change and no ComfyUI restart: the diff for
+the editor UI touches only HTML, CSS and JavaScript (plus test fixtures). A browser
+refresh is enough. New editor modules have additive coverage floors in
+`tools/vendor/frontend-coverage-baseline.json`; none were lowered.

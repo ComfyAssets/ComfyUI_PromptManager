@@ -253,3 +253,33 @@ test("ApiError exposes only validated history recovery actions on all error path
         }
     }
 });
+
+test("patch sends a JSON body with the PATCH method and forwards an AbortSignal", async () => {
+    const fetch = fakeFetch();
+    const api = createApiClient(fetch);
+    assert.equal(typeof api.patch, "function");
+    const controller = new AbortController();
+    const pending = api.patch("/prompt_manager/library/7", { metadata: { rating: null } }, { signal: controller.signal });
+    assert.equal(fetch.calls[0].init.method, "PATCH");
+    assert.equal(fetch.calls[0].init.body, JSON.stringify({ metadata: { rating: null } }));
+    assert.equal(fetch.calls[0].init.headers["Content-Type"], "application/json");
+    assert.equal(fetch.calls[0].init.signal, controller.signal);
+    fetch.calls[0].resolve(jsonResponse(409, { success: false, code: "metadata-conflict", error: "changed" }));
+    await assert.rejects(pending, error => error instanceof ApiError && error.status === 409 && error.code === "metadata-conflict");
+});
+
+test("get forwards an explicit cache mode and keeps the default request otherwise", async () => {
+    const fetch = fakeFetch();
+    const api = createApiClient(fetch);
+    const fresh = api.get("/prompt_manager/library/options", { cache: "no-store" });
+    const plain = api.get("/prompt_manager/library/options");
+    assert.equal(fetch.calls[0].init.cache, "no-store");
+    assert.equal("cache" in fetch.calls[1].init, false);
+    assert.deepEqual(fetch.calls[1].init, { method: "GET", headers: {} });
+    for (const call of fetch.calls) call.resolve(jsonResponse(200, { success: true }));
+    await Promise.all([fresh, plain]);
+    const writes = api.post("/x", {}, { cache: "no-store" });
+    assert.equal("cache" in fetch.calls[2].init, false, "only reads take a cache mode");
+    fetch.calls[2].resolve(jsonResponse(200, { success: true }));
+    await writes;
+});

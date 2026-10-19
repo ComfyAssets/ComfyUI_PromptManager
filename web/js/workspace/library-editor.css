@@ -1,0 +1,27 @@
+/* Native recipe editor and shared toast: geometry and tokens follow the approved concept (style.css 859-1007, 1424-1531). */
+.library-editor, .toast { --editor-red: #ff8c98; --editor-warning: #e6bd78; }
+[data-ca-theme="light"] :where(.library-editor, .toast) { --editor-red: #b71931; --editor-warning: #815514; }
+.ca-tools .library-editor { color: var(--ca-text); background: var(--ca-surface); border: 1px solid var(--ca-border); border-radius: 9px; padding: 24px; width: min(650px, calc(100vw - 24px)); max-height: 90dvh; overflow: auto; }
+.library-editor::backdrop { background: #080b12b8; }
+.library-editor .dialog-header { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin-bottom: 20px; }
+.library-editor .dialog-header h2 { margin: 0; font-size: 18px; font-weight: 600; line-height: inherit; }
+.library-editor :where(form, p) { margin: 0; line-height: inherit; }
+.library-editor p + p { margin-top: 10px; }
+.ca-tools .library-editor button { min-height: 32px; font-size: 12px; }
+.ca-tools .library-editor .dialog-header > button { font-size: 20px; min-width: 32px; }
+.library-editor .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 23px; }
+.library-editor .field { display: grid; gap: 7px; font-size: 12px; margin: 15px 0; }
+.library-editor .field :where(input, textarea, select) { width: 100%; font-size: 12px; }
+.library-editor .field textarea { min-height: 100px; resize: vertical; }
+.library-editor .two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.library-editor .small { font-size: 12px; color: var(--ca-muted); }
+.library-editor .warning-note { font-size: 11px; color: var(--editor-warning); margin: 13px 0; }
+.ca-tools .library-editor .danger { color: var(--editor-red); border-color: var(--editor-red); }
+.library-editor :where(button, input, select, textarea):focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 3px; }
+.toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--ca-surface); border: 1px solid var(--ca-accent); padding: 12px 18px; border-radius: 6px; box-shadow: 0 8px 35px #0004; z-index: 10; max-width: min(650px, 90vw); font-size: 12px; }
+.toast:empty { display: none; }
+@media (max-width: 700px) {
+    .library-editor .two-col { grid-template-columns: 1fr; }
+    .toast { bottom: 12px; }
+}
+@media (pointer: coarse) { .ca-tools .library-editor button { min-height: 40px; } }
