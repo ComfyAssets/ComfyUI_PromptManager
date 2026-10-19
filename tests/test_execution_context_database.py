@@ -11,6 +11,7 @@ import textwrap
 from unittest.mock import patch
 import unittest
 
+from database import execution_contexts
 from database.execution_history import HistoryEpochChanged
 from database.execution_context_schema import context_schema_error
 from database.execution_contexts import LIVE_HINT_PROMPT_IDS_SQL
@@ -161,12 +162,23 @@ class ContextDatabaseTests(unittest.TestCase):
         for start in starts:
             db.write_execution_start(start)
 
+        hold = history_tests.FirstWriterHold()
+        write_capture = execution_contexts._write_capture
+
+        def held_open(*args, **kwargs):
+            hold()
+            return write_capture(*args, **kwargs)
+
         def write(start):
             return db.write_execution_contexts(
                 start.run_id, start.storage_epoch, bundle()
             )
 
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        with (
+            patch.object(execution_contexts, "_write_capture", side_effect=held_open),
+            history_tests.queued_writer_budget(),
+            ThreadPoolExecutor(max_workers=4) as pool,
+        ):
             self.assertEqual(list(pool.map(write, starts)), [True] * 8)
         self.assertEqual(self.counts(db), (8, 1, 2, 8))
 

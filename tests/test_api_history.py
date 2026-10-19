@@ -30,6 +30,13 @@ from tests.test_execution_history_database import JOB, SESSION
 from utils.execution_contexts import ContextBundle, RecipeContext, TextEvidence
 from utils.execution_history_events import make_finish, make_start
 
+# Ceiling for the restore handoffs in assert_projection_releases_retired_owner.
+# Each wait ends on an event (the read reaching its barrier, the test releasing
+# it after a full multipart restore); the ceiling only stops a broken test from
+# hanging. A slow Windows runner took longer than 5 s for that restore, so the
+# blocked read raised inside its handler and returned a text/plain 500 (#242).
+HANDOFF_TIMEOUT_SECONDS = 60
+
 OTHER_SESSION = "aaaaaaaa-3333-4333-8333-333333333333"
 MISSING_RUN = "bbbbbbbb-4444-4444-8444-444444444444"
 
@@ -920,7 +927,7 @@ class HistoryAPITests(ImageAPITestCase):
             if armed and func.__name__ == "project":
                 armed = False
                 reached.set()
-                await asyncio.wait_for(release.wait(), 5)
+                await asyncio.wait_for(release.wait(), HANDOFF_TIMEOUT_SECONDS)
             return await executor(func, *args, **kwargs)
 
         def selected_connection():
@@ -928,7 +935,7 @@ class HistoryAPITests(ImageAPITestCase):
             if armed:
                 armed = False
                 loop.call_soon_threadsafe(reached.set)
-                if not release.wait(5):
+                if not release.wait(HANDOFF_TIMEOUT_SECONDS):
                     raise AssertionError("connection-acquisition barrier timed out")
             return connection()
 
@@ -992,7 +999,7 @@ class HistoryAPITests(ImageAPITestCase):
             )
             pending = asyncio.create_task(read)
             try:
-                await asyncio.wait_for(reached.wait(), 5)
+                await asyncio.wait_for(reached.wait(), HANDOFF_TIMEOUT_SECONDS)
                 form = FormData()
                 form.add_field("database_file", upload, filename="upload.db")
                 restored = await self.client.post("/prompt_manager/restore", data=form)
@@ -1001,7 +1008,9 @@ class HistoryAPITests(ImageAPITestCase):
                 self.assertEqual(len(old_db.model._connections), 0)
             finally:
                 release.set()
-                response, body = await asyncio.wait_for(pending, 5)
+                response, body = await asyncio.wait_for(
+                    pending, HANDOFF_TIMEOUT_SECONDS
+                )
 
         if failure is not None:
             self.assert_error(

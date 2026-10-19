@@ -134,6 +134,13 @@ Before changing paths, SQLite, streams, restore or cleanup:
   exercise the actual native branch, then prove handle release and successful
   cleanup. Do not hide failures with blanket skips or retries.
   See Python's [remove/unlink semantics](https://docs.python.org/3.13/library/os.html#os.remove).
+- Concurrent SQLite tests must not depend on how fast the host commits.
+  Managed connections use WAL with `synchronous=NORMAL` (see
+  `configure_connection`) so commits do not hold the write lock across a
+  flush. Make real overlap deterministic (for example hold the first writer
+  open with `FirstWriterHold`) and give peers that must all succeed the
+  ordinary busy timeout; cross-thread handoffs wait on events with generous
+  ceilings, never a short wall clock (#242).
 - Run native Windows CI early for these changes and include a Windows impact and
   evidence note in the PR. All twelve OS/Python combinations and every applicable
   exact-head check must pass before merge. Portable `ntpath`/`PureWindowsPath`

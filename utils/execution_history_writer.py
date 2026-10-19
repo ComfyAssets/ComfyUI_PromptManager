@@ -12,12 +12,14 @@ from typing import Callable, Iterator
 
 try:
     from ..database import PromptDatabase
+    from ..database import execution_history as history_storage
     from ..database.execution_history import (
         HistoryEpochChanged,
         subscribe_history_restore,
     )
 except ImportError:
     from database import PromptDatabase
+    from database import execution_history as history_storage
     from database.execution_history import (
         HistoryEpochChanged,
         subscribe_history_restore,
@@ -409,7 +411,10 @@ class HistoryWriter:
                             unsubscribe = subscribe_history_restore(
                                 db.model.db_path, self.invalidate
                             )
-                        db.model.get_connection().execute("PRAGMA busy_timeout=250")
+                        db.model.get_connection().execute(
+                            "PRAGMA busy_timeout="
+                            f"{int(history_storage.EXECUTION_BUSY_TIMEOUT_MS)}"
+                        )
                         epoch = db.get_execution_epoch()
                         with self._lock:
                             if not self._closing and generation == self._generation:
@@ -429,7 +434,10 @@ class HistoryWriter:
                         command = command.command
                     try:
                         # Restore may have reopened this thread's managed connection.
-                        db.model.get_connection().execute("PRAGMA busy_timeout=250")
+                        db.model.get_connection().execute(
+                            "PRAGMA busy_timeout="
+                            f"{int(history_storage.EXECUTION_BUSY_TIMEOUT_MS)}"
+                        )
                         if isinstance(command, RunStart):
                             db.write_execution_start(command)
                         else:

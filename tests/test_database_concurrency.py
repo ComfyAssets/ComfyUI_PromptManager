@@ -7,13 +7,16 @@ another thread's half-done write.
 """
 
 import os
+import sqlite3
 import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from database import models
 from database.operations import PromptDatabase
 from utils.hashing import generate_prompt_hash
 
@@ -124,6 +127,76 @@ class TestConcurrentWrites(ConcurrencyTestCase):
         prompt = self.db.get_prompt_by_hash(prompt_hash)
         self.assertEqual(prompt["id"], ids[0])
         self.assertEqual(prompt["run_count"], THREADS * CALLS_PER_THREAD)
+
+
+def connection_settings(conn):
+    return tuple(
+        conn.execute(f"PRAGMA {name}").fetchone()[0]
+        for name in ("journal_mode", "synchronous", "busy_timeout", "foreign_keys")
+    )
+
+
+# WAL journal, synchronous=NORMAL (1), the shared busy timeout, foreign keys on.
+MANAGED_SETTINGS = ("wal", 1, models.BUSY_TIMEOUT_SECONDS * 1000, 1)
+
+
+class TestConnectionConfiguration(ConcurrencyTestCase):
+    """Every managed connection shares one locking and durability setup.
+
+    With synchronous=FULL each WAL commit waits for a disk flush while it holds
+    SQLite's single write lock. On slow disks (Windows runners) the other
+    writers' polling busy handlers then starve past the busy timeout and fail
+    with "database is locked" (#242). In WAL mode synchronous=NORMAL keeps the
+    database consistent after an application crash and only flushes at
+    checkpoints, so commits stop holding the lock across a flush.
+    """
+
+    def test_every_thread_connection_uses_the_managed_settings(self):
+        seen = []
+
+        def grab(_index):
+            seen.append(connection_settings(self.db.model.get_connection()))
+
+        self.assertEqual(self._run_threads(grab), [])
+        seen.append(connection_settings(self.db.model.get_connection()))
+        self.db.close_all()
+        seen.append(connection_settings(self.db.model.get_connection()))
+        self.assertEqual(seen, [MANAGED_SETTINGS] * (THREADS + 2))
+
+    def test_schema_connection_uses_the_managed_settings(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        seen = []
+        create_tables = models.PromptModel._create_tables
+
+        def record(model, conn):
+            seen.append(connection_settings(conn))
+            return create_tables(model, conn)
+
+        fresh = None
+        try:
+            with patch.object(
+                models.PromptModel, "_create_tables", autospec=True, side_effect=record
+            ):
+                fresh = PromptDatabase(path)
+        finally:
+            if fresh is not None:
+                fresh.close_all()
+            for suffix in ("", "-wal", "-shm"):
+                if os.path.exists(path + suffix):
+                    os.unlink(path + suffix)
+        self.assertEqual(seen, [MANAGED_SETTINGS])
+
+    def test_normal_sync_is_only_used_with_a_wal_journal(self):
+        # An in-memory database cannot use WAL; keep SQLite's FULL default there.
+        conn = sqlite3.connect(":memory:")
+        try:
+            models.configure_connection(conn)
+            self.assertEqual(
+                connection_settings(conn), ("memory", 2, *MANAGED_SETTINGS[2:])
+            )
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":
