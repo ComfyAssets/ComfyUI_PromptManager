@@ -1,18 +1,17 @@
-import {imageKey} from './images-state.mjs';
-import {inspectPath} from './inspection-state.mjs';
+import {rootedFileAdapter} from './inspection-state.mjs';
 
 /** A viewer visits only the descriptors loaded by its opening query. */
-export function createViewerSession({items, initialKey, onChange = () => {}, setTimer = setTimeout, clearTimer = clearTimeout}) {
+export function createViewerSession({items, initialKey, onChange = () => {}, setTimer = setTimeout, clearTimer = clearTimeout, adapter = rootedFileAdapter}) {
     if (!Array.isArray(items) || !items.length) throw new TypeError('A loaded media collection is required');
     const keys = new Set();
     const loaded = Object.freeze(items.map(item => {
-        inspectPath(item);
-        const key = imageKey(item);
+        adapter.validate(item);
+        const key = adapter.key(item);
         if (keys.has(key)) throw new TypeError('Duplicate viewer identity');
         keys.add(key);
-        return Object.freeze({...item});
+        return Object.freeze({...item, ...(adapter !== rootedFileAdapter && item.occurrence ? {occurrence:Object.freeze({...item.occurrence}), reference:Object.freeze({...item.reference})} : {})});
     }));
-    const index = loaded.findIndex(item => imageKey(item) === initialKey);
+    const index = loaded.findIndex(item => adapter.key(item) === initialKey);
     if (index < 0) throw new TypeError('Selected media is not loaded');
     let state = Object.freeze({key:initialKey,index,total:loaded.length,phase:'stopped',requested:false,mediaReady:false});
     let timer = null, deadline = 0;
@@ -42,7 +41,7 @@ export function createViewerSession({items, initialKey, onChange = () => {}, set
         if (loaded.length === 1) return;
         cancel();
         const next = (state.index + direction + loaded.length) % loaded.length;
-        publish({index:next,key:imageKey(loaded[next]),phase:state.requested ? loaded[next].is_video ? 'paused-video' : 'waiting-image' : 'stopped',mediaReady:false});
+        publish({index:next,key:adapter.key(loaded[next]),phase:state.requested ? loaded[next].is_video ? 'paused-video' : 'waiting-image' : 'stopped',mediaReady:false});
     }
     publish({});
     return {

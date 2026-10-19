@@ -151,10 +151,16 @@ export function toInspectionRecord(result, image, extractFacts = globalThis.Comf
     if (!legacy && result.inspection_version !== 1) throw new TypeError('Unsupported inspection version');
     if (!legacy && result.success !== true) throw new TypeError('Invalid inspection success status');
     if ((!legacy || result.image !== undefined) && (!object(result.image) || result.image.root_index !== image.root_index || result.image.path !== image.path || result.image.filename !== image.path.split('/').at(-1))) throw new TypeError('Mismatched inspection identity');
+    return projectInspectionPayload(result,
+        { kind: 'rooted-file', key: imageKey(image), root_index: image.root_index, path: image.path, root_scope: scope },
+        downloadFor(image, !legacy || scope !== null), extractFacts, legacy);
+}
+
+/** Shared bounded payload projection; adapters validate identity before entering here. */
+export function projectInspectionPayload(result, identity, download, extractFacts = globalThis.ComfyMetadata?.extractGenerationFacts || globalThis.window?.ComfyMetadata?.extractGenerationFacts, legacy = false) {
     const record = {
-        identity: { kind: 'rooted-file', key: imageKey(image), root_index: image.root_index, path: image.path, root_scope: scope },
-        file: null, prompts: promptsFor(result.prompts), library: null, metadata: null,
-        generation: unavailableFacts(), historyTarget: null, download: downloadFor(image, !legacy || scope !== null),
+        identity, file: null, prompts: promptsFor(result.prompts), library: null, metadata: null,
+        generation: unavailableFacts(), historyTarget: null, download,
     };
     if (legacy) return record;
     const resolution = result.resolution;
@@ -170,7 +176,12 @@ export function toInspectionRecord(result, image, extractFacts = globalThis.Comf
     return record;
 }
 
-export function createInspectionLoader(api, onChange, { extractFacts } = {}) {
+export const rootedFileAdapter = Object.freeze({
+    validate: validateIdentity, key: imageKey, scope: descriptorScope,
+    inspectionPath: inspectPath, originalDownload: originalMediaDownload, toRecord: toInspectionRecord,
+});
+
+export function createInspectionLoader(api, onChange, { extractFacts, adapter = rootedFileAdapter } = {}) {
     let request = null, disposed = false;
     return {
         async load(image) {
@@ -179,24 +190,27 @@ export function createInspectionLoader(api, onChange, { extractFacts } = {}) {
             const current = request = new AbortController();
             onChange({ loading: true });
             try {
-                const result = await api.get(inspectPath(image), { signal: current.signal });
+                const result = await api.get(adapter.inspectionPath(image), { signal: current.signal });
                 if (disposed || request !== current) return;
-                const record = toInspectionRecord(result, image, extractFacts);
+                const record = adapter.toRecord(result, image, extractFacts);
                 onChange({ prompts: record.prompts, record });
             } catch (error) {
                 if (disposed || request !== current) return;
                 if (error?.status === 409 && error.code === 'source-changed') error = new InspectionSourceChangedError();
-                const refreshRequired = error instanceof InspectionSourceChangedError;
-                onChange({ error: true, refreshRequired, message: refreshRequired ? SOURCE_CHANGED : 'Could not read details from this file.' });
+                const historyRecovery = adapter !== rootedFileAdapter && error?.status === 409 && ['history-changed', 'candidate-stale', 'capture-changed'].includes(error.code);
+                const refreshRequired = error instanceof InspectionSourceChangedError || error?.refreshRequired === true || historyRecovery;
+                onChange({ error: true, refreshRequired, code: error?.code ?? null, recovery: error?.recovery ?? null,
+                    message: error instanceof InspectionSourceChangedError ? SOURCE_CHANGED : refreshRequired ?
+                        error.code === 'history-changed' ? 'Recorded history changed. Reload recorded history.' : 'Current output locations changed. Reload reported outputs.' : 'Could not read details from this file.' });
             }
         },
         dispose() { disposed = true; request?.abort(); request = null; },
     };
 }
 
-const emptyState = () => ({ loading: false, error: false, record: null, prompts: undefined, message: '', refreshRequired: false });
+const emptyState = () => ({ loading: false, error: false, record: null, prompts: undefined, message: '', refreshRequired: false, code: null, recovery: null });
 
-export function createInspectionController({ api, extractFacts }) {
+export function createInspectionController({ api, extractFacts, adapter = rootedFileAdapter }) {
     let state = Object.freeze(emptyState()), current = null, pending = null, disposed = false;
     let attempted, hasAttempt = false;
     const listeners = new Set();
@@ -205,7 +219,7 @@ export function createInspectionController({ api, extractFacts }) {
         state = Object.freeze({ ...emptyState(), ...update });
         for (const listener of listeners) listener(state);
     }
-    const makeLoader = () => createInspectionLoader(api, publish, { extractFacts });
+    const makeLoader = () => createInspectionLoader(api, publish, { extractFacts, adapter });
     let loader = makeLoader();
     function read(image) {
         pending = loader.load(image);
@@ -217,14 +231,15 @@ export function createInspectionController({ api, extractFacts }) {
             if (disposed) return;
             let selected = null;
             try {
-                const scope = validateIdentity(image), key = imageKey(image);
-                if (current?.key === key && current.scope === scope) return pending;
-                selected = { key, scope };
+                adapter.validate(image);
+                const scope = adapter.scope(image), key = adapter.key(image), path = adapter.inspectionPath(image);
+                if (current?.key === key && current.scope === scope && current.path === path) return pending;
+                selected = { key, scope, path };
             } catch {
                 // The loader publishes validation errors after invalidating the previous source.
             }
             loader.dispose(); loader = makeLoader(); current = selected;
-            attempted = object(image) ? { ...image } : image; hasAttempt = true;
+            attempted = object(image) ? { ...image, ...(adapter !== rootedFileAdapter ? {occurrence:{...image.occurrence}, reference:{...image.reference}} : {}) } : image; hasAttempt = true;
             return read(attempted);
         },
         retry() {

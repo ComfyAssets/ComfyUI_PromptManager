@@ -463,3 +463,45 @@ class TestInspectionResponse(unittest.TestCase):
             )
             self.assertEqual(result["metadata"]["raw"], read.metadata)
             self.assertEqual(result["prompts"], PROMPTS)
+
+    def test_history_identity_shares_rooted_evidence_and_library_projection(self):
+        from utils.inspection_response import encode_history_inspection_response
+
+        read = inspection({"prompt": graph_text()})
+        identity = {
+            "occurrence": {
+                "run_id": "run",
+                "output_node_id": "node",
+                "image_ordinal": 2,
+            },
+            "reference": {"filename": "image.png"},
+            "history_epoch": "epoch",
+            "current_scope": "scope",
+            "location_key": "location",
+            "file_identity": "unverified",
+        }
+        body = json.loads(
+            encode_history_inspection_response(
+                current_output=identity,
+                file={"size": 7, "observation": "current-file"},
+                prompts=PROMPTS,
+                resolution={"state": "resolved"},
+                inspection=read,
+                library={"status": "linked", "tags": ["猫" * 12000]},
+            )
+        )
+        rooted = json.loads(
+            encode(
+                read,
+                file={"size": 7, "observation": "current-file"},
+                library={"status": "linked", "tags": ["猫" * 12000]},
+            )
+        )
+        self.assertEqual(body["current_output"], identity)
+        self.assertEqual(body.get("history_version"), 1)
+        self.assertEqual(body.get("history_epoch"), "epoch")
+        for key in ("file", "prompts", "metadata", "library"):
+            self.assertEqual(body[key], rooted[key])
+        self.assertEqual(body["library"]["status"], "limited")
+        self.assertNotIn("image", body)
+        self.assertNotIn("root_scope", body)

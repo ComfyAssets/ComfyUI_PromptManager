@@ -14,7 +14,7 @@ jobs:
   frontend-coverage:
     name: frontend coverage (chromium and touch)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

@@ -427,3 +427,17 @@ test('unchanged row observations settle without resize feedback',async({page,req
         expect((await page.evaluate(()=>window.libraryObservation.stats())).unmounted).toBe(0);
     } finally {if(breakpoint)await session.send('Debugger.removeBreakpoint',{breakpointId:breakpoint});if(session)await session.detach();}
 });
+
+test('saved choices retain curved staggered lanes and the full negative immediately follows its positive',async({page,request})=>{
+    await page.goto(route);await openHistory(page);await selectVariant(page,1);
+    const positive=saved(page).getByRole('region',{name:'Positive prompt',exact:true});
+    expect(await positive.evaluate(node=>node.nextElementSibling?.getAttribute('aria-label'))).toBe('Negative prompt');
+    const values=await page.locator('.library-variant-lane').evaluateAll(nodes=>nodes.map(node=>({offset:parseFloat(getComputedStyle(node).marginInlineStart),radius:getComputedStyle(node,'::before').borderBottomLeftRadius})));
+    expect(values).toEqual([{offset:38,radius:'22px'},{offset:85,radius:'22px'},{offset:132,radius:'22px'},{offset:179,radius:'22px'}]);
+    const order=await page.locator('.library-history').evaluate(node=>[...node.querySelectorAll('section[aria-label]')].filter(section=>['Saved negative variants','Recorded executions','Shared gallery'].includes(section.getAttribute('aria-label'))).map(section=>section.getAttribute('aria-label')));
+    expect(order).toEqual(['Saved negative variants','Recorded executions','Shared gallery']);
+    const rows=await(await request.get('/prompt_manager/library')).json();const cat=rows.items.find(item=>item.text==='Cat portrait');
+    const details=await(await request.get(`/prompt_manager/library/${cat.id}`)).json();
+    const selected=details.variants[1].negative_text;
+    expect(await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre').evaluate(node=>node.textContent)).toBe(selected);
+});

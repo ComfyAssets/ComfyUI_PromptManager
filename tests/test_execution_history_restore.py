@@ -22,6 +22,41 @@ class HistoryRestoreTests(unittest.TestCase):
     finish = history_tests.HistoryDatabaseTests.finish
     count = history_tests.HistoryDatabaseTests.count
 
+    def test_restore_installs_optional_history_read_indexes_without_mutating_source(
+        self,
+    ):
+        from database.execution_history_schema import history_schema_error
+
+        db = self.database()
+        start = self.start(db)
+        db.write_execution_start(start)
+        conn = db.model.get_connection()
+        tables = (
+            "execution_prompt_snapshots",
+            "execution_contexts",
+            "execution_run_contexts",
+            "execution_runs",
+        )
+        with conn:
+            for table in tables:
+                conn.execute(f"DROP INDEX idx_history_read_{table}")
+        self.assertIsNone(history_schema_error(conn, allow_missing=False))
+        source = str(Path(self.temp.name) / "without-read-indexes.db")
+        self.assertTrue(db.model.backup_database(source))
+        original = Path(source).read_bytes()
+        db.model.restore_from_file(source)
+        conn = db.model.get_connection()
+        for table in tables:
+            indexes = {r[1]: r for r in conn.execute(f"PRAGMA index_list({table})")}
+            self.assertIn(f"idx_history_read_{table}", indexes)
+            self.assertFalse(indexes[f"idx_history_read_{table}"][2])
+        self.assertIsNone(history_schema_error(conn, allow_missing=False))
+        self.assertEqual(Path(source).read_bytes(), original)
+        with db.recorded_history_snapshot() as epoch:
+            run = db.get_history_run(start.run_id)
+        self.assertNotEqual(epoch, run["run"]["storage_epoch"])
+        self.assertEqual(run["run"]["storage_epoch"], start.storage_epoch)
+
     def test_output_operations_restore_preserves_evidence_and_rejects_stale_finish(
         self,
     ):
