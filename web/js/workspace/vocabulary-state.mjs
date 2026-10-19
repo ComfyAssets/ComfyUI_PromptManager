@@ -133,7 +133,8 @@ function writePhase(error) {
  * One dialog's command. Phases: idle, saving, previewed, write-error, conflict,
  * storage-changed, unknown-outcome, done (and disposed). `onInvalidate({phase,
  * kind, receipt})` fires whenever stored vocabulary may differ from the loaded
- * lists: after a receipt, a conflict, a restore or an unconfirmed write.
+ * lists: after a receipt, a conflict, a restore or an unconfirmed write, including
+ * one that lands after `dispose()`.
  */
 export function createVocabularyCommand({api, onChange = () => {}, onInvalidate = () => {}}) {
     let state = freeze({phase: 'idle', kind: null, error: null, preview: null, receipt: null});
@@ -157,7 +158,12 @@ export function createVocabularyCommand({api, onChange = () => {}, onInvalidate 
             phase = writePhase(failure);
             error = failure;
         }
-        if (disposed) return;
+        if (disposed) {
+            // A write that may have committed still invalidates cached Library views after the dialog went away
+            // (forced close, Back); nothing is rendered then.
+            if (phase !== 'write-error') onInvalidate(freeze({phase, kind, receipt}));
+            return;
+        }
         emit({phase, error, receipt});
         if (phase !== 'write-error') invalidate();
     }

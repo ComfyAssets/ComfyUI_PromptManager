@@ -375,7 +375,7 @@ test('a token conflict on apply requires a new preview', async () => {
     assert.equal(command.state.phase, 'previewed');
 });
 
-test('dispose ignores late command results', async () => {
+test('dispose ignores late command results but a landed write still invalidates once', async () => {
     const {createVocabularyCommand} = await source;
     let release;
     const states = [];
@@ -385,12 +385,41 @@ test('dispose ignores late command results', async () => {
     const pending = command.createTag('sunset', EPOCH);
     command.dispose();
     const count = states.length;
-    release(tagReceipt());
+    const receipt = tagReceipt();
+    release(receipt);
     await pending;
-    assert.equal(states.length, count);
-    assert.equal(invalidations.length, 0, 'a disposed page re-reads on its next mount');
+    assert.equal(states.length, count, 'a disposed dialog is never rendered again');
+    // The write committed after its dialog went away: cached Library views must still be dropped.
+    assert.equal(invalidations.length, 1);
+    assert.equal(invalidations[0].phase, 'done');
+    assert.equal(invalidations[0].kind, 'create-tag');
+    assert.deepEqual(invalidations[0].receipt, receipt);
+    assert.ok(Object.isFrozen(invalidations[0]));
     assert.equal(command.state.phase, 'disposed');
     await command.createTag('x', EPOCH);
+    assert.equal(invalidations.length, 1);
+});
+
+test('after dispose an unconfirmed write invalidates and a failed write does not', async () => {
+    const {createVocabularyCommand} = await source;
+    const cases = [
+        [new TypeError('Failed to fetch'), 'unknown-outcome', 1],
+        [new ApiError(409, 'changed', 'vocabulary-conflict'), 'conflict', 1],
+        [new ApiError(400, 'Tag names cannot contain commas'), null, 0],
+    ];
+    for (const [error, phase, expected] of cases) {
+        let fail;
+        const invalidations = [];
+        const command = createVocabularyCommand({api: {patch: () => new Promise((resolve, reject) => {fail = reject;})},
+            onInvalidate: event => invalidations.push(event)});
+        const pending = command.renameTag({id: 3, name: 'dawn'}, 'dusk', EPOCH);
+        command.dispose();
+        fail(error);
+        await pending;
+        assert.equal(invalidations.length, expected, error.message);
+        if (expected) assert.deepEqual({...invalidations[0]}, {phase, kind: 'rename-tag', receipt: null});
+        assert.equal(command.state.phase, 'disposed');
+    }
 });
 
 test('browseFilters hands Library one exact constraint', async () => {

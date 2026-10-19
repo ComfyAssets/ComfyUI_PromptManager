@@ -451,6 +451,53 @@ test('lost response is outcome-unknown',async({page,request})=>{
     await expect(main(page).getByRole('heading',{level:1})).toBeFocused();
 });
 
+const nav=(page,name)=>page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name,exact:true});
+const chips=(page,name)=>main(page).locator('article[data-prompt-id] .library-chip').filter({hasText:new RegExp(`^${name}$`)});
+/** Visit the Library so its shelf is cached, then open Rename on blue_hour and start a rename whose PATCH is held. */
+async function heldRename(page) {
+    await page.goto('/prompt_manager/workspace#/library');await expect(chips(page,'blue_hour')).toHaveCount(1);
+    await nav(page,'Overview').click();await nav(page,'Tags & categories').click();
+    await expect(rows(page)).toHaveCount(manifest.tags.length);
+    let held;const arrived=new Promise(resolve=>{held=resolve;});
+    await page.route('**/prompt_manager/vocabulary/tags/*',route=>route.request().method()==='PATCH'?held(route):route.continue());
+    const box=await openRename(page,'blue_hour');
+    await field(box,'New name; existing names merge').fill('golden_hour');await button(box,'Apply').click();
+    return {box,patch:await arrived};
+}
+async function releaseAndExpectFreshLibrary(page,patch) {
+    const landed=page.waitForResponse(response=>response.request().method()==='PATCH');
+    await patch.continue();expect((await landed).ok()).toBe(true);
+    await nav(page,'Prompt library').click();
+    await expect(main(page).getByRole('heading',{level:1})).toHaveText('Prompt library');
+    await expect(chips(page,'golden_hour')).toHaveCount(1);await expect(chips(page,'blue_hour')).toHaveCount(0);
+}
+
+test('a write that lands after a forced dialog close still refreshes the lists and the cached Library',async({page,request})=>{
+    const {box,patch}=await heldRename(page);
+    // Chromium force-closes a modal on a repeated Escape; close() is the same event in every engine.
+    await box.evaluate(node=>node.close());
+    await expect(box).toHaveCount(0);
+    await expect(tagRow(page,'blue_hour').getByRole('button',{name:'Rename / merge',exact:true})).toBeFocused();
+    const landed=page.waitForResponse(response=>response.request().method()==='PATCH');
+    await patch.continue();await landed;
+    await expect(tagRow(page,'golden_hour')).toHaveCount(1);await expect(tagRow(page,'blue_hour')).toHaveCount(0);
+    expect(tagNames(await snapshot(request))).toContain('golden_hour');
+    await expect(toast(page)).not.toHaveText('Tag renamed.');
+    await nav(page,'Prompt library').click();
+    await expect(chips(page,'golden_hour')).toHaveCount(1);await expect(chips(page,'blue_hour')).toHaveCount(0);
+});
+
+test('Back during a write removes the dialog and the landed write refreshes the cached Library',async({page})=>{
+    const {box,patch}=await heldRename(page);
+    await page.goBack();
+    await expect(main(page).getByRole('heading',{level:1})).toHaveText('Overview');
+    await expect(box).toHaveCount(0);
+    expect(await page.evaluate(()=>document.querySelectorAll('dialog').length)).toBe(0);
+    // Nothing stays inert: the page takes keyboard focus again.
+    await nav(page,'Prompt library').focus();await expect(nav(page,'Prompt library')).toBeFocused();
+    await releaseAndExpectFreshLibrary(page,patch);
+});
+
 test('a failed Load more read moves keyboard focus to Retry',async({page,request})=>{
     manifest=await seed(request,{extra_tags:211});
     await page.route('**/prompt_manager/vocabulary/tags?*',route=>{
