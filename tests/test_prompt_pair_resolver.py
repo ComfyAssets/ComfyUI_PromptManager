@@ -481,6 +481,59 @@ def _diamond_samplers(count: int) -> dict:
     return source
 
 
+def _distinct_diamond_samplers(count: int, chain: int = 60) -> dict:
+    """``count`` samplers, each with its own 590-node diamond, sharing a latent chain.
+
+    Real work exceeds the shared 20,000-visit total while the graph stays under
+    the node ceiling: every candidate re-walks the (unmemoized) latent chain.
+    """
+    source = {
+        "neg": {"class_type": "CLIPTextEncode", "inputs": {"text": "bad"}},
+        "z0": {"class_type": "EmptyLatentImage", "inputs": {}},
+    }
+    for index in range(1, chain + 1):
+        source[f"z{index}"] = {
+            "class_type": "Reroute",
+            "inputs": {"value": [f"z{index - 1}", 0]},
+        }
+    for index in range(count):
+        prefix = f"d{index}_"
+        source.update(_diamond(prefix, leaves=565))
+        source[f"e{index}"] = {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": [f"{prefix}r", 0]},
+        }
+        source[f"s{index}"] = {
+            "class_type": "KSampler",
+            "inputs": {
+                "positive": [f"e{index}", 0],
+                "negative": ["neg", 0],
+                "latent_image": [f"z{chain}", 0],
+            },
+        }
+    return source
+
+
+class _CountingInputs(dict):
+    """Node inputs that count how often a resolver iterates (scans) their keys."""
+
+    scans = 0
+
+    def __iter__(self):
+        type(self).scans += 1
+        return super().__iter__()
+
+
+class _CountingText(str):
+    """A literal that tallies the characters a resolver strips from it."""
+
+    stripped = 0
+
+    def strip(self, *args):
+        type(self).stripped += len(self)
+        return super().strip(*args)
+
+
 class TestResolverProfiles(unittest.TestCase):
     """Inspection bounds work, not graph size; the default profile is pinned."""
 
@@ -507,16 +560,18 @@ class TestResolverProfiles(unittest.TestCase):
             self.assertNotIn("node", result)
 
     def test_total_visit_budget_is_shared_across_candidates(self):
-        source = _diamond_samplers(40)
+        source = _distinct_diamond_samplers(33)
         self.assertEqual(resolver.INSPECTION_PROFILE.total_visits, 20_000)
         self.assertLess(len(source), resolver.INSPECTION_PROFILE.node_ceiling)
         result = resolve_prompt_pair(
             {"prompt": source}, profile=resolver.INSPECTION_PROFILE
         )
+        # While selection is off (until PR3) many samplers are always ambiguous;
+        # PR3 must add "work-limit never upgrades to resolved" once one is chosen.
         self.assertNotEqual(result["state"], "resolved")
         self.assertEqual(result["state"], "ambiguous")
         candidates = result["candidates"]
-        self.assertEqual(len(candidates), 40)
+        self.assertEqual(len(candidates), 33)
         self.assertEqual(candidates[0]["state"], "resolved")
         codes = [candidate["reason_code"] for candidate in candidates]
         first_limited = codes.index("work-limit")
@@ -529,6 +584,58 @@ class TestResolverProfiles(unittest.TestCase):
         self.assertEqual(
             resolve_prompt_pair({"prompt": source})["reason"],
             "Resolution limit reached",
+        )
+
+    def test_shared_node_is_scanned_once_however_many_candidates_use_it(self):
+        _CountingInputs.scans = 0
+        fat = _CountingInputs({"text": "portrait"})
+        fat.update({f"extra_{index}": 0 for index in range(20_000)})
+        source = {
+            "fat": {"class_type": "CLIPTextEncode", "inputs": fat},
+            "neg": {"class_type": "CLIPTextEncode", "inputs": {"text": "bad"}},
+        }
+        for index in range(1_000):
+            source[f"s{index}"] = {
+                "class_type": "KSampler",
+                "inputs": {"positive": ["fat", 0], "negative": ["neg", 0]},
+            }
+        result = resolve_prompt_pair(
+            {"prompt": source}, profile=resolver.INSPECTION_PROFILE
+        )
+        states = {candidate["state"] for candidate in result["candidates"]}
+        self.assertEqual(states, {"resolved"})
+        # Work is O(nodes), not O(candidates x node size).
+        self.assertLessEqual(_CountingInputs.scans, 2)
+
+    def test_stripped_concatenation_text_is_charged_to_a_work_budget(self):
+        _CountingText.stripped = 0
+        letters = "abcdefghijklmnopqrstuvwxyz"
+        hub = _CountingText(" " * 100_000)
+        source = graph()
+        source["hub"] = {"class_type": "PrimitiveString", "inputs": {"value": hub}}
+        for leaf in range(300):
+            source[f"l{leaf}"] = {
+                "class_type": "Text Concatenate",
+                "inputs": {f"text_{c}": ["hub", 0] for c in letters},
+            }
+        for middle in range(12):
+            source[f"m{middle}"] = {
+                "class_type": "Text Concatenate",
+                "inputs": {
+                    f"text_{letters[i]}": [f"l{middle * 25 + i}", 0] for i in range(25)
+                },
+            }
+        source["root"] = {
+            "class_type": "Text Concatenate",
+            "inputs": {f"text_{letters[i]}": [f"m{i}", 0] for i in range(12)},
+        }
+        source["1"]["inputs"]["text"] = ["root", 0]
+        result = resolve_prompt_pair(source, profile=resolver.INSPECTION_PROFILE)
+        self.assertEqual(
+            (result["state"], result["reason_code"]), ("unresolved", "work-limit")
+        )
+        self.assertLessEqual(
+            _CountingText.stripped, resolver.INSPECTION_PROFILE.max_scanned_units
         )
 
     def test_per_candidate_visit_budget_resets_for_each_sampler(self):
@@ -548,7 +655,7 @@ class TestResolverProfiles(unittest.TestCase):
             ["work-limit"] * 3,
         )
 
-    def test_node_ceiling_is_limited_not_unresolved(self):
+    def test_node_ceiling_reports_graph_ceiling(self):
         source = graph()
         for index in range(20_001 - len(source)):
             source[f"p{index}"] = {"class_type": "PrimitiveInt", "inputs": {"value": 1}}
@@ -697,7 +804,12 @@ class TestResolverProfiles(unittest.TestCase):
         result = resolve_prompt_pair(source, profile=resolver.INSPECTION_PROFILE)
         self.assertEqual(result["state"], "unresolved")
         self.assertEqual(result["reason_code"], "work-limit")
-        self.assertEqual(result["reason"], "Provenance path limit reached")
+        # A memo hit charges its unfolded cost, so the allowance (2^k unfolded
+        # visits) can trip before the provenance path limit does.
+        self.assertIn(
+            result["reason"],
+            ("Provenance path limit reached", "Resolution visit limit reached"),
+        )
 
 
 if __name__ == "__main__":

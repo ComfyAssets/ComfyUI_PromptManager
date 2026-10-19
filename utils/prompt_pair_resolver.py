@@ -76,7 +76,10 @@ class ResolverProfile:
     """Resolution bounds. ``legacy_node_gate`` set means the historical code path.
 
     ``max_path_entries`` and ``max_built_chars`` bound memory across the whole
-    resolution (provenance entries and newly built text); ``None`` disables them.
+    resolution (provenance entries and newly built text). ``max_scanned_units``
+    bounds linear work across the whole resolution: input keys validated or
+    scanned, characters stripped or joined, and provenance entries copied, each
+    charged before the work is done. ``None`` disables each bound.
     ``semantics`` and ``selection`` are reserved for later slices and stay off.
     """
 
@@ -91,6 +94,7 @@ class ResolverProfile:
     selection: bool = False
     max_path_entries: Optional[int] = None
     max_built_chars: Optional[int] = None
+    max_scanned_units: Optional[int] = None
 
     @property
     def legacy(self) -> bool:
@@ -116,6 +120,8 @@ INSPECTION_PROFILE = ResolverProfile(
     legacy_node_gate=None,
     max_path_entries=64 * 20_000,
     max_built_chars=16 * 100_000,
+    # About four passes over the 2 MiB role-record budget.
+    max_scanned_units=8_000_000,
 )
 _SAMPLER_LIKE_INPUTS = ("latent_image", "guider", "positive", "negative")
 _NO_SAMPLER_NAMES = 3
@@ -134,8 +140,8 @@ class _Unresolved(Exception):
 
 
 def _node_ref(node_id: str, class_type: Any) -> dict:
-    name = class_type if isinstance(class_type, str) else None
-    return {"id": node_id, "class_type": name}
+    name = class_type[:_CLASS_NAME_LENGTH] if isinstance(class_type, str) else None
+    return {"id": node_id[:_CLASS_NAME_LENGTH], "class_type": name}
 
 
 class _Budget:
@@ -157,10 +163,17 @@ class _Budget:
         return min(self.total, self.allowance)
 
     def spend(self) -> None:
+        # Checked before decrementing, so an exhausted allowance costs no total.
+        if self.total <= 0 or self.allowance <= 0:
+            raise _Unresolved("Resolution visit limit reached", "work-limit")
         self.total -= 1
         self.allowance -= 1
-        if self.total < 0 or self.allowance < 0:
+
+    def charge(self, cost: int) -> None:
+        """Charge a memoized subtree's visit cost to this candidate only."""
+        if cost > self.allowance:
             raise _Unresolved("Resolution visit limit reached", "work-limit")
+        self.allowance -= cost
 
 
 def _link(value: Any) -> bool:
@@ -218,6 +231,9 @@ class _GraphResolver:
         budget: Optional[_Budget] = None,
         profile: ResolverProfile = DEFAULT_PROFILE,
     ) -> None:
+        # ``max_visits`` is the per-candidate allowance; ``profile`` supplies only
+        # the path selection and whole-resolution bounds. ``resolve_text_input``
+        # relies on the legacy default profile here.
         self.graph = graph
         self.adapters = {**_DEFAULT_ADAPTERS, **adapters}
         self.per_candidate_visits = max_visits
@@ -226,6 +242,12 @@ class _GraphResolver:
         self.legacy = profile.legacy
         self.path_entries = profile.max_path_entries
         self.built_chars = profile.max_built_chars
+        self.scanned = profile.max_scanned_units
+        self.checked: dict = {}
+        # Unfolded visit cost of each memo entry (inspection): a memo hit charges
+        # it to the current candidate, so each candidate's outcome is independent
+        # of tracing order while the shared work is done only once.
+        self.costs: dict = {}
         self.max_depth = max_depth
         self.max_text_length = max_text_length
         self.memo: dict = {}
@@ -234,12 +256,36 @@ class _GraphResolver:
         self.text_sources: dict = {}
 
     def node(self, node_id: str) -> Tuple[str, dict]:
+        if self.legacy:
+            return self.checked_node(node_id)
+        if node_id not in self.checked:
+            try:
+                self.checked[node_id] = self.checked_node(node_id)
+            except _Unresolved as error:
+                if error.code == "work-limit":
+                    raise
+                self.checked[node_id] = error
+        checked = self.checked[node_id]
+        if isinstance(checked, _Unresolved):
+            raise _Unresolved(str(checked), checked.code, checked.node)
+        return checked
+
+    def checked_node(self, node_id: str) -> Tuple[str, dict]:
         node = self.graph.get(node_id)
         if not isinstance(node, dict) or not isinstance(node.get("inputs"), dict):
             raise _Unresolved("Missing or malformed graph node", "malformed")
+        self.scan(len(node["inputs"]))
         if any(not isinstance(key, str) for key in node["inputs"]):
             raise _Unresolved("Malformed node input names", "malformed")
         return str(node.get("class_type", "")), node["inputs"]
+
+    def scan(self, units: int) -> None:
+        """Charge linear work before doing it (inspection; no-op when legacy)."""
+        if self.scanned is not None:
+            if units > self.scanned:
+                self.scanned = -1
+                raise _Unresolved("Resolution work limit reached", "work-limit")
+            self.scanned -= units
 
     def unsupported(self, message: str, node_id: str) -> _Unresolved:
         node = self.graph.get(node_id)
@@ -273,9 +319,13 @@ class _GraphResolver:
         if key in self.active:
             raise _Unresolved("Cyclic prompt graph", "malformed")
         if key in self.memo:
+            if not self.legacy:
+                self.budget.charge(self.costs[key])
             return self.memo[key]
+        allowance = self.budget.allowance
         self.budget.spend()
         name, inputs = self.node(node_id)
+        self.scan(len(inputs))
         self.active.add(key)
         try:
             if name == "Reroute" and slot == 0:
@@ -320,6 +370,13 @@ class _GraphResolver:
                         after, after_path, _ = self.text(
                             inputs.get("append_text", ""), "string", depth + 1
                         )
+                        self.scan(
+                            len(before)
+                            + len(after)
+                            + len(before_path)
+                            + len(path)
+                            + len(after_path)
+                        )
                         text = self.built(
                             self.bounded(
                                 " ".join(
@@ -354,6 +411,8 @@ class _GraphResolver:
                     part, followed, _ = self.text(
                         inputs.get(input_name, ""), "string", depth + 1
                     )
+                    # Charged before stripping: stripped-away text is work too.
+                    self.scan(len(part) + len(followed))
                     if clean:
                         part = part.strip()
                     path.extend(followed)
@@ -371,6 +430,7 @@ class _GraphResolver:
                     "Unsupported node semantics or output slot", node_id
                 )
             # Memoized paths stay bounded even for diamond-shaped string graphs.
+            self.scan(len(path) + 1)
             path = [{"node_id": node_id, "output_slot": slot}] + path
             if self.legacy:
                 path_limit = self.max_depth * max(1, len(self.graph))
@@ -383,6 +443,7 @@ class _GraphResolver:
             ):
                 raise _Unresolved("Provenance path limit reached", "work-limit")
             self.memo[key] = (text, path, storage_text)
+            self.costs[key] = allowance - self.budget.allowance
             return text, path, storage_text
         finally:
             self.active.discard(key)
@@ -446,10 +507,6 @@ class _GraphResolver:
     def pair(self, sampler_id: str) -> dict:
         positive = negative = None
         self.budget.reset(self.per_candidate_visits)
-        if not self.legacy:
-            # Each candidate chain is costed on its own: its outcome never depends
-            # on which other candidates were traced first.
-            self.memo = {}
         if not self.legacy and self.budget.total <= 0:
             return _result(
                 "unresolved",
