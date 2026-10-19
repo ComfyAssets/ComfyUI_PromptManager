@@ -496,6 +496,28 @@ class TestVocabularyAPI(ImageAPITestCase):
             self.assertEqual(result["library_epoch"], epoch)
         self.assertEqual(self.category_rows(), before)
 
+    async def test_blank_category_source_is_rejected_without_writing(self):
+        epoch = self.api.db.get_execution_epoch()
+        self._save_prompt("Owner", category="Scenery")
+        before = self.category_rows()
+        token = "0" * 64
+        for source in ("", "   ", "\t\n"):
+            for path, extra in (
+                ("categories/preview", {}),
+                ("categories/apply", {"impact_token": token}),
+            ):
+                body = {
+                    "expected_epoch": epoch,
+                    "source": source,
+                    "target": "Land",
+                    **extra,
+                }
+                response, result = await self.send("POST", path, body)
+                self.assertEqual(response.status, 400, (path, source))
+                self.assertFalse(result["success"])
+                self.assertIsNone(result["code"])
+        self.assertEqual(self.category_rows(), before)
+
 
 if __name__ == "__main__":
     unittest.main()

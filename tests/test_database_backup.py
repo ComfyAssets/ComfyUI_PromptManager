@@ -18,8 +18,10 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from database.library_commands import LibraryCommandError
 from database.models import PromptModel
 from database.operations import PromptDatabase
+from tests.open_handles import assert_closed
 from utils.hashing import generate_prompt_hash
 
 
@@ -440,6 +442,47 @@ class TestRestoreFromFile(BackupTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRetainedTags(BackupTestCase):
+    """Unused registry tags are user data: they outlive restore and cleanup."""
+
+    def _tag_names(self, db):
+        return sorted(db.get_all_tags())
+
+    def test_unused_tag_survives_backup_restore_and_restore_rotates_epoch(self):
+        old_epoch = self.db.get_execution_epoch()
+        self.db.create_vocabulary_tag("keeper", expected_epoch=old_epoch)
+        backup = os.path.join(self.tmpdir, "backup.db")
+        self.assertTrue(self.db.model.backup_database(backup))
+        self.db.close_all()
+        target_path = os.path.join(self.tmpdir, "target.db")
+        target = PromptDatabase(target_path)
+        try:
+            target.model.restore_from_file(backup)
+            self.assertIn("keeper", self._tag_names(target))
+            new_epoch = target.get_execution_epoch()
+            self.assertNotEqual(new_epoch, old_epoch)
+            with self.assertRaises(LibraryCommandError) as caught:
+                target.create_vocabulary_tag("other", expected_epoch=old_epoch)
+            self.assertEqual(caught.exception.code, "storage-changed")
+            self.assertNotIn("other", self._tag_names(target))
+        finally:
+            target.close_all()
+        assert_closed(self, self.tmpdir)
+
+    def test_unused_tag_survives_startup_maintenance(self):
+        epoch = self.db.get_execution_epoch()
+        self.db.create_vocabulary_tag("keeper", expected_epoch=epoch)
+        owner = self.db.save_prompt(
+            text="owner", prompt_hash=generate_prompt_hash("owner"), tags=["used"]
+        )
+        self.assertTrue(self.db.delete_prompt(owner))
+        self.db.cleanup_duplicates()
+        self.db.prune_orphaned_prompts()
+        self.assertEqual(self._tag_names(self.db), ["keeper", "used"])
+        self.db.close_all()
+        assert_closed(self, self.tmpdir)
 
 
 class TestConnectionsAcrossInstances(BackupTestCase):

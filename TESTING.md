@@ -565,3 +565,32 @@ Deploying this change needs no Python change and no ComfyUI restart: the diff fo
 the editor UI touches only HTML, CSS and JavaScript (plus test fixtures). A browser
 refresh is enough. New editor modules have additive coverage floors in
 `tools/vendor/frontend-coverage-baseline.json`; none were lowered.
+
+## Native vocabulary backend (#236)
+
+Routes under `/prompt_manager/vocabulary/`: `GET tags` and `GET categories`
+(bounded pages, signed epoch-scoped cursors), `POST tags` (create or reuse an exact
+name), `PATCH tags/{id}` (rename), `POST tags/{id}/delete`, `GET tags/{id}/impact`,
+`POST categories/preview` and `POST categories/apply`. Every command carries
+`expected_epoch`; tag commands also carry the exact `{id, name}` identity, and
+category apply carries the preview's `impact_token`.
+
+Error contract: validation failures are 400 with `code: null`. A stale epoch is 409
+`storage-changed`; a changed or missing identity, or a changed category projection,
+is 409 `vocabulary-conflict` with a generic message. Both 409 bodies include the
+current `library_epoch`. Nothing is written on any refusal.
+
+Count semantics: a count is the number of eligible Library parents carrying the value
+directly or through one active saved pair, exactly what `list_library(tags=[name])` or
+`list_library(category=value)` returns. Unused registry tags report 0 and are kept by
+`get_all_tags`, `suggest_tags`, backup and restore, duplicate cleanup, orphan pruning
+and owner deletion (`TestRetainedTags` in `tests/test_database_backup.py`). Restore
+rotates the epoch, so a pre-restore `expected_epoch` is refused with `storage-changed`.
+Owner rows and their timestamps never change on a tag command; a category apply only
+touches rows carrying the exact source.
+
+Both token functions (`library_edit_token`, `category_impact_token`) share
+`canonical_token` in `database/library_tokens.py`; `TestSharedTokenHashing` pins their
+outputs.
+
+Deploying this backend needs a ComfyUI restart (Python and route changes).
