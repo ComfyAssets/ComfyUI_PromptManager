@@ -157,6 +157,19 @@ _UNVERIFIABLE_CODES = frozenset({"unsupported-node", "runtime-value"})
 # JoinStringMulti's own ``inputcount`` range; anything else never executed.
 _MAX_JOIN_INPUTS = 1000
 _SAMPLER_LIKE_INPUTS = ("latent_image", "guider", "positive", "negative")
+# Inputs that make an unlisted node a possible sampler stage in an ancestry walk:
+# pipes (easy-use, Impact), video embeds and custom-sampler parts carry a prompt
+# without a ``positive`` link. ``model`` is not one (LoRA loaders are walked).
+_STAGE_SHAPED_INPUTS = _SAMPLER_LIKE_INPUTS + (
+    "pipe",
+    "basic_pipe",
+    "detailer_pipe",
+    "sampler",
+    "sigmas",
+    "noise",
+    "text_embeds",
+    "hyvid_embeds",
+)
 _NO_SAMPLER_NAMES = 3
 _CLASS_NAME_LENGTH = 64
 
@@ -1009,6 +1022,12 @@ class _GraphResolver:
                     queued.add(key)
                     queue.append((key, depth))
 
+    def stage_shaped(self, name: str, inputs: dict) -> bool:
+        """An unlisted node that may itself be a sampler stage."""
+        return name not in self.semantics.all_classes and any(
+            _link(inputs.get(key)) for key in _STAGE_SHAPED_INPUTS
+        )
+
     def upstream_stages(self, origin: str, value: Any) -> list:
         """Samplers reached from a detailer's image input, in breadth-first order.
 
@@ -1030,6 +1049,8 @@ class _GraphResolver:
             if name in self.stage_classes:
                 found.append(node_id)
                 continue
+            if self.stage_shaped(name, inputs):
+                raise self.unsupported("Unsupported sampler stage ancestry", node_id)
             self.enqueue(queue, queued, inputs, depth + 1)
         return found
 
@@ -1238,9 +1259,7 @@ class _GraphResolver:
                 # ``multistage-differs`` is reserved for when stage texts are
                 # compared (PR3); until then no stage's prompt is chosen.
                 raise _Unresolved("Multistage sampler ancestry is ambiguous")
-            if name not in self.semantics.all_classes and any(
-                _link(inputs.get(key)) for key in _SAMPLER_LIKE_INPUTS
-            ):
+            if self.stage_shaped(name, inputs):
                 raise self.unsupported("Unsupported latent ancestry", node_id)
             self.enqueue(queue, queued, inputs, depth + 1)
 

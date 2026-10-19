@@ -2571,7 +2571,133 @@ class TestLatentAncestry(unittest.TestCase):
         source["3"]["inputs"]["latent_image"] = None
         self.assertEqual(_inspect(source)["reason_code"], "malformed")
 
-    def test_unclassified_sampler_shaped_latent_start_is_unsupported_and_named(self):
+    def test_unlisted_pipe_and_custom_samplers_in_the_ancestry_are_unsupported(self):
+        # Review I-1: stages whose inputs are pipes, embeds or sampler parts
+        # (easy-use, Impact pipes, video and custom samplers) must never be
+        # walked through to a silent single-stage pick of the final prompt.
+        easy = _latent_from(None)
+        easy["3"]["inputs"]["positive"] = ["62", 0]
+        easy.update(
+            {
+                "62": parity._enc(OTHER),
+                "20": {
+                    "class_type": "easy fullLoader",
+                    "inputs": {"positive": "first pass", "negative": "bad"},
+                },
+                "21": {"class_type": "easy preSampling", "inputs": {"pipe": ["20", 0]}},
+                "22": {"class_type": "easy kSampler", "inputs": {"pipe": ["21", 0]}},
+                "23": {
+                    "class_type": "VAEEncode",
+                    "inputs": {"pixels": ["22", 1], "vae": ["4", 2]},
+                },
+            }
+        )
+        easy["3"]["inputs"]["latent_image"] = ["23", 0]
+        pipes = _latent_from(None)
+        pipes.update(
+            {
+                "50": {"class_type": "LoadImage", "inputs": {"image": "a.png"}},
+                "20": {
+                    "class_type": "easy fullLoader",
+                    "inputs": {"positive": "segs prompt", "negative": "n"},
+                },
+                "24": {
+                    "class_type": "easy pipeToBasicPipe",
+                    "inputs": {"pipe": ["20", 0]},
+                },
+                "26": {
+                    "class_type": "BasicPipeToDetailerPipe",
+                    "inputs": {"basic_pipe": ["24", 0]},
+                },
+                "25": {
+                    "class_type": "FaceDetailerPipe",
+                    "inputs": {"image": ["50", 0], "detailer_pipe": ["26", 0]},
+                },
+                "23": {
+                    "class_type": "VAEEncode",
+                    "inputs": {"pixels": ["25", 0], "vae": ["4", 2]},
+                },
+            }
+        )
+        pipes["3"]["inputs"]["latent_image"] = ["23", 0]
+        cases = {"easy": (easy, "22", "easy kSampler")}
+        # Breadth-first, the first unlisted pipe consumer met is named.
+        cases["pipes"] = (pipes, "25", "FaceDetailerPipe")
+        for label, embeds in (
+            ("text_embeds", "WanVideoSampler"),
+            ("hyvid_embeds", "HyVideoSampler"),
+            ("sigmas", "MysteryCustomSampler"),
+            ("noise", "MysteryNoiseSampler"),
+            ("sampler", "MysterySamplerStage"),
+        ):
+            source = _latent_from(None)
+            source.update(
+                {
+                    "30": {"class_type": "MysteryEmbeds", "inputs": {}},
+                    "31": {"class_type": embeds, "inputs": {label: ["30", 0]}},
+                    "32": {
+                        "class_type": "VAEDecode",
+                        "inputs": {"samples": ["31", 0], "vae": ["4", 2]},
+                    },
+                    "23": {
+                        "class_type": "VAEEncode",
+                        "inputs": {"pixels": ["32", 0], "vae": ["4", 2]},
+                    },
+                }
+            )
+            source["3"]["inputs"]["latent_image"] = ["23", 0]
+            cases[label] = (source, "31", embeds)
+        for label, (source, node_id, class_type) in cases.items():
+            with self.subTest(case=label):
+                result = _inspect(source)
+                self.assertEqual(result["state"], "unresolved")
+                self.assertEqual(result["reason_code"], "unsupported-node")
+                self.assertEqual(result["reason"], "Unsupported latent ancestry")
+                self.assertEqual(
+                    result["node"], {"id": node_id, "class_type": class_type}
+                )
+                self.assertIsNone(result["positive"])
+        # A LoRA in a walked CLIP chain is not a stage (``model`` is not one).
+        source = _latent_from(
+            {
+                "class_type": "InpaintModelConditioning",
+                "inputs": {
+                    "positive": ["6", 0],
+                    "negative": ["7", 0],
+                    "vae": ["4", 2],
+                    "pixels": ["50", 0],
+                    "mask": ["50", 1],
+                },
+            },
+            {
+                "50": {"class_type": "LoadImage", "inputs": {"image": "a.png"}},
+                "40": {
+                    "class_type": "LoraLoader",
+                    "inputs": {"model": ["4", 0], "clip": ["4", 1]},
+                },
+            },
+        )
+        source["6"]["inputs"]["clip"] = ["40", 1]
+        source["3"]["inputs"].update(
+            positive=["5", 0], negative=["5", 1], latent_image=["5", 2]
+        )
+        self.assertEqual(_inspect(source)["state"], "resolved")
+
+    def test_unlisted_stage_in_a_detailer_image_ancestry_is_unsupported(self):
+        # Review M-1: the detailer's upstream-stage walk uses the same rule.
+        source = _detailed(same_prompt=True)
+        source.update(
+            {
+                "20": {"class_type": "easy fullLoader", "inputs": {"positive": "x"}},
+                "22": {"class_type": "easy kSampler", "inputs": {"pipe": ["20", 0]}},
+            }
+        )
+        source["50"]["inputs"]["image"] = ["22", 1]
+        result = _inspect(source, output_node_id="9")
+        self.assertEqual(result["reason_code"], "unsupported-node")
+        self.assertEqual(result["node"], {"id": "22", "class_type": "easy kSampler"})
+
+    def test_unclassified_sampler_shaped_latent_node_is_unsupported_and_named(self):
         # An unlisted node with sampler inputs may itself be an earlier stage:
         # never call the chain single-stage across it.
         source = _latent_from(
@@ -2593,6 +2719,30 @@ class TestLatentAncestry(unittest.TestCase):
             result["node"], {"id": "5", "class_type": "MysteryLatentSampler"}
         )
         self.assertIsNone(result["positive"])
+        # The rule holds at any depth (review M-3): behind a VAEEncode.
+        source = _latent_from(
+            {
+                "class_type": "VAEEncode",
+                "inputs": {"pixels": ["60", 0], "vae": ["4", 2]},
+            },
+            {
+                "50": {"class_type": "LoadImage", "inputs": {"image": "a.png"}},
+                "60": {
+                    "class_type": "UltimateSDUpscale",
+                    "inputs": {
+                        "image": ["50", 0],
+                        "model": ["4", 0],
+                        "positive": ["6", 0],
+                        "negative": ["7", 0],
+                    },
+                },
+            },
+        )
+        result = _inspect(source, output_node_id="9")
+        self.assertEqual(result["reason_code"], "unsupported-node")
+        self.assertEqual(
+            result["node"], {"id": "60", "class_type": "UltimateSDUpscale"}
+        )
 
     def test_latent_walk_budget_exhaustion_is_work_limit(self):
         # 2,100 distinct images in the latent ancestry: more than one
