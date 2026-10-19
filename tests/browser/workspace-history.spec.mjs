@@ -560,6 +560,24 @@ test('a bounded saved-parent prefix leaves previously loaded variants unverified
     await expect(page.getByRole('button',{name:'Reload saved Library view',exact:true})).toBeVisible();await expect(choices.last()).toBeDisabled();
 });
 
+test('an authoritative save after a stale revalidation makes the saved view current again',async({page,request})=>{
+    const f=page.fixture;const detail=await(await request.get(`/prompt_manager/library/${f.detail_id}`)).json();
+    for(let index=0;index<41;index++)await expect(await request.post('/prompt_manager/pairs',{data:{positive_text:detail.positive.text,negative_text:`Bounded negative ${index}`}})).toBeOK();
+    await open(page,f.detail_id);await page.getByRole('button',{name:'Load more negative variants',exact:true}).click();
+    const choices=page.getByRole('button',{name:/^Select negative variant /});await expect(choices).toHaveCount(43);await choices.last().click();
+    const negative=await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).textContent();
+    await page.route(/\/history\/runs\/[^/]+\/outputs\?/,async route=>route.fulfill({status:409,json:{success:false,history_version:1,code:'history-changed',error:'History changed',recovery:{action:'refresh-history'}}}));
+    await marker(page,f.runs.shared).click();await expect(dialog(page)).toContainText('Recorded evidence changed');await page.keyboard.press('Escape');
+    await expect(page.getByRole('button',{name:'Reload saved Library view',exact:true})).toBeVisible();await expect(choices.first()).toBeDisabled();
+    await page.getByRole('button',{name:'Edit metadata',exact:true}).click();const editor=page.locator('dialog.library-editor');
+    await expect(editor.getByRole('button',{name:'Save',exact:true})).toBeEnabled();await editor.getByLabel('Notes',{exact:true}).fill('Saved after stale revalidation');
+    await editor.getByRole('button',{name:'Save',exact:true}).click();await expect(editor).toHaveCount(0);
+    await expect(page.locator('.library-parent-status')).toBeHidden();await expect(page.getByRole('button',{name:'Reload saved Library view',exact:true})).toBeHidden();
+    await expect(choices.first()).toBeEnabled();await expect(page.locator('.library-variant-dot[aria-pressed="true"]')).toHaveCount(1);
+    expect(await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).textContent()).toBe(negative);
+    const names=await choices.evaluateAll(nodes=>nodes.map(node=>node.getAttribute('aria-label')));expect(new Set(names).size).toBe(names.length);
+});
+
 async function retainSavedSelection(page,request,fixture) {
     await open(page,fixture.detail_id);
     const details=await(await request.get(`/prompt_manager/library/${fixture.detail_id}`)).json();

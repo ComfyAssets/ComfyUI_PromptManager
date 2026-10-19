@@ -50,16 +50,20 @@ export function rememberLibraryResult(result) {
     else selectedPairs.set(positive.id,result.pair);
     if(result.pair.archived) archivedVisible.set(positive.id,true);
 }
-/** Toast copy from the receipt: the concept's Add-negative line, otherwise the spec's observable outcomes. */
+/**
+ * Toast copy from the receipt: the concept's Edit and Add-negative lines (app.js 989, 1028),
+ * otherwise the spec's "Observable outcome" table wording.
+ */
 function outcomeMessage(result,outcome) {
     const {kind,receipt}=result.commit;
+    if(kind==='metadata') return 'Saved.';
     if(kind==='archive-pair') return ARCHIVED_MESSAGE;
     if(kind!=='create' && kind!=='add-negative') return null;
-    if(receipt.positive_created) return 'Saved a new parent with its initial saved negative; submitted parent metadata persisted.';
+    if(receipt.positive_created) return 'New parent and initial saved negative; submitted parent metadata persisted.';
     if(receipt.pair_created) return kind==='add-negative'?'Negative saved without adding another positive or gallery.'
-        :`Saved a negative under the existing positive; existing parent metadata kept.${outcome?.metadataNotApplied?' The entered parent metadata was not applied; use Edit metadata to apply it.':''}`;
+        :`Saved a negative under the existing positive; existing parent metadata kept.${outcome?.metadataNotApplied?' The entered parent metadata was not applied.':''}`;
     if(receipt.pair.archived) return 'This combination is an archived negative variant. It stays archived; restore it from Show archived in Negative variants.';
-    return 'Opened the reused combination with its original canonical texts and metadata.';
+    return 'Open the reused combination with its original canonical texts and metadata.';
 }
 function rememberUnappliedMetadata(result,{outcome,draft}={}) {
     if(result.commit.kind!=='create' || !outcome?.metadataNotApplied || !draft) return;
@@ -392,7 +396,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             content.listen(restoreAction,'click',()=>restoreHandler?.());
             const more=createButton('Load more negative variants');const retry=createButton('Retry negative variants');retry.hidden=true;
             const archivedLoader=createLibraryDetail({api,onChange:()=>{if(!content.signal.aborted)updateBranches(loader.state);},archive:'archived'});content.cleanup(()=>archivedLoader.dispose());
-            let archivedShown=archivedVisible.get(positiveId)===true;
+            let archivedShown=archivedVisible.get(positiveId)===true,archivedStale=false;
             const archivedList=()=>archivedShown?archivedLoader.state.detail?.variants || []:[];
             const separate=()=>{const pair=selectedPairs.get(positiveId);return pair && !detail.variants.some(variant=>variant.id===pair.id) && !archivedList().some(variant=>variant.id===pair.id)?pair:null;};
             const moreTarget=()=>detail.variants_has_more?loader:archivedShown && archivedLoader.state.detail?.variants_has_more?archivedLoader:null;
@@ -404,7 +408,8 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             content.listen(addNegative,'click',()=>editor.open({mode:'negative',positiveId,trigger:addNegative}));
             content.listen(showArchived,'click',()=>{
                 archivedShown=!archivedShown;archivedVisible.set(positiveId,archivedShown);
-                if(archivedShown && !archivedLoader.state.detail && !archivedLoader.state.loading) archivedLoader.load(positiveId);
+                // A write while hidden makes the loaded archived list stale; reread it when it is shown again.
+                if(archivedShown && (archivedStale || (!archivedLoader.state.detail && !archivedLoader.state.loading))) {archivedStale=false;archivedLoader.load(positiveId);}
                 if(!archivedShown && archivedList().every(variant=>variant.id!==activePairId) && detail.variants.every(variant=>variant.id!==activePairId) && separate()?.id!==activePairId) select(null);
                 updateBranches(loader.state);
             });
@@ -414,8 +419,10 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             }
             function laneEntries() {
                 const entries=detail.variants.map((variant,index)=>({key:`active:${variant.id}`,kind:'active',variant,number:index+1}));
-                const outside=separate();if(outside) entries.push({key:`${outside.archived?'archived':'separate'}:${outside.id}`,kind:outside.archived?'archived':'separate',variant:outside,number:detail.variant_total+1});
-                for(const [index,variant] of archivedList().entries()) entries.push({key:`archived:${variant.id}`,kind:'archived',variant,number:detail.variant_total+index+1});
+                const loadedArchived=archivedList(),outside=separate();
+                // Archived numbers follow the active total; a pair outside the loaded archived page follows them, so names stay unique.
+                if(outside) entries.push({key:`${outside.archived?'archived':'separate'}:${outside.id}`,kind:outside.archived?'archived':'separate',variant:outside,number:detail.variant_total+loadedArchived.length+1});
+                for(const [index,variant] of loadedArchived.entries()) entries.push({key:`archived:${variant.id}`,kind:'archived',variant,number:detail.variant_total+index+1});
                 return entries;
             }
             function laneFor(entry) {
@@ -573,10 +580,13 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             /** Same-parent reconciliation from one authoritative result; the separately verified pair stays outside the page. */
             function apply(result) {
                 const kind=result.commit.kind,pair=result.pair,previous=detail.variants.map(variant=>variant.id);
+                // An authoritative reconciled read supersedes any stale or pending revalidation.
+                parentGeneration++;parentRequest?.abort();savedReadState='current';
+                parentStatus.hidden=true;parentStatus.textContent='';retryParent.hidden=reloadSaved.hidden=true;
                 loader.accept(result.detail);
                 // A reused archived pair is shown where it lives, under Show archived; archiving itself never turns the toggle on.
                 if(pair?.archived && kind!=='archive-pair') {archivedShown=true;archivedVisible.set(positiveId,true);}
-                if(archivedShown) archivedLoader.load(positiveId);
+                if(archivedShown) archivedLoader.load(positiveId);else archivedStale=true;
                 if(kind==='metadata') {rereadSelectedPair();return;}
                 if(kind==='archive-pair') {
                     if(selectedPairs.get(positiveId)?.id===pair.id) selectedPairs.delete(positiveId);

@@ -425,7 +425,7 @@ test('library heading offers Export then + New prompt, and New opens the saved p
     const created=(await(await request.get('/prompt_manager/library?text=quiet%20harbor')).json()).items[0];
     await expect(page).toHaveURL(new RegExp(`#/library/${created.id}$`));
     await expect(page.locator('#workspace-main h1')).toHaveText('Harbor at dawn');await expect(page.locator('#workspace-main h1')).toBeFocused();
-    await expect(toast(page)).toHaveText('Saved a new parent with its initial saved negative; submitted parent metadata persisted.');
+    await expect(toast(page)).toHaveText('New parent and initial saved negative; submitted parent metadata persisted.');
     await expect(pressedVariant(page)).toHaveCount(1);await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true})).toContainText('fog, noise');
     expect(page.writes.map(write=>`${write.method} ${write.url}`)).toEqual(['POST /prompt_manager/library']);
 });
@@ -470,7 +470,7 @@ test('add negative re-renders history with the saved or reused pair selected',as
     await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true})).toContainText('grain, dust');
     await expect(laneLabel(page,'Negative variant 1 ·')).toHaveCount(1);await expect(pressedVariant(page)).toHaveAccessibleName('Select negative variant 1');
     await add.click();dialog=editorDialog(page);await ready(dialog);await field(dialog,'Negative prompt').fill(`  ${f.selected_negative.toUpperCase()} `);await button(dialog,'Save').click();
-    await expect(dialog).toHaveCount(0);await expect(toast(page)).toHaveText('Opened the reused combination with its original canonical texts and metadata.');
+    await expect(dialog).toHaveCount(0);await expect(toast(page)).toHaveText('Open the reused combination with its original canonical texts and metadata.');
     await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre')).toHaveText(f.selected_negative);
     await expect(laneLabel(page,'· 1 linked images')).toHaveCount(1);
     await expect(pressedVariant(page)).toHaveAccessibleName('Select negative variant 3');
@@ -502,6 +502,7 @@ test('edit metadata stays on the page and re-reads the selected pair',async({pag
     const before=pairReads.length;
     await field(dialog,'Title').fill('Edited in place');await field(dialog,'Category').fill('Studio work');await button(dialog,'Save').click();await expect(dialog).toHaveCount(0);
     await expect(page.locator('#workspace-main h1')).toHaveText('Edited in place');await expect(page.locator('#workspace-main h1')).toBeFocused();
+    await expect(toast(page)).toHaveText('Saved.');
     await expect(page).toHaveURL(new RegExp(`#/library/${f.positive_id}$`));await expect(historyRegion(page).locator('.library-surface .library-chip').first()).toHaveText('Studio work');
     await expect(pressedVariant(page)).toHaveAccessibleName('Select negative variant 2');
     await expect.poll(()=>pairReads.length).toBeGreaterThan(before);
@@ -612,4 +613,57 @@ test('export downloads the full Library JSON without a toast and reports a failu
     let downloads=0;page.on('download',()=>downloads++);await exportButton.click();
     await expect(page.getByRole('alert').filter({hasText:'The Library export could not be downloaded.'})).toBeVisible();
     expect(downloads).toBe(0);await expect(toast(page)).toBeHidden();expect(page.writes).toHaveLength(0);
+});
+
+const uniqueDotNames=async page=>{const names=await variantsPanel(page).locator('.library-variant-dot').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('aria-label')));expect(new Set(names).size).toBe(names.length);};
+
+test('archived reuse is reported, shown under Show archived and selected read-only from Add negative and New',async({page})=>{
+    const f=page.fixture;await openHistory(page,f.positive_id);
+    const galleryReads=[];page.on('request',item=>{if(item.url().includes('/images?'))galleryReads.push(new URL(item.url()).searchParams);});
+    await variantsPanel(page).getByRole('button',{name:'+ Add negative',exact:true}).click();let dialog=editorDialog(page);await ready(dialog);
+    await field(dialog,'Negative prompt').fill(f.archived_negative);await button(dialog,'Save').click();await expect(dialog).toHaveCount(0);
+    const message='This combination is an archived negative variant. It stays archived; restore it from Show archived in Negative variants.';
+    await expect(toast(page)).toHaveText(message);
+    await expect(variantsPanel(page).getByRole('button',{name:'Show archived (1)',exact:true})).toHaveAttribute('aria-pressed','true');
+    const lane=variantsPanel(page).locator('.library-variant-archived');await expect(lane).toHaveCount(1);
+    await expect(lane.locator('.library-variant-dot')).toHaveAttribute('aria-pressed','true');
+    await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre')).toHaveText(f.archived_negative);
+    await expect.poll(()=>galleryReads.at(-1)?.get('archive')).toBe('archived');expect(galleryReads.at(-1).get('pair_id')).toBe(String(f.archived_pair_id));
+    await uniqueDotNames(page);
+    await page.goto(`${workspace}#/library`);await page.getByRole('button',{name:'+ New prompt',exact:true}).click();dialog=editorDialog(page);await ready(dialog);
+    await field(dialog,'Title').fill(f.metadata.title);await field(dialog,'Positive prompt').fill(f.positive_text);await field(dialog,'Negative prompt (optional)').fill(f.archived_negative);
+    await field(dialog,'Category').fill(f.metadata.category);await field(dialog,'Tags, separated by commas').fill(f.metadata.tags.join(', '));await field(dialog,'Rating').selectOption(String(f.metadata.rating));await field(dialog,'Notes').fill(f.metadata.notes);
+    await button(dialog,'Save').click();await expect(page).toHaveURL(new RegExp(`#/library/${f.positive_id}$`));
+    await expect(toast(page)).toHaveText(message);
+    await expect(variantsPanel(page).locator('.library-variant-archived .library-variant-dot')).toHaveAttribute('aria-pressed','true');
+    expect(page.writes.every(write=>write.method==='POST')).toBe(true);
+});
+
+test('reuse that leaves parent metadata unapplied discloses it and keeps the draft for Edit metadata',async({page})=>{
+    const f=page.fixture;await page.goto(`${workspace}#/library`);
+    await page.getByRole('button',{name:'+ New prompt',exact:true}).click();let dialog=editorDialog(page);await ready(dialog);
+    await field(dialog,'Title').fill('A different title');await field(dialog,'Positive prompt').fill(f.positive_text);await field(dialog,'Negative prompt (optional)').fill('brand new negative');
+    await field(dialog,'Notes').fill('Draft notes');await button(dialog,'Save').click();
+    await expect(page).toHaveURL(new RegExp(`#/library/${f.positive_id}$`));
+    await expect(toast(page)).toHaveText('Saved a negative under the existing positive; existing parent metadata kept. The entered parent metadata was not applied.');
+    await expect(page.locator('#workspace-main h1')).toHaveText(f.metadata.title);
+    await page.getByRole('button',{name:'Edit metadata',exact:true}).click();dialog=editorDialog(page);await ready(dialog);
+    await expect(field(dialog,'Title')).toHaveValue('A different title');await expect(field(dialog,'Notes')).toHaveValue('Draft notes');
+    await button(dialog,'Cancel').click();
+    await page.getByRole('button',{name:'Edit metadata',exact:true}).click();dialog=editorDialog(page);await ready(dialog);
+    await expect(field(dialog,'Title')).toHaveValue(f.metadata.title);await button(dialog,'Cancel').click();
+    expect(page.writes).toHaveLength(1);
+});
+
+test('turning Show archived on again after a hidden archive shows the newly archived pair',async({page})=>{
+    const f=page.fixture;await openHistory(page,f.positive_id);
+    const toggle=()=>variantsPanel(page).getByRole('button',{name:/^Show archived/});
+    await toggle().click();await expect(variantsPanel(page).locator('.library-variant-archived')).toHaveCount(1);
+    await toggle().click();await expect(toggle()).toHaveAttribute('aria-pressed','false');await expect(variantsPanel(page).locator('.library-variant-archived')).toHaveCount(0);
+    await selectPair(page,'Select negative variant 2');
+    await page.getByRole('button',{name:'Edit metadata',exact:true}).click();const dialog=editorDialog(page);await ready(dialog);
+    await button(dialog,'Archive…').click();await expect(button(dialog,'Archive')).toBeEnabled();await button(dialog,'Archive').click();await expect(dialog).toHaveCount(0);
+    await expect(toggle()).toHaveText('Show archived (2)');await toggle().click();
+    await expect(variantsPanel(page).locator('.library-variant-archived')).toHaveCount(2);
+    await expect(laneLabel(page,'· 1 linked images · Archived')).toHaveCount(1);await uniqueDotNames(page);
 });
