@@ -394,6 +394,37 @@ class TestRestoreFromFile(BackupTestCase):
         self.assertEqual(prompt["run_count"], 1)
         self.assertNotIn("workflow_name", prompt)
         self.assertEqual(self.db.get_prompt_images(1), [])
+        conn = sqlite3.connect(self.path)
+        try:
+            self.assertEqual(
+                [r[1] for r in conn.execute("PRAGMA table_info(prompt_library_state)")],
+                ["prompt_id", "title"],
+            )
+        finally:
+            conn.close()
+        ok, _ = PromptModel.verify_database_file(self.path, require_library_state=True)
+        self.assertTrue(ok)
+
+    def test_backup_round_trips_library_state_from_the_wal(self):
+        prompt_id = self._save(self.db, "titled")
+        with self.db.model.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO prompt_library_state VALUES (?, 'WAL title')",
+                (prompt_id,),
+            )
+        dst = os.path.join(self.tmpdir, "backup.db")
+        self.assertTrue(self.db.model.backup_database(dst))
+        conn = sqlite3.connect(dst)
+        try:
+            self.assertEqual(
+                conn.execute("SELECT title FROM prompt_library_state").fetchall(),
+                [("WAL title",)],
+            )
+        finally:
+            conn.close()
+        self.assertTrue(
+            PromptModel.verify_database_file(dst, require_library_state=True)[0]
+        )
 
     def test_restore_without_a_live_database_returns_empty_backup_path(self):
         src = self._make_source_db(["fresh"])

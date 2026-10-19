@@ -299,3 +299,43 @@ class TestPromptPairs(unittest.TestCase):
             self.db.update_prompt_pair_metadata(pid, title=[])
         with self.assertRaises(ValueError):
             self.db.list_prompt_pairs(text=[])
+
+    def test_connection_outcomes_report_insertions_under_the_held_transaction(self):
+        conn = self.db.model.get_connection()
+        legacy = self.save("Kept Spelling", "", title="legacy", tags=["t"])
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            first = self.db._pair_component_outcome(conn, "  New Text  ")
+            again = self.db._pair_component_outcome(conn, "new text")
+            spaced = self.db._pair_component_outcome(conn, "new  text")
+            kept = self.db._pair_component_outcome(conn, " kept spelling ")
+            pair = self.db._save_pair_components(conn, first[0], spaced[0], title="p")
+            reused = self.db._save_pair_components(conn, first[0], spaced[0])
+            empty = self.db._save_pair_components(conn, kept[0], None, title="x")
+        self.assertEqual((first[1], again, spaced[1]), (True, (first[0], False), True))
+        self.assertNotEqual(first[0], spaced[0])
+        self.assertEqual(kept[1], False)
+        self.assertEqual((pair[1], reused), (True, (pair[0], False)))
+        self.assertEqual(empty, (legacy, False))
+        self.assertEqual(self.db.get_prompt_by_id(first[0])["text"], "New Text")
+        self.assertEqual(self.db.get_prompt_pair(pair[0])["title"], "p")
+        legacy_pair = self.db.get_prompt_pair(legacy)
+        self.assertEqual((legacy_pair["title"], legacy_pair["tags"]), ("legacy", ["t"]))
+        self.assertEqual(legacy_pair["positive_text"], "Kept Spelling")
+        # Public saves keep their integer contract on create and on reuse.
+        self.assertIs(type(self.save("fresh", "")), int)
+        self.assertEqual(self.save("FRESH ", " "), self.save("fresh", ""))
+
+    def test_pair_component_outcome_rolls_back_with_its_caller(self):
+        conn = self.db.model.get_connection()
+
+        def failing():
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                positive, _ = self.db._pair_component_outcome(conn, "transient")
+                self.db._save_pair_components(conn, positive, None, tags=["x"])
+                raise RuntimeError("rollback")
+
+        self.assertRaisesRegex(RuntimeError, "rollback", failing)
+        self.assertEqual(self.db.search_prompts(), [])
+        self.assertEqual(self.db.list_prompt_pairs()["total"], 0)

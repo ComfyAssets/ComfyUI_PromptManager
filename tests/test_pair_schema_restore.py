@@ -247,6 +247,10 @@ class PairSchemaTests(unittest.TestCase):
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM prompt_pairs").fetchone()[0], 0
             )
+            self.assertEqual(
+                [r[1] for r in conn.execute("PRAGMA table_info(prompt_library_state)")],
+                ["prompt_id", "title"],
+            )
         self.assertTrue(PromptModel.verify_database_file(live.db_path)[0])
 
     def test_restore_staged_verification_failure_does_not_replace_live_pages(self):

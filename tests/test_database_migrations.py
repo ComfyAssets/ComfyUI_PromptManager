@@ -169,6 +169,37 @@ class TestIdempotentMigrations(MigrationTestCase):
         self.assertNotIn("workflow_name", self._columns("prompts"))
         self.assertEqual(len(db.get_prompt_images(1)), 1)
 
+    def test_rebuild_keeps_library_state_rows(self):
+        self._legacy_db(
+            [
+                "INSERT INTO prompts (text, hash, workflow_name)"
+                " VALUES ('a', 'h1', 'wf')",
+                "CREATE TABLE prompt_library_state (prompt_id INTEGER PRIMARY KEY,"
+                " title TEXT, FOREIGN KEY(prompt_id) REFERENCES prompts(id)"
+                " ON DELETE CASCADE)",
+                "INSERT INTO prompt_library_state VALUES (1, 'kept')",
+            ]
+        )
+
+        self._open()
+
+        self.assertEqual(self._columns("prompt_library_state"), ["prompt_id", "title"])
+        conn = sqlite3.connect(self.path)
+        try:
+            self.assertEqual(
+                conn.execute("SELECT * FROM prompt_library_state").fetchall(),
+                [(1, "kept")],
+            )
+        finally:
+            conn.close()
+
+    def test_legacy_database_gains_library_state_table(self):
+        self._legacy_db([])
+
+        self._open()
+
+        self.assertEqual(self._columns("prompt_library_state"), ["prompt_id", "title"])
+
     def test_migration_error_is_logged_and_raised(self):
         # The legacy table has no CHECK on rating; the rebuilt one does, so the
         # copy into prompts_new fails inside the migration.

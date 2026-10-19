@@ -15,6 +15,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Optional, Set, Tuple
 
+from .library_schema import library_schema_error, migrate_library_state
 from .execution_history_schema import (
     history_schema_error,
     migrate_execution_history,
@@ -280,6 +281,7 @@ class PromptModel:
         self._migrate_image_uniqueness_by_path(conn)
         self._migrate_prompt_pairs(conn)
         migrate_execution_history(conn)
+        migrate_library_state(conn)
 
     def _migrate_prompt_pairs(self, conn: sqlite3.Connection) -> None:
         conn.execute("SAVEPOINT prompt_pair_schema")
@@ -988,7 +990,9 @@ class PromptModel:
             return False
 
     @staticmethod
-    def verify_database_file(path: str) -> Tuple[bool, str]:
+    def verify_database_file(
+        path: str, *, require_library_state: bool = False
+    ) -> Tuple[bool, str]:
         """
         Check that a file is a healthy prompts database before restoring it.
 
@@ -1046,6 +1050,11 @@ class PromptModel:
             history_error = history_schema_error(conn)
             if history_error:
                 return False, history_error
+            library_error = library_schema_error(
+                conn, allow_missing=not require_library_state
+            )
+            if library_error:
+                return False, library_error
             return True, "ok"
         except sqlite3.Error as e:
             return False, f"Invalid SQLite database: {e}"
@@ -1112,7 +1121,9 @@ class PromptModel:
             try:
                 staged = PromptModel(staged_path)
                 rotate_history_epoch(staged.get_connection())
-                ok, reason = self.verify_database_file(staged_path)
+                ok, reason = self.verify_database_file(
+                    staged_path, require_library_state=True
+                )
                 if not ok:
                     raise ValueError(reason)
                 staged.close_all()

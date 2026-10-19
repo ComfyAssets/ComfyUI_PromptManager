@@ -66,15 +66,31 @@ class PairOperations:
             )
 
     def _pair_component(self, conn: sqlite3.Connection, text: str) -> int:
+        return self._pair_component_outcome(conn, text)[0]
+
+    def _pair_component_outcome(
+        self, conn: sqlite3.Connection, text: str
+    ) -> tuple[int, bool]:
+        """Resolve a component by its dedup hash; report whether it was inserted.
+
+        The first stored spelling wins: the hash ignores outer whitespace and
+        case, internal whitespace stays significant. ``created`` comes from the
+        INSERT result under the caller's held write transaction.
+        """
         prompt_hash = generate_prompt_hash(text)
-        conn.execute(
-            "INSERT INTO prompts(text, hash, created_at, updated_at) VALUES(?,?,?,?) "
-            "ON CONFLICT(hash) DO NOTHING",
-            (text.strip(), prompt_hash, utc_now_iso(), utc_now_iso()),
+        now = utc_now_iso()
+        created = (
+            conn.execute(
+                "INSERT INTO prompts(text, hash, created_at, updated_at) "
+                "VALUES(?,?,?,?) ON CONFLICT(hash) DO NOTHING",
+                (text.strip(), prompt_hash, now, now),
+            ).rowcount
+            == 1
         )
-        return conn.execute(
+        row = conn.execute(
             "SELECT id FROM prompts WHERE hash = ?", (prompt_hash,)
-        ).fetchone()["id"]
+        ).fetchone()
+        return row["id"], created
 
     def _sync_pair_tags(
         self, conn: sqlite3.Connection, pair_id: int, tags: List[str]
@@ -127,27 +143,57 @@ class PairOperations:
             raise ValueError("Positive prompt text cannot be empty")
         if not isinstance(negative_text, str):
             raise ValueError("Negative prompt text must be a string; use '' for empty")
-        tags = _validate_metadata(title, category, tags, rating, notes)
+        # Validate metadata before any component insertion.
+        _validate_metadata(title, category, tags, rating, notes)
         positive = self._pair_component(conn, positive_text)
         negative = (
             self._pair_component(conn, negative_text) if negative_text.strip() else None
         )
+        return self._save_pair_components(
+            conn,
+            positive,
+            negative,
+            title=title,
+            category=category,
+            tags=tags,
+            rating=rating,
+            notes=notes,
+        )[0]
+
+    def _save_pair_components(
+        self,
+        conn: sqlite3.Connection,
+        positive_id: int,
+        negative_id: Optional[int],
+        *,
+        title: Optional[str] = None,
+        category: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        rating: Optional[int] = None,
+        notes: Optional[str] = None,
+    ) -> tuple[int, bool]:
+        """Create or reuse the ordered pair of existing component IDs.
+
+        Returns ``(pair_id, created)``. A reused pair keeps all of its metadata
+        and archive state; metadata applies only to a newly inserted pair.
+        """
+        tags = _validate_metadata(title, category, tags, rating, notes)
         existing = conn.execute(
             "SELECT id FROM prompt_pairs WHERE positive_prompt_id = ? "
             "AND negative_prompt_id IS ?",
-            (positive, negative),
+            (positive_id, negative_id),
         ).fetchone()
         if existing:
-            return existing["id"]
+            return existing["id"], False
         now = utc_now_iso()
         pair_id = conn.execute(
             "INSERT INTO prompt_pairs(positive_prompt_id,negative_prompt_id,title,"
             "category,rating,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-            (positive, negative, title, category, rating, notes, now, now),
+            (positive_id, negative_id, title, category, rating, notes, now, now),
         ).lastrowid
         if tags:
             self._sync_pair_tags(conn, pair_id, tags)
-        return pair_id
+        return pair_id, True
 
     def _read_pair_rows(
         self, conn: sqlite3.Connection, where: str, params: List[Any], suffix: str = ""

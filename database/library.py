@@ -1,13 +1,37 @@
 """Read-only positive-parent views over existing prompt and pair tables."""
 
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+from .library_tokens import library_edit_token
+
 _ELIGIBLE = """(EXISTS(SELECT 1 FROM prompt_pairs ep WHERE ep.positive_prompt_id=p.id)
  OR EXISTS(SELECT 1 FROM generated_images eg WHERE eg.prompt_id=p.id)
- OR NOT EXISTS(SELECT 1 FROM prompt_pairs en WHERE en.negative_prompt_id=p.id))"""
+ OR NOT EXISTS(SELECT 1 FROM prompt_pairs en WHERE en.negative_prompt_id=p.id)
+ OR EXISTS(SELECT 1 FROM prompt_library_state es WHERE es.prompt_id=p.id))"""
+_FROM = "prompts p LEFT JOIN prompt_library_state ls ON ls.prompt_id=p.id"
+# The characters JavaScript's String.prototype.trim() removes, so a title the
+# display treats as blank also falls back to the prompt text for name sorting.
+_BLANK = (
+    "char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,"
+    "8200,8201,8202,8232,8233,8239,8287,12288,65279)"
+)
+_NAME = (
+    f"LOWER(CASE WHEN TRIM(COALESCE(ls.title,''),{_BLANK})!='' "
+    "THEN ls.title ELSE p.text END)"
+)
 _ORDERS = {
     "newest": ("COALESCE(julianday(p.created_at),0)", "DESC"),
     "oldest": ("COALESCE(julianday(p.created_at),0)", "ASC"),
-    "name": ("LOWER(p.text)", "ASC"),
+    "name": (_NAME, "ASC"),
     "rating": ("COALESCE(p.rating,0)", "DESC"),
+}
+# Pair archive scopes for variant and image reads, as conditions on alias pp.
+ARCHIVE_SCOPES = {
+    "active": " AND pp.archived=0",
+    "archived": " AND pp.archived=1",
+    "all": "",
 }
 
 
@@ -18,6 +42,13 @@ def _escape(value: str) -> str:
 def _limit(value: int) -> None:
     if type(value) is not int or not 1 <= value <= 200:
         raise ValueError("limit must be between 1 and 200")
+
+
+def _archive(value: str) -> str:
+    """Return the pair-archive condition for one scope (alias ``pp``)."""
+    if not isinstance(value, str) or value not in ARCHIVE_SCOPES:
+        raise ValueError("archive must be one of active, archived or all")
+    return ARCHIVE_SCOPES[value]
 
 
 def _filter(text: str, category: str | None, tags: list[str]) -> tuple[str, list]:
@@ -33,13 +64,13 @@ def _filter(text: str, category: str | None, tags: list[str]) -> tuple[str, list
         raise ValueError("Invalid library tags")
     parent, pair, parent_params, pair_params = [], ["pp.archived=0"], [], []
     if text:
-        parent.append("p.text LIKE ? ESCAPE '\\'")
-        parent_params.append(f"%{_escape(text)}%")
+        parent.append("(p.text LIKE ? ESCAPE '\\' OR ls.title LIKE ? ESCAPE '\\')")
+        parent_params.extend([f"%{_escape(text)}%"] * 2)
         pair.append(
-            "(p.text LIKE ? ESCAPE '\\' OR n.text LIKE ? ESCAPE '\\' "
-            "OR pp.title LIKE ? ESCAPE '\\')"
+            "(p.text LIKE ? ESCAPE '\\' OR ls.title LIKE ? ESCAPE '\\' "
+            "OR n.text LIKE ? ESCAPE '\\' OR pp.title LIKE ? ESCAPE '\\')"
         )
-        pair_params.extend([f"%{_escape(text)}%"] * 3)
+        pair_params.extend([f"%{_escape(text)}%"] * 4)
     if category is not None:
         parent.append("p.category=?")
         pair.append("pp.category=?")
@@ -71,24 +102,55 @@ def _filter(text: str, category: str | None, tags: list[str]) -> tuple[str, list
 
 
 class LibraryOperations:
-    """Group reusable negative variants without changing legacy prompt queries."""
+    """Group reusable negative variants without changing legacy prompt queries.
+
+    Each public read runs inside ``library_snapshot``; the ``_``-prefixed
+    helpers take that snapshot's connection and epoch so routes can share it.
+    """
+
+    @contextmanager
+    def library_snapshot(
+        self, *, include_ceiling: bool = False
+    ) -> Iterator[tuple[sqlite3.Connection, str, int | None]]:
+        """Hold one read transaction, reading the epoch (and ceiling) first."""
+        conn = self.model.get_connection()
+        if conn.in_transaction:
+            raise sqlite3.ProgrammingError("Library reads require their own snapshot")
+        conn.execute("BEGIN")
+        try:
+            row = conn.execute(
+                "SELECT storage_epoch,"
+                + (
+                    "(SELECT COALESCE(MAX(id),0) FROM prompts)"
+                    if include_ceiling
+                    else "NULL"
+                )
+                + " FROM execution_history_metadata WHERE singleton_id=1"
+            ).fetchone()
+            if row is None:
+                raise sqlite3.DatabaseError("Missing execution history metadata")
+            yield conn, row[0], row[1]
+        finally:
+            if conn.in_transaction:
+                conn.rollback()
 
     def _library_parents(
         self,
+        conn: sqlite3.Connection,
+        epoch: str,
         where: str,
         params: list,
         suffix: str = "",
         sort_expression: str | None = None,
     ) -> list[dict]:
-        conn = self.model.get_connection()
         rows = conn.execute(
-            "SELECT p.id,p.text,p.category,p.rating,p.created_at,"
+            "SELECT p.id,p.text,ls.title,p.category,p.rating,p.notes,p.created_at,"
             + (f"{sort_expression} AS _sort," if sort_expression else "")
             + "(SELECT COUNT(*) FROM prompt_pairs v WHERE v.positive_prompt_id=p.id "
             "AND v.archived=0) AS variant_count,"
             "(SELECT COUNT(*) FROM generated_images g "
             "WHERE g.prompt_id=p.id) AS image_count "
-            "FROM prompts p WHERE " + where + suffix,
+            "FROM " + _FROM + " WHERE " + where + suffix,
             params,
         ).fetchall()
         result = [{**dict(row), "tags": []} for row in rows]
@@ -102,10 +164,15 @@ class LibraryOperations:
                 list(by_id),
             ):
                 by_id[row["prompt_id"]]["tags"].append(row["name"])
+        for row in result:
+            row["edit_token"] = library_edit_token(epoch, row)
         return result
 
-    def list_library(
+    def _list_library(
         self,
+        conn: sqlite3.Connection,
+        epoch: str,
+        ceiling: int,
         *,
         text: str = "",
         category: str | None = None,
@@ -118,8 +185,6 @@ class LibraryOperations:
         if sort not in _ORDERS:
             raise ValueError("Unknown library sort order")
         where, params = _filter(text, category, [] if tags is None else tags)
-        conn = self.model.get_connection()
-        ceiling = conn.execute("SELECT COALESCE(MAX(id),0) FROM prompts").fetchone()[0]
         if after is not None:
             if (
                 not isinstance(after, dict)
@@ -132,7 +197,7 @@ class LibraryOperations:
         where += " AND p.id<=?"
         params.append(ceiling)
         total = conn.execute(
-            "SELECT COUNT(*) FROM prompts p WHERE " + where, params
+            "SELECT COUNT(*) FROM " + _FROM + " WHERE " + where, params
         ).fetchone()[0]
         expression, direction = _ORDERS[sort]
         if after is not None:
@@ -143,6 +208,8 @@ class LibraryOperations:
             )
             params.extend([after["value"], after["value"], after["id"]])
         rows = self._library_parents(
+            conn,
+            epoch,
             where,
             [*params, limit + 1],
             f" ORDER BY {expression} {direction},p.id {direction} LIMIT ?",
@@ -160,33 +227,78 @@ class LibraryOperations:
         for row in rows:
             row.pop("_sort")
         return {
+            "library_epoch": epoch,
             "items": rows,
             "total": total,
             "has_more": has_more,
             "next_key": next_key,
         }
 
-    def get_library_positive(
+    def list_library(
         self,
+        *,
+        text: str = "",
+        category: str | None = None,
+        tags: list[str] | None = None,
+        sort: str = "newest",
+        limit: int = 40,
+        after: dict | None = None,
+    ) -> dict:
+        with self.library_snapshot(include_ceiling=True) as (conn, epoch, ceiling):
+            return self._list_library(
+                conn,
+                epoch,
+                ceiling,
+                text=text,
+                category=category,
+                tags=tags,
+                sort=sort,
+                limit=limit,
+                after=after,
+            )
+
+    def _is_library_positive(self, conn: sqlite3.Connection, positive_id: int) -> bool:
+        return (
+            conn.execute(
+                "SELECT 1 FROM prompts p WHERE p.id=? AND " + _ELIGIBLE, (positive_id,)
+            ).fetchone()
+            is not None
+        )
+
+    def _get_library_positive(
+        self,
+        conn: sqlite3.Connection,
+        epoch: str,
         positive_id: int,
         *,
         variant_limit: int = 40,
         variant_after: int | None = None,
+        archive: str = "active",
     ) -> dict | None:
         _limit(variant_limit)
+        scope = _archive(archive)
         if variant_after is not None and (
             type(variant_after) is not int or variant_after <= 0
         ):
             raise ValueError("Invalid variant cursor")
-        rows = self._library_parents(_ELIGIBLE + " AND p.id=?", [positive_id])
+        rows = self._library_parents(
+            conn, epoch, _ELIGIBLE + " AND p.id=?", [positive_id]
+        )
         if not rows:
             return None
-        conn = self.model.get_connection()
-        where = "pp.positive_prompt_id=? AND pp.archived=0"
-        params = [positive_id]
-        variant_total = conn.execute(
-            "SELECT COUNT(*) FROM prompt_pairs pp WHERE " + where, params
+        positive = rows[0]
+        positive["archived_variant_count"] = conn.execute(
+            "SELECT COUNT(*) FROM prompt_pairs "
+            "WHERE positive_prompt_id=? AND archived=1",
+            (positive_id,),
         ).fetchone()[0]
+        variant_total = {
+            "active": positive["variant_count"],
+            "archived": positive["archived_variant_count"],
+            "all": positive["variant_count"] + positive["archived_variant_count"],
+        }[archive]
+        where = "pp.positive_prompt_id=?" + scope
+        params = [positive_id]
         if variant_after is not None:
             where += " AND pp.id<?"
             params.append(variant_after)
@@ -194,7 +306,7 @@ class LibraryOperations:
             dict(row)
             for row in conn.execute(
                 "SELECT pp.id,COALESCE(n.text,'') AS negative_text,"
-                "pp.category,pp.title,"
+                "pp.category,pp.title,pp.archived,"
                 "pp.negative_prompt_id IS NULL AS explicit_empty,"
                 "(SELECT COUNT(DISTINCT image_id) FROM image_prompt_pairs ip "
                 "WHERE ip.pair_id=pp.id) AS image_count "
@@ -209,6 +321,7 @@ class LibraryOperations:
         by_id = {row["id"]: row for row in variants}
         for row in variants:
             row["tags"] = []
+            row["archived"] = bool(row["archived"])
             row["explicit_empty"] = bool(row["explicit_empty"])
         if by_id:
             marks = ",".join("?" for _ in by_id)
@@ -226,7 +339,8 @@ class LibraryOperations:
             (positive_id,),
         ).fetchone()[0]
         return {
-            "positive": rows[0],
+            "library_epoch": epoch,
+            "positive": positive,
             "variants": variants,
             "unassigned_image_count": unassigned,
             "variant_total": variant_total,
@@ -234,20 +348,41 @@ class LibraryOperations:
             "variants_next_key": variants[-1]["id"] if variants_has_more else None,
         }
 
-    def get_library_options(self) -> dict:
-        rows = (
-            self.model.get_connection()
-            .execute(
-                "SELECT category FROM (SELECT p.category AS category "
-                "FROM prompts p WHERE "
-                + _ELIGIBLE
-                + (" UNION SELECT category FROM prompt_pairs " "WHERE archived=0) ")
-                + "WHERE category IS NOT NULL AND TRIM(category)!='' "
-                "ORDER BY category COLLATE NOCASE,category"
+    def get_library_positive(
+        self,
+        positive_id: int,
+        *,
+        variant_limit: int = 40,
+        variant_after: int | None = None,
+        archive: str = "active",
+    ) -> dict | None:
+        with self.library_snapshot() as (conn, epoch, _ceiling):
+            return self._get_library_positive(
+                conn,
+                epoch,
+                positive_id,
+                variant_limit=variant_limit,
+                variant_after=variant_after,
+                archive=archive,
             )
-            .fetchall()
-        )
-        return {"categories": [row["category"] for row in rows]}
+
+    def _get_library_options(self, conn: sqlite3.Connection, epoch: str) -> dict:
+        rows = conn.execute(
+            "SELECT category FROM (SELECT p.category AS category "
+            "FROM prompts p WHERE "
+            + _ELIGIBLE
+            + (" UNION SELECT category FROM prompt_pairs " "WHERE archived=0) ")
+            + "WHERE category IS NOT NULL AND TRIM(category)!='' "
+            "ORDER BY category COLLATE NOCASE,category"
+        ).fetchall()
+        return {
+            "library_epoch": epoch,
+            "categories": [row["category"] for row in rows],
+        }
+
+    def get_library_options(self) -> dict:
+        with self.library_snapshot() as (conn, epoch, _ceiling):
+            return self._get_library_options(conn, epoch)
 
     def get_library_previews(self, positive_ids: list[int]) -> dict[int, list[dict]]:
         """Read at most two links per parent in one bounded page query."""
@@ -273,24 +408,34 @@ class LibraryOperations:
             result[row["prompt_id"]].append(dict(row))
         return result
 
-    def list_library_images(
+    def _list_library_images(
         self,
+        conn: sqlite3.Connection,
+        epoch: str,
         positive_id: int,
         *,
         pair_id: int | None = None,
         limit: int = 40,
         after: int | None = None,
+        archive: str = "active",
     ) -> dict:
         _limit(limit)
-        conn = self.model.get_connection()
+        scope = _archive(archive)
+        if after is not None and (type(after) is not int or after <= 0):
+            raise ValueError("Invalid image cursor")
         if (
             pair_id is not None
             and not conn.execute(
-                "SELECT 1 FROM prompt_pairs WHERE id=? "
-                "AND positive_prompt_id=? AND archived=0",
+                "SELECT 1 FROM prompt_pairs pp WHERE pp.id=? "
+                "AND pp.positive_prompt_id=?" + scope,
                 (pair_id, positive_id),
             ).fetchone()
         ):
+            if conn.execute(
+                "SELECT 1 FROM prompt_pairs WHERE id=? AND positive_prompt_id=?",
+                (pair_id, positive_id),
+            ).fetchone():
+                raise ValueError("Variant is not in the requested archive scope")
             raise ValueError("Variant does not belong to this positive prompt")
         where, params = "g.prompt_id=?", [positive_id]
         if pair_id is not None:
@@ -303,8 +448,6 @@ class LibraryOperations:
             "SELECT COUNT(*) FROM generated_images g WHERE " + where, params
         ).fetchone()[0]
         if after is not None:
-            if type(after) is not int or after <= 0:
-                raise ValueError("Invalid image cursor")
             where += " AND g.id<?"
             params.append(after)
         rows = conn.execute(
@@ -314,8 +457,91 @@ class LibraryOperations:
             [*params, limit + 1],
         ).fetchall()
         return {
+            "library_epoch": epoch,
             "images": [dict(row) for row in rows[:limit]],
             "total": total,
             "has_more": len(rows) > limit,
             "next_key": rows[limit - 1]["id"] if len(rows) > limit else None,
         }
+
+    def list_library_images(
+        self,
+        positive_id: int,
+        *,
+        pair_id: int | None = None,
+        limit: int = 40,
+        after: int | None = None,
+        archive: str = "active",
+    ) -> dict:
+        with self.library_snapshot() as (conn, epoch, _ceiling):
+            return self._list_library_images(
+                conn,
+                epoch,
+                positive_id,
+                pair_id=pair_id,
+                limit=limit,
+                after=after,
+                archive=archive,
+            )
+
+    def export_library(self) -> dict:
+        """Read every portable owner and pair from one snapshot, writing nothing.
+
+        Local IDs order the rows internally and never appear in the document.
+        """
+        with self.library_snapshot() as (conn, _epoch, _ceiling):
+            owners = {}
+            order = []
+            for row in conn.execute(
+                "SELECT p.id,p.text,ls.title,p.category,p.rating,p.notes FROM "
+                + _FROM
+                + " WHERE "
+                + _ELIGIBLE
+                + " ORDER BY p.id"
+            ):
+                owners[row["id"]] = {
+                    "positive_text": row["text"],
+                    "title": row["title"],
+                    "category": row["category"],
+                    "tags": [],
+                    "rating": row["rating"],
+                    "notes": row["notes"],
+                    "variants": [],
+                }
+                order.append(row["id"])
+            for row in conn.execute(
+                "SELECT pt.prompt_id,t.name FROM prompt_tags pt "
+                "JOIN tags t ON t.id=pt.tag_id ORDER BY pt.prompt_id,t.name"
+            ):
+                if row["prompt_id"] in owners:
+                    owners[row["prompt_id"]]["tags"].append(row["name"])
+            variants = {}
+            for row in conn.execute(
+                "SELECT pp.id,pp.positive_prompt_id,"
+                "COALESCE(n.text,'') AS negative_text,"
+                "pp.title,pp.category,pp.rating,pp.notes,pp.archived "
+                "FROM prompt_pairs pp "
+                "LEFT JOIN prompts n ON n.id=pp.negative_prompt_id "
+                "ORDER BY pp.id"
+            ):
+                variant = {
+                    "negative_text": row["negative_text"],
+                    "title": row["title"],
+                    "category": row["category"],
+                    "tags": [],
+                    "rating": row["rating"],
+                    "notes": row["notes"],
+                    "archived": bool(row["archived"]),
+                }
+                variants[row["id"]] = variant
+                owners[row["positive_prompt_id"]]["variants"].append(variant)
+            for row in conn.execute(
+                "SELECT pt.pair_id,t.name FROM prompt_pair_tags pt "
+                "JOIN tags t ON t.id=pt.tag_id ORDER BY pt.pair_id,t.name"
+            ):
+                variants[row["pair_id"]]["tags"].append(row["name"])
+            return {
+                "schema_version": 1,
+                "kind": "prompt-manager-library",
+                "positives": [owners[key] for key in order],
+            }

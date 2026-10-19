@@ -86,7 +86,12 @@ class TestLibraryAPI(ImageAPITestCase):
         response, result = await self.get("/options")
         self.assertEqual(response.status, 200)
         self.assertEqual(
-            result, {"success": True, "categories": ["Legacy", "Pair-only"]}
+            result,
+            {
+                "success": True,
+                "library_epoch": self.api.db.get_execution_epoch(),
+                "categories": ["Legacy", "Pair-only"],
+            },
         )
 
     async def test_variant_cursor_is_positive_scoped_and_required_limits_are_bounded(
@@ -158,7 +163,7 @@ class TestLibraryAPI(ImageAPITestCase):
             response, _ = await self.get(path, **params)
             self.assertEqual(response.status, 400, (path, params))
         with patch.object(
-            self.api.db, "list_library", side_effect=RuntimeError(str(self.comfy_dir))
+            self.api.db, "_list_library", side_effect=RuntimeError(str(self.comfy_dir))
         ):
             response, result = await self.get()
         self.assertEqual(response.status, 500)
@@ -182,7 +187,16 @@ class TestLibraryAPI(ImageAPITestCase):
 
     async def test_maximum_parent_page_uses_bounded_sql_queries_for_previews(self):
         for index in range(200):
-            self._save_prompt(f"Parent {index}")
+            positive = self._save_prompt(f"Parent {index}", tags=[f"tag {index}"])
+            make_png(self.output_dir / f"{index}.png")
+            self.api.db.link_image_to_prompt(
+                positive, str(self.output_dir / f"{index}.png")
+            )
+            with self.api.db.model.get_connection() as connection:
+                connection.execute(
+                    "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                    (positive, f"Title {index}"),
+                )
         statements = []
         original = self.api.db.model.get_connection
 
@@ -203,6 +217,21 @@ class TestLibraryAPI(ImageAPITestCase):
             if query.lstrip().upper().startswith(("SELECT", "WITH"))
         ]
         self.assertLessEqual(len(selects), 5)
+        epoch = self.api.db.get_execution_epoch()
+        self.assertEqual(result["library_epoch"], epoch)
+        self.assertEqual(
+            [query for query in selects if "storage_epoch" in query], selects[:1]
+        )
+        self.assertIn("MAX(", selects[0].upper())
+        self.assertTrue(
+            all(
+                item["title"].startswith("Title ")
+                and len(item["tags"]) == 1
+                and len(item["previews"]) == 1
+                and len(item["edit_token"]) == 64
+                for item in result["items"]
+            )
+        )
 
     async def test_long_name_cursor_stays_small_and_preserves_full_sorting(self):
         prefix = "猫" * 10_000
@@ -213,6 +242,20 @@ class TestLibraryAPI(ImageAPITestCase):
         self.assertLess(len(first["next_cursor"]), 512)
         with self.api.db.model.get_connection() as connection:
             connection.execute("DELETE FROM prompts WHERE id=?", (alpha,))
+        _, second = await self.get(sort="name", cursor=first["next_cursor"])
+        self.assertEqual([item["text"] for item in second["items"]], [prefix + "Z"])
+        titled = self._save_prompt("Zzz untitled order")
+        with self.api.db.model.get_connection() as connection:
+            connection.execute(
+                "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                (titled, prefix + "0"),
+            )
+        _, first = await self.get(sort="name", limit=1)
+        self.assertEqual(
+            (first["items"][0]["id"], first["items"][0]["title"]),
+            (titled, prefix + "0"),
+        )
+        self.assertLess(len(first["next_cursor"]), 512)
         _, second = await self.get(sort="name", cursor=first["next_cursor"])
         self.assertEqual([item["text"] for item in second["items"]], [prefix + "Z"])
 
@@ -274,6 +317,10 @@ class TestLibraryAPI(ImageAPITestCase):
         preview = listing["items"][0]["previews"][0]
         _, gallery = await self.get(f"/{positive}/images", pair_id=pair)
         descriptor = gallery["images"][0]
+        epoch = self.api.db.get_execution_epoch()
+        self.assertEqual(
+            (listing["library_epoch"], gallery["library_epoch"]), (epoch,) * 2
+        )
         self.assertRegex(descriptor.get("root_scope", ""), r"^[0-9a-f]{64}$")
         self.assertEqual(preview["root_scope"], descriptor["root_scope"])
         for entry in (preview, descriptor):
@@ -297,6 +344,527 @@ class TestLibraryAPI(ImageAPITestCase):
         self.assertEqual(result["library"]["pair_id"], pair)
         self.assertEqual(result["library"]["positive_id"], positive)
         self.assertEqual(result["library"]["title"], "Pair title")
+
+    async def test_epoch_scoped_all_library_cursors(self):
+        from database.execution_history_schema import rotate_history_epoch
+
+        pairs = [
+            self.api.db.save_prompt_pair("Cat", f"Neg {index}") for index in range(3)
+        ]
+        positive = self.api.db.get_prompt_pair(pairs[0])["positive_prompt_id"]
+        self._save_prompt("Dog")
+        for index in range(3):
+            path = make_png(self.output_dir / f"{index}.png")
+            image = self.api.db.link_image_to_prompt(positive, str(path))
+            self.api.db.link_image_to_pair(pairs[0], image, {"source": "test"})
+        self.api.db.archive_prompt_pair(pairs[0])
+        self.api.db.archive_prompt_pair(pairs[1])
+        epoch = self.api.db.get_execution_epoch()
+        _, parents = await self.get(limit=1)
+        _, variants = await self.get(f"/{positive}", variant_limit=1, archive="all")
+        _, images = await self.get(
+            f"/{positive}/images", pair_id=pairs[0], archive="archived", limit=1
+        )
+        _, options = await self.get("/options")
+        for envelope in (parents, variants, images, options):
+            self.assertEqual(envelope["library_epoch"], epoch)
+        self.assertEqual(
+            (variants["variant_total"], variants["positive"]["archived_variant_count"]),
+            (3, 2),
+        )
+        self.assertEqual(variants["positive"]["variant_count"], 1)
+        _, archived = await self.get(f"/{positive}", archive="archived")
+        self.assertEqual(
+            [(item["id"], item["archived"]) for item in archived["variants"]],
+            [(pairs[1], True), (pairs[0], True)],
+        )
+        _, every = await self.get(
+            f"/{positive}/images", pair_id=pairs[0], archive="all"
+        )
+        self.assertEqual(every["total"], 3)
+        _, unfiltered = await self.get(f"/{positive}/images")
+        self.assertEqual(unfiltered["total"], 3)
+        for path, params in (
+            (f"/{positive}", {"archive": "hidden"}),
+            (f"/{positive}/images", {"archive": "hidden"}),
+            (f"/{positive}/images", {"pair_id": pairs[0]}),
+            (
+                f"/{positive}",
+                {"variant_cursor": variants["variants_next_cursor"]},
+            ),
+            (
+                f"/{positive}/images",
+                {
+                    "pair_id": pairs[0],
+                    "archive": "all",
+                    "cursor": images["next_cursor"],
+                },
+            ),
+        ):
+            response, _ = await self.get(path, **params)
+            self.assertEqual(response.status, 400, (path, params))
+        negative_only = self.api.db.get_prompt_pair(pairs[2])["negative_prompt_id"]
+        response, _ = await self.get(f"/{negative_only}/images")
+        self.assertEqual(response.status, 404)
+        rotate_history_epoch(self.api.db.model.get_connection())
+        for path, params in (
+            ("", {"cursor": parents["next_cursor"]}),
+            (
+                f"/{positive}",
+                {"archive": "all", "variant_cursor": variants["variants_next_cursor"]},
+            ),
+            (
+                f"/{positive}/images",
+                {
+                    "pair_id": pairs[0],
+                    "archive": "archived",
+                    "cursor": images["next_cursor"],
+                },
+            ),
+        ):
+            response, result = await self.get(path, **params)
+            self.assertEqual(response.status, 400, (path, params))
+            self.assertIn("refresh", result["error"])
+        _, fresh = await self.get(limit=1)
+        self.assertNotEqual(fresh["library_epoch"], epoch)
+        response, _ = await self.get(limit=1, cursor=fresh["next_cursor"])
+        self.assertEqual(response.status, 200)
+
+    async def patch_parent(self, path, body=None, *, data=None):
+        response = await self.client.patch(
+            "/prompt_manager/library/" + str(path),
+            json=body if data is None else None,
+            data=data,
+        )
+        return response, await response.json()
+
+    async def test_native_parent_patch_strict_validation(self):
+        from database.execution_history_schema import rotate_history_epoch
+
+        pair = self.api.db.save_prompt_pair("Cat", "Blur", title="Pair", rating=2)
+        positive = self.api.db.get_prompt_pair(pair)["positive_prompt_id"]
+        negative_only = self.api.db.get_prompt_pair(pair)["negative_prompt_id"]
+        self.api.db.update_prompt_metadata(positive, category="A", tags=["t"])
+        pair_before = self.api.db.get_prompt_pair(pair)
+        _, detail = await self.get(f"/{positive}")
+        epoch = detail["library_epoch"]
+        token = detail["positive"]["edit_token"]
+
+        def request(**changes):
+            value = {
+                "expected_epoch": epoch,
+                "if_match": token,
+                "metadata": {"title": "Portrait"},
+            }
+            value.update(changes)
+            return {key: item for key, item in value.items() if item is not ...}
+
+        def state_rows():
+            return (
+                self.api.db.model.get_connection()
+                .execute("SELECT COUNT(*) FROM prompt_library_state")
+                .fetchone()[0]
+            )
+
+        invalid = [
+            ("[]", None),
+            ("{", None),
+            (None, request(expected_epoch=...)),
+            (None, request(if_match=...)),
+            (None, request(metadata=...)),
+            (None, request(archived=True)),
+            (None, {**request(metadata=...), "archived": True}),
+            (None, request(extra=1)),
+            (None, request(metadata={})),
+            (None, request(metadata=None)),
+            (None, request(metadata=[["title", "x"]])),
+            (None, request(expected_epoch=None)),
+            (None, request(expected_epoch=5)),
+            (None, request(expected_epoch="not-a-uuid")),
+            (None, request(expected_epoch=epoch.upper())),
+            (None, request(expected_epoch="{" + epoch + "}")),
+            (None, request(if_match=None)),
+            (None, request(if_match=token.upper())),
+            (None, request(if_match=token[:-1])),
+            (None, request(if_match=token + "0")),
+        ]
+        for metadata in (
+            {"text": "Dog"},
+            {"positive_prompt_id": positive},
+            {"negative_prompt_id": negative_only},
+            {"pair_id": pair},
+            {"run_count": 1},
+            {"archived": True},
+            {"unknown": 1},
+            {"title": "x", "variant_count": 3},
+            {"tags": None},
+            {"tags": "a,b"},
+            {"tags": [1]},
+            {"tags": [" "]},
+            {"tags": ["x" * 51]},
+            {"tags": [f"t{index}" for index in range(21)]},
+            {"rating": True},
+            {"rating": False},
+            {"rating": 0},
+            {"rating": 6},
+            {"rating": "3"},
+            {"rating": 2.0},
+            {"title": 5},
+            {"title": "x" * 10001},
+            {"notes": ["n"]},
+            {"notes": "x" * 10001},
+            {"category": 1},
+            {"category": "x" * 101},
+            {"category": "bad\x01"},
+        ):
+            invalid.append((None, request(metadata=metadata)))
+        for data, value in invalid:
+            with self.subTest(data=data, body=value):
+                response, result = await self.patch_parent(positive, value, data=data)
+                self.assertEqual(response.status, 400)
+                self.assertEqual(set(result), {"success", "code", "error"})
+                self.assertEqual((result["success"], result["code"]), (False, None))
+        for path in ("abc", "0", "-1", str(2**63)):
+            response, result = await self.patch_parent(path, request())
+            self.assertEqual((response.status, result["code"]), (400, None))
+        self.assertEqual(state_rows(), 0)
+
+        for missing in (9999, negative_only):
+            response, result = await self.patch_parent(missing, request())
+            self.assertEqual((response.status, result["code"]), (404, None))
+            self.assertFalse(result["success"])
+        self.assertEqual(state_rows(), 0)
+        _, legacy_missing = await self.get("/9999")
+        self.assertEqual(
+            legacy_missing, {"success": False, "error": "Positive prompt not found"}
+        )
+
+        response, updated = await self.patch_parent(
+            positive,
+            request(metadata={"title": "Portrait", "rating": None, "tags": []}),
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(set(updated), {"success", "library_epoch", "positive"})
+        self.assertTrue(updated["success"])
+        self.assertEqual(updated["library_epoch"], epoch)
+        self.assertIsNone(updated["positive"]["rating"])
+        self.assertEqual(updated["positive"]["tags"], [])
+        self.assertEqual(updated["positive"]["title"], "Portrait")
+        self.assertEqual(updated["positive"]["category"], "A")
+        self.assertNotIn("previews", updated["positive"])
+        self.assertEqual(self.api.db.get_prompt_pair(pair), pair_before)
+        _, reread = await self.get(f"/{positive}")
+        self.assertEqual(
+            reread["positive"]["edit_token"], updated["positive"]["edit_token"]
+        )
+
+        response, body = await self.patch_parent(positive, request())
+        self.assertEqual((response.status, body["code"]), (409, "metadata-conflict"))
+        self.assertFalse(body["success"])
+        self.assertEqual(body["library_epoch"], epoch)
+        self.assertEqual(body["positive"], updated["positive"])
+        self.assertIsInstance(body["error"], str)
+
+        new_epoch = rotate_history_epoch(self.api.db.model.get_connection())
+        for target in (positive, 9999):
+            response, body = await self.patch_parent(
+                target, request(if_match=updated["positive"]["edit_token"])
+            )
+            self.assertEqual((response.status, body["code"]), (409, "storage-changed"))
+            self.assertNotIn("positive", body)  # storage changed before owner lookup
+            self.assertEqual(body["library_epoch"], new_epoch)
+
+        with patch.object(
+            self.api.db,
+            "update_library_parent",
+            side_effect=RuntimeError(f"no such table at {self.comfy_dir}"),
+        ):
+            response, result = await self.patch_parent(positive, request())
+        self.assertEqual(response.status, 500)
+        self.assertEqual(set(result), {"success", "code", "error"})
+        self.assertIsNone(result["code"])
+        self.assertNotIn(str(self.comfy_dir), json.dumps(result))
+        self.assertNotIn("table", result["error"])
+
+    async def post_library(self, path="", body=None, *, data=None):
+        response = await self.client.post(
+            "/prompt_manager/library" + path,
+            json=body if data is None else None,
+            data=data,
+        )
+        return response, await response.json()
+
+    def library_rows(self):
+        connection = self.api.db.model.get_connection()
+        return [
+            connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in ("prompts", "prompt_pairs", "prompt_library_state", "tags")
+        ]
+
+    async def test_native_create_strict_validation_and_receipts(self):
+        from database.execution_history_schema import rotate_history_epoch
+
+        _, options = await self.get("/options")
+        epoch = options["library_epoch"]
+
+        def request(**changes):
+            value = {
+                "expected_epoch": epoch,
+                "positive_text": "Portrait",
+                "negative_text": "",
+                "parent_metadata": {"title": "Portrait", "tags": ["soft"]},
+            }
+            value.update(changes)
+            return {key: item for key, item in value.items() if item is not ...}
+
+        invalid = [
+            ("[]", None),
+            ("{", None),
+            (None, request(negative_text=...)),
+            (None, request(negative_text=None)),
+            (None, request(negative_text=5)),
+            (None, request(negative_text="x" * 10001)),
+            (None, request(positive_text=...)),
+            (None, request(positive_text=None)),
+            (None, request(positive_text="   ")),
+            (None, request(positive_text="x" * 10001)),
+            (None, request(expected_epoch=...)),
+            (None, request(expected_epoch=None)),
+            (None, request(expected_epoch=epoch.upper())),
+            (None, request(parent_metadata=...)),
+            (None, request(parent_metadata=None)),
+            (None, request(parent_metadata={})),
+            (None, request(parent_metadata={"category": "A"})),
+            (None, request(parent_metadata={"title": " \t "})),
+            (None, request(parent_metadata={"title": None})),
+            (None, request(parent_metadata={"title": "x" * 10001})),
+            (None, request(parent_metadata={"title": "t", "archived": True})),
+            (None, request(parent_metadata={"title": "t", "text": "x"})),
+            (None, request(parent_metadata={"title": "t", "tags": None})),
+            (None, request(parent_metadata={"title": "t", "rating": True})),
+            (None, request(extra=1)),
+            (None, request(if_match="0" * 64)),
+            (None, request(source_positive_id=1)),
+        ]
+        for data, value in invalid:
+            with self.subTest(data=data, body=value):
+                response, result = await self.post_library(body=value, data=data)
+                self.assertEqual(response.status, 400)
+                self.assertEqual(set(result), {"success", "code", "error"})
+                self.assertEqual((result["success"], result["code"]), (False, None))
+        self.assertEqual(self.library_rows(), [0, 0, 0, 0])
+
+        response, created = await self.post_library(body=request())
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            set(created),
+            {
+                "success",
+                "library_epoch",
+                "positive",
+                "pair",
+                "positive_created",
+                "pair_created",
+                "parent_metadata_applied",
+            },
+        )
+        self.assertTrue(created["success"])
+        self.assertEqual(
+            [created[k] for k in ("positive_created", "pair_created")], [True, True]
+        )
+        self.assertIs(created["parent_metadata_applied"], True)
+        self.assertEqual(created["positive"]["title"], "Portrait")
+        self.assertEqual(created["positive"]["tags"], ["soft"])
+        self.assertNotIn("previews", created["positive"])
+        self.assertIsNone(created["pair"]["negative_prompt_id"])
+        self.assertEqual(created["pair"]["negative_text"], "")
+        _, detail = await self.get(f"/{created['positive']['id']}")
+        self.assertEqual(
+            detail["positive"]["edit_token"], created["positive"]["edit_token"]
+        )
+
+        # A resubmitted request after a lost response returns a real receipt.
+        response, repeat = await self.post_library(
+            body=request(negative_text="   ", positive_text=" portrait ")
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            [repeat[k] for k in ("positive_created", "pair_created")], [False, False]
+        )
+        self.assertIs(repeat["parent_metadata_applied"], False)
+        self.assertEqual(repeat["pair"], created["pair"])
+        self.assertEqual(repeat["positive"], created["positive"])
+
+        self.assertTrue(self.api.db.archive_prompt_pair(created["pair"]["id"]))
+        _, archived = await self.post_library(body=request())
+        self.assertIs(archived["pair"]["archived"], True)
+        self.assertIs(archived["pair_created"], False)
+        self.assertIs(
+            self.api.db.get_prompt_pair(created["pair"]["id"])["archived"], True
+        )
+
+        rows = self.library_rows()
+        new_epoch = rotate_history_epoch(self.api.db.model.get_connection())
+        response, body = await self.post_library(
+            body=request(positive_text="Another", negative_text="Grain")
+        )
+        self.assertEqual((response.status, body["code"]), (409, "storage-changed"))
+        self.assertEqual(body["library_epoch"], new_epoch)
+        self.assertNotIn("positive", body)
+        self.assertEqual(self.library_rows(), rows)
+
+    async def test_native_add_negative_strict_validation_and_receipts(self):
+        from database.execution_history_schema import rotate_history_epoch
+
+        pair = self.api.db.save_prompt_pair("Cat", "Blur", title="Pair", rating=2)
+        positive = self.api.db.get_prompt_pair(pair)["positive_prompt_id"]
+        negative_only = self.api.db.get_prompt_pair(pair)["negative_prompt_id"]
+        pair_before = self.api.db.get_prompt_pair(pair)
+        _, detail = await self.get(f"/{positive}")
+        epoch = detail["library_epoch"]
+        token = detail["positive"]["edit_token"]
+
+        def request(**changes):
+            value = {"expected_epoch": epoch, "if_match": token, "negative_text": ""}
+            value.update(changes)
+            return {key: item for key, item in value.items() if item is not ...}
+
+        def variants(target):
+            return self.post_library(f"/{target}/variants", request())
+
+        invalid = [
+            ("[]", None),
+            (None, request(negative_text=...)),
+            (None, request(negative_text=None)),
+            (None, request(negative_text="x" * 10001)),
+            (None, request(positive_text="Dog")),
+            (None, request(parent_metadata={"title": "x"})),
+            (None, request(if_match=...)),
+            (None, request(if_match=token.upper())),
+            (None, request(expected_epoch="not-a-uuid")),
+        ]
+        for data, value in invalid:
+            with self.subTest(data=data, body=value):
+                response, result = await self.post_library(
+                    f"/{positive}/variants", value, data=data
+                )
+                self.assertEqual(response.status, 400)
+                self.assertEqual((result["success"], result["code"]), (False, None))
+        for path in ("abc", "0", str(2**63)):
+            response, result = await self.post_library(f"/{path}/variants", request())
+            self.assertEqual((response.status, result["code"]), (400, None))
+        rows = self.library_rows()
+        for missing in (9999, negative_only):
+            response, result = await variants(missing)
+            self.assertEqual((response.status, result["code"]), (404, None))
+        self.assertEqual(self.library_rows(), rows)
+
+        response, added = await self.post_library(
+            f"/{positive}/variants", request(negative_text=" Noise ")
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            [added[k] for k in ("positive_created", "pair_created")], [False, True]
+        )
+        self.assertIs(added["parent_metadata_applied"], False)
+        self.assertEqual(added["pair"]["negative_text"], "Noise")
+        self.assertEqual(added["positive"]["edit_token"], token)
+        self.assertEqual(added["positive"]["variant_count"], 2)
+        _, repeat = await self.post_library(
+            f"/{positive}/variants", request(negative_text="blur")
+        )
+        self.assertEqual(repeat["pair"], pair_before)
+        self.assertIs(repeat["pair_created"], False)
+
+        self.api.db.update_prompt_metadata(positive, category="Changed")
+        rows = self.library_rows()
+        response, body = await variants(positive)
+        self.assertEqual((response.status, body["code"]), (409, "metadata-conflict"))
+        self.assertEqual(body["positive"]["category"], "Changed")
+        self.assertEqual(body["library_epoch"], epoch)
+        new_epoch = rotate_history_epoch(self.api.db.model.get_connection())
+        response, body = await variants(positive)
+        self.assertEqual((response.status, body["code"]), (409, "storage-changed"))
+        self.assertEqual(body["library_epoch"], new_epoch)
+        self.assertNotIn("positive", body)
+        self.assertEqual(self.library_rows(), rows)
+
+    async def test_command_wrapper_hides_unexpected_type_errors(self):
+        _, options = await self.get("/options")
+        body = {
+            "expected_epoch": options["library_epoch"],
+            "positive_text": "Cat",
+            "negative_text": "",
+            "parent_metadata": {"title": "Cat"},
+        }
+        secret = f"unsupported operand at {self.comfy_dir}"
+        with (
+            patch.object(
+                self.api.db, "create_library_recipe", side_effect=TypeError(secret)
+            ),
+            self.assertLogs("prompt_manager.api", level="ERROR") as logs,
+        ):
+            response, result = await self.post_library(body=body)
+        self.assertEqual(response.status, 500)
+        self.assertEqual(
+            result, {"success": False, "code": None, "error": "Library command failed"}
+        )
+        self.assertIn(secret, "\n".join(logs.output))
+
+    async def test_command_wrapper_unknown_conflict_code_uses_generic_message(self):
+        from database.library_commands import LibraryCommandError
+
+        positive = self._save_prompt("Cat")
+        _, detail = await self.get(f"/{positive}")
+        body = {
+            "expected_epoch": detail["library_epoch"],
+            "if_match": detail["positive"]["edit_token"],
+            "metadata": {"title": "x"},
+        }
+        error = LibraryCommandError("future-code", detail["library_epoch"])
+        with patch.object(self.api.db, "update_library_parent", side_effect=error):
+            response, result = await self.patch_parent(positive, body)
+        self.assertEqual(response.status, 409)
+        self.assertEqual(result["code"], "future-code")
+        self.assertEqual(result["library_epoch"], detail["library_epoch"])
+        self.assertIsInstance(result["error"], str)
+        self.assertNotIn("positive", result)
+
+    async def test_full_export_download_rejects_queries_and_keeps_legacy_formats(self):
+        self.api.db.save_prompt_pair("Cat", "Blur")
+        self._save_prompt("Solo")
+        response = await self.client.get("/prompt_manager/library/export")
+        document = await response.json()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            response.headers["Content-Disposition"],
+            'attachment; filename="prompt-manager-library-v1.json"',
+        )
+        self.assertEqual(
+            (document["schema_version"], document["kind"]),
+            (1, "prompt-manager-library"),
+        )
+        solo = next(o for o in document["positives"] if o["positive_text"] == "Solo")
+        self.assertEqual(solo["variants"], [])
+        for query in ("?limit=1", "?x", "?archive=all"):
+            rejected = await self.client.get("/prompt_manager/library/export" + query)
+            self.assertEqual(rejected.status, 400)
+            self.assertNotIn("Content-Disposition", rejected.headers)
+        legacy = await self.client.get("/prompt_manager/pairs/export")
+        self.assertEqual((await legacy.json())["kind"], "prompt-manager-pairs")
+        self.assertEqual(
+            legacy.headers["Content-Disposition"],
+            'attachment; filename="prompt-pairs.json"',
+        )
+        positive = (await self.client.get("/prompt_manager/library")).status
+        self.assertEqual(positive, 200)
+
+    async def test_non_numeric_positive_id_returns_fixed_message(self):
+        response = await self.client.patch("/prompt_manager/library/export", json={})
+        result = await response.json()
+        self.assertEqual(response.status, 400)
+        self.assertEqual(result["error"], "Invalid positive prompt ID")
+        self.assertNotIn("literal", json.dumps(result))
 
 
 class TestNameCursorBudget(unittest.TestCase):
