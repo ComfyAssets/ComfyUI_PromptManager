@@ -86,7 +86,12 @@ class TestLibraryAPI(ImageAPITestCase):
         response, result = await self.get("/options")
         self.assertEqual(response.status, 200)
         self.assertEqual(
-            result, {"success": True, "categories": ["Legacy", "Pair-only"]}
+            result,
+            {
+                "success": True,
+                "library_epoch": self.api.db.get_execution_epoch(),
+                "categories": ["Legacy", "Pair-only"],
+            },
         )
 
     async def test_variant_cursor_is_positive_scoped_and_required_limits_are_bounded(
@@ -158,7 +163,7 @@ class TestLibraryAPI(ImageAPITestCase):
             response, _ = await self.get(path, **params)
             self.assertEqual(response.status, 400, (path, params))
         with patch.object(
-            self.api.db, "list_library", side_effect=RuntimeError(str(self.comfy_dir))
+            self.api.db, "_list_library", side_effect=RuntimeError(str(self.comfy_dir))
         ):
             response, result = await self.get()
         self.assertEqual(response.status, 500)
@@ -182,7 +187,16 @@ class TestLibraryAPI(ImageAPITestCase):
 
     async def test_maximum_parent_page_uses_bounded_sql_queries_for_previews(self):
         for index in range(200):
-            self._save_prompt(f"Parent {index}")
+            positive = self._save_prompt(f"Parent {index}", tags=[f"tag {index}"])
+            make_png(self.output_dir / f"{index}.png")
+            self.api.db.link_image_to_prompt(
+                positive, str(self.output_dir / f"{index}.png")
+            )
+            with self.api.db.model.get_connection() as connection:
+                connection.execute(
+                    "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                    (positive, f"Title {index}"),
+                )
         statements = []
         original = self.api.db.model.get_connection
 
@@ -203,6 +217,21 @@ class TestLibraryAPI(ImageAPITestCase):
             if query.lstrip().upper().startswith(("SELECT", "WITH"))
         ]
         self.assertLessEqual(len(selects), 5)
+        epoch = self.api.db.get_execution_epoch()
+        self.assertEqual(result["library_epoch"], epoch)
+        self.assertEqual(
+            [query for query in selects if "storage_epoch" in query], selects[:1]
+        )
+        self.assertIn("MAX(", selects[0].upper())
+        self.assertTrue(
+            all(
+                item["title"].startswith("Title ")
+                and len(item["tags"]) == 1
+                and len(item["previews"]) == 1
+                and len(item["edit_token"]) == 64
+                for item in result["items"]
+            )
+        )
 
     async def test_long_name_cursor_stays_small_and_preserves_full_sorting(self):
         prefix = "猫" * 10_000
@@ -213,6 +242,20 @@ class TestLibraryAPI(ImageAPITestCase):
         self.assertLess(len(first["next_cursor"]), 512)
         with self.api.db.model.get_connection() as connection:
             connection.execute("DELETE FROM prompts WHERE id=?", (alpha,))
+        _, second = await self.get(sort="name", cursor=first["next_cursor"])
+        self.assertEqual([item["text"] for item in second["items"]], [prefix + "Z"])
+        titled = self._save_prompt("Zzz untitled order")
+        with self.api.db.model.get_connection() as connection:
+            connection.execute(
+                "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                (titled, prefix + "0"),
+            )
+        _, first = await self.get(sort="name", limit=1)
+        self.assertEqual(
+            (first["items"][0]["id"], first["items"][0]["title"]),
+            (titled, prefix + "0"),
+        )
+        self.assertLess(len(first["next_cursor"]), 512)
         _, second = await self.get(sort="name", cursor=first["next_cursor"])
         self.assertEqual([item["text"] for item in second["items"]], [prefix + "Z"])
 
@@ -274,6 +317,10 @@ class TestLibraryAPI(ImageAPITestCase):
         preview = listing["items"][0]["previews"][0]
         _, gallery = await self.get(f"/{positive}/images", pair_id=pair)
         descriptor = gallery["images"][0]
+        epoch = self.api.db.get_execution_epoch()
+        self.assertEqual(
+            (listing["library_epoch"], gallery["library_epoch"]), (epoch,) * 2
+        )
         self.assertRegex(descriptor.get("root_scope", ""), r"^[0-9a-f]{64}$")
         self.assertEqual(preview["root_scope"], descriptor["root_scope"])
         for entry in (preview, descriptor):
@@ -297,6 +344,91 @@ class TestLibraryAPI(ImageAPITestCase):
         self.assertEqual(result["library"]["pair_id"], pair)
         self.assertEqual(result["library"]["positive_id"], positive)
         self.assertEqual(result["library"]["title"], "Pair title")
+
+    async def test_epoch_scoped_all_library_cursors(self):
+        from database.execution_history_schema import rotate_history_epoch
+
+        pairs = [
+            self.api.db.save_prompt_pair("Cat", f"Neg {index}") for index in range(3)
+        ]
+        positive = self.api.db.get_prompt_pair(pairs[0])["positive_prompt_id"]
+        self._save_prompt("Dog")
+        for index in range(3):
+            path = make_png(self.output_dir / f"{index}.png")
+            image = self.api.db.link_image_to_prompt(positive, str(path))
+            self.api.db.link_image_to_pair(pairs[0], image, {"source": "test"})
+        self.api.db.archive_prompt_pair(pairs[0])
+        self.api.db.archive_prompt_pair(pairs[1])
+        epoch = self.api.db.get_execution_epoch()
+        _, parents = await self.get(limit=1)
+        _, variants = await self.get(f"/{positive}", variant_limit=1, archive="all")
+        _, images = await self.get(
+            f"/{positive}/images", pair_id=pairs[0], archive="archived", limit=1
+        )
+        _, options = await self.get("/options")
+        for envelope in (parents, variants, images, options):
+            self.assertEqual(envelope["library_epoch"], epoch)
+        self.assertEqual(
+            (variants["variant_total"], variants["positive"]["archived_variant_count"]),
+            (3, 2),
+        )
+        self.assertEqual(variants["positive"]["variant_count"], 1)
+        _, archived = await self.get(f"/{positive}", archive="archived")
+        self.assertEqual(
+            [(item["id"], item["archived"]) for item in archived["variants"]],
+            [(pairs[1], True), (pairs[0], True)],
+        )
+        _, every = await self.get(
+            f"/{positive}/images", pair_id=pairs[0], archive="all"
+        )
+        self.assertEqual(every["total"], 3)
+        _, unfiltered = await self.get(f"/{positive}/images")
+        self.assertEqual(unfiltered["total"], 3)
+        for path, params in (
+            (f"/{positive}", {"archive": "hidden"}),
+            (f"/{positive}/images", {"archive": "hidden"}),
+            (f"/{positive}/images", {"pair_id": pairs[0]}),
+            (
+                f"/{positive}",
+                {"variant_cursor": variants["variants_next_cursor"]},
+            ),
+            (
+                f"/{positive}/images",
+                {
+                    "pair_id": pairs[0],
+                    "archive": "all",
+                    "cursor": images["next_cursor"],
+                },
+            ),
+        ):
+            response, _ = await self.get(path, **params)
+            self.assertEqual(response.status, 400, (path, params))
+        negative_only = self.api.db.get_prompt_pair(pairs[2])["negative_prompt_id"]
+        response, _ = await self.get(f"/{negative_only}/images")
+        self.assertEqual(response.status, 404)
+        rotate_history_epoch(self.api.db.model.get_connection())
+        for path, params in (
+            ("", {"cursor": parents["next_cursor"]}),
+            (
+                f"/{positive}",
+                {"archive": "all", "variant_cursor": variants["variants_next_cursor"]},
+            ),
+            (
+                f"/{positive}/images",
+                {
+                    "pair_id": pairs[0],
+                    "archive": "archived",
+                    "cursor": images["next_cursor"],
+                },
+            ),
+        ):
+            response, result = await self.get(path, **params)
+            self.assertEqual(response.status, 400, (path, params))
+            self.assertIn("refresh", result["error"])
+        _, fresh = await self.get(limit=1)
+        self.assertNotEqual(fresh["library_epoch"], epoch)
+        response, _ = await self.get(limit=1, cursor=fresh["next_cursor"])
+        self.assertEqual(response.status, 200)
 
 
 class TestNameCursorBudget(unittest.TestCase):

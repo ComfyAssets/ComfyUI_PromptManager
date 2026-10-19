@@ -1,5 +1,6 @@
 """Grouped library reads retain component roles and association semantics."""
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -101,7 +102,10 @@ class TestLibrary(unittest.TestCase):
         self.db.archive_prompt_pair(archived)
         self.assertEqual(
             self.db.get_library_options(),
-            {"categories": ["Legacy category", "Pair category"]},
+            {
+                "library_epoch": self.db.get_execution_epoch(),
+                "categories": ["Legacy category", "Pair category"],
+            },
         )
 
     def test_variant_detail_is_bounded_and_cursor_continues_without_duplicates(self):
@@ -297,3 +301,221 @@ class TestLibrary(unittest.TestCase):
         self.assertEqual(self.db.get_library_previews([]), {})
         with self.assertRaises(ValueError):
             self.db.get_library_previews(parents + [9999])
+
+    def state(self, prompt_id, title=None):
+        with self.db.model.get_connection() as connection:
+            connection.execute(
+                "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                (prompt_id, title),
+            )
+
+    def test_parent_projection_title_sort_search_and_archive_scope(self):
+        pair = self.db.save_prompt_pair("Alpha text", "Blur", tags=["pair-only"])
+        positive = self.db.get_prompt_pair(pair)["positive_prompt_id"]
+        with self.db.model.get_connection() as connection:
+            connection.execute(
+                "UPDATE prompts SET category='A',notes=? WHERE id=?",
+                ("keep\nnotes", positive),
+            )
+        self.state(positive, "Portrait")
+        blank = self.save("Middle text", category="Active")
+        self.state(blank, " \t\u00a0\u3000")
+        self.save("beta text")
+        epoch = self.db.get_execution_epoch()
+        page = self.db.list_library(sort="name")
+        self.assertEqual(page["library_epoch"], epoch)
+        self.assertEqual(
+            [item["text"] for item in page["items"]],
+            ["beta text", "Middle text", "Alpha text"],
+        )
+        parent = page["items"][2]
+        self.assertEqual(
+            (parent["title"], parent["notes"]), ("Portrait", "keep\nnotes")
+        )
+        self.assertNotIn("archived", parent)
+        self.assertRegex(parent["edit_token"], r"^[0-9a-f]{64}$")
+        self.assertEqual(page["items"][1]["title"], " \t\u00a0\u3000")
+        self.assertEqual(self.db.list_library(text="Portrait")["total"], 1)
+        self.assertEqual(self.db.list_library(text="keep")["total"], 0)
+        self.assertEqual(
+            self.db.list_library(category="A", tags=["pair-only"])["items"], []
+        )
+        self.assertEqual(self.db.get_library_options()["categories"], ["A", "Active"])
+        renamed = self.db.list_library(sort="name", limit=1)
+        with self.db.model.get_connection() as connection:
+            connection.execute(
+                "UPDATE prompt_library_state SET title='Aardvark' WHERE prompt_id=?",
+                (positive,),
+            )
+        self.assertEqual(
+            self.db.list_library(sort="name", limit=1)["items"][0]["id"], positive
+        )
+        self.assertEqual(renamed["next_key"]["value"], "beta text")
+        archived = self.db.save_prompt_pair("Alpha text", "Noise")
+        self.db.archive_prompt_pair(archived)
+        detail = self.db.get_library_positive(positive)
+        self.assertEqual(detail["library_epoch"], epoch)
+        self.assertEqual(
+            (
+                detail["positive"]["variant_count"],
+                detail["positive"]["archived_variant_count"],
+            ),
+            (1, 1),
+        )
+        self.assertEqual(
+            [(v["id"], v["archived"]) for v in detail["variants"]], [(pair, False)]
+        )
+        only = self.db.get_library_positive(positive, archive="archived")
+        self.assertEqual(
+            [(v["id"], v["archived"]) for v in only["variants"]], [(archived, True)]
+        )
+        self.assertEqual(only["variant_total"], 1)
+        every = self.db.get_library_positive(positive, archive="all", variant_limit=1)
+        self.assertEqual(
+            (every["variant_total"], every["variants"][0]["id"]), (2, archived)
+        )
+        rest = self.db.get_library_positive(
+            positive, archive="all", variant_after=every["variants_next_key"]
+        )
+        self.assertEqual([v["id"] for v in rest["variants"]], [pair])
+        for operation in (
+            lambda: self.db.get_library_positive(positive, archive="hidden"),
+            lambda: self.db.list_library_images(positive, archive="hidden"),
+        ):
+            with self.assertRaises(ValueError):
+                operation()
+
+    def test_all_archived_pairs_keep_parent_and_unfiltered_gallery(self):
+        first = self.db.save_prompt_pair("Cat", "Blur")
+        second = self.db.save_prompt_pair("Cat", "Noise")
+        positive = self.db.get_prompt_pair(first)["positive_prompt_id"]
+        images = []
+        for pair in (first, second):
+            image = self.db.link_image_to_prompt(
+                positive, str(Path(self.temp.name) / f"{pair}.png")
+            )
+            self.db.link_image_to_pair(pair, image, {"source": "test"})
+            images.append(image)
+            self.db.archive_prompt_pair(pair)
+        self.assertIn(positive, [row["id"] for row in self.db.list_library()["items"]])
+        detail = self.db.get_library_positive(positive)
+        self.assertEqual(detail["positive"]["archived_variant_count"], 2)
+        gallery = self.db.list_library_images(positive)
+        self.assertEqual([image["id"] for image in gallery["images"]], images[::-1])
+        self.assertEqual(gallery["library_epoch"], self.db.get_execution_epoch())
+        with self.assertRaises(ValueError):
+            self.db.list_library_images(positive, pair_id=first)
+        for archive in ("archived", "all"):
+            page = self.db.list_library_images(positive, pair_id=first, archive=archive)
+            self.assertEqual([image["id"] for image in page["images"]], [images[0]])
+        self.db.archive_prompt_pair(second, archived=False)
+        with self.assertRaises(ValueError):
+            self.db.list_library_images(positive, pair_id=second, archive="archived")
+
+    def test_explicit_parent_survives_last_positive_pair_removal(self):
+        kept = self.db.save_prompt_pair("Portrait", "Blur")
+        plain = self.db.save_prompt_pair("Plain", "Blur")
+        positive = self.db.get_prompt_pair(kept)["positive_prompt_id"]
+        plain_positive = self.db.get_prompt_pair(plain)["positive_prompt_id"]
+        self.db.save_prompt_pair("Other", "Portrait")
+        self.db.save_prompt_pair("Another", "Plain")
+        self.state(positive)
+        self.assertTrue(self.db.delete_prompt_pair(kept))
+        self.assertTrue(self.db.delete_prompt_pair(plain))
+        ids = [row["id"] for row in self.db.list_library()["items"]]
+        self.assertIn(positive, ids)
+        self.assertNotIn(plain_positive, ids)
+        detail = self.db.get_library_positive(positive)
+        self.assertEqual(detail["positive"]["variant_count"], 0)
+        self.assertIsNone(detail["positive"]["title"])
+        self.assertIsNone(self.db.get_library_positive(plain_positive))
+
+    def test_token_changes_only_for_owner_projection(self):
+        from database.execution_history_schema import rotate_history_epoch
+        from database.library_tokens import library_edit_token
+
+        positive = self.save("Cat", category="A", tags=["b", "a"], rating=3)
+
+        def token():
+            return self.db.get_library_positive(positive)["positive"]["edit_token"]
+
+        original = token()
+        record = self.db.get_library_positive(positive)["positive"]
+        self.assertEqual(
+            library_edit_token(self.db.get_execution_epoch(), record), original
+        )
+        self.state(positive)
+        self.assertEqual(token(), original)
+        pair = self.db.save_prompt_pair("Cat", "Blur", title="Pair", tags=["c"])
+        self.db.link_image_to_pair(
+            pair,
+            self.db.link_image_to_prompt(positive, str(Path(self.temp.name) / "i.png")),
+            {"source": "test"},
+        )
+        self.db.archive_prompt_pair(pair)
+        with self.db.model.get_connection() as connection:
+            connection.execute(
+                "UPDATE prompts SET updated_at='2001-01-01',created_at='2000-01-01' "
+                "WHERE id=?",
+                (positive,),
+            )
+        self.assertEqual(token(), original)
+        seen = {original}
+        for statement, values in (
+            ("UPDATE prompt_library_state SET title='T' WHERE prompt_id=?", ()),
+            ("UPDATE prompts SET category='B' WHERE id=?", ()),
+            ("UPDATE prompts SET notes='n' WHERE id=?", ()),
+            ("UPDATE prompts SET rating=4 WHERE id=?", ()),
+            ("UPDATE prompts SET text='Cat ' WHERE id=?", ()),
+            (
+                "DELETE FROM prompt_tags WHERE prompt_id=? AND tag_id=?",
+                (
+                    self.db.model.get_connection()
+                    .execute("SELECT id FROM tags WHERE name='a'")
+                    .fetchone()[0],
+                ),
+            ),
+        ):
+            with self.subTest(statement=statement):
+                with self.db.model.get_connection() as connection:
+                    connection.execute(statement, (positive, *values))
+                self.assertNotIn(token(), seen)
+                seen.add(token())
+        before = token()
+        rotate_history_epoch(self.db.model.get_connection())
+        self.assertNotEqual(token(), before)
+
+    def test_library_snapshot_reads_epoch_and_ceiling_in_one_select_and_ends(self):
+        self.save("Cat")
+        connection = self.db.model.get_connection()
+        statements = []
+        connection.set_trace_callback(statements.append)
+        try:
+            with self.db.library_snapshot(include_ceiling=True) as snapshot:
+                self.assertTrue(connection.in_transaction)
+            with self.assertRaises(RuntimeError):
+                with self.db.library_snapshot():
+                    raise RuntimeError("read failed")
+        finally:
+            connection.set_trace_callback(None)
+        self.assertFalse(connection.in_transaction)
+        self.assertEqual(snapshot[1:], (self.db.get_execution_epoch(), 1))
+        selects = [
+            query for query in statements if query.lstrip().upper().startswith("SELECT")
+        ]
+        self.assertEqual(len(selects), 2)
+        self.assertIn("storage_epoch", selects[0])
+        self.assertIn("MAX", selects[0].upper())
+        self.assertEqual(statements.count("ROLLBACK"), 2)
+        connection.execute("BEGIN")
+        try:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                with self.db.library_snapshot():
+                    pass
+        finally:
+            connection.rollback()
+        with self.db.model.get_connection() as writer:
+            writer.execute("DELETE FROM execution_history_metadata")
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.db.get_library_options()
+        self.assertFalse(connection.in_transaction)
