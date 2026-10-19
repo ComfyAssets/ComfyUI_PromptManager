@@ -7,9 +7,13 @@ from .library import _ELIGIBLE
 from .models import utc_now_iso
 
 try:
-    from ..utils.validators import validate_category, validate_tags
+    from ..utils.validators import (
+        validate_category,
+        validate_prompt_text,
+        validate_tags,
+    )
 except ImportError:
-    from utils.validators import validate_category, validate_tags
+    from utils.validators import validate_category, validate_prompt_text, validate_tags
 
 METADATA_FIELDS = frozenset({"title", "category", "tags", "rating", "notes"})
 MAX_TEXT_FIELD = 10000
@@ -67,13 +71,25 @@ def normalize_library_tags(tags: list[str]) -> list[str]:
     return list(dict.fromkeys(tag.strip() for tag in tags))
 
 
+def _validate_epoch(expected_epoch: str) -> None:
+    if not isinstance(expected_epoch, str) or not _UUID.fullmatch(expected_epoch):
+        raise ValueError("expected_epoch must be a canonical UUID")
+
+
 def _validate_guards(positive_id: int, expected_epoch: str, if_match: str) -> None:
     if type(positive_id) is not int or not 1 <= positive_id <= 2**63 - 1:
         raise ValueError("Invalid positive prompt ID")
-    if not isinstance(expected_epoch, str) or not _UUID.fullmatch(expected_epoch):
-        raise ValueError("expected_epoch must be a canonical UUID")
+    _validate_epoch(expected_epoch)
     if not isinstance(if_match, str) or not _TOKEN.fullmatch(if_match):
         raise ValueError("if_match must be 64 lowercase hexadecimal characters")
+
+
+def _validate_negative_text(negative_text: str) -> None:
+    """Require an explicit string; blank deliberately means the empty negative."""
+    if not isinstance(negative_text, str):
+        raise ValueError("negative_text must be explicit; use an empty string for none")
+    if negative_text.strip():
+        validate_prompt_text(negative_text)
 
 
 class LibraryCommandOperations:
@@ -168,3 +184,116 @@ class LibraryCommandOperations:
             if positive is None:
                 raise sqlite3.DatabaseError("Library parent vanished during update")
             return {"library_epoch": epoch, "positive": positive}
+
+    def _recipe_negative(
+        self, conn: sqlite3.Connection, negative_text: str
+    ) -> int | None:
+        if not negative_text.strip():
+            return None
+        return self._pair_component_outcome(conn, negative_text)[0]
+
+    def _recipe_receipt(
+        self,
+        conn: sqlite3.Connection,
+        epoch: str,
+        positive_id: int,
+        pair_id: int,
+        *,
+        positive_created: bool,
+        pair_created: bool,
+    ) -> dict:
+        """Read both owners inside the write transaction for the receipt."""
+        positive = self._library_parent(conn, epoch, positive_id)
+        pairs = self._read_pair_rows(conn, "pp.id = ?", [pair_id])
+        if positive is None or not pairs:
+            raise sqlite3.DatabaseError("Library recipe vanished during save")
+        return {
+            "library_epoch": epoch,
+            "positive": positive,
+            "pair": pairs[0],
+            "positive_created": positive_created,
+            "pair_created": pair_created,
+            # Parent metadata is applied only to a newly inserted positive.
+            "parent_metadata_applied": positive_created,
+        }
+
+    def create_library_recipe(
+        self,
+        positive_text: str,
+        negative_text: str,
+        *,
+        expected_epoch: str,
+        parent_metadata: dict,
+    ) -> dict:
+        """Create or reuse a positive and its ordered pair in one transaction.
+
+        Submitted parent metadata applies only when the positive component is
+        newly inserted; a reused component keeps its own metadata. New pairs get
+        empty pair metadata. Reused pairs keep theirs, including archive state.
+        Every success registers the positive as a Library parent.
+        """
+        _validate_epoch(expected_epoch)
+        validate_prompt_text(positive_text)
+        _validate_negative_text(negative_text)
+        validate_library_metadata(parent_metadata, require_title=True)
+        with self._pair_transaction() as conn:
+            epoch = self._library_epoch(conn, expected_epoch)
+            positive_id, positive_created = self._pair_component_outcome(
+                conn, positive_text
+            )
+            negative_id = self._recipe_negative(conn, negative_text)
+            pair_id, pair_created = self._save_pair_components(
+                conn, positive_id, negative_id
+            )
+            self._ensure_library_parent(conn, positive_id)
+            if positive_created:
+                current = self._library_parent(conn, epoch, positive_id)
+                if current is None:
+                    raise sqlite3.DatabaseError("New Library parent is not eligible")
+                self._apply_library_metadata(conn, current, parent_metadata)
+            return self._recipe_receipt(
+                conn,
+                epoch,
+                positive_id,
+                pair_id,
+                positive_created=positive_created,
+                pair_created=pair_created,
+            )
+
+    def add_library_negative(
+        self,
+        positive_id: int,
+        negative_text: str,
+        *,
+        expected_epoch: str,
+        if_match: str,
+    ) -> dict | None:
+        """Create or reuse a pair under the exact stored positive.
+
+        The stored positive ID and text are used as they are; only the negative
+        is resolved. Returns None when the positive is missing or not a Library
+        parent, and raises LibraryCommandError for a rotated epoch or a stale
+        token, in both cases before any insertion.
+        """
+        _validate_guards(positive_id, expected_epoch, if_match)
+        _validate_negative_text(negative_text)
+        with self._pair_transaction() as conn:
+            epoch = self._library_epoch(conn, expected_epoch)
+            current = self._library_parent(conn, epoch, positive_id)
+            if current is None:
+                return None
+            if current["edit_token"] != if_match:
+                raise LibraryCommandError("metadata-conflict", epoch, current)
+            negative_id = self._recipe_negative(conn, negative_text)
+            pair_id, pair_created = self._save_pair_components(
+                conn, positive_id, negative_id
+            )
+            self._ensure_library_parent(conn, positive_id)
+            return self._recipe_receipt(
+                conn,
+                epoch,
+                positive_id,
+                pair_id,
+                positive_created=False,
+                pair_created=pair_created,
+            )

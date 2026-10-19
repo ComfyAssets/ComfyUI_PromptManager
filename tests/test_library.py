@@ -845,3 +845,494 @@ class TestLibrary(unittest.TestCase):
         self.assertEqual(outcomes.count("metadata-conflict"), 11)
         title = self.db.get_library_positive(positive)["positive"]["title"]
         self.assertEqual(title, f"Title {outcomes.index('ok')}")
+
+    # -- native create/revision and exact-parent Add negative -----------------
+
+    PAIR_KEYS = {
+        "id",
+        "positive_prompt_id",
+        "negative_prompt_id",
+        "title",
+        "category",
+        "rating",
+        "notes",
+        "created_at",
+        "updated_at",
+        "last_used_at",
+        "run_count",
+        "archived",
+        "positive_text",
+        "negative_text",
+        "image_count",
+        "tags",
+    }
+    OUTCOMES = ("positive_created", "pair_created", "parent_metadata_applied")
+
+    def create(self, positive, negative="", metadata=None, *, epoch=None):
+        return self.db.create_library_recipe(
+            positive,
+            negative,
+            expected_epoch=self.db.get_execution_epoch() if epoch is None else epoch,
+            parent_metadata={"title": "Recipe"} if metadata is None else metadata,
+        )
+
+    def add(self, positive, negative, *, epoch=None, token=None):
+        current_epoch, current_token = self.current(positive)
+        return self.db.add_library_negative(
+            positive,
+            negative,
+            expected_epoch=current_epoch if epoch is None else epoch,
+            if_match=current_token if token is None else token,
+        )
+
+    def storage(self):
+        connection = self.db.model.get_connection()
+        return {
+            table: [
+                tuple(row)
+                for row in connection.execute(f"SELECT * FROM {table} ORDER BY 1,2")
+            ]
+            for table in (
+                "prompts",
+                "prompt_pairs",
+                "prompt_library_state",
+                "prompt_tags",
+                "prompt_pair_tags",
+                "tags",
+                "image_prompt_pairs",
+            )
+        }
+
+    def test_atomic_create_receipts_and_canonical_reuse(self):
+        epoch = self.db.get_execution_epoch()
+        metadata = {
+            "title": "Portrait",
+            "category": "Studio",
+            "tags": [" soft light ", "soft light", "warm"],
+            "rating": 4,
+            "notes": "",
+        }
+        first = self.create("  First Spelling  ", "Blur", metadata)
+        self.assertEqual(
+            set(first),
+            {"library_epoch", "positive", "pair", *self.OUTCOMES},
+        )
+        self.assertEqual(
+            [
+                first[k]
+                for k in ("positive_created", "pair_created", "parent_metadata_applied")
+            ],
+            [True, True, True],
+        )
+        self.assertEqual(first["library_epoch"], epoch)
+        positive = first["positive"]
+        self.assertNotIn("previews", positive)
+        self.assertEqual(
+            {k: positive[k] for k in ("text", "title", "category", "rating", "notes")},
+            {
+                "text": "First Spelling",
+                "title": "Portrait",
+                "category": "Studio",
+                "rating": 4,
+                "notes": "",
+            },
+        )
+        self.assertEqual(positive["tags"], ["soft light", "warm"])
+        self.assertEqual((positive["variant_count"], positive["image_count"]), (1, 0))
+        self.assertEqual(set(first["pair"]), self.PAIR_KEYS)
+        self.assertEqual(first["pair"], self.db.get_prompt_pair(first["pair"]["id"]))
+        # New pairs get the existing default empty pair metadata, not a copy.
+        self.assertEqual(
+            [first["pair"][k] for k in ("title", "category", "rating", "notes")],
+            [None, None, None, None],
+        )
+        self.assertEqual(first["pair"]["tags"], [])
+        fresh = self.db.get_library_positive(positive["id"])["positive"]
+        self.assertEqual(positive, {key: fresh[key] for key in positive})
+
+        # Outer trim and case reuse the first spelling; nothing is rewritten.
+        reuse = self.create(" first spelling ", " BLUR ", {"title": "Other"})
+        self.assertEqual(
+            [
+                reuse[k]
+                for k in ("positive_created", "pair_created", "parent_metadata_applied")
+            ],
+            [False, False, False],
+        )
+        self.assertEqual(reuse["pair"]["positive_text"], "First Spelling")
+        self.assertEqual(reuse["pair"]["negative_text"], "Blur")
+        self.assertEqual(reuse["pair"]["id"], first["pair"]["id"])
+        self.assertEqual(reuse["positive"], positive)
+
+        # Internal whitespace is significant and creates a new parent.
+        spaced = self.create("First  Spelling", "Blur", {"title": "Spaced"})
+        self.assertEqual([spaced[k] for k in self.OUTCOMES], [True, True, True])
+        self.assertNotEqual(spaced["positive"]["id"], positive["id"])
+
+        # Existing positive with a new negative keeps the parent metadata.
+        revised = self.create("FIRST SPELLING", "Noise", {"title": "Ignored"})
+        self.assertEqual([revised[k] for k in self.OUTCOMES], [False, True, False])
+        self.assertEqual(revised["positive"]["title"], "Portrait")
+        self.assertEqual(revised["positive"]["variant_count"], 2)
+        self.assertEqual(revised["positive"]["edit_token"], positive["edit_token"])
+
+        # Missing-versus-empty: blank negatives share one explicit-empty pair.
+        empty = self.create("First Spelling", "", {"title": "x"})
+        blank = self.create("First Spelling", "   ", {"title": "x"})
+        self.assertEqual([empty[k] for k in self.OUTCOMES], [False, True, False])
+        self.assertEqual([blank[k] for k in self.OUTCOMES], [False, False, False])
+        self.assertEqual(blank["pair"]["id"], empty["pair"]["id"])
+        self.assertIsNone(empty["pair"]["negative_prompt_id"])
+        self.assertEqual(empty["pair"]["negative_text"], "")
+
+        # Archived pair reuse is reported and never restored implicitly.
+        archived_pair = revised["pair"]["id"]
+        self.assertTrue(self.db.archive_prompt_pair(archived_pair))
+        archived = self.create("first spelling", "noise", {"title": "x"})
+        self.assertEqual([archived[k] for k in self.OUTCOMES], [False, False, False])
+        self.assertEqual(archived["pair"]["id"], archived_pair)
+        self.assertIs(archived["pair"]["archived"], True)
+        db_pair = self.db.get_prompt_pair(archived_pair)
+        self.assertEqual(db_pair, archived["pair"])
+        self.assertEqual(self.db.get_prompt_pair(archived_pair)["archived"], True)
+        self.assertEqual(db_pair["negative_text"], "Noise")
+        self.assertEqual(archived["positive"]["variant_count"], 2)
+
+        # Reusing a legacy pair keeps its metadata, usage and image links.
+        legacy = self.db.save_prompt_pair(
+            "Legacy", "Grain", title="Pair", category="P", tags=["pt"], rating=2
+        )
+        legacy_positive = self.db.get_prompt_pair(legacy)["positive_prompt_id"]
+        image = self.db.link_image_to_prompt(
+            legacy_positive, str(Path(self.temp.name) / "legacy.png")
+        )
+        self.db.link_image_to_pair(legacy, image, {"source": "run"})
+        self.db.record_prompt_pair_use(legacy, 3)
+        self.db.update_prompt_metadata(legacy_positive, category="Owner")
+        before = self.storage()
+        pair_before = self.db.get_prompt_pair(legacy)
+        prompt_before = self.owner_state(legacy_positive)
+        again = self.create("legacy", "grain", {"title": "Ignored", "rating": 5})
+        self.assertEqual([again[k] for k in self.OUTCOMES], [False, False, False])
+        self.assertEqual(again["pair"], pair_before)
+        self.assertEqual(again["positive"]["image_count"], 1)
+        self.assertEqual(self.owner_state(legacy_positive)[:2], prompt_before[:2])
+        after = self.storage()
+        self.assertEqual(
+            after["prompt_library_state"],
+            sorted([*before["prompt_library_state"], (legacy_positive, None)]),
+        )
+        for table in set(after) - {"prompt_library_state"}:
+            self.assertEqual(after[table], before[table], table)
+
+    def test_native_create_revision_and_add_negative_retain_reused_positive_after_last_positive_pair_removal(  # noqa: E501
+        self,
+    ):
+        # Legacy commands never register Library parent intent.
+        self.db.save_prompt_pair("Other", "Portrait")
+        self.db.save_prompt_pair("Another", "Plain")
+        self.db.save_prompt_pair("Third", "")
+        negative_only = self.db.get_prompt_pair(
+            self.db.save_prompt_pair("Other", "Portrait")
+        )["negative_prompt_id"]
+        self.db.update_prompt_metadata(negative_only, category="Shared", tags=["n"])
+        self.assertEqual(self.storage()["prompt_library_state"], [])
+        self.assertIsNone(self.db.get_library_positive(negative_only))
+        owner_before = self.owner_state(negative_only)
+
+        # A formerly negative-only component is reused with its own metadata.
+        created = self.create(" portrait ", "Noise", {"title": "Not applied"})
+        self.assertEqual([created[k] for k in self.OUTCOMES], [False, True, False])
+        self.assertEqual(created["positive"]["id"], negative_only)
+        self.assertEqual(created["positive"]["text"], "Portrait")
+        self.assertIsNone(created["positive"]["title"])
+        self.assertEqual(created["positive"]["category"], "Shared")
+        self.assertEqual(self.owner_state(negative_only)[:2], owner_before[:2])
+        self.assertEqual(self.owner_state(negative_only)[2], (negative_only, None))
+        token = created["positive"]["edit_token"]
+
+        # Removing its last positive pair keeps the explicit parent.
+        self.assertTrue(self.db.delete_prompt_pair(created["pair"]["id"]))
+        detail = self.db.get_library_positive(negative_only)
+        self.assertEqual(detail["positive"]["variant_count"], 0)
+        self.assertEqual(detail["positive"]["edit_token"], token)
+
+        # Add negative registers retention for an ordinary eligible parent too.
+        plain = self.save("Standalone")
+        added = self.add(plain, "Blur")
+        self.assertEqual([added[k] for k in self.OUTCOMES], [False, True, False])
+        self.assertEqual(self.owner_state(plain)[2], (plain, None))
+        self.db.save_prompt_pair("Elsewhere", "standalone")
+        self.assertTrue(self.db.delete_prompt_pair(added["pair"]["id"]))
+        self.assertIn(plain, [row["id"] for row in self.db.list_library()["items"]])
+        self.assertEqual(self.add(negative_only, "")["pair_created"], True)
+
+        # An arbitrary negative-only component stays unavailable to Add.
+        plain_negative = self.db.get_prompt_pair(
+            self.db.save_prompt_pair("Another", "Plain")
+        )["negative_prompt_id"]
+        before = self.storage()
+        self.assertIsNone(
+            self.db.add_library_negative(
+                plain_negative,
+                "Blur",
+                expected_epoch=self.db.get_execution_epoch(),
+                if_match="0" * 64,
+            )
+        )
+        self.assertEqual(self.storage(), before)
+
+    def test_exact_parent_add_does_not_revalidate_or_replace_stored_positive(self):
+        from database.execution_history_schema import rotate_history_epoch
+        from database.library_commands import LibraryCommandError
+
+        # Legacy rows may hold text a new submission could not: over-long and
+        # outer whitespace. Add negative targets the ID and never re-saves it.
+        long_text = "  " + "x" * 10050 + "  "
+        with self.db.model.get_connection() as connection:
+            connection.execute(
+                "INSERT INTO prompts(text,hash,category,rating,notes) "
+                "VALUES(?,?,?,?,?)",
+                (long_text, generate_prompt_hash(long_text), "C", 3, "kept"),
+            )
+            positive = connection.execute(
+                "SELECT id FROM prompts WHERE text=?", (long_text,)
+            ).fetchone()[0]
+        self.db.update_prompt_metadata(positive, tags=["keep"])
+        existing_parent = self.db.get_library_positive(positive)["positive"]
+        prompts_before = self.storage()["prompts"]
+
+        added = self.add(positive, " Blur ")
+        self.assertEqual([added[k] for k in self.OUTCOMES], [False, True, False])
+        self.assertEqual(
+            {
+                k: added["positive"][k]
+                for k in (
+                    "text",
+                    "title",
+                    "category",
+                    "tags",
+                    "rating",
+                    "notes",
+                    "edit_token",
+                )
+            },
+            {
+                k: existing_parent[k]
+                for k in (
+                    "text",
+                    "title",
+                    "category",
+                    "tags",
+                    "rating",
+                    "notes",
+                    "edit_token",
+                )
+            },
+        )
+        self.assertEqual(added["pair"]["positive_prompt_id"], positive)
+        self.assertEqual(added["pair"]["positive_text"], long_text)
+        self.assertEqual(added["pair"]["negative_text"], "Blur")
+        self.assertEqual(added["positive"]["variant_count"], 1)
+        prompts_after = self.storage()["prompts"]
+        self.assertEqual(prompts_after[: len(prompts_before)], prompts_before)
+        self.assertEqual(len(prompts_after), len(prompts_before) + 1)
+
+        # Reuse (including an archived pair and an explicit empty) is truthful.
+        repeat = self.add(positive, "blur")
+        self.assertEqual([repeat[k] for k in self.OUTCOMES], [False, False, False])
+        self.assertEqual(repeat["pair"], added["pair"])
+        self.assertTrue(self.db.archive_prompt_pair(added["pair"]["id"]))
+        archived = self.add(positive, "BLUR")
+        self.assertEqual(archived["pair_created"], False)
+        self.assertIs(archived["pair"]["archived"], True)
+        self.assertEqual(self.db.get_prompt_pair(added["pair"]["id"])["archived"], True)
+        empty = self.add(positive, "")
+        self.assertEqual(
+            (empty["pair_created"], empty["pair"]["negative_prompt_id"]), (True, None)
+        )
+        self.assertEqual(self.add(positive, "  ")["pair"]["id"], empty["pair"]["id"])
+
+        # Guards run before any component, pair or state insertion.
+        other = self.save("Fresh parent")
+        epoch, token = self.current(other)
+        stale = token
+        self.db.update_prompt_metadata(other, category="changed")
+        before = self.storage()
+        with self.assertRaises(LibraryCommandError) as caught:
+            self.add(other, "Brand new negative", token=stale)
+        self.assertEqual(caught.exception.code, "metadata-conflict")
+        self.assertEqual(caught.exception.positive["category"], "changed")
+        self.assertEqual(self.storage(), before)
+        rotate_history_epoch(self.db.model.get_connection())
+        with self.assertRaises(LibraryCommandError) as caught:
+            self.add(other, "Brand new negative", epoch=epoch)
+        self.assertEqual(caught.exception.code, "storage-changed")
+        self.assertIsNone(caught.exception.positive)
+        with self.assertRaises(LibraryCommandError) as caught:
+            self.create("Brand new positive", "Brand new negative", epoch=epoch)
+        self.assertEqual(caught.exception.code, "storage-changed")
+        self.assertEqual(self.storage(), before)
+        self.assertIsNone(
+            self.db.add_library_negative(
+                9999,
+                "x",
+                expected_epoch=self.db.get_execution_epoch(),
+                if_match="0" * 64,
+            )
+        )
+        for bad in (None, 5, "x" * 10001):
+            with self.subTest(negative=bad):
+                with self.assertRaises(ValueError):
+                    self.add(other, bad)
+        for options in ({"epoch": "nope"}, {"token": "F" * 64}):
+            with self.subTest(options=options):
+                with self.assertRaises(ValueError):
+                    self.add(other, "x", **options)
+        for positive_text, negative_text, metadata in (
+            ("", "x", {"title": "t"}),
+            ("  ", "x", {"title": "t"}),
+            (None, "x", {"title": "t"}),
+            ("y" * 10001, "x", {"title": "t"}),
+            ("ok", None, {"title": "t"}),
+            ("ok", "y" * 10001, {"title": "t"}),
+            ("ok", "x", {}),
+            ("ok", "x", {"title": "  "}),
+            ("ok", "x", {"title": None}),
+            ("ok", "x", {"category": "c"}),
+            ("ok", "x", {"title": "t", "text": "x"}),
+            ("ok", "x", {"title": "t", "rating": 0}),
+            ("ok", "x", None),
+        ):
+            with self.subTest(positive=positive_text, metadata=metadata):
+                with self.assertRaises(ValueError):
+                    self.db.create_library_recipe(
+                        positive_text,
+                        negative_text,
+                        expected_epoch=self.db.get_execution_epoch(),
+                        parent_metadata=metadata,
+                    )
+        self.assertEqual(self.storage(), before)
+
+    def test_native_concurrent_winner_and_transaction_rollback(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from contextlib import contextmanager
+        from unittest.mock import patch
+
+        epoch = self.db.get_execution_epoch()
+        metadata = {"title": "Race", "tags": ["race"], "rating": 2}
+
+        def create(index):
+            try:
+                return self.db.create_library_recipe(
+                    " Racing Cat " if index % 2 else "racing cat",
+                    "Racing Blur",
+                    expected_epoch=epoch,
+                    parent_metadata={**metadata, "notes": f"writer {index}"},
+                )
+            finally:
+                self.db.close()
+
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            receipts = list(executor.map(create, range(12)))
+        self.assertEqual(sum(r["positive_created"] for r in receipts), 1)
+        self.assertEqual(sum(r["pair_created"] for r in receipts), 1)
+        self.assertEqual(sum(r["parent_metadata_applied"] for r in receipts), 1)
+        winner = next(r for r in receipts if r["positive_created"])
+        self.assertEqual(len({r["pair"]["id"] for r in receipts}), 1)
+        stored = self.db.get_library_positive(winner["positive"]["id"])["positive"]
+        self.assertEqual(stored["notes"], winner["positive"]["notes"])
+        self.assertEqual(stored["tags"], ["race"])
+        self.assertEqual(self.db.list_prompt_pairs()["total"], 1)
+
+        positive = winner["positive"]["id"]
+        _epoch, token = self.current(positive)
+
+        def add(index):
+            try:
+                return self.db.add_library_negative(
+                    positive, "Shared Negative", expected_epoch=epoch, if_match=token
+                )
+            finally:
+                self.db.close()
+
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            added = list(executor.map(add, range(12)))
+        self.assertEqual(sum(r["pair_created"] for r in added), 1)
+        self.assertEqual(len({r["pair"]["id"] for r in added}), 1)
+        self.assertEqual(sum(r["positive_created"] for r in added), 0)
+
+        # Any failure inside the command rolls the whole command back.
+        unregistered = self.save("Unregistered legacy parent")
+        unregistered_token = self.current(unregistered)[1]
+        original_transaction = self.db._pair_transaction
+        original_parents = self.db._library_parents
+
+        @contextmanager
+        def failing_commit():
+            with original_transaction() as conn:
+                yield conn
+                raise sqlite3.OperationalError("commit failed")
+
+        def failing_state(conn, prompt_id):
+            conn.execute(
+                "INSERT INTO prompt_library_state(prompt_id) VALUES(?)", (prompt_id,)
+            )
+            raise sqlite3.OperationalError("state failed")
+
+        def failing_component(conn, text):
+            conn.execute(
+                "INSERT INTO prompts(text,hash) VALUES(?,?)",
+                ("partial", generate_prompt_hash("partial")),
+            )
+            raise sqlite3.OperationalError("component failed")
+
+        def failing_pair(*args, **kwargs):
+            raise sqlite3.OperationalError("pair failed")
+
+        def failing_result(*args, **kwargs):
+            raise sqlite3.OperationalError("result failed")
+
+        reads = []
+
+        def failing_parent_read(*args, **kwargs):
+            reads.append(1)
+            if len(reads) > 1:
+                raise sqlite3.OperationalError("parent read failed")
+            return original_parents(*args, **kwargs)
+
+        failures = (
+            ("_sync_prompt_tags", {"side_effect": sqlite3.OperationalError("tags")}),
+            ("_ensure_library_parent", {"side_effect": failing_state}),
+            ("_pair_component_outcome", {"side_effect": failing_component}),
+            ("_save_pair_components", {"side_effect": failing_pair}),
+            ("_read_pair_rows", {"side_effect": failing_result}),
+            ("_library_parents", {"side_effect": failing_parent_read}),
+            ("_pair_transaction", {"new": failing_commit}),
+        )
+        commands = {
+            "create": lambda: self.db.create_library_recipe(
+                "Rolled back",
+                "Rolled negative",
+                expected_epoch=epoch,
+                parent_metadata={"title": "T", "tags": ["rolled"]},
+            ),
+            "add": lambda: self.db.add_library_negative(
+                unregistered,
+                "Rolled negative",
+                expected_epoch=epoch,
+                if_match=unregistered_token,
+            ),
+        }
+        before = self.storage()
+        for command, run in commands.items():
+            for name, options in failures:
+                if command == "add" and name == "_sync_prompt_tags":
+                    continue
+                with self.subTest(command=command, failure=name):
+                    reads.clear()
+                    with patch.object(self.db, name, **options):
+                        with self.assertRaises(sqlite3.OperationalError):
+                            run()
+                    self.assertFalse(self.db.model.get_connection().in_transaction)
+                    self.assertEqual(self.storage(), before)

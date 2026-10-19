@@ -159,16 +159,31 @@ def _missing() -> web.Response:
 
 
 _PARENT_PATCH_FIELDS = frozenset({"expected_epoch", "if_match", "metadata"})
+_CREATE_FIELDS = frozenset(
+    {"expected_epoch", "positive_text", "negative_text", "parent_metadata"}
+)
+_ADD_NEGATIVE_FIELDS = frozenset({"expected_epoch", "if_match", "negative_text"})
 _COMMAND_MESSAGES = {
     "metadata-conflict": "This prompt changed since it was loaded; review it first",
     "storage-changed": "Prompt storage was restored; refresh the library",
 }
+_GENERIC_CONFLICT = "Library command conflicted; refresh the library"
 
 
 def _command_error(status: int, error: str, code: str | None = None, **extra):
     return web.json_response(
         {"success": False, "code": code, "error": error, **extra}, status=status
     )
+
+
+async def _command_body(request: web.Request, fields: frozenset) -> dict:
+    """Read a JSON object whose keys are exactly ``fields``."""
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise ValueError("Expected a JSON object")
+    if set(body) != fields:
+        raise ValueError("Request must contain exactly " + ", ".join(sorted(fields)))
+    return body
 
 
 def library_command_response(handler: Callable) -> Callable:
@@ -182,8 +197,11 @@ def library_command_response(handler: Callable) -> Callable:
             extra = {"library_epoch": exc.epoch}
             if exc.code == "metadata-conflict" and exc.positive is not None:
                 extra["positive"] = exc.positive
-            return _command_error(409, _COMMAND_MESSAGES[exc.code], exc.code, **extra)
-        except (ValueError, TypeError) as exc:
+            message = _COMMAND_MESSAGES.get(exc.code, _GENERIC_CONFLICT)
+            return _command_error(409, message, exc.code, **extra)
+        except ValueError as exc:
+            # Only explicit validation (ValueError) is a client error; any other
+            # exception, TypeError included, is an unexpected server failure.
             return _command_error(400, str(exc))
         except Exception:
             self.logger.exception("Library command failed")
@@ -200,8 +218,12 @@ class LibraryRoutesMixin:
         routes.patch("/prompt_manager/library/{positive_id}")(
             self.update_library_parent
         )
+        routes.post("/prompt_manager/library")(self.create_library_recipe)
         routes.get("/prompt_manager/library/{positive_id}/images")(
             self.get_library_images
+        )
+        routes.post("/prompt_manager/library/{positive_id}/variants")(
+            self.add_library_negative
         )
 
     def _library_media(self, records: list[dict], roots: list[Path]) -> list[dict]:
@@ -364,19 +386,40 @@ class LibraryRoutesMixin:
     @library_command_response
     async def update_library_parent(self, request: web.Request) -> web.Response:
         positive = _positive_id(request)
-        body = await request.json()
-        if not isinstance(body, dict):
-            raise ValueError("Expected a JSON object")
-        if set(body) != _PARENT_PATCH_FIELDS:
-            raise ValueError(
-                "Request must contain exactly expected_epoch, if_match and metadata"
-            )
+        body = await _command_body(request, _PARENT_PATCH_FIELDS)
         result = await self._run_in_executor(
             self.db.update_library_parent,
             positive,
             expected_epoch=body["expected_epoch"],
             if_match=body["if_match"],
             metadata=body["metadata"],
+        )
+        if result is None:
+            return _command_error(404, "Positive prompt not found")
+        return web.json_response({"success": True, **result})
+
+    @library_command_response
+    async def create_library_recipe(self, request: web.Request) -> web.Response:
+        body = await _command_body(request, _CREATE_FIELDS)
+        result = await self._run_in_executor(
+            self.db.create_library_recipe,
+            body["positive_text"],
+            body["negative_text"],
+            expected_epoch=body["expected_epoch"],
+            parent_metadata=body["parent_metadata"],
+        )
+        return web.json_response({"success": True, **result})
+
+    @library_command_response
+    async def add_library_negative(self, request: web.Request) -> web.Response:
+        positive = _positive_id(request)
+        body = await _command_body(request, _ADD_NEGATIVE_FIELDS)
+        result = await self._run_in_executor(
+            self.db.add_library_negative,
+            positive,
+            body["negative_text"],
+            expected_epoch=body["expected_epoch"],
+            if_match=body["if_match"],
         )
         if result is None:
             return _command_error(404, "Positive prompt not found")
