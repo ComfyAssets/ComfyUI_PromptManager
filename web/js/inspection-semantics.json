@@ -149,6 +149,7 @@
       "RandomNoise": { "kind": "noise", "fields": ["noise_seed"] },
       "KSamplerSelect": { "kind": "sampler", "fields": ["sampler_name"] },
       "BasicScheduler": { "kind": "sigmas", "fields": ["steps", "scheduler"] },
+      "Flux2Scheduler": { "kind": "sigmas", "fields": ["steps"], "type_fields": ["scheduler"] },
       "CFGGuider": { "kind": "guider", "fields": ["cfg", "model"] },
       "BasicGuider": { "kind": "guider", "fields": ["model"] }
     },
@@ -158,7 +159,13 @@
       "unCLIPCheckpointLoader": "ckpt_name",
       "UNETLoader": "unet_name"
     },
-    "model_passthroughs": ["LoraLoader", "LoraLoaderModelOnly"],
+    "model_passthroughs": [
+      "LoraLoader",
+      "LoraLoaderModelOnly",
+      "ModelSamplingFlux",
+      "ModelSamplingAuraFlow",
+      "ModelSamplingSD3"
+    ],
     "scalar_outputs": {
       "PrimitiveInt": "number",
       "PrimitiveFloat": "number",

@@ -317,6 +317,12 @@ class SpecEntriesTest(unittest.TestCase):
                 "RandomNoise": {"kind": "noise", "fields": ("noise_seed",)},
                 "KSamplerSelect": {"kind": "sampler", "fields": ("sampler_name",)},
                 "BasicScheduler": {"kind": "sigmas", "fields": ("steps", "scheduler")},
+                # D8: Flux2Scheduler has no scheduler input; its type names it.
+                "Flux2Scheduler": {
+                    "kind": "sigmas",
+                    "fields": ("steps",),
+                    "type_fields": ("scheduler",),
+                },
                 "CFGGuider": {"kind": "guider", "fields": ("cfg", "model")},
                 "BasicGuider": {"kind": "guider", "fields": ("model",)},
             },
@@ -331,7 +337,14 @@ class SpecEntriesTest(unittest.TestCase):
             },
         )
         self.assertEqual(
-            facts["model_passthroughs"], ("LoraLoader", "LoraLoaderModelOnly")
+            facts["model_passthroughs"],
+            (
+                "LoraLoader",
+                "LoraLoaderModelOnly",
+                "ModelSamplingFlux",
+                "ModelSamplingAuraFlow",
+                "ModelSamplingSD3",
+            ),
         )
         self.assertEqual(
             facts["scalar_outputs"],
@@ -478,6 +491,24 @@ class ValidationTest(_TableCase):
             (
                 lambda d: d["facts"]["scalar_outputs"].update(PrimitiveInt="int"),
                 "facts",
+            ),
+            (
+                lambda d: d["facts"]["configuration_outputs"].update(
+                    X={"kind": "sigmas", "fields": ["steps"], "type_fields": []}
+                ),
+                "input name",
+            ),
+            (
+                lambda d: d["facts"]["configuration_outputs"].update(
+                    X={"kind": "sigmas", "fields": ["steps"], "type_fields": ["steps"]}
+                ),
+                "type_fields",
+            ),
+            (
+                lambda d: d["facts"]["configuration_outputs"].update(
+                    X={"kind": "sigmas", "fields": ["steps"], "names": ["x"]}
+                ),
+                "field",
             ),
         )
         for index, (mutate, fragment) in enumerate(cases):

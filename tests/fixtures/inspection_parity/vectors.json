@@ -57,28 +57,28 @@
       "candidate_count": 0,
       "facts": {
         "seed": {
-          "status": "known",
-          "value": "1000"
+          "status": "ambiguous",
+          "value": null
         },
         "steps": {
-          "status": "unresolved",
+          "status": "ambiguous",
           "value": null
         },
         "cfg": {
-          "status": "not-recorded",
+          "status": "ambiguous",
           "value": null
         },
         "sampler": {
-          "status": "known",
-          "value": "euler"
+          "status": "ambiguous",
+          "value": null
         },
         "scheduler": {
-          "status": "unresolved",
+          "status": "ambiguous",
           "value": null
         },
         "model": {
-          "status": "known",
-          "value": "flux-2-klein-9b-fp8.safetensors"
+          "status": "ambiguous",
+          "value": null
         }
       }
     }
@@ -939,16 +939,16 @@
       "candidate_count": 0,
       "facts": {
         "seed": {
-          "status": "known",
-          "value": "42"
+          "status": "ambiguous",
+          "value": null
         },
         "steps": {
-          "status": "known",
-          "value": "25"
+          "status": "ambiguous",
+          "value": null
         },
         "cfg": {
-          "status": "known",
-          "value": "6.5"
+          "status": "ambiguous",
+          "value": null
         },
         "sampler": {
           "status": "known",

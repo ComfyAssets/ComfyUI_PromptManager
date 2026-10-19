@@ -33,3 +33,19 @@ test("the facts tables are not part of the legacy page contract", () => {
     assert.deepStrictEqual(Object.keys(metadata).filter(key => !key.startsWith("_")).sort(), ["PLACEHOLDERS", "extractGenerationFacts", "extractGenerationParams"]);
     assert.ok(Object.isFrozen(metadata._factsTables));
 });
+
+// Task 2.1 checked only `facts`; the facts code also reads the samplers table
+// (which classes are samplers, their facts shape and a detailer's image input).
+test("sampler facts table equals semantics.samplers", () => {
+    assert.equal(typeof metadata._samplerTable, "object", "comfy-metadata exposes its sampler table for this test");
+    const expected = Object.fromEntries(Object.entries(semantics.samplers).map(([name, entry]) => [name,
+        entry.image_stage === undefined ? { facts: entry.facts } : { facts: entry.facts, image_stage: entry.image_stage }]));
+    assert.deepStrictEqual(plain(metadata._samplerTable), expected);
+    assert.ok(Object.isFrozen(metadata._samplerTable));
+});
+
+test("detailer-stage samplers, and only they, name an image stage", () => {
+    for (const [name, entry] of Object.entries(semantics.samplers)) {
+        assert.equal(Object.hasOwn(metadata._samplerTable[name], "image_stage"), entry.strategy === "detailer-stage", name);
+    }
+});

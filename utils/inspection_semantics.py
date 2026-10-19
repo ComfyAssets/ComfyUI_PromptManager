@@ -56,6 +56,7 @@ SAVER_PATTERNS = MappingProxyType(
 )
 _CONFIGURATION_KINDS = frozenset({"noise", "sampler", "sigmas", "guider"})
 _SCALAR_KINDS = frozenset({"number", "string"})
+_TYPE_FIELDS = frozenset({"type_fields"})
 _CLASS_CATEGORIES = ("samplers", "guiders", "selectors", "composites", "savers")
 _SLOT_CATEGORIES = ("conditioning", "encoders", "strings")
 _SET_CATEGORIES = ("runtime", "non_file_outputs")
@@ -360,10 +361,15 @@ def _facts(doc: dict) -> Mapping[str, Any]:
     for name, adapter in configuration.items():
         where = f"facts.configuration_outputs[{name!r}]"
         _name(name, where, "class")
-        _fields(adapter, where, frozenset({"kind", "fields"}), frozenset())
+        _fields(adapter, where, frozenset({"kind", "fields"}), _TYPE_FIELDS)
         if adapter["kind"] not in _CONFIGURATION_KINDS:
             raise SemanticsError(f"{where}: unknown kind {adapter['kind']!r}")
         _names(adapter["fields"], where)
+        if "type_fields" in adapter:
+            # A fact whose value is the provider's node type (D8: Flux2Scheduler).
+            _names(adapter["type_fields"], where)
+            if set(adapter["type_fields"]) & set(adapter["fields"]):
+                raise SemanticsError(f"{where}: type_fields repeat an input field")
     _string_map(facts["model_outputs"], "facts.model_outputs", None)
     _string_map(facts["scalar_outputs"], "facts.scalar_outputs", _SCALAR_KINDS)
     passthroughs = facts["model_passthroughs"]
