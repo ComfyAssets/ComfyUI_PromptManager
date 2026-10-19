@@ -1094,6 +1094,31 @@ class TestMaintenanceOperations(DatabaseTestCase):
         self.assertIsNotNone(self.db.get_prompt_by_id(illustrated))
         self.assertEqual(self.db.prune_orphaned_prompts(), 0)
 
+    def test_prune_orphaned_prompts_spares_library_parents(self):
+        titled = self._save("titled parent")
+        untitled = self._save("untitled parent")
+        orphan = self._save("orphan")
+        with self.db.model.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO prompt_library_state(prompt_id,title) "
+                "VALUES(?,?),(?,NULL)",
+                (titled, "My recipe", untitled),
+            )
+            conn.commit()
+
+        self.assertEqual(self.db.prune_orphaned_prompts(), 1)
+        self.assertIsNone(self.db.get_prompt_by_id(orphan))
+        self.assertIsNotNone(self.db.get_prompt_by_id(titled))
+        self.assertIsNotNone(self.db.get_prompt_by_id(untitled))
+        with self.db.model.get_connection() as conn:
+            titles = conn.execute(
+                "SELECT prompt_id,title FROM prompt_library_state ORDER BY prompt_id"
+            ).fetchall()
+        self.assertEqual(
+            [tuple(row) for row in titles], [(titled, "My recipe"), (untitled, None)]
+        )
+        self.assertEqual(self.db.prune_orphaned_prompts(), 0)
+
     def test_consistency_check_reports_orphaned_rows(self):
         self.assertEqual(self.db.check_consistency(), [])
         pid = self._save("to orphan", tags=["t"])

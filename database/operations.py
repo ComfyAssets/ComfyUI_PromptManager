@@ -2162,7 +2162,13 @@ class PromptDatabase(
             return [dict(row) for row in cursor.fetchall()]
 
     def prune_orphaned_prompts(self) -> int:
-        """Delete prompts with no linked images and no __protected__ tag.
+        """Delete prompts nothing references.
+
+        A prompt is kept when it has a linked image, belongs to a pair, carries
+        the ``__protected__`` tag, has Library parent state (a titled or
+        explicit parent), or is the currently valid navigation hint of a
+        recorded run: same storage epoch and unchanged exact raw snapshot text,
+        the conditions under which history reads still resolve it.
 
         Returns number of prompts removed.
         """
@@ -2179,6 +2185,25 @@ class PromptDatabase(
                     SELECT 1 FROM prompt_tags pt
                     JOIN tags t ON pt.tag_id = t.id
                     WHERE pt.prompt_id = p.id AND t.name = '__protected__'
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM prompt_library_state ls WHERE ls.prompt_id = p.id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM execution_run_contexts r
+                    JOIN execution_contexts c ON c.context_id = r.context_id
+                    JOIN execution_prompt_snapshots s ON (
+                        (r.positive_prompt_id = p.id
+                            AND s.snapshot_id = c.positive_snapshot_id)
+                        OR (r.negative_prompt_id = p.id
+                            AND s.snapshot_id = c.negative_snapshot_id)
+                    )
+                    JOIN execution_context_texts tx ON tx.text_id = s.raw_text_id
+                    WHERE r.reference_epoch = (
+                        SELECT storage_epoch FROM execution_history_metadata
+                        WHERE singleton_id = 1
+                    )
+                    AND tx.text_value = p.text COLLATE BINARY
                 )
             """)
             orphaned = [row["id"] for row in cursor.fetchall()]

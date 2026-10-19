@@ -365,6 +365,35 @@ class ContextDatabaseTests(unittest.TestCase):
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM prompts").fetchone()[0], 0)
         self.assertIsNone(context_schema_error(conn))
 
+    def test_prune_keeps_prompts_referenced_by_recorded_runs(self):
+        db = self.database()
+        conn = db.model.get_connection()
+        with conn:
+            conn.execute(
+                "INSERT INTO prompts(id,text) VALUES(1,'positive'),(2,'negative'),"
+                "(3,'unreferenced')"
+            )
+        start = self.capture(db)
+        original = db.get_execution_contexts(start.run_id)["contexts"][0]
+        self.assertEqual(
+            (original["positive_prompt_id"], original["negative_prompt_id"]), (1, 2)
+        )
+        self.assertEqual(db.prune_orphaned_prompts(), 1)
+        self.assertEqual(
+            [row[0] for row in conn.execute("SELECT id FROM prompts ORDER BY id")],
+            [1, 2],
+        )
+        self.assertEqual(
+            db.get_execution_contexts(start.run_id)["contexts"][0], original
+        )
+        self.assertEqual(db.prune_orphaned_prompts(), 0)
+        db.update_prompt_text(2, "edited")
+        self.assertEqual(db.prune_orphaned_prompts(), 1)
+        self.assertEqual(
+            [row[0] for row in conn.execute("SELECT id FROM prompts")], [1]
+        )
+        self.assertIsNone(context_schema_error(conn))
+
     def test_hints_require_exact_unique_raw_text_and_never_refresh(self):
         db = self.database()
         conn = db.model.get_connection()
