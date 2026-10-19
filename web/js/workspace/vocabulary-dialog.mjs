@@ -24,6 +24,13 @@ const IMPACT_FAILED = 'Linked prompts could not be read. Nothing was deleted.';
 const SAVING = 'Applying… The dialog stays open until the server answers.';
 const DELETING = 'Deleting… The dialog stays open until the server answers.';
 const PREVIEWING = 'Previewing… Nothing is changed by a preview.';
+const CATEGORIES_LOADING = 'Loading categories…';
+const CATEGORIES_FAILED = 'Categories could not be loaded. Nothing was changed.';
+// Manage categories reads at most this many categories (10 pages) into its select.
+const CATEGORY_CAP = 1000;
+const CATEGORIES_CAPPED = 'Only the first 1,000 categories are listed.';
+// Command phases after which the delete confirmation's impact no longer describes storage.
+const STALE_IMPACT = new Set(['conflict', 'storage-changed', 'unknown-outcome']);
 // Phases that send nothing until the user acts: the primary stays disabled.
 const BLOCKED = new Set(['saving', 'storage-changed']);
 
@@ -70,7 +77,9 @@ function statusOf(state, {conflict, saving, failed, kept = ' Your entries are ke
 }
 
 /**
- * `epoch()` and `categories()` read the loaded lists; `reload()` re-reads them and
+ * `epoch()` reads the loaded lists' epoch and `categories` is the page's category
+ * list (`{stream, subscribe}`), which Manage categories reads to the end (capped);
+ * `reload()` re-reads both lists and
  * `settled()` resolves once the latest re-read landed; `tagAction(id)` and
  * `categoryAction(value)` find a loaded row's action for focus; `heading()` is the
  * page h1, the focus fallback.
@@ -201,7 +210,7 @@ export function createVocabularyDialog({api, scope, createCommand, epoch, catego
             cancel.disabled = close.disabled = saving;
             if (remove) remove.disabled = saving;
             setChildren(ui.actions, [...(status?.reload ? [ui.reloadButton] : []), ...(remove ? [remove] : []), cancel, apply]);
-            if (!saving) ui.refocus(status?.reload ? ui.reloadButton : null, apply, cancel);
+            if (!saving && state.phase !== 'done') ui.refocus(status?.reload ? ui.reloadButton : null, apply, cancel);
         }
         current.render = render;
         show(row ? 'Rename or merge tag' : 'Create tag', [form]);
@@ -218,7 +227,11 @@ export function createVocabularyDialog({api, scope, createCommand, epoch, catego
         const cancel = createButton('Cancel'), confirm = createButton('Delete', 'danger');
         let read = 'loading';
         cancel.addEventListener('click', () => finish(), {signal: views.signal});
-        retry.addEventListener('click', () => readImpact(), {signal: views.signal});
+        retry.addEventListener('click', () => {
+            // After an unconfirmed delete, Retry only re-reads the impact; it never resends the delete.
+            if (command.state.phase === 'unknown-outcome') command.reset();
+            readImpact();
+        }, {signal: views.signal});
         confirm.addEventListener('click', async () => {
             await command.deleteTag(row, current.epoch);
             const {phase, receipt, kind} = command.state;
@@ -251,13 +264,14 @@ export function createVocabularyDialog({api, scope, createCommand, epoch, catego
                 ?? {loading: {text: CHECKING}, failed: {text: IMPACT_FAILED, retry: true}, restored: {text: RESTORED, reload: true},
                     conflict: {text: TAG_CONFLICT}}[read] ?? null;
             ui.set(status?.text);
-            impactText.hidden = read !== 'ready';
+            const stale = STALE_IMPACT.has(state.phase);
+            impactText.hidden = read !== 'ready' || stale;
             const saving = state.phase === 'saving';
-            confirm.disabled = read !== 'ready' || BLOCKED.has(state.phase) || state.phase === 'conflict';
+            confirm.disabled = read !== 'ready' || saving || stale;
             cancel.disabled = close.disabled = saving;
-            const recovery = status?.reload ? ui.reloadButton : status?.retry ? retry : null;
+            const recovery = status?.reload ? ui.reloadButton : status?.retry || state.phase === 'unknown-outcome' ? retry : null;
             setChildren(ui.actions, [...(recovery ? [recovery] : []), cancel, confirm]);
-            if (!saving) ui.refocus(recovery, confirm, cancel);
+            if (!saving && state.phase !== 'done') ui.refocus(recovery, confirm, cancel);
         }
         current.render = render;
         show('Delete tag', [impactText, ui.note, ui.actions]);
@@ -268,16 +282,46 @@ export function createVocabularyDialog({api, scope, createCommand, epoch, catego
     function manageView(current) {
         const {command, views} = current;
         const form = el('form');
-        const values = categories();
+        const {stream} = categories;
+        // A category command carries the category list's own epoch.
+        current.epoch = stream.state.epoch;
         const source = el('select');
         source.required = true;
-        for (const value of values) source.add(new Option(value, value));
         const target = el('input');
         target.required = true;
         target.setAttribute('list', 'categories');
         const list = el('datalist');
         list.id = 'categories';
-        list.append(...values.map(value => Object.assign(document.createElement('option'), {value})));
+        const retry = createButton('Retry');
+        retry.addEventListener('click', () => stream.loadMore(), {signal: views.signal});
+        let drain = 'loading', shown = null;
+        function fill(values) {
+            const key = values.join('\n');
+            if (key === shown) return;
+            shown = key;
+            const selected = source.value;
+            source.replaceChildren(...values.map(value => new Option(value, value)));
+            if (values.includes(selected)) source.value = selected;
+            list.replaceChildren(...values.map(value => Object.assign(document.createElement('option'), {value})));
+        }
+        /** Read the shared category list to its end (at most CATEGORY_CAP) before the select is offered. */
+        function sync() {
+            const state = stream.state;
+            if (state.resetRequired) drain = 'restored';
+            else if (state.error) drain = 'failed';
+            // A reset emits its empty first state before it starts reading; the stream itself reads page one.
+            else if (state.loading || state.epoch === null) drain = 'loading';
+            else if (state.hasMore && state.items.length < CATEGORY_CAP) {
+                drain = 'loading';
+                stream.loadMore();
+                return;
+            } else {
+                fill(state.items.slice(0, CATEGORY_CAP).map(item => item.value));
+                drain = state.hasMore || state.items.length > CATEGORY_CAP ? 'capped' : 'ready';
+            }
+            render(command.state);
+        }
+        views.signal.addEventListener('abort', categories.subscribe(() => sync()), {once: true});
         const impactText = el('p', '', 'small');
         impactText.hidden = true;
         const ui = chrome(views);
@@ -299,7 +343,7 @@ export function createVocabularyDialog({api, scope, createCommand, epoch, catego
                 if (command.state.phase === 'done' && receipt) complete(kind, receipt, () => categoryAction(receipt.target));
                 return;
             }
-            const expected = openedEpoch(current);
+            const expected = current.epoch ??= stream.state.epoch;
             if (!expected) {message = NOT_LOADED; render(command.state); return;}
             message = null;
             if (phase === 'unknown-outcome') command.reset();
@@ -308,20 +352,24 @@ export function createVocabularyDialog({api, scope, createCommand, epoch, catego
 
         function render(state) {
             const previewed = state.phase === 'previewed';
-            const status = statusOf(state, {conflict: CATEGORY_CONFLICT, saving: SAVING, failed: 'Not changed'});
-            ui.set(status?.text ?? message);
+            const status = statusOf(state, {conflict: CATEGORY_CONFLICT, saving: SAVING, failed: 'Not changed'})
+                ?? (message ? {text: message} : null)
+                ?? {loading: {text: CATEGORIES_LOADING}, failed: {text: CATEGORIES_FAILED, retry: true},
+                    restored: {text: RESTORED, reload: true}, capped: {text: CATEGORIES_CAPPED}}[drain] ?? null;
+            ui.set(status?.text);
             if (previewed) impactText.textContent = categoryPreviewText(state.preview);
             impactText.hidden = !previewed;
             primary.textContent = previewed ? 'Apply' : 'Preview';
             const saving = state.phase === 'saving';
-            primary.disabled = BLOCKED.has(state.phase);
+            primary.disabled = BLOCKED.has(state.phase) || !['ready', 'capped'].includes(drain);
             cancel.disabled = close.disabled = saving;
-            setChildren(ui.actions, [...(status?.reload ? [ui.reloadButton] : []), cancel, primary]);
-            if (!saving) ui.refocus(status?.reload ? ui.reloadButton : null, primary, cancel);
+            const recovery = status?.reload ? ui.reloadButton : status?.retry ? retry : null;
+            setChildren(ui.actions, [...(recovery ? [recovery] : []), cancel, primary]);
+            if (!saving && state.phase !== 'done') ui.refocus(recovery, primary, cancel);
         }
         current.render = render;
         show('Manage categories', [form]);
-        render(command.state);
+        sync();
     }
 
     function dispose() {

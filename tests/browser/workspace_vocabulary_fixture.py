@@ -77,6 +77,7 @@ ARCHIVED_ONLY_TAG = "archived_pair_detail"
 NEGATIVE_ONLY_TAG = "legacy_negative_detail"
 UNUSED_TAG = "unused_vocabulary"
 MAX_EXTRA_TAGS = 300
+MAX_EXTRA_CATEGORIES = 200
 _TABLES = (
     "image_prompt_pairs",
     "prompt_pair_tags",
@@ -103,7 +104,9 @@ _SNAPSHOT = {
 }
 
 
-def seed_vocabulary(api: PromptManagerAPI, root: Path, extra_tags: int = 0) -> dict:
+def seed_vocabulary(
+    api: PromptManagerAPI, root: Path, extra_tags: int = 0, extra_categories: int = 0
+) -> dict:
     """Replace this server's disposable rows with the concept vocabulary."""
     db = api.db
     with db.model.get_connection() as conn:
@@ -146,6 +149,17 @@ def seed_vocabulary(api: PromptManagerAPI, root: Path, extra_tags: int = 0) -> d
     db.create_vocabulary_tag(UNUSED_TAG, expected_epoch=epoch)
     for number in range(extra_tags):
         db.create_vocabulary_tag(f"bulk_tag_{number:04}", expected_epoch=epoch)
+    # Each extra category is carried by one minimal Library recipe, after the concept's.
+    for number in range(extra_categories):
+        db.create_library_recipe(
+            f"Bulk category recipe {number:04}",
+            "",
+            expected_epoch=epoch,
+            parent_metadata={
+                "title": f"Bulk {number:04}",
+                "category": f"bulk_category_{number:04}",
+            },
+        )
     with db.model.get_connection() as conn:
         tags = [row[0] for row in conn.execute("SELECT name FROM tags ORDER BY id")]
     api.invalidate_gallery_cache()
@@ -179,17 +193,23 @@ def register_vocabulary_commands(
     @routes.post("/__test__/vocabulary/reset")
     async def reset(request: web.Request) -> web.Response:
         data = await request.json() if request.can_read_body else {}
-        extra = data.get("extra_tags", 0) if isinstance(data, dict) else None
-        if (
-            not isinstance(data, dict)
-            or set(data) - {"extra_tags"}
-            or isinstance(extra, bool)
-            or not isinstance(extra, int)
-            or not 0 <= extra <= MAX_EXTRA_TAGS
-            or request.query
-        ):
+        if not isinstance(data, dict) or set(data) - {"extra_tags", "extra_categories"}:
             raise web.HTTPBadRequest()
-        manifest = await api._run_in_executor(seed_vocabulary, api, root, extra)
+        extra = data.get("extra_tags", 0)
+        categories = data.get("extra_categories", 0)
+        for value, limit in (
+            (extra, MAX_EXTRA_TAGS),
+            (categories, MAX_EXTRA_CATEGORIES),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise web.HTTPBadRequest()
+            if not 0 <= value <= limit:
+                raise web.HTTPBadRequest()
+        if request.query:
+            raise web.HTTPBadRequest()
+        manifest = await api._run_in_executor(
+            seed_vocabulary, api, root, extra, categories
+        )
         return web.json_response({"success": True, **manifest})
 
     @routes.get("/__test__/vocabulary/snapshot")

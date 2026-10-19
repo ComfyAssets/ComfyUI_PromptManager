@@ -445,3 +445,112 @@ test('a failed Load more read moves keyboard focus to Retry',async({page,request
     await expect(retry).toBeVisible();await expect(retry).toBeFocused();
     await expect(rows(page)).toHaveCount(100);
 });
+
+test('an unconfirmed delete disables Delete and re-reads the impact before anything else',async({page,request})=>{
+    const writes=trackWrites(page);await openPage(page);
+    await page.route('**/prompt_manager/vocabulary/tags/*/delete',async route=>{await route.fetch();await route.abort('failed');});
+    const box=await openRename(page,'forest');await button(box,'Delete tag…').click();
+    const impact=box.locator('p.small');await expect(impact).toBeVisible();
+    await button(box,'Delete').click();
+    await expect(note(box)).toHaveText('The result could not be confirmed. The lists were re-read; check them before applying again.');
+    await expect(impact).toBeHidden();await expect(button(box,'Delete')).toBeDisabled();
+    expect(await actionNames(box)).toEqual(['Retry','Cancel','Delete']);
+    await expect(tagRow(page,'forest')).toHaveCount(0);expect(tagNames(await snapshot(request))).not.toContain('forest');
+    await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,300)));
+    expect(writes.filter(write=>write.method==='POST')).toHaveLength(1);
+    // Retry re-reads the impact and resends nothing: the tag is gone, so it is a changed tag.
+    await button(box,'Retry').click();
+    await expect(note(box)).toHaveText('This tag changed since this dialog opened. Nothing was changed. The list was re-read; review it before trying again.');
+    await expect(button(box,'Delete')).toBeDisabled();await expect(impact).toBeHidden();
+    expect(writes.filter(write=>write.method==='POST')).toHaveLength(1);
+});
+
+test('delete confirmation read failure, missing tag and restore keep Delete disabled',async({page,request})=>{
+    const saved=await backup(request);const writes=trackWrites(page);await openPage(page);
+    let failures=1;
+    await page.route('**/prompt_manager/vocabulary/tags/*/impact',route=>failures-->0?route.fulfill({status:500,json:{success:false,error:'Database is unavailable'}}):route.continue());
+    let box=await openRename(page,'mist');await button(box,'Delete tag…').click();
+    await expect(note(box)).toHaveText('Linked prompts could not be read. Nothing was deleted.');
+    await expect(button(box,'Delete')).toBeDisabled();expect(await actionNames(box)).toEqual(['Retry','Cancel','Delete']);
+    await button(box,'Retry').click();
+    await expect(box.locator('p.small')).toHaveText('Deleting “mist” removes the name and its links from 1 positive prompt. The prompts, negative variants, images and history themselves are kept.');
+    await expect(note(box)).toBeHidden();await expect(button(box,'Delete')).toBeEnabled();
+    await button(box,'Cancel').click();
+
+    // Deleted elsewhere: the impact read finds no tag, which is a changed tag.
+    box=await openRename(page,'forest');
+    await expect(await request.delete('/prompt_manager/tags/forest')).toBeOK();
+    await button(box,'Delete tag…').click();
+    await expect(note(box)).toHaveText('This tag changed since this dialog opened. Nothing was changed. The list was re-read; review it before trying again.');
+    await expect(button(box,'Delete')).toBeDisabled();await expect(tagRow(page,'forest')).toHaveCount(0);
+    await button(box,'Cancel').click();
+    // Renamed elsewhere after the impact read: the guarded delete is refused and writes nothing.
+    box=await openRename(page,'peaceful');await button(box,'Delete tag…').click();await expect(button(box,'Delete')).toBeEnabled();
+    await expect(await request.put('/prompt_manager/tags/peaceful',{data:{new_name:'calm'}})).toBeOK();
+    await button(box,'Delete').click();
+    await expect(note(box)).toHaveText('This tag changed since this dialog opened. Nothing was changed. The list was re-read; review it before trying again.');
+    await expect(button(box,'Delete')).toBeDisabled();await expect(tagRow(page,'calm').locator('td:nth-child(2)')).toHaveText('2');
+    await button(box,'Cancel').click();
+
+    box=await openRename(page,'mist');await restore(request,saved);
+    await button(box,'Delete tag…').click();
+    await expect(note(box)).toHaveText('Prompt storage was restored since this dialog opened. Nothing was changed.');
+    await expect(button(box,'Delete')).toBeDisabled();expect(await actionNames(box)).toEqual(['Reload','Cancel','Delete']);
+    await button(box,'Reload').click();await expect(box).toHaveCount(0);
+    await expect(main(page).getByRole('heading',{level:1})).toBeFocused();await expect(tagRow(page,'forest')).toHaveCount(1);
+    expect(writes.map(write=>write.url)).toEqual([expect.stringMatching(/^\/prompt_manager\/vocabulary\/tags\/\d+\/delete$/)]);
+});
+
+test('manage categories lists every category page without Load more',async({page,request})=>{
+    manifest=await seed(request,{extra_categories:150});
+    let release;const held=new Promise(resolve=>{release=resolve;});
+    await page.route('**/prompt_manager/vocabulary/categories?*',async route=>{
+        if(new URL(route.request().url()).searchParams.has('cursor')) await held;
+        return route.continue();
+    });
+    await page.goto(route);await expect(categoryRow(page,'Landscapes')).toHaveCount(1);
+    const box=await openManage(page);
+    await expect(note(box)).toHaveText('Loading categories…');await expect(button(box,'Preview')).toBeDisabled();
+    release();
+    await expect(note(box)).toBeHidden();await expect(button(box,'Preview')).toBeEnabled();
+    const source=field(box,'Category');
+    await expect(source.locator('option')).toHaveCount(154);
+    await expect(source.locator('option').last()).toHaveText('bulk_category_0149');
+    expect(await box.locator('datalist#categories option').count()).toBe(154);
+    await source.selectOption('bulk_category_0149');await field(box,'Proposed new category name').fill('Bulk renamed');
+    await button(box,'Preview').click();
+    await expect(box.locator('p.small')).toHaveText('“bulk_category_0149” is used by 1 positive prompt. Apply renames it to “Bulk renamed”.');
+    await expect(main(page).getByRole('button',{name:'Load more categories',exact:true})).toHaveCount(0);
+});
+
+test('manage categories stops at 1,000 categories and says so',async({page})=>{
+    await page.route('**/prompt_manager/vocabulary/categories?*',route=>{
+        const cursor=new URL(route.request().url()).searchParams.get('cursor');const index=cursor?Number(cursor.slice(1)):0;
+        const categories=Array.from({length:100},(_,item)=>({value:`many_${String(index*100+item).padStart(5,'0')}`,prompt_count:1}));
+        return route.fulfill({json:{success:true,library_epoch:manifest.epoch,total:5000,has_more:true,next_cursor:`c${index+1}`,categories}});
+    });
+    await page.goto(route);await expect(categoryRow(page,'many_00000')).toHaveCount(1);
+    // Every mocked page has more, so scrolling to Review would keep appending under the pointer.
+    const review=categoryRow(page,'Manage category').getByRole('button',{name:'Review',exact:true});
+    const box=await openDialog(page,{click:()=>review.evaluate(node=>node.click())},'Manage categories');
+    await expect(note(box)).toHaveText('Only the first 1,000 categories are listed.');
+    await expect(field(box,'Category').locator('option')).toHaveCount(1000);
+    await expect(field(box,'Category').locator('option').last()).toHaveText('many_00999');
+    await expect(button(box,'Preview')).toBeEnabled();
+});
+
+test('a failed category read in Manage categories offers Retry',async({page,request})=>{
+    manifest=await seed(request,{extra_categories:150});
+    let failures=1;
+    await page.route('**/prompt_manager/vocabulary/categories?*',route=>{
+        if(new URL(route.request().url()).searchParams.has('cursor') && failures-->0) return route.fulfill({status:500,json:{success:false,error:'Database is unavailable'}});
+        return route.continue();
+    });
+    await page.goto(route);await expect(categoryRow(page,'Landscapes')).toHaveCount(1);
+    const box=await openManage(page);
+    await expect(note(box)).toHaveText('Categories could not be loaded. Nothing was changed.');
+    await expect(button(box,'Preview')).toBeDisabled();expect(await actionNames(box)).toEqual(['Retry','Cancel','Preview']);
+    await button(box,'Retry').click();
+    await expect(field(box,'Category').locator('option')).toHaveCount(154);
+    await expect(note(box)).toBeHidden();await expect(button(box,'Preview')).toBeEnabled();
+});

@@ -82,6 +82,7 @@ function mountList(scope, api, kind, {content, rowsHost, renderRow, after}) {
     continuation.append(status, alert, retry, more);
     after.after(empty, continuation);
     const items = new WeakMap();
+    const listeners = new Set();
     let rendered = 0, first = null;
 
     function maybeLoad() {
@@ -120,6 +121,7 @@ function mountList(scope, api, kind, {content, rowsHost, renderRow, after}) {
         more.hidden = hideMore;
         more.setAttribute('aria-disabled', String(state.loading));
         continuation.hidden = !(state.loading || failed || state.hasMore);
+        for (const listener of listeners) listener(state);
     }
     const stream = createVocabularyStream({api, kind, onChange: render});
     scope.listen(more, 'click', () => stream.loadMore());
@@ -140,7 +142,12 @@ function mountList(scope, api, kind, {content, rowsHost, renderRow, after}) {
     function rowFor(match) {
         return [...rowsHost.children].find(row => {const item = items.get(row); return item !== undefined && match(item);}) ?? null;
     }
-    return {stream, itemOf: row => items.get(row), rowFor};
+    /** Follow this list's state (a dialog reading further pages); returns the unsubscribe. */
+    function subscribe(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+    }
+    return {stream, itemOf: row => items.get(row), rowFor, subscribe};
 }
 
 /** Mount the screen into `main` below the shell's heading; `scope` owns every request, listener and observer. */
@@ -211,7 +218,7 @@ export function mountVocabulary(main, api, scope) {
     const actionOf = (row, action) => row?.querySelector(`button[data-action="${action}"]`) ?? null;
     const dialog = createVocabularyDialog({api, scope, createCommand,
         epoch: () => tags.stream.state.epoch ?? categories.stream.state.epoch,
-        categories: () => categories.stream.state.items.map(item => item.value),
+        categories: {stream: categories.stream, subscribe: categories.subscribe},
         reload,
         // Rows are replaced on every reset, so a result's row exists only once the re-read has landed.
         settled: () => settled,
