@@ -176,6 +176,7 @@ class ContextDatabaseTests(unittest.TestCase):
 
         with (
             patch.object(execution_contexts, "_write_capture", side_effect=held_open),
+            history_tests.queued_writer_budget(),
             ThreadPoolExecutor(max_workers=4) as pool,
         ):
             self.assertEqual(list(pool.map(write, starts)), [True] * 8)

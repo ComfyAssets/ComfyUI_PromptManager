@@ -159,7 +159,10 @@ class OutputDatabaseTests(unittest.TestCase):
                 generation_guard=held_open,
             )
 
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with (
+            history_tests.queued_writer_budget(),
+            ThreadPoolExecutor(max_workers=4) as executor,
+        ):
             self.assertEqual(list(executor.map(write, range(4))), [True] * 4)
         capture = db.get_execution_outputs(start.run_id)
         self.assertEqual(

@@ -6,12 +6,14 @@ import threading
 import time
 import unittest
 from contextlib import closing
+from unittest.mock import patch
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
-from database.models import PromptModel
+from database import execution_history
+from database.models import BUSY_TIMEOUT_SECONDS, PromptModel
 from database.operations import PromptDatabase
 from utils.execution_history_events import make_finish, make_start
 
@@ -36,6 +38,20 @@ class FirstWriterHold:
             hold, self._held = not self._held, True
         if hold:
             time.sleep(self.seconds)
+
+
+def queued_writer_budget():
+    """Let concurrent test peers wait like ordinary writers do.
+
+    Production history writes give up after EXECUTION_BUSY_TIMEOUT_MS so they
+    never stall ComfyUI, which the bounded writer timeout test covers. Tests
+    that assert every concurrent peer succeeds are about serialization and
+    first-capture semantics, so they must not also depend on how quickly the
+    host commits the writers queued ahead of them.
+    """
+    return patch.object(
+        execution_history, "EXECUTION_BUSY_TIMEOUT_MS", BUSY_TIMEOUT_SECONDS * 1000
+    )
 
 
 SESSION = "11111111-1111-4111-8111-111111111111"

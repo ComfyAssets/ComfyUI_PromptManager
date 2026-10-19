@@ -25,6 +25,10 @@ except ImportError:
 
 
 _logger = get_logger("prompt_manager.database.execution_history")
+# Bounded wait for a history write lock. History is best effort and must
+# never stall ComfyUI's queue: a write that cannot start in time raises
+# "database is locked" and the writer records a gap instead of waiting.
+EXECUTION_BUSY_TIMEOUT_MS = 250
 _restore_lock = threading.Lock()
 _restore_observers: dict[str, dict[object, Callable[[], None]]] = {}
 
@@ -100,7 +104,7 @@ class ExecutionHistoryOperations:
                 "Execution history requires its own transaction"
             )
         timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
-        conn.execute("PRAGMA busy_timeout=250")
+        conn.execute(f"PRAGMA busy_timeout={int(EXECUTION_BUSY_TIMEOUT_MS)}")
         try:
             conn.execute("BEGIN IMMEDIATE")
             try:
