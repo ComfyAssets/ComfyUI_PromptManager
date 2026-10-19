@@ -302,7 +302,7 @@
   "workspace/topbar.mjs": {
     "lines": 98,
     "branches": 98,
-    "functions": 81,
+    "functions": 83,
     "statements": 98
   },
   "workspace/viewer-state.mjs": {

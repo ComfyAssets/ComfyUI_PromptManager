@@ -6,7 +6,7 @@ import { mountImages } from './images.mjs';
 import { mountLibrary, mountNewPromptAction, onLibraryWrite } from './library.mjs';
 import { mountVocabulary } from './vocabulary.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
-import { bindCanvasLink, canvasRoot } from './topbar.mjs';
+import { bindCanvasLink, canvasHref } from './topbar.mjs';
 import { renderHeading } from './heading.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
@@ -42,7 +42,7 @@ function mountWorkspace() {
     // D6: ComfyUI ↗ opens the canvas; on Images with a resolved selection it sends that pair (D5: no Activity).
     let images = null;
     scope.cleanup(bindCanvasLink(document.querySelector('.topbar .canvas-link'), {
-        href: canvasRoot(resolveUrl),
+        href: canvasHref(resolveUrl, window.location.pathname),
         getSelectedPair: () => images?.selectedPair?.() ?? null,
         sender: {open: (roles, trigger) => images?.sender.open(roles, trigger)},
     }));

@@ -630,3 +630,55 @@ test('the footer is the concept app footer with production copy', async ({ page 
     }
 });
 
+// #164: the maintainer serves ComfyUI behind a proxy prefix. Everything, the ComfyUI link included, stays on that mount.
+const PROXY_MOUNT = '/ComfyBackendDirect';
+async function serveUnderProxyMount(page) {
+    const escaped = [];
+    page.on('request', item => {
+        const { pathname } = new URL(item.url());
+        if (pathname.startsWith('/prompt_manager/')) escaped.push(pathname);
+    });
+    await page.route(url => url.pathname.startsWith(`${PROXY_MOUNT}/`), async route => {
+        const url = new URL(route.request().url());
+        url.pathname = url.pathname.slice(PROXY_MOUNT.length);
+        const response = await route.fetch({ url: url.href });
+        await route.fulfill({ response });
+    });
+    return escaped;
+}
+
+test('the ComfyUI link points to the root of a non-standard proxy mount', async ({ page }) => {
+    const escaped = await serveUnderProxyMount(page);
+    for (const route of ['overview', 'library', 'tags']) {
+        await page.goto(`${PROXY_MOUNT}${workspace}#/${route}`);
+        await expect(page.locator('#workspace-main > .heading h1')).toBeVisible();
+        const link = page.getByRole('link', { name: 'ComfyUI', exact: true });
+        await expect(link).toHaveAttribute('href', `${PROXY_MOUNT}/`);
+        expect(await link.evaluate(node => node.href)).toBe(new URL(`${PROXY_MOUNT}/`, page.url()).href);
+    }
+    await expect(navCount(page, 'library')).toHaveCount(1);
+    expect(escaped).toEqual([]);
+});
+
+test('a resolver failure for the ComfyUI link never stops the shell from mounting', async ({ page }) => {
+    await serveUnderProxyMount(page);
+    // Wrap the shared client as it loads so only the topbar's canvas-root lookup throws (the sender reads the same root).
+    await page.addInitScript(() => {
+        let client;
+        Object.defineProperty(window, 'ApiClient', { configurable: true, get: () => client, set(value) {
+            client = { ...value, resolveUrl: (url, ...rest) => {
+                if (url === '/prompt_manager/' && /topbar\.mjs/.test(new Error().stack)) throw new Error('resolver unavailable');
+                return value.resolveUrl(url, ...rest);
+            } };
+        } });
+    });
+    const warnings = [];
+    page.on('console', message => { if (message.type() === 'warning') warnings.push(message.text()); });
+    await page.goto(`${PROXY_MOUNT}${workspace}#/overview`);
+    await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    await expect(sidebarLinks(page)).toHaveCount(routes.length);
+    expect(warnings.filter(text => text.includes('the ComfyUI link falls back to the page mount'))).toHaveLength(1);
+    await expect(page.getByRole('link', { name: 'ComfyUI', exact: true })).toHaveAttribute('href', `${PROXY_MOUNT}/`);
+    await sidebarLink(page, 'Prompt library').click();
+    await expect(page.locator('#workspace-main h1')).toHaveText('Prompt library');
+});

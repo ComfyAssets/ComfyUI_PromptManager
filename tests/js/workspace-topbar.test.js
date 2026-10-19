@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canvasRoot, bindCanvasLink } from '../../web/js/workspace/topbar.mjs';
+import { canvasRoot, canvasHref, bindCanvasLink } from '../../web/js/workspace/topbar.mjs';
 
 // The shared mount-aware resolver (#164), as api-client.js implements it.
 const resolverAt = pathname => url => {
@@ -25,6 +25,33 @@ test('the canvas root is the ComfyUI root under the page mount', () => {
     assert.equal(canvasRoot(resolverAt('/prompt_manager/workspace')), '/');
     assert.equal(canvasRoot(resolverAt('/proxy/comfy/prompt_manager/workspace')), '/proxy/comfy/');
     assert.throws(() => canvasRoot(() => 'https://elsewhere.example/'), /canvas/i);
+});
+
+test('the canvas root follows a non-standard proxy mount', () => {
+    assert.equal(canvasRoot(resolverAt('/ComfyBackendDirect/prompt_manager/workspace')), '/ComfyBackendDirect/');
+    assert.equal(canvasHref(resolverAt('/ComfyBackendDirect/prompt_manager/workspace'), '/ComfyBackendDirect/prompt_manager/workspace'),
+        '/ComfyBackendDirect/');
+});
+
+// A4 review: a resolver failure must never stop the shell from mounting, and the fallback stays on the page's mount.
+test('a resolver failure falls back to the page mount and never to another origin', () => {
+    const warn = console.warn;
+    const warnings = [];
+    console.warn = (...args) => warnings.push(args);
+    try {
+        const broken = () => { throw new Error('resolver unavailable'); };
+        assert.equal(canvasHref(broken, '/ComfyBackendDirect/prompt_manager/workspace'), '/ComfyBackendDirect/');
+        assert.equal(canvasHref(broken, '/ComfyBackendDirect/prompt_manager/workspace/'), '/ComfyBackendDirect/');
+        assert.equal(canvasHref(broken, '/prompt_manager/workspace'), '/');
+        assert.equal(canvasHref(() => 'https://elsewhere.example/prompt_manager/', '/a/prompt_manager/workspace'), '/a/');
+        assert.equal(canvasHref(broken, '//elsewhere.example/prompt_manager/workspace'), '/');
+        assert.equal(canvasHref(broken, '/workspace'), '/');
+        assert.equal(canvasHref(broken, undefined), '/');
+        assert.equal(canvasHref(undefined, '/a/prompt_manager/workspace'), '/a/');
+        assert.equal(warnings.length, 8);
+    } finally {
+        console.warn = warn;
+    }
 });
 
 test('ComfyUI link follows its href unless a resolved pair is selected', () => {
