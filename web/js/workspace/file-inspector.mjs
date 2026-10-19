@@ -226,7 +226,7 @@ export function mountFileInspector(container, {sender, parentScope, inline = fal
         inner.append(raw);
         const footer = el('footer', undefined, 'file-inspector-footer'), roles = promptRoles(record.prompts);
         if (Object.hasOwn(roles, 'positive') && Object.hasOwn(roles, 'negative')) {
-            const pair = createSendButton('Send prompt pair'); pair.dataset.sendRole = 'pair';
+            const pair = createSendButton(promptContext ? `Send ${promptContext.toLowerCase()} prompt pair` : 'Send prompt pair'); pair.dataset.sendRole = 'pair';
             contentScope.listen(pair, 'click', () => sender.open(roles, pair)); footer.append(pair);
         }
         if (record.historyTarget) {
