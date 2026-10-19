@@ -1572,6 +1572,36 @@ class TestConditioningSemantics(unittest.TestCase):
         self.assertEqual(result["state"], "unresolved")
         self.assertEqual(result["reason_code"], "malformed")
 
+    def test_selector_sources_and_string_branches(self):
+        # Converging branches with different text sources name no single source.
+        source = parity.build("f23")["prompt"]
+        source["12"] = _image_exists()
+        source["14"] = _encoded("")
+        source["15"] = _if_else(["12", 1], ["7", 0], ["14", 0])
+        source["3"]["inputs"]["negative"] = ["15", 0]
+        negative = _inspect(source)["negative"]
+        self.assertEqual(negative["text"], "")
+        self.assertEqual(negative["provenance"]["text_source"], "graph-inferred")
+        source["3"]["inputs"]["negative"] = ["7", 0]
+        source["15"]["inputs"]["on_false"] = ["7", 0]
+        source["3"]["inputs"]["negative"] = ["15", 0]
+        negative = _inspect(source)["negative"]
+        self.assertEqual(negative["provenance"]["text_source"], "zeroed-conditioning")
+        # A selector also forwards string inputs, including literal text.
+        source = parity.build("f02")["prompt"]
+        source["12"] = _image_exists()
+        source["20"] = _if_else(["12", 1], "same words", "same words")
+        source["6"]["inputs"]["text"] = ["20", 0]
+        result = _inspect(source)
+        self.assertEqual(result["positive"]["text"], "same words")
+        source["20"]["inputs"]["on_false"] = "other words"
+        result = _inspect(source)
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(
+            [item["positive"]["text"] for item in result["candidates"]],
+            ["same words", "other words"],
+        )
+
     def test_default_profile_keeps_conditioning_nodes_unsupported(self):
         for name in ("f06c", "f06d", "f06e", "f20", "f23"):
             with self.subTest(fixture=name):
@@ -1581,6 +1611,195 @@ class TestConditioningSemantics(unittest.TestCase):
                     result["reason"], "Unsupported node semantics or output slot"
                 )
                 self.assertIsNone(result["reason_code"])
+
+
+def _detailed(same_prompt: bool = False) -> dict:
+    """``f19``: KSampler 3 -> VAEDecode 8 -> FaceDetailer 50 -> SaveImage 9."""
+    source = parity.build("f19")["prompt"]
+    if same_prompt:
+        source["50"]["inputs"]["positive"] = ["6", 0]
+    return source
+
+
+def _detailer(image: list, positive: list, negative: list = None) -> dict:
+    return {
+        "class_type": "FaceDetailer",
+        "inputs": {
+            "image": image,
+            "model": ["4", 0],
+            "positive": positive,
+            "negative": negative or ["7", 0],
+            "seed": 1,
+            "steps": 8,
+        },
+    }
+
+
+class TestDetailerStages(unittest.TestCase):
+    """D19: a detailer is a sampler stage judged with its upstream sampler."""
+
+    def test_detailer_with_the_upstream_prompt_resolves(self):
+        result = _inspect(_detailed(same_prompt=True))
+        self.assertEqual(result["state"], "resolved")
+        self.assertEqual(result["sampler_id"], "50")
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        self.assertEqual(result["candidates"], [])
+        self.assertEqual(
+            _inspect(_detailed(same_prompt=True), output_node_id="9"), result
+        )
+
+    def test_detailer_with_a_different_prompt_is_ambiguous_with_both_stages(self):
+        from utils.prompt_inspector import inspect_prompt_evidence
+
+        result = _inspect(_detailed())
+        self.assertEqual(
+            (result["state"], result["reason_code"]),
+            ("ambiguous", "multistage-differs"),
+        )
+        self.assertEqual(result["sampler_id"], "50")
+        self.assertIsNone(result["positive"])
+        self.assertIsNone(result["negative"])
+        self.assertEqual(
+            [(item["sampler_id"], _sides(item)) for item in result["candidates"]],
+            [
+                ("50", (parity.DETAILER_POS, parity.NEG)),
+                ("3", (parity.POS, parity.NEG)),
+            ],
+        )
+        self.assertEqual(_inspect(_detailed(), output_node_id="9"), result)
+        # Neither the upstream prompt nor the detailer prompt is shown as the answer.
+        prompts = inspect_prompt_evidence({"prompt": _detailed()})["prompts"]
+        self.assertEqual(
+            [prompts[role]["status"] for role in ("positive", "negative")],
+            ["ambiguous", "ambiguous"],
+        )
+        self.assertNotIn(parity.POS, str(prompts))
+
+    def test_detailer_of_a_loaded_image_is_a_single_stage(self):
+        source = _detailed()
+        source["13"] = {"class_type": "LoadImage", "inputs": {"image": "input.png"}}
+        source["50"]["inputs"]["image"] = ["13", 0]
+        source["9"]["inputs"]["images"] = ["50", 0]
+        source["8"]["inputs"]["samples"] = ["3", 0]
+        source["14"] = {"class_type": "SaveImage", "inputs": {"images": ["8", 0]}}
+        result = _inspect(source, output_node_id="9")
+        self.assertEqual(result["state"], "resolved")
+        self.assertEqual(_sides(result), (parity.DETAILER_POS, parity.NEG))
+        self.assertEqual(result["sampler_id"], "50")
+
+    def test_raw_and_detailed_saves_stay_ambiguous_without_an_anchor(self):
+        source = _detailed(same_prompt=True)
+        source["14"] = {"class_type": "SaveImage", "inputs": {"images": ["8", 0]}}
+        result = _inspect(source)
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(result["reason"], "Multiple sampler branches")
+        self.assertEqual(
+            sorted(item["sampler_id"] for item in result["candidates"]), ["3", "50"]
+        )
+        raw = _inspect(source, output_node_id="14")
+        self.assertEqual((raw["state"], raw["sampler_id"]), ("resolved", "3"))
+        detailed = _inspect(source, output_node_id="9")
+        self.assertEqual(
+            (detailed["state"], detailed["sampler_id"]), ("resolved", "50")
+        )
+
+    def test_a_preview_of_the_upstream_image_is_not_another_output(self):
+        source = _detailed()
+        source["14"] = {"class_type": "PreviewImage", "inputs": {"images": ["8", 0]}}
+        result = _inspect(source)
+        self.assertEqual(result["reason_code"], "multistage-differs")
+        self.assertEqual(len(result["candidates"]), 2)
+
+    def test_chained_detailers_compare_every_stage(self):
+        source = _detailed(same_prompt=True)
+        source["51"] = _detailer(["50", 0], ["6", 0])
+        source["9"]["inputs"]["images"] = ["51", 0]
+        result = _inspect(source)
+        self.assertEqual((result["state"], result["sampler_id"]), ("resolved", "51"))
+        source["50"]["inputs"]["positive"] = ["10", 0]
+        result = _inspect(source)
+        self.assertEqual(result["reason_code"], "multistage-differs")
+        self.assertEqual(
+            [item["sampler_id"] for item in result["candidates"]], ["51", "50", "3"]
+        )
+
+    def test_unresolved_stage_blocks_the_chain(self):
+        source = _detailed(same_prompt=True)
+        source["30"] = {"class_type": "FutureConditioner", "inputs": {"c": ["6", 0]}}
+        source["3"]["inputs"]["positive"] = ["30", 0]
+        source["50"]["inputs"]["positive"] = ["10", 0]
+        result = _inspect(source)
+        self.assertEqual((result["state"], result["sampler_id"]), ("unresolved", "50"))
+        self.assertEqual(
+            result["node"], {"id": "30", "class_type": "FutureConditioner"}
+        )
+        self.assertIsNone(result["positive"])
+
+    def test_malformed_and_cyclic_detailer_ancestry_never_guesses(self):
+        source = _detailed()
+        del source["50"]["inputs"]["image"]
+        result = _inspect(source, output_node_id="9")
+        self.assertEqual(
+            (result["state"], result["reason_code"]), ("unresolved", "malformed")
+        )
+        source = _detailed()
+        source["8"]["inputs"]["samples"] = ["51", 0]
+        source["51"] = _detailer(["50", 0], ["6", 0])
+        result = _inspect(source, output_node_id="9")
+        self.assertEqual(result["state"], "unresolved")
+        self.assertEqual(result["reason_code"], "malformed")
+
+    def test_detailer_image_ancestry_is_walked_generically(self):
+        source = _detailed(same_prompt=True)
+        source["60"] = {
+            "class_type": "ImageBlend",
+            "inputs": {"image1": ["8", 0], "image2": ["8", 0], "blend_factor": 0.5},
+        }
+        source["61"] = {
+            "class_type": "ImageBlend",
+            "inputs": {"image1": ["8", 0], "image2": ["60", 0]},
+        }
+        source["62"] = {"class_type": "ImageScale", "inputs": {"image": ["60", 0]}}
+        source["50"]["inputs"]["image"] = ["61", 0]
+        source["63"] = {"class_type": "PreviewImage", "inputs": {"images": ["62", 0]}}
+        source["junk"] = "not a node"
+        result = _inspect(source)
+        self.assertEqual((result["state"], result["sampler_id"]), ("resolved", "50"))
+        # A detailer whose image ancestry returns to itself is malformed.
+        source = _detailed()
+        source["64"] = {"class_type": "ImageScale", "inputs": {"image": ["50", 0]}}
+        source["50"]["inputs"]["image"] = ["64", 0]
+        result = _inspect(source, output_node_id="9")
+        self.assertEqual(result["reason"], "Cyclic sampler stage ancestry")
+        self.assertEqual(result["reason_code"], "malformed")
+
+    def test_detailer_stage_walks_draw_from_the_work_budget(self):
+        self.assertEqual(
+            _inspect(_detailed(), max_visits=6)["reason_code"], "work-limit"
+        )
+        # Too little budget to absorb the upstream sampler keeps both as
+        # candidates: more ambiguity, never a chosen prompt.
+        starved = _inspect(_detailed(), max_visits=3)
+        self.assertEqual(starved["state"], "ambiguous")
+        self.assertEqual(len(starved["candidates"]), 2)
+        self.assertIsNone(starved["positive"])
+        source = _detailed()
+        previous = "8"
+        for index in range(70):
+            source[f"u{index}"] = {
+                "class_type": "ImageScale",
+                "inputs": {"image": [previous, 0]},
+            }
+            previous = f"u{index}"
+        source["50"]["inputs"]["image"] = [previous, 0]
+        result = _inspect(source, output_node_id="9")
+        self.assertEqual(result["reason_code"], "depth-limit")
+
+    def test_default_profile_keeps_the_upstream_sampler(self):
+        # Ingestion is unchanged (D1): the detailer is not a sampler there.
+        result = resolve_prompt_pair({"prompt": _detailed()})
+        self.assertEqual((result["state"], result["sampler_id"]), ("resolved", "3"))
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
 
 
 REPO = Path(__file__).resolve().parents[1]

@@ -48,9 +48,9 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "Unsupported latent ancestry",
-      "reason_code": "unsupported-node",
+      "state": "ambiguous",
+      "reason": "Multiple sampler branches",
+      "reason_code": null,
       "selection": null,
       "positive": null,
       "negative": null,
@@ -924,6 +924,48 @@
     }
   },
   {
+    "name": "f19-inspection",
+    "fixture": "f19",
+    "profile": "inspection",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "ambiguous",
+      "reason": "Sampler stages have different prompts",
+      "reason_code": "multistage-differs",
+      "selection": null,
+      "positive": null,
+      "negative": null,
+      "candidate_count": 0,
+      "facts": {
+        "seed": {
+          "status": "known",
+          "value": "42"
+        },
+        "steps": {
+          "status": "known",
+          "value": "25"
+        },
+        "cfg": {
+          "status": "known",
+          "value": "6.5"
+        },
+        "sampler": {
+          "status": "known",
+          "value": "euler"
+        },
+        "scheduler": {
+          "status": "known",
+          "value": "normal"
+        },
+        "model": {
+          "status": "known",
+          "value": "sdxl_base.safetensors"
+        }
+      }
+    }
+  },
+  {
     "name": "f20-inspection",
     "fixture": "f20",
     "profile": "inspection",
@@ -1377,6 +1419,23 @@
       "selection": null,
       "positive": "<absent>",
       "negative": "<absent>",
+      "candidate_count": 0,
+      "facts": null
+    }
+  },
+  {
+    "name": "f19-default",
+    "fixture": "f19",
+    "profile": "default",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
+      "selection": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": null
     }

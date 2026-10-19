@@ -66,6 +66,7 @@ COMMITTED = (
     "f15",
     "f16",
     "f17",
+    "f19",
     "f20",
     "f23",
 )
@@ -693,6 +694,34 @@ def _f17():
     return _basic(graph, _ui(graph))
 
 
+DETAILER_POS = "a red fox in snow, sharp detailed face"
+
+
+def _f19():
+    """KSampler -> VAEDecode -> FaceDetailer -> SaveImage; the detailer re-prompts."""
+    graph = _ksampler_graph(_enc(POS), _enc(NEG))
+    graph["10"] = _enc(DETAILER_POS)
+    graph["50"] = {
+        "class_type": "FaceDetailer",
+        "inputs": {
+            "image": ["8", 0],
+            "model": ["4", 0],
+            "clip": ["4", 1],
+            "vae": ["4", 2],
+            "positive": ["10", 0],
+            "negative": ["7", 0],
+            "seed": 7,
+            "steps": 12,
+            "cfg": 4.5,
+            "sampler_name": "euler",
+            "scheduler": "normal",
+            "denoise": 0.4,
+        },
+    }
+    graph["9"]["inputs"]["images"] = ["50", 0]
+    return _basic(graph)
+
+
 def _f20():
     """``easy ifElse`` with a literal boolean picks the positive branch."""
     select = {
@@ -732,6 +761,7 @@ _BUILDERS = {
     "f15": _f15,
     "f16": _f16,
     "f17": _f17,
+    "f19": _f19,
     "f20": _f20,
     "f23": _f23,
 }

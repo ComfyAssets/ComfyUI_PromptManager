@@ -3,8 +3,9 @@
 // (web/metadata.html, web/js/gallery.js) show today on the synthetic inspection
 // parity fixtures, so the #240 workspace work cannot change them by accident.
 // Some answers are known to be wrong (f01b shows the preview-only detailer text
-// as both roles; f16 shows the last of two conflicting prompt chunks; f23 shows the
-// positive text as the zeroed negative). They are
+// as both roles; f16 shows the last of two conflicting prompt chunks; f19 shows the
+// upstream sampler's prompt and settings, not the detailer's; f23 shows the positive
+// text as the zeroed negative). They are
 // recorded as-is and intentionally unchanged (spec section 11).
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -57,6 +58,7 @@ const EXPECTED = {
     f15: { positivePrompt: "a red fox in snow, detailed fur", negativePrompt: "blurry, lowres", checkpoint: "sdxl_base.safetensors", steps: 25, cfgScale: 6.5, sampler: "euler", seed: 42 },
     f16: { positivePrompt: "a grey wolf in fog", negativePrompt: "blurry, lowres", checkpoint: "sdxl_base.safetensors", steps: 25, cfgScale: 6.5, sampler: "euler", seed: 42 },
     f17: { positivePrompt: "No prompt found", negativePrompt: "No negative prompt found", checkpoint: "flux1-dev.safetensors", steps: "Unknown", cfgScale: "Unknown", sampler: "euler", seed: "Unknown" },
+    f19: { positivePrompt: "a red fox in snow, detailed fur", negativePrompt: "blurry, lowres", checkpoint: "sdxl_base.safetensors", steps: 25, cfgScale: 6.5, sampler: "euler", seed: 42 },
     f20: { positivePrompt: "No prompt found", negativePrompt: "blurry, lowres", checkpoint: "sdxl_base.safetensors", steps: 25, cfgScale: 6.5, sampler: "euler", seed: 42 },
     f23: { positivePrompt: "a red fox in snow, detailed fur", negativePrompt: "a red fox in snow, detailed fur", checkpoint: "sdxl_base.safetensors", steps: 25, cfgScale: 6.5, sampler: "euler", seed: 42 },
 };

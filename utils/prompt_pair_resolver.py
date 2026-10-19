@@ -138,10 +138,11 @@ _DIRECT_SAMPLER = {
     "conditioning": {"positive": "positive", "negative": "negative"},
     "latent": "latent_image",
 }
-# Strategies whose nodes are prompt candidates in this slice. A detailer stage
-# re-samples an upstream image; it is judged together with its upstream chain,
-# which needs output ancestry (later slice), so it is never a candidate alone.
-_CANDIDATE_STRATEGIES = frozenset({"ksampler", "custom-advanced"})
+# Strategies whose nodes are prompt candidates. A detailer stage (D19) re-samples
+# an upstream image: it is judged together with the samplers found in its image
+# ancestry, and a sampler consumed only by detailers is not a candidate alone.
+_CANDIDATE_STRATEGIES = frozenset({"ksampler", "custom-advanced", "detailer-stage"})
+_DETAILER = "detailer-stage"
 _GUIDER_ABSENT_REASON = "Guider has no negative input"
 # ConditioningZeroOut discards its input text: an explicit empty prompt.
 _ZEROED_SOURCE = "zeroed-conditioning"
@@ -769,6 +770,157 @@ class _GraphResolver:
             return self.sides(sampler_id)
         return self.branches(sampler_id)
 
+    def stage(self, sampler_id: str, later: frozenset) -> dict:
+        """One sampler's result; a detailer is compared with its upstream stages.
+
+        ``later`` holds the detailers already being judged below this one, so a
+        cyclic stage ancestry is malformed instead of recursing.
+        """
+        own = self.sides(sampler_id)
+        if own["state"] == "unresolved":
+            return own
+        name, inputs = self.node(sampler_id)
+        entry = self.semantics.samplers.get(name)
+        if entry is None or entry["strategy"] != _DETAILER:
+            return own
+        try:
+            upstream = self.upstream_stages(
+                sampler_id, inputs.get(entry["image_stage"])
+            )
+            if any(node_id in later for node_id in upstream):
+                raise _Unresolved("Cyclic sampler stage ancestry", "malformed")
+        except _Unresolved as error:
+            return _result(
+                "unresolved",
+                sampler_id=sampler_id,
+                reason=str(error),
+                reason_code=error.code,
+                node=error.node,
+            )
+        if not upstream:
+            return own
+        later = later | {sampler_id}
+        stages = [self.stage(node_id, later) for node_id in upstream]
+        blocked = next((item for item in stages if item["state"] == "unresolved"), None)
+        if blocked is not None:
+            # A stage that cannot be read cannot be compared: never pick one.
+            return _result(
+                "unresolved",
+                sampler_id=sampler_id,
+                reason=blocked["reason"],
+                reason_code=blocked["reason_code"],
+                node=blocked["node"],
+            )
+        flat: list = []
+        for item in [own] + stages:
+            flat.extend(item["candidates"] if item["state"] == "ambiguous" else [item])
+        if len({_outcome_key(item) for item in flat}) == 1:
+            return own
+        return _result(
+            "ambiguous",
+            sampler_id=sampler_id,
+            reason="Sampler stages have different prompts",
+            candidates=flat,
+            reason_code="multistage-differs",
+        )
+
+    def upstream_stages(self, origin: str, value: Any) -> list:
+        """Samplers reached from a detailer's image input, in breadth-first order.
+
+        Every link input of non-sampler nodes is walked (decoders, upscalers,
+        compositors), stopping at listed samplers. Each node draws a visit.
+        """
+        if not _link(value):
+            raise _Unresolved("Expected an image link", "malformed")
+        found: list = []
+        seen: set = set()
+        queue = [(str(value[0]), 0)]
+        while queue:
+            node_id, depth = queue.pop(0)
+            if node_id in seen:
+                continue
+            if node_id == origin:
+                raise _Unresolved("Cyclic sampler stage ancestry", "malformed")
+            if depth >= self.max_depth:
+                raise _Unresolved("Resolution depth limit reached", "depth-limit")
+            seen.add(node_id)
+            self.budget.spend()
+            name, inputs = self.node(node_id)
+            if name in self.stage_classes:
+                found.append(node_id)
+                continue
+            self.scan(len(inputs))
+            queue.extend(
+                (str(item[0]), depth + 1) for item in inputs.values() if _link(item)
+            )
+        return found
+
+    def final_stages(self, sampler_ids: list) -> list:
+        """Drop samplers that only feed detailers: each is judged in that chain.
+
+        A sampler whose output also reaches a terminal node other than a later
+        stage or a preview stays a candidate of its own (the file may be its
+        output). Any walk that fails or runs out of budget absorbs nothing.
+        """
+        detailers = [
+            node_id
+            for node_id in sampler_ids
+            if self.semantics.samplers[self.graph[node_id]["class_type"]]["strategy"]
+            == _DETAILER
+        ]
+        if not detailers:
+            return sampler_ids
+        try:
+            consumers = self.consumers()
+        except _Unresolved:
+            return sampler_ids
+        absorbed: set = set()
+        for detailer in detailers:
+            self.budget.reset(self.per_candidate_visits)
+            try:
+                name, inputs = self.node(detailer)
+                image = inputs.get(self.semantics.samplers[name]["image_stage"])
+                for node_id in self.upstream_stages(detailer, image):
+                    if not self.reaches_output(node_id, consumers):
+                        absorbed.add(node_id)
+            except _Unresolved:
+                continue
+        kept = [node_id for node_id in sampler_ids if node_id not in absorbed]
+        return kept or sampler_ids
+
+    def consumers(self) -> dict:
+        """Reverse links: node ID to the IDs of nodes reading one of its outputs."""
+        consumers: dict = {}
+        for node_id, node in self.graph.items():
+            if not isinstance(node, dict) or not isinstance(node.get("inputs"), dict):
+                continue
+            self.scan(len(node["inputs"]))
+            for value in node["inputs"].values():
+                if _link(value):
+                    consumers.setdefault(str(value[0]), []).append(node_id)
+        return consumers
+
+    def reaches_output(self, node_id: str, consumers: dict) -> bool:
+        """Whether a sampler's output reaches a terminal node besides later stages."""
+        seen, queue = {node_id}, [node_id]
+        while queue:
+            current = queue.pop(0)
+            for consumer in consumers.get(current, ()):
+                if consumer in seen:
+                    continue
+                seen.add(consumer)
+                self.budget.spend()
+                name = str(self.graph[consumer].get("class_type", ""))
+                if (
+                    name in self.stage_classes
+                    or name in self.semantics.non_file_outputs
+                ):
+                    continue
+                if not consumers.get(consumer):
+                    return True
+                queue.append(consumer)
+        return False
+
     def branches(self, sampler_id: str) -> dict:
         """Resolve once per runtime selector choice that changes a role text.
 
@@ -782,7 +934,7 @@ class _GraphResolver:
             while pending:
                 self.choices = pending.pop(0)
                 try:
-                    results.append(self.sides(sampler_id))
+                    results.append(self.stage(sampler_id, frozenset()))
                 except _Diverging as diverging:
                     if len(results) + len(pending) + 2 > _MAX_BRANCH_CANDIDATES:
                         raise _Unresolved("Too many selector branches", "work-limit")
@@ -1117,6 +1269,8 @@ def _resolve(
             and isinstance(node.get("class_type"), str)
             and node["class_type"] in resolver.sampler_classes
         ]
+        if semantics is not None:
+            sampler_ids = resolver.final_stages(sampler_ids)
     if not sampler_ids:
         return _no_sampler(normalized, profile)
     if len(sampler_ids) > 1:

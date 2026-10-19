@@ -241,9 +241,14 @@ branch only; with a linked boolean both branches are traced, equal texts resolve
 different texts make the sampler `ambiguous` with one candidate per choice (at most
 32, else `work-limit`). ConditioningCombine/Concat/Average resolve only when every
 part has the same text, otherwise `unresolved` with `composite` naming the node.
-Results that depend on a forced choice are never memoized. If the table cannot
-be loaded, graph inspection is `unresolved` ("Inspection node semantics are
-unavailable") and ingestion is unaffected, because it never imports the table.
+Results that depend on a forced choice are never memoized. A `FaceDetailer`
+(`detailer-stage`) is a sampler stage: the samplers reached through its `image`
+ancestry are compared with it. Equal texts resolve with the detailer as the sampler;
+different texts are `ambiguous` with `multistage-differs` and one candidate per
+stage; an unreadable stage makes the chain `unresolved`. Unanchored, a sampler
+whose output only feeds detailers (or previews) is not a candidate of its own. If
+the table cannot be loaded, graph inspection is `unresolved` ("Inspection node
+semantics are unavailable") and ingestion is unaffected, because it never imports the table.
 
 `tools/inspection_corpus.py --root DIR --out JSONL [--workers N] [--baseline JSONL]
 [--summary TXT] [--code TREE]` measures a media folder read-only against the #240
