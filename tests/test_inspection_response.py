@@ -560,6 +560,42 @@ class TestInspectionResponse(unittest.TestCase):
                     result["metadata"]["omitted_reason"], "response-size-limit"
                 )
 
+    def test_response_budget_drops_workflow_graph_before_prompt_graph(self):
+        import utils.inspection_response as response
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = parity.fixture_path("f05", directory)
+            parity.write_png(path, parity.build("f05"))
+            read = read_inspection_file(path)
+
+        def metadata_at(cap, read):
+            with patch.object(response, "MAX_RESPONSE_BYTES", cap):
+                body = encode(read)
+            self.assertLessEqual(len(body), cap)
+            return json.loads(body)["metadata"]
+
+        # Step 1: the workflow graph alone is dropped; prompt evidence stays.
+        step1 = metadata_at(4_500_000, read)
+        self.assertEqual(step1["workflow_graph"], {"status": "limited", "value": None})
+        self.assertEqual(step1["prompt_graph"]["status"], "parsed")
+        self.assertEqual(step1["status"], "available")
+        self.assertIn("workflow", step1["raw"])
+
+        # Step 2: a large prompt graph goes too, while raw records stay.
+        large = inspection({"prompt": graph_text(20000)})
+        step2 = metadata_at(3_000_000, large)
+        self.assertEqual(step2["prompt_graph"], {"status": "limited", "value": None})
+        self.assertEqual(step2["workflow_graph"]["status"], "absent")
+        self.assertEqual(step2["status"], "available")
+        self.assertIn("prompt", step2["raw"])
+
+        # Step 3: raw is omitted atomically.
+        step3 = metadata_at(3_000_000, read)
+        self.assertEqual(step3["prompt_graph"]["status"], "limited")
+        self.assertEqual(step3["workflow_graph"]["status"], "limited")
+        self.assertEqual(step3["raw"], {})
+        self.assertEqual(step3["omitted_reason"], "response-size-limit")
+
     def test_response_byte_boundary_is_inclusive(self):
         prompts = {
             role: {

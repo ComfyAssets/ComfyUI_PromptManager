@@ -334,11 +334,14 @@ def _encode_inspection(
         "library": _library_projection(library),
     }
     body = _bytes(response)
-    if len(body) > MAX_RESPONSE_BYTES:
-        for field in ("prompt_graph", "workflow_graph"):
-            if metadata[field]["status"] != "absent":
-                metadata[field] = {"status": "limited", "value": None}
-        body = _bytes(response)
+    # Omission order keeps prompt evidence longest: the workflow graph first,
+    # then the prompt graph, then all raw records atomically.
+    for field in ("workflow_graph", "prompt_graph"):
+        if len(body) <= MAX_RESPONSE_BYTES:
+            break
+        if metadata[field]["status"] != "absent":
+            metadata[field] = {"status": "limited", "value": None}
+            body = _bytes(response)
     if len(body) > MAX_RESPONSE_BYTES:
         metadata.update(
             raw={},
