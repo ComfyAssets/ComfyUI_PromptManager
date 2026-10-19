@@ -23,8 +23,10 @@
 .vocabulary-main .vocabulary-continuation { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-block: 15px 0; overflow-anchor: none; }
 .vocabulary-main .vocabulary-continuation p { margin: 0; flex: 1 1 200px; font-size: 12px; color: var(--ca-muted); }
 .vocabulary-main .vocabulary-continuation .vocabulary-error { color: var(--ca-error-text); }
-.vocabulary-main :where(button, a):focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 3px; }
+/* Focus rings come from the toolkit (2px --ca-focus, offset 2px), which is what the concept renders: its own 3px rule loses to controls.css. */
 @media (max-width: 700px) {
+    /* Concept .heading stacks with align-items: flex-start (style.css 1408-1414); the shared shell computes `start`. */
+    .vocabulary-main .workspace-heading { align-items: flex-start; }
     .vocabulary-main .two-col { grid-template-columns: 1fr; }
     .vocabulary-main .operation { align-items: flex-start; flex-direction: column; }
     .vocabulary-main .operation .row-actions { flex-wrap: wrap; }

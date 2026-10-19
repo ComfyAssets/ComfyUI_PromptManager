@@ -1,5 +1,8 @@
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
+import {writeFile} from 'node:fs/promises';
 import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import {captureCanonicalState} from './history-canonical-comparison.mjs';
+import {pageInventoryOf,inventoryOf,diffInventory,mapVocabularyConcept,mapVocabularyDialog} from './vocabulary-canonical-comparison.mjs';
 
 const route='/prompt_manager/workspace#/tags';
 // Prompts per concept tag (app.js:71-165): first appearance order, Library Browse counts.
@@ -553,4 +556,139 @@ test('a failed category read in Manage categories offers Retry',async({page,requ
     await button(box,'Retry').click();
     await expect(field(box,'Category').locator('option')).toHaveCount(154);
     await expect(note(box)).toBeHidden();await expect(button(box,'Preview')).toBeEnabled();
+});
+
+// Concept comparison (Task 9): the immutable concept at /__test__/canonical/workspace against production with the
+// concept fixture, same browser, both themes, both widths, normal and reduced motion. Only recorded deviations are mapped.
+const concept='/__test__/canonical/workspace';
+const SIZES=[[1600,1100],[390,844]];
+const MOTIONS=['no-preference','reduce'];
+async function openConceptTags(page,theme,motion) {
+    await page.emulateMedia({reducedMotion:motion});
+    await page.goto('about:blank');await page.goto(`${concept}#tags`);
+    await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
+    await expect(page.locator('#main h1')).toHaveText('Tags & categories');
+}
+async function openProductionTags(page,theme,motion) {
+    await page.emulateMedia({reducedMotion:motion});
+    await page.goto('about:blank');await page.goto(route);
+    await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+    await expect(rows(page)).toHaveCount(manifest.tags.length);await expect(categoryRow(page,'Landscapes')).toHaveCount(1);
+}
+const pageOf=(page,production)=>page.locator(production?'#workspace-main':'#main').evaluate(pageInventoryOf,production);
+/** Breadcrumb, document title (D7: "Tags", only the concept suffix differs) and the keyboard focus ring on a row action. */
+async function chromeOf(page,production) {
+    const scope=page.locator(production?'#workspace-main':'#main');
+    await scope.locator('tbody tr').first().getByRole('button',{name:'Rename / merge',exact:true}).focus();
+    await page.keyboard.press('Shift+Tab');
+    const browse=scope.locator('tbody tr').first().getByRole('button',{name:'Browse',exact:true});await expect(browse).toBeFocused();
+    const ring=await browse.evaluate(node=>{const style=getComputedStyle(node);return {visible:node.matches(':focus-visible'),
+        outlineStyle:style.outlineStyle,outlineWidth:style.outlineWidth,outlineColor:style.outlineColor,outlineOffset:style.outlineOffset};});
+    await page.keyboard.press('Tab');
+    return {breadcrumb:(await page.locator(production?'#workspace-breadcrumb':'#breadcrumb').textContent()).trim(),
+        title:(await page.title()).replace(/ · Prompt Manager( concept)?$/,''),ring};
+}
+/** Concept rows are the concept's own sample tags; production appends the fixture-only tags after them (D4 creation order). */
+function comparePage(reference,actual) {
+    const expected=mapVocabularyConcept(reference);
+    const shared=expected.table.rows.length;
+    return {diff:diffInventory(expected,{...actual,table:{...actual.table,rows:actual.table.rows.slice(0,shared)}}),
+        extra:actual.table.rows.slice(shared).map(row=>row.tag)};
+}
+const fixtureOnly=()=>[manifest.pair_only_tag,manifest.archived_only_tag,manifest.negative_only_tag,manifest.unused_tag];
+
+for(const [width,height] of SIZES)for(const theme of ['dark','light'])test(`tags page geometry, tokens and controls match the concept ${width}x${height} ${theme}`,async({page},testInfo)=>{
+    await page.setViewportSize({width,height});const result={};
+    for(const motion of MOTIONS) {
+        await openConceptTags(page,theme,motion);const reference=await pageOf(page,false);
+        if(motion==='no-preference')await captureCanonicalState(page,testInfo,`concept-tags-${width}-${theme}`,'#main');
+        const referenceChrome=await chromeOf(page,false);
+        await openProductionTags(page,theme,motion);const actual=await pageOf(page,true);
+        if(motion==='no-preference')await captureCanonicalState(page,testInfo,`production-tags-${width}-${theme}`,'#workspace-main');
+        result[motion]={reference,actual,...comparePage(reference,actual),referenceChrome,actualChrome:await chromeOf(page,true)};
+    }
+    const path=testInfo.outputPath('tags-geometry.json');await writeFile(path,JSON.stringify(result,null,2));
+    await testInfo.attach('tags-geometry',{path,contentType:'application/json'});
+    for(const [motion,{reference,diff,extra,referenceChrome,actualChrome}] of Object.entries(result)) {
+        expect.soft(referenceChrome,`${motion} concept chrome`).toMatchObject({breadcrumb:'Tags',title:'Tags',ring:{visible:true}});
+        expect.soft(actualChrome,`${motion} breadcrumb, title and focus ring`).toEqual(referenceChrome);
+        expect.soft(reference.heading.actions.buttons.map(item=>item.text),`${motion} concept heading actions`).toEqual(['+ Create tag','Auto-tag images']);
+        expect.soft(reference.table.rows.map(row=>[row.tag,Number(row.prompts)]),`${motion} concept rows`).toEqual(CONCEPT_COUNTS);
+        expect.soft(diff,`${motion} differences after the recorded deviations`).toEqual([]);
+        expect.soft(extra,`${motion} fixture-only rows`).toEqual(fixtureOnly());
+    }
+    const {actual}=result['no-preference'];
+    expect(actual.noPageScroll).toBe(true);
+    expect(actual.twoCol.columns).toBe(width<=700?1:2);
+});
+
+const conceptDialogs={
+    create:async page=>page.locator('#main').getByRole('button',{name:'+ Create tag',exact:true}).click(),
+    rename:async page=>page.locator('#main tbody tr').first().getByRole('button',{name:'Rename / merge',exact:true}).click(),
+    manage:async page=>page.locator('#main').getByRole('button',{name:'Review',exact:true}).click(),
+};
+const productionDialogs={
+    create:page=>openDialog(page,main(page).getByRole('button',{name:'+ Create tag',exact:true}),'Create tag'),
+    rename:page=>openRename(page,'cinematic'),
+    manage:async page=>{const box=await openManage(page);await expect(button(box,'Preview')).toBeEnabled();return box;},
+};
+async function conceptDonors(page,theme) {
+    await page.goto('about:blank');await page.goto(`${concept}#images`);await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
+    await page.locator('#main').getByRole('button',{name:'Filters',exact:true}).click();await expect(page.locator('#modal')).toBeVisible();
+    const filters=await page.locator('#modal').evaluate(inventoryOf);
+    await page.goto('about:blank');await page.goto(`${concept}#prompt/alpine`);await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
+    await page.getByRole('button',{name:'Edit metadata',exact:true}).click();await expect(page.locator('#modal')).toBeVisible();
+    const editor=await page.locator('#modal').evaluate(inventoryOf);
+    return {filters,editor,categories:CATEGORIES.map(([name])=>name)};
+}
+
+for(const [width,height] of SIZES)for(const theme of ['dark','light'])test(`dialog inventories match the concept ${width}x${height} ${theme}`,async({page},testInfo)=>{
+    await page.setViewportSize({width,height});const result={};
+    const donors=await conceptDonors(page,theme);
+    for(const mode of Object.keys(conceptDialogs)) {
+        await openConceptTags(page,theme,'no-preference');await conceptDialogs[mode](page);
+        const modal=page.locator('#modal');await expect(modal).toBeVisible();
+        result[mode]={reference:await modal.evaluate(inventoryOf),referenceValue:await modal.locator('input').inputValue()};
+        await captureCanonicalState(page,testInfo,`concept-dialog-${mode}-${width}-${theme}`,'#modal');
+    }
+    await openProductionTags(page,theme,'no-preference');
+    for(const mode of Object.keys(productionDialogs)) {
+        const box=await productionDialogs[mode](page);
+        result[mode].actual=await box.evaluate(inventoryOf);result[mode].actualValue=await box.locator('input').inputValue();
+        await captureCanonicalState(page,testInfo,`production-dialog-${mode}-${width}-${theme}`,'dialog.vocabulary-dialog');
+        await page.keyboard.press('Escape');await expect(box).toHaveCount(0);
+    }
+    const path=testInfo.outputPath('vocabulary-dialog-geometry.json');await writeFile(path,JSON.stringify({donors,result},null,2));
+    await testInfo.attach('vocabulary-dialog-geometry',{path,contentType:'application/json'});
+    for(const [mode,{reference,actual,referenceValue,actualValue}] of Object.entries(result)) {
+        expect.soft(reference.actions.buttons.map(item=>item.text),`${mode} concept actions`).toEqual(['Cancel','Apply in prototype']);
+        expect.soft(diffInventory(mapVocabularyDialog(mode,reference,donors),actual),`${mode} differences after the recorded deviations`).toEqual([]);
+        expect.soft(actualValue,`${mode} prefilled value`).toBe(referenceValue);
+    }
+});
+
+test('mutation check: the comparison reports a changed surface padding and a changed Browse label',async({page})=>{
+    await page.setViewportSize({width:1600,height:1100});
+    await openConceptTags(page,'dark','no-preference');const reference=await pageOf(page,false);
+    await openProductionTags(page,'dark','no-preference');
+    expect(comparePage(reference,await pageOf(page,true)).diff).toEqual([]);
+    await page.addStyleTag({content:'.vocabulary-main .surface{padding:21px!important}'});
+    await rows(page).first().getByRole('button',{name:'Browse',exact:true}).evaluate(node=>{node.textContent='Open';});
+    const paths=comparePage(reference,await pageOf(page,true)).diff.map(item=>item.path);
+    expect(paths).toContain('surfaces.0.paddingTop');
+    expect(paths).toContain('surfaces.1.paddingLeft');
+    expect(paths).toContain('table.rows.0.actions.0');
+    expect(paths).toContain('table.rowActions.buttons.0.text');
+    // The dialog comparison is not vacuous either: a removed Cancel and a recolored field are reported.
+    const donors=await conceptDonors(page,'dark');
+    await openConceptTags(page,'dark','no-preference');await conceptDialogs.create(page);
+    const dialogReference=mapVocabularyDialog('create',await page.locator('#modal').evaluate(inventoryOf),donors);
+    await openProductionTags(page,'dark','no-preference');const box=await productionDialogs.create(page);
+    expect(diffInventory(dialogReference,await box.evaluate(inventoryOf))).toEqual([]);
+    await page.addStyleTag({content:'dialog.vocabulary-dialog .field input{color:rgb(4,5,6)!important}'});
+    await button(box,'Cancel').evaluate(node=>node.remove());
+    const dialogPaths=diffInventory(dialogReference,await box.evaluate(inventoryOf)).map(item=>item.path);
+    expect(dialogPaths).toContain('actions.buttons.length');
+    expect(dialogPaths).toContain('fields.0.control.color');
+    await page.keyboard.press('Escape');
 });
