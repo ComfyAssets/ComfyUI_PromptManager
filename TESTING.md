@@ -258,7 +258,8 @@ loading a workflow or queueing generation.
 
 `npm run --prefix tools/vendor test:executions` runs 46 real execution cases
 (23 each in Classic and Nodes 2.0, retaining all 42 prior execution cases),
-alongside the existing 78 stock host cases and six pack compatibility cases. Run
+alongside the existing 80 stock host cases (the original 78 plus the native
+editor host case) and six pack compatibility cases. Run
 these suites serially because they share report cleanup and owned host resources. Use the same pinned disposable `PM_COMFY_ROOT`,
 `PM_TEST_PYTHON` and Playwright browser installation as `test:comfyui`:
 
@@ -310,7 +311,8 @@ both ways and workflow reload. PM usage counts retain their existing per-job
 behavior. References identify reported locators only: file identity is unverified,
 new generation and context membership are unknown, and temp references are
 transient. The stock suite excludes both execution files; discovery retains its
-78 cases and the six pack cases unchanged.
+80 cases (the original 78 plus the native editor host case) and the six pack
+cases unchanged.
 
 For a meaningful historical failure, create a separate disposable detached
 checkout at `fdba6fd0126a8a40cbd6f3e50ed4c5de8991efd4` and pass its path to

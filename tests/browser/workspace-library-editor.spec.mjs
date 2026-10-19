@@ -164,6 +164,21 @@ test('archive confirms the selected pair with fresh counts and writes only on co
     await expect.poll(()=>page.evaluate(()=>window.editorEvents.reconciled.at(-1)?.commit.kind)).toBe('archive-pair');
 });
 
+test('a failed archive keeps focus on the Archive confirmation inside the dialog',async({page})=>{
+    const f=page.fixture;await mountEditor(page);
+    let failed=false;
+    await page.route(`**/prompt_manager/pairs/${f.pair_id}`,route=>{
+        if(route.request().method()!=='PATCH'||failed)return route.continue();
+        failed=true;return route.fulfill({status:400,contentType:'application/json',body:'{"success":false,"error":"Cannot archive.","code":null}'});
+    });
+    const dialog=await openEditor(page,{mode:'metadata',positiveId:f.positive_id,pairId:f.pair_id});await ready(dialog);
+    await button(dialog,'Archive…').click();await expect(button(dialog,'Archive')).toBeEnabled();
+    await button(dialog,'Archive').click();
+    await expect(note(dialog)).toContainText('Cannot archive.');expect(page.writes).toHaveLength(1);
+    await expect(button(dialog,'Archive')).toBeFocused();
+    expect(await dialog.evaluate(node=>node.contains(document.activeElement))).toBe(true);
+});
+
 test('an archive conflict offers an explicit Reload that re-reads and never replays the archive',async({page,request})=>{
     const f=page.fixture;await mountEditor(page);
     let conflicted=false;
