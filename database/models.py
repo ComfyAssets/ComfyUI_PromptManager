@@ -101,6 +101,24 @@ SQLITE_HEADER = b"SQLite format 3\x00"
 REQUIRED_PROMPT_COLUMNS = ("id", "text", "created_at")
 
 
+def configure_connection(conn: sqlite3.Connection) -> None:
+    """Apply the locking and durability settings every managed connection shares.
+
+    WAL lets readers run beside the single writer. In WAL mode
+    ``synchronous=NORMAL`` keeps the database consistent after an application
+    or ComfyUI crash and flushes only at checkpoints, so a commit no longer
+    holds SQLite's write lock across a disk flush. Under ``FULL`` a slow flush
+    (common on Windows) let other writers' polling busy handlers starve past
+    BUSY_TIMEOUT_SECONDS and fail with "database is locked" (#242). Without
+    WAL (for example an in-memory database) SQLite's FULL default is kept.
+    """
+    journal_mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_SECONDS * 1000}")
+    if str(journal_mode).lower() == "wal":
+        conn.execute("PRAGMA synchronous = NORMAL")
+
+
 class PromptModel:
     """Database model for prompt storage and schema management."""
 
@@ -153,9 +171,7 @@ class PromptModel:
             try:
                 conn = sqlite3.connect(self.db_path, timeout=BUSY_TIMEOUT_SECONDS)
                 try:
-                    conn.execute("PRAGMA journal_mode = WAL")
-                    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_SECONDS * 1000}")
-                    conn.execute("PRAGMA foreign_keys = ON")
+                    configure_connection(conn)
                     self._create_tables(conn)
                     self._create_indexes(conn)
                     conn.commit()
@@ -538,10 +554,11 @@ class PromptModel:
 
         Each thread gets its own ``sqlite3.Connection`` (kept in
         ``threading.local``), created on first use and reused by that thread
-        thereafter. Every connection is configured with WAL journaling,
-        ``row_factory = sqlite3.Row``, ``PRAGMA foreign_keys = ON`` and
-        ``PRAGMA busy_timeout`` of BUSY_TIMEOUT_SECONDS so concurrent writers
-        wait instead of failing. Callers use it as a context manager
+        thereafter. Every connection gets ``row_factory = sqlite3.Row`` and the
+        shared settings of ``configure_connection``: WAL journaling with
+        ``synchronous=NORMAL``, ``PRAGMA foreign_keys = ON`` and a
+        ``busy_timeout`` of BUSY_TIMEOUT_SECONDS so concurrent writers wait
+        instead of failing. Callers use it as a context manager
         (``with conn:``), which commits or rolls back that thread's transaction
         and leaves the connection open. No lock is held while a connection is in use.
 
@@ -558,9 +575,7 @@ class PromptModel:
             self.db_path, check_same_thread=False, timeout=BUSY_TIMEOUT_SECONDS
         )
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_SECONDS * 1000}")
+        configure_connection(conn)
         self._local.conn = conn
         self._local.generation = self._generation
         with self._conn_lock:
