@@ -8,6 +8,7 @@ it. Python and JS therefore assert the same files with the same expectations.
 """
 
 import json
+import os
 import shutil
 import subprocess  # nosec B404
 import tempfile
@@ -79,6 +80,8 @@ class TestParityFacts(unittest.TestCase):
     def test_vectors_json_facts_match_workspace_js(self):
         node = shutil.which("node")
         if node is None:  # pragma: no cover - CI runners and dev hosts ship Node
+            if os.environ.get("CI"):
+                self.fail("Node.js is required in CI for the facts vectors")
             self.skipTest("Node.js is not installed")
         vectors = [v for v in parity.load_vectors() if v["profile"] == "inspection"]
         self.assertTrue(vectors)
