@@ -1249,6 +1249,340 @@ class TestGuiderSamplers(unittest.TestCase):
         )
 
 
+WOLF = "a grey wolf in fog"
+
+
+def _encoded(text: str) -> dict:
+    return {"class_type": "CLIPTextEncode", "inputs": {"text": text, "clip": ["4", 1]}}
+
+
+def _with_positive(node: dict, extra: dict = None) -> dict:
+    """``f02``'s KSampler graph whose positive input reads ``node`` (as node 6)."""
+    source = parity.build("f02")["prompt"]
+    source["6"] = node
+    source.update(extra or {})
+    return source
+
+
+def _if_else(condition, on_true, on_false) -> dict:
+    return {
+        "class_type": "easy ifElse",
+        "inputs": {"boolean": condition, "on_true": on_true, "on_false": on_false},
+    }
+
+
+def _image_exists() -> dict:
+    return {"class_type": "ImageExists", "inputs": {"image": ["13", 0]}}
+
+
+def _sides(result: dict) -> tuple:
+    return tuple(
+        result[role]["text"] if isinstance(result[role], dict) else None
+        for role in ("positive", "negative")
+    )
+
+
+class TestConditioningSemantics(unittest.TestCase):
+    """Pass-throughs, zeroed conditioning, selectors and composites (inspection)."""
+
+    def test_flux_guidance_passthrough_resolves(self):
+        result = _inspect(parity.build("f06c")["prompt"])
+        self.assertEqual(result["state"], "resolved")
+        self.assertIsNone(result["reason_code"])
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        provenance = result["positive"]["provenance"]
+        self.assertEqual(
+            provenance["path"],
+            [{"node_id": "6", "output_slot": 0}, {"node_id": "10", "output_slot": 0}],
+        )
+        self.assertEqual(provenance["text_source"], "graph-inferred")
+        # f17: BasicGuider <- FluxGuidance <- CLIPTextEncode, negative absent.
+        guided = _inspect(parity.build("f17")["prompt"])
+        self.assertEqual(guided["state"], "absent")
+        self.assertEqual(guided["reason"], "Guider has no negative input")
+        self.assertEqual(guided["positive"]["text"], parity.POS)
+
+    def test_controlnet_apply_advanced_maps_slots(self):
+        source = parity.build("f06e")["prompt"]
+        result = _inspect(source)
+        self.assertEqual(result["state"], "resolved")
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        self.assertEqual(
+            result["negative"]["provenance"]["path"],
+            [{"node_id": "7", "output_slot": 1}, {"node_id": "11", "output_slot": 0}],
+        )
+        # Slot 0 of the negative's node is its positive output, never the negative.
+        source["3"]["inputs"]["negative"] = ["7", 0]
+        self.assertEqual(_sides(_inspect(source)), (parity.POS, parity.POS))
+        # An output slot the table does not list is unsupported, named.
+        source["3"]["inputs"]["negative"] = ["7", 2]
+        result = _inspect(source)
+        self.assertEqual(result["reason_code"], "unsupported-node")
+        self.assertEqual(
+            result["node"], {"id": "7", "class_type": "ControlNetApplyAdvanced"}
+        )
+
+    def test_reference_latent_and_set_area_pass_through(self):
+        chain = [
+            ("ReferenceLatent", {"latent": ["5", 0]}),
+            ("ConditioningSetArea", {"width": 64, "height": 64, "x": 0, "y": 0}),
+            ("ConditioningSetAreaPercentage", {"width": 1.0, "height": 1.0}),
+            ("ConditioningSetAreaStrength", {"strength": 1.0}),
+            ("ConditioningSetMask", {"mask": ["40", 0], "strength": 1.0}),
+            ("ConditioningSetTimestepRange", {"start": 0.0, "end": 1.0}),
+            ("ControlNetApply", {"control_net": ["41", 0], "strength": 1.0}),
+        ]
+        extra, previous = {"10": _encoded(parity.POS)}, "10"
+        for index, (name, inputs) in enumerate(chain):
+            node_id = f"2{index}"
+            extra[node_id] = {
+                "class_type": name,
+                "inputs": {**inputs, "conditioning": [previous, 0]},
+            }
+            previous = node_id
+        source = _with_positive(extra.pop(previous), extra)
+        result = _inspect(source)
+        self.assertEqual(result["state"], "resolved")
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        path = result["positive"]["provenance"]["path"]
+        self.assertEqual(
+            [entry["node_id"] for entry in path],
+            ["6", "25", "24", "23", "22", "21", "20", "10"],
+        )
+
+    def test_inpaint_model_conditioning_slots(self):
+        inpaint = {
+            "class_type": "InpaintModelConditioning",
+            "inputs": {
+                "positive": ["10", 0],
+                "negative": ["11", 0],
+                "vae": ["4", 2],
+                "pixels": ["13", 0],
+                "mask": ["14", 0],
+                "noise_mask": True,
+            },
+        }
+        extra = {"10": _encoded(parity.POS), "11": _encoded(parity.NEG)}
+        source = _with_positive(inpaint, extra)
+        source["3"]["inputs"]["negative"] = ["6", 1]
+        result = _inspect(source)
+        self.assertEqual(result["state"], "resolved")
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        self.assertEqual(result["positive"]["provenance"]["output_slot"], 0)
+        self.assertEqual(result["negative"]["provenance"]["output_slot"], 1)
+
+    def test_zeroed_negative_is_explicit_empty_with_distinct_source(self):
+        from utils.prompt_inspector import inspect_prompt_evidence
+
+        source = parity.build("f23")["prompt"]
+        result = _inspect(source)
+        self.assertEqual(result["state"], "resolved")
+        negative = result["negative"]
+        self.assertEqual((negative["text"], negative["storage_text"]), ("", ""))
+        self.assertEqual(negative["provenance"]["text_source"], "zeroed-conditioning")
+        self.assertEqual(
+            negative["provenance"]["path"], [{"node_id": "7", "output_slot": 0}]
+        )
+        self.assertEqual(result["positive"]["text"], parity.POS)
+        self.assertEqual(
+            result["positive"]["provenance"]["text_source"], "graph-inferred"
+        )
+        evidence = inspect_prompt_evidence({"prompt": source})["prompts"]
+        self.assertEqual(
+            evidence["negative"],
+            {"status": "resolved", "text": "", "source": "zeroed-conditioning"},
+        )
+        # The source survives pass-throughs and reroutes in front of it.
+        source["30"] = {
+            "class_type": "FluxGuidance",
+            "inputs": {"guidance": 3.5, "conditioning": ["7", 0]},
+        }
+        source["31"] = {"class_type": "Reroute", "inputs": {"value": ["30", 0]}}
+        source["3"]["inputs"]["negative"] = ["31", 0]
+        negative = _inspect(source)["negative"]
+        self.assertEqual(negative["text"], "")
+        self.assertEqual(negative["provenance"]["text_source"], "zeroed-conditioning")
+        # A zeroed positive is an empty positive, never a resolved prompt.
+        source["3"]["inputs"]["positive"] = ["7", 0]
+        result = _inspect(source)
+        self.assertEqual(result["state"], "unresolved")
+        self.assertEqual(result["reason"], "Positive prompt is empty")
+
+    def test_if_else_literal_boolean_selects_branch(self):
+        source = parity.build("f20")["prompt"]
+        result = _inspect(source)
+        self.assertEqual(result["state"], "resolved")
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        self.assertEqual(
+            [entry["node_id"] for entry in result["positive"]["provenance"]["path"]],
+            ["6", "10"],
+        )
+        source["6"]["inputs"]["boolean"] = False
+        self.assertEqual(_inspect(source)["positive"]["text"], WOLF)
+        # The branch that is not taken is never traced.
+        source["6"]["inputs"]["on_true"] = ["99", 0]
+        self.assertEqual(_inspect(source)["state"], "resolved")
+        for literal in (1, "true", None):
+            with self.subTest(literal=literal):
+                source["6"]["inputs"]["boolean"] = literal
+                result = _inspect(source)
+                self.assertEqual(result["state"], "unresolved")
+                self.assertEqual(result["reason_code"], "malformed")
+                self.assertIsNone(result["positive"])
+
+    def test_if_else_linked_boolean_converging_branches_resolve(self):
+        guidance = {
+            "class_type": "FluxGuidance",
+            "inputs": {"guidance": 3.5, "conditioning": ["10", 0]},
+        }
+        extra = {"10": _encoded(parity.POS), "11": guidance, "12": _image_exists()}
+        source = _with_positive(_if_else(["12", 1], ["11", 0], ["10", 0]), extra)
+        result = _inspect(source)
+        self.assertEqual(result["state"], "resolved")
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        self.assertEqual(result["sampler_id"], "3")
+        self.assertEqual(result["candidates"], [])
+        # Two encoders with the same text converge as well.
+        source["11"] = _encoded(parity.POS)
+        self.assertEqual(_inspect(source)["state"], "resolved")
+
+    def test_if_else_linked_boolean_diverging_branches_are_ambiguous_with_candidates(
+        self,
+    ):
+        extra = {
+            "10": _encoded(parity.POS),
+            "11": _encoded(WOLF),
+            "12": _image_exists(),
+        }
+        source = _with_positive(_if_else(["12", 1], ["10", 0], ["11", 0]), extra)
+        result = _inspect(source)
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(result["sampler_id"], "3")
+        self.assertIsNone(result["positive"])
+        self.assertIsNone(result["negative"])
+        candidates = result["candidates"]
+        self.assertEqual([item["state"] for item in candidates], ["resolved"] * 2)
+        self.assertEqual(
+            [_sides(item) for item in candidates],
+            [(parity.POS, parity.NEG), (WOLF, parity.NEG)],
+        )
+        self.assertEqual(
+            [
+                item["positive"]["provenance"]["path"][-1]["node_id"]
+                for item in candidates
+            ],
+            ["10", "11"],
+        )
+        # One selector read by both roles is one runtime choice, not four pairs.
+        source["3"]["inputs"]["negative"] = ["6", 0]
+        candidates = _inspect(source)["candidates"]
+        self.assertEqual(
+            [_sides(item) for item in candidates],
+            [(parity.POS, parity.POS), (WOLF, WOLF)],
+        )
+        # Independent selectors on each role multiply.
+        source["7"] = _if_else(["12", 1], ["10", 0], ["14", 0])
+        source["14"] = _encoded(parity.NEG)
+        source["3"]["inputs"]["negative"] = ["7", 0]
+        candidates = _inspect(source)["candidates"]
+        self.assertEqual(len(candidates), 4)
+        self.assertEqual(len({_sides(item) for item in candidates}), 4)
+
+    def test_diverging_branch_that_cannot_be_traced_is_never_guessed(self):
+        extra = {
+            "10": _encoded(parity.POS),
+            "11": {"class_type": "FutureEncoder", "inputs": {"text": WOLF}},
+            "12": _image_exists(),
+        }
+        source = _with_positive(_if_else(["12", 1], ["10", 0], ["11", 0]), extra)
+        result = _inspect(source)
+        self.assertEqual(result["state"], "unresolved")
+        self.assertEqual(result["node"], {"id": "11", "class_type": "FutureEncoder"})
+        self.assertIsNone(result["positive"])
+
+    def test_selector_branches_are_bounded(self):
+        extra, previous = {"12": _image_exists()}, None
+        for index in range(6):
+            extra[f"a{index}"] = _encoded(f"left {index}")
+            extra[f"b{index}"] = _encoded(f"right {index}")
+            extra[f"s{index}"] = _if_else(["12", 1], [f"a{index}", 0], [f"b{index}", 0])
+            extra[f"c{index}"] = {
+                "class_type": "ConditioningCombine",
+                "inputs": {
+                    "conditioning_1": [f"s{index}", 0],
+                    "conditioning_2": [previous or f"s{index}", 0],
+                },
+            }
+            previous = f"c{index}"
+        source = _with_positive(
+            {"class_type": "Reroute", "inputs": {"value": [previous, 0]}}, extra
+        )
+        result = _inspect(source)
+        self.assertEqual(result["state"], "unresolved")
+        self.assertEqual(result["reason_code"], "work-limit")
+        self.assertEqual(result["candidates"], [])
+        # Branch tracing draws from the per-candidate visit allowance too.
+        small = _with_positive(
+            _if_else(["12", 1], ["10", 0], ["11", 0]),
+            {"10": _encoded(parity.POS), "11": _encoded(WOLF), "12": _image_exists()},
+        )
+        self.assertEqual(_inspect(small, max_visits=3)["reason_code"], "work-limit")
+
+    def test_conditioning_combine_distinct_texts_is_composite(self):
+        source = parity.build("f06d")["prompt"]
+        result = _inspect(source)
+        self.assertEqual(
+            (result["state"], result["reason_code"]), ("unresolved", "composite")
+        )
+        self.assertEqual(
+            result["node"], {"id": "6", "class_type": "ConditioningCombine"}
+        )
+        self.assertIsNone(result["positive"])
+        for name, inputs in (
+            ("ConditioningConcat", ("conditioning_to", "conditioning_from")),
+            ("ConditioningAverage", ("conditioning_to", "conditioning_from")),
+        ):
+            with self.subTest(name=name):
+                source["6"] = {
+                    "class_type": name,
+                    "inputs": {inputs[0]: ["10", 0], inputs[1]: ["11", 0]},
+                }
+                result = _inspect(source)
+                self.assertEqual(result["reason_code"], "composite")
+                self.assertEqual(result["node"], {"id": "6", "class_type": name})
+        # A zeroed part is a different text too.
+        source["12"] = {
+            "class_type": "ConditioningZeroOut",
+            "inputs": {"conditioning": ["10", 0]},
+        }
+        source["6"]["inputs"]["conditioning_from"] = ["12", 0]
+        self.assertEqual(_inspect(source)["reason_code"], "composite")
+
+    def test_conditioning_combine_identical_texts_resolve(self):
+        source = parity.build("f06d")["prompt"]
+        source["11"]["inputs"]["text"] = parity.POS
+        result = _inspect(source)
+        self.assertEqual(result["state"], "resolved")
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        source["6"]["inputs"]["conditioning_2"] = ["10", 0]
+        self.assertEqual(_inspect(source)["state"], "resolved")
+        # A missing part is malformed, never "the other part".
+        del source["6"]["inputs"]["conditioning_2"]
+        result = _inspect(source)
+        self.assertEqual(result["state"], "unresolved")
+        self.assertEqual(result["reason_code"], "malformed")
+
+    def test_default_profile_keeps_conditioning_nodes_unsupported(self):
+        for name in ("f06c", "f06d", "f06e", "f20", "f23"):
+            with self.subTest(fixture=name):
+                result = resolve_prompt_pair({"prompt": parity.build(name)["prompt"]})
+                self.assertEqual(result["state"], "unresolved")
+                self.assertEqual(
+                    result["reason"], "Unsupported node semantics or output slot"
+                )
+                self.assertIsNone(result["reason_code"])
+
+
 REPO = Path(__file__).resolve().parents[1]
 SEMANTICS_UNAVAILABLE = "Inspection node semantics are unavailable"
 

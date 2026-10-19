@@ -342,12 +342,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "Unsupported node semantics or output slot",
-      "reason_code": "unsupported-node",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {
@@ -385,8 +385,8 @@
     "expect": {
       "metadata_status": "available",
       "state": "unresolved",
-      "reason": "Unsupported node semantics or output slot",
-      "reason_code": "unsupported-node",
+      "reason": "Combined conditioning has different texts",
+      "reason_code": "composite",
       "selection": null,
       "positive": null,
       "negative": null,
@@ -426,12 +426,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "Unsupported node semantics or output slot",
-      "reason_code": "unsupported-node",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {
@@ -888,12 +888,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "Unsupported node semantics or output slot",
-      "reason_code": "unsupported-node",
+      "state": "absent",
+      "reason": "Guider has no negative input",
+      "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "<absent>",
       "candidate_count": 0,
       "facts": {
         "seed": {
@@ -919,6 +919,90 @@
         "model": {
           "status": "known",
           "value": "flux1-dev.safetensors"
+        }
+      }
+    }
+  },
+  {
+    "name": "f20-inspection",
+    "fixture": "f20",
+    "profile": "inspection",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
+      "selection": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
+      "candidate_count": 0,
+      "facts": {
+        "seed": {
+          "status": "known",
+          "value": "42"
+        },
+        "steps": {
+          "status": "known",
+          "value": "25"
+        },
+        "cfg": {
+          "status": "known",
+          "value": "6.5"
+        },
+        "sampler": {
+          "status": "known",
+          "value": "euler"
+        },
+        "scheduler": {
+          "status": "known",
+          "value": "normal"
+        },
+        "model": {
+          "status": "known",
+          "value": "sdxl_base.safetensors"
+        }
+      }
+    }
+  },
+  {
+    "name": "f23-inspection",
+    "fixture": "f23",
+    "profile": "inspection",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
+      "selection": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "",
+      "candidate_count": 0,
+      "facts": {
+        "seed": {
+          "status": "known",
+          "value": "42"
+        },
+        "steps": {
+          "status": "known",
+          "value": "25"
+        },
+        "cfg": {
+          "status": "known",
+          "value": "6.5"
+        },
+        "sampler": {
+          "status": "known",
+          "value": "euler"
+        },
+        "scheduler": {
+          "status": "known",
+          "value": "normal"
+        },
+        "model": {
+          "status": "known",
+          "value": "sdxl_base.safetensors"
         }
       }
     }
@@ -1293,6 +1377,40 @@
       "selection": null,
       "positive": "<absent>",
       "negative": "<absent>",
+      "candidate_count": 0,
+      "facts": null
+    }
+  },
+  {
+    "name": "f20-default",
+    "fixture": "f20",
+    "profile": "default",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "unresolved",
+      "reason": "Unsupported node semantics or output slot",
+      "reason_code": null,
+      "selection": null,
+      "positive": null,
+      "negative": null,
+      "candidate_count": 0,
+      "facts": null
+    }
+  },
+  {
+    "name": "f23-default",
+    "fixture": "f23",
+    "profile": "default",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "unresolved",
+      "reason": "Unsupported node semantics or output slot",
+      "reason_code": null,
+      "selection": null,
+      "positive": null,
+      "negative": null,
       "candidate_count": 0,
       "facts": null
     }

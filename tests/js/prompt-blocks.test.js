@@ -70,3 +70,14 @@ test('frozen fields disclose their exact source and keep null, empty and whitesp
         container.click(f.walk(container,node=>node.dataset.sendRole==='pair')[0]);assert.equal(sent.length,2);
     }finally{scope.dispose();f.restore();}
 });
+
+test('a zeroed conditioning negative shows as an explicit empty negative with its own source',()=>{
+    const f=dom(),scope=createScope(),container=new f.Element('div'),sent=[];
+    try{
+        module.mountPromptBlocks(container,{parentScope:scope,sender:{open:roles=>sent.push(roles)},prompts:{positive:{status:'resolved',text:'positive',source:'graph-inferred'},negative:{status:'resolved',text:'',source:'zeroed-conditioning'}}});
+        assert.equal(f.walk(container,node=>node.textContent==='Zeroed conditioning (no negative text)').length,1);
+        assert.equal(f.walk(container,node=>node.textContent==='Empty negative prompt').length,1);
+        container.click(f.walk(container,node=>node.dataset.sendRole==='pair')[0]);
+        assert.deepEqual(sent,[{positive:'positive',negative:''}]);
+    }finally{scope.dispose();f.restore();}
+});

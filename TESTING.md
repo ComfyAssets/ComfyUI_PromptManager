@@ -232,7 +232,16 @@ semantics table `web/js/inspection-semantics.json` (at most 1 MiB and eight nest
 levels, loaded on first use). With it, `SamplerCustomAdvanced` follows its `guider`
 link (through Reroutes) to `CFGGuider` (positive and negative) or `BasicGuider`
 (positive only; the negative is `absent`, "Guider has no negative input"). Any
-other guider, such as `DualCFGGuider`, is `unsupported-node`. If the table cannot
+other guider, such as `DualCFGGuider`, is `unsupported-node`. Conditioning is
+traced through the table's pass-throughs (FluxGuidance, ReferenceLatent, the
+ConditioningSet* nodes, ControlNet apply nodes, InpaintModelConditioning and
+WanImageToVideo by output slot). `ConditioningZeroOut` is an explicit empty text
+with source `zeroed-conditioning`. `easy ifElse` with a literal boolean follows that
+branch only; with a linked boolean both branches are traced, equal texts resolve and
+different texts make the sampler `ambiguous` with one candidate per choice (at most
+32, else `work-limit`). ConditioningCombine/Concat/Average resolve only when every
+part has the same text, otherwise `unresolved` with `composite` naming the node.
+Results that depend on a forced choice are never memoized. If the table cannot
 be loaded, graph inspection is `unresolved` ("Inspection node semantics are
 unavailable") and ingestion is unaffected, because it never imports the table.
 

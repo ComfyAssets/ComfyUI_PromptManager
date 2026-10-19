@@ -11,6 +11,7 @@ const sources = {
     execution: 'Recorded at execution',
     'graph-inferred': 'Inferred from the saved workflow',
     'embedded-parameters': 'Embedded generation parameters',
+    'zeroed-conditioning': 'Zeroed conditioning (no negative text)',
     'saved-association': 'Saved library association',
 };
 const statuses = {

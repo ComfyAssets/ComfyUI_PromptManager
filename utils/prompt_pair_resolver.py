@@ -143,6 +143,10 @@ _DIRECT_SAMPLER = {
 # which needs output ancestry (later slice), so it is never a candidate alone.
 _CANDIDATE_STRATEGIES = frozenset({"ksampler", "custom-advanced"})
 _GUIDER_ABSENT_REASON = "Guider has no negative input"
+# ConditioningZeroOut discards its input text: an explicit empty prompt.
+_ZEROED_SOURCE = "zeroed-conditioning"
+# Runtime selector choices expanded per sampler (the spec's candidate cap).
+_MAX_BRANCH_CANDIDATES = 32
 _SAMPLER_LIKE_INPUTS = ("latent_image", "guider", "positive", "negative")
 _NO_SAMPLER_NAMES = 3
 _CLASS_NAME_LENGTH = 64
@@ -157,6 +161,18 @@ class _Unresolved(Exception):
         super().__init__(message)
         self.code = code
         self.node = node
+
+
+class _Diverging(Exception):
+    """A runtime selector whose branches trace to different texts.
+
+    Raised from inside tracing; ``_GraphResolver.branches`` resolves the sampler
+    again once per choice, so each candidate is internally consistent.
+    """
+
+    def __init__(self, node_id: str) -> None:
+        super().__init__(node_id)
+        self.node_id = node_id
 
 
 def _node_ref(node_id: str, class_type: Any) -> dict:
@@ -230,6 +246,19 @@ def _result(
     }
 
 
+def _role_text(side: Any) -> Optional[str]:
+    return side["text"] if isinstance(side, dict) else None
+
+
+def _outcome_key(result: Dict[str, Any]) -> tuple:
+    """What a reader sees of a result: state and the two role texts."""
+    return (
+        result["state"],
+        _role_text(result["positive"]),
+        _role_text(result["negative"]),
+    )
+
+
 def _legacy_result(result: Dict[str, Any]) -> Dict[str, Any]:
     """The default profile's wire: today's keys plus ``reason_code: None``."""
     legacy = {key: value for key, value in result.items() if key != "node"}
@@ -280,6 +309,10 @@ class _GraphResolver:
         self.active: set = set()
         self.metadata = metadata or {}
         self.text_sources: dict = {}
+        # Forced runtime selector choices (inspection); a result traced through
+        # one is "tainted" and never memoized, since it depends on the choice.
+        self.choices: dict = {}
+        self.tainted = False
         # ``semantics`` (inspection) names the samplers and guiders it follows.
         self.semantics = semantics
         if semantics is None:
@@ -326,11 +359,15 @@ class _GraphResolver:
             self.scanned -= units
 
     def unsupported(self, message: str, node_id: str) -> _Unresolved:
+        return self.named(message, "unsupported-node", node_id)
+
+    def named(self, message: str, code: str, node_id: str) -> _Unresolved:
+        """An outcome that names the node it is about (bounded class name)."""
         node = self.graph.get(node_id)
         class_type = node.get("class_type") if isinstance(node, dict) else None
         if isinstance(class_type, str):
             class_type = class_type[:_CLASS_NAME_LENGTH]
-        return _Unresolved(message, "unsupported-node", _node_ref(node_id, class_type))
+        return _Unresolved(message, code, _node_ref(node_id, class_type))
 
     def bounded(self, text: str) -> str:
         if len(text) > self.max_text_length:
@@ -368,6 +405,7 @@ class _GraphResolver:
             return self.memo[key]
         allowance = self.budget.allowance
         outer_deepest = self.deepest
+        outer_tainted, self.tainted = self.tainted, False
         self.deepest = depth
         try:
             self.budget.spend()
@@ -381,6 +419,8 @@ class _GraphResolver:
                         "Reroute input is not uniquely identifiable", "malformed"
                     )
                 text, path, storage_text = self.text(inputs[keys[0]], kind, depth + 1)
+                if self.semantics is not None:
+                    self.inherit_source(node_id, slot, [path])
             elif (name, slot) in self.adapters:
                 adapter = self.adapters[(name, slot)]
                 if not isinstance(adapter, OutputAdapter) or adapter.kind != kind:
@@ -471,6 +511,10 @@ class _GraphResolver:
                         parts.append(part)
                 text = self.built(delimiter.join(parts))
                 storage_text = text
+            elif self.semantics is not None and self.follows(name, slot, kind):
+                text, path, storage_text = self.semantic(
+                    node_id, name, slot, kind, inputs, depth
+                )
             else:
                 raise self.unsupported(
                     "Unsupported node semantics or output slot", node_id
@@ -488,13 +532,122 @@ class _GraphResolver:
                 self.path_entries is not None and self.path_entries < 0
             ):
                 raise _Unresolved("Provenance path limit reached", "work-limit")
-            self.memo[key] = (text, path, storage_text)
-            self.costs[key] = allowance - self.budget.allowance
-            self.heights[key] = self.deepest - depth
+            if not self.tainted:
+                self.memo[key] = (text, path, storage_text)
+                self.costs[key] = allowance - self.budget.allowance
+                self.heights[key] = self.deepest - depth
             return text, path, storage_text
         finally:
             self.deepest = max(outer_deepest, self.deepest)
+            self.tainted = outer_tainted or self.tainted
             self.active.discard(key)
+
+    def follows(self, name: str, slot: int, kind: str) -> bool:
+        """Whether the semantics table traces this output (inspection only)."""
+        semantics = self.semantics
+        if slot == 0 and name in semantics.selectors:
+            return True
+        return kind == "conditioning" and (
+            (name, slot) in semantics.conditioning
+            or (slot == 0 and name in semantics.composites)
+        )
+
+    def semantic(
+        self, node_id: str, name: str, slot: int, kind: str, inputs: dict, depth: int
+    ) -> Tuple[str, list, str]:
+        """Trace a table-listed pass-through, zeroed, selector or composite output.
+
+        The caller (``text``) prepends this node to the returned path.
+        """
+        semantics = self.semantics
+        entry = (
+            semantics.conditioning.get((name, slot)) if kind == "conditioning" else None
+        )
+        if entry is not None and entry["strategy"] == "zeroed":
+            # The upstream text is discarded, so it is not traced.
+            self.text_sources[(node_id, slot)] = _ZEROED_SOURCE
+            return "", [], ""
+        if entry is not None:  # passthrough: one input carries the text
+            traced = self.text(inputs.get(entry["input"]), kind, depth + 1)
+            self.inherit_source(node_id, slot, [traced[1]])
+            return traced
+        if name in semantics.selectors:
+            return self.select(node_id, semantics.selectors[name], inputs, kind, depth)
+        parts = [
+            self.text(inputs.get(input_name), kind, depth + 1)
+            for input_name in semantics.composites[name]["inputs"]
+        ]
+        if len({part[0] for part in parts}) != 1:
+            # Several texts are in effect at once: not one sendable prompt.
+            raise self.named(
+                "Combined conditioning has different texts", "composite", node_id
+            )
+        return self.merged(node_id, slot, parts)
+
+    def select(
+        self, node_id: str, entry: Mapping, inputs: dict, kind: str, depth: int
+    ) -> Tuple[str, list, str]:
+        """A literal condition picks one branch; a linked one is a runtime choice.
+
+        A runtime choice traces both branches. Equal texts converge; different
+        texts raise ``_Diverging`` unless this choice is already forced.
+        """
+        condition = inputs.get(entry["condition"])
+        branches = entry["branches"]
+        if type(condition) is bool:
+            choice: Optional[bool] = condition
+        elif not _link(condition):
+            raise _Unresolved("Malformed selector condition", "malformed")
+        elif node_id in self.choices:
+            choice = self.choices[node_id]
+            self.tainted = True
+        else:
+            choice = None
+        if choice is not None:
+            branch = branches["true" if choice else "false"]
+            traced = self.text(inputs.get(branch), kind, depth + 1)
+            self.inherit_source(node_id, 0, [traced[1]])
+            return traced
+        parts = [
+            self.text(inputs.get(branches[label]), kind, depth + 1)
+            for label in ("true", "false")
+        ]
+        if parts[0][0] != parts[1][0]:
+            raise _Diverging(node_id)
+        return self.merged(node_id, 0, parts)
+
+    def merged(self, node_id: str, slot: int, parts: list) -> Tuple[str, list, str]:
+        """One text reached through several followed paths (deduplicated)."""
+        text = parts[0][0]
+        storages = {part[2] for part in parts}
+        storage_text = parts[0][2] if len(storages) == 1 else text
+        paths = [part[1] for part in parts]
+        self.scan(sum(len(path) for path in paths))
+        merged, seen = [], set()
+        for path in paths:
+            for step in path:
+                identity = (step["node_id"], step["output_slot"])
+                if identity not in seen:
+                    seen.add(identity)
+                    merged.append(step)
+        self.inherit_source(node_id, slot, paths)
+        return text, merged, storage_text
+
+    def source_of(self, path: list) -> str:
+        if not path:
+            return "graph-inferred"
+        origin = path[0]
+        return self.text_sources.get(
+            (origin["node_id"], origin["output_slot"]), "graph-inferred"
+        )
+
+    def inherit_source(self, node_id: str, slot: int, paths: list) -> None:
+        """A forwarding node reports its input's text source when unambiguous."""
+        sources = {self.source_of(path) for path in paths}
+        if len(sources) == 1:
+            self.text_sources[(node_id, slot)] = sources.pop()
+        else:
+            self.text_sources.pop((node_id, slot), None)
 
     def execution_record(self, node_id: str, inputs: dict) -> Optional[dict]:
         try:
@@ -604,7 +757,6 @@ class _GraphResolver:
         return self.semantics.samplers[name]
 
     def pair(self, sampler_id: str) -> dict:
-        positive = negative = None
         self.budget.reset(self.per_candidate_visits)
         if not self.legacy and self.budget.total <= 0:
             return _result(
@@ -613,13 +765,62 @@ class _GraphResolver:
                 reason="Resolution visit limit reached",
                 reason_code="work-limit",
             )
+        if self.semantics is None:
+            return self.sides(sampler_id)
+        return self.branches(sampler_id)
+
+    def branches(self, sampler_id: str) -> dict:
+        """Resolve once per runtime selector choice that changes a role text.
+
+        Every run draws from the same candidate allowance. Results that agree
+        collapse to one; otherwise the sampler is ``ambiguous`` with one
+        candidate per choice set, in true-before-false order.
+        """
+        pending: list = [{}]
+        results: list = []
+        try:
+            while pending:
+                self.choices = pending.pop(0)
+                try:
+                    results.append(self.sides(sampler_id))
+                except _Diverging as diverging:
+                    if len(results) + len(pending) + 2 > _MAX_BRANCH_CANDIDATES:
+                        raise _Unresolved("Too many selector branches", "work-limit")
+                    pending.extend(
+                        {**self.choices, diverging.node_id: choice}
+                        for choice in (True, False)
+                    )
+        except _Unresolved as error:
+            return _result(
+                "unresolved",
+                sampler_id=sampler_id,
+                reason=str(error),
+                reason_code=error.code,
+                node=error.node,
+            )
+        finally:
+            self.choices = {}
+        if all(item["state"] == "unresolved" for item in results):
+            return results[0]
+        if len({_outcome_key(item) for item in results}) == 1:
+            return results[0]
+        return _result(
+            "ambiguous",
+            sampler_id=sampler_id,
+            reason="Selector branches have different prompts",
+            candidates=results,
+        )
+
+    def sides(self, sampler_id: str) -> dict:
+        positive = negative = None
         try:
             name, inputs = self.node(sampler_id)
             entry = self.sampler_entry(name)
             # A second sampler in the latent ancestry denotes a multistage run;
             # associating the final image with one prompt pair would be a guess.
-            if entry["latent"] in inputs:
-                self.latent_source(inputs[entry["latent"]], set(), 0)
+            latent = entry.get("latent")
+            if latent is not None and latent in inputs:
+                self.latent_source(inputs[latent], set(), 0)
             guider_id, depth = None, 0
             conditioning = entry["conditioning"]
             absent_reason = "Negative input is absent"

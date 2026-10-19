@@ -2,7 +2,7 @@
 
 Every graph here is original synthetic content (CC0): neutral texts, generic model
 file names and invented filename prefixes. Nothing is copied from user outputs.
-The shapes reproduce the parity audit's fixture numbering (``f01``..``f17``).
+The shapes reproduce the parity audit's fixture numbering (``f01``..``f23``).
 
 ``build(name)`` returns ``{"prompt", "workflow", "extra_chunks"}``. ``write_png``
 writes the two records the way core ``SaveImage`` does (Pillow ``PngInfo.add_text``,
@@ -66,6 +66,8 @@ COMMITTED = (
     "f15",
     "f16",
     "f17",
+    "f20",
+    "f23",
 )
 # Built in a temporary directory at test time (too large to commit).
 TEST_TIME = ("f01", "f04", "f05")
@@ -691,6 +693,22 @@ def _f17():
     return _basic(graph, _ui(graph))
 
 
+def _f20():
+    """``easy ifElse`` with a literal boolean picks the positive branch."""
+    select = {
+        "class_type": "easy ifElse",
+        "inputs": {"boolean": True, "on_true": ["10", 0], "on_false": ["11", 0]},
+    }
+    extra = {"10": _enc(POS), "11": _enc("a grey wolf in fog")}
+    return _basic(_ksampler_graph(select, _enc(NEG), extra=extra))
+
+
+def _f23():
+    """The negative is ``ConditioningZeroOut`` of the positive encoder."""
+    zero = {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["6", 0]}}
+    return _basic(_ksampler_graph(_enc(POS), zero))
+
+
 _BUILDERS = {
     "f01": _f01,
     "f01b": _f01b,
@@ -714,6 +732,8 @@ _BUILDERS = {
     "f15": _f15,
     "f16": _f16,
     "f17": _f17,
+    "f20": _f20,
+    "f23": _f23,
 }
 
 
