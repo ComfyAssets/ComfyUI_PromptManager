@@ -1087,6 +1087,40 @@ class TestPerRecordBudgets(unittest.TestCase):
         read = read_inspection_file(path)
         self.assertEqual(len(read.metadata["parameters"]), ROLE_METADATA_BYTES * 3 // 4)
 
+    def test_duplicate_chunk_reads_share_a_total_budget(self):
+        from utils import prompt_inspector
+
+        self.assertEqual(prompt_inspector.DUPLICATE_METADATA_BYTES, 8 * MIB)
+        chunk = self.prompt_chunk()
+        size = len(chunk) - 12
+        path = _png_with_chunks(self.directory / "dupes.png", [chunk] * 6)
+        added = []
+        original = prompt_inspector._PngRecords.add
+
+        def counting(records, kind, data):
+            added.append(len(data))
+            return original(records, kind, data)
+
+        with (
+            patch.object(
+                prompt_inspector, "DUPLICATE_METADATA_BYTES", size * 2 + size // 2
+            ),
+            patch.object(prompt_inspector._PngRecords, "add", counting),
+        ):
+            read = read_inspection_file(path)
+        # The original plus two budgeted duplicates were read; the third
+        # would exceed the budget, so the key is limited and the rest skipped.
+        self.assertEqual(added, [size] * 3)
+        self.assertEqual(read.record_formats["prompt"], "limited")
+        self.assertNotIn("prompt", read.metadata)
+        self.assertIn("prompt", read.limited_records)
+
+    def test_duplicates_within_the_total_budget_are_unchanged(self):
+        path = _png_with_chunks(self.directory / "few.png", [self.prompt_chunk()] * 3)
+        read = read_inspection_file(path)
+        self.assertEqual(read.record_formats["prompt"], "original-text")
+        self.assert_prompts_resolved(read)
+
     def test_unretained_text_chunks_are_skipped_without_retention(self):
         software = _text_chunk(b"tEXt", "Software", b"S" * (5 * MIB))
         compressed = _text_chunk(b"zTXt", "Comment", b"\0" + b"not zlib at all")

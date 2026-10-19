@@ -23,6 +23,9 @@ from .video_metadata import ffprobe_path, is_video_path
 # only the workflow is ``limited``. Other text chunks are never retained.
 ROLE_METADATA_BYTES = 2 * 1024 * 1024
 WORKFLOW_METADATA_BYTES = 4 * 1024 * 1024
+# Total bytes read for byte-identical duplicate chunks of one file: two
+# workflow budgets, so repeated chunks cost bounded I/O instead of file size.
+DUPLICATE_METADATA_BYTES = 2 * WORKFLOW_METADATA_BYTES
 MAX_METADATA_BYTES = ROLE_METADATA_BYTES  # video stdout bound, unchanged here
 MAX_KEYWORD_BYTES = 80  # a 1-79 byte PNG keyword plus its NUL separator
 MAX_HEADER_BYTES = 8 * 1024 * 1024
@@ -111,6 +114,7 @@ class _PngRecords:
         self.limited: set[str] = set()
         self.digests: dict[str, tuple[int, bytes]] = {}
         self.role_encoded = self.role_decoded = 0
+        self.duplicate_read = 0
 
     def skip(self, key: str, length: int) -> bool:
         """Decide from the keyword and length alone whether to seek past a chunk."""
@@ -119,6 +123,11 @@ class _PngRecords:
         if key in self.digests:
             if self.digests[key][0] != length:
                 raise MetadataReadError("Duplicate prompt metadata")
+            if self.duplicate_read + length > DUPLICATE_METADATA_BYTES:
+                self.limited.add(key)
+                self.found.pop(key, None)
+                return True
+            self.duplicate_read += length
             return False  # same length: read and compare bytes
         if key == "workflow":
             if length > WORKFLOW_METADATA_BYTES:
