@@ -1,9 +1,10 @@
 import '../api-client.js';
 import { createButton, createField, createScope, createSelect } from '../shared/toolkit/core.js';
-import { routes, mountRouter, summarizeStats } from './state.mjs';
+import { routes, mountRouter, summarizeStats, routeTitle, isHandoff } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
 import { mountImages } from './images.mjs';
 import { mountLibrary, mountNewPromptAction } from './library.mjs';
+import { mountVocabulary } from './vocabulary.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
@@ -65,7 +66,7 @@ function mountWorkspace() {
             if (link.dataset.route === route.id) link.setAttribute('aria-current', 'page');
             else link.removeAttribute('aria-current');
         }
-        document.title = `${route.label} · Prompt Manager`;
+        document.title = `${routeTitle(route)} · Prompt Manager`;
         const heading = element('h1', route.label);
         // Focus target after a save, as the concept's page title.
         heading.tabIndex = -1;
@@ -76,7 +77,7 @@ function mountWorkspace() {
         main.replaceChildren(headingRegion);
         if (!firstRender) main.focus();
         firstRender = false;
-        document.getElementById('workspace-breadcrumb').textContent = route.label;
+        document.getElementById('workspace-breadcrumb').textContent = routeTitle(route);
         if (route.id === 'images') {
             mountNewPromptAction(main, api, view);
             mountImages(main, api, view);
@@ -86,7 +87,11 @@ function mountWorkspace() {
             mountLibrary(main, api, view, {positiveId:route.positiveId});
             return;
         }
-        if (route.id !== 'overview') {
+        if (route.id === 'tags') {
+            mountVocabulary(main, api, view);
+            return;
+        }
+        if (isHandoff(route)) {
             headingCopy.append(element('p', route.description, 'intro'));
             const panel = element('section', undefined, 'panel handoff');
             panel.append(element('h2', 'Your current tools are ready'),

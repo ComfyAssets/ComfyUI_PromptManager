@@ -304,5 +304,11 @@
     "branches": 96,
     "functions": 98,
     "statements": 98
+  },
+  "workspace/vocabulary.mjs": {
+    "lines": 94,
+    "branches": 91,
+    "functions": 89,
+    "statements": 94
   }
 }

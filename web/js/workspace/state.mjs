@@ -3,7 +3,8 @@ export const routes = [
         description: 'Browse your images, inspect their metadata and review generated tags.', action: 'Open existing image gallery' },
     { id: 'library', label: 'Prompt library', href: '/prompt_manager/admin',
         description: 'Find, edit and organize the prompts already in your library.', action: 'Open existing prompt library' },
-    { id: 'tags', label: 'Tags & categories', href: '/prompt_manager/admin#/tags',
+    // Native screen; `title` is the concept's breadcrumb/title, the href stays for Overview's card.
+    { id: 'tags', label: 'Tags & categories', title: 'Tags', href: '/prompt_manager/admin#/tags',
         description: 'Explore your vocabulary and find the prompts associated with each tag.', action: 'Open existing tag manager' },
     { id: 'inspect', label: 'Inspect a file', href: '/prompt_manager/gallery.html',
         description: 'Inspect generation metadata from an image or video file.', action: 'Open existing metadata inspector' },
@@ -11,6 +12,18 @@ export const routes = [
     { id: 'system', label: 'System', href: '/prompt_manager/admin',
         description: 'Open the current dashboard, then choose Settings or Maintenance for configuration, scans, backups and diagnostics.', action: 'Open existing administration' },
 ];
+
+const NATIVE_ROUTES = new Set(['images', 'library', 'tags', 'overview']);
+
+/** Breadcrumb and document title: the concept names a few pages differently from their nav label. */
+export function routeTitle(route) {
+    return route.title || route.label;
+}
+
+/** Routes the workspace does not render yet show the generic legacy handoff panel. */
+export function isHandoff(route) {
+    return !NATIVE_ROUTES.has(route.id);
+}
 
 export function resolveRoute(hash) {
     const match = /^#\/library\/([1-9]\d*)$/.exec(hash);

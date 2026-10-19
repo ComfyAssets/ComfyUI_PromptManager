@@ -12,6 +12,21 @@ test('workspace routes resolve only supported deep links', async () => {
     }
 });
 
+test('tags is a native route titled Tags; only unbuilt routes hand off to legacy tools', async () => {
+    const { resolveRoute, routeTitle, isHandoff } = await source;
+    const tags = resolveRoute('#/tags');
+    assert.equal(tags.label, 'Tags & categories');
+    assert.equal(routeTitle(tags), 'Tags');
+    assert.equal(tags.href, '/prompt_manager/admin#/tags', 'Overview keeps the existing tag manager card');
+    for (const id of ['images', 'library', 'inspect', 'overview', 'system']) {
+        const route = resolveRoute(`#/${id}`);
+        assert.equal(routeTitle(route), route.label);
+    }
+    assert.equal(routeTitle(resolveRoute('#/library/7')), 'Prompt library');
+    for (const id of ['images', 'library', 'tags', 'overview']) assert.equal(isHandoff(resolveRoute(`#/${id}`)), false, id);
+    for (const id of ['inspect', 'system']) assert.equal(isHandoff(resolveRoute(`#/${id}`)), true, id);
+});
+
 test('statistics preserve zero and reject incomplete or invalid counts', async () => {
     const { summarizeStats } = await source;
     assert.deepEqual(summarizeStats({total_prompts:0, total_images:12, total_tags:3}), [
