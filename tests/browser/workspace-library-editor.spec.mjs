@@ -2,6 +2,7 @@ import {writeFile} from 'node:fs/promises';
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
 import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
+import {inventoryOf,mapConcept,diffInventory} from './library-editor-canonical-comparison.mjs';
 
 // Dialog-level contracts mount the editor through a page import; the user flows below use the real entry actions.
 test.use({locale:'en-US',timezoneId:'UTC',reducedMotion:'reduce'});
@@ -326,37 +327,6 @@ const conceptModes={
     negative:['prompt/alpine',async page=>page.getByRole('button',{name:'+ Add negative',exact:true}).click()],
 };
 
-function inventoryOf(dialog) {
-    const css=(node,...keys)=>{const style=getComputedStyle(node);return Object.fromEntries(keys.map(key=>[key,style[key]]));};
-    const header=dialog.querySelector('.dialog-header'),title=header.querySelector('h2'),close=header.querySelector('button');
-    const actions=dialog.querySelector('.dialog-actions'),twoCol=dialog.querySelector('.two-col');
-    return {
-        dialog:{...css(dialog,'paddingTop','paddingRight','paddingBottom','paddingLeft','borderTopLeftRadius','borderTopWidth','borderTopStyle','maxHeight','overflowY','backgroundColor','color','borderTopColor','fontFamily','fontSize','lineHeight'),
-            width:dialog.getBoundingClientRect().width,modal:dialog.matches(':modal'),backdrop:getComputedStyle(dialog,'::backdrop').backgroundColor,
-            labelledBy:document.getElementById(dialog.getAttribute('aria-labelledby'))===title},
-        header:css(header,'display','justifyContent','alignItems','columnGap','marginBottom'),
-        title:{text:title.textContent,...css(title,'fontSize','fontWeight','marginTop','marginBottom','lineHeight')},
-        close:{label:close.getAttribute('aria-label'),text:close.textContent.trim(),focused:document.activeElement===close,...css(close,'fontSize','minWidth','minHeight')},
-        fields:[...dialog.querySelectorAll('.field')].map(field=>{
-            const label=field.querySelector('label'),control=field.querySelector('input,textarea,select');
-            return {label:label.textContent,labelled:label.htmlFor===control.id,tag:control.tagName.toLowerCase(),readOnly:Boolean(control.readOnly),required:control.required,
-                placeholder:control.getAttribute('placeholder'),listed:Boolean(control.list),commaOptions:control.list?[...control.list.options].every(option=>option.value.endsWith(',')):null,
-                options:control.tagName==='SELECT'?[...control.options].map(option=>[option.value,option.textContent]):null,
-                field:css(field,'display','rowGap','fontSize','marginTop','marginBottom'),control:css(control,'fontSize','minHeight','resize')};
-        }),
-        twoCol:twoCol?{columns:getComputedStyle(twoCol).gridTemplateColumns.split(' ').length,...css(twoCol,'display','columnGap')}:null,
-        small:[...dialog.querySelectorAll('p.small')].map(node=>({text:node.textContent,...css(node,'fontSize','color')})),
-        actions:{...css(actions,'display','justifyContent','columnGap','flexWrap','marginTop'),
-            buttons:[...actions.querySelectorAll('button')].map(node=>({text:node.textContent.trim(),type:node.type,danger:node.classList.contains('danger'),primary:node.classList.contains('ca-primary'),
-                ...css(node,'minHeight','fontSize','color','borderTopColor','backgroundColor')}))},
-        demo:Boolean(dialog.querySelector('.demo-note')),
-    };
-}
-// Documented differences only: prototype Save label, prototype demo note, and data-dependent values.
-function mapConcept(reference) {
-    return {...reference,demo:false,actions:{...reference.actions,buttons:reference.actions.buttons.map(item=>item.text==='Save in prototype'?{...item,text:'Save'}:item)}};
-}
-
 for(const [width,height] of [[1600,1100],[390,844]])for(const theme of ['dark','light'])test(`dialog geometry, tokens and controls match the concept ${width} ${theme}`,async({page},testInfo)=>{
     await page.setViewportSize({width,height});const f=page.fixture;const result={};
     for(const mode of Object.keys(conceptModes)) {
@@ -666,4 +636,60 @@ test('turning Show archived on again after a hidden archive shows the newly arch
     await expect(toggle()).toHaveText('Show archived (2)');await toggle().click();
     await expect(variantsPanel(page).locator('.library-variant-archived')).toHaveCount(2);
     await expect(laneLabel(page,'· 1 linked images · Archived')).toHaveCount(1);await uniqueDotNames(page);
+});
+
+test('the comparison reports a wrong role color, a wrong field color and a removed Save control',async({page})=>{
+    const f=page.fixture;await mountEditor(page,'dark');
+    const dialog=await openEditor(page,{mode:'metadata',positiveId:f.positive_id,pairId:f.pair_id});await ready(dialog);
+    // Work on a copy of the production dialog so the live editor is untouched; ids are renamed to keep label/list wiring valid.
+    await dialog.evaluate(node=>{
+        const copy=node.cloneNode(true);copy.removeAttribute('open');copy.id='mutant';copy.classList.add('mutant');
+        const ids=new Set([...copy.querySelectorAll('[id]')].map(item=>item.id));
+        for(const item of copy.querySelectorAll('[id]'))item.id=`${item.id}-copy`;
+        for(const item of copy.querySelectorAll('[for],[list],[aria-labelledby],[aria-describedby]'))for(const attr of ['for','list','aria-labelledby','aria-describedby']) {
+            const value=item.getAttribute(attr);if(value&&ids.has(value))item.setAttribute(attr,`${value}-copy`);
+        }
+        copy.setAttribute('open','');node.parentElement.append(copy);
+    });
+    const mutant=page.locator('dialog.mutant');await expect(mutant).toBeVisible();
+    const baseline=await mutant.evaluate(inventoryOf);
+    expect(diffInventory(baseline,await mutant.evaluate(inventoryOf))).toEqual([]);
+    await page.addStyleTag({content:'dialog.mutant .danger{color:rgb(1,2,3)!important}dialog.mutant .field input{color:rgb(4,5,6)!important;background-color:rgb(7,8,9)!important}'});
+    await mutant.getByRole('button',{name:'Save',exact:true}).evaluate(node=>node.remove());
+    const paths=diffInventory(baseline,await mutant.evaluate(inventoryOf)).map(item=>item.path);
+    expect(paths).toContain('actions.buttons.length');
+    expect(paths).toContain('actions.buttons.1.color');
+    expect(paths).toContain('fields.0.control.color');
+    expect(paths).toContain('fields.0.control.backgroundColor');
+    await page.keyboard.press('Escape');
+});
+
+test('long and error states retain footer focus and reflow',async({page})=>{
+    await page.setViewportSize({width:390,height:844});
+    await mountEditor(page,'light');
+    const dialog=await openEditor(page,{mode:'new'});await ready(dialog);
+    const unbroken='W'.repeat(240);
+    await field(dialog,'Title').fill(`A very long title that keeps going ${unbroken} and going`);
+    await field(dialog,'Positive prompt').fill('A quiet harbor at dawn');
+    await field(dialog,'Notes').fill(Array.from({length:60},(_,index)=>`Long note line ${index} ${unbroken.slice(0,40)}`).join('\n'));
+    await page.route('**/prompt_manager/library',route=>route.request().method()==='POST'
+        ?route.fulfill({status:400,contentType:'application/json',body:'{"success":false,"error":"Title is too long.","code":null}'}):route.continue(),{times:1});
+    await button(dialog,'Save').click();
+    await expect(note(dialog)).toHaveText('Not saved: Title is too long. Your entries are kept.');
+    const state=await dialog.evaluate(node=>({scrolls:node.scrollHeight>node.clientHeight,height:node.getBoundingClientRect().height,innerHeight,overflowY:getComputedStyle(node).overflowY,
+        pageOverflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,dialogOverflow:node.scrollWidth-node.clientWidth,
+        left:node.getBoundingClientRect().left,right:node.getBoundingClientRect().right,viewport:innerWidth}));
+    expect(state.scrolls).toBe(true);expect(state.height).toBeLessThanOrEqual(state.innerHeight*.9+1);expect(['auto','scroll']).toContain(state.overflowY);
+    expect(state.pageOverflow).toBeLessThanOrEqual(1);expect(state.dialogOverflow).toBeLessThanOrEqual(1);expect(state.left).toBeGreaterThanOrEqual(0);expect(state.right).toBeLessThanOrEqual(state.viewport);
+    for(const name of ['Cancel','Save']) {
+        const item=button(dialog,name);await item.scrollIntoViewIfNeeded();await expect(item).toBeVisible();await expect(item).toBeEnabled();
+        await item.focus();await expect(item).toBeFocused();
+        const box=await item.boundingBox();expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(390);
+    }
+    // Keyboard: Tab from Cancel reaches Save inside the dialog; the draft survives the error.
+    await button(dialog,'Cancel').focus();await page.keyboard.press('Tab');await expect(button(dialog,'Save')).toBeFocused();
+    await expect(field(dialog,'Positive prompt')).toHaveValue('A quiet harbor at dawn');
+    expect(page.writes.filter(write=>write.method==='POST')).toHaveLength(1);
+    await page.keyboard.press('Escape');await expect(dialog).toHaveCount(0);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
 });
