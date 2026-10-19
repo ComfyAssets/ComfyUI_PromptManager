@@ -405,6 +405,9 @@
     const FACT_FIELDS = ["seed", "steps", "cfg", "sampler", "scheduler", "model"];
     const GENERATION_SAMPLERS = new Set(["KSampler", "KSamplerAdvanced", "SamplerCustom", "SamplerCustomAdvanced"]);
     const WORKFLOW_PASSTHROUGH = Symbol("inspection workflow passthrough");
+    // These four tables must equal the `facts` section of inspection-semantics.json
+    // (tests/js/inspection-semantics-sync.test.js). They stay inline literals because the
+    // legacy pages load this file as a classic script.
     // Fixed output0 contracts from the pinned core node schemas, not input-name inference.
     const SCALAR_OUTPUTS = Object.freeze({
         PrimitiveInt: "number", PrimitiveFloat: "number",
@@ -575,6 +578,15 @@
     }
 
     const api = { extractGenerationParams, extractGenerationFacts, PLACEHOLDERS };
+    // For the semantics sync test only; not part of the legacy page contract.
+    Object.defineProperty(api, "_factsTables", {
+        value: Object.freeze({
+            configuration_outputs: CONFIGURATION_OUTPUTS,
+            model_outputs: MODEL_OUTPUTS,
+            model_passthroughs: MODEL_PASSTHROUGHS,
+            scalar_outputs: SCALAR_OUTPUTS,
+        }),
+    });
     if (typeof module !== "undefined" && module.exports) module.exports = api;
     else root.ComfyMetadata = api;
 })(typeof window !== "undefined" ? window : globalThis);

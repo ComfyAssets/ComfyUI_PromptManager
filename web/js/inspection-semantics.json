@@ -1,0 +1,169 @@
+{
+  "schema": 1,
+  "samplers": {
+    "KSampler": {
+      "strategy": "ksampler",
+      "conditioning": { "positive": "positive", "negative": "negative" },
+      "latent": "latent_image",
+      "facts": "ksampler"
+    },
+    "KSamplerAdvanced": {
+      "strategy": "ksampler",
+      "conditioning": { "positive": "positive", "negative": "negative" },
+      "latent": "latent_image",
+      "facts": "ksampler"
+    },
+    "SamplerCustom": {
+      "strategy": "ksampler",
+      "conditioning": { "positive": "positive", "negative": "negative" },
+      "latent": "latent_image",
+      "facts": "custom"
+    },
+    "SamplerCustomAdvanced": {
+      "strategy": "custom-advanced",
+      "conditioning": { "guider": "guider" },
+      "latent": "latent_image",
+      "facts": "custom-advanced"
+    },
+    "FaceDetailer": {
+      "strategy": "detailer-stage",
+      "conditioning": { "positive": "positive", "negative": "negative" },
+      "image_stage": "image",
+      "facts": "ksampler"
+    }
+  },
+  "guiders": {
+    "CFGGuider": { "strategy": "cfg", "positive": "positive", "negative": "negative" },
+    "BasicGuider": {
+      "strategy": "basic",
+      "positive": "conditioning",
+      "absent_reason": "Guider has no negative input"
+    }
+  },
+  "conditioning": [
+    { "class": "FluxGuidance", "slot": 0, "strategy": "passthrough", "input": "conditioning" },
+    { "class": "ReferenceLatent", "slot": 0, "strategy": "passthrough", "input": "conditioning" },
+    { "class": "ConditioningSetArea", "slot": 0, "strategy": "passthrough", "input": "conditioning" },
+    { "class": "ConditioningSetAreaPercentage", "slot": 0, "strategy": "passthrough", "input": "conditioning" },
+    { "class": "ConditioningSetAreaStrength", "slot": 0, "strategy": "passthrough", "input": "conditioning" },
+    { "class": "ConditioningSetMask", "slot": 0, "strategy": "passthrough", "input": "conditioning" },
+    { "class": "ConditioningSetTimestepRange", "slot": 0, "strategy": "passthrough", "input": "conditioning" },
+    { "class": "ControlNetApply", "slot": 0, "strategy": "passthrough", "input": "conditioning" },
+    { "class": "ControlNetApplyAdvanced", "slot": 0, "strategy": "passthrough", "input": "positive" },
+    { "class": "ControlNetApplyAdvanced", "slot": 1, "strategy": "passthrough", "input": "negative" },
+    { "class": "ControlNetApplySD3", "slot": 0, "strategy": "passthrough", "input": "positive" },
+    { "class": "ControlNetApplySD3", "slot": 1, "strategy": "passthrough", "input": "negative" },
+    { "class": "InpaintModelConditioning", "slot": 0, "strategy": "passthrough", "input": "positive" },
+    { "class": "InpaintModelConditioning", "slot": 1, "strategy": "passthrough", "input": "negative" },
+    { "class": "WanImageToVideo", "slot": 0, "strategy": "passthrough", "input": "positive" },
+    { "class": "WanImageToVideo", "slot": 1, "strategy": "passthrough", "input": "negative" },
+    { "class": "ConditioningZeroOut", "slot": 0, "strategy": "zeroed", "input": "conditioning" }
+  ],
+  "selectors": {
+    "easy ifElse": {
+      "strategy": "boolean-select",
+      "condition": "boolean",
+      "branches": { "true": "on_true", "false": "on_false" }
+    }
+  },
+  "composites": {
+    "ConditioningCombine": { "strategy": "combine", "inputs": ["conditioning_1", "conditioning_2"] },
+    "ConditioningConcat": { "strategy": "combine", "inputs": ["conditioning_to", "conditioning_from"] },
+    "ConditioningAverage": { "strategy": "combine", "inputs": ["conditioning_to", "conditioning_from"] }
+  },
+  "encoders": [
+    { "class": "CLIPTextEncode", "slot": 0, "strategy": "single", "inputs": ["text"] },
+    { "class": "CLIPTextEncodeSDXL", "slot": 0, "strategy": "parts-equal", "inputs": ["text_g", "text_l"] },
+    { "class": "CLIPTextEncodeFlux", "slot": 0, "strategy": "parts-equal", "inputs": ["clip_l", "t5xxl"] },
+    { "class": "CLIPTextEncodeSD3", "slot": 0, "strategy": "parts-equal", "inputs": ["clip_l", "clip_g", "t5xxl"] },
+    { "class": "TextEncodeQwenImageEdit", "slot": 0, "strategy": "single", "inputs": ["prompt"] },
+    { "class": "TextEncodeQwenImageEditPlus", "slot": 0, "strategy": "single", "inputs": ["prompt"] },
+    { "class": "TextEncodeQwenImage21", "slot": 0, "strategy": "single", "inputs": ["prompt"] },
+    { "class": "TextEncodeQwenImage21", "slot": 1, "strategy": "single", "inputs": ["negative_prompt"] },
+    { "class": "KikoTextEncode", "slot": 0, "strategy": "single", "inputs": ["text"] }
+  ],
+  "strings": [
+    { "class": "StringConstant", "slot": 0, "strategy": "literal", "inputs": ["string"] },
+    {
+      "class": "StringConstantMultiline",
+      "slot": 0,
+      "strategy": "strip-newlines",
+      "inputs": ["string"],
+      "params": { "flag": "strip_newlines" }
+    },
+    {
+      "class": "JoinStringMulti",
+      "slot": 0,
+      "strategy": "join-multi",
+      "inputs": ["string_1"],
+      "params": {
+        "count": "inputcount",
+        "delimiter": "delimiter",
+        "list_flag": "return_list",
+        "input_prefix": "string_"
+      }
+    }
+  ],
+  "runtime": ["PromptSearchList"],
+  "savers": {
+    "SaveImage": {
+      "strategy": "comfy-counter",
+      "prefix_input": "filename_prefix",
+      "image_input": "images",
+      "pattern": "{name}_{counter:05}_.{ext}"
+    },
+    "SaveAnimatedWEBP": {
+      "strategy": "comfy-counter",
+      "prefix_input": "filename_prefix",
+      "image_input": "images",
+      "pattern": "{name}_{counter:05}_.{ext}"
+    },
+    "SaveAnimatedPNG": {
+      "strategy": "comfy-counter",
+      "prefix_input": "filename_prefix",
+      "image_input": "images",
+      "pattern": "{name}_{counter:05}_.{ext}"
+    },
+    "SaveVideo": {
+      "strategy": "comfy-counter",
+      "prefix_input": "filename_prefix",
+      "image_input": "video",
+      "pattern": "{name}_{counter:05}_.{ext}"
+    },
+    "SaveWEBM": {
+      "strategy": "comfy-counter",
+      "prefix_input": "filename_prefix",
+      "image_input": "images",
+      "pattern": "{name}_{counter:05}_.{ext}"
+    },
+    "VHS_VideoCombine": {
+      "strategy": "vhs-counter",
+      "prefix_input": "filename_prefix",
+      "image_input": "images",
+      "pattern": "{name}_{counter:05}.{ext}"
+    }
+  },
+  "non_file_outputs": ["PreviewImage", "PreviewAny", "SaveImageWebsocket", "Image Comparer (rgthree)"],
+  "facts": {
+    "configuration_outputs": {
+      "RandomNoise": { "kind": "noise", "fields": ["noise_seed"] },
+      "KSamplerSelect": { "kind": "sampler", "fields": ["sampler_name"] },
+      "BasicScheduler": { "kind": "sigmas", "fields": ["steps", "scheduler"] },
+      "CFGGuider": { "kind": "guider", "fields": ["cfg", "model"] },
+      "BasicGuider": { "kind": "guider", "fields": ["model"] }
+    },
+    "model_outputs": {
+      "CheckpointLoader": "ckpt_name",
+      "CheckpointLoaderSimple": "ckpt_name",
+      "unCLIPCheckpointLoader": "ckpt_name",
+      "UNETLoader": "unet_name"
+    },
+    "model_passthroughs": ["LoraLoader", "LoraLoaderModelOnly"],
+    "scalar_outputs": {
+      "PrimitiveInt": "number",
+      "PrimitiveFloat": "number",
+      "PrimitiveString": "string",
+      "PrimitiveStringMultiline": "string"
+    }
+  }
+}
