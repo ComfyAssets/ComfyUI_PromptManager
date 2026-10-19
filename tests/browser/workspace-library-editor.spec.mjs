@@ -754,6 +754,24 @@ test('reuse with the stored parent metadata entered does not claim it was not ap
     expect(page.writes).toHaveLength(1);
 });
 
+test('reuse of an uncategorized prompt with the category left blank is not unapplied metadata, a different category is',async({page,request})=>{
+    const f=page.fixture;const current=await detail(request,f.positive_id,'active');
+    await expect(await request.patch(`/prompt_manager/library/${f.positive_id}`,{data:{expected_epoch:current.library_epoch,if_match:current.positive.edit_token,metadata:{category:''}}})).toBeOK();
+    expect((await detail(request,f.positive_id)).positive.category).toBeNull();
+    const reuse=async(category,negative)=>{
+        await page.goto(`${workspace}#/library`);await page.getByRole('button',{name:'+ New prompt',exact:true}).click();const dialog=editorDialog(page);await ready(dialog);
+        await field(dialog,'Title').fill(f.metadata.title);await field(dialog,'Positive prompt').fill(f.positive_text);await field(dialog,'Negative prompt (optional)').fill(negative);
+        await field(dialog,'Category').fill(category);await field(dialog,'Tags, separated by commas').fill(f.metadata.tags.join(', '));
+        await field(dialog,'Rating').selectOption(String(f.metadata.rating));await field(dialog,'Notes').fill(f.metadata.notes);
+        await button(dialog,'Save').click();await expect(page).toHaveURL(new RegExp(`#/library/${f.positive_id}$`));
+    };
+    await reuse('','blank category negative');
+    await expect(toast(page)).toHaveText('Saved as a new negative variant of an existing prompt.');
+    await reuse('Landscapes','different category negative');
+    await expect(toast(page)).toHaveText('Saved as a new negative variant of an existing prompt. The title, category, tags, rating and notes you entered were not applied.');
+    expect(page.writes.map(write=>`${write.method} ${write.url}`)).toEqual(['POST /prompt_manager/library','POST /prompt_manager/library']);
+});
+
 test('turning Show archived on again after a hidden archive shows the newly archived pair',async({page})=>{
     const f=page.fixture;await openHistory(page,f.positive_id);
     const toggle=()=>variantsPanel(page).getByRole('button',{name:/^Show archived/});

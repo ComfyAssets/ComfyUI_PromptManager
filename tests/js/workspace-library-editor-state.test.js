@@ -788,3 +788,22 @@ test('a refresh failed by restored storage cannot recover through retryReconcili
     assert.equal(server.writes().length, 1);
     controller.dispose();
 });
+
+test('a blank category reused against an uncategorized owner is not unapplied metadata; a different one is', async () => {
+    const { createLibraryEditorController } = await source;
+    for (const [stored, entered, expected] of [[null, '', false], ['', '  ', false], ['Uncategorized', '', false], [null, 'Uncategorized', false],
+        [null, 'Landscapes', true], ['Studio', '', true]]) {
+        const owner = positive({ id: 9, text: 'a portrait', title: 'Portrait', category: stored, tags: [], rating: null, notes: '' });
+        const reused = recipe({ positive_created: false, pair_created: true, parent_metadata_applied: false, positive: owner });
+        const server = harness(created(() => response(200, reused)));
+        const controller = createLibraryEditorController({ api: server.api, mode: 'new' });
+        await controller.initialize();
+        controller.setField('title', 'Portrait');
+        controller.setField('positive_text', 'a portrait');
+        controller.setField('category', entered);
+        await controller.submit();
+        assert.equal(controller.state.phase, 'complete');
+        assert.equal(controller.state.outcome.metadataNotApplied, expected, `stored ${stored} entered ${JSON.stringify(entered)}`);
+        controller.dispose();
+    }
+});
