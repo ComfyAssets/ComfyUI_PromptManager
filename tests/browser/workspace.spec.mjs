@@ -8,7 +8,7 @@ const routes = [
     ['overview', 'Overview', null],
     ['images', 'Images', '/prompt_manager/gallery'],
     ['library', 'Prompt library', '/prompt_manager/admin'],
-    ['tags', 'Tags & categories', '/prompt_manager/admin#/tags'],
+    ['tags', 'Tags & categories', null],
     ['inspect', 'Inspect a file', '/prompt_manager/gallery.html'],
     ['system', 'System', '/prompt_manager/admin'],
 ];
@@ -68,6 +68,7 @@ test('all shell destinations deep-link, reload and expose working existing appli
         await expect(main.getByRole('heading', { level: 1, name: label, exact: true })).toBeVisible();
         await expect(page.getByRole('navigation', { name: 'Workspace', exact: true })
             .getByRole('link', { name: label, exact: true })).toHaveAttribute('aria-current', 'page');
+        if (route === 'tags') await expect(main.locator('.handoff')).toHaveCount(0);
         if (legacy) {
             await expect(main.locator(`a[href="${legacy}"]`)).toBeVisible();
             await expect(await request.get(legacy.split('#')[0])).toBeOK();

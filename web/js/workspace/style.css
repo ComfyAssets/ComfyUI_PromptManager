@@ -9,7 +9,8 @@ body[data-ca-theme="light"] { --workspace-page: #f3f4f6; --workspace-sidebar: #f
 [hidden] { display: none !important; }
 a { color: var(--ca-focus); text-decoration: none; }
 a:hover { text-decoration: underline; }
-a:focus-visible, main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
+a:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 3px; }
+main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 .workspace-shell { display: grid; grid-template-columns: 218px minmax(0, 1fr); min-block-size: 100dvh; }
 .sidebar { background: var(--workspace-sidebar); border-inline-end: 1px solid var(--ca-line); padding: 26px 14px 16px; display: flex; flex-direction: column; gap: 5px; position: sticky; inset-block-start: 0; block-size: 100dvh; align-self: start; overflow-y: auto; }
 .brand { display: flex; gap: 11px; align-items: center; color: var(--ca-text); font-weight: 650; font-size: 14px; margin: 0 4px 28px; line-height: 1.3; }

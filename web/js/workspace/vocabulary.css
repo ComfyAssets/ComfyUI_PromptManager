@@ -1,0 +1,47 @@
+/* Native Tags & categories: geometry and tokens follow the approved concept (style.css 79-99, 283-304, 709-731, 840-895, 1195-1202, 1408-1526). */
+.vocabulary-main :where(.two-col, .surface, .table-wrap, .operation > div) { min-inline-size: 0; }
+.vocabulary-main .two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.vocabulary-main .surface { padding: 22px; background: var(--ca-surface); border: 1px solid var(--ca-line); border-radius: 7px; }
+.vocabulary-main .surface + .surface { margin-top: 18px; }
+.vocabulary-main .surface :where(h2, h3, p) { margin: 0; line-height: 1.5; }
+.vocabulary-main .surface h2 { font-size: 17px; font-weight: 600; }
+.vocabulary-main .surface > p { font-size: 12px; color: var(--ca-muted); margin-top: 7px; }
+.vocabulary-main .row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ca-tools .vocabulary-main .row-actions button, .ca-tools .vocabulary-main .vocabulary-continuation button { min-height: 32px; font-size: 12px; }
+.vocabulary-main .operation { display: flex; justify-content: space-between; gap: 18px; align-items: center; padding: 15px 0; border-top: 1px solid var(--ca-line); }
+.vocabulary-main .operation h3 { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.vocabulary-main .operation p { font-size: 11px; color: var(--ca-muted); margin-top: 5px; }
+.vocabulary-main .operation .row-actions { flex-shrink: 0; }
+.vocabulary-main .table-wrap { overflow-x: auto; }
+.vocabulary-main table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.vocabulary-main caption { text-align: start; font-size: 13px; font-weight: 600; margin: 0 0 15px; }
+.vocabulary-main :where(th, td) { text-align: start; border-bottom: 1px solid var(--ca-line); padding: 13px 10px; }
+.vocabulary-main th { color: var(--ca-muted); font-size: 10px; font-weight: 500; }
+/* Long tag names wrap inside the Tag cell so the Actions column keeps its intrinsic width and no row action is clipped;
+   on two-column screens the minimum keeps short names (the concept's longest sample, "architecture", is about 5em) on
+   one line, as the concept shows. */
+.vocabulary-main td:first-child { overflow-wrap: anywhere; min-inline-size: calc(6em + 20px); }
+.vocabulary-main td .row-actions { justify-content: flex-end; }
+.vocabulary-main .empty { padding: 50px; text-align: center; border: 1px dashed var(--ca-line); border-radius: 6px; color: var(--ca-muted); }
+/* Never a scroll anchor: appended rows must push the end of the list away, not chain further pages. */
+.vocabulary-main .vocabulary-continuation { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-block: 15px 0; overflow-anchor: none; }
+.vocabulary-main .vocabulary-continuation p { margin: 0; flex: 1 1 200px; font-size: 12px; color: var(--ca-muted); }
+.vocabulary-main .vocabulary-continuation .vocabulary-error { color: var(--ca-error-text); }
+/* Focus rings come from the toolkit (2px --ca-focus, offset 2px), which is what the concept renders: its own 3px rule loses to controls.css. */
+@media (max-width: 700px) {
+    /* Concept .heading stacks with align-items: flex-start (style.css 1408-1414); the shared shell computes `start`. */
+    .vocabulary-main .workspace-heading { align-items: flex-start; }
+    .vocabulary-main .two-col { grid-template-columns: 1fr; }
+    .vocabulary-main .operation { align-items: flex-start; flex-direction: column; }
+    .vocabulary-main .operation .row-actions { flex-wrap: wrap; }
+    .vocabulary-main .table-wrap { margin-inline: -10px; }
+    /* One column: the fit must not depend on font metrics. The Tag column has no fixed minimum, and the Actions column
+       asks for no more than its stacked width (the concept's 390px rows stack Browse over Rename / merge), so all space
+       left after Prompts, Images and the stacked actions goes to the tag name. Short names stay on one line wherever the
+       concept's own table fits; with a wider fallback font the name wraps instead of pushing an action out of view. */
+    .vocabulary-main td:first-child { min-inline-size: 0; }
+    .vocabulary-main td .row-actions { inline-size: min-content; margin-inline-start: auto; }
+}
+@media (pointer: coarse) {
+    .ca-tools .vocabulary-main .row-actions button, .ca-tools .vocabulary-main .vocabulary-continuation button { min-height: 40px; }
+}

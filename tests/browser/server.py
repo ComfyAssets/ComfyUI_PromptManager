@@ -24,6 +24,7 @@ from tests.browser.workspace_history_fixture import (
 from tests.browser.workspace_library_editor_fixture import (
     register_library_editor_commands,
 )
+from tests.browser.workspace_vocabulary_fixture import register_vocabulary_commands
 
 CANONICAL_ROOT = Path(__file__).resolve().parents[2]
 CANONICAL_ASSETS = {
@@ -104,6 +105,7 @@ def create_app(root: Path) -> web.Application:
     api.add_routes(routes)
     history_commands = register_workspace_history_commands(routes, api, root)
     library_editor_commands = register_library_editor_commands(routes, api, root)
+    register_vocabulary_commands(routes, api, root)
 
     async def canonical_asset(request: web.Request) -> web.Response:
         filename, content_type = CANONICAL_ASSETS[request.path]

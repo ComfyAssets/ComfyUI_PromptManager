@@ -41,6 +41,17 @@ export function invalidateLibraryAfterWrite(commit) {
     writeGeneration++;
     if(shelfVisit) shelfVisit={filters:shelfVisit.filters,anchor:shelfVisit.layout?.anchor ?? shelfVisit.anchor ?? null};
 }
+/**
+ * Open the Library shelf with exactly these filters (Tags & categories Browse): the
+ * visit is seeded like a returning shelf without a cached stream, so it reads page one
+ * with the existing Library filters, and the heading takes focus as after a save.
+ */
+export function browseLibrary(filters) {
+    const {text='',category='',tags=[],sort='newest'}=filters || {};
+    if(typeof text!=='string' || typeof category!=='string' || !Array.isArray(tags) || tags.some(tag=>typeof tag!=='string') || typeof sort!=='string') throw new TypeError('Invalid Library filters');
+    shelfVisit={filters:{text,category,tags:[...tags],sort},anchor:null};
+    focusHeadingOnMount=true;window.location.hash='#/library';
+}
 /** Remember the selection a reconciled save names, so the destination history opens on it once. */
 export function rememberLibraryResult(result) {
     const positive=result?.detail?.positive, kind=result?.commit?.kind;

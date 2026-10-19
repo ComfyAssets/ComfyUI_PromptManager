@@ -20,24 +20,34 @@ jobs:
   frontend-coverage:
     name: frontend coverage (chromium and touch)
     runs-on: ubuntu-latest
+    # Layout comparisons depend on the fonts each browser falls back to, so browser jobs run in the
+    # same pinned Playwright image as local runs (tag = @playwright/test in tools/vendor/package-lock.json;
+    # tests/vendor/browser-image.test.mjs checks it). Browsers and fonts come from the image.
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble
+      options: --user 1001
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-          cache: pip
-          cache-dependency-path: requirements-dev.txt
-      - run: python -m pip install -r requirements-dev.txt
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: tools/vendor/package-lock.json
+      # The image's own Python 3.12 and Node 24: setup-python/setup-node install the runner's toolcache
+      # builds, whose entry points name host paths that do not exist in the container. The image has no
+      # ensurepip and the job has no root, so a checksum-pinned pip wheel bootstraps a user-space venv.
+      - name: Python environment
+        env:
+          PIP_WHEEL: https://files.pythonhosted.org/packages/f3/6e/1736e5b4ae2b778ef2f81c47d797de9f891d4d8acb047a24ca37a60294dd/pip-26.2.1-py3-none-any.whl
+          PIP_SHA256: 71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e
+        run: |
+          venv="$RUNNER_TEMP/venv" wheel="$RUNNER_TEMP/pip-26.2.1-py3-none-any.whl"
+          python3 -m venv --without-pip "$venv"
+          curl -fsSL --retry 3 -o "$wheel" "$PIP_WHEEL"
+          echo "$PIP_SHA256  $wheel" | sha256sum -c -
+          "$venv/bin/python" "$wheel/pip" install --no-index --no-cache-dir "$wheel"
+          "$venv/bin/python" -m pip install --no-cache-dir -r requirements-dev.txt
+          echo "$venv/bin" >> "$GITHUB_PATH"
+      - run: python --version && node --version && node --version | grep -q '^v24\.'
       - run: npm ci --prefix tools/vendor --ignore-scripts
       - run: npm run --prefix tools/vendor check
       - run: npm run --prefix tools/vendor test
-      - run: npx --prefix tools/vendor playwright install --with-deps chromium
       - name: Frontend unit, viewer, workflow, and coverage checks
         run: npm run --prefix tools/vendor test:coverage
       - name: Upload frontend coverage and Chromium traces
@@ -54,6 +64,12 @@ jobs:
   browser-workflows:
     name: page workflows (${{ matrix.browser }})
     runs-on: ubuntu-latest
+    # Layout comparisons depend on the fonts each browser falls back to, so browser jobs run in the
+    # same pinned Playwright image as local runs (tag = @playwright/test in tools/vendor/package-lock.json;
+    # tests/vendor/browser-image.test.mjs checks it). Browsers and fonts come from the image.
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble
+      options: --user 1001
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -61,19 +77,23 @@ jobs:
         browser: [firefox, webkit]
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-          cache: pip
-          cache-dependency-path: requirements-dev.txt
-      - run: python -m pip install -r requirements-dev.txt
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: tools/vendor/package-lock.json
+      # The image's own Python 3.12 and Node 24: setup-python/setup-node install the runner's toolcache
+      # builds, whose entry points name host paths that do not exist in the container. The image has no
+      # ensurepip and the job has no root, so a checksum-pinned pip wheel bootstraps a user-space venv.
+      - name: Python environment
+        env:
+          PIP_WHEEL: https://files.pythonhosted.org/packages/f3/6e/1736e5b4ae2b778ef2f81c47d797de9f891d4d8acb047a24ca37a60294dd/pip-26.2.1-py3-none-any.whl
+          PIP_SHA256: 71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e
+        run: |
+          venv="$RUNNER_TEMP/venv" wheel="$RUNNER_TEMP/pip-26.2.1-py3-none-any.whl"
+          python3 -m venv --without-pip "$venv"
+          curl -fsSL --retry 3 -o "$wheel" "$PIP_WHEEL"
+          echo "$PIP_SHA256  $wheel" | sha256sum -c -
+          "$venv/bin/python" "$wheel/pip" install --no-index --no-cache-dir "$wheel"
+          "$venv/bin/python" -m pip install --no-cache-dir -r requirements-dev.txt
+          echo "$venv/bin" >> "$GITHUB_PATH"
+      - run: python --version && node --version && node --version | grep -q '^v24\.'
       - run: npm ci --prefix tools/vendor --ignore-scripts
-      - run: npx --prefix tools/vendor playwright install --with-deps ${{ matrix.browser }}
       - name: Page workflows in ${{ matrix.browser }}
         run: npm run --prefix tools/vendor test:workflows -- --project ${{ matrix.browser }}
       - name: Upload browser traces
