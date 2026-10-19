@@ -1,28 +1,79 @@
-"""Bounded tag and category reads whose counts match Library Browse totals.
+"""Bounded tag and category reads, and guarded tag commands.
 
 A count is the number of eligible Library parents that carry the value
 directly or through one active saved pair, which is exactly what
 ``list_library(tags=[name])`` / ``list_library(category=value)`` return.
+
+Tag commands run in one ``_pair_transaction``: the storage epoch is checked
+first, then the exact ``{id, name}`` identity, and the receipt is read on the
+same connection before commit. Owner rows and their timestamps never change.
 """
 
 import sqlite3
 
 from .library import _ELIGIBLE, _limit
+from .library_commands import LibraryCommandError, _validate_epoch
 
-# Eligible parent components carrying a tag in the requested page, plus the
-# positive parent of every active pair carrying it (always eligible).
-_TAG_PAGE = (
-    "WITH page AS (SELECT id,name FROM tags WHERE id>? ORDER BY id LIMIT ?),"
-    "owners(tag_id,pid) AS ("
-    "SELECT pt.tag_id,p.id FROM prompts p JOIN prompt_tags pt ON pt.prompt_id=p.id "
-    "WHERE pt.tag_id IN (SELECT id FROM page) AND " + _ELIGIBLE + " "
-    "UNION SELECT ppt.tag_id,pp.positive_prompt_id FROM prompt_pairs pp "
-    "JOIN prompt_pair_tags ppt ON ppt.pair_id=pp.id "
-    "WHERE pp.archived=0 AND ppt.tag_id IN (SELECT id FROM page)) "
-    "SELECT page.id,page.name,COUNT(DISTINCT owners.pid) AS prompt_count "
-    "FROM page LEFT JOIN owners ON owners.tag_id=page.id "
-    "GROUP BY page.id ORDER BY page.id"
+try:
+    from ..utils.validators import validate_tags
+except ImportError:
+    from utils.validators import validate_tags
+
+
+def _tag_rows(page: str) -> str:
+    """Count rows for the registry rows selected by ``page`` (id, name)."""
+    # Eligible parent components carrying a tag in the page, plus the
+    # positive parent of every active pair carrying it (always eligible).
+    return (
+        "WITH page AS (" + page + "),"
+        "owners(tag_id,pid) AS ("
+        "SELECT pt.tag_id,p.id FROM prompts p "
+        "JOIN prompt_tags pt ON pt.prompt_id=p.id "
+        "WHERE pt.tag_id IN (SELECT id FROM page) AND " + _ELIGIBLE + " "
+        "UNION SELECT ppt.tag_id,pp.positive_prompt_id FROM prompt_pairs pp "
+        "JOIN prompt_pair_tags ppt ON ppt.pair_id=pp.id "
+        "WHERE pp.archived=0 AND ppt.tag_id IN (SELECT id FROM page)) "
+        "SELECT page.id,page.name,COUNT(DISTINCT owners.pid) AS prompt_count "
+        "FROM page LEFT JOIN owners ON owners.tag_id=page.id "
+        "GROUP BY page.id ORDER BY page.id"
+    )
+
+
+_TAG_PAGE = _tag_rows("SELECT id,name FROM tags WHERE id>? ORDER BY id LIMIT ?")
+_TAG_ONE = _tag_rows("SELECT id,name FROM tags WHERE id=?")
+# Every owner kind a tag can sit on, for the delete confirmation.
+_TAG_IMPACT = (
+    "SELECT "
+    "(SELECT COUNT(*) FROM prompts p JOIN prompt_tags pt ON pt.prompt_id=p.id "
+    "WHERE pt.tag_id=:tag AND " + _ELIGIBLE + ") AS positive_prompts,"
+    "(SELECT COUNT(*) FROM prompts p JOIN prompt_tags pt ON pt.prompt_id=p.id "
+    "WHERE pt.tag_id=:tag AND NOT " + _ELIGIBLE + ") AS other_prompts,"
+    "(SELECT COUNT(*) FROM prompt_pairs pp JOIN prompt_pair_tags ppt "
+    "ON ppt.pair_id=pp.id WHERE ppt.tag_id=:tag AND pp.archived=0) "
+    "AS negative_variants,"
+    "(SELECT COUNT(*) FROM prompt_pairs pp JOIN prompt_pair_tags ppt "
+    "ON ppt.pair_id=pp.id WHERE ppt.tag_id=:tag AND pp.archived!=0) "
+    "AS archived_negative_variants"
 )
+_MAX_ID = 2**63 - 1
+
+
+def validate_vocabulary_tag_name(value: object) -> str:
+    """Return the trimmed name, applying tag rules plus the native comma ban."""
+    if not isinstance(value, str):
+        raise ValueError("Tag name must be a string")
+    validate_tags([value])
+    name = value.strip()
+    if "," in name:
+        raise ValueError("Tag names cannot contain commas")
+    return name
+
+
+def _validate_tag_id(tag_id: object) -> None:
+    if type(tag_id) is not int or not 1 <= tag_id <= _MAX_ID:
+        raise ValueError("Invalid tag ID")
+
+
 # The /library/options universe: nonblank values on eligible parents or on
 # active pairs, grouped exactly (whitespace and case variants stay distinct).
 _CATEGORY_GROUPS = (
@@ -58,7 +109,116 @@ def _category_after(after: object) -> tuple[int, str] | None:
 
 
 class VocabularyOperations:
-    """Vocabulary reads; ``_`` helpers take a ``library_snapshot`` connection."""
+    """Vocabulary reads and tag commands.
+
+    ``_`` helpers take an open ``library_snapshot`` or ``_pair_transaction``
+    connection.
+    """
+
+    def _vocabulary_tag(self, conn: sqlite3.Connection, tag_id: int) -> dict | None:
+        row = conn.execute(_TAG_ONE, (tag_id,)).fetchone()
+        return dict(row) if row else None
+
+    def _vocabulary_identity(
+        self, conn: sqlite3.Connection, epoch: str, tag_id: int, name: str
+    ) -> dict:
+        """The stored tag, or vocabulary-conflict when it is gone or renamed."""
+        tag = self._vocabulary_tag(conn, tag_id)
+        if tag is None or tag["name"] != name:
+            raise LibraryCommandError("vocabulary-conflict", epoch)
+        return tag
+
+    @staticmethod
+    def _tag_owner_counts(conn: sqlite3.Connection, tag_id: int) -> dict:
+        components = conn.execute(
+            "SELECT COUNT(DISTINCT prompt_id) FROM prompt_tags WHERE tag_id=?",
+            (tag_id,),
+        ).fetchone()[0]
+        pairs = conn.execute(
+            "SELECT COUNT(DISTINCT pair_id) FROM prompt_pair_tags WHERE tag_id=?",
+            (tag_id,),
+        ).fetchone()[0]
+        return {"components_changed": components, "pairs_changed": pairs}
+
+    def create_vocabulary_tag(self, name: str, *, expected_epoch: str) -> dict:
+        """Insert an unused registry row, or reuse the exact existing name."""
+        _validate_epoch(expected_epoch)
+        name = validate_vocabulary_tag_name(name)
+        with self._pair_transaction() as conn:
+            epoch = self._library_epoch(conn, expected_epoch)
+            row = conn.execute("SELECT id FROM tags WHERE name=?", (name,)).fetchone()
+            created = row is None
+            if created:
+                tag_id = conn.execute(
+                    "INSERT INTO tags(name) VALUES(?)", (name,)
+                ).lastrowid
+            else:
+                tag_id = row[0]
+            return {
+                "library_epoch": epoch,
+                "created": created,
+                "tag": self._vocabulary_tag(conn, tag_id),
+            }
+
+    def rename_vocabulary_tag(
+        self, tag_id: int, *, expected_epoch: str, name: str, new_name: str
+    ) -> dict:
+        """Rename ``{tag_id, name}``, merging into an existing exact ``new_name``.
+
+        Links move across components and all pairs, archived included; an
+        owner already carrying the target keeps one link.
+        """
+        _validate_tag_id(tag_id)
+        _validate_epoch(expected_epoch)
+        if not isinstance(name, str):
+            raise ValueError("name must be the tag's current name")
+        new_name = validate_vocabulary_tag_name(new_name)
+        if new_name == name:
+            raise ValueError("New name must differ from the current name")
+        with self._pair_transaction() as conn:
+            epoch = self._library_epoch(conn, expected_epoch)
+            self._vocabulary_identity(conn, epoch, tag_id, name)
+            counts = self._tag_owner_counts(conn, tag_id)
+            target = conn.execute(
+                "SELECT id FROM tags WHERE name=?", (new_name,)
+            ).fetchone()
+            if target is None:
+                conn.execute("UPDATE tags SET name=? WHERE id=?", (new_name, tag_id))
+                result_id = tag_id
+            else:
+                result_id = target[0]
+                self._move_tag_links(conn, tag_id, result_id)
+                conn.execute("DELETE FROM tags WHERE id=?", (tag_id,))
+            return {
+                "library_epoch": epoch,
+                "merged": target is not None,
+                "tag": self._vocabulary_tag(conn, result_id),
+                **counts,
+            }
+
+    def delete_vocabulary_tag(
+        self, tag_id: int, *, expected_epoch: str, name: str
+    ) -> dict:
+        """Remove the registry row ``{tag_id, name}``; its links cascade."""
+        _validate_tag_id(tag_id)
+        _validate_epoch(expected_epoch)
+        if not isinstance(name, str):
+            raise ValueError("name must be the tag's current name")
+        with self._pair_transaction() as conn:
+            epoch = self._library_epoch(conn, expected_epoch)
+            self._vocabulary_identity(conn, epoch, tag_id, name)
+            counts = self._tag_owner_counts(conn, tag_id)
+            conn.execute("DELETE FROM tags WHERE id=?", (tag_id,))
+            return {"library_epoch": epoch, "deleted": True, **counts}
+
+    def vocabulary_tag_impact(self, tag_id: int) -> dict | None:
+        """Owner counts by kind for one tag, or None when it does not exist."""
+        _validate_tag_id(tag_id)
+        with self.library_snapshot() as (conn, epoch, _ceiling):
+            if not conn.execute("SELECT 1 FROM tags WHERE id=?", (tag_id,)).fetchone():
+                return None
+            row = conn.execute(_TAG_IMPACT, {"tag": tag_id}).fetchone()
+            return {"library_epoch": epoch, "impact": dict(row)}
 
     def _vocabulary_tags(
         self,

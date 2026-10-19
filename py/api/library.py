@@ -169,6 +169,9 @@ _ADD_NEGATIVE_FIELDS = frozenset({"expected_epoch", "if_match", "negative_text"}
 _COMMAND_MESSAGES = {
     "metadata-conflict": "This prompt changed since it was loaded; review it first",
     "storage-changed": "Prompt storage was restored; refresh the library",
+    "vocabulary-conflict": (
+        "This tag or category changed since it was loaded; review it first"
+    ),
 }
 _GENERIC_CONFLICT = "Library command conflicted; refresh the library"
 

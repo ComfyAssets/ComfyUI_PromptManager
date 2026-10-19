@@ -926,6 +926,23 @@ class PromptDatabase(
                 "has_more": (offset + limit) < total,
             }
 
+    @staticmethod
+    def _move_tag_links(
+        conn: sqlite3.Connection, source_id: int, target_id: int
+    ) -> None:
+        """Repoint component and pair links from source to target.
+
+        Owners that already carry the target keep that one link; the source's
+        leftover duplicates are removed. The source registry row is left for the
+        caller to delete.
+        """
+        for junction in ("prompt_tags", "prompt_pair_tags"):
+            conn.execute(
+                f"UPDATE OR IGNORE {junction} SET tag_id = ? WHERE tag_id = ?",
+                (target_id, source_id),
+            )
+            conn.execute(f"DELETE FROM {junction} WHERE tag_id = ?", (source_id,))
+
     def rename_tag_all_prompts(self, old_name: str, new_name: str) -> Dict[str, Any]:
         """
         Rename a tag across all prompts that use it.
@@ -968,15 +985,7 @@ class PromptDatabase(
 
             if existing_new:
                 # Target tag exists — merge: move links, handle conflicts, delete old
-                new_tag_id = existing_new["id"]
-                for junction in ("prompt_tags", "prompt_pair_tags"):
-                    conn.execute(
-                        f"UPDATE OR IGNORE {junction} SET tag_id = ? WHERE tag_id = ?",
-                        (new_tag_id, old_tag_id),
-                    )
-                    conn.execute(
-                        f"DELETE FROM {junction} WHERE tag_id = ?", (old_tag_id,)
-                    )
+                self._move_tag_links(conn, old_tag_id, existing_new["id"])
                 conn.execute("DELETE FROM tags WHERE id = ?", (old_tag_id,))
             else:
                 # Simple rename
@@ -1074,15 +1083,7 @@ class PromptDatabase(
                     "SELECT COUNT(*) FROM prompt_pair_tags WHERE tag_id = ?", (src_id,)
                 ).fetchone()[0]
                 if src_count or pair_count:
-                    for junction in ("prompt_tags", "prompt_pair_tags"):
-                        conn.execute(
-                            f"UPDATE OR IGNORE {junction} "
-                            "SET tag_id = ? WHERE tag_id = ?",
-                            (target_id, src_id),
-                        )
-                        conn.execute(
-                            f"DELETE FROM {junction} WHERE tag_id = ?", (src_id,)
-                        )
+                    self._move_tag_links(conn, src_id, target_id)
                     tags_merged += 1
                     affected += src_count
 

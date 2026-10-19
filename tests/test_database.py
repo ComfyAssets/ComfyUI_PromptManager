@@ -239,6 +239,24 @@ class TestTagSuggestions(DatabaseTestCase):
         self.assertEqual(self._names("snow_", []), [("snow_day", 1)])
         self.assertEqual(self._names("snow%", []), [])
 
+    def test_like_wildcards_never_match_unused_names(self):
+        self._add_unused("snowXday", "snowfall", "plain")
+        self.assertEqual(self._names("_", []), [])
+        self.assertEqual(self._names("%", []), [])
+        self.assertEqual(self._names("snow_", []), [("snow_day", 1)])
+        self.assertEqual(self._names("snow%", []), [])
+        self.assertEqual(
+            self._names("snow", []),
+            [("snow_day", 1), ("snowfall", 0), ("snowXday", 0)],
+        )
+
+    def test_context_limit_ignores_unused_rows(self):
+        self._add_unused("aaa_unused", "portrait_unused")
+        self.assertEqual(
+            self._names("", ["asian"], limit=2), [("portrait", 2), ("dog", 1)]
+        )
+        self.assertEqual(self._names("p", ["asian"], limit=1), [("portrait", 2)])
+
 
 class TestTagJunctionTables(DatabaseTestCase):
     """Test normalized tag storage via junction tables."""

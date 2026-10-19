@@ -152,6 +152,226 @@ class TestVocabularyAPI(ImageAPITestCase):
         self.assertEqual(counts["shared"], 150)
         self.assertEqual(counts["pair"], 1)
 
+    async def send(self, method, path, body):
+        response = await self.client.request(
+            method, "/prompt_manager/vocabulary/" + path, json=body
+        )
+        return response, await response.json()
+
+    def tag_rows(self):
+        with self.api.db.model.get_connection() as conn:
+            return [
+                conn.execute("SELECT * FROM tags ORDER BY id").fetchall(),
+                conn.execute("SELECT * FROM prompt_tags ORDER BY 1,2").fetchall(),
+                conn.execute("SELECT * FROM prompt_pair_tags ORDER BY 1,2").fetchall(),
+            ]
+
+    async def test_tag_command_routes_return_receipts(self):
+        epoch = self.api.db.get_execution_epoch()
+        parent = self._save_prompt("Parent", tags=["moody"])
+        pair = self.api.db.save_prompt_pair("Pair", "Noise", tags=["moody"])
+        response, created = await self.send(
+            "POST", "tags", {"expected_epoch": epoch, "name": " sunset "}
+        )
+        self.assertEqual(response.status, 200, created)
+        self.assertEqual(
+            created,
+            {
+                "success": True,
+                "library_epoch": epoch,
+                "created": True,
+                "tag": {
+                    "id": created["tag"]["id"],
+                    "name": "sunset",
+                    "prompt_count": 0,
+                },
+            },
+        )
+        _, page = await self.get("tags")
+        self.assertIn("sunset", [row["name"] for row in page["tags"]])
+        moody = next(row for row in page["tags"] if row["name"] == "moody")
+        response, impact = await self.get(f"tags/{moody['id']}/impact")
+        self.assertEqual(response.status, 200, impact)
+        self.assertEqual(
+            impact,
+            {
+                "success": True,
+                "library_epoch": epoch,
+                "impact": {
+                    "positive_prompts": 1,
+                    "other_prompts": 0,
+                    "negative_variants": 1,
+                    "archived_negative_variants": 0,
+                },
+            },
+        )
+        response, renamed = await self.send(
+            "PATCH",
+            f"tags/{moody['id']}",
+            {"expected_epoch": epoch, "name": "moody", "new_name": "sunset"},
+        )
+        self.assertEqual(response.status, 200, renamed)
+        self.assertEqual(
+            renamed,
+            {
+                "success": True,
+                "library_epoch": epoch,
+                "merged": True,
+                "tag": {
+                    "id": created["tag"]["id"],
+                    "name": "sunset",
+                    "prompt_count": 2,
+                },
+                "components_changed": 1,
+                "pairs_changed": 1,
+            },
+        )
+        self.assertEqual(self.api.db.get_prompt_by_id(parent)["tags"], ["sunset"])
+        self.assertEqual(self.api.db.get_prompt_pair(pair)["tags"], ["sunset"])
+        response, deleted = await self.send(
+            "POST",
+            f"tags/{created['tag']['id']}/delete",
+            {"expected_epoch": epoch, "name": "sunset"},
+        )
+        self.assertEqual(response.status, 200, deleted)
+        self.assertEqual(
+            deleted,
+            {
+                "success": True,
+                "library_epoch": epoch,
+                "deleted": True,
+                "components_changed": 1,
+                "pairs_changed": 1,
+            },
+        )
+        self.assertEqual(self.api.db.get_all_tags(), [])
+        response, missing = await self.get(f"tags/{created['tag']['id']}/impact")
+        self.assertEqual(response.status, 404)
+        self.assertEqual(missing, {"success": False, "error": "Tag not found"})
+        for bad in ("0", "x", str(2**63)):
+            response, result = await self.get(f"tags/{bad}/impact")
+            self.assertEqual(response.status, 400, bad)
+            self.assertNotIn("code", result)
+
+    async def test_create_route_validates_names(self):
+        epoch = self.api.db.get_execution_epoch()
+        before = self.tag_rows()
+        bodies = [
+            {"expected_epoch": epoch, "name": name}
+            for name in ("", "  ", "x" * 51, "bad\x01", "a,b", 7, None, ["a"])
+        ] + [
+            {"expected_epoch": epoch},
+            {"name": "ok"},
+            {"expected_epoch": epoch, "name": "ok", "extra": 1},
+            {"expected_epoch": "not-a-uuid", "name": "ok"},
+            ["ok"],
+        ]
+        for body in bodies:
+            response, result = await self.send("POST", "tags", body)
+            self.assertEqual(response.status, 400, body)
+            self.assertEqual(result["success"], False)
+            self.assertIsNone(result["code"])
+            self.assertIsInstance(result["error"], str)
+        tag_id = self.api.db.create_vocabulary_tag("ok", expected_epoch=epoch)["tag"][
+            "id"
+        ]
+        before = self.tag_rows()
+        for path, method, body in (
+            (f"tags/{tag_id}", "PATCH", {"expected_epoch": epoch, "name": "ok"}),
+            (
+                f"tags/{tag_id}",
+                "PATCH",
+                {"expected_epoch": epoch, "name": "ok", "new_name": "a,b"},
+            ),
+            (
+                f"tags/{tag_id}",
+                "PATCH",
+                {"expected_epoch": epoch, "name": "ok", "new_name": "ok"},
+            ),
+            (
+                "tags/x",
+                "PATCH",
+                {"expected_epoch": epoch, "name": "ok", "new_name": "new"},
+            ),
+            (f"tags/{tag_id}/delete", "POST", {"expected_epoch": epoch}),
+            (
+                f"tags/{tag_id}/delete",
+                "POST",
+                {"expected_epoch": epoch, "name": "ok", "new_name": "x"},
+            ),
+        ):
+            response, result = await self.send(method, path, body)
+            self.assertEqual(response.status, 400, (path, body))
+            self.assertIsNone(result["code"])
+        self.assertEqual(self.tag_rows(), before)
+
+    async def test_command_conflicts_use_command_envelope(self):
+        epoch = self.api.db.get_execution_epoch()
+        self._save_prompt("Owner", tags=["moody"])
+        tag_id = self.tag_rows()[0][0]["id"]
+        before = self.tag_rows()
+        conflict = "This tag or category changed since it was loaded; review it first"
+        for path, method, body in (
+            (
+                f"tags/{tag_id}",
+                "PATCH",
+                {"expected_epoch": epoch, "name": "Moody", "new_name": "x"},
+            ),
+            (
+                f"tags/{tag_id + 9}",
+                "PATCH",
+                {"expected_epoch": epoch, "name": "moody", "new_name": "x"},
+            ),
+            (f"tags/{tag_id}/delete", "POST", {"expected_epoch": epoch, "name": "x"}),
+            (
+                f"tags/{tag_id + 9}/delete",
+                "POST",
+                {"expected_epoch": epoch, "name": "moody"},
+            ),
+        ):
+            response, result = await self.send(method, path, body)
+            self.assertEqual(response.status, 409, (path, body))
+            self.assertEqual(
+                result,
+                {
+                    "success": False,
+                    "code": "vocabulary-conflict",
+                    "error": conflict,
+                    "library_epoch": epoch,
+                },
+            )
+        stale = "00000000-0000-4000-8000-000000000000"
+        for path, method, body in (
+            ("tags", "POST", {"expected_epoch": stale, "name": "fresh"}),
+            (
+                f"tags/{tag_id}",
+                "PATCH",
+                {"expected_epoch": stale, "name": "moody", "new_name": "x"},
+            ),
+            (
+                f"tags/{tag_id}/delete",
+                "POST",
+                {"expected_epoch": stale, "name": "moody"},
+            ),
+        ):
+            response, result = await self.send(method, path, body)
+            self.assertEqual(response.status, 409, (path, body))
+            self.assertEqual(result["code"], "storage-changed")
+            self.assertEqual(result["library_epoch"], epoch)
+        self.assertEqual(self.tag_rows(), before)
+        with patch.object(
+            self.api.db,
+            "create_vocabulary_tag",
+            create=True,
+            side_effect=RuntimeError("secret path"),
+        ):
+            response, result = await self.send(
+                "POST", "tags", {"expected_epoch": epoch, "name": "fresh"}
+            )
+        self.assertEqual(response.status, 500)
+        self.assertIsNone(result["code"])
+        self.assertNotIn("secret", result["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

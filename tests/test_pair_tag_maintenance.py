@@ -102,6 +102,40 @@ class TestPairTagMaintenance(unittest.TestCase):
         self.assertEqual(self.db.get_prompt_by_id(prompt)["tags"], ["source"])
         self.assertNotIn("target", self.db.get_all_tags())
 
+    def test_pair_junction_failure_rolls_back_native_rename(self):
+        pair = self.pair("portrait", ["source", "target"])
+        other = self.pair("landscape", ["source"])
+        prompt = self.db.save_prompt("standalone", tags=["source"])
+        conn = self.db.model.get_connection()
+        before = [
+            conn.execute(f"SELECT * FROM {table} ORDER BY 1,2").fetchall()
+            for table in ("tags", "prompt_tags", "prompt_pair_tags")
+        ]
+        source = conn.execute("SELECT id FROM tags WHERE name='source'").fetchone()[0]
+        conn.execute(
+            "CREATE TRIGGER reject_pair_tag_change BEFORE UPDATE "
+            "ON prompt_pair_tags BEGIN SELECT RAISE(ABORT,'pair tag failure'); END"
+        )
+        conn.commit()
+        rename = getattr(self.db, "rename_vocabulary_tag", None)
+        self.assertTrue(callable(rename), "rename_vocabulary_tag is missing")
+        with self.assertRaises(sqlite3.IntegrityError):
+            rename(
+                source,
+                expected_epoch=self.db.get_execution_epoch(),
+                name="source",
+                new_name="target",
+            )
+        self.assertFalse(conn.in_transaction)
+        after = [
+            conn.execute(f"SELECT * FROM {table} ORDER BY 1,2").fetchall()
+            for table in ("tags", "prompt_tags", "prompt_pair_tags")
+        ]
+        self.assertEqual(after, before)
+        self.assertEqual(self.tags(pair), ["source", "target"])
+        self.assertEqual(self.tags(other), ["source"])
+        self.assertEqual(self.db.get_prompt_by_id(prompt)["tags"], ["source"])
+
 
 if __name__ == "__main__":
     unittest.main()
