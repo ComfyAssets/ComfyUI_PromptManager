@@ -1135,7 +1135,10 @@ class _GraphResolver:
             # associating the final image with one prompt pair would be a guess.
             latent = entry.get("latent")
             if latent is not None and latent in inputs:
-                self.latent_source(inputs[latent], set(), 0)
+                if self.semantics is None:
+                    self.latent_source(inputs[latent], set(), 0)
+                else:
+                    self.latent_stages(sampler_id, inputs[latent])
             guider_id, depth = None, 0
             conditioning = entry["conditioning"]
             absent_reason = "Negative input is absent"
@@ -1194,6 +1197,44 @@ class _GraphResolver:
             self.latent_source(inputs["value"], seen, depth + 1)
             return
         raise self.unsupported("Unsupported latent ancestry", node_id)
+
+    def latent_stages(self, origin: str, value: Any) -> None:
+        """Semantics table: is there an earlier sampler in the latent ancestry?
+
+        Every link input of non-sampler nodes is walked breadth-first (encoders,
+        decoders, masks, conditioning), stopping at listed samplers; each node
+        draws a visit. No sampler found means a single stage whatever the origin
+        (VAEEncode, EmptyLatentBatch, WanImageToVideo slot 2, ...). An unlisted
+        node with sampler-shaped inputs could itself be a stage, so it is
+        ``unsupported-node``. Budget or depth exhaustion is never single stage.
+        """
+        if not _link(value):
+            raise _Unresolved("Unknown latent ancestry", "malformed")
+        seen: set = set()
+        queue = [(str(value[0]), 0)]
+        while queue:
+            node_id, depth = queue.pop(0)
+            if node_id in seen:
+                continue
+            if node_id == origin:
+                raise _Unresolved("Cyclic latent ancestry", "malformed")
+            if depth >= self.max_depth:
+                raise _Unresolved("Resolution depth limit reached", "depth-limit")
+            seen.add(node_id)
+            self.budget.spend()
+            name, inputs = self.node(node_id)
+            if name in self.stage_classes:
+                # ``multistage-differs`` is reserved for when stage texts are
+                # compared (PR3); until then no stage's prompt is chosen.
+                raise _Unresolved("Multistage sampler ancestry is ambiguous")
+            if name not in self.semantics.all_classes and any(
+                _link(inputs.get(key)) for key in _SAMPLER_LIKE_INPUTS
+            ):
+                raise self.unsupported("Unsupported latent ancestry", node_id)
+            self.scan(len(inputs))
+            queue.extend(
+                (str(item[0]), depth + 1) for item in inputs.values() if _link(item)
+            )
 
     def anchor(self, node_id: str) -> str:
         seen = set()

@@ -636,12 +636,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "Unsupported latent ancestry",
-      "reason_code": "unsupported-node",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {
@@ -678,12 +678,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "Unsupported latent ancestry",
-      "reason_code": "unsupported-node",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {

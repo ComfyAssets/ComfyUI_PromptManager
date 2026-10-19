@@ -1994,7 +1994,9 @@ class TestEncoderAndStringSemantics(unittest.TestCase):
         self.assertEqual(evidence["prompts"]["positive"]["status"], "unresolved")
         self.assertIsNone(evidence["prompts"]["positive"]["text"])
 
-    @unittest.expectedFailure  # needs Task 2.5 (EmptyFlux2LatentImage origin)
+    # TODO(PR3): flip with the f01b vector once output ancestry excludes the
+    # preview-only FaceDetailer (D19); the latent origin is accepted since 2.5.
+    @unittest.expectedFailure
     def test_f01b_single_flux2_branch_resolves_with_absent_negative(self):
         result = _inspect(parity.build("f01b")["prompt"])
         self.assertEqual(result["state"], "absent")
@@ -2002,14 +2004,10 @@ class TestEncoderAndStringSemantics(unittest.TestCase):
         self.assertIsNone(result["negative"])
 
     def test_f01b_branch_text_is_the_exact_join(self):
-        # Until Task 2.5 the flux2 latent origin is unsupported, so this swaps
-        # it for an EmptyLatentImage and anchors at the branch's saver: the
-        # join, multiline strings and encoder alone must give the exact text.
+        # Anchored at the branch's saver, over its EmptyFlux2LatentImage origin:
+        # the join, multiline strings and encoder alone give the exact text.
         source = parity.build("f01b")["prompt"]
-        source["1300:7"] = {
-            "class_type": "EmptyLatentImage",
-            "inputs": {"width": 1024, "height": 1024, "batch_size": 1},
-        }
+        self.assertEqual(source["1300:7"]["class_type"], "EmptyFlux2LatentImage")
         result = _inspect(source, output_node_id="1400")
         self.assertEqual(result["state"], "absent")
         self.assertEqual(result["reason"], "Guider has no negative input")
@@ -2392,6 +2390,248 @@ class TestDetailerStages(unittest.TestCase):
         result = resolve_prompt_pair({"prompt": _detailed()})
         self.assertEqual((result["state"], result["sampler_id"]), ("resolved", "3"))
         self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+
+
+MULTISTAGE = "Multistage sampler ancestry is ambiguous"
+OTHER = "a white owl at dusk"
+
+
+def _latent_from(node: dict, extra: dict = None) -> dict:
+    """``f02``'s KSampler graph whose ``latent_image`` reads ``node`` (as node 5)."""
+    return parity._ksampler_graph(
+        parity._enc(parity.POS), parity._enc(parity.NEG), latent=node, extra=extra
+    )
+
+
+def _image_to_image(positive: str = OTHER) -> dict:
+    """KSampler 3 -> VAEDecode 8 -> VAEEncode 60 -> KSampler 61 -> SaveImage 63."""
+    source = _latent_from(None)
+    source.update(
+        {
+            "60": {
+                "class_type": "VAEEncode",
+                "inputs": {"pixels": ["8", 0], "vae": ["4", 2]},
+            },
+            "62": parity._enc(positive),
+            "61": {
+                "class_type": "KSampler",
+                "inputs": {
+                    **source["3"]["inputs"],
+                    "positive": ["62", 0],
+                    "latent_image": ["60", 0],
+                    "denoise": 0.6,
+                },
+            },
+            "64": {
+                "class_type": "VAEDecode",
+                "inputs": {"samples": ["61", 0], "vae": ["4", 2]},
+            },
+            "63": {
+                "class_type": "SaveImage",
+                "inputs": {"filename_prefix": "img2img", "images": ["64", 0]},
+            },
+        }
+    )
+    # The first stage's own output is only a preview.
+    source["9"]["class_type"] = "PreviewImage"
+    return source
+
+
+class TestLatentAncestry(unittest.TestCase):
+    """Any latent origin without an upstream sampler is a single stage."""
+
+    def test_vaeencode_from_load_image_is_single_stage(self):
+        source = parity.build("f10")["prompt"]
+        for anchor in (None, "9"):
+            with self.subTest(anchor=anchor):
+                result = _inspect(source, output_node_id=anchor)
+                self.assertEqual(result["state"], "resolved")
+                self.assertIsNone(result["reason_code"])
+                self.assertEqual(result["sampler_id"], "3")
+                self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        # Ingestion is unchanged (D1).
+        legacy = resolve_prompt_pair({"prompt": source})
+        self.assertEqual(legacy["state"], "unresolved")
+        self.assertEqual(legacy["reason"], "Unsupported latent ancestry")
+
+    def test_model_specific_empty_latents_are_single_stage(self):
+        size = {"width": 1024, "height": 1024, "batch_size": 1}
+        origins = {
+            "f11": parity.build("f11")["prompt"],
+            "EmptyLatentBatch": _latent_from(
+                {"class_type": "EmptyLatentBatch", "inputs": dict(size)}
+            ),
+            "EmptyFlux2LatentImage": _latent_from(
+                {"class_type": "EmptyFlux2LatentImage", "inputs": dict(size)}
+            ),
+            "SetLatentNoiseMask": _latent_from(
+                {
+                    "class_type": "SetLatentNoiseMask",
+                    "inputs": {"samples": ["60", 0], "mask": ["50", 1]},
+                },
+                {
+                    "50": {"class_type": "LoadImage", "inputs": {"image": "a.png"}},
+                    "60": {
+                        "class_type": "VAEEncode",
+                        "inputs": {"pixels": ["50", 0], "vae": ["4", 2]},
+                    },
+                },
+            ),
+            "Reroute": _latent_from(
+                {"class_type": "Reroute", "inputs": {"value": ["60", 0]}},
+                {"60": {"class_type": "EmptyLatentBatch", "inputs": dict(size)}},
+            ),
+        }
+        for name in ("InpaintModelConditioning", "WanImageToVideo"):
+            # Slots 0 and 1 carry the conditioning, slot 2 is the latent origin.
+            source = _latent_from(
+                {
+                    "class_type": name,
+                    "inputs": {
+                        "positive": ["6", 0],
+                        "negative": ["7", 0],
+                        "vae": ["4", 2],
+                        "pixels": ["50", 0],
+                        "start_image": ["50", 0],
+                        "mask": ["50", 1],
+                        "width": 832,
+                        "height": 480,
+                    },
+                },
+                {"50": {"class_type": "LoadImage", "inputs": {"image": "a.png"}}},
+            )
+            source["3"]["inputs"].update(
+                positive=["5", 0], negative=["5", 1], latent_image=["5", 2]
+            )
+            origins[name] = source
+        for name, source in origins.items():
+            with self.subTest(origin=name):
+                result = _inspect(source)
+                self.assertEqual(result["state"], "resolved")
+                self.assertEqual(result["sampler_id"], "3")
+                self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+                self.assertEqual(_inspect(source, output_node_id="9"), result)
+
+    def test_upstream_sampler_through_vaedecode_vaeencode_is_multistage(self):
+        for positive in (OTHER, parity.POS):
+            with self.subTest(positive=positive):
+                result = _inspect(_image_to_image(positive), output_node_id="63")
+                # Until PR3 compares stage texts, never one stage's prompt.
+                self.assertEqual(result["state"], "unresolved")
+                self.assertEqual(result["sampler_id"], "61")
+                self.assertEqual(result["reason"], MULTISTAGE)
+                self.assertIsNone(result["reason_code"])
+                self.assertIsNone(result["positive"])
+                self.assertIsNone(result["negative"])
+        # An upstream sampler reached through a non-latent input is a stage too.
+        source = _latent_from(
+            {
+                "class_type": "InpaintModelConditioning",
+                "inputs": {
+                    "positive": ["6", 0],
+                    "negative": ["7", 0],
+                    "vae": ["4", 2],
+                    "pixels": ["71", 0],
+                    "mask": ["50", 1],
+                },
+            },
+            {
+                "50": {"class_type": "LoadImage", "inputs": {"image": "a.png"}},
+                "70": {
+                    "class_type": "KSampler",
+                    "inputs": {
+                        "model": ["4", 0],
+                        "positive": ["6", 0],
+                        "negative": ["7", 0],
+                        "latent_image": ["72", 0],
+                    },
+                },
+                "71": {
+                    "class_type": "VAEDecode",
+                    "inputs": {"samples": ["70", 0], "vae": ["4", 2]},
+                },
+                "72": {"class_type": "EmptyLatentImage", "inputs": {}},
+            },
+        )
+        source["3"]["inputs"]["latent_image"] = ["5", 2]
+        result = _inspect(source, output_node_id="9")
+        self.assertEqual(
+            (result["state"], result["reason"]), ("unresolved", MULTISTAGE)
+        )
+        # A latent that reaches its own sampler is malformed, not a stage.
+        source = _latent_from(
+            {"class_type": "SetLatentNoiseMask", "inputs": {"samples": ["3", 0]}}
+        )
+        result = _inspect(source, output_node_id="9")
+        self.assertEqual(
+            (result["state"], result["reason_code"]), ("unresolved", "malformed")
+        )
+        self.assertEqual(result["reason"], "Cyclic latent ancestry")
+        source["3"]["inputs"]["latent_image"] = None
+        self.assertEqual(_inspect(source)["reason_code"], "malformed")
+
+    def test_unclassified_sampler_shaped_latent_start_is_unsupported_and_named(self):
+        # An unlisted node with sampler inputs may itself be an earlier stage:
+        # never call the chain single-stage across it.
+        source = _latent_from(
+            {
+                "class_type": "MysteryLatentSampler",
+                "inputs": {
+                    "model": ["4", 0],
+                    "positive": ["6", 0],
+                    "latent_image": ["60", 0],
+                },
+            },
+            {"60": {"class_type": "EmptyLatentImage", "inputs": {}}},
+        )
+        result = _inspect(source)
+        self.assertEqual(result["state"], "unresolved")
+        self.assertEqual(result["reason_code"], "unsupported-node")
+        self.assertEqual(result["reason"], "Unsupported latent ancestry")
+        self.assertEqual(
+            result["node"], {"id": "5", "class_type": "MysteryLatentSampler"}
+        )
+        self.assertIsNone(result["positive"])
+
+    def test_latent_walk_budget_exhaustion_is_work_limit(self):
+        # 2,100 distinct images in the latent ancestry: more than one
+        # candidate's 2,000 visits, and never reported as single stage.
+        extra = {
+            f"i{index}": {"class_type": "LoadImage", "inputs": {"image": f"{index}"}}
+            for index in range(2_100)
+        }
+        extra["50"] = {
+            "class_type": "ImageBatchMulti",
+            "inputs": {f"image_{index}": [f"i{index}", 0] for index in range(2_100)},
+        }
+        source = _latent_from(
+            {
+                "class_type": "VAEEncode",
+                "inputs": {"pixels": ["50", 0], "vae": ["4", 2]},
+            },
+            extra,
+        )
+        result = _inspect(source)
+        self.assertEqual(result["state"], "unresolved")
+        self.assertEqual(result["reason_code"], "work-limit")
+        self.assertIsNone(result["positive"])
+        self.assertEqual(
+            _inspect(parity.build("f10")["prompt"], max_visits=2)["reason_code"],
+            "work-limit",
+        )
+        # A chain longer than the depth limit is ``depth-limit``.
+        source = _latent_from({"class_type": "EmptyLatentImage", "inputs": {}})
+        previous = "5"
+        for index in range(70):
+            source[f"u{index}"] = {
+                "class_type": "LatentUpscaleBy",
+                "inputs": {"samples": [previous, 0], "scale_by": 1.0},
+            }
+            previous = f"u{index}"
+        source["3"]["inputs"]["latent_image"] = [previous, 0]
+        self.assertEqual(_inspect(source)["reason_code"], "depth-limit")
+        source["3"]["inputs"]["latent_image"] = ["u10", 0]
+        self.assertEqual(_inspect(source)["state"], "resolved")
 
 
 REPO = Path(__file__).resolve().parents[1]

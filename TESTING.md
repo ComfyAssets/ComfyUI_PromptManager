@@ -247,6 +247,14 @@ ancestry are compared with it. Equal texts resolve with the detailer as the samp
 different texts are `ambiguous` with `multistage-differs` and one candidate per
 stage; an unreadable stage makes the chain `unresolved`. Unanchored, a sampler
 whose output only feeds detailers (or previews) is not a candidate of its own.
+A sampler's latent ancestry is walked through every link input of non-sampler
+nodes within the same visit and depth budgets: with no earlier sampler it is a
+single stage whatever the origin (VAEEncode, EmptyLatentBatch, EmptyFlux2LatentImage,
+EmptyHunyuanLatentVideo, SetLatentNoiseMask, InpaintModelConditioning or
+WanImageToVideo slot 2). An earlier sampler (img2img from a decode, hires fix) stays
+`unresolved` "Multistage sampler ancestry is ambiguous" until stage texts are
+compared; an unlisted node with sampler-shaped inputs is `unsupported-node` naming
+it; running out of budget is `work-limit` or `depth-limit`, never single stage.
 Text encoders: `single` encoders (the Qwen image encoders, `TextEncodeQwenImage21`
 slot 0 `prompt` and slot 1 `negative_prompt`, `KikoTextEncode`) read one string
 input unchanged. `parts-equal` encoders (CLIPTextEncodeSDXL, Flux, SD3) resolve when
