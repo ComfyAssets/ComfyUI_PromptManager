@@ -199,7 +199,7 @@
   },
   "workspace/images.mjs": {
     "lines": 97,
-    "branches": 88,
+    "branches": 89,
     "functions": 98,
     "statements": 97
   },
@@ -241,7 +241,7 @@
   },
   "workspace/library.mjs": {
     "lines": 95,
-    "branches": 84,
+    "branches": 85,
     "functions": 96,
     "statements": 95
   },
@@ -296,6 +296,12 @@
   "workspace/viewer-state.mjs": {
     "lines": 98,
     "branches": 95,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/vocabulary-state.mjs": {
+    "lines": 98,
+    "branches": 96,
     "functions": 98,
     "statements": 98
   }
