@@ -13,7 +13,7 @@ from .pairs import PairDependencyError, PairOperations
 from .library import LibraryOperations
 from .library_commands import LibraryCommandOperations
 from .execution_history import ExecutionHistoryOperations
-from .execution_contexts import ExecutionContextOperations
+from .execution_contexts import ExecutionContextOperations, LIVE_HINT_CTES
 from .execution_outputs import ExecutionOutputOperations
 from .history_reads import HistoryReadOperations
 
@@ -154,6 +154,28 @@ def _coerce_file_info(metadata: Any) -> tuple:
         _bounded_int(dimensions[1], MAX_IMAGE_DIMENSION),
         _known_image_format(file_info.get("format")),
     )
+
+
+# Exempt references: images, pairs, the __protected__ tag, Library parent
+# state, and live recorded-run hints (computed once, see LIVE_HINT_CTES).
+ORPHANED_PROMPTS_SQL = "WITH " + LIVE_HINT_CTES + """
+SELECT p.id FROM prompts p
+LEFT JOIN generated_images gi ON p.id = gi.prompt_id
+WHERE gi.prompt_id IS NULL
+AND NOT EXISTS (
+    SELECT 1 FROM prompt_pairs pp
+    WHERE pp.positive_prompt_id = p.id OR pp.negative_prompt_id = p.id
+)
+AND NOT EXISTS (
+    SELECT 1 FROM prompt_tags pt
+    JOIN tags t ON pt.tag_id = t.id
+    WHERE pt.prompt_id = p.id AND t.name = '__protected__'
+)
+AND NOT EXISTS (
+    SELECT 1 FROM prompt_library_state ls WHERE ls.prompt_id = p.id
+)
+AND p.id NOT IN (SELECT prompt_id FROM live_hint_prompts)
+"""
 
 
 class PromptDatabase(
@@ -2167,45 +2189,13 @@ class PromptDatabase(
         A prompt is kept when it has a linked image, belongs to a pair, carries
         the ``__protected__`` tag, has Library parent state (a titled or
         explicit parent), or is the currently valid navigation hint of a
-        recorded run: same storage epoch and unchanged exact raw snapshot text,
-        the conditions under which history reads still resolve it.
+        recorded run: same storage epoch and exact raw snapshot text matching
+        only that prompt, the conditions under which history reads resolve it.
 
         Returns number of prompts removed.
         """
         with self._pair_transaction() as conn:
-            cursor = conn.execute("""
-                SELECT p.id FROM prompts p
-                LEFT JOIN generated_images gi ON p.id = gi.prompt_id
-                WHERE gi.prompt_id IS NULL
-                AND NOT EXISTS (
-                    SELECT 1 FROM prompt_pairs pp
-                    WHERE pp.positive_prompt_id = p.id OR pp.negative_prompt_id = p.id
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM prompt_tags pt
-                    JOIN tags t ON pt.tag_id = t.id
-                    WHERE pt.prompt_id = p.id AND t.name = '__protected__'
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM prompt_library_state ls WHERE ls.prompt_id = p.id
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM execution_run_contexts r
-                    JOIN execution_contexts c ON c.context_id = r.context_id
-                    JOIN execution_prompt_snapshots s ON (
-                        (r.positive_prompt_id = p.id
-                            AND s.snapshot_id = c.positive_snapshot_id)
-                        OR (r.negative_prompt_id = p.id
-                            AND s.snapshot_id = c.negative_snapshot_id)
-                    )
-                    JOIN execution_context_texts tx ON tx.text_id = s.raw_text_id
-                    WHERE r.reference_epoch = (
-                        SELECT storage_epoch FROM execution_history_metadata
-                        WHERE singleton_id = 1
-                    )
-                    AND tx.text_value = p.text COLLATE BINARY
-                )
-            """)
+            cursor = conn.execute(ORPHANED_PROMPTS_SQL)
             orphaned = [row["id"] for row in cursor.fetchall()]
             if not orphaned:
                 return 0

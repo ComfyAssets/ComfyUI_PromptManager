@@ -132,6 +132,41 @@ def _insert_exact(
         conn.execute(f"INSERT INTO {table} ({names}) VALUES ({placeholders})", values)
 
 
+def _role_hints(role: str) -> str:
+    return (
+        f"SELECT r.{role}_prompt_id, tx.text_value "
+        "FROM execution_run_contexts r "
+        "JOIN execution_contexts c ON c.context_id = r.context_id "
+        f"JOIN execution_prompt_snapshots s ON s.snapshot_id = c.{role}_snapshot_id "
+        "JOIN execution_context_texts tx ON tx.text_id = s.raw_text_id "
+        f"WHERE r.{role}_prompt_id IS NOT NULL AND r.reference_epoch = ("
+        "SELECT storage_epoch FROM execution_history_metadata WHERE singleton_id = 1)"
+    )
+
+
+# Set form of the read-time prompt-hint rule in get_execution_contexts():
+# a stored role hint is live only in the current storage epoch, and only when
+# its exact raw snapshot text matches exactly one prompt, which is the hinted
+# one (_prompt_hint). Evaluated once per statement, never per prompt row.
+# Defines the CTE ``live_hint_prompts(prompt_id)``; prefix it with WITH.
+LIVE_HINT_CTES = (
+    "stored_hints(prompt_id, raw) AS ("
+    + _role_hints("positive")
+    + " UNION "
+    + _role_hints("negative")
+    + "), unique_hint_texts(prompt_id, raw) AS ("
+    "SELECT MIN(id), text COLLATE BINARY FROM prompts "
+    "WHERE text COLLATE BINARY IN (SELECT raw FROM stored_hints) "
+    "GROUP BY text COLLATE BINARY HAVING COUNT(*) = 1"
+    "), live_hint_prompts(prompt_id) AS ("
+    "SELECT h.prompt_id FROM stored_hints h JOIN unique_hint_texts u "
+    "ON u.prompt_id = h.prompt_id AND u.raw = h.raw COLLATE BINARY)"
+)
+LIVE_HINT_PROMPT_IDS_SQL = (
+    "WITH " + LIVE_HINT_CTES + " SELECT DISTINCT prompt_id FROM live_hint_prompts"
+)
+
+
 def _prompt_hint(conn: sqlite3.Connection, raw: str | None) -> int | None:
     if raw is None:
         return None
