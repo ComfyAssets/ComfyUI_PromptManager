@@ -20,6 +20,7 @@ const ALREADY_ARCHIVED = 'This negative variant is already archived.';
 const REVIEW = 'Loaded the latest saved values. Review your entries, then save.';
 const REVIEW_ARCHIVE = 'Loaded the latest saved values. Review them, then archive.';
 const TOAST_MS = 6500;
+const REFRESH = ['Reload Library', 'refresh'];
 let toastTimer;
 
 /** Show one outcome in the shared workspace toast (role="status"); it clears itself like the concept's. */
@@ -50,10 +51,15 @@ function statusOf(state, archive) {
     case 'write-error': return {text: `${archive ? 'Not archived' : 'Not saved'}: ${message} Your entries are kept.`};
     case 'conflict': return {text: archive ? 'This negative variant changed since it was loaded. Reload it and review it before archiving.'
         : 'This prompt changed since it was loaded. Reload it and review your entries before saving.', action: ['Reload', 'reload']};
-    case 'storage-changed': return {text: `Prompt storage was restored since this dialog opened. ${nothing}`, action: archive ? null : ['Reload Library state', 'reload']};
+    case 'storage-changed': return {text: `Prompt storage was restored since this dialog opened. ${nothing}`, action: archive ? REFRESH : ['Reload Library state', 'reload']};
     case 'unknown-outcome': return {text: archive ? 'Archive could not be confirmed. Retry sends the same archive once.'
         : 'Save could not be confirmed. Your entries are kept; Retry sends the same save once.', action: ['Retry', 'retryUnconfirmed']};
-    case 'saved-refresh-error': return {text: archive ? 'Archived; Library refresh failed.' : 'Saved; Library refresh failed.', action: ['Retry refresh', 'retryReconciliation']};
+    case 'saved-refresh-error':
+        // A refresh that found restored storage cannot recover by re-reading; only reloading the Library view can.
+        if (state.error?.code === 'storage-changed') {
+            return {text: `${archive ? 'Archived' : 'Saved'}; Library refresh failed because prompt storage was restored. Reload the Library to see current data.`, action: REFRESH};
+        }
+        return {text: archive ? 'Archived; Library refresh failed.' : 'Saved; Library refresh failed.', action: ['Retry refresh', 'retryReconciliation']};
     case 'ready': return message ? {text: message} : state.reviewRequired ? {text: archive ? REVIEW_ARCHIVE : REVIEW} : null;
     default: return null;
     }
@@ -91,7 +97,13 @@ function datalist(id, values) {
     return list;
 }
 
-export function createLibraryEditor({api, parentScope, onCommitted = () => {}, onReconciled = () => {}}) {
+/**
+ * `onReconciled(result, {outcome, draft})` receives the reconciled result with the
+ * controller's outcome and submitted draft. `onRefreshRequired()` is the explicit
+ * exit when prompt storage was restored; the dialog closes first.
+ */
+export function createLibraryEditor({api, parentScope, onCommitted = () => {}, onReconciled = () => {},
+    onRefreshRequired = () => window.location.reload()}) {
     let session = null, disposed = false;
     const dialog = el('dialog', undefined, 'library-editor');
     dialog.setAttribute('aria-labelledby', 'library-editor-title');
@@ -140,6 +152,7 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
             const control = createButton(label);
             control.addEventListener('click', () => {
                 const {controller} = session;
+                if (method === 'refresh') {finish(); onRefreshRequired(); return;}
                 if (method === 'reload') controller.reloadOwner({keepDraft: true});
                 else controller[method]();
             }, {signal});
@@ -149,8 +162,10 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
     }
 
     function controllerFor(mode, positiveId, pairId) {
-        return createLibraryEditorController({api, mode, positiveId, pairId, onCommitted, onReconciled,
+        const controller = createLibraryEditorController({api, mode, positiveId, pairId, onCommitted,
+            onReconciled: result => onReconciled(result, {outcome: controller.state.outcome, draft: controller.state.draft}),
             onChange: state => session?.render(state)});
+        return controller;
     }
 
     function editorView({mode, positiveId, pairId, draft}) {

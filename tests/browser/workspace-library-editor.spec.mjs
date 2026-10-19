@@ -3,7 +3,7 @@ import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mj
 import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
 
-// The editor is mounted through a test-only page import until Task 9 wires its entry actions.
+// Dialog-level contracts mount the editor through a page import; the user flows below use the real entry actions.
 test.use({locale:'en-US',timezoneId:'UTC',reducedMotion:'reduce'});
 const workspace='/prompt_manager/workspace';
 const ACTIONS={new:['Cancel','Save'],metadata:['Create text revision','Archive…','Cancel','Save'],revision:['Cancel','Save'],negative:['Cancel','Save']};
@@ -394,4 +394,222 @@ for(const [width,height] of [[1600,1100],[390,844]])for(const theme of ['dark','
         if(testInfo.project.name==='chromium')expect.soft(actual.dialog.backdrop).toBe('rgba(8, 11, 18, 0.72)');
     }
     expect(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+});
+
+// Real entry actions: Library, Images and prompt history headings, and the Negative variants panel.
+const historyRegion=page=>page.getByRole('region',{name:'Prompt history',exact:true});
+const headingActions=page=>page.locator('#workspace-main .workspace-heading .heading-actions');
+const variantsPanel=page=>page.getByRole('region',{name:'Saved negative variants',exact:true});
+const savedTexts=page=>historyRegion(page).getByRole('region',{name:'Saved prompt texts',exact:true});
+const toast=page=>page.locator('#workspace-toast');
+const visibleNames=locator=>locator.evaluateAll(nodes=>nodes.map(node=>node.textContent.trim()));
+const pressedVariant=page=>variantsPanel(page).locator('.library-variant-dot[aria-pressed="true"]');
+async function openHistory(page,id) {
+    await page.goto(`${workspace}#/library/${id}`);await expect(variantsPanel(page)).toBeVisible();
+}
+async function selectPair(page,name) {
+    const dot=variantsPanel(page).getByRole('button',{name,exact:true});await dot.click();await expect(dot).toHaveAttribute('aria-pressed','true');
+}
+const laneLabel=(page,text)=>variantsPanel(page).locator('.library-variant-lane').filter({hasText:text});
+
+test('library heading offers Export then + New prompt, and New opens the saved prompt history',async({page,request})=>{
+    await page.goto(`${workspace}#/library`);await expect(page.locator('article[data-prompt-id]').first()).toBeVisible();
+    const actions=headingActions(page).locator('button');
+    expect(await visibleNames(actions)).toEqual(['Export','+ New prompt']);
+    await expect(actions.nth(0)).toHaveAccessibleName('Export full Library JSON');await expect(actions.nth(0)).not.toHaveClass(/ca-primary/);
+    await expect(actions.nth(1)).toHaveClass(/\bca-primary\b/);
+    for(const index of [0,1])expect((await actions.nth(index).boundingBox()).height).toBeGreaterThanOrEqual(32);
+    await actions.nth(1).click();const dialog=editorDialog(page);await expect(dialog.getByRole('heading',{name:'New prompt',exact:true})).toBeVisible();await ready(dialog);
+    await field(dialog,'Title').fill('Harbor at dawn');await field(dialog,'Positive prompt').fill('A quiet harbor at dawn');await field(dialog,'Negative prompt (optional)').fill('fog, noise');
+    await button(dialog,'Save').click();await expect(dialog).toHaveCount(0);
+    const created=(await(await request.get('/prompt_manager/library?text=quiet%20harbor')).json()).items[0];
+    await expect(page).toHaveURL(new RegExp(`#/library/${created.id}$`));
+    await expect(page.locator('#workspace-main h1')).toHaveText('Harbor at dawn');await expect(page.locator('#workspace-main h1')).toBeFocused();
+    await expect(toast(page)).toHaveText('Saved a new parent with its initial saved negative; submitted parent metadata persisted.');
+    await expect(pressedVariant(page)).toHaveCount(1);await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true})).toContainText('fog, noise');
+    expect(page.writes.map(write=>`${write.method} ${write.url}`)).toEqual(['POST /prompt_manager/library']);
+});
+
+test('new from Images cancel preserves browse',async({page})=>{
+    await page.goto(`${workspace}#/images`);await expect(page.locator('#workspace-main h1')).toHaveText('Images');
+    const actions=headingActions(page).locator('button');expect(await visibleNames(actions)).toEqual(['New prompt']);
+    const trigger=actions.first();await expect(trigger).toHaveClass(/\bca-primary\b/);await expect(trigger.locator('svg')).toHaveCount(1);
+    await trigger.click();let dialog=editorDialog(page);await expect(dialog.getByRole('heading',{name:'New prompt',exact:true})).toBeVisible();await ready(dialog);
+    await field(dialog,'Title').fill('Discarded');await button(dialog,'Cancel').click();await expect(dialog).toHaveCount(0);
+    await expect(trigger).toBeFocused();await expect(page).toHaveURL(/#\/images$/);await expect(page.locator('.library-shelf, .library-history')).toHaveCount(0);
+    expect(page.writes).toHaveLength(0);
+    await trigger.click();dialog=editorDialog(page);await ready(dialog);
+    await field(dialog,'Title').fill('From images');await field(dialog,'Positive prompt').fill('A prompt saved from Images');await button(dialog,'Save').click();
+    await expect(page).toHaveURL(/#\/library\/\d+$/);await expect(page.locator('#workspace-main h1')).toHaveText('From images');await expect(page.locator('#workspace-main h1')).toBeFocused();
+});
+
+test('history heading follows the concept and sends the selected saved pair',async({page})=>{
+    const f=page.fixture;await openHistory(page,f.positive_id);
+    const actions=headingActions(page).locator('button');
+    expect(await visibleNames(actions)).toEqual(['← Prompt library','Edit metadata','Send to ComfyUI']);
+    await expect(page.getByRole('link',{name:'Back to library',exact:true})).toHaveCount(0);
+    const send=actions.nth(2);await expect(send).toHaveClass(/\bsend\b/);await expect(send.locator('svg')).toHaveCount(1);
+    await expect(send).toHaveAccessibleName(`Send prompt pair to ComfyUI: ${f.metadata.title}`);
+    expect(await visibleNames(variantsPanel(page).locator('.row-actions button'))).toEqual(['+ Add negative','Show archived (1)']);
+    await expect(variantsPanel(page).getByRole('button',{name:'Show archived (1)',exact:true})).toHaveAttribute('aria-pressed','false');
+    await expect(send).toBeDisabled();
+    await selectPair(page,'Select negative variant 2');await expect(send).toBeEnabled();
+    await expect(savedTexts(page).getByRole('button',{name:'Send prompt pair',exact:true})).toHaveCount(0);
+    await send.click();const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});await expect(sender).toBeVisible();
+    await sender.getByRole('button',{name:'Close',exact:true}).click();await expect(sender).toHaveCount(0);await expect(send).toBeFocused();
+    await actions.nth(0).click();await expect(page).toHaveURL(/#\/library$/);await expect(page.locator('#workspace-main h1')).toHaveText('Prompt library');
+    expect(page.writes).toHaveLength(0);
+});
+
+test('add negative re-renders history with the saved or reused pair selected',async({page})=>{
+    const f=page.fixture;await openHistory(page,f.positive_id);
+    const add=variantsPanel(page).getByRole('button',{name:'+ Add negative',exact:true});
+    await add.click();let dialog=editorDialog(page);await ready(dialog);await field(dialog,'Negative prompt').fill('grain, dust');await button(dialog,'Save').click();
+    await expect(dialog).toHaveCount(0);await expect(page).toHaveURL(new RegExp(`#/library/${f.positive_id}$`));
+    await expect(toast(page)).toHaveText('Negative saved without adding another positive or gallery.');await expect(page.locator('#workspace-main h1')).toBeFocused();
+    await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true})).toContainText('grain, dust');
+    await expect(laneLabel(page,'Negative variant 1 ·')).toHaveCount(1);await expect(pressedVariant(page)).toHaveAccessibleName('Select negative variant 1');
+    await add.click();dialog=editorDialog(page);await ready(dialog);await field(dialog,'Negative prompt').fill(`  ${f.selected_negative.toUpperCase()} `);await button(dialog,'Save').click();
+    await expect(dialog).toHaveCount(0);await expect(toast(page)).toHaveText('Opened the reused combination with its original canonical texts and metadata.');
+    await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre')).toHaveText(f.selected_negative);
+    await expect(laneLabel(page,'· 1 linked images')).toHaveCount(1);
+    await expect(pressedVariant(page)).toHaveAccessibleName('Select negative variant 3');
+    expect(page.writes.map(write=>write.url)).toEqual([`/prompt_manager/library/${f.positive_id}/variants`,`/prompt_manager/library/${f.positive_id}/variants`]);
+});
+
+test('reused pair outside first forty remains selected without loading every page',async({page,request})=>{
+    test.setTimeout(90000);
+    const f=page.fixture;let current=await detail(request,f.positive_id,'active');
+    for(let index=0;index<41;index++) {
+        const response=await request.post(`/prompt_manager/library/${f.positive_id}/variants`,{data:{expected_epoch:current.library_epoch,if_match:current.positive.edit_token,negative_text:`bulk negative ${index}`}});
+        await expect(response).toBeOK();current={...current,positive:(await response.json()).positive};
+    }
+    const variantCursorRequests=[];page.on('request',item=>{if(item.url().includes('variant_cursor'))variantCursorRequests.push(item.url());});
+    await openHistory(page,f.positive_id);await expect(variantsPanel(page)).toContainText('40 of 44 saved negative variants');page.writes.length=0;
+    await variantsPanel(page).getByRole('button',{name:'+ Add negative',exact:true}).click();
+    const dialog=editorDialog(page);await ready(dialog);await field(dialog,'Negative prompt').fill(f.first_negative);await button(dialog,'Save').click();await expect(dialog).toHaveCount(0);
+    await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre')).toHaveText(f.first_negative);
+    await expect(pressedVariant(page)).toHaveCount(1);await expect(variantsPanel(page)).toContainText('40 of 44 saved negative variants');
+    await expect(variantsPanel(page).locator('.library-variant-lane')).toHaveCount(41);
+    expect(variantCursorRequests).toHaveLength(0);expect(page.writes).toHaveLength(1);
+});
+
+test('edit metadata stays on the page and re-reads the selected pair',async({page,request})=>{
+    const f=page.fixture;await openHistory(page,f.positive_id);await selectPair(page,'Select negative variant 2');
+    const pairReads=[];page.on('request',item=>{if(item.method()==='GET'&&new URL(item.url()).pathname===`/prompt_manager/pairs/${f.pair_id}`)pairReads.push(item.url());});
+    await page.getByRole('button',{name:'Edit metadata',exact:true}).click();const dialog=editorDialog(page);await ready(dialog);
+    await expect(field(dialog,'Negative prompt (optional)')).toHaveValue(f.selected_negative);
+    const before=pairReads.length;
+    await field(dialog,'Title').fill('Edited in place');await field(dialog,'Category').fill('Studio work');await button(dialog,'Save').click();await expect(dialog).toHaveCount(0);
+    await expect(page.locator('#workspace-main h1')).toHaveText('Edited in place');await expect(page.locator('#workspace-main h1')).toBeFocused();
+    await expect(page).toHaveURL(new RegExp(`#/library/${f.positive_id}$`));await expect(historyRegion(page).locator('.library-surface .library-chip').first()).toHaveText('Studio work');
+    await expect(pressedVariant(page)).toHaveAccessibleName('Select negative variant 2');
+    await expect.poll(()=>pairReads.length).toBeGreaterThan(before);
+    await expect(headingActions(page).locator('button.send')).toHaveAccessibleName('Send prompt pair to ComfyUI: Edited in place');
+    expect((await detail(request,f.positive_id)).positive).toMatchObject({title:'Edited in place',category:'Studio work'});
+});
+
+test('saved refresh failure retries only reads',async({page})=>{
+    const f=page.fixture;await openHistory(page,f.positive_id);
+    await page.getByRole('button',{name:'Edit metadata',exact:true}).click();const dialog=editorDialog(page);await ready(dialog);
+    let failed=false;
+    await page.route(`**/prompt_manager/library/${f.positive_id}?variant_limit=40`,route=>{if(page.writes.length&&!failed){failed=true;return route.fulfill({status:500,contentType:'application/json',body:'{"success":false,"error":"boom"}'});}return route.continue();});
+    await field(dialog,'Notes').fill('Refresh after failure');await button(dialog,'Save').click();
+    await expect(page.getByText('Saved; Library refresh failed.',{exact:true})).toBeVisible();
+    const writeRequests=page.writes;expect(writeRequests).toHaveLength(1);
+    await button(dialog,'Retry refresh').click();await expect(dialog).toHaveCount(0);expect(writeRequests).toHaveLength(1);
+    await expect(page.locator('#workspace-main h1')).toBeFocused();
+});
+
+test('restored storage after a confirmed save or before an archive offers an explicit Library reload',async({page,request})=>{
+    const f=page.fixture;const snapshot=await(await request.get('/__test__/library-editor/snapshot')).body();
+    const restore=()=>request.post('/prompt_manager/restore',{multipart:{database_file:{name:'editor.db',mimeType:'application/octet-stream',buffer:snapshot}}});
+    await openHistory(page,f.positive_id);
+    await page.route(`**/prompt_manager/library/${f.positive_id}`,async route=>{
+        if(route.request().method()!=='PATCH')return route.continue();
+        const response=await route.fetch();await expect(await restore()).toBeOK();return route.fulfill({response});
+    });
+    await page.getByRole('button',{name:'Edit metadata',exact:true}).click();let dialog=editorDialog(page);await ready(dialog);
+    await field(dialog,'Notes').fill('Lost to a restore');await button(dialog,'Save').click();
+    await expect(note(dialog)).toHaveText('Saved; Library refresh failed because prompt storage was restored. Reload the Library to see current data.');
+    expect(await actionNames(dialog)).toEqual(['Reload Library','Create text revision','Archive…','Cancel','Save']);
+    await button(dialog,'Reload Library').click();await expect(dialog).toHaveCount(0);
+    await expect(variantsPanel(page)).toBeVisible();await expect(page.locator('#workspace-main h1')).toHaveText(f.metadata.title);
+    await page.unroute(`**/prompt_manager/library/${f.positive_id}`);expect(page.writes).toHaveLength(1);
+    await selectPair(page,'Select negative variant 2');
+    await page.getByRole('button',{name:'Edit metadata',exact:true}).click();dialog=editorDialog(page);await ready(dialog);
+    await button(dialog,'Archive…').click();await expect(button(dialog,'Archive')).toBeEnabled();
+    await expect(await restore()).toBeOK();await button(dialog,'Archive').click();
+    await expect(note(dialog)).toHaveText('Prompt storage was restored since this dialog opened. Nothing was archived.');
+    expect(await actionNames(dialog)).toEqual(['Reload Library','Cancel','Archive']);expect(page.writes).toHaveLength(1);
+    await button(dialog,'Reload Library').click();await expect(dialog).toHaveCount(0);await expect(variantsPanel(page)).toBeVisible();
+    expect((await pairRead(request,f.pair_id)).archived).toBe(false);
+});
+
+test('archive hides a pair, Show archived finds it and Restore keeps it selected with links and counts unchanged',async({page,request})=>{
+    const f=page.fixture;
+    const evidence=async()=>{
+        const pair=await pairRead(request,f.pair_id);const gallery=await(await request.get(`/prompt_manager/library/${f.positive_id}/images?limit=50`)).json();
+        const history=await(await request.get(`/prompt_manager/library/${f.positive_id}/history`)).json();const parent=(await detail(request,f.positive_id,'all')).positive;
+        return {counts:{images:pair.image_count,runs:pair.run_count},gallery:gallery.images.map(item=>item.id),history:history.recorded_run_count,parentImages:parent.image_count};
+    };
+    const before=await evidence();expect(before.counts).toEqual({images:1,runs:2});
+    await openHistory(page,f.positive_id);await selectPair(page,'Select negative variant 2');
+    await page.getByRole('button',{name:'Edit metadata',exact:true}).click();const dialog=editorDialog(page);await ready(dialog);
+    await button(dialog,'Archive…').click();await expect(button(dialog,'Archive')).toBeEnabled();await button(dialog,'Archive').click();await expect(dialog).toHaveCount(0);
+    await expect(toast(page)).toHaveText('Archived. Find it under Show archived in Negative variants.');await expect(page.locator('#workspace-main h1')).toBeFocused();
+    await expect(variantsPanel(page).locator('.library-variant-lane')).toHaveCount(2);await expect(pressedVariant(page)).toHaveCount(1);
+    await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true})).not.toContainText(f.selected_negative);
+    expect(await evidence()).toEqual(before);
+    const toggle=variantsPanel(page).getByRole('button',{name:'Show archived (2)',exact:true});await expect(toggle).toHaveAttribute('aria-pressed','false');
+    await toggle.click();await expect(toggle).toHaveAttribute('aria-pressed','true');
+    const archived=variantsPanel(page).locator('.library-variant-archived');await expect(archived).toHaveCount(2);
+    const lane=archived.filter({hasText:'· 1 linked images · Archived'});await expect(lane).toHaveCount(1);
+    const opacity=await lane.locator('.library-variant-dot').evaluate(node=>getComputedStyle(node).opacity);expect(Number(opacity)).toBeLessThan(1);
+    const galleryReads=[];page.on('request',item=>{if(item.url().includes('/images?'))galleryReads.push(new URL(item.url()).searchParams);});
+    await lane.locator('.library-variant-dot').click();await expect(lane.locator('.library-variant-dot')).toHaveAttribute('aria-pressed','true');
+    await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre')).toHaveText(f.selected_negative);
+    await expect(page.getByRole('region',{name:'Shared gallery',exact:true}).locator('article[data-image-key]')).toHaveCount(1);
+    expect(galleryReads.at(-1).get('archive')).toBe('archived');expect(galleryReads.at(-1).get('pair_id')).toBe(String(f.pair_id));
+    await expect(headingActions(page).getByRole('button',{name:/^Send prompt pair to ComfyUI/})).toBeEnabled();
+    const writes=page.writes.length;
+    await lane.getByRole('button',{name:/^Restore/}).click();
+    await expect(variantsPanel(page).getByRole('button',{name:'Show archived (1)',exact:true})).toBeVisible();
+    await expect(variantsPanel(page).locator('.library-variant-archived')).toHaveCount(1);
+    await expect(pressedVariant(page)).toHaveCount(1);await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre')).toHaveText(f.selected_negative);
+    expect(page.writes.slice(writes)).toEqual([{method:'PATCH',url:`/prompt_manager/pairs/${f.pair_id}`,body:{archived:false}}]);
+    expect((await pairRead(request,f.pair_id)).archived).toBe(false);expect(await evidence()).toEqual(before);
+    await expect(page.getByRole('region',{name:'Shared gallery',exact:true}).locator('article[data-image-key]')).toHaveCount(1);
+    expect(galleryReads.at(-1).get('archive')).toBeNull();
+});
+
+test('filter hidden save resets shelf cursor and measured heights retaining anchor',async({page})=>{
+    await page.goto(`${workspace}#/library`);await page.getByRole('searchbox',{name:'Search prompts',exact:true}).fill('Standalone');
+    await expect(page.locator('article[data-prompt-id]')).toHaveCount(1);
+    const shelfReads=[];page.on('request',item=>{const url=new URL(item.url());if(url.pathname==='/prompt_manager/library'&&item.method()==='GET')shelfReads.push(url.searchParams);});
+    await page.getByRole('button',{name:'+ New prompt',exact:true}).click();const dialog=editorDialog(page);await ready(dialog);
+    await field(dialog,'Title').fill('Hidden by filter');await field(dialog,'Positive prompt').fill('Lighthouse in heavy rain');await button(dialog,'Save').click();
+    await expect(page).toHaveURL(/#\/library\/\d+$/);await expect(page.locator('#workspace-main h1')).toHaveText('Hidden by filter');
+    await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
+    await expect(page.getByRole('searchbox',{name:'Search prompts',exact:true})).toHaveValue('Standalone');
+    await expect(page.locator('article[data-prompt-id]')).toHaveCount(1);
+    await expect(page.getByText('The saved prompt is hidden by the current filters.',{exact:false})).toBeVisible();
+    expect(shelfReads.length).toBeGreaterThan(0);expect(shelfReads.every(params=>!params.has('cursor'))).toBe(true);
+    expect(shelfReads.at(-1).get('text')).toBe('Standalone');
+});
+
+test('export downloads the full Library JSON without a toast and reports a failure before any download',async({page,request})=>{
+    await page.addInitScript(()=>{window.revokedUrls=[];const revoke=URL.revokeObjectURL.bind(URL);URL.revokeObjectURL=url=>{window.revokedUrls.push(url);revoke(url);};});
+    await page.goto(`${workspace}#/library`);await expect(page.locator('article[data-prompt-id]').first()).toBeVisible();
+    const exportButton=page.getByRole('button',{name:'Export full Library JSON',exact:true});
+    const [download]=await Promise.all([page.waitForEvent('download'),exportButton.click()]);
+    expect(download.suggestedFilename()).toBe('prompt-manager-library-v1.json');
+    const saved=JSON.parse(await (await import('node:fs/promises')).readFile(await download.path(),'utf8'));
+    expect(saved).toEqual(await(await request.get('/prompt_manager/library/export')).json());
+    expect(saved).toMatchObject({schema_version:1,kind:'prompt-manager-library'});
+    await expect.poll(()=>page.evaluate(()=>window.revokedUrls.length)).toBe(1);await expect(toast(page)).toBeHidden();
+    await page.route('**/prompt_manager/library/export',route=>route.fulfill({status:500,contentType:'application/json',body:'{"success":false,"error":"down"}'}));
+    let downloads=0;page.on('download',()=>downloads++);await exportButton.click();
+    await expect(page.getByRole('alert').filter({hasText:'The Library export could not be downloaded.'})).toBeVisible();
+    expect(downloads).toBe(0);await expect(toast(page)).toBeHidden();expect(page.writes).toHaveLength(0);
 });

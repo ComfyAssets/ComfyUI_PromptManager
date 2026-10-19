@@ -724,3 +724,45 @@ test('refreshPair is inert without a selected pair, while busy and after dispose
     await disposed.refreshPair();
     assert.equal(server.calls.length, count);
 });
+
+test('reused pair outside first forty remains selected without loading every page', async () => {
+    const { reconcileLibraryReceipt } = await source;
+    const { libraryPromptRoles } = await import('../../web/js/workspace/library-state.mjs');
+    const page = Array.from({ length: 40 }, (_, index) => variant(200 - index, `negative ${200 - index}`));
+    const oldPair = pair({ id: 3, negative_text: 'the oldest saved negative', negative_prompt_id: 99 });
+    const server = harness(call => {
+        const path = call.url.split('?')[0];
+        if (call.method === 'GET' && path === '/prompt_manager/library/7') {
+            return response(200, { ...detail(EPOCH, positive(), page), variant_total: 85, variants_has_more: true, variants_next_cursor: 'c'.repeat(16) });
+        }
+        return library({ selected: oldPair })(call);
+    });
+    const receipt = recipe({ positive: positive(), pair: oldPair, positive_created: false, pair_created: false, parent_metadata_applied: false });
+    const result = await reconcileLibraryReceipt(server.api, { kind: 'add-negative', receipt }, {});
+    const detailResult = result.detail;
+    assert.equal(detailResult.variants.length, 40);
+    assert.equal(detailResult.variant_total, 85);
+    assert.ok(!detailResult.variants.some(item => item.id === oldPair.id), 'the reused pair is outside the bounded page');
+    assert.equal(libraryPromptRoles(detailResult, oldPair.id, result.pair).negative.text, oldPair.negative_text);
+    const variantCursorRequests = server.calls.filter(call => call.url.includes('variant_cursor'));
+    assert.equal(variantCursorRequests.length, 0);
+    assert.equal(server.writes().length, 0);
+});
+
+test('a refresh failed by restored storage cannot recover through retryReconciliation', async () => {
+    const { createLibraryEditorController } = await source;
+    let restored = false;
+    const receipt = { success: true, library_epoch: EPOCH, positive: positive({ notes: 'saved', edit_token: TOKEN2 }) };
+    const server = harness(call => library({ epoch: restored ? RESTORED : EPOCH, write: () => {restored = true; return response(200, receipt);} })(call));
+    const controller = createLibraryEditorController({ api: server.api, mode: 'metadata', positiveId: 7, pairId: 31 });
+    await controller.initialize();
+    controller.setField('notes', 'saved');
+    await controller.submit();
+    assert.equal(controller.state.phase, 'saved-refresh-error');
+    assert.equal(controller.state.error.code, 'storage-changed');
+    await controller.retryReconciliation();
+    assert.equal(controller.state.phase, 'saved-refresh-error', 'only an explicit Library reload can leave this state');
+    assert.equal(controller.state.error.code, 'storage-changed');
+    assert.equal(server.writes().length, 1);
+    controller.dispose();
+});

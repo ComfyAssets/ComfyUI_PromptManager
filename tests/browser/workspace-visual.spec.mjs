@@ -101,7 +101,10 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         const roles = page.getByRole('region', { name: 'Saved prompt texts', exact: true });
         const positive = roles.getByRole('region', { name: 'Positive prompt', exact: true });
         expect(await positive.evaluate(node => node.nextElementSibling?.getAttribute('aria-label'))).toBe('Negative prompt');
-        for (const name of ['Copy positive prompt', 'Send positive prompt', 'Copy negative prompt', 'Send negative prompt', 'Send prompt pair']) await expect(roles.getByRole('button', { name, exact: true })).toBeVisible();
+        for (const name of ['Copy positive prompt', 'Send positive prompt', 'Copy negative prompt', 'Send negative prompt']) await expect(roles.getByRole('button', { name, exact: true })).toBeVisible();
+        // As in the concept, the selected pair's send sits in the history heading, not among the saved texts.
+        await expect(roles.getByRole('button', { name: 'Send prompt pair', exact: true })).toHaveCount(0);
+        await expect(page.locator('.workspace-heading button.send')).toBeEnabled();
         await expect(page.locator('.library-shared-gallery article[data-image-key]')).toHaveCount(2);
         await page.locator('.library-shared-gallery .image-open').first().click();
         await expect(page.getByRole('region', { name: 'Image details', exact: true })).toContainText('canonical-alt.png');
@@ -517,7 +520,7 @@ test('Library visual evidence keeps natural cards and returns from real history 
             await page.getByRole('link',{name:'Explore history',exact:true}).first().click();
             await expect(page.getByRole('region',{name:'Prompt history',exact:true})).toBeVisible();
             await expect(page.locator('.library-history > div > .intro')).toHaveCount(1);
-            await page.getByRole('link',{name:'Back to library',exact:true}).click();
+            await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
             await expect(page.locator('article[data-prompt-id]')).toHaveCount(6);
             await expect(page.locator('.workspace-heading-copy > .intro')).toHaveCount(1);
             expect(errors).toEqual([]);
@@ -616,7 +619,7 @@ test('embedded history gallery keeps the history heading and disposes its layout
             await expect(page.locator('.workspace-heading-copy > .intro')).toHaveCount(0);
         }
         await attachEvidence(page,testInfo,`after-images-embedded-history-${width}`,false);
-        await page.getByRole('link',{name:'Back to library',exact:true}).click();
+        await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
         await expect(page.locator('.image-card,.image-details,dialog[open]')).toHaveCount(0);
     }
 });

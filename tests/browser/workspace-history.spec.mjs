@@ -333,7 +333,7 @@ test('route reentry restores older timeline range and both scroll axes after 61 
     await marker(page,oldRun).click();await expect(dialog(page)).toContainText(oldRun);await dialog(page).getByRole('button',{name:'Effective',exact:true}).click();await page.keyboard.press('Escape');
     const timeline=recorded(page).locator('.history-timeline');await timeline.evaluate(node=>{node.scrollLeft=731;node.scrollTop=95;node.dispatchEvent(new Event('scroll'));});
     const scroll=await timeline.evaluate(node=>({left:node.scrollLeft,top:node.scrollTop}));expect(scroll.left).toBeGreaterThan(0);expect(scroll.top).toBeGreaterThan(0);
-    await page.getByRole('link',{name:'Back to library',exact:true}).evaluate(node=>node.click());await expect(recorded(page)).toHaveCount(0);await command(request,{action:'append-history-runs'});
+    await page.getByRole('button',{name:'← Prompt library',exact:true}).evaluate(node=>node.click());await expect(recorded(page)).toHaveCount(0);await command(request,{action:'append-history-runs'});
     let windowReads=0;page.on('request',request=>{if(/\/library\/\d+\/history$/.test(new URL(request.url()).pathname))windowReads++;});
     let release,entered;const held=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});
     await page.route(new RegExp(`/history/runs/${oldRun}\\?`),async route=>{const response=await route.fetch();entered();await held;await route.fulfill({response}).catch(()=>{});});
@@ -366,7 +366,7 @@ for(const [width,height] of [[1600,1100],[390,844]])for(const theme of ['dark','
     await marker(page,oldRun).click();await expect(dialog(page)).toContainText(oldRun);await dialog(page).getByRole('button',{name:'Effective',exact:true}).click();await page.keyboard.press('Escape');
     const timeline=recorded(page).locator('.history-timeline');await timeline.evaluate(node=>{node.scrollLeft=731;node.scrollTop=95;node.dispatchEvent(new Event('scroll'));});
     const before=await timeline.evaluate(node=>({left:node.scrollLeft,top:node.scrollTop}));await reviewCapture(page,testInfo,`range-before-${width}-${theme}`,timeline);
-    await page.getByRole('link',{name:'Back to library',exact:true}).evaluate(node=>node.click());await expect(recorded(page)).toHaveCount(0);await command(request,{action:'append-history-runs'});
+    await page.getByRole('button',{name:'← Prompt library',exact:true}).evaluate(node=>node.click());await expect(recorded(page)).toHaveCount(0);await command(request,{action:'append-history-runs'});
     await page.evaluate(id=>{location.hash=`#/library/${id}`;},range.positive_id);await expect(recorded(page)).toContainText('80 loaded positions');await expect(marker(page,oldRun)).toHaveAttribute('aria-disabled','false');await expect(marker(page,oldRun)).toHaveAttribute('aria-pressed','true');
     const after=await timeline.evaluate(node=>({left:node.scrollLeft,top:node.scrollTop}));expect(Math.abs(after.left-before.left)).toBeLessThanOrEqual(1);expect(Math.abs(after.top-before.top)).toBeLessThanOrEqual(1);
     expect(await recorded(page).locator('[data-history-run]').evaluateAll(nodes=>nodes.map(node=>node.dataset.historyRun))).toEqual(ids);
@@ -421,7 +421,7 @@ test('more than 1000 real runs retain sparse columns, focused identity and pixel
     await expect.poll(()=>recorded(page).locator('[data-history-run]').count()).toBeLessThanOrEqual(bound);
     expect(await recorded(page).locator('[data-run-id]').count()).toBeLessThanOrEqual(bound);
     expect(await page.evaluate(()=>window.retainedHistoryButton.isConnected&&document.activeElement===window.retainedHistoryButton)).toBe(true);
-    await page.getByRole('link',{name:'Back to library',exact:true}).evaluate(node=>node.click());await expect(recorded(page)).toHaveCount(0);
+    await page.getByRole('button',{name:'← Prompt library',exact:true}).evaluate(node=>node.click());await expect(recorded(page)).toHaveCount(0);
 });
 
 test('390px and 200 percent layout keeps scrolling inside timeline and coarse targets remain 44px',async({page})=>{
