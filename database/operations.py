@@ -12,6 +12,7 @@ from .models import PromptModel, normalize_image_path, utc_now_iso
 from .pairs import PairDependencyError, PairOperations
 from .library import LibraryOperations
 from .library_commands import LibraryCommandOperations
+from .vocabulary import VocabularyOperations
 from .execution_history import ExecutionHistoryOperations
 from .execution_contexts import ExecutionContextOperations
 from .execution_outputs import ExecutionOutputOperations
@@ -160,6 +161,7 @@ class PromptDatabase(
     PairOperations,
     LibraryOperations,
     LibraryCommandOperations,
+    VocabularyOperations,
     ExecutionHistoryOperations,
     ExecutionContextOperations,
     ExecutionOutputOperations,
