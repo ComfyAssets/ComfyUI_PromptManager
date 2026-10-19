@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from database.library_commands import LibraryCommandError
 from database.operations import PromptDatabase
 from utils.hashing import generate_prompt_hash
 
@@ -1461,3 +1462,125 @@ class TestLibrary(unittest.TestCase):
             self.db.export_library()["positives"][0]["variants"][0]["negative_text"],
             "Blur",
         )
+
+    # -- final-review fixes ---------------------------------------------------
+
+    def _category(self, positive):
+        return self.owner_state(positive)[0]["category"]
+
+    def test_native_patch_trims_category_and_blank_becomes_null(self):
+        positive = self.db.save_prompt_pair("Cat", "Blur")
+        positive = self.db.get_prompt_pair(positive)["positive_prompt_id"]
+        self.state(positive)
+        for raw, expected in (
+            ("  Spaced  ", "Spaced"),
+            ("", None),
+            ("Again", "Again"),
+            ("   ", None),
+        ):
+            with self.subTest(raw=raw):
+                result = self.update(positive, {"category": raw})
+                self.assertEqual(self._category(positive), expected)
+                self.assertEqual(result["positive"]["category"], expected)
+
+    def test_native_patch_padded_category_equal_to_stored_writes_nothing(self):
+        positive = self.save("Cat", category="Studio")
+        self.state(positive)
+        before = self.owner_state(positive)
+        statements = []
+        connection = self.db.model.get_connection()
+        epoch, token = self.current(positive)
+        connection.set_trace_callback(statements.append)
+        try:
+            self.db.update_library_parent(
+                positive,
+                expected_epoch=epoch,
+                if_match=token,
+                metadata={"category": "  Studio "},
+            )
+        finally:
+            connection.set_trace_callback(None)
+        self.assertEqual(self.owner_state(positive), before)
+        dml = [
+            s
+            for s in statements
+            if s.lstrip().upper().startswith(("UPDATE", "INSERT", "DELETE"))
+        ]
+        self.assertEqual(dml, [])
+
+    def test_native_patch_category_limit_applies_to_trimmed_value(self):
+        positive = self.save("Cat")
+        self.state(positive)
+        self.update(positive, {"category": "  " + "x" * 100 + "  "})
+        self.assertEqual(self._category(positive), "x" * 100)
+        with self.assertRaises(ValueError):
+            self.update(positive, {"category": "x" * 101})
+
+    def test_native_create_trims_category_and_blank_becomes_null(self):
+        for index, (raw, expected) in enumerate(
+            (("  Spaced  ", "Spaced"), ("  ", None), ("", None))
+        ):
+            with self.subTest(raw=raw):
+                result = self.db.create_library_recipe(
+                    f"Cat {index}",
+                    "",
+                    expected_epoch=self.db.get_execution_epoch(),
+                    parent_metadata={"title": "T", "category": raw},
+                )
+                positive = result["positive"]["id"]
+                self.assertEqual(self._category(positive), expected)
+                self.assertEqual(result["positive"]["category"], expected)
+
+    def test_restore_of_identical_backup_fences_stale_patch_epoch(self):
+        from unittest.mock import patch
+
+        from database.models import PromptModel
+
+        try:
+            from tests.open_handles import assert_closed
+        except ImportError:
+            from open_handles import assert_closed
+
+        positive = self.save("Cat")
+        self.state(positive)
+        self.update(positive, {"title": "Before"})
+        epoch, token = self.current(positive)
+        backup = str(Path(self.temp.name) / "backup.db")
+        self.assertTrue(self.db.model.backup_database(backup))
+        real = PromptModel.verify_database_file
+        calls = []
+
+        def spy(path, **kwargs):
+            calls.append(kwargs)
+            return real(path, **kwargs)
+
+        with patch.object(PromptModel, "verify_database_file", staticmethod(spy)):
+            self.db.model.restore_from_file(backup)
+        self.assertIn({"require_library_state": True}, calls)
+        with self.assertRaises(LibraryCommandError) as raised:
+            self.db.update_library_parent(
+                positive,
+                expected_epoch=epoch,
+                if_match=token,
+                metadata={"title": "After"},
+            )
+        self.assertEqual(raised.exception.code, "storage-changed")
+        self.assertEqual(self.owner_state(positive)[2], (positive, "Before"))
+        self.db.close_all()
+        assert_closed(self, self.temp.name)
+
+    def test_archived_pair_image_scope_message_differs_from_foreign_pair(self):
+        archived = self.db.save_prompt_pair("Cat", "Blur")
+        positive = self.db.get_prompt_pair(archived)["positive_prompt_id"]
+        self.db.archive_prompt_pair(archived)
+        foreign = self.db.save_prompt_pair("Dog", "Blur")
+        with self.assertRaisesRegex(ValueError, "not in the requested archive scope"):
+            self.db.list_library_images(positive, pair_id=archived)
+        self.assertEqual(
+            self.db.list_library_images(positive, pair_id=archived, archive="all")[
+                "total"
+            ],
+            0,
+        )
+        with self.assertRaisesRegex(ValueError, "does not belong to this positive"):
+            self.db.list_library_images(positive, pair_id=foreign, archive="all")

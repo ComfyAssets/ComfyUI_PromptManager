@@ -431,6 +431,11 @@ class LibraryOperations:
                 (pair_id, positive_id),
             ).fetchone()
         ):
+            if conn.execute(
+                "SELECT 1 FROM prompt_pairs WHERE id=? AND positive_prompt_id=?",
+                (pair_id, positive_id),
+            ).fetchone():
+                raise ValueError("Variant is not in the requested archive scope")
             raise ValueError("Variant does not belong to this positive prompt")
         where, params = "g.prompt_id=?", [positive_id]
         if pair_id is not None:

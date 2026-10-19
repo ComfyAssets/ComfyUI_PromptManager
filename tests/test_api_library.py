@@ -859,6 +859,13 @@ class TestLibraryAPI(ImageAPITestCase):
         positive = (await self.client.get("/prompt_manager/library")).status
         self.assertEqual(positive, 200)
 
+    async def test_non_numeric_positive_id_returns_fixed_message(self):
+        response = await self.client.patch("/prompt_manager/library/export", json={})
+        result = await response.json()
+        self.assertEqual(response.status, 400)
+        self.assertEqual(result["error"], "Invalid positive prompt ID")
+        self.assertNotIn("literal", json.dumps(result))
+
 
 class TestNameCursorBudget(unittest.TestCase):
     def test_lru_byte_budget_scope_and_oversize_keys_are_bounded(self):

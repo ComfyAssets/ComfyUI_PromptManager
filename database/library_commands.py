@@ -66,6 +66,14 @@ def validate_library_metadata(metadata: dict, *, require_title: bool = False) ->
         raise ValueError("rating must be an integer between 1 and 5 or null")
 
 
+def normalize_library_metadata(metadata: dict) -> dict:
+    """Return validated metadata with category trimmed and blank stored as NULL."""
+    if "category" not in metadata:
+        return metadata
+    category = metadata["category"]
+    return {**metadata, "category": (category or "").strip() or None}
+
+
 def normalize_library_tags(tags: list[str]) -> list[str]:
     """Trim and deduplicate validated tags, keeping first-seen order."""
     return list(dict.fromkeys(tag.strip() for tag in tags))
@@ -171,6 +179,7 @@ class LibraryCommandOperations:
         """
         _validate_guards(positive_id, expected_epoch, if_match)
         validate_library_metadata(metadata)
+        metadata = normalize_library_metadata(metadata)
         with self._pair_transaction() as conn:
             epoch = self._library_epoch(conn, expected_epoch)
             current = self._library_parent(conn, epoch, positive_id)
@@ -236,6 +245,7 @@ class LibraryCommandOperations:
         validate_prompt_text(positive_text)
         _validate_negative_text(negative_text)
         validate_library_metadata(parent_metadata, require_title=True)
+        parent_metadata = normalize_library_metadata(parent_metadata)
         with self._pair_transaction() as conn:
             epoch = self._library_epoch(conn, expected_epoch)
             positive_id, positive_created = self._pair_component_outcome(

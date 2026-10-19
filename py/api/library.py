@@ -132,7 +132,10 @@ def _decode(token: str | None, scope: str) -> object:
 
 
 def _positive_id(request: web.Request) -> int:
-    value = int(request.match_info["positive_id"])
+    try:
+        value = int(request.match_info["positive_id"])
+    except ValueError:
+        raise ValueError("Invalid positive prompt ID") from None
     if not 1 <= value <= 2**63 - 1:
         raise ValueError("Invalid positive prompt ID")
     return value
