@@ -776,8 +776,16 @@ class _GraphResolver:
         """One sampler's result; a detailer is compared with its upstream stages.
 
         ``later`` holds the detailers already being judged below this one, so a
-        cyclic stage ancestry is malformed instead of recursing.
+        cyclic stage ancestry is malformed instead of recursing, and a chain
+        deeper than ``max_depth`` stages is ``depth-limit``.
         """
+        if len(later) >= self.max_depth:
+            return _result(
+                "unresolved",
+                sampler_id=sampler_id,
+                reason="Resolution depth limit reached",
+                reason_code="depth-limit",
+            )
         own = self.sides(sampler_id)
         if own["state"] == "unresolved":
             return own

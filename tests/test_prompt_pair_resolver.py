@@ -1834,6 +1834,31 @@ class TestDetailerStages(unittest.TestCase):
         result = _inspect(source, output_node_id="9")
         self.assertEqual(result["reason_code"], "depth-limit")
 
+    def test_long_detailer_chains_are_depth_limited(self):
+        for count in (70, 600):
+            source = _detailed(same_prompt=True)
+            previous = "50"
+            for index in range(count):
+                node_id = f"d{index}"
+                source[node_id] = _detailer([previous, 0], ["6", 0])
+                previous = node_id
+            source["9"]["inputs"]["images"] = [previous, 0]
+            for options in ({}, {"output_node_id": "9"}):
+                with self.subTest(count=count, options=options):
+                    result = _inspect(source, **options)
+                    self.assertEqual(result["state"], "unresolved")
+                    self.assertEqual(result["reason_code"], "depth-limit")
+                    self.assertIsNone(result["positive"])
+        # A chain within the bound still resolves.
+        source = _detailed(same_prompt=True)
+        previous = "50"
+        for index in range(20):
+            source[f"d{index}"] = _detailer([previous, 0], ["6", 0])
+            previous = f"d{index}"
+        source["9"]["inputs"]["images"] = [previous, 0]
+        result = _inspect(source, output_node_id="9")
+        self.assertEqual((result["state"], result["sampler_id"]), ("resolved", "d19"))
+
     def test_default_profile_keeps_the_upstream_sampler(self):
         # Ingestion is unchanged (D1): the detailer is not a sampler there.
         result = resolve_prompt_pair({"prompt": _detailed()})
