@@ -19,24 +19,24 @@
           "value": null
         },
         "steps": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "20"
         },
         "cfg": {
-          "status": "ambiguous",
+          "status": "unresolved",
           "value": null
         },
         "sampler": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "euler"
         },
         "scheduler": {
           "status": "ambiguous",
           "value": null
         },
         "model": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "flux-2-klein-9b-fp8.safetensors"
         }
       }
     }
@@ -61,24 +61,24 @@
           "value": null
         },
         "steps": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "20"
         },
         "cfg": {
-          "status": "ambiguous",
+          "status": "unresolved",
           "value": null
         },
         "sampler": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "euler"
         },
         "scheduler": {
           "status": "ambiguous",
           "value": null
         },
         "model": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "flux-2-klein-9b-fp8.safetensors"
         }
       }
     }
@@ -603,28 +603,28 @@
       "candidate_count": 0,
       "facts": {
         "seed": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "42"
         },
         "steps": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "25"
         },
         "cfg": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "6.5"
         },
         "sampler": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "euler"
         },
         "scheduler": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "normal"
         },
         "model": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "sdxl_base.safetensors"
         }
       }
     }

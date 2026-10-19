@@ -49,3 +49,12 @@ test("detailer-stage samplers, and only they, name an image stage", () => {
         assert.equal(Object.hasOwn(metadata._samplerTable[name], "image_stage"), entry.strategy === "detailer-stage", name);
     }
 });
+
+// The stage walk treats every table class as known (the resolver's `all_classes`).
+test("stage walk table classes equal every class in the semantics table", () => {
+    const classes = new Set();
+    for (const category of ["samplers", "guiders", "selectors", "composites", "savers"]) Object.keys(semantics[category]).forEach(name => classes.add(name));
+    for (const category of ["conditioning", "encoders", "strings"]) semantics[category].forEach(entry => classes.add(entry.class));
+    for (const category of ["runtime", "non_file_outputs"]) semantics[category].forEach(name => classes.add(name));
+    assert.deepStrictEqual([...metadata._tableClasses].sort(), [...classes].sort());
+});

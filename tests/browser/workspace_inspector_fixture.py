@@ -89,7 +89,9 @@ def seed_workspace_inspector(
         ],
         "links": [],
     }
-    ambiguous = {**complete, "5": complete["3"]}
+    # Two branches that differ only in seed: facts merge per field (spec section 10).
+    branch = {**complete["3"], "inputs": {**complete["3"]["inputs"], "seed": 7}}
+    ambiguous = {**complete, "5": branch}
     examples = (
         ("complete.png", {"prompt": complete, "workflow": workflow}),
         ("empty.png", {}),

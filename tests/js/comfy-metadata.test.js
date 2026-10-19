@@ -203,7 +203,7 @@ test("facts use resolution.sampler_id for detailer-stage nodes", () => {
         sampler: ["known", "euler"], scheduler: ["known", "normal"], model: ["known", "model.safetensors"],
     });
     // Without a named sampler, two samplers stay ambiguous (today's rules, now over the samplers table).
-    for (const resolution of [undefined, { state: "ambiguous", sampler_id: null }, { state: "unresolved", sampler_id: "d" }]) {
+    for (const resolution of [undefined, { state: "unresolved", sampler_id: "d" }]) {
         assert.ok(Object.values(factsFor(detailerFactGraph(), { resolution })).every(fact => fact.status === "ambiguous"), JSON.stringify(resolution));
     }
     // A sampler_id the graph or the samplers table does not hold never falls back to a guess.
@@ -224,6 +224,56 @@ test("facts use resolution.sampler_id for detailer-stage nodes", () => {
     for (let index = 0; index < 600; index++) { wide[`hop${index}`] = { class_type: "ImageScale", inputs: { image: previous } }; previous = [`hop${index}`, 0]; }
     wide.decode.inputs.samples = ["s", 0]; wide.d.inputs.image = previous;
     assert.ok(Object.values(factsFor(wide, { resolution: { state: "ambiguous", sampler_id: "d" } })).every(fact => fact.status === "unresolved"), "the stage walk is bounded by MAX_VISITS");
+});
+
+test("ambiguous results without a sampler_id merge facts across every listed stage", () => {
+    const ambiguous = { resolution: { state: "ambiguous", sampler_id: null, reason: "Multiple sampler branches" } };
+    // f01b's shape: an upstream sampler and a detailer whose settings partly differ.
+    assert.deepEqual(statusValues(factsFor(detailerFactGraph(), ambiguous)), {
+        seed: ["ambiguous", null], steps: ["ambiguous", null], cfg: ["known", "6.5"],
+        sampler: ["known", "euler"], scheduler: ["known", "normal"], model: ["known", "model.safetensors"],
+    });
+    assert.ok(Object.values(factsFor(detailerFactGraph(), ambiguous)).every(fact => fact.sampler_id === null));
+    // Equal independent branches agree on every field once the server says ambiguous;
+    // without a resolution they stay ambiguous (today's rules, reversed in PR3).
+    const equal = factGraph(); equal.other = structuredClone(equal.s);
+    assert.ok(Object.values(factsFor(equal, ambiguous)).every(fact => fact.status === "known"));
+    assert.ok(Object.values(factsFor(equal)).every(fact => fact.status === "ambiguous"));
+    // A walk that fails keeps every field unresolved; so does a graph with no listed sampler.
+    const cyclic = detailerFactGraph(); cyclic.decode.inputs.samples = ["d", 0];
+    const broken = detailerFactGraph(); broken.d.inputs.image = ["gone", 0];
+    for (const graph of [cyclic, broken, { model: factGraph().model }]) {
+        assert.ok(Object.values(factsFor(graph, ambiguous)).every(fact => fact.status === "unresolved" && fact.value === null));
+    }
+    const many = factGraph();
+    for (let index = 0; index < 40; index++) many[`s${index}`] = structuredClone(many.s);
+    assert.ok(Object.values(factsFor(many, ambiguous)).every(fact => fact.status === "unresolved"), "more stages than the candidate cap");
+});
+
+test("stage walks fail on unlisted sampler-shaped nodes like the resolver", () => {
+    const shaped = [
+        { positive: ["model", 0] }, { latent_image: ["model", 0] }, { guider: ["model", 0] }, { negative: ["model", 0] },
+        { pipe: ["model", 0] }, { basic_pipe: ["model", 0] }, { detailer_pipe: ["model", 0] }, { sampler: ["model", 0] },
+        { sigmas: ["model", 0] }, { noise: ["model", 0] }, { text_embeds: ["model", 0] }, { hyvid_embeds: ["model", 0] },
+        { model: ["model", 0], conditioning: ["model", 0] }, { model: ["model", 0], neg_conditioning: ["model", 0] },
+        { model: ["model", 0], samples: ["model", 0] }, { model: ["model", 0], latent: ["model", 0] },
+    ];
+    for (const inputs of shaped) {
+        const graph = detailerFactGraph();
+        graph.efficient = { class_type: "KSampler (Efficient)", inputs: { ...inputs, image: ["decode", 0] } };
+        graph.d.inputs.image = ["efficient", 0];
+        for (const sampler_id of ["d", null]) {
+            const facts = factsFor(graph, { resolution: { state: "ambiguous", sampler_id } });
+            assert.ok(Object.values(facts).every(fact => fact.status === "unresolved"), `${JSON.stringify(inputs)} ${sampler_id}`);
+        }
+    }
+    // Model patches (model alone, or with clip) and listed table classes are walked through.
+    for (const [class_type, inputs] of [["ModelPatch", { model: ["model", 0] }], ["LoraPatch", { model: ["model", 0], clip: ["model", 1] }], ["ImageScale", { samples: ["model", 0] }], ["CFGGuider", { model: ["model", 0], positive: ["model", 0] }]]) {
+        const graph = detailerFactGraph();
+        graph.hop = { class_type, inputs: { ...inputs, image: ["decode", 0] } };
+        graph.d.inputs.image = ["hop", 0];
+        assert.equal(factsFor(graph, { resolution: { state: "ambiguous", sampler_id: "d" } }).seed.status, "ambiguous", class_type);
+    }
 });
 
 test("Flux2Scheduler provides steps and scheduler is its node type", () => {

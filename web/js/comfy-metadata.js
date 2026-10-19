@@ -415,8 +415,26 @@
         SamplerCustomAdvanced: { facts: "custom-advanced" },
         FaceDetailer: { facts: "ksampler", image_stage: "image" },
     });
-    // Stages merged for one ambiguous multistage result: the resolver's candidate cap.
+    // Stages merged for one ambiguous result: the resolver's candidate cap.
     const MAX_STAGES = 32;
+    // Every class the semantics table lists (the resolver's `all_classes`): a stage walk
+    // passes these, and treats any other node shaped like a sampler as an unknown stage.
+    const TABLE_CLASSES = new Set([
+        "KSampler", "KSamplerAdvanced", "SamplerCustom", "SamplerCustomAdvanced", "FaceDetailer",
+        "CFGGuider", "BasicGuider", "easy ifElse", "ConditioningCombine", "ConditioningConcat",
+        "ConditioningAverage", "SaveImage", "SaveAnimatedWEBP", "SaveAnimatedPNG", "SaveVideo",
+        "SaveWEBM", "VHS_VideoCombine", "FluxGuidance", "ReferenceLatent", "ConditioningSetArea",
+        "ConditioningSetAreaPercentage", "ConditioningSetAreaStrength", "ConditioningSetMask", "ConditioningSetTimestepRange", "ControlNetApply",
+        "ControlNetApplyAdvanced", "ControlNetApplySD3", "InpaintModelConditioning", "WanImageToVideo", "ConditioningZeroOut",
+        "CLIPTextEncode", "CLIPTextEncodeSDXL", "CLIPTextEncodeFlux", "CLIPTextEncodeSD3", "TextEncodeQwenImageEdit",
+        "TextEncodeQwenImageEditPlus", "TextEncodeQwenImage21", "KikoTextEncode", "StringConstant", "StringConstantMultiline",
+        "JoinStringMulti", "PromptSearchList", "PreviewImage", "PreviewAny", "SaveImageWebsocket",
+        "Image Comparer (rgthree)",
+    ]);
+    // The resolver's stage-shaped inputs (pipes, embeds, custom-sampler parts), and the
+    // ones that make a node with a linked `model` a stage rather than a model patch.
+    const STAGE_SHAPED_INPUTS = ["latent_image", "guider", "positive", "negative", "pipe", "basic_pipe", "detailer_pipe", "sampler", "sigmas", "noise", "text_embeds", "hyvid_embeds"];
+    const MODEL_STAGE_INPUTS = ["conditioning", "neg_conditioning", "samples", "latent"];
     // Fixed output0 contracts from the pinned core node schemas, not input-name inference.
     const SCALAR_OUTPUTS = Object.freeze({
         PrimitiveInt: "number", PrimitiveFloat: "number",
@@ -487,6 +505,11 @@
 
     const samplerEntry = (graph, id) => (Object.hasOwn(graph, id) && Object.hasOwn(SAMPLERS, graph[id].class_type) ? SAMPLERS[graph[id].class_type] : undefined);
 
+    const linked = (inputs, key) => Object.hasOwn(inputs, key) && isLink(inputs[key]);
+    /** An unlisted node that may itself be a sampler stage: the walk cannot judge it. */
+    const stageShaped = ({ class_type, inputs }) => !TABLE_CLASSES.has(class_type) &&
+        (STAGE_SHAPED_INPUTS.some(key => linked(inputs, key)) || (linked(inputs, "model") && MODEL_STAGE_INPUTS.some(key => linked(inputs, key))));
+
     /** Samplers reached from a detailer's image input, breadth-first, stopping at listed samplers. */
     function upstreamStages(graph, origin, value, budget) {
         if (!isLink(value)) return null;
@@ -495,6 +518,7 @@
             const id = queue[head];
             if (id === origin || ++budget.visits > MAX_VISITS || !Object.hasOwn(graph, id)) return null;
             if (samplerEntry(graph, id)) { found.push(id); continue; }
+            if (stageShaped(graph[id])) return null;
             for (const input of Object.values(graph[id].inputs)) {
                 const next = isLink(input) ? String(input[0]) : null;
                 if (next !== null && !queued.has(next)) { queued.add(next); queue.push(next); }
@@ -573,8 +597,9 @@
      * Facts follow the server's resolution. Its `sampler_id` drives them only when
      * resolved, or for an ambiguous result naming the final stage of a multistage
      * chain (merged per field across the stages, independent of any selection: D5).
-     * Otherwise (no candidates on the wire until PR3) exactly one listed sampler in the
-     * graph supplies them; several leave every field ambiguous.
+     * Ambiguous without a named sampler (no candidates on the wire until PR3) merges
+     * the same way across every listed sampler and its stages. Otherwise exactly one
+     * listed sampler in the graph supplies them; several leave every field ambiguous.
      */
     function graphFacts(graph, source, resolution) {
         if (!object(graph)) return factSet("unresolved", source);
@@ -593,6 +618,12 @@
             return mergeFacts([...stages].map(id => samplerFacts(ctx, id, source)), source);
         }
         const candidates = entries.filter(([id]) => samplerEntry(graph, id));
+        if (state === "ambiguous") {
+            // The server's branches: every listed sampler, a detailer judged with its stages.
+            const stages = new Set();
+            if (!candidates.length || !candidates.every(([id]) => collectStages(graph, id, new Set(), stages, { visits: 0 }))) return factSet("unresolved", source);
+            return mergeFacts([...stages].map(id => samplerFacts(ctx, id, source)), source);
+        }
         if (candidates.length !== 1) return factSet(candidates.length > 1 ? "ambiguous" : "unresolved", source);
         return samplerFacts(ctx, candidates[0][0], source);
     }
@@ -672,6 +703,7 @@
         }),
     });
     Object.defineProperty(api, "_samplerTable", { value: SAMPLERS });
+    Object.defineProperty(api, "_tableClasses", { value: TABLE_CLASSES });
     if (typeof module !== "undefined" && module.exports) module.exports = api;
     else root.ComfyMetadata = api;
 })(typeof window !== "undefined" ? window : globalThis);
