@@ -227,7 +227,14 @@ workflow graph and its facts become limited). The serialized
 response stays under 8 MiB by omitting, in order, the workflow graph, then the prompt
 graph, then all raw records atomically. Retry does not raise these limits. Ingestion
 (scan, live monitor, admin import) and queue-time run counting keep the default
-profile, including its 500-node gate.
+profile, including its 500-node gate. Only `INSPECTION_PROFILE` reads the node
+semantics table `web/js/inspection-semantics.json` (at most 1 MiB and eight nesting
+levels, loaded on first use). With it, `SamplerCustomAdvanced` follows its `guider`
+link (through Reroutes) to `CFGGuider` (positive and negative) or `BasicGuider`
+(positive only; the negative is `absent`, "Guider has no negative input"). Any
+other guider, such as `DualCFGGuider`, is `unsupported-node`. If the table cannot
+be loaded, graph inspection is `unresolved` ("Inspection node semantics are
+unavailable") and ingestion is unaffected, because it never imports the table.
 
 `tools/inspection_corpus.py --root DIR --out JSONL [--workers N] [--baseline JSONL]
 [--summary TXT] [--code TREE]` measures a media folder read-only against the #240

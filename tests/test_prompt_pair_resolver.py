@@ -912,12 +912,15 @@ class TestResolverProfiles(unittest.TestCase):
         self.assertEqual(result["state"], "resolved")
 
     def test_prompt_graph_without_supported_sampler_is_unresolved_not_absent(self):
-        metadata = {"prompt": parity.build("f17")["prompt"]}
+        # f17 with its sampler renamed to a class the inspector does not know.
+        source = parity.build("f17")["prompt"]
+        source["13"]["class_type"] = "FutureSampler"
+        metadata = {"prompt": source}
         result = resolve_prompt_pair(metadata, profile=resolver.INSPECTION_PROFILE)
         self.assertEqual(
             (result["state"], result["reason_code"]), ("unresolved", "no-sampler")
         )
-        self.assertIn("SamplerCustomAdvanced", result["reason"])
+        self.assertIn("FutureSampler", result["reason"])
         self.assertIsNone(result["positive"])
         default = resolve_prompt_pair(metadata)
         self.assertEqual(default["state"], "absent")
@@ -1047,6 +1050,203 @@ class TestResolverProfiles(unittest.TestCase):
         # A memo hit charges its unfolded cost: the 2^k unfolded visits exhaust
         # the 2,000 allowance (per-entry paths never outgrow the allowance).
         self.assertEqual(result["reason"], "Resolution visit limit reached")
+
+
+def _guided(guider: dict = None) -> dict:
+    """``f07b`` (SamplerCustomAdvanced + CFGGuider), optionally another guider."""
+    source = parity.build("f07b")["prompt"]
+    if guider is not None:
+        source["21"] = guider
+    return source
+
+
+def _basic_guided() -> dict:
+    """``f17`` with its BasicGuider reading the CLIPTextEncode directly."""
+    source = parity.build("f17")["prompt"]
+    source["22"]["inputs"]["conditioning"] = ["6", 0]
+    del source["26"]
+    return source
+
+
+def _inspect(source: dict, **options) -> dict:
+    return resolve_prompt_pair(
+        {"prompt": source}, profile=resolver.INSPECTION_PROFILE, **options
+    )
+
+
+class TestGuiderSamplers(unittest.TestCase):
+    """SamplerCustomAdvanced follows its guider through the semantics table."""
+
+    def test_sampler_custom_advanced_with_cfg_guider_resolves(self):
+        result = _inspect(_guided())
+        self.assertEqual(result["state"], "resolved")
+        self.assertIsNone(result["reason_code"])
+        self.assertEqual(result["sampler_id"], "3")
+        self.assertEqual(result["positive"]["text"], parity.POS)
+        self.assertEqual(result["negative"]["text"], parity.NEG)
+        provenance = result["positive"]["provenance"]
+        self.assertEqual(
+            (provenance["sampler_id"], provenance["guider_id"]), ("3", "21")
+        )
+        self.assertEqual(provenance["node_id"], "6")
+        self.assertEqual(provenance["path"], [{"node_id": "6", "output_slot": 0}])
+        self.assertEqual(result["negative"]["provenance"]["node_id"], "7")
+        # The saver anchor reaches the same sampler.
+        anchored = _inspect(_guided(), output_node_id="9")
+        self.assertEqual(anchored, result)
+
+    def test_basic_guider_negative_is_absent_by_design(self):
+        from utils.prompt_inspector import inspect_prompt_evidence
+
+        result = _inspect(_basic_guided())
+        self.assertEqual(result["state"], "absent")
+        self.assertEqual(result["reason"], "Guider has no negative input")
+        self.assertIsNone(result["reason_code"])
+        self.assertEqual(result["positive"]["text"], parity.POS)
+        self.assertIsNone(result["negative"])
+        evidence = inspect_prompt_evidence({"prompt": _basic_guided()})
+        self.assertEqual(evidence["prompts"]["positive"]["status"], "resolved")
+        self.assertEqual(evidence["prompts"]["positive"]["text"], parity.POS)
+        self.assertEqual(evidence["prompts"]["negative"]["status"], "absent")
+        self.assertEqual(
+            evidence["resolution"]["reason"], "Guider has no negative input"
+        )
+
+    def test_basic_guider_empty_positive_is_not_absent(self):
+        source = _basic_guided()
+        source["6"]["inputs"]["text"] = "  "
+        result = _inspect(source)
+        self.assertEqual(result["state"], "unresolved")
+        self.assertEqual(result["reason"], "Positive prompt is empty")
+
+    def test_dual_cfg_guider_is_unsupported_node(self):
+        dual = {
+            "class_type": "DualCFGGuider",
+            "inputs": {
+                "model": ["4", 0],
+                "cond1": ["6", 0],
+                "cond2": ["6", 0],
+                "negative": ["7", 0],
+                "cfg_conds": 8.0,
+                "cfg_cond2_negative": 8.0,
+            },
+        }
+        result = _inspect(_guided(dual))
+        self.assertEqual(
+            (result["state"], result["reason_code"], result["node"]["class_type"]),
+            ("unresolved", "unsupported-node", "DualCFGGuider"),
+        )
+        self.assertEqual(result["node"], {"id": "21", "class_type": "DualCFGGuider"})
+        self.assertEqual(result["sampler_id"], "3")
+        self.assertIsNone(result["positive"])
+
+    def test_unsupported_node_names_first_blocking_node(self):
+        source = _guided()
+        source["30"] = {
+            "class_type": "FutureConditioner",
+            "inputs": {"conditioning": ["6", 0]},
+        }
+        source["31"] = {
+            "class_type": "OtherConditioner",
+            "inputs": {"conditioning": ["7", 0]},
+        }
+        source["21"]["inputs"]["positive"] = ["30", 0]
+        source["21"]["inputs"]["negative"] = ["31", 0]
+        result = _inspect(source)
+        self.assertEqual(result["reason_code"], "unsupported-node")
+        self.assertEqual(
+            result["node"], {"id": "30", "class_type": "FutureConditioner"}
+        )
+        # With the positive fixed, the negative's node is the first blocker.
+        source["21"]["inputs"]["positive"] = ["6", 0]
+        result = _inspect(source)
+        self.assertEqual(result["node"], {"id": "31", "class_type": "OtherConditioner"})
+        self.assertEqual(result["positive"]["text"], parity.POS)
+
+    def test_default_profile_ignores_semantics(self):
+        for source in (_guided(), _basic_guided()):
+            result = resolve_prompt_pair({"prompt": source})
+            self.assertIn(result["state"], ("unresolved", "absent"))
+            self.assertEqual(result["reason"], "No supported sampler pair found")
+            self.assertIsNone(result["reason_code"])
+            self.assertIsNone(result["positive"])
+        # Without semantics the inspection bounds alone do not follow guiders.
+        plain = replace(resolver.INSPECTION_PROFILE, semantics=False)
+        result = resolve_prompt_pair({"prompt": _guided()}, profile=plain)
+        self.assertEqual(result["reason_code"], "no-sampler")
+
+    def test_guider_reached_through_a_reroute(self):
+        source = _guided()
+        source["40"] = {"class_type": "Reroute", "inputs": {"value": ["21", 0]}}
+        source["3"]["inputs"]["guider"] = ["40", 0]
+        result = _inspect(source)
+        self.assertEqual(result["state"], "resolved")
+        self.assertEqual(result["positive"]["provenance"]["guider_id"], "21")
+
+    def test_malformed_guider_links_and_slots_never_guess(self):
+        cases = {
+            "missing": None,
+            "literal": "CFGGuider",
+            "dangling": ["99", 0],
+            "slot": ["21", 1],
+        }
+        for label, value in cases.items():
+            with self.subTest(label=label):
+                source = _guided()
+                if value is None:
+                    del source["3"]["inputs"]["guider"]
+                else:
+                    source["3"]["inputs"]["guider"] = value
+                result = _inspect(source)
+                self.assertEqual(result["state"], "unresolved")
+                self.assertIsNone(result["positive"])
+                expected = "unsupported-node" if label == "slot" else "malformed"
+                self.assertEqual(result["reason_code"], expected)
+        source = _guided()
+        source["21"]["inputs"]["model"] = ["21", 0]
+        source["40"] = {"class_type": "Reroute", "inputs": {"value": ["40", 0]}}
+        source["3"]["inputs"]["guider"] = ["40", 0]
+        self.assertEqual(_inspect(source)["reason"], "Cyclic guider ancestry")
+        source["40"]["inputs"] = {"value": ["21", 0], "input": ["21", 0]}
+        result = _inspect(source)
+        self.assertEqual(result["reason"], "Reroute input is not uniquely identifiable")
+        self.assertEqual(result["reason_code"], "malformed")
+
+    def test_guider_hops_draw_from_the_work_budgets(self):
+        self.assertEqual(_inspect(_guided(), max_visits=2)["reason_code"], "work-limit")
+        self.assertEqual(_inspect(_guided())["state"], "resolved")
+        source = _guided()
+        previous = "21"
+        for index in range(70):
+            source[f"r{index}"] = {
+                "class_type": "Reroute",
+                "inputs": {"value": [previous, 0]},
+            }
+            previous = f"r{index}"
+        source["3"]["inputs"]["guider"] = [previous, 0]
+        self.assertEqual(_inspect(source)["reason_code"], "depth-limit")
+
+    def test_custom_advanced_upstream_of_a_sampler_is_multistage(self):
+        source = _guided()
+        source["41"] = {
+            "class_type": "KSampler",
+            "inputs": {
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+                "latent_image": ["3", 0],
+            },
+        }
+        source["8"]["inputs"]["samples"] = ["41", 0]
+        result = _inspect(source, output_node_id="9")
+        self.assertEqual(result["sampler_id"], "41")
+        self.assertEqual(result["state"], "unresolved")
+        self.assertEqual(result["reason"], "Multistage sampler ancestry is ambiguous")
+        unanchored = _inspect(source)
+        self.assertEqual(unanchored["state"], "ambiguous")
+        self.assertEqual(
+            sorted(item["sampler_id"] for item in unanchored["candidates"]),
+            ["3", "41"],
+        )
 
 
 REPO = Path(__file__).resolve().parents[1]

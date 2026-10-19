@@ -773,8 +773,11 @@ class TestPromptInspector(ImageAPITestCase):
         self.assertEqual(result["metadata"]["prompt_graph"]["status"], "parsed")
 
     async def test_inspect_route_reports_no_sampler_instead_of_absent(self):
-        # f17: a BasicGuider-only prompt graph is a record, never "not recorded".
-        self.parity_fixture("f17")
+        # f17 with a sampler class the inspector does not know: a prompt graph
+        # is a record, never "not recorded".
+        built = parity.build("f17")
+        built["prompt"]["13"]["class_type"] = "FutureSampler"
+        parity.write_png(self.output_dir / "f17.png", built)
         response, result = await self.inspect("f17.png")
         self.assertEqual(response.status, 200)
         self.assertEqual(
@@ -785,7 +788,7 @@ class TestPromptInspector(ImageAPITestCase):
         self.assertEqual(result["resolution"]["reason_code"], "no-sampler")
         self.assertEqual(
             result["resolution"]["reason"],
-            "No supported sampler pair found (saw SamplerCustomAdvanced)",
+            "No supported sampler pair found (saw FutureSampler)",
         )
 
     async def test_inspect_route_exposes_reason_code_and_blocking_node(self):

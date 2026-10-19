@@ -132,6 +132,17 @@ INSPECTION_PROFILE = ResolverProfile(
     # About four passes over the 2 MiB role-record budget.
     max_scanned_units=8_000_000,
 )
+# Without the semantics table every sampler reads its pair directly.
+_DIRECT_SAMPLER = {
+    "strategy": "ksampler",
+    "conditioning": {"positive": "positive", "negative": "negative"},
+    "latent": "latent_image",
+}
+# Strategies whose nodes are prompt candidates in this slice. A detailer stage
+# re-samples an upstream image; it is judged together with its upstream chain,
+# which needs output ancestry (later slice), so it is never a candidate alone.
+_CANDIDATE_STRATEGIES = frozenset({"ksampler", "custom-advanced"})
+_GUIDER_ABSENT_REASON = "Guider has no negative input"
 _SAMPLER_LIKE_INPUTS = ("latent_image", "guider", "positive", "negative")
 _NO_SAMPLER_NAMES = 3
 _CLASS_NAME_LENGTH = 64
@@ -239,6 +250,7 @@ class _GraphResolver:
         *,
         budget: Optional[_Budget] = None,
         profile: ResolverProfile = DEFAULT_PROFILE,
+        semantics: Optional[Any] = None,
     ) -> None:
         # ``max_visits`` is the per-candidate allowance; ``profile`` supplies only
         # the path selection and whole-resolution bounds. ``resolve_text_input``
@@ -268,6 +280,18 @@ class _GraphResolver:
         self.active: set = set()
         self.metadata = metadata or {}
         self.text_sources: dict = {}
+        # ``semantics`` (inspection) names the samplers and guiders it follows.
+        self.semantics = semantics
+        if semantics is None:
+            self.sampler_classes = self.stage_classes = _SAMPLERS
+        else:
+            self.sampler_classes = frozenset(
+                name
+                for name, entry in semantics.samplers.items()
+                if entry["strategy"] in _CANDIDATE_STRATEGIES
+            )
+            # Any listed sampler upstream in latent ancestry is an earlier stage.
+            self.stage_classes = frozenset(semantics.samplers)
 
     def node(self, node_id: str) -> Tuple[str, dict]:
         if self.legacy:
@@ -511,22 +535,73 @@ class _GraphResolver:
                 )
         return record
 
-    def side(self, value: Any, sampler_id: str) -> dict:
-        text, path, storage_text = self.text(value, "conditioning")
+    def side(
+        self,
+        value: Any,
+        sampler_id: str,
+        guider_id: Optional[str] = None,
+        depth: int = 0,
+    ) -> dict:
+        text, path, storage_text = self.text(value, "conditioning", depth)
         origin = path[0]
-        return {
-            "text": text,
-            "storage_text": storage_text,
-            "provenance": {
-                "format": "comfyui",
-                "sampler_id": sampler_id,
-                **origin,
-                "path": path,
-                "text_source": self.text_sources.get(
-                    (origin["node_id"], origin["output_slot"]), "graph-inferred"
-                ),
-            },
+        provenance = {
+            "format": "comfyui",
+            "sampler_id": sampler_id,
+            **origin,
+            "path": path,
+            "text_source": self.text_sources.get(
+                (origin["node_id"], origin["output_slot"]), "graph-inferred"
+            ),
         }
+        if guider_id is not None:
+            # The conditioning path starts below the guider the sampler reads.
+            provenance["guider_id"] = guider_id
+        return {"text": text, "storage_text": storage_text, "provenance": provenance}
+
+    def guider(self, value: Any) -> Tuple[str, dict, Mapping, str, int]:
+        """Follow a sampler's ``guider`` link (through Reroutes) to a listed guider.
+
+        Returns the guider's ID and inputs, its conditioning input names, the
+        reason used when it has no negative input, and the depth reached. Each
+        hop draws a visit; an unlisted guider class is ``unsupported-node``.
+        """
+        seen: set = set()
+        depth = 0
+        while True:
+            if depth >= self.max_depth:
+                raise _Unresolved("Resolution depth limit reached", "depth-limit")
+            if not _link(value):
+                raise _Unresolved("Expected a guider link", "malformed")
+            node_id, slot = str(value[0]), value[1]
+            if node_id in seen:
+                raise _Unresolved("Cyclic guider ancestry", "malformed")
+            seen.add(node_id)
+            self.budget.spend()
+            name, inputs = self.node(node_id)
+            self.scan(len(inputs))
+            depth += 1
+            if name == "Reroute" and slot == 0:
+                keys = [key for key in ("value", "input", "in") if key in inputs]
+                if len(keys) != 1:
+                    raise _Unresolved(
+                        "Reroute input is not uniquely identifiable", "malformed"
+                    )
+                value = inputs[keys[0]]
+                continue
+            entry = self.semantics.guiders.get(name)
+            if entry is None or slot != 0:
+                raise self.unsupported("Unsupported guider", node_id)
+            conditioning = {
+                "positive": entry["positive"],
+                "negative": entry.get("negative"),
+            }
+            reason = entry.get("absent_reason", _GUIDER_ABSENT_REASON)
+            return node_id, inputs, conditioning, reason, depth
+
+    def sampler_entry(self, name: str) -> Mapping:
+        if self.semantics is None:
+            return _DIRECT_SAMPLER
+        return self.semantics.samplers[name]
 
     def pair(self, sampler_id: str) -> dict:
         positive = negative = None
@@ -539,22 +614,35 @@ class _GraphResolver:
                 reason_code="work-limit",
             )
         try:
-            _, inputs = self.node(sampler_id)
+            name, inputs = self.node(sampler_id)
+            entry = self.sampler_entry(name)
             # A second sampler in the latent ancestry denotes a multistage run;
             # associating the final image with one prompt pair would be a guess.
-            if "latent_image" in inputs:
-                self.latent_source(inputs["latent_image"], set(), 0)
-            positive = self.side(inputs.get("positive"), sampler_id)
+            if entry["latent"] in inputs:
+                self.latent_source(inputs[entry["latent"]], set(), 0)
+            guider_id, depth = None, 0
+            conditioning = entry["conditioning"]
+            absent_reason = "Negative input is absent"
+            if entry["strategy"] == "custom-advanced":
+                guider_id, inputs, conditioning, guider_reason, depth = self.guider(
+                    inputs.get(conditioning["guider"])
+                )
+                if conditioning["negative"] is None:
+                    absent_reason = guider_reason
+            positive = self.side(
+                inputs.get(conditioning["positive"]), sampler_id, guider_id, depth
+            )
             if not positive["text"].strip():
                 raise _Unresolved("Positive prompt is empty")
-            if "negative" not in inputs:
+            negative_name = conditioning["negative"]
+            if negative_name is None or negative_name not in inputs:
                 return _result(
                     "absent",
                     positive,
                     sampler_id=sampler_id,
-                    reason="Negative input is absent",
+                    reason=absent_reason,
                 )
-            negative = self.side(inputs["negative"], sampler_id)
+            negative = self.side(inputs[negative_name], sampler_id, guider_id, depth)
             return _result("resolved", positive, negative, sampler_id)
         except _Unresolved as error:
             return _result(
@@ -581,7 +669,7 @@ class _GraphResolver:
             self.budget.spend()
         seen.add(node_id)
         name, inputs = self.node(node_id)
-        if name in _SAMPLERS:
+        if name in self.stage_classes:
             # ``multistage-differs`` is reserved for when stage texts are compared.
             raise _Unresolved("Multistage sampler ancestry is ambiguous")
         if name in ("EmptyLatentImage", "EmptySD3LatentImage") and slot == 0:
@@ -603,7 +691,7 @@ class _GraphResolver:
                 self.budget.spend()
             seen.add(node_id)
             name, inputs = self.node(node_id)
-            if name in _SAMPLERS and slot == 0:
+            if name in self.sampler_classes and slot == 0:
                 return node_id
             key = {
                 "SaveImage": "images",
@@ -811,6 +899,7 @@ def _resolve(
         metadata if "prompt" in metadata else None,
         budget=_Budget(profile.total_visits),
         profile=profile,
+        semantics=semantics,
     )
     if output_node_id is not None:
         try:
@@ -825,7 +914,7 @@ def _resolve(
             for node_id, node in normalized.items()
             if isinstance(node, dict)
             and isinstance(node.get("class_type"), str)
-            and node["class_type"] in _SAMPLERS
+            and node["class_type"] in resolver.sampler_classes
         ]
     if not sampler_ids:
         return _no_sampler(normalized, profile)
