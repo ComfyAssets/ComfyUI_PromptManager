@@ -53,6 +53,12 @@ class OutputAdapter:
     kind: str
     compose: bool = False
     storage_input: bool = False
+    # Historical PromptManager classes (inspection only): ``comma`` strips the
+    # text and joins prepend/append with ", " exactly as their code did;
+    # ``strip`` only strips. ``default`` stands in for a missing optional input.
+    comma: bool = False
+    strip: bool = False
+    default: Optional[str] = None
 
 
 _SAMPLERS = frozenset({"KSampler", "KSamplerAdvanced", "SamplerCustom"})
@@ -76,6 +82,25 @@ for _name in ("PrimitiveString", "PrimitiveStringMultiline"):
     _DEFAULT_ADAPTERS[(_name, 0)] = OutputAdapter("value", "string")
 for _name in ("Text Multiline", "String Literal", "ShowText|pysssss"):
     _DEFAULT_ADAPTERS[(_name, 0)] = OutputAdapter("text", "string")
+# This repository's node classes up to 07a5af3 (``prompt_manager_*.py``), still in
+# saved workflows. Inspection only: the default profile keeps them unsupported.
+_COMMA = OutputAdapter("text", "conditioning", comma=True)
+_NEGATIVE = OutputAdapter("negative_text", "conditioning", strip=True, default="")
+_HISTORICAL_ADAPTERS = {
+    ("PromptManagerV2", 0): _COMMA,
+    ("PromptManagerV2", 1): _NEGATIVE,
+    ("PromptManagerV2", 2): replace(_COMMA, kind="string"),
+    ("PromptManagerV2", 3): replace(_NEGATIVE, kind="string"),
+    ("PromptManagerV2Text", 0): replace(_COMMA, kind="string"),
+    ("PromptManagerV2Text", 1): replace(_NEGATIVE, kind="string"),
+    ("PromptManagerNegative", 0): OutputAdapter("text", "conditioning", strip=True),
+    ("PromptManagerNegative", 1): OutputAdapter("text", "string", strip=True),
+    ("PromptManagerPositiveText", 0): replace(_COMMA, kind="string"),
+    ("PromptManagerNegativeText", 0): replace(_COMMA, kind="string"),
+}
+for _name in ("PromptManagerPositive", "PromptManagerDetailer"):
+    _HISTORICAL_ADAPTERS[(_name, 0)] = _COMMA
+    _HISTORICAL_ADAPTERS[(_name, 1)] = replace(_COMMA, kind="string")
 
 
 @dataclass(frozen=True)
@@ -155,6 +180,9 @@ _RUNTIME_REASON = "Text is decided at run time"
 EMPTY_POSITIVE_REASON = "Positive prompt is empty"
 MULTISTAGE_UNATTRIBUTED_REASON = "Multistage sampler ancestry is ambiguous"
 _INCOMPATIBLE_SLOT = "Output slot has an incompatible type"
+# Before 3.2.3 a save patch overwrote every PromptManager node's saved ``text``
+# with the last-run node's prompt (comfy-metadata.js ``createContext``).
+OVERWRITTEN_PROMPT_REASON = "Saved PromptManager text was overwritten by another node"
 # Trace outcomes that leave an input unverifiable against execution evidence.
 _UNVERIFIABLE_CODES = frozenset({"unsupported-node", "runtime-value"})
 # JoinStringMulti's own ``inputcount`` range; anything else never executed.
@@ -296,12 +324,16 @@ class _GraphResolver:
         budget: Optional[_Budget] = None,
         profile: ResolverProfile = DEFAULT_PROFILE,
         semantics: Optional[Any] = None,
+        overwritten: frozenset = frozenset(),
     ) -> None:
         # ``max_visits`` is the per-candidate allowance; ``profile`` supplies only
         # the path selection and whole-resolution bounds. ``resolve_text_input``
         # relies on the legacy default profile here.
         self.graph = graph
-        self.adapters = {**_DEFAULT_ADAPTERS, **adapters}
+        historical = _HISTORICAL_ADAPTERS if semantics is not None else {}
+        self.adapters = {**_DEFAULT_ADAPTERS, **historical, **adapters}
+        # Nodes whose saved text is not their own (inspection; R1).
+        self.overwritten = overwritten
         self.per_candidate_visits = max_visits
         self.budget = budget if budget is not None else _Budget(max_visits)
         self.budget.reset(max_visits)
@@ -433,6 +465,8 @@ class _GraphResolver:
             self.budget.spend()
             name, inputs = self.node(node_id)
             self.scan(len(inputs))
+            if node_id in self.overwritten:
+                raise _Unresolved(OVERWRITTEN_PROMPT_REASON, "malformed")
             self.active.add(key)
             if name == "Reroute" and slot == 0:
                 keys = [key for key in ("value", "input", "in") if key in inputs]
@@ -463,6 +497,8 @@ class _GraphResolver:
                     storage_text = evidence[adapter.input_name]
                     path = []
                     self.text_sources[(node_id, slot)] = "execution"
+                elif adapter.comma or adapter.strip:
+                    text, path, storage_text = self.historical(adapter, inputs, depth)
                 else:
                     text, path, storage_text = self.text(
                         inputs.get(adapter.input_name), "string", depth + 1
@@ -561,6 +597,40 @@ class _GraphResolver:
             self.deepest = max(outer_deepest, self.deepest)
             self.tainted = outer_tainted or self.tainted
             self.active.discard(key)
+
+    def historical(
+        self, adapter: OutputAdapter, inputs: dict, depth: int
+    ) -> Tuple[str, list, str]:
+        """``prompt_manager_*.py`` at 07a5af3: strip, then join with ", ".
+
+        Prepend and append are stripped and skipped when empty; the separator is
+        left out when either side is empty or already ends with a comma. The
+        stripped main text is the recipe.
+        """
+        text, path, _ = self.text(
+            inputs.get(adapter.input_name, adapter.default), "string", depth + 1
+        )
+        self.scan(len(text))
+        text = text.strip()
+        storage_text = text
+        if adapter.comma:
+            before, before_path, _ = self.text(
+                inputs.get("prepend_text", ""), "string", depth + 1
+            )
+            after, after_path, _ = self.text(
+                inputs.get("append_text", ""), "string", depth + 1
+            )
+            self.scan(len(before) + len(after) + len(before_path) + len(after_path))
+            before, after = before.strip(), after.strip()
+            if before:
+                joint = ", " if text and not before.endswith(",") else ""
+                text = f"{before}{joint}{text}"
+            if after:
+                joint = ", " if text and not text.endswith(",") else ""
+                text = f"{text}{joint}{after}"
+            text = self.built(self.bounded(text))
+            path = before_path + path + after_path
+        return text, path, storage_text
 
     def follows(self, name: str, slot: int, kind: str) -> bool:
         """Whether the semantics table traces this output (inspection only)."""
@@ -1506,6 +1576,9 @@ def _resolve(
             reason="Graph node IDs are not unique",
             reason_code="malformed",
         )
+    overwritten = frozenset()
+    if semantics is not None and "prompt" in metadata:
+        overwritten = _overwritten_prompt_nodes(metadata.get("workflow"), normalized)
     resolver = _GraphResolver(
         normalized,
         adapters or {},
@@ -1516,6 +1589,7 @@ def _resolve(
         budget=_Budget(profile.total_visits),
         profile=profile,
         semantics=semantics,
+        overwritten=overwritten,
     )
     if output_node_id is not None:
         try:
@@ -1543,6 +1617,54 @@ def _resolve(
             candidates=[resolver.pair(node_id) for node_id in sampler_ids],
         )
     return resolver.pair(sampler_ids[0])
+
+
+def _overwritten_prompt_nodes(workflow: Any, graph: dict) -> frozenset:
+    """API node IDs whose saved PromptManager text is another node's (R1).
+
+    The pre-3.2.3 signature (comfy-metadata.js ``createContext``): two or more
+    workflow nodes of a PromptManager type other than ``PromptManagerPair``
+    share one API ``text`` while their first widget values differ. Their API
+    class may have been rewritten to ``CLIPTextEncode``, so nodes are matched by
+    ID. Unlike the legacy viewer, the widget text is never substituted: it was
+    not recorded as executed, so these nodes are refused instead.
+    """
+    nodes = workflow.get("nodes") if isinstance(workflow, dict) else None
+    if not isinstance(nodes, list):
+        return frozenset()
+    widgets: Dict[str, str] = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        kind, values, node_id = (
+            node.get("type"),
+            node.get("widgets_values"),
+            node.get("id"),
+        )
+        if (
+            isinstance(kind, str)
+            and kind != "PromptManagerPair"
+            and "promptmanager" in kind.lower()
+            and isinstance(values, list)
+            and values
+            and isinstance(values[0], str)
+            and isinstance(node_id, (str, int))
+            and not isinstance(node_id, bool)
+        ):
+            widgets[str(node_id)] = values[0]
+    by_text: Dict[str, list] = {}
+    for node_id, widget in widgets.items():
+        node = graph.get(node_id)
+        inputs = node.get("inputs") if isinstance(node, dict) else None
+        text = inputs.get("text") if isinstance(inputs, dict) else None
+        if isinstance(text, str):
+            by_text.setdefault(text, []).append(node_id)
+    return frozenset(
+        node_id
+        for ids in by_text.values()
+        if len(ids) > 1 and len({widgets[node_id] for node_id in ids}) > 1
+        for node_id in ids
+    )
 
 
 def _no_sampler(graph: dict, profile: ResolverProfile) -> Dict[str, Any]:

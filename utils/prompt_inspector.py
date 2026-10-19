@@ -435,6 +435,16 @@ def unreadable_evidence() -> dict:
     return {"prompts": _explained(prompts, resolution), "resolution": resolution}
 
 
+def _parsed_workflow(value: Any) -> dict | None:
+    """The UI workflow as an object, or ``None`` (absent, invalid or not JSON)."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, RecursionError):
+            return None
+    return value if isinstance(value, dict) else None
+
+
 def inspect_prompt_evidence(
     metadata: dict,
     saved: dict | None = None,
@@ -448,6 +458,7 @@ def inspect_prompt_evidence(
     directly with its default profile. ``resolution`` carries the closed
     ``reason_code`` and, for a blocking node, ``node: {id, class_type}``.
     """
+    workflow = metadata.get("workflow")
     metadata = {
         key: value for key, value in metadata.items() if key in _ROLE_METADATA_KEYS
     }
@@ -496,6 +507,10 @@ def inspect_prompt_evidence(
             canonical["prompt"] = json.loads(canonical["prompt"])
         except (ValueError, RecursionError):
             return malformed
+    workflow = _parsed_workflow(workflow)
+    if workflow is not None and "prompt" in canonical:
+        # Only to recognize overwritten PromptManager text (R1); never a role.
+        canonical["workflow"] = workflow
     resolved = resolve_prompt_pair(canonical, profile=profile)
     state = resolved["state"]
     result = {}
