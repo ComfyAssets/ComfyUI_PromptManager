@@ -2,7 +2,13 @@
 
 import unittest
 
+from utils import prompt_pair_resolver as resolver
 from utils.prompt_pair_resolver import OutputAdapter, resolve_prompt_pair
+
+try:
+    from tests import inspection_parity as parity
+except ImportError:  # discovered with ``-s tests``
+    import inspection_parity as parity
 
 
 def graph(positive: str = "portrait", negative: str = "blurry") -> dict:
@@ -421,6 +427,277 @@ class TestPromptPairResolver(unittest.TestCase):
             }
         )
         self.assertEqual(result["state"], "unresolved")
+
+
+def _f03_metadata() -> dict:
+    return {"prompt": parity.build("f03")["prompt"]}
+
+
+def _vector(name: str) -> dict:
+    return next(v for v in parity.load_vectors() if v["name"] == name)["expect"]
+
+
+def _diamond(prefix: str = "d", leaves: int = 575, middles: int = 24) -> dict:
+    """A ~600-node string diamond: 24 fans over 575 leaves, one leaf shared."""
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    nodes = {
+        f"{prefix}l{index}": {"class_type": "PrimitiveString", "inputs": {"value": "a"}}
+        for index in range(leaves)
+    }
+    for middle in range(middles):
+        nodes[f"{prefix}m{middle}"] = {
+            "class_type": "Text Concatenate",
+            "inputs": {
+                f"text_{letters[index]}": [
+                    f"{prefix}l{(middle * middles + index) % leaves}",
+                    0,
+                ]
+                for index in range(middles)
+            },
+        }
+    nodes[f"{prefix}r"] = {
+        "class_type": "Text Concatenate",
+        "inputs": {
+            f"text_{letters[index]}": [f"{prefix}m{index}", 0]
+            for index in range(middles)
+        },
+    }
+    return nodes
+
+
+def _diamond_samplers(count: int) -> dict:
+    """``count`` samplers, each encoding the same diamond through its own encoder."""
+    source = {"neg": {"class_type": "CLIPTextEncode", "inputs": {"text": "bad"}}}
+    source.update(_diamond())
+    for index in range(count):
+        source[f"e{index}"] = {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": ["dr", 0]},
+        }
+        source[f"s{index}"] = {
+            "class_type": "KSampler",
+            "inputs": {"positive": [f"e{index}", 0], "negative": ["neg", 0]},
+        }
+    return source
+
+
+class TestResolverProfiles(unittest.TestCase):
+    """Inspection bounds work, not graph size; the default profile is pinned."""
+
+    def test_inspection_profile_resolves_reachable_branch_in_506_node_graph(self):
+        expected = _vector("f03-default")
+        self.assertGreater(len(_f03_metadata()["prompt"]), 500)
+        result = resolve_prompt_pair(
+            _f03_metadata(), profile=resolver.INSPECTION_PROFILE
+        )
+        self.assertEqual(result["state"], "resolved")
+        self.assertIsNone(result["reason_code"])
+        self.assertEqual(result["positive"]["text"], parity.POS)
+        self.assertEqual(result["negative"]["text"], parity.NEG)
+        self.assertEqual(expected["state"], "unresolved")  # ingestion baseline
+
+    def test_default_profile_keeps_500_node_gate(self):
+        for result in (
+            resolve_prompt_pair(_f03_metadata()),
+            resolve_prompt_pair(_f03_metadata(), profile=resolver.DEFAULT_PROFILE),
+        ):
+            self.assertEqual(result["state"], "unresolved")
+            self.assertEqual(result["reason"], "Resolution limit reached")
+            self.assertIsNone(result["reason_code"])
+            self.assertNotIn("node", result)
+
+    def test_total_visit_budget_is_shared_across_candidates(self):
+        source = _diamond_samplers(40)
+        self.assertEqual(resolver.INSPECTION_PROFILE.total_visits, 20_000)
+        self.assertLess(len(source), resolver.INSPECTION_PROFILE.node_ceiling)
+        result = resolve_prompt_pair(
+            {"prompt": source}, profile=resolver.INSPECTION_PROFILE
+        )
+        self.assertNotEqual(result["state"], "resolved")
+        self.assertEqual(result["state"], "ambiguous")
+        candidates = result["candidates"]
+        self.assertEqual(len(candidates), 40)
+        self.assertEqual(candidates[0]["state"], "resolved")
+        codes = [candidate["reason_code"] for candidate in candidates]
+        first_limited = codes.index("work-limit")
+        self.assertGreater(first_limited, 0)
+        self.assertTrue(all(code == "work-limit" for code in codes[first_limited:]))
+        self.assertTrue(
+            all(c["state"] == "unresolved" for c in candidates[first_limited:])
+        )
+        # The default profile keeps its historical gate on the same graph.
+        self.assertEqual(
+            resolve_prompt_pair({"prompt": source})["reason"],
+            "Resolution limit reached",
+        )
+
+    def test_per_candidate_visit_budget_resets_for_each_sampler(self):
+        source = _diamond_samplers(3)
+        result = resolve_prompt_pair(
+            {"prompt": source}, profile=resolver.INSPECTION_PROFILE, max_visits=700
+        )
+        self.assertEqual(
+            [candidate["state"] for candidate in result["candidates"]],
+            ["resolved"] * 3,
+        )
+        result = resolve_prompt_pair(
+            {"prompt": source}, profile=resolver.INSPECTION_PROFILE, max_visits=300
+        )
+        self.assertEqual(
+            [candidate["reason_code"] for candidate in result["candidates"]],
+            ["work-limit"] * 3,
+        )
+
+    def test_node_ceiling_is_limited_not_unresolved(self):
+        source = graph()
+        for index in range(20_001 - len(source)):
+            source[f"p{index}"] = {"class_type": "PrimitiveInt", "inputs": {"value": 1}}
+        self.assertEqual(len(source), 20_001)
+        result = resolve_prompt_pair(
+            {"prompt": source}, profile=resolver.INSPECTION_PROFILE
+        )
+        self.assertEqual(result["reason_code"], "graph-ceiling")
+        self.assertNotEqual(result["state"], "resolved")
+        del source["p0"]
+        result = resolve_prompt_pair(
+            {"prompt": source}, profile=resolver.INSPECTION_PROFILE
+        )
+        self.assertEqual(result["state"], "resolved")
+
+    def test_prompt_graph_without_supported_sampler_is_unresolved_not_absent(self):
+        metadata = {"prompt": parity.build("f17")["prompt"]}
+        result = resolve_prompt_pair(metadata, profile=resolver.INSPECTION_PROFILE)
+        self.assertEqual(
+            (result["state"], result["reason_code"]), ("unresolved", "no-sampler")
+        )
+        self.assertIn("SamplerCustomAdvanced", result["reason"])
+        self.assertIsNone(result["positive"])
+        default = resolve_prompt_pair(metadata)
+        self.assertEqual(default["state"], "absent")
+        self.assertEqual(default["reason"], "No supported sampler pair found")
+        self.assertIsNone(default["reason_code"])
+
+    def test_no_sampler_reason_names_at_most_three_sampler_like_classes(self):
+        source = {
+            str(index): {
+                "class_type": f"FutureSampler{index % 5}",
+                "inputs": {"latent_image": ["x", 0]},
+            }
+            for index in range(10)
+        }
+        result = resolve_prompt_pair(
+            {"prompt": source}, profile=resolver.INSPECTION_PROFILE
+        )
+        self.assertEqual(result["reason_code"], "no-sampler")
+        self.assertEqual(
+            result["reason"],
+            "No supported sampler pair found "
+            "(saw FutureSampler0, FutureSampler1, FutureSampler2)",
+        )
+
+    def test_absent_only_without_prompt_or_parameters(self):
+        for value in (None, [], "raw text", {}, {"parameters": None}):
+            with self.subTest(value=value):
+                result = resolve_prompt_pair(value, profile=resolver.INSPECTION_PROFILE)
+                self.assertEqual(result["state"], "absent")
+                self.assertIsNone(result["positive"])
+        note = {"1": {"class_type": "Note", "inputs": {"text": "hello"}}}
+        for value in (
+            {"prompt": note},
+            note,
+            {"prompt": {}},
+            {"prompt": []},
+            {"prompt": {"1": None}},
+            {"parameters": "unstructured arbitrary text"},
+        ):
+            with self.subTest(value=value):
+                result = resolve_prompt_pair(value, profile=resolver.INSPECTION_PROFILE)
+                self.assertEqual(result["state"], "unresolved")
+                self.assertIsNotNone(result["reason_code"])
+        self.assertEqual(resolve_prompt_pair({"prompt": note})["state"], "absent")
+        # A pair-level "absent" names the missing negative; it always has a positive.
+        source = graph()
+        del source["3"]["inputs"]["negative"]
+        result = resolve_prompt_pair(source, profile=resolver.INSPECTION_PROFILE)
+        self.assertEqual(result["state"], "absent")
+        self.assertEqual(result["positive"]["text"], "portrait")
+
+    def test_existing_limits_map_to_reason_codes(self):
+        cases = (
+            ({"max_visits": 1}, "work-limit", "Resolution visit limit reached"),
+            ({"max_depth": 0}, "depth-limit", None),
+            ({"max_depth": 1}, "depth-limit", "Resolution depth limit reached"),
+            ({"max_text_length": 3}, "text-limit", None),
+        )
+        for limits, code, reason in cases:
+            with self.subTest(limits=limits):
+                default = resolve_prompt_pair(graph(), **limits)
+                self.assertEqual(default["state"], "unresolved")
+                self.assertIsNone(default["reason_code"])
+                result = resolve_prompt_pair(
+                    graph(), profile=resolver.INSPECTION_PROFILE, **limits
+                )
+                self.assertEqual(result["state"], "unresolved")
+                self.assertEqual(result["reason_code"], code)
+                if reason:
+                    self.assertEqual(result["reason"], reason)
+        result = resolve_prompt_pair(
+            {"parameters": "x" * 20},
+            profile=resolver.INSPECTION_PROFILE,
+            max_text_length=10,
+        )
+        self.assertEqual(result["reason_code"], "text-limit")
+
+    def test_unsupported_node_names_the_blocking_node(self):
+        source = graph()
+        source["1"]["class_type"] = "UnknownEncoder"
+        result = resolve_prompt_pair(source, profile=resolver.INSPECTION_PROFILE)
+        self.assertEqual(result["reason_code"], "unsupported-node")
+        self.assertEqual(result["node"], {"id": "1", "class_type": "UnknownEncoder"})
+        default = resolve_prompt_pair(source)
+        self.assertIsNone(default["reason_code"])
+        self.assertNotIn("node", default)
+        self.assertEqual(default["reason"], result["reason"])
+
+    def test_default_profile_emits_only_a_null_reason_code_beyond_todays_keys(self):
+        source = graph()
+        source["4"] = {"class_type": "KSampler", "inputs": source["3"]["inputs"]}
+        for value in (graph(), source, {"parameters": "a\nSteps: 1, Sampler: x"}):
+            result = resolve_prompt_pair(value)
+            self.assertEqual(
+                set(result),
+                {
+                    "state",
+                    "positive",
+                    "negative",
+                    "sampler_id",
+                    "reason",
+                    "candidates",
+                    "reason_code",
+                },
+            )
+            self.assertIsNone(result["reason_code"])
+            for candidate in result["candidates"]:
+                self.assertNotIn("node", candidate)
+                self.assertIsNone(candidate["reason_code"])
+
+    def test_diamond_provenance_paths_are_bounded_in_inspection(self):
+        source = graph()
+        source["8"] = {"class_type": "PrimitiveString", "inputs": {"value": ""}}
+        for index in range(9, 49):
+            source[str(index)] = {
+                "class_type": "StringConcatenate",
+                "inputs": {
+                    "string_a": [str(index - 1), 0],
+                    "string_b": [str(index - 1), 0],
+                    "delimiter": "",
+                },
+            }
+        source["1"]["inputs"]["text"] = ["48", 0]
+        result = resolve_prompt_pair(source, profile=resolver.INSPECTION_PROFILE)
+        self.assertEqual(result["state"], "unresolved")
+        self.assertEqual(result["reason_code"], "work-limit")
+        self.assertEqual(result["reason"], "Provenance path limit reached")
 
 
 if __name__ == "__main__":

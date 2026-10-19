@@ -819,10 +819,11 @@ def _role_text(status, text):
 
 def _observe_inspection(read):
     from utils.prompt_inspector import inspect_prompt_evidence
+    from utils.prompt_pair_resolver import INSPECTION_PROFILE
 
     if read is None:  # inspect_current_file's unreadable-media evidence
         return "unresolved", "Media metadata could not be read", None, None, {}
-    evidence = inspect_prompt_evidence(read.metadata)
+    evidence = inspect_prompt_evidence(read.metadata, profile=INSPECTION_PROFILE)
     resolution, prompts = evidence["resolution"], evidence["prompts"]
     roles = [
         _role_text(prompts[role]["status"], prompts[role]["text"])
@@ -832,7 +833,7 @@ def _observe_inspection(read):
 
 
 def _observe_default(path):
-    from utils.prompt_pair_resolver import resolve_prompt_pair
+    from utils.prompt_pair_resolver import DEFAULT_PROFILE, resolve_prompt_pair
 
     # Last chunk wins, as Pillow's ``image.text`` (the metadata extractor) does.
     records = dict(read_text_chunks(path))
@@ -841,7 +842,7 @@ def _observe_default(path):
     }
     if isinstance(canonical.get("prompt"), str):
         canonical["prompt"] = json.loads(canonical["prompt"])
-    resolved = resolve_prompt_pair(canonical)
+    resolved = resolve_prompt_pair(canonical, profile=DEFAULT_PROFILE)
     state = resolved["state"]
     roles = [
         (
@@ -871,9 +872,10 @@ def observe(vector, directory=FIXTURE_DIR):
     """Today's outcome for one vector, shaped like ``vector["expect"]`` minus facts.
 
     ``inspection`` is the workspace inspector path (``read_inspection_file`` then
-    ``inspect_prompt_evidence``). ``default`` pins the resolver's default profile
-    only: ``resolve_prompt_pair`` on the role records decoded from the PNG text
-    chunks. Ingestion's own readers are covered by their own suites.
+    ``inspect_prompt_evidence``) with ``INSPECTION_PROFILE``. ``default`` pins
+    the resolver's ``DEFAULT_PROFILE`` only: ``resolve_prompt_pair`` on the role
+    records decoded from the PNG text chunks. Ingestion's own readers are
+    covered by their own suites.
 
     Committed fixtures are read from ``directory``, which must contain them.
     Test-time fixtures are built into a temporary directory; the file is

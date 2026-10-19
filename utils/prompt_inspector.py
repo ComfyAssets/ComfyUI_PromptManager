@@ -13,7 +13,7 @@ from typing import Any
 from PIL import Image
 
 from .pair_execution import EXECUTION_KEY
-from .prompt_pair_resolver import resolve_prompt_pair
+from .prompt_pair_resolver import DEFAULT_PROFILE, ResolverProfile, resolve_prompt_pair
 from .video_metadata import ffprobe_path, is_video_path
 
 MAX_METADATA_BYTES = 2 * 1024 * 1024
@@ -282,8 +282,17 @@ def _side(status: str, text: str | None = None, source: str | None = None) -> di
     return {"status": status, "text": text, "source": source}
 
 
-def inspect_prompt_evidence(metadata: dict, saved: dict | None = None) -> dict:
-    """Keep uncertainty visible; a saved association never replaces file evidence."""
+def inspect_prompt_evidence(
+    metadata: dict,
+    saved: dict | None = None,
+    *,
+    profile: ResolverProfile = DEFAULT_PROFILE,
+) -> dict:
+    """Keep uncertainty visible; a saved association never replaces file evidence.
+
+    ``profile`` selects the resolver bounds. The default is unchanged here; the
+    parity vectors pass ``INSPECTION_PROFILE`` until the routes adopt it.
+    """
     metadata = {
         key: value for key, value in metadata.items() if key in _ROLE_METADATA_KEYS
     }
@@ -329,7 +338,7 @@ def inspect_prompt_evidence(metadata: dict, saved: dict | None = None) -> dict:
                 },
                 "resolution": resolution,
             }
-    resolved = resolve_prompt_pair(canonical)
+    resolved = resolve_prompt_pair(canonical, profile=profile)
     state = resolved["state"]
     result = {}
     for role in ("positive", "negative"):

@@ -7,7 +7,7 @@
     "expect": {
       "metadata_status": "available",
       "state": "unresolved",
-      "reason": "Resolution limit reached",
+      "reason": "No supported sampler pair found (saw FaceDetailer, SamplerCustomAdvanced)",
       "reason_code": null,
       "selection": null,
       "positive": null,
@@ -49,7 +49,7 @@
     "expect": {
       "metadata_status": "available",
       "state": "unresolved",
-      "reason": "No supported sampler pair found",
+      "reason": "No supported sampler pair found (saw FaceDetailer, SamplerCustomAdvanced)",
       "reason_code": null,
       "selection": null,
       "positive": null,
@@ -132,12 +132,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "Resolution limit reached",
+      "state": "resolved",
+      "reason": "",
       "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {
@@ -511,7 +511,7 @@
     "expect": {
       "metadata_status": "available",
       "state": "unresolved",
-      "reason": "No supported sampler pair found",
+      "reason": "No supported sampler pair found (saw SamplerCustomAdvanced, CFGGuider)",
       "reason_code": null,
       "selection": null,
       "positive": null,
@@ -888,12 +888,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "absent",
-      "reason": "No supported sampler pair found",
+      "state": "unresolved",
+      "reason": "No supported sampler pair found (saw SamplerCustomAdvanced)",
       "reason_code": null,
       "selection": null,
-      "positive": "<absent>",
-      "negative": "<absent>",
+      "positive": null,
+      "negative": null,
       "candidate_count": 0,
       "facts": {
         "seed": {
