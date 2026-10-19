@@ -204,8 +204,9 @@ role record over that budget) still fail. Other read bounds are unchanged: 8 MiB
 non-PNG header, 10,000 PNG chunks and a three-second ffprobe. Resolution under
 `INSPECTION_PROFILE` bounds work, not graph size: 2,000 visits per candidate chain,
 20,000 in total, 64 link/JSON-container levels, 100,000 resolved characters, and a
-20,000-node backstop that counts only executable API prompt nodes (workflow UI nodes
-and subgraph definitions never count against prompts or facts). The serialized
+two 20,000-node ceilings: one over the top-level entries of the API prompt, and one
+over the workflow graph's UI nodes plus subgraph-definition nodes (past it the
+workflow graph and its facts become limited). The serialized
 response stays under 8 MiB by omitting, in order, the workflow graph, then the prompt
 graph, then all raw records atomically. Retry does not raise these limits. Ingestion
 (scan, live monitor, admin import) and queue-time run counting keep the default

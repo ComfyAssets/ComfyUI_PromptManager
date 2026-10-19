@@ -86,7 +86,8 @@ class TestParityFacts(unittest.TestCase):
         vectors = [v for v in parity.load_vectors() if v["profile"] == "inspection"]
         self.assertTrue(vectors)
         payload = json.dumps(_responses(vectors, self.directory))
-        completed = subprocess.run(  # nosec B603 - fixed local harness, no shell
+        # Fixed local Node harness, no shell.
+        completed = subprocess.run(  # nosec B603
             [node, str(HARNESS)],
             input=payload.encode("utf-8"),
             capture_output=True,

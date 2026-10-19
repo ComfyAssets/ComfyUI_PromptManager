@@ -29,7 +29,7 @@ import os
 import shutil
 import stat
 import struct
-import subprocess  # nosec B404 - fixed local Node harness, no shell
+import subprocess  # nosec B404
 import sys
 import time
 from collections import Counter
@@ -121,7 +121,8 @@ def _load_code(code_dir: Path) -> SimpleNamespace:
 def _start_node(node: str | None, code_dir: Path):
     if not node:
         return None
-    return subprocess.Popen(  # nosec B603 - fixed local harness, no shell
+    # Fixed local Node harness, no shell.
+    return subprocess.Popen(  # nosec B603
         [node, str(FACTS_HARNESS), str(code_dir)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
