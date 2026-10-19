@@ -545,6 +545,38 @@ def _depth_straddling_samplers() -> dict:
     return source
 
 
+def _nested_shared_chain_samplers() -> dict:
+    """A, B and C share one chain; each later sampler hangs below a memo hit."""
+    source = {"p": {"class_type": "PrimitiveString", "inputs": {"value": "cat"}}}
+
+    def chain(start: str, prefix: str, count: int) -> str:
+        previous = start
+        for index in range(count):
+            source[f"{prefix}{index}"] = {
+                "class_type": "Reroute",
+                "inputs": {"value": [previous, 0]},
+            }
+            previous = f"{prefix}{index}"
+        return previous
+
+    def sampler(name: str, text_source: str) -> None:
+        source[f"enc{name}"] = {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": [text_source, 0]},
+        }
+        source[name] = {
+            "class_type": "KSampler",
+            "inputs": {"positive": [f"enc{name}", 0], "negative": [f"enc{name}", 0]},
+        }
+
+    top = chain("p", "c", 6)  # A memoizes c5 with height 6
+    sampler("A", top)
+    middle = chain(top, "r", 1)  # r0 is built over a memo hit on c5
+    sampler("B", middle)
+    sampler("C", chain(middle, "d", 3))  # C reaches r0 three Reroutes deeper
+    return source
+
+
 def _random_graph(rng: random.Random) -> dict:
     ids = [str(index) for index in range(rng.randrange(5, 60))]
     classes = (
@@ -686,6 +718,22 @@ class TestResolverProfiles(unittest.TestCase):
             (anchored["state"], anchored["reason_code"]), ("unresolved", "depth-limit")
         )
 
+    def test_memo_height_propagates_through_a_nested_memo_hit(self):
+        source = _nested_shared_chain_samplers()
+        reverse = dict(reversed(list(source.items())))
+        profile = resolver.INSPECTION_PROFILE
+        for graph in (source, reverse):
+            outcomes = _outcomes(
+                resolve_prompt_pair({"prompt": graph}, profile=profile, max_depth=12)
+            )
+            self.assertEqual(outcomes["C"][:2], ("unresolved", "depth-limit"))
+        anchored = resolve_prompt_pair(
+            {"prompt": source}, profile=profile, max_depth=12, output_node_id="C"
+        )
+        self.assertEqual(
+            (anchored["state"], anchored["reason_code"]), ("unresolved", "depth-limit")
+        )
+
     def test_candidate_outcomes_match_anchored_and_ignore_node_order(self):
         profile = resolver.INSPECTION_PROFILE
         limits = ({}, {"max_depth": 4}, {"max_depth": 8}, {"max_visits": 6})
@@ -756,10 +804,9 @@ class TestResolverProfiles(unittest.TestCase):
         self.assertEqual(result["candidates"][0]["state"], "resolved")
         first = reasons.index("Provenance path limit reached")
         self.assertGreater(first, 0)
-        self.assertEqual(
+        self.assertLessEqual(
             set(reasons[first:]),
-            {"Provenance path limit reached", "Resolution visit limit reached"}
-            & set(reasons[first:]),
+            {"Provenance path limit reached", "Resolution visit limit reached"},
         )
         self.assertEqual(reasons[first], "Provenance path limit reached")
         self.assertEqual(
