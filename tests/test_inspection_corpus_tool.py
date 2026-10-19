@@ -16,10 +16,10 @@ import shutil
 import struct
 import tempfile
 import unittest
+import unittest.mock
 import zlib
 from collections import Counter
 from pathlib import Path
-from unittest import mock
 
 from tools import inspection_corpus as corpus
 
@@ -285,7 +285,9 @@ class CorpusToolTest(unittest.TestCase):
 
     def test_harness_exceptions_fail_the_run(self):
         out = self.base / "out.jsonl"
-        with mock.patch.object(corpus, "_observe", side_effect=RuntimeError("boom")):
+        with unittest.mock.patch.object(
+            corpus, "_observe", side_effect=RuntimeError("boom")
+        ):
             code, printed = self._run("--out", str(out))
         self.assertEqual(code, corpus.EXIT_INVARIANT_FAILED)
         rows = self._rows(out)

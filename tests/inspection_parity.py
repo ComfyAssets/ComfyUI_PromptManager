@@ -829,7 +829,8 @@ def _observe_inspection(read):
         _role_text(prompts[role]["status"], prompts[role]["text"])
         for role in ("positive", "negative")
     ]
-    return resolution["state"], resolution["reason"], *roles, resolution
+    positive, negative = roles
+    return resolution["state"], resolution["reason"], positive, negative, resolution
 
 
 def _observe_default(path):
@@ -853,7 +854,8 @@ def _observe_default(path):
         for role in ("positive", "negative")
     ]
     resolved = {**resolved, "candidate_count": len(resolved.get("candidates") or [])}
-    return "available", state, resolved.get("reason", ""), *roles, resolved
+    positive, negative = roles
+    return "available", state, resolved.get("reason", ""), positive, negative, resolved
 
 
 def _observe_path(vector, path):
@@ -865,7 +867,8 @@ def _observe_path(vector, path):
         read, status = read_inspection_file(path), "available"
     except MetadataReadError:
         read, status = None, "unreadable"
-    return (status, *_observe_inspection(read))
+    state, reason, positive, negative, resolution = _observe_inspection(read)
+    return status, state, reason, positive, negative, resolution
 
 
 def observe(vector, directory=FIXTURE_DIR):
