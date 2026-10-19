@@ -1481,12 +1481,47 @@ class TestConditioningSemantics(unittest.TestCase):
             [(parity.POS, parity.POS), (WOLF, WOLF)],
         )
         # Independent selectors on each role multiply.
-        source["7"] = _if_else(["12", 1], ["10", 0], ["14", 0])
+        source["7"] = _if_else(["16", 1], ["10", 0], ["14", 0])
         source["14"] = _encoded(parity.NEG)
+        source["16"] = _image_exists()
         source["3"]["inputs"]["negative"] = ["7", 0]
         candidates = _inspect(source)["candidates"]
         self.assertEqual(len(candidates), 4)
         self.assertEqual(len({_sides(item) for item in candidates}), 4)
+
+    def test_selectors_sharing_one_condition_choose_together(self):
+        extra = {
+            "10": _encoded("pos A"),
+            "11": _encoded("pos B"),
+            "14": _encoded("neg A"),
+            "15": _encoded("neg B"),
+            "12": _image_exists(),
+            "16": _image_exists(),
+        }
+        source = _with_positive(_if_else(["12", 1], ["10", 0], ["11", 0]), extra)
+        source["7"] = _if_else(["12", 1], ["14", 0], ["15", 0])
+        result = _inspect(source)
+        self.assertEqual(result["state"], "ambiguous")
+        # One runtime value drives both selectors: never "pos A" with "neg B".
+        self.assertEqual(
+            [_sides(item) for item in result["candidates"]],
+            [("pos A", "neg A"), ("pos B", "neg B")],
+        )
+        # Another output slot of the same node is another value.
+        source["7"]["inputs"]["boolean"] = ["12", 0]
+        self.assertEqual(len(_inspect(source)["candidates"]), 4)
+        # Two independent conditions give the full cross product.
+        source["7"]["inputs"]["boolean"] = ["16", 1]
+        candidates = _inspect(source)["candidates"]
+        self.assertEqual(
+            sorted(_sides(item) for item in candidates),
+            [
+                ("pos A", "neg A"),
+                ("pos A", "neg B"),
+                ("pos B", "neg A"),
+                ("pos B", "neg B"),
+            ],
+        )
 
     def test_diverging_branch_that_cannot_be_traced_is_never_guessed(self):
         extra = {
@@ -1505,7 +1540,11 @@ class TestConditioningSemantics(unittest.TestCase):
         for index in range(6):
             extra[f"a{index}"] = _encoded(f"left {index}")
             extra[f"b{index}"] = _encoded(f"right {index}")
-            extra[f"s{index}"] = _if_else(["12", 1], [f"a{index}", 0], [f"b{index}", 0])
+            # Each selector reads its own condition: independent choices.
+            extra[f"e{index}"] = _image_exists()
+            extra[f"s{index}"] = _if_else(
+                [f"e{index}", 1], [f"a{index}", 0], [f"b{index}", 0]
+            )
             extra[f"c{index}"] = {
                 "class_type": "ConditioningCombine",
                 "inputs": {

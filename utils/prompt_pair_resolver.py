@@ -171,9 +171,11 @@ class _Diverging(Exception):
     again once per choice, so each candidate is internally consistent.
     """
 
-    def __init__(self, node_id: str) -> None:
-        super().__init__(node_id)
-        self.node_id = node_id
+    def __init__(self, key: Tuple[str, int]) -> None:
+        super().__init__(key)
+        # The condition output (node ID, slot): one runtime value, so every
+        # selector it drives is forced together.
+        self.key = key
 
 
 def _node_ref(node_id: str, class_type: Any) -> dict:
@@ -599,8 +601,8 @@ class _GraphResolver:
             choice: Optional[bool] = condition
         elif not _link(condition):
             raise _Unresolved("Malformed selector condition", "malformed")
-        elif node_id in self.choices:
-            choice = self.choices[node_id]
+        elif (str(condition[0]), condition[1]) in self.choices:
+            choice = self.choices[(str(condition[0]), condition[1])]
             self.tainted = True
         else:
             choice = None
@@ -614,7 +616,7 @@ class _GraphResolver:
             for label in ("true", "false")
         ]
         if parts[0][0] != parts[1][0]:
-            raise _Diverging(node_id)
+            raise _Diverging((str(condition[0]), condition[1]))
         return self.merged(node_id, 0, parts)
 
     def merged(self, node_id: str, slot: int, parts: list) -> Tuple[str, list, str]:
@@ -939,7 +941,7 @@ class _GraphResolver:
                     if len(results) + len(pending) + 2 > _MAX_BRANCH_CANDIDATES:
                         raise _Unresolved("Too many selector branches", "work-limit")
                     pending.extend(
-                        {**self.choices, diverging.node_id: choice}
+                        {**self.choices, diverging.key: choice}
                         for choice in (True, False)
                     )
         except _Unresolved as error:
