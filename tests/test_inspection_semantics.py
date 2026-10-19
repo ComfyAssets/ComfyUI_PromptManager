@@ -125,6 +125,7 @@ class SpecEntriesTest(unittest.TestCase):
             },
         )
         # D19: FaceDetailer is a stage over its upstream image, ksampler-shaped facts.
+        # A non-empty wildcard replaces the detail prompt (Impact core.py:267).
         self.assertEqual(
             table.samplers["FaceDetailer"],
             {
@@ -132,6 +133,7 @@ class SpecEntriesTest(unittest.TestCase):
                 "conditioning": pair,
                 "image_stage": "image",
                 "facts": "ksampler",
+                "prompt_overrides": ("wildcard",),
             },
         )
 
@@ -310,6 +312,55 @@ class SpecEntriesTest(unittest.TestCase):
         for name in ("PromptManager", "PromptManagerPair", "PromptManagerText"):
             self.assertNotIn(name, table.all_classes)
 
+    def test_legacy_parser_ports_are_listed_with_their_source_inputs(self):
+        # Task 2.7b (R6): input names and slots read from each node's source;
+        # the report lists the file and line for every one.
+        table = load_semantics()
+        pair = {"positive": "positive", "negative": "negative"}
+        for name, image in (
+            ("DetailerForEach", "image"),
+            ("UltimateSDUpscale", "image"),
+            ("UltimateSDUpscaleNoUpscale", "upscaled_image"),
+        ):
+            entry = dict(table.samplers[name])
+            self.assertEqual(
+                entry.pop("prompt_overrides", None) is not None,
+                name == "DetailerForEach",
+                name,
+            )
+            self.assertEqual(
+                entry,
+                {
+                    "strategy": "detailer-stage",
+                    "conditioning": pair,
+                    "image_stage": image,
+                    "facts": "ksampler",
+                },
+                name,
+            )
+        for (name, slot), source in {
+            ("ControlNetInpaintingAliMamaApply", 0): "positive",
+            ("ControlNetInpaintingAliMamaApply", 1): "negative",
+            ("LTXVConditioning", 0): "positive",
+            ("LTXVConditioning", 1): "negative",
+            ("FluxKontextMultiReferenceLatentMethod", 0): "conditioning",
+        }.items():
+            self.assertEqual(
+                table.conditioning[(name, slot)],
+                {"strategy": "passthrough", "input": source},
+            )
+        self.assertNotIn(
+            ("FluxKontextMultiReferenceLatentMethod", 1), table.conditioning
+        )
+        self.assertEqual(
+            table.encoders[("Text to Conditioning", 0)],
+            {"strategy": "single", "inputs": ("text",)},
+        )
+        for name in ("TextInput", "DisplayText"):
+            self.assertEqual(
+                table.strings[(name, 0)], {"strategy": "literal", "inputs": ("text",)}
+            )
+
     def test_stage_inputs_are_the_one_source_for_both_stage_walks(self):
         # Review I-2: Python's resolver and comfy-metadata.js read these lists here.
         stage_inputs = load_semantics().stage_inputs
@@ -374,6 +425,12 @@ class SpecEntriesTest(unittest.TestCase):
                 "ModelSamplingFlux",
                 "ModelSamplingAuraFlow",
                 "ModelSamplingSD3",
+                # Task 2.7b (R9): model in, model out, verified in their sources.
+                "Lora Loader (LoraManager)",
+                "Power Lora Loader (rgthree)",
+                "ModelPatchTorchSettings",
+                "CFGNorm",
+                "PerturbedAttentionGuidance",
             ),
         )
         self.assertEqual(
@@ -652,6 +709,24 @@ def _depth(value, level=1):
     if not isinstance(value, (dict, list)):
         return level - 1
     return max([level] + [_depth(item, level + 1) for item in children])
+
+
+class SamplerOptionsTest(_TableCase):
+    """Task 2.7b: optional sampler lists are input names, or the table fails."""
+
+    def test_prompt_overrides_are_input_names(self):
+        doc = _minimal()
+        doc["samplers"]["KSampler"]["prompt_overrides"] = ["wildcard"]
+        sampler = self.load_doc(doc).samplers["KSampler"]
+        self.assertEqual(sampler["prompt_overrides"], ("wildcard",))
+        for value in ([], "wildcard", [""], ["a", "a"], [1]):
+            with self.subTest(value=value):
+                doc["samplers"]["KSampler"]["prompt_overrides"] = value
+                with self.assertRaises(SemanticsError):
+                    self.load_doc(doc)
+        doc["samplers"]["KSampler"].pop("prompt_overrides")
+        doc["samplers"]["KSampler"]["overrides"] = ["wildcard"]
+        self.assertRejected(doc, "unknown field")
 
 
 if __name__ == "__main__":

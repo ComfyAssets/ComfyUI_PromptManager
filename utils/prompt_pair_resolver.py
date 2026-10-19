@@ -1241,6 +1241,7 @@ class _GraphResolver:
         try:
             name, inputs = self.node(sampler_id)
             entry = self.sampler_entry(name)
+            self.check_overrides(sampler_id, entry, inputs)
             # A second sampler in the latent ancestry denotes a multistage run;
             # associating the final image with one prompt pair would be a guess.
             latent = entry.get("latent")
@@ -1283,6 +1284,21 @@ class _GraphResolver:
                 reason_code=error.code,
                 node=error.node,
             )
+
+    def check_overrides(self, sampler_id: str, entry: Mapping, inputs: dict) -> None:
+        """A set prompt override replaces the conditioning inputs' prompt.
+
+        Exact ``""`` (or a missing input) leaves the prompt alone. A literal is
+        processed at run time (a detailer wildcard); a link is a source the
+        inspector does not follow, so it is named.
+        """
+        for name in entry.get("prompt_overrides", ()):
+            value = inputs.get(name)
+            if value is None or value == "":
+                continue
+            if _link(value):
+                raise self.unsupported("Unsupported prompt override", str(value[0]))
+            raise self.named(_RUNTIME_REASON, "runtime-value", sampler_id)
 
     def latent_source(self, value: Any, seen: set, depth: int) -> None:
         if not _link(value) or depth >= self.max_depth:

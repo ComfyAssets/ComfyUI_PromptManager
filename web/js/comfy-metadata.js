@@ -414,6 +414,9 @@
         SamplerCustom: { facts: "custom" },
         SamplerCustomAdvanced: { facts: "custom-advanced" },
         FaceDetailer: { facts: "ksampler", image_stage: "image" },
+        DetailerForEach: { facts: "ksampler", image_stage: "image" },
+        UltimateSDUpscale: { facts: "ksampler", image_stage: "image" },
+        UltimateSDUpscaleNoUpscale: { facts: "ksampler", image_stage: "upscaled_image" },
     });
     // Stages merged for one result: the resolver's candidate cap. Together with
     // MAX_VISITS per candidate walk these are deliberately tighter than the server's
@@ -431,7 +434,9 @@
         "CLIPTextEncode", "CLIPTextEncodeSDXL", "CLIPTextEncodeFlux", "CLIPTextEncodeSD3", "TextEncodeQwenImageEdit",
         "TextEncodeQwenImageEditPlus", "TextEncodeQwenImage21", "KikoTextEncode", "StringConstant", "StringConstantMultiline",
         "JoinStringMulti", "PromptSearchList", "PreviewImage", "PreviewAny", "SaveImageWebsocket",
-        "Image Comparer (rgthree)",
+        "Image Comparer (rgthree)", "DetailerForEach", "UltimateSDUpscale", "UltimateSDUpscaleNoUpscale",
+        "ControlNetInpaintingAliMamaApply", "LTXVConditioning", "FluxKontextMultiReferenceLatentMethod", "Text to Conditioning",
+        "TextInput", "DisplayText",
     ]);
     // The table's `stage_inputs` (the resolver reads the same lists): inputs that make an
     // unlisted node a possible stage, and those that do so beside a linked `model`.
@@ -448,7 +453,10 @@
         CheckpointLoader: "ckpt_name", CheckpointLoaderSimple: "ckpt_name",
         unCLIPCheckpointLoader: "ckpt_name", UNETLoader: "unet_name",
     });
-    const MODEL_PASSTHROUGHS = new Set(["LoraLoader", "LoraLoaderModelOnly", "ModelSamplingFlux", "ModelSamplingAuraFlow", "ModelSamplingSD3"]);
+    const MODEL_PASSTHROUGHS = new Set([
+        "LoraLoader", "LoraLoaderModelOnly", "ModelSamplingFlux", "ModelSamplingAuraFlow", "ModelSamplingSD3",
+        "Lora Loader (LoraManager)", "Power Lora Loader (rgthree)", "ModelPatchTorchSettings", "CFGNorm", "PerturbedAttentionGuidance",
+    ]);
     const CONFIGURATION_OUTPUTS = Object.freeze({
         RandomNoise: { kind: "noise", fields: ["noise_seed"] },
         KSamplerSelect: { kind: "sampler", fields: ["sampler_name"] },

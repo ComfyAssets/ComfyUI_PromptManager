@@ -57,3 +57,42 @@ test("R10: commas inside quoted settings values do not split them", () => {
     // An unbalanced quote is not a quoted value: the historical split, as A1111 reads it.
     assert.deepEqual(parameterFacts(`a cat\n${FOOTER}, Note: "open, Model: base`).model, ["known", "base"]);
 });
+
+function graphFacts(graph, resolution) {
+    const facts = extractGenerationFacts({
+        prompt_graph: { status: "parsed", value: graph },
+        workflow_graph: { status: "absent", value: null },
+        metadataStatus: "available",
+        resolution,
+    });
+    return Object.fromEntries(fields.map(field => [field, [facts[field].status, facts[field].value]]));
+}
+
+function modelGraph(between) {
+    return {
+        ckpt: { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "base.safetensors" } },
+        hop: { class_type: between, inputs: { model: ["ckpt", 0], clip: ["ckpt", 1] } },
+        s: { class_type: "KSampler", inputs: { seed: 5, steps: 20, cfg: 7, sampler_name: "euler", scheduler: "normal", model: ["hop", 0] } },
+    };
+}
+
+test("R9: model pass-throughs verified in their sources lead to the loader", () => {
+    for (const name of ["Lora Loader (LoraManager)", "Power Lora Loader (rgthree)", "ModelPatchTorchSettings", "CFGNorm", "PerturbedAttentionGuidance"]) {
+        assert.deepEqual(graphFacts(modelGraph(name)).model, ["known", "base.safetensors"], name);
+        // Only output 0 is the model.
+        const other = modelGraph(name); other.s.inputs.model = ["hop", 1];
+        assert.deepEqual(graphFacts(other).model, ["unresolved", null], name);
+    }
+    assert.deepEqual(graphFacts(modelGraph("ModelMergeSDXL")).model, ["unresolved", null]);
+});
+
+test("R6: upscale and SEGS detailers supply stage facts like FaceDetailer", () => {
+    for (const [class_type, image] of [["UltimateSDUpscale", "image"], ["UltimateSDUpscaleNoUpscale", "upscaled_image"], ["DetailerForEach", "image"]]) {
+        const graph = modelGraph("CFGNorm");
+        graph.decode = { class_type: "VAEDecode", inputs: { samples: ["s", 0], vae: ["ckpt", 2] } };
+        graph.d = { class_type, inputs: { [image]: ["decode", 0], model: ["hop", 0], seed: 7, steps: 12, cfg: 7, sampler_name: "euler", scheduler: "normal" } };
+        assert.deepEqual(graphFacts(graph, { state: "resolved", sampler_id: "d" }).seed, ["known", "7"], class_type);
+        const merged = graphFacts(graph, { state: "ambiguous", sampler_id: "d" });
+        assert.deepEqual([merged.seed[0], merged.steps[0], merged.cfg], ["ambiguous", "ambiguous", ["known", "7"]], class_type);
+    }
+});

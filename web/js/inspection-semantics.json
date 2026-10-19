@@ -29,6 +29,26 @@
       "strategy": "detailer-stage",
       "conditioning": { "positive": "positive", "negative": "negative" },
       "image_stage": "image",
+      "facts": "ksampler",
+      "prompt_overrides": ["wildcard"]
+    },
+    "DetailerForEach": {
+      "strategy": "detailer-stage",
+      "conditioning": { "positive": "positive", "negative": "negative" },
+      "image_stage": "image",
+      "facts": "ksampler",
+      "prompt_overrides": ["wildcard"]
+    },
+    "UltimateSDUpscale": {
+      "strategy": "detailer-stage",
+      "conditioning": { "positive": "positive", "negative": "negative" },
+      "image_stage": "image",
+      "facts": "ksampler"
+    },
+    "UltimateSDUpscaleNoUpscale": {
+      "strategy": "detailer-stage",
+      "conditioning": { "positive": "positive", "negative": "negative" },
+      "image_stage": "upscaled_image",
       "facts": "ksampler"
     }
   },
@@ -57,6 +77,11 @@
     { "class": "InpaintModelConditioning", "slot": 1, "strategy": "passthrough", "input": "negative" },
     { "class": "WanImageToVideo", "slot": 0, "strategy": "passthrough", "input": "positive" },
     { "class": "WanImageToVideo", "slot": 1, "strategy": "passthrough", "input": "negative" },
+    { "class": "ControlNetInpaintingAliMamaApply", "slot": 0, "strategy": "passthrough", "input": "positive" },
+    { "class": "ControlNetInpaintingAliMamaApply", "slot": 1, "strategy": "passthrough", "input": "negative" },
+    { "class": "LTXVConditioning", "slot": 0, "strategy": "passthrough", "input": "positive" },
+    { "class": "LTXVConditioning", "slot": 1, "strategy": "passthrough", "input": "negative" },
+    { "class": "FluxKontextMultiReferenceLatentMethod", "slot": 0, "strategy": "passthrough", "input": "conditioning" },
     { "class": "ConditioningZeroOut", "slot": 0, "strategy": "zeroed", "input": "conditioning" }
   ],
   "selectors": {
@@ -80,10 +105,13 @@
     { "class": "TextEncodeQwenImageEditPlus", "slot": 0, "strategy": "single", "inputs": ["prompt"] },
     { "class": "TextEncodeQwenImage21", "slot": 0, "strategy": "single", "inputs": ["prompt"] },
     { "class": "TextEncodeQwenImage21", "slot": 1, "strategy": "single", "inputs": ["negative_prompt"] },
-    { "class": "KikoTextEncode", "slot": 0, "strategy": "single", "inputs": ["text"] }
+    { "class": "KikoTextEncode", "slot": 0, "strategy": "single", "inputs": ["text"] },
+    { "class": "Text to Conditioning", "slot": 0, "strategy": "single", "inputs": ["text"] }
   ],
   "strings": [
     { "class": "StringConstant", "slot": 0, "strategy": "literal", "inputs": ["string"] },
+    { "class": "TextInput", "slot": 0, "strategy": "literal", "inputs": ["text"] },
+    { "class": "DisplayText", "slot": 0, "strategy": "literal", "inputs": ["text"] },
     {
       "class": "StringConstantMultiline",
       "slot": 0,
@@ -181,7 +209,12 @@
       "LoraLoaderModelOnly",
       "ModelSamplingFlux",
       "ModelSamplingAuraFlow",
-      "ModelSamplingSD3"
+      "ModelSamplingSD3",
+      "Lora Loader (LoraManager)",
+      "Power Lora Loader (rgthree)",
+      "ModelPatchTorchSettings",
+      "CFGNorm",
+      "PerturbedAttentionGuidance"
     ],
     "scalar_outputs": {
       "PrimitiveInt": "number",

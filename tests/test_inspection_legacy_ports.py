@@ -450,5 +450,180 @@ class TestBatchIndexDuplicates(unittest.TestCase):
             read_inspection_file(path)
 
 
+def _f02(**changes) -> dict:
+    """``f02`` (KSampler 3, encoders 6 and 7) with nodes added or replaced."""
+    prompt = parity.build("f02")["prompt"]
+    prompt.update(changes)
+    return prompt
+
+
+def _stage(class_type: str, image_input: str, positive=("6", 0), **inputs) -> dict:
+    """``f19``'s shape with ``class_type`` as the detailer stage (node 50)."""
+    prompt = parity.build("f19")["prompt"]
+    if "upscale_model" in inputs:
+        prompt["12"] = {"class_type": "UpscaleModelLoader", "inputs": {}}
+    if "segs" in inputs:
+        prompt["13"] = {"class_type": "SegsDetector", "inputs": {"image": ["8", 0]}}
+    prompt["50"] = {
+        "class_type": class_type,
+        "inputs": {
+            image_input: ["8", 0],
+            "model": ["4", 0],
+            "vae": ["4", 2],
+            "positive": list(positive),
+            "negative": ["7", 0],
+            "seed": 7,
+            "steps": 12,
+            "cfg": 4.5,
+            "sampler_name": "euler",
+            "scheduler": "normal",
+            "denoise": 0.4,
+            **inputs,
+        },
+    }
+    return prompt
+
+
+DETAILERS = (
+    ("UltimateSDUpscale", "image", {"upscale_model": ["12", 0], "upscale_by": 2}),
+    ("UltimateSDUpscaleNoUpscale", "upscaled_image", {}),
+    ("DetailerForEach", "image", {"segs": ["13", 0], "wildcard": ""}),
+)
+
+
+class TestInstalledNodeSemantics(unittest.TestCase):
+    """R6 entries verified against the installed node sources (see the report)."""
+
+    def test_upscale_and_segs_detailers_are_stages(self):
+        for class_type, image, extra in DETAILERS:
+            with self.subTest(node=class_type):
+                same = _inspect({"prompt": _stage(class_type, image, **extra)})
+                self.assertEqual(same["state"], "resolved")
+                self.assertEqual(same["sampler_id"], "50")
+                self.assertEqual(_texts(same), (parity.POS, parity.NEG))
+                other = _inspect(
+                    {"prompt": _stage(class_type, image, ("10", 0), **extra)}
+                )
+                self.assertEqual(other["state"], "ambiguous")
+                self.assertEqual(other["reason_code"], "multistage-differs")
+                self.assertEqual(
+                    sorted(item["sampler_id"] for item in other["candidates"]),
+                    ["3", "50"],
+                )
+
+    def test_a_detailer_wildcard_replaces_its_prompt(self):
+        # Impact Pack core.py: a non-empty wildcard is encoded instead of positive.
+        for class_type in ("DetailerForEach", "FaceDetailer"):
+            with self.subTest(node=class_type):
+                result = _inspect(
+                    {"prompt": _stage(class_type, "image", wildcard="a smiling face")}
+                )
+                self.assertEqual(result["state"], "unresolved")
+                self.assertEqual(result["reason_code"], "runtime-value")
+                self.assertEqual(result["node"], {"id": "50", "class_type": class_type})
+                linked = _stage(class_type, "image", wildcard=["14", 0])
+                linked["14"] = {"class_type": "WildcardSource", "inputs": {}}
+                result = _inspect({"prompt": linked})
+                self.assertEqual(result["reason_code"], "unsupported-node")
+                self.assertEqual(
+                    result["node"], {"id": "14", "class_type": "WildcardSource"}
+                )
+                for empty in ("", None):
+                    result = _inspect(
+                        {"prompt": _stage(class_type, "image", wildcard=empty)}
+                    )
+                    self.assertEqual(result["state"], "resolved", empty)
+
+    def test_conditioning_passthroughs_keep_each_role(self):
+        pair = {"positive": ["6", 0], "negative": ["7", 0]}
+        cases = {
+            "ControlNetInpaintingAliMamaApply": (
+                {
+                    **pair,
+                    "control_net": ["11", 0],
+                    "vae": ["4", 2],
+                    "image": ["12", 0],
+                    "mask": ["12", 1],
+                    "strength": 1.0,
+                },
+                0,
+                1,
+            ),
+            "LTXVConditioning": ({**pair, "frame_rate": 25.0}, 0, 1),
+            "FluxKontextMultiReferenceLatentMethod": (
+                {"conditioning": ["6", 0], "reference_latents_method": "offset"},
+                0,
+                None,
+            ),
+        }
+        for class_type, (inputs, positive, negative) in cases.items():
+            with self.subTest(node=class_type):
+                prompt = _f02(**{"20": {"class_type": class_type, "inputs": inputs}})
+                prompt["3"]["inputs"]["positive"] = ["20", positive]
+                if negative is not None:
+                    prompt["3"]["inputs"]["negative"] = ["20", negative]
+                result = _inspect({"prompt": prompt})
+                self.assertEqual(result["state"], "resolved")
+                self.assertEqual(_texts(result), (parity.POS, parity.NEG))
+                self.assertEqual(
+                    result["positive"]["provenance"]["path"][0]["node_id"], "20"
+                )
+                if negative is None:
+                    prompt["3"]["inputs"]["negative"] = ["20", 1]
+                    self.assertEqual(
+                        _inspect({"prompt": prompt})["reason_code"], "unsupported-node"
+                    )
+
+    def test_text_nodes(self):
+        prompt = _f02(
+            **{
+                "6": {
+                    "class_type": "Text to Conditioning",
+                    "inputs": {"clip": ["4", 1], "text": ["21", 0]},
+                },
+                "21": {"class_type": "DisplayText", "inputs": {"text": ["22", 0]}},
+                "22": {"class_type": "TextInput", "inputs": {"text": parity.POS}},
+            }
+        )
+        result = _inspect({"prompt": prompt})
+        self.assertEqual(_texts(result), (parity.POS, parity.NEG))
+        self.assertEqual(
+            [step["node_id"] for step in result["positive"]["provenance"]["path"]],
+            ["6", "21", "22"],
+        )
+        # Text to Conditioning has one output; TextInput reads only ``text``.
+        prompt["3"]["inputs"]["positive"] = ["6", 1]
+        self.assertEqual(
+            _inspect({"prompt": prompt})["reason_code"], "unsupported-node"
+        )
+
+    def test_overwritten_text_behind_a_new_passthrough_is_still_refused(self):
+        # R1 before R6: the pass-through must not let overwritten text resolve.
+        metadata = _overwritten()
+        metadata["prompt"]["20"] = {
+            "class_type": "FluxKontextMultiReferenceLatentMethod",
+            "inputs": {"conditioning": ["17", 0], "reference_latents_method": "offset"},
+        }
+        metadata["prompt"]["3"]["inputs"]["positive"] = ["20", 0]
+        result = _inspect(metadata)
+        self.assertEqual(result["reason"], resolver.OVERWRITTEN_PROMPT_REASON)
+
+    def test_default_profile_keeps_them_unsupported(self):
+        for class_type, image, extra in DETAILERS:
+            with self.subTest(node=class_type):
+                result = resolve_prompt_pair(
+                    {"prompt": _stage(class_type, image, **extra)}
+                )
+                # The historical rule: the one KSampler, whatever reads its image.
+                self.assertEqual(result["sampler_id"], "3")
+        prompt = _f02(
+            **{"6": {"class_type": "Text to Conditioning", "inputs": {"text": "a"}}}
+        )
+        self.assertEqual(
+            resolve_prompt_pair({"prompt": prompt})["reason"],
+            "Unsupported node semantics or output slot",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

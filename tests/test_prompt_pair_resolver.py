@@ -2826,7 +2826,9 @@ class TestLatentAncestry(unittest.TestCase):
             {
                 "50": {"class_type": "LoadImage", "inputs": {"image": "a.png"}},
                 "60": {
-                    "class_type": "UltimateSDUpscale",
+                    # Task 2.7b lists UltimateSDUpscale; an unlisted upscaler
+                    # of the same shape keeps this rule's coverage.
+                    "class_type": "MysteryUpscaler",
                     "inputs": {
                         "image": ["50", 0],
                         "model": ["4", 0],
@@ -2838,9 +2840,11 @@ class TestLatentAncestry(unittest.TestCase):
         )
         result = _inspect(source, output_node_id="9")
         self.assertEqual(result["reason_code"], "unsupported-node")
-        self.assertEqual(
-            result["node"], {"id": "60", "class_type": "UltimateSDUpscale"}
-        )
+        self.assertEqual(result["node"], {"id": "60", "class_type": "MysteryUpscaler"})
+        # The listed stage is now an earlier sampler stage in the ancestry.
+        source["60"]["class_type"] = "UltimateSDUpscale"
+        result = _inspect(source, output_node_id="9")
+        self.assertEqual(result["reason"], resolver.MULTISTAGE_UNATTRIBUTED_REASON)
 
     def test_latent_walk_budget_exhaustion_is_work_limit(self):
         # 2,100 distinct images in the latent ancestry: more than one

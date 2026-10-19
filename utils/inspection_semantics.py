@@ -54,6 +54,7 @@ SAVER_PATTERNS = MappingProxyType(
         "vhs-counter": "{name}_{counter:05}.{ext}",
     }
 )
+_SAMPLER_OPTIONS = frozenset({"prompt_overrides"})
 _CONFIGURATION_KINDS = frozenset({"noise", "sampler", "sigmas", "guider"})
 _SCALAR_KINDS = frozenset({"number", "string"})
 _TYPE_FIELDS = frozenset({"type_fields"})
@@ -177,9 +178,13 @@ def _check_sampler(entry: dict, strategy: str, where: str) -> None:
         entry,
         where,
         frozenset({"strategy", "conditioning", stage, "facts"}),
-        frozenset(),
+        _SAMPLER_OPTIONS,
     )
     _name(entry[stage], where)
+    # Inputs that, when set, replace the prompt the sampler's conditioning
+    # inputs carry (a detailer's wildcard); the prompt is then not read.
+    if "prompt_overrides" in entry:
+        _names(entry["prompt_overrides"], where + ".prompt_overrides")
     keys = {"guider"} if strategy == "custom-advanced" else {"positive", "negative"}
     conditioning = entry["conditioning"]
     _fields(conditioning, where + ".conditioning", frozenset(keys), frozenset())
