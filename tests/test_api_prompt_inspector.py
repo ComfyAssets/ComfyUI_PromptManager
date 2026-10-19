@@ -7,8 +7,10 @@ from PIL import Image, PngImagePlugin
 
 try:
     from test_api_images import ImageAPITestCase, make_png
+    import inspection_parity as parity
 except ImportError:
     from tests.test_api_images import ImageAPITestCase, make_png
+    from tests import inspection_parity as parity
 
 from utils.pair_execution import EXECUTION_KEY, record_pair_execution
 from database.pair_ingestion import ingest_resolved_pair
@@ -748,6 +750,60 @@ class TestPromptInspector(ImageAPITestCase):
             result["metadata"]["workflow_graph"], {"status": "limited", "value": None}
         )
         self.assertEqual(result["metadata"]["prompt_graph"]["status"], "parsed")
+
+    def parity_fixture(self, name):
+        path = self.output_dir / f"{name}.png"
+        parity.write_png(path, parity.build(name))
+        return path
+
+    async def test_inspect_route_resolves_506_node_graph(self):
+        # f03: 506 executable nodes. The default (ingestion) profile's 500-node
+        # gate reports "Resolution limit reached"; the inspection profile bounds
+        # work instead of graph size, so the route resolves the pair.
+        self.parity_fixture("f03")
+        response, result = await self.inspect("f03.png")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            result["prompts"],
+            {"positive": self.side(parity.POS), "negative": self.side(parity.NEG)},
+        )
+        self.assertEqual(result["resolution"]["state"], "resolved")
+        self.assertIsNone(result["resolution"]["reason_code"])
+        self.assertIsNone(result["resolution"]["node"])
+        self.assertEqual(result["metadata"]["prompt_graph"]["status"], "parsed")
+
+    async def test_inspect_route_reports_no_sampler_instead_of_absent(self):
+        # f17: a BasicGuider-only prompt graph is a record, never "not recorded".
+        self.parity_fixture("f17")
+        response, result = await self.inspect("f17.png")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            {role: side["status"] for role, side in result["prompts"].items()},
+            {"positive": "unresolved", "negative": "unresolved"},
+        )
+        self.assertEqual(result["resolution"]["state"], "unresolved")
+        self.assertEqual(result["resolution"]["reason_code"], "no-sampler")
+        self.assertEqual(
+            result["resolution"]["reason"],
+            "No supported sampler pair found (saw SamplerCustomAdvanced)",
+        )
+
+    async def test_inspect_route_exposes_reason_code_and_blocking_node(self):
+        self.parity_fixture("f06a")
+        _, result = await self.inspect("f06a.png")
+        resolution = result["resolution"]
+        self.assertEqual(resolution["state"], "unresolved")
+        self.assertEqual(resolution["reason_code"], "unsupported-node")
+        self.assertEqual(set(resolution["node"]), {"id", "class_type"})
+        self.assertIsInstance(resolution["node"]["class_type"], str)
+        png(self.output_dir / "image.png", prompt="{broken")
+        _, result = await self.inspect()
+        self.assertEqual(result["resolution"]["reason_code"], "malformed")
+        make_png(self.output_dir / "image.png")
+        _, result = await self.inspect()
+        self.assertEqual(result["resolution"]["state"], "absent")
+        self.assertIsNone(result["resolution"]["reason_code"])
+        self.assertIsNone(result["resolution"]["node"])
 
     async def test_workflow_only_keeps_existing_role_uncertainty(self):
         path = png(self.output_dir / "image.png", workflow={"nodes": []})

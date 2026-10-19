@@ -7,11 +7,14 @@ import { createWorkspaceIcon } from './icons.mjs';
 const RAW_KEYS = ['prompt', 'workflow', 'parameters', 'comfyassets_prompt_pairs'];
 const RAW_LIMIT = 'Raw metadata exceeds the response limit. Download the original file to inspect it externally.';
 const CONTAINER_WORKFLOW = 'Original workflow JSON text is unavailable for this container record. Download metadata or the original file.';
+const LIMITED_WORKFLOW = 'Workflow exceeds inspection limits. Download the original file to inspect it externally.';
 const REPRESENTATIONS = {
     'original-text': 'Original embedded text',
     'reserialized-json': 'Reserialized container JSON; numeric spelling/precision may differ',
     invalid: 'Invalid container record; text is unavailable',
+    limited: 'Record exceeds inspection limits; text is unavailable',
 };
+const TEXTLESS = new Set(['invalid', 'limited']);
 const FACTS = [['seed', 'Seed'], ['steps', 'Steps'], ['cfg', 'CFG'], ['sampler', 'Sampler'], ['scheduler', 'Scheduler'], ['model', 'Model']];
 const FACT_SOURCES = {'api-graph': 'Embedded API configuration', workflow: 'Saved workflow configuration', 'embedded-parameters': 'Embedded generation parameters'};
 
@@ -33,7 +36,7 @@ export function inspectionDownloads(record) {
         if (Object.hasOwn(REPRESENTATIONS, metadata.record_formats?.[key])) {
             record_formats[key] = metadata.record_formats[key];
             representations[key] = REPRESENTATIONS[record_formats[key]];
-            if (record_formats[key] !== 'invalid' && typeof metadata.raw?.[key] === 'string') raw[key] = metadata.raw[key];
+            if (!TEXTLESS.has(record_formats[key]) && typeof metadata.raw?.[key] === 'string') raw[key] = metadata.raw[key];
         }
     }
     const envelope = {inspection_version:1, identity:record.identity, file:record.file, prompts:record.prompts,
@@ -42,6 +45,7 @@ export function inspectionDownloads(record) {
             scope:'Supported embedded records only; one selected container carrier for video. Other metadata and private carrier text are excluded.'}};
     result.metadata = {...result.metadata, available:true, reason:null, bodyText:JSON.stringify(envelope, null, 2)};
     if (record_formats.workflow === 'reserialized-json') result.workflow.reason = CONTAINER_WORKFLOW;
+    else if (record_formats.workflow === 'limited') result.workflow.reason = LIMITED_WORKFLOW;
     else if (record_formats.workflow === 'original-text' && metadata.workflow_graph?.status === 'parsed' && typeof raw.workflow === 'string') {
         result.workflow = {...result.workflow, available:true, reason:null, bodyText:raw.workflow};
     } else result.workflow.reason = 'A valid original workflow JSON record is not available in this file.';

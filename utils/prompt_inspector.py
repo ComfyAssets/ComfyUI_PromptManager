@@ -14,7 +14,11 @@ from typing import Any
 from PIL import Image
 
 from .pair_execution import EXECUTION_KEY
-from .prompt_pair_resolver import DEFAULT_PROFILE, ResolverProfile, resolve_prompt_pair
+from .prompt_pair_resolver import (
+    INSPECTION_PROFILE,
+    ResolverProfile,
+    resolve_prompt_pair,
+)
 from .video_metadata import ffprobe_path, is_video_path
 
 # Role records (prompt, parameters, the pair execution record) share one
@@ -400,12 +404,14 @@ def inspect_prompt_evidence(
     metadata: dict,
     saved: dict | None = None,
     *,
-    profile: ResolverProfile = DEFAULT_PROFILE,
+    profile: ResolverProfile = INSPECTION_PROFILE,
 ) -> dict:
     """Keep uncertainty visible; a saved association never replaces file evidence.
 
-    ``profile`` selects the resolver bounds. The default is unchanged here; the
-    parity vectors pass ``INSPECTION_PROFILE`` until the routes adopt it.
+    Inspection routes resolve with ``INSPECTION_PROFILE``: bounded work, not
+    graph size. Ingestion (scan, live monitor, admin import) calls the resolver
+    directly with its default profile. ``resolution`` carries the closed
+    ``reason_code`` and, for a blocking node, ``node: {id, class_type}``.
     """
     metadata = {
         key: value for key, value in metadata.items() if key in _ROLE_METADATA_KEYS
@@ -414,6 +420,8 @@ def inspect_prompt_evidence(
         "state": "unresolved",
         "sampler_id": None,
         "reason": "Prompt evidence is malformed",
+        "reason_code": "malformed",
+        "node": None,
     }
     if not metadata:
         result = {role: _side("absent") for role in ("positive", "negative")}
@@ -434,6 +442,8 @@ def inspect_prompt_evidence(
                 "state": "absent",
                 "sampler_id": None,
                 "reason": "No parsed prompt metadata",
+                "reason_code": None,
+                "node": None,
             },
         }
     canonical = dict(metadata)
@@ -473,6 +483,8 @@ def inspect_prompt_evidence(
             "state": state,
             "sampler_id": resolved.get("sampler_id"),
             "reason": resolved.get("reason", ""),
+            "reason_code": resolved.get("reason_code"),
+            "node": resolved.get("node"),
         },
     }
 

@@ -54,3 +54,14 @@ test('reported location metadata export carries exact occurrence without assigni
     source.identity={kind:'reported-location',key:'b'.repeat(64),path:'folder/a.png',occurrence:{run_id:'22222222-2222-2222-2222-222222222222',output_node_id:'𐀀',image_ordinal:255},history_epoch:'11111111-1111-1111-1111-111111111111',current_scope:'c'.repeat(64),reference:{folder_type:'temp',subfolder:'folder',filename:'a.png',path_style:'posix',root_key:null}};
     const value=JSON.parse(inspectionDownloads(source).metadata.bodyText);assert.deepEqual(value.identity,source.identity);assert.equal(value.identity.root_index,undefined);assert.equal(value.context_id,undefined);assert.equal(value.file_identity,undefined);assert.deepEqual(value.prompts,source.prompts);
 });
+
+test('limited workflow record exports its representation and disables workflow download',async()=>{
+    const {inspectionDownloads}=await load(),source=record();
+    source.metadata.record_formats.workflow='limited';delete source.metadata.raw.workflow;source.metadata.workflow_graph={status:'limited',value:null};
+    const downloads=inspectionDownloads(source),value=JSON.parse(downloads.metadata.bodyText);
+    assert.equal(value.metadata.record_formats.workflow,'limited');
+    assert.equal(value.metadata.representations.workflow,'Record exceeds inspection limits; text is unavailable');
+    assert.equal(value.metadata.raw.workflow,undefined);
+    assert.equal(downloads.workflow.available,false);assert.equal(downloads.workflow.bodyText,null);
+    assert.equal(downloads.workflow.reason,'Workflow exceeds inspection limits. Download the original file to inspect it externally.');
+});

@@ -8,34 +8,34 @@
       "metadata_status": "available",
       "state": "unresolved",
       "reason": "No supported sampler pair found (saw FaceDetailer, SamplerCustomAdvanced)",
-      "reason_code": null,
+      "reason_code": "no-sampler",
       "selection": null,
       "positive": null,
       "negative": null,
       "candidate_count": 0,
       "facts": {
         "seed": {
-          "status": "unresolved",
+          "status": "ambiguous",
           "value": null
         },
         "steps": {
-          "status": "unresolved",
+          "status": "ambiguous",
           "value": null
         },
         "cfg": {
-          "status": "unresolved",
+          "status": "ambiguous",
           "value": null
         },
         "sampler": {
-          "status": "unresolved",
+          "status": "ambiguous",
           "value": null
         },
         "scheduler": {
-          "status": "unresolved",
+          "status": "ambiguous",
           "value": null
         },
         "model": {
-          "status": "unresolved",
+          "status": "ambiguous",
           "value": null
         }
       }
@@ -50,7 +50,7 @@
       "metadata_status": "available",
       "state": "unresolved",
       "reason": "No supported sampler pair found (saw FaceDetailer, SamplerCustomAdvanced)",
-      "reason_code": null,
+      "reason_code": "no-sampler",
       "selection": null,
       "positive": null,
       "negative": null,
@@ -141,28 +141,28 @@
       "candidate_count": 0,
       "facts": {
         "seed": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "42"
         },
         "steps": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "25"
         },
         "cfg": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "6.5"
         },
         "sampler": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "euler"
         },
         "scheduler": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "normal"
         },
         "model": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "sdxl_base.safetensors"
         }
       }
     }
@@ -260,7 +260,7 @@
       "metadata_status": "available",
       "state": "unresolved",
       "reason": "Unsupported node semantics or output slot",
-      "reason_code": null,
+      "reason_code": "unsupported-node",
       "selection": null,
       "positive": null,
       "negative": null,
@@ -302,7 +302,7 @@
       "metadata_status": "available",
       "state": "unresolved",
       "reason": "Unsupported node semantics or output slot",
-      "reason_code": null,
+      "reason_code": "unsupported-node",
       "selection": null,
       "positive": null,
       "negative": null,
@@ -344,7 +344,7 @@
       "metadata_status": "available",
       "state": "unresolved",
       "reason": "Unsupported node semantics or output slot",
-      "reason_code": null,
+      "reason_code": "unsupported-node",
       "selection": null,
       "positive": null,
       "negative": null,
@@ -386,7 +386,7 @@
       "metadata_status": "available",
       "state": "unresolved",
       "reason": "Unsupported node semantics or output slot",
-      "reason_code": null,
+      "reason_code": "unsupported-node",
       "selection": null,
       "positive": null,
       "negative": null,
@@ -428,7 +428,7 @@
       "metadata_status": "available",
       "state": "unresolved",
       "reason": "Unsupported node semantics or output slot",
-      "reason_code": null,
+      "reason_code": "unsupported-node",
       "selection": null,
       "positive": null,
       "negative": null,
@@ -512,7 +512,7 @@
       "metadata_status": "available",
       "state": "unresolved",
       "reason": "No supported sampler pair found (saw SamplerCustomAdvanced, CFGGuider)",
-      "reason_code": null,
+      "reason_code": "no-sampler",
       "selection": null,
       "positive": null,
       "negative": null,
@@ -638,7 +638,7 @@
       "metadata_status": "available",
       "state": "unresolved",
       "reason": "Unsupported latent ancestry",
-      "reason_code": null,
+      "reason_code": "unsupported-node",
       "selection": null,
       "positive": null,
       "negative": null,
@@ -680,7 +680,7 @@
       "metadata_status": "available",
       "state": "unresolved",
       "reason": "Unsupported latent ancestry",
-      "reason_code": null,
+      "reason_code": "unsupported-node",
       "selection": null,
       "positive": null,
       "negative": null,
@@ -890,7 +890,7 @@
       "metadata_status": "available",
       "state": "unresolved",
       "reason": "No supported sampler pair found (saw SamplerCustomAdvanced)",
-      "reason_code": null,
+      "reason_code": "no-sampler",
       "selection": null,
       "positive": null,
       "negative": null,

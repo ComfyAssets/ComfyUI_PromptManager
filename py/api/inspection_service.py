@@ -82,6 +82,8 @@ def inspect_current_file(
                 "state": "unresolved",
                 "sampler_id": None,
                 "reason": "Media metadata could not be read",
+                "reason_code": None,
+                "node": None,
             },
         }
     else:
