@@ -8,14 +8,14 @@ import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/i
 test.use({ locale: 'en-US', timezoneId: 'UTC', reducedMotion: 'reduce' });
 const workspace = '/prompt_manager/workspace';
 const primary = ['images', 'library', 'tags', 'inspect'];
-const tools = ['overview', 'system'];
+const tools = ['system', 'overview'];
 
 async function noOverflow(page) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
 }
 async function groupedNavigation(page) {
-    for (const [group, routes] of [['primary', primary], ['tools', tools]]) {
-        const region = page.locator(`.workspace-nav-${group}`);
+    for (const [group, routes] of [['primary', primary], ['system', tools]]) {
+        const region = page.locator(`#${group}-nav`);
         await expect(region).toHaveCount(1);
         expect(await region.locator('[data-route]').evaluateAll(nodes => nodes.map(node => node.dataset.route))).toEqual(routes);
     }
@@ -216,7 +216,7 @@ test('shell matches approved stable geometry in both themes', async ({ page, req
                     await expect(page.locator('.topbar')).toHaveCSS('height', '68px');
                 } else {
                     await expect(page.locator('.sidebar')).toHaveCSS('position', 'static');
-                    expect(await page.locator('.workspace-shell').evaluate(node => getComputedStyle(node).gridTemplateColumns.split(' ').length)).toBe(1);
+                    expect(await page.locator('.app-shell').evaluate(node => getComputedStyle(node).gridTemplateColumns.split(' ').length)).toBe(1);
                 }
                 await noOverflow(page);
                 await attachEvidence(page, testInfo, `${route}-${width}-${theme}`);
@@ -533,11 +533,11 @@ test('approved icons are decorative safe SVGs and reject unknown vocabulary', as
     await page.goto(`${workspace}#/images`);
     const icons = await page.evaluate(async () => {
         const { createWorkspaceIcon } = await import('/prompt_manager/js/workspace/icons.mjs');
-        const names = ['images', 'library', 'tags', 'upload', 'overview', 'settings', 'grid', 'list', 'masonry', 'search', 'info', 'copy', 'branch'];
+        const names = ['images', 'library', 'tags', 'upload', 'overview', 'settings', 'grid', 'list', 'masonry', 'search', 'info', 'copy', 'branch', 'star', 'tagImage', 'folder', 'history', 'review'];
         const otherDocument = document.implementation.createHTMLDocument();
         const rendered = names.map(name => {
             const icon = createWorkspaceIcon(name, otherDocument);
-            return { name, svg: icon instanceof SVGSVGElement, owner: icon.ownerDocument === otherDocument,
+            return { name, svg: icon instanceof SVGSVGElement, className: icon.getAttribute('class'), owner: icon.ownerDocument === otherDocument,
                 viewBox: icon.getAttribute('viewBox'), hidden: icon.getAttribute('aria-hidden'), focusable: icon.getAttribute('focusable'),
                 fill: icon.getAttribute('fill'), stroke: icon.getAttribute('stroke'), width: icon.getAttribute('stroke-width'),
                 path: icon.querySelector('path').getAttribute('d'), children: icon.childElementCount };
@@ -549,7 +549,7 @@ test('approved icons are decorative safe SVGs and reject unknown vocabulary', as
     });
     expect(icons.unknown).toEqual([true, true, true, true, true]);
     for (const icon of icons.rendered) {
-        expect(icon).toMatchObject({ svg: true, owner: true, viewBox: '0 0 24 24', hidden: 'true', focusable: 'false', fill: 'none', stroke: 'currentColor', width: '1.65', children: 1 });
+        expect(icon).toMatchObject({ svg: true, className: 'icon', owner: true, viewBox: '0 0 24 24', hidden: 'true', focusable: 'false', fill: 'none', stroke: 'currentColor', width: '1.65', children: 1 });
         expect(icon.path.length).toBeGreaterThan(10);
     }
     expect(icons.rendered.find(icon => icon.name === 'overview').path).toBe('M3 12h4l3-8 4 16 3-8h4');

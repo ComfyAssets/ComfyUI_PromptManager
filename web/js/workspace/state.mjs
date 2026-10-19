@@ -42,6 +42,28 @@ export function summarizeStats(stats) {
         });
 }
 
+// The sidebar's real counts (D27): one bounded `limit=1` read each, whose `total` is the count.
+const NAV_COUNT_SOURCES = Object.freeze([
+    ['images', '/prompt_manager/images/output?mode=workspace&limit=1'],
+    ['library', '/prompt_manager/library?limit=1'],
+    ['tags', '/prompt_manager/vocabulary/tags?limit=1'],
+]);
+
+/** Route id -> count for the WORKSPACE links; null when a page is missing or its total is not a count. */
+export function summarizeNavCounts(pages = {}) {
+    return new Map(NAV_COUNT_SOURCES.map(([id]) => {
+        const total = pages?.[id]?.total;
+        return [id, Number.isSafeInteger(total) && total >= 0 ? total : null];
+    }));
+}
+
+/** Read the three counts; a failed read yields null for its route only. */
+export async function loadNavCounts(api, signal) {
+    const results = await Promise.allSettled(NAV_COUNT_SOURCES.map(([, url]) => api.get(url, { signal })));
+    return summarizeNavCounts(Object.fromEntries(NAV_COUNT_SOURCES.map(([id], index) =>
+        [id, results[index].status === 'fulfilled' ? results[index].value : undefined])));
+}
+
 export function mountRouter(win, onRoute) {
     let current;
     const update = () => {

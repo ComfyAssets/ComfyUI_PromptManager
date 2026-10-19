@@ -1,9 +1,9 @@
 import '../api-client.js';
 import { createButton, createField, createScope, createSelect } from '../shared/toolkit/core.js';
-import { routes, mountRouter, summarizeStats, routeTitle, isHandoff } from './state.mjs';
+import { routes, mountRouter, summarizeStats, routeTitle, isHandoff, loadNavCounts } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
 import { mountImages } from './images.mjs';
-import { mountLibrary, mountNewPromptAction } from './library.mjs';
+import { mountLibrary, mountNewPromptAction, onLibraryWrite } from './library.mjs';
 import { mountVocabulary } from './vocabulary.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 
@@ -26,7 +26,8 @@ function mountWorkspace() {
     const scope = createScope();
     const api = createApiClient();
     const main = document.getElementById('workspace-main');
-    const nav = document.querySelector('nav[aria-label="Workspace"]');
+    const primaryNav = document.getElementById('primary-nav');
+    const systemNav = document.getElementById('system-nav');
     const appearance = document.getElementById('appearance-control');
     scope.listen(document.querySelector('.skip'), 'click', event => {
         event.preventDefault();
@@ -39,21 +40,37 @@ function mountWorkspace() {
     appearanceField.classList.add('workspace-appearance');
     appearance.replaceChildren(appearanceField);
     scope.listen(preference, 'change', () => theme.setPreference(preference.value));
-    const icons = { images: 'images', library: 'library', tags: 'tags', inspect: 'upload', overview: 'overview', system: 'settings' };
-    const groups = [['primary', 'WORKSPACE', ['images', 'library', 'tags', 'inspect']], ['tools', 'TOOLS', ['overview', 'system']]];
-    nav.replaceChildren(...groups.map(([name, label, ids]) => {
-        const group = element('div', undefined, `workspace-nav-${name}`);
-        group.append(element('p', label, 'sidebar-label'));
-        for (const id of ids) {
-            const route = routes.find(item => item.id === id);
-            const link = element('a');
-            link.append(createWorkspaceIcon(icons[id]), element('span', route.label));
-            link.href = `#/${route.id}`;
-            link.dataset.route = route.id;
-            group.append(link);
-        }
-        return group;
-    }));
+    // The concept's nav(): icon, label text, then a `.nav-count` only for a loaded real count.
+    const navLinks = ids => ids.map(([id, icon]) => {
+        const route = routes.find(item => item.id === id);
+        const link = element('a');
+        link.append(createWorkspaceIcon(icon), document.createTextNode(route.label));
+        link.href = `#/${route.id}`;
+        link.dataset.route = route.id;
+        return link;
+    });
+    primaryNav.replaceChildren(...navLinks([['images', 'images'], ['library', 'library'], ['tags', 'tags'], ['inspect', 'upload']]));
+    // D28: System, then the production Overview hub, in the concept's tools-and-system group.
+    systemNav.replaceChildren(...navLinks([['system', 'settings'], ['overview', 'overview']]));
+    const sidebar = document.querySelector('aside.sidebar');
+    let countsRequest;
+    function refreshCounts() {
+        countsRequest?.abort();
+        const request = countsRequest = new AbortController();
+        loadNavCounts(api, request.signal).then(counts => {
+            if (request.signal.aborted) return;
+            countsRequest = null;
+            // A count that failed to refresh is removed, never left stale.
+            for (const link of primaryNav.querySelectorAll('[data-route]')) {
+                link.querySelector('.nav-count')?.remove();
+                const count = counts.get(link.dataset.route);
+                if (Number.isSafeInteger(count)) link.append(element('span', count.toLocaleString(), 'nav-count'));
+            }
+        });
+    }
+    scope.cleanup(() => countsRequest?.abort());
+    scope.cleanup(onLibraryWrite(refreshCounts));
+    refreshCounts();
     let viewScope;
     let firstRender = true;
     scope.cleanup(() => viewScope?.dispose());
@@ -62,7 +79,7 @@ function mountWorkspace() {
         viewScope?.dispose();
         viewScope = createScope();
         const view = viewScope;
-        for (const link of nav.querySelectorAll('[data-route]')) {
+        for (const link of sidebar.querySelectorAll('nav [data-route]')) {
             if (link.dataset.route === route.id) link.setAttribute('aria-current', 'page');
             else link.removeAttribute('aria-current');
         }

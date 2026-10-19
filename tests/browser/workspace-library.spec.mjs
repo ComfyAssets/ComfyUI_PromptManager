@@ -129,7 +129,7 @@ test('returning from history restores library context and mobile content stays i
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
     await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
     await expect(page.getByRole('searchbox',{name:'Search prompts',exact:true})).toHaveValue('Cat portrait');await expect(cards(page)).toHaveCount(1);
-    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Overview',exact:true}).click();
+    await page.getByRole('navigation', { name: 'Tools and system', exact: true }).getByRole('link', { name: 'Overview', exact: true }).click();
     await expect(history(page)).toHaveCount(0);await expect(page.locator('dialog[open]')).toHaveCount(0);
 });
 
@@ -140,9 +140,9 @@ test('empty shelf visits restore saved scroll without inventing a parent anchor'
     await page.evaluate(()=>scrollTo(0,document.documentElement.scrollHeight));
     await expect.poll(()=>page.evaluate(()=>scrollY)).toBeGreaterThan(0);
     const position=await page.evaluate(()=>scrollY);
-    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Overview',exact:true}).evaluate(node=>node.click());
+    await page.getByRole('navigation', { name: 'Tools and system', exact: true }).getByRole('link', { name: 'Overview', exact: true }).evaluate(node=>node.click());
     await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
-    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Prompt library',exact:true}).evaluate(node=>node.click());
+    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name: /^Prompt library(?:\s*[\d,]+)?$/}).evaluate(node=>node.click());
     await expect(page.getByRole('searchbox',{name:'Search prompts',exact:true})).toHaveValue('No matching saved positive');
     await expect(cards(page)).toHaveCount(0);
     await expect.poll(()=>page.evaluate(expected=>Math.abs(scrollY-expected),position)).toBeLessThanOrEqual(1);
@@ -203,7 +203,7 @@ test('history shares real image metadata, vendored Viewer and the acknowledged p
         await expect(inspector.locator('summary')).toHaveText(['File & provenance','Workflow & raw metadata']);
         await inspector.getByRole('button',{name:'Open full preview',exact:true}).click();await expect(page.locator('dialog[open] .viewer-canvas img')).toBeVisible();
         await page.keyboard.press('Escape');await expect(page.locator('dialog[open]')).toHaveCount(0);
-        await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Overview',exact:true}).click();await expect(page.locator('.viewer-container')).toHaveCount(0);
+        await page.getByRole('navigation', { name: 'Tools and system', exact: true }).getByRole('link', { name: 'Overview', exact: true }).click();await expect(page.locator('.viewer-container')).toHaveCount(0);
     } finally {await host.evaluate(()=>window.libraryHost.dispose());await host.close();}
 });
 

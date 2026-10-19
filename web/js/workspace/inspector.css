@@ -38,7 +38,7 @@
 .ca-tools .file-inspector-footer :where(button, a) { font-size: 11px; min-block-size: 30px; }
 .ca-tools .image-preview-details .file-inspector-footer button { white-space: normal; }
 .file-inspector-footer .workspace-link { display: inline-flex; gap: 7px; border: 1px solid var(--ca-line); border-radius: 4px; padding: 5px 8px; }
-.file-inspector-footer .workspace-icon { inline-size: 14px; block-size: 14px; }
+.file-inspector-footer .icon { inline-size: 14px; block-size: 14px; }
 .file-status { padding: 17px; }
 @media (max-width: 700px) { .ca-tools .file-cover { block-size: 200px; } }
 @media (pointer: coarse) {

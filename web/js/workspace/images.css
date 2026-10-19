@@ -14,7 +14,7 @@
 .image-toolbar p { margin: 0; font-size: 11px; }
 .image-layouts { display: inline-flex; flex-wrap: wrap; gap: 3px; }
 .image-layouts button { display: inline-flex; align-items: center; gap: 6px; }
-.image-layouts .workspace-icon { inline-size: 14px; block-size: 14px; }
+.image-layouts .icon { inline-size: 14px; block-size: 14px; }
 .ca-tools .image-layouts button[aria-pressed="true"] { background: var(--ca-accent); color: white; border-color: var(--ca-accent); }
 .images-main { container: images-page / inline-size; }
 .image-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 22px; align-items: start; }
@@ -29,7 +29,7 @@
 .image-card-footer strong { display: block; padding-inline-end: 24px; font-size: 11px; line-height: 1.4; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .image-card-footer small { display: block; color: var(--ca-muted); font-size: 9px; line-height: 1.4; margin-block-start: 6px; overflow-wrap: anywhere; }
 .ca-tools .image-card-footer button { position: absolute; inset-inline-end: 6px; inset-block-start: 5px; inline-size: 26px; block-size: 26px; min-block-size: 26px; padding: 5px; }
-.image-card-footer .workspace-icon { inline-size: 14px; block-size: 14px; }
+.image-card-footer .icon { inline-size: 14px; block-size: 14px; }
 .image-grid[data-layout="list"] .image-card { grid-template-columns: min(160px, 45%) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
 .image-grid[data-layout="list"] .image-open { border-radius: 6px 0 0 6px; }
 .image-grid[data-layout="list"] .image-card-footer { align-self: center; min-block-size: 0; }
@@ -113,7 +113,7 @@
 .prompt-actions { display: flex; flex-wrap: wrap; gap: 4px; }
 .ca-tools .prompt-actions button { display: inline-flex; align-items: center; justify-content: center; inline-size: 26px; block-size: 26px; min-block-size: 26px; padding: 5px; }
 .prompt-actions .prompt-send-button span { display: none; }
-.prompt-actions .workspace-icon { inline-size: 14px; block-size: 14px; }
+.prompt-actions .icon { inline-size: 14px; block-size: 14px; }
 .prompt-copy-status { font-size: 11px; margin-block-end: 0; }
 .prompt-copy-status:empty { display: none; }
 .image-preview-details .prompt-inspector { margin-block-start: 0; }

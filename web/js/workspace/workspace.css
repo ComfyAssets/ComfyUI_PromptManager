@@ -3,6 +3,13 @@
 
 /* Production-only shell states. */
 main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
+/* D28: the sidebar shows no connection state, so its dot is neutral instead of the concept's demo green. */
+.connection i { background: var(--ca-muted); }
+/* D3: bounded rendering reads the grid's real width, so at extreme zoom the one-column shell must not grow to the
+   sidebar's min-content (the concept's `1fr`); the column is capped at the viewport as production's shell was. */
+@media (max-width: 950px) {
+    .app-shell { grid-template-columns: minmax(0, 1fr); /* D3 */ }
+}
 @media (forced-colors: active) {
     nav a[aria-current="page"] { border: 2px solid Highlight; color: LinkText; }
 }
@@ -44,17 +51,8 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
     .vocabulary-main td .row-actions { width: min-content; margin-inline-start: auto; }
 }
 
-/* Interim shell: production markup the concept classes replace in Task A3 (sidebar), A4 (topbar) and A5 (heading,
-   footer). These selectors match nothing in the concept; each block is deleted by the task named. */
-.workspace-shell { display: grid; grid-template-columns: 218px minmax(0, 1fr); min-height: 100dvh; } /* A3 */
-.workspace-body { min-width: 0; display: flex; flex-direction: column; } /* A3 */
-.workspace-body > main { flex: 1; width: 100%; min-width: 0; } /* A3 */
-nav[aria-label="Workspace"] { display: flex; flex-direction: column; flex: 1; gap: 5px; } /* A3 */
-.workspace-nav-primary, .workspace-nav-tools { display: grid; gap: 3px; } /* A3 */
-.workspace-nav-tools { margin-top: auto; padding-top: 32px; } /* A3 */
-.workspace-icon { display: block; width: 17px; height: 17px; flex: 0 0 auto; } /* A3: becomes the concept `.icon` */
-.sidebar-footer { margin: 17px 6px 0; padding-top: 17px; border-top: 1px solid var(--line); color: var(--ca-muted); font-size: 10px; display: flex; align-items: center; gap: 8px; } /* A3 */
-.connection-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ca-muted); flex: 0 0 auto; } /* A3 */
+/* Interim shell: production markup the concept classes replace in Task A4 (topbar) and A5 (heading, footer). These
+   selectors match nothing in the concept; each block is deleted by the task named. */
 .topbar > span { font-size: 12px; } /* A4 */
 #appearance-control { min-width: 0; max-width: 100%; } /* A4 */
 .ca-tools .workspace-appearance { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; min-width: 0; max-width: 100%; font-size: 11px; } /* A4 */
@@ -64,19 +62,9 @@ nav[aria-label="Workspace"] { display: flex; flex-direction: column; flex: 1; ga
 .workspace-heading-copy .intro { font-size: 12px; color: var(--ca-muted); margin-top: 6px; } /* A5 */
 .intro { color: var(--ca-muted); } /* A5 */
 .page-footer { display: flex; gap: 20px; justify-content: space-between; margin: 0 32px; padding: 20px 0; border-top: 1px solid var(--line); color: var(--ca-muted); font-size: 11px; } /* A5 */
-@media (max-width: 1250px) {
-    .workspace-shell { grid-template-columns: 185px minmax(0, 1fr); } /* A3 */
-}
-@media (max-width: 950px) {
-    .workspace-shell { grid-template-columns: minmax(0, 1fr); } /* A3 */
-    .sidebar-footer { display: none; } /* A3 */
-    .workspace-nav-primary, .workspace-nav-tools { display: flex; flex-wrap: wrap; gap: 4px; } /* A3 */
-    .workspace-nav-tools { margin: 0; padding-top: 5px; border-top: 1px solid var(--line); } /* A3 */
-}
 @media (max-width: 700px) {
     .topbar > span { overflow-wrap: anywhere; } /* A4 */
     .workspace-heading { align-items: flex-start; flex-direction: column; } /* A5 */
-    .sidebar nav .workspace-icon { width: 14px; height: 14px; } /* A3 */
     .page-footer { margin: 0 14px; flex-wrap: wrap; } /* A5 */
 }
 

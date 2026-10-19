@@ -295,7 +295,8 @@ test('collection viewer follows filtered loaded order beyond mounted cards',asyn
     const loaded=listed.images.slice(0,160);expect(loaded).toHaveLength(160);
     await page.evaluate(()=>scrollTo(0,0));await expect.poll(()=>page.locator('article[data-image-key]').count()).toBeLessThan(120);
     let release,started;const held=new Promise(resolve=>{release=resolve;});const hit=new Promise(resolve=>{started=resolve;});
-    await page.route('**/images/output?*',async route=>{started();await held;await route.continue();},{times:1});
+    // A grid page, not the sidebar's `limit=1` Images count.
+    await page.route(url=>url.pathname.endsWith('/images/output') && url.searchParams.get('limit')!=='1',async route=>{started();await held;await route.continue();},{times:1});
     await more.click();await hit;await page.evaluate(()=>scrollTo(0,0));
     const opener=page.locator(`article[data-image-key="0:${loaded[0].path}"] .image-card-footer button`);
     await opener.click();release();await expect(page.locator('.image-toolbar')).toContainText('200 of');

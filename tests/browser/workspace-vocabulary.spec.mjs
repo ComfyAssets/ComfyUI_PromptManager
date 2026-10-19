@@ -89,7 +89,7 @@ test('category Browse sets only the category constraint',async({page})=>{
     await page.goto('/prompt_manager/workspace#/library');
     const search=page.getByRole('searchbox',{name:'Search prompts',exact:true});
     await search.fill('observatory');await expect(page.locator('article[data-prompt-id]')).toHaveCount(1);
-    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Tags & categories',exact:true}).click();
+    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name: /^Tags & categories(?:\s*[\d,]+)?$/}).click();
     const row=categoryRow(page,'Landscapes');await expect(row.locator('p')).toHaveText('3 positive prompts');
     await row.getByRole('button',{name:'Browse',exact:true}).click();
     await expectLibrary(page,{category:'Landscapes',count:3});
@@ -127,7 +127,8 @@ test('long vocabularies append and Load more is keyboard reachable',async({page,
 
 test('read failure shows inline error with Retry and no zero counts',async({page})=>{
     let failures=0;
-    await page.route('**/prompt_manager/vocabulary/tags?*',route=>{
+    // Tag list pages only: the sidebar's Tags count is its own `limit=1` read.
+    await page.route(url=>url.pathname==='/prompt_manager/vocabulary/tags' && url.searchParams.get('limit')!=='1',route=>{
         if(failures++) return route.continue();
         return route.fulfill({status:500,json:{success:false,error:'Database is unavailable'}});
     });
@@ -149,7 +150,7 @@ test('breadcrumb and document title are Tags',async({page})=>{
     await page.goto(route);
     await expect(page.locator('#workspace-breadcrumb')).toHaveText('Tags');
     await expect(page).toHaveTitle('Tags · Prompt Manager');
-    await expect(page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Tags & categories',exact:true})).toHaveAttribute('aria-current','page');
+    await expect(page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name: /^Tags & categories(?:\s*[\d,]+)?$/})).toHaveAttribute('aria-current','page');
     await page.reload();
     await expect(page.locator('#workspace-breadcrumb')).toHaveText('Tags');
     await page.goto('/prompt_manager/workspace#/library');
@@ -161,7 +162,8 @@ test('route disposal aborts requests and removes observers',async({page})=>{
     await page.addInitScript(()=>{
         window.__vocabularySignals=[];window.__vocabularyObservers=[];
         const fetch=window.fetch;
-        window.fetch=(input,init={})=>{if(String(input).includes('/vocabulary/') && init.signal) window.__vocabularySignals.push(init.signal);return fetch(input,init);};
+        // The page's own reads; the sidebar's `limit=1` Tags count belongs to the shell.
+        window.fetch=(input,init={})=>{if(String(input).includes('/vocabulary/') && !/[?&]limit=1(?:&|$)/.test(String(input)) && init.signal) window.__vocabularySignals.push(init.signal);return fetch(input,init);};
         const Observer=window.IntersectionObserver;
         window.IntersectionObserver=class extends Observer {
             constructor(...args) {super(...args);this.record={targets:[],disconnected:false};window.__vocabularyObservers.push(this.record);}
@@ -175,7 +177,7 @@ test('route disposal aborts requests and removes observers',async({page})=>{
     await expect.poll(()=>page.evaluate(()=>window.__vocabularySignals.length)).toBe(2);
     expect(await page.evaluate(()=>window.__vocabularyObservers.filter(item=>item.targets.some(name=>name.includes('vocabulary-continuation'))).length)).toBe(2);
     await expect(main(page).getByText('Loading…',{exact:true})).toHaveCount(2);
-    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Prompt library',exact:true}).click();
+    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name: /^Prompt library(?:\s*[\d,]+)?$/}).click();
     await expect(main(page).getByRole('heading',{level:1})).toHaveText('Prompt library');
     expect(await page.evaluate(()=>window.__vocabularySignals.map(signal=>signal.aborted))).toEqual([true,true]);
     expect(await page.evaluate(()=>window.__vocabularyObservers.filter(item=>item.targets.some(name=>name.includes('vocabulary-continuation'))).map(item=>item.disconnected))).toEqual([true,true]);
@@ -482,7 +484,8 @@ test('lost response is outcome-unknown',async({page,request})=>{
     await expect(main(page).getByRole('heading',{level:1})).toBeFocused();
 });
 
-const nav=(page,name)=>page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name,exact:true});
+// Concept nav links end in their real `.nav-count` once it loads.
+const nav=(page,name)=>page.locator('aside.sidebar nav').getByRole('link',{name:new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?:\\s*[\\d,]+)?$`)});
 const chips=(page,name)=>main(page).locator('article[data-prompt-id] .library-chip').filter({hasText:new RegExp(`^${name}$`)});
 /** Visit the Library so its shelf is cached, then open Rename on blue_hour and start a rename whose PATCH is held. */
 async function heldRename(page) {

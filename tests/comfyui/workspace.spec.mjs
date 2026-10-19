@@ -24,7 +24,7 @@ test('workspace serves real library data beside either ComfyUI renderer', async 
             return url.pathname === '/prompt_manager/images/output' && url.searchParams.get('mode') === 'workspace';
         });
         await workspace.getByRole('navigation', { name: 'Workspace', exact: true })
-            .getByRole('link', { name: 'Images', exact: true }).click();
+            .getByRole('link', { name: /^Images(?:\s*[\d,]+)?$/ }).click();
         await expect(workspace.locator('#workspace-main h1')).toHaveText('Images');
         const images = await imageResponse;
         expect(images.ok()).toBe(true);

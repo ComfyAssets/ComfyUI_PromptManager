@@ -18,14 +18,18 @@
     <script type="module" src="js/workspace/index.mjs"></script>
 </head>
 <body class="ca-tools">
-    <a class="skip" href="#workspace-main">Skip to content</a>
-    <div class="workspace-shell">
+    <a class="skip" href="#workspace-main">Skip to workspace</a>
+    <div class="app-shell">
         <aside class="sidebar">
             <a class="brand" href="#/images"><span class="brand-mark" aria-hidden="true">P<span>±</span></span><span>Prompt Manager<small>COMFYASSETS</small></span></a>
-            <nav aria-label="Workspace"></nav>
-            <div class="sidebar-footer"><span class="connection-dot" aria-hidden="true"></span> Your library, on your server</div>
+            <div class="sidebar-label">WORKSPACE</div>
+            <nav id="primary-nav" aria-label="Workspace"></nav>
+            <div class="sidebar-bottom">
+                <nav id="system-nav" aria-label="Tools and system"></nav>
+                <div class="connection"><i></i><div>ComfyUI workspace<small>Your library, on your server</small></div></div>
+            </div>
         </aside>
-        <div class="workspace-body">
+        <div class="workspace">
             <header class="topbar"><span>ComfyAssets <span class="muted">/ <span id="workspace-breadcrumb">Images</span></span></span><div id="appearance-control"></div></header>
             <main id="workspace-main" tabindex="-1"></main>
             <footer class="page-footer">ComfyAssets <span>Local tools. Your library.</span></footer>

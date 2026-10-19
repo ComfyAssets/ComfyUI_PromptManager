@@ -13,7 +13,13 @@ const paths = Object.freeze({
     "copy": "M8 8h13v13H8z M16 8V3H3v13h5",
     "send": "m22 2-7 20-4-9-9-4L22 2ZM22 2 11 13",
     "plus": "M12 4v16M4 12h16",
-    "branch": "M6 3v12M18 9a9 9 0 0 1-9 9M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0M21 6a3 3 0 1 1-6 0 3 3 0 0 1 6 0"
+    "branch": "M6 3v12M18 9a9 9 0 0 1-9 9M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0M21 6a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
+    // The concept's remaining vocabulary (docs/concepts/workspace/app.js `paths`), for the pages rebuilt next.
+    "star": "m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z",
+    "tagImage": "M3 4h8l9 9-7 7L3 10V4ZM7 8h.01M18 2v5M15.5 4.5h5",
+    "folder": "M3 5h7l2 3h9v12H3z",
+    "history": "M3 11a9 9 0 1 1 2 7M3 4v7h7M12 7v6l4 2",
+    "review": "M4 3h16v18H4zM8 7h8M8 12h8M8 17h5"
 });
 
 /** Create an approved decorative outline icon without injecting markup. */
@@ -24,7 +30,7 @@ export function createWorkspaceIcon(name, doc = document) {
     const namespace = 'http://www.w3.org/2000/svg';
     const icon = doc.createElementNS(namespace, 'svg');
     for (const [attribute, value] of Object.entries({
-        class: 'workspace-icon', viewBox: '0 0 24 24', 'aria-hidden': 'true',
+        class: 'icon', viewBox: '0 0 24 24', 'aria-hidden': 'true',
         focusable: 'false', fill: 'none', stroke: 'currentColor',
         'stroke-width': '1.65', 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
     })) icon.setAttribute(attribute, value);

@@ -36,10 +36,17 @@ function headingActions(main,fallback) {
 }
 
 /** A confirmed receipt makes cached shelf items, cursor and measured heights stale; filters and anchor survive. */
+const writeListeners=new Set();
 export function invalidateLibraryAfterWrite(commit) {
     if(!commit || typeof commit.kind!=='string' || !commit.receipt || typeof commit.receipt!=='object') throw new TypeError('Invalid editor commit');
     writeGeneration++;
     if(shelfVisit) shelfVisit={filters:shelfVisit.filters,anchor:shelfVisit.layout?.anchor ?? shelfVisit.anchor ?? null};
+    for(const listener of [...writeListeners]) listener(commit);
+}
+/** Observe confirmed Library and vocabulary writes (the sidebar re-reads its counts); returns the unsubscribe. */
+export function onLibraryWrite(listener) {
+    if(typeof listener!=='function') throw new TypeError('Invalid Library write listener');
+    writeListeners.add(listener);return ()=>{writeListeners.delete(listener);};
 }
 /**
  * Open the Library shelf with exactly these filters (Tags & categories Browse): the

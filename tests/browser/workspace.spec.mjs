@@ -4,6 +4,11 @@ import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/i
 const workspace = '/prompt_manager/workspace';
 const statistic = (page, label) => page.locator('#workspace-main dt')
     .filter({ hasText: new RegExp(`^${label}$`) }).locator('..').locator('dd');
+// Concept sidebar: WORKSPACE links carry a real `.nav-count` once loaded, so their accessible name may end in it.
+const escapeName = label => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const navName = label => new RegExp(`^${escapeName(label)}(?:\\s*[\\d,]+)?$`);
+const sidebarLink = (page, label) => page.locator('aside.sidebar nav').getByRole('link', { name: navName(label) });
+const sidebarLinks = page => page.locator('aside.sidebar nav a');
 const routes = [
     ['overview', 'Overview', null],
     ['images', 'Images', '/prompt_manager/gallery'],
@@ -66,8 +71,7 @@ test('all shell destinations deep-link, reload and expose working existing appli
         await page.goto(`${workspace}#/${route}`);
         const main = page.locator('#workspace-main');
         await expect(main.getByRole('heading', { level: 1, name: label, exact: true })).toBeVisible();
-        await expect(page.getByRole('navigation', { name: 'Workspace', exact: true })
-            .getByRole('link', { name: label, exact: true })).toHaveAttribute('aria-current', 'page');
+        await expect(sidebarLink(page, label)).toHaveAttribute('aria-current', 'page');
         if (route === 'tags') await expect(main.locator('.handoff')).toHaveCount(0);
         if (legacy) {
             await expect(main.locator(`a[href="${legacy}"]`)).toBeVisible();
@@ -81,11 +85,11 @@ test('all shell destinations deep-link, reload and expose working existing appli
 test('keyboard navigation, browser history and unknown routes remain usable', async ({ page }) => {
     await page.goto(`${workspace}#/overview`);
     const navigation = page.getByRole('navigation', { name: 'Workspace', exact: true });
-    const images = navigation.getByRole('link', { name: 'Images', exact: true });
+    const images = navigation.getByRole('link', { name: navName('Images') });
     await images.focus();
     await page.keyboard.press('Enter');
     await expect(page.locator('#workspace-main h1')).toHaveText('Images');
-    await navigation.getByRole('link', { name: 'Prompt library', exact: true }).click();
+    await navigation.getByRole('link', { name: navName('Prompt library') }).click();
     await expect(page.locator('#workspace-main h1')).toHaveText('Prompt library');
     await page.goBack();
     await expect(page.locator('#workspace-main h1')).toHaveText('Images');
@@ -93,7 +97,7 @@ test('keyboard navigation, browser history and unknown routes remain usable', as
     await expect(page.locator('#workspace-main h1')).toHaveText('Prompt library');
     await page.goto(`${workspace}#/not-a-page`);
     await expect(page.locator('#workspace-main h1')).toHaveText('Images');
-    await expect(navigation.getByRole('link', { name: 'Images', exact: true }))
+    await expect(navigation.getByRole('link', { name: navName('Images') }))
         .toHaveAttribute('aria-current', 'page');
 });
 
@@ -101,7 +105,7 @@ test('skip to content focuses the current view without changing its route', asyn
     await page.goto(`${workspace}#/library`);
     await expect(page.locator('#workspace-main h1')).toHaveText('Prompt library');
     await page.keyboard.press('Tab');
-    await expect(page.getByRole('link', { name: 'Skip to content', exact: true })).toBeFocused();
+    await expect(page.getByRole('link', { name: 'Skip to workspace', exact: true })).toBeFocused();
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(`${workspace}#/library`);
     await expect(page.locator('#workspace-main')).toBeFocused();
@@ -113,12 +117,12 @@ test('returning to overview refreshes persisted counts without duplicating navig
     const prompts = statistic(page, 'Prompts');
     await expect(prompts).toHaveText('2');
     const navigation = page.getByRole('navigation', { name: 'Workspace', exact: true });
-    await navigation.getByRole('link', { name: 'Images', exact: true }).click();
+    await sidebarLink(page, 'Images').click();
     await expect(await request.post('/prompt_manager/save', { data: { text: 'A new persisted workspace prompt' } })).toBeOK();
-    await navigation.getByRole('link', { name: 'Overview', exact: true }).click();
+    await sidebarLink(page, 'Overview').click();
     await expect(prompts).toHaveText('3');
     await expect(navigation).toHaveCount(1);
-    await expect(navigation.getByRole('link')).toHaveCount(routes.length);
+    await expect(sidebarLinks(page)).toHaveCount(routes.length);
 });
 
 test('appearance follows ComfyUI and persists an explicit light or dark preference', async ({ page }) => {
@@ -173,9 +177,8 @@ test('overview reports loading, offers retry after failure and renders real empt
 test('small screens keep navigation and appearance accessible without horizontal page overflow', async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto(`${workspace}#/overview`);
-    const navigation = page.getByRole('navigation', { name: 'Workspace', exact: true });
     for (const [, label] of routes) {
-        await navigation.getByRole('link', { name: label, exact: true }).click();
+        await sidebarLink(page, label).click();
         await expect(page.locator('#workspace-main h1')).toHaveText(label);
     }
     await expect(page.getByRole('combobox', { name: 'Appearance', exact: true })).toBeVisible();
@@ -196,15 +199,14 @@ test('leaving a loading overview prevents its delayed result from replacing the 
     });
     await page.goto(`${workspace}#/overview`);
     await expect(page.locator('#workspace-main').getByRole('status')).toBeVisible();
-    await page.getByRole('navigation', { name: 'Workspace', exact: true })
-        .getByRole('link', { name: 'Images', exact: true }).click();
+    await sidebarLink(page, 'Images').click();
     await expect(page.locator('#workspace-main h1')).toHaveText('Images');
     release();
     await finished;
     await expect(page.locator('#workspace-main h1')).toHaveText('Images');
     await expect(page.locator('#workspace-main')).not.toContainText('999');
-    await expect(page.locator('.workspace-nav-primary')).toHaveCount(1);
-    await expect(page.locator('.workspace-nav-tools')).toHaveCount(1);
+    await expect(page.locator('#primary-nav')).toHaveCount(1);
+    await expect(page.locator('#system-nav')).toHaveCount(1);
     await expect(page.getByRole('combobox', { name: 'Appearance', exact: true })).toHaveCount(1);
     await expect(page.locator('#workspace-main a[href="/prompt_manager/gallery"]')).toBeVisible();
     await countAppearanceWrites(page);
@@ -227,13 +229,12 @@ test('cached-page restoration remounts one working shell and refreshes its data'
         await expect(statistic(page, 'Prompts')).toHaveText('2');
     }
     expect(reads).toBe(3);
-    const navigation = page.getByRole('navigation', { name: 'Workspace', exact: true });
-    await expect(navigation.getByRole('link')).toHaveCount(routes.length);
-    await expect(page.locator('.workspace-nav-primary')).toHaveCount(1);
-    await expect(page.locator('.workspace-nav-tools')).toHaveCount(1);
+    await expect(sidebarLinks(page)).toHaveCount(routes.length);
+    await expect(page.locator('#primary-nav')).toHaveCount(1);
+    await expect(page.locator('#system-nav')).toHaveCount(1);
     await expect(page.getByRole('combobox', { name: 'Appearance', exact: true })).toHaveCount(1);
     await countAppearanceWrites(page);
-    await navigation.getByRole('link', { name: 'Images', exact: true }).click();
+    await sidebarLink(page, 'Images').click();
     await expect(page.locator('#workspace-main h1')).toHaveText('Images');
     await page.getByRole('combobox', { name: 'Appearance' }).selectOption('light');
     await expect(page.locator('body')).toHaveAttribute('data-ca-theme', 'light');
@@ -276,11 +277,186 @@ for (const width of [1600, 390]) test(`overview and handoff render with concept 
     expect(await card.locator('p.small').evaluate(node => getComputedStyle(node).fontSize)).toBe('12px');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
-    await page.getByRole('navigation', { name: 'Workspace', exact: true }).getByRole('link', { name: 'System', exact: true }).click();
+    await sidebarLink(page, 'System').click();
     const handoff = main.locator('section.handoff');
     await expect(handoff).toHaveClass(/\bsurface\b/);
     expect(await handoff.evaluate(surfaceStyle)).toMatchObject(SURFACE);
     await expect(handoff.locator('a[href="/prompt_manager/admin"]')).toBeVisible();
     await expect(main.locator('.panel')).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+// Task A3: the concept sidebar (index.html h16-41, app.js nav()) rendered from real data (D27, D28).
+const NAV_TOTALS = [
+    ['images', 'Images', '/prompt_manager/images/output?mode=workspace&limit=1'],
+    ['library', 'Prompt library', '/prompt_manager/library?limit=1'],
+    ['tags', 'Tags & categories', '/prompt_manager/vocabulary/tags?limit=1'],
+];
+async function serverTotals(request) {
+    const totals = {};
+    for (const [id, , url] of NAV_TOTALS) {
+        const response = await request.get(url);
+        await expect(response).toBeOK();
+        totals[id] = (await response.json()).total;
+        expect(Number.isSafeInteger(totals[id]) && totals[id] >= 0).toBe(true);
+    }
+    return totals;
+}
+const navCount = (page, route) => page.locator(`#primary-nav a[data-route="${route}"] .nav-count`);
+const childShape = locator => locator.evaluate(node => [...node.children]
+    .map(child => `${child.localName}${child.id ? `#${child.id}` : ''}${[...child.classList].map(name => `.${name}`).join('')}`));
+
+test('sidebar matches the concept groups and shows real counts', async ({ page, request }) => {
+    const totals = await serverTotals(request);
+    expect(totals.library).toBe(2);
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await page.goto(`${workspace}#/images`);
+    await expect(page.locator('body > .app-shell > aside.sidebar')).toHaveCount(1);
+    await expect(page.locator('body > .app-shell > .workspace > #workspace-main')).toHaveCount(1);
+    await expect(page.locator('.workspace-shell, .workspace-body, .sidebar-footer, .connection-dot, .workspace-icon')).toHaveCount(0);
+    const sidebar = page.locator('aside.sidebar');
+    expect(await childShape(sidebar)).toEqual(['a.brand', 'div.sidebar-label', 'nav#primary-nav', 'div.sidebar-bottom']);
+    await expect(sidebar.locator('.brand')).toHaveAttribute('href', '#/images');
+    await expect(sidebar.locator('.sidebar-label')).toHaveText(['WORKSPACE']);
+    await expect(page.locator('#saved-nav, #collections-nav, .new-label')).toHaveCount(0);
+    const primary = page.locator('nav#primary-nav');
+    await expect(primary).toHaveAttribute('aria-label', 'Workspace');
+    for (const [id] of NAV_TOTALS) await expect(navCount(page, id)).toHaveText(totals[id].toLocaleString('en-US'));
+    const links = await primary.evaluate(node => [...node.children].map(link => ({ tag: link.localName,
+        href: link.getAttribute('href'), icon: link.querySelector('svg')?.getAttribute('class'),
+        nodes: [...link.childNodes].map(child => child.nodeType === Node.TEXT_NODE ? `text:${child.textContent}`
+            : `${child.localName}${[...child.classList].map(name => `.${name}`).join('')}`) })));
+    expect(links).toEqual([
+        { tag: 'a', href: '#/images', nodes: ['svg.icon', 'text:Images', 'span.nav-count'], icon: 'icon' },
+        { tag: 'a', href: '#/library', nodes: ['svg.icon', 'text:Prompt library', 'span.nav-count'], icon: 'icon' },
+        { tag: 'a', href: '#/tags', nodes: ['svg.icon', 'text:Tags & categories', 'span.nav-count'], icon: 'icon' },
+        { tag: 'a', href: '#/inspect', nodes: ['svg.icon', 'text:Inspect a file'], icon: 'icon' },
+    ]);
+    await expect(primary.locator('a[href="#/images"]')).toHaveAttribute('aria-current', 'page');
+    await expect(primary.locator('a[aria-current]')).toHaveCount(1);
+    await expect(page.locator('#primary-nav a[data-route="inspect"] .nav-count')).toHaveCount(0);
+    // Concept tokens: 38px rows, 12px muted labels, 10px muted counts pushed to the end.
+    const style = await primary.locator('a[href="#/library"]').evaluate(link => {
+        const own = getComputedStyle(link), count = link.querySelector('.nav-count');
+        return { minHeight: own.minHeight, fontSize: own.fontSize, gap: own.columnGap, count: getComputedStyle(count).fontSize,
+            end: Math.round(link.getBoundingClientRect().right - count.getBoundingClientRect().right) };
+    });
+    expect(style).toEqual({ minHeight: '38px', fontSize: '12px', gap: '11px', count: '10px', end: 12 });
+    // At phone width the concept wraps the links and hides counts and the connection (concept 950px block).
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(navCount(page, 'library')).toBeHidden();
+    await expect(page.locator('.sidebar-label, .connection')).toHaveCount(2);
+    for (const hidden of await page.locator('.sidebar-label, .connection').all()) await expect(hidden).toBeHidden();
+    await expect(primary.locator('a[href="#/inspect"]')).toBeVisible();
+});
+
+test('nav counts stay hidden until loaded and when their request fails', async ({ page, request }) => {
+    const totals = await serverTotals(request);
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    await page.route('**/prompt_manager/library?limit=1', async route => {
+        await pending;
+        await route.fulfill({ status: 503, json: { success: false, error: 'Unavailable' } });
+    });
+    await page.route('**/prompt_manager/vocabulary/tags?limit=1', route => route.fulfill({ json: { success: true, total: -4 } }));
+    await page.goto(`${workspace}#/overview`);
+    await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    // Nothing renders while a read is outstanding: no "0" placeholder.
+    await expect(page.locator('#primary-nav .nav-count')).toHaveCount(0);
+    release();
+    await expect(navCount(page, 'images')).toHaveText(String(totals.images));
+    await expect(navCount(page, 'library')).toHaveCount(0);
+    await expect(navCount(page, 'tags')).toHaveCount(0);
+    await expect(page.locator('#primary-nav .nav-count')).toHaveCount(1);
+});
+
+test('sidebar bottom holds System and Overview with a neutral connection', async ({ page }) => {
+    await page.goto(`${workspace}#/system`);
+    const bottom = page.locator('aside.sidebar > .sidebar-bottom');
+    expect(await childShape(bottom)).toEqual(['nav#system-nav', 'div.connection']);
+    const system = page.locator('nav#system-nav');
+    await expect(system).toHaveAttribute('aria-label', 'Tools and system');
+    expect(await system.locator(':scope > a').evaluateAll(nodes => nodes.map(node => [node.getAttribute('href'), node.textContent]))).toEqual([
+        ['#/system', 'System'], ['#/overview', 'Overview'],
+    ]);
+    await expect(system.locator('.nav-count')).toHaveCount(0);
+    await expect(system.locator('a[href="#/system"]')).toHaveAttribute('aria-current', 'page');
+    await expect(system.locator('svg.icon')).toHaveCount(2);
+    const connection = bottom.locator('.connection');
+    expect(await childShape(connection)).toEqual(['i', 'div']);
+    await expect(connection.locator(':scope > div')).toHaveText('ComfyUI workspaceYour library, on your server');
+    await expect(connection.locator('small')).toHaveText('Your library, on your server');
+    // D28: no fake connection state. The dot is the muted text colour, not the concept's demo green.
+    const dot = await connection.evaluate(node => ({ dot: getComputedStyle(node.querySelector('i')).backgroundColor,
+        muted: getComputedStyle(node.querySelector('small')).color }));
+    expect(dot.dot).toBe(dot.muted);
+    await page.locator('nav#system-nav').getByRole('link', { name: 'Overview', exact: true }).click();
+    await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    await expect(system.locator('a[href="#/overview"]')).toHaveAttribute('aria-current', 'page');
+    await expect(page.locator('aside.sidebar a[aria-current]')).toHaveCount(1);
+});
+
+test('counts refresh after a confirmed editor save', async ({ page, request }) => {
+    const before = await serverTotals(request);
+    await page.goto(`${workspace}#/library`);
+    await expect(navCount(page, 'library')).toHaveText(String(before.library));
+    await expect(navCount(page, 'tags')).toHaveText(String(before.tags));
+    const reads = [];
+    page.on('request', item => {
+        const url = new URL(item.url());
+        if (url.searchParams.get('limit') === '1') reads.push(url.pathname);
+    });
+    await page.getByRole('button', { name: '+ New prompt', exact: true }).click();
+    const dialog = page.locator('dialog.library-editor');
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+    await dialog.getByLabel('Title', { exact: true }).fill('Harbor at dawn');
+    await dialog.getByLabel('Positive prompt', { exact: true }).fill('A quiet harbor at dawn for the sidebar count');
+    await dialog.getByLabel('Tags, separated by commas', { exact: true }).fill('sidebar_count_tag');
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    const after = await serverTotals(request);
+    expect(after.library).toBe(before.library + 1);
+    expect(after.tags).toBeGreaterThan(before.tags);
+    await expect(navCount(page, 'library')).toHaveText(String(after.library));
+    await expect(navCount(page, 'tags')).toHaveText(String(after.tags));
+    expect(reads.filter(path => path === '/prompt_manager/library').length).toBeGreaterThanOrEqual(1);
+});
+
+test('a superseded count read never lands and a failed refresh removes the stale count', async ({ page, request }) => {
+    const totals = await serverTotals(request);
+    await page.goto(`${workspace}#/overview`);
+    await expect(navCount(page, 'library')).toHaveText(String(totals.library));
+    const held = [];
+    let reads = 0;
+    await page.route('**/prompt_manager/library?limit=1', route => {
+        if (reads++ === 0) { held.push(route); return undefined; }
+        return route.fulfill({ status: 503, json: { success: false, error: 'Unavailable' } });
+    });
+    const invalidate = () => page.evaluate(async () => {
+        const { invalidateLibraryAfterWrite } = await import('/prompt_manager/js/workspace/library.mjs');
+        invalidateLibraryAfterWrite({ kind: 'test', receipt: {} });
+    });
+    await invalidate();
+    await expect.poll(() => held.length).toBe(1);
+    await invalidate();
+    await expect(navCount(page, 'library')).toHaveCount(0);
+    await expect(navCount(page, 'images')).toHaveText(String(totals.images));
+    await expect(navCount(page, 'tags')).toHaveText(String(totals.tags));
+    await held[0].fulfill({ json: { success: true, total: 999 } }).catch(() => {});
+    await page.waitForTimeout(100);
+    await expect(navCount(page, 'library')).toHaveCount(0);
+    await page.unroute('**/prompt_manager/library?limit=1');
+    // Leaving the page with a read in flight aborts it; the restored shell reads the counts again.
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    await page.route('**/prompt_manager/library?limit=1', async route => { await pending; await route.continue().catch(() => {}); }, { times: 1 });
+    await invalidate();
+    await page.evaluate(() => {
+        window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+        window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    });
+    release();
+    await expect(navCount(page, 'library')).toHaveText(String(totals.library));
+    await expect(page.locator('#primary-nav a')).toHaveCount(4);
+    await expect(page.locator('#primary-nav .nav-count')).toHaveCount(3);
 });
