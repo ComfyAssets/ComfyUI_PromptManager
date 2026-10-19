@@ -194,10 +194,33 @@ The inspector does not establish historical file identity, infer run membership,
 edit image tags, export all EXIF, or load/execute a workflow. Saved vocabulary is
 labelled by its recipe or positive-prompt scope. Limited raw evidence is omitted
 atomically, with JSON exports unavailable and the rooted original still downloadable.
-The inspection API uses one bounded read (2 MiB aggregate metadata, 8 MiB non-PNG
-header, 10,000 PNG chunks, three-second ffprobe, 500 graph nodes/semantic expansions,
-64 link/JSON-container levels and an 8 MiB serialized response); retry does not raise
-these limits. Installing the Python inspection/source-scope changes requires a
+The inspection API uses one bounded read with per-record budgets: role records
+(`prompt`, `parameters`, the pair execution record) share 2 MiB and exceeding it
+fails the read; the `workflow` record has its own 4 MiB and past it only the workflow
+becomes record format `limited` (no raw text, graph `limited`, roles and facts
+unaffected); other text chunks are skipped unread; byte-identical duplicates are
+accepted within a bounded read budget, while differing duplicates (and any duplicate
+role record over that budget) still fail. Other read bounds are unchanged: 8 MiB
+non-PNG header, 10,000 PNG chunks and a three-second ffprobe. Resolution under
+`INSPECTION_PROFILE` bounds work, not graph size: 2,000 visits per candidate chain,
+20,000 in total, 64 link/JSON-container levels, 100,000 resolved characters, and a
+20,000-node backstop that counts only executable API prompt nodes (workflow UI nodes
+and subgraph definitions never count against prompts or facts). The serialized
+response stays under 8 MiB by omitting, in order, the workflow graph, then the prompt
+graph, then all raw records atomically. Retry does not raise these limits. Ingestion
+(scan, live monitor, admin import) and queue-time run counting keep the default
+profile, including its 500-node gate.
+
+`tools/inspection_corpus.py --root DIR --out JSONL [--workers N] [--baseline JSONL]
+[--summary TXT] [--code TREE]` measures a media folder read-only against the #240
+invariants H1 to H8. It runs the inspection route pipeline and the workspace JS facts
+of `--code` (default: its own tree), opens media only for reading, follows no
+symlinks, imports no database, and refuses `--out`/`--summary` inside the root or a
+code tree. Its rows and summary hold counts, statuses and SHA-256 digests of resolved
+role texts, never file names or prompt text unless `--with-paths` is given. Run it
+on the base commit first and pass that JSONL as `--baseline` for H1 and H8; it exits
+1 when an invariant fails. Never point it at a live install's folders from an
+automated job. Installing the Python inspection/source-scope changes requires a
 maintainer ComfyUI restart. Automated tests use disposable hosts and never restart
 the running personal ComfyUI.
 
