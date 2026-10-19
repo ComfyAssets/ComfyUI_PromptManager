@@ -1,5 +1,6 @@
 """Conservative prompt-pair resolution contracts, independent of ComfyUI."""
 
+import collections
 import random
 import subprocess  # nosec B404 - fixed interpreter command, no shell
 import sys
@@ -2632,6 +2633,91 @@ class TestLatentAncestry(unittest.TestCase):
         self.assertEqual(_inspect(source)["reason_code"], "depth-limit")
         source["3"]["inputs"]["latent_image"] = ["u10", 0]
         self.assertEqual(_inspect(source)["state"], "resolved")
+
+
+class _CountingDeque(collections.deque):
+    """Counts every item queued by the resolver's breadth-first walks."""
+
+    queued = 0
+
+    def append(self, item):
+        _CountingDeque.queued += 1
+        super().append(item)
+
+    def extend(self, items):
+        for item in items:
+            self.append(item)
+
+
+def _dense_layers(
+    prefix: str, bottom: list, layers: int = 4, width: int = 40, fan: int = None
+):
+    """A hub over ``layers`` x ``width`` nodes; each links to ``fan`` (default:
+    all) nodes of the next layer, so every node is shared by many consumers."""
+    nodes = {}
+    fan = fan or width
+    for layer in range(layers):
+        for index in range(width):
+            below = (
+                [
+                    [f"{prefix}{layer + 1}_{(index + step) % width}", 0]
+                    for step in range(fan)
+                ]
+                if layer + 1 < layers
+                else [bottom]
+            )
+            nodes[f"{prefix}{layer}_{index}"] = {
+                "class_type": "DenseBlend",
+                "inputs": {f"in_{k}": link for k, link in enumerate(below)},
+            }
+    # One hub reads the whole first layer.
+    nodes[f"{prefix}top"] = {
+        "class_type": "DenseBlend",
+        "inputs": {f"in_{k}": [f"{prefix}0_{k}", 0] for k in range(width)},
+    }
+    return nodes, [f"{prefix}top", 0], layers * width + 1
+
+
+class TestBreadthFirstWalkWork(unittest.TestCase):
+    """Dense shared fan-in: each node is queued at most once per walk."""
+
+    def counted(self, source: dict, **options) -> tuple:
+        _CountingDeque.queued = 0
+        with mock.patch.object(resolver, "deque", _CountingDeque):
+            result = _inspect(source, **options)
+        return result, _CountingDeque.queued
+
+    def test_dense_latent_ancestry_queues_each_node_once(self):
+        source = _latent_from({"class_type": "EmptyLatentImage", "inputs": {}})
+        dense, top, count = _dense_layers("L", ["5", 0])
+        source.update(dense)
+        source["3"]["inputs"]["latent_image"] = top
+        result, queued = self.counted(source)
+        self.assertEqual(result["state"], "resolved")
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        # The dense layers plus the empty latent, each queued once.
+        self.assertLessEqual(queued, count + 1)
+
+    def test_dense_detailer_image_ancestry_queues_each_node_once(self):
+        source = _detailed(same_prompt=True)
+        expected = _inspect(source, output_node_id="9")
+        dense, top, count = _dense_layers("D", source["50"]["inputs"]["image"])
+        source.update(dense)
+        source["50"]["inputs"]["image"] = top
+        result, queued = self.counted(source, output_node_id="9")
+        self.assertEqual(_outcomes(result), _outcomes(expected))
+        # Dense layers + the decoder + its sampler, plus the latent walk of
+        # that sampler (one EmptyLatentImage).
+        self.assertLessEqual(queued, count + 3)
+
+    def test_dense_fan_in_beyond_the_budget_is_work_limit(self):
+        source = _latent_from({"class_type": "EmptyLatentImage", "inputs": {}})
+        dense, top, count = _dense_layers("W", ["5", 0], layers=3, width=800, fan=40)
+        source.update(dense)
+        source["3"]["inputs"]["latent_image"] = top
+        result, queued = self.counted(source)
+        self.assertEqual(result["reason_code"], "work-limit")
+        self.assertLessEqual(queued, count + 1)
 
 
 REPO = Path(__file__).resolve().parents[1]

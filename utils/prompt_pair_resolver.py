@@ -30,6 +30,7 @@ When the semantics table cannot be loaded, inspection of a prompt graph is
 
 import logging
 import re
+from collections import deque
 from dataclasses import dataclass, replace
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -987,6 +988,27 @@ class _GraphResolver:
             reason_code="multistage-differs",
         )
 
+    @staticmethod
+    def walk_from(value: list) -> Tuple[deque, set]:
+        """A breadth-first queue holding one start link, and its queued IDs."""
+        start = str(value[0])
+        return deque([(start, 0)]), {start}
+
+    def enqueue(self, queue: deque, queued: set, inputs: dict, depth: int) -> None:
+        """Queue each linked input once per walk; every edge is charged as scanned.
+
+        Deduplicating at enqueue keeps a dense shared fan-in to one entry per
+        node, so the queue never outgrows the nodes the visit budget pays for.
+        Breadth-first, a node's first enqueue is at its least depth, as before.
+        """
+        self.scan(len(inputs))
+        for item in inputs.values():
+            if _link(item):
+                key = str(item[0])
+                if key not in queued:
+                    queued.add(key)
+                    queue.append((key, depth))
+
     def upstream_stages(self, origin: str, value: Any) -> list:
         """Samplers reached from a detailer's image input, in breadth-first order.
 
@@ -996,26 +1018,19 @@ class _GraphResolver:
         if not _link(value):
             raise _Unresolved("Expected an image link", "malformed")
         found: list = []
-        seen: set = set()
-        queue = [(str(value[0]), 0)]
+        queue, queued = self.walk_from(value)
         while queue:
-            node_id, depth = queue.pop(0)
-            if node_id in seen:
-                continue
+            node_id, depth = queue.popleft()
             if node_id == origin:
                 raise _Unresolved("Cyclic sampler stage ancestry", "malformed")
             if depth >= self.max_depth:
                 raise _Unresolved("Resolution depth limit reached", "depth-limit")
-            seen.add(node_id)
             self.budget.spend()
             name, inputs = self.node(node_id)
             if name in self.stage_classes:
                 found.append(node_id)
                 continue
-            self.scan(len(inputs))
-            queue.extend(
-                (str(item[0]), depth + 1) for item in inputs.values() if _link(item)
-            )
+            self.enqueue(queue, queued, inputs, depth + 1)
         return found
 
     def final_stages(self, sampler_ids: list) -> list:
@@ -1065,9 +1080,9 @@ class _GraphResolver:
 
     def reaches_output(self, node_id: str, consumers: dict) -> bool:
         """Whether a sampler's output reaches a terminal node besides later stages."""
-        seen, queue = {node_id}, [node_id]
+        seen, queue = {node_id}, deque([node_id])
         while queue:
-            current = queue.pop(0)
+            current = queue.popleft()
             for consumer in consumers.get(current, ()):
                 if consumer in seen:
                     continue
@@ -1210,17 +1225,13 @@ class _GraphResolver:
         """
         if not _link(value):
             raise _Unresolved("Unknown latent ancestry", "malformed")
-        seen: set = set()
-        queue = [(str(value[0]), 0)]
+        queue, queued = self.walk_from(value)
         while queue:
-            node_id, depth = queue.pop(0)
-            if node_id in seen:
-                continue
+            node_id, depth = queue.popleft()
             if node_id == origin:
                 raise _Unresolved("Cyclic latent ancestry", "malformed")
             if depth >= self.max_depth:
                 raise _Unresolved("Resolution depth limit reached", "depth-limit")
-            seen.add(node_id)
             self.budget.spend()
             name, inputs = self.node(node_id)
             if name in self.stage_classes:
@@ -1231,10 +1242,7 @@ class _GraphResolver:
                 _link(inputs.get(key)) for key in _SAMPLER_LIKE_INPUTS
             ):
                 raise self.unsupported("Unsupported latent ancestry", node_id)
-            self.scan(len(inputs))
-            queue.extend(
-                (str(item[0]), depth + 1) for item in inputs.values() if _link(item)
-            )
+            self.enqueue(queue, queued, inputs, depth + 1)
 
     def anchor(self, node_id: str) -> str:
         seen = set()
