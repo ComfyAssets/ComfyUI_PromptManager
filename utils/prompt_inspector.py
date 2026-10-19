@@ -13,8 +13,10 @@ from typing import Any
 
 from PIL import Image
 
+from .inspection_outcomes import UNREADABLE_METADATA_REASON, outcome_message
 from .pair_execution import EXECUTION_KEY
 from .prompt_pair_resolver import (
+    EMPTY_POSITIVE_REASON,
     INSPECTION_PROFILE,
     ResolverProfile,
     resolve_prompt_pair,
@@ -400,6 +402,39 @@ def _side(status: str, text: str | None = None, source: str | None = None) -> di
     return {"status": status, "text": text, "source": source}
 
 
+_EMPTY_POSITIVE = outcome_message(
+    {"state": "unresolved", "reason": EMPTY_POSITIVE_REASON}
+)
+
+
+def _explained(prompts: dict, resolution: dict) -> dict:
+    """Each unresolved role carries the outcome's line; other roles are kept."""
+    message = outcome_message(resolution)
+    if message is None:
+        return prompts
+    return {
+        role: (
+            {**side, "message": message}
+            if side["status"] == "unresolved" and "message" not in side
+            else side
+        )
+        for role, side in prompts.items()
+    }
+
+
+def unreadable_evidence() -> dict:
+    """Both roles when the file's metadata could not be read at all."""
+    resolution = {
+        "state": "unresolved",
+        "sampler_id": None,
+        "reason": UNREADABLE_METADATA_REASON,
+        "reason_code": None,
+        "node": None,
+    }
+    prompts = {role: _side("unresolved") for role in ("positive", "negative")}
+    return {"prompts": _explained(prompts, resolution), "resolution": resolution}
+
+
 def inspect_prompt_evidence(
     metadata: dict,
     saved: dict | None = None,
@@ -447,21 +482,20 @@ def inspect_prompt_evidence(
             },
         }
     canonical = dict(metadata)
+    malformed = {
+        "prompts": _explained(
+            {role: _side("unresolved") for role in ("positive", "negative")},
+            resolution,
+        ),
+        "resolution": resolution,
+    }
     if "prompt" not in canonical and "parameters" not in canonical:
-        return {
-            "prompts": {role: _side("unresolved") for role in ("positive", "negative")},
-            "resolution": resolution,
-        }
+        return malformed
     if isinstance(canonical.get("prompt"), str):
         try:
             canonical["prompt"] = json.loads(canonical["prompt"])
         except (ValueError, RecursionError):
-            return {
-                "prompts": {
-                    role: _side("unresolved") for role in ("positive", "negative")
-                },
-                "resolution": resolution,
-            }
+            return malformed
     resolved = resolve_prompt_pair(canonical, profile=profile)
     state = resolved["state"]
     result = {}
@@ -475,18 +509,19 @@ def inspect_prompt_evidence(
             result[role] = _side(
                 "resolved", side["text"], side["provenance"]["text_source"]
             )
+        elif state == "resolved" and isinstance(side, dict):
+            # A resolved pair withholds only an empty positive.
+            result[role] = {**_side("unresolved"), "message": _EMPTY_POSITIVE}
         else:
             result[role] = _side(state if state != "resolved" else "unresolved")
-    return {
-        "prompts": result,
-        "resolution": {
-            "state": state,
-            "sampler_id": resolved.get("sampler_id"),
-            "reason": resolved.get("reason", ""),
-            "reason_code": resolved.get("reason_code"),
-            "node": resolved.get("node"),
-        },
+    resolution = {
+        "state": state,
+        "sampler_id": resolved.get("sampler_id"),
+        "reason": resolved.get("reason", ""),
+        "reason_code": resolved.get("reason_code"),
+        "node": resolved.get("node"),
     }
+    return {"prompts": _explained(result, resolution), "resolution": resolution}
 
 
 def inspect_prompt_roles(metadata: dict, saved: dict | None = None) -> dict:

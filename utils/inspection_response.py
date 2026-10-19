@@ -5,6 +5,8 @@ import math
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Literal
 
+from .inspection_outcomes import project_resolution
+
 if TYPE_CHECKING:
     from .prompt_inspector import InspectionRead
 
@@ -329,7 +331,7 @@ def _encode_inspection(
         **identity,
         "file": _file_projection(file, inspection),
         "prompts": prompts,
-        "resolution": resolution,
+        "resolution": project_resolution(resolution),
         "metadata": metadata,
         "library": _library_projection(library),
     }

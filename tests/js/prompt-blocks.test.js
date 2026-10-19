@@ -81,3 +81,52 @@ test('a zeroed conditioning negative shows as an explicit empty negative with it
         assert.deepEqual(sent,[{positive:'positive',negative:''}]);
     }finally{scope.dispose();f.restore();}
 });
+
+const unresolved=message=>({status:'unresolved',text:null,source:null,...(message===undefined?{}:{message})});
+const statusLines=(f,container)=>f.walk(container,node=>node.tagName==='p'&&node.className==='muted').map(node=>node.textContent);
+test('unsupported node status names the class',()=>{
+    const f=dom(),scope=createScope(),container=new f.Element('div');
+    const line='Prompt uses a node the inspector does not support (DualCFGGuider).';
+    try{
+        module.mountPromptBlocks(container,{parentScope:scope,sender:{open:()=>{}},prompts:{positive:unresolved(line),negative:unresolved(line)}});
+        assert.deepEqual(statusLines(f,container),[line,line]);
+        assert.equal(f.walk(container,node=>node.dataset.sendRole!==undefined||node.dataset.copyRole!==undefined).length,0,'no action implies a prompt exists');
+    }finally{scope.dispose();f.restore();}
+});
+test('runtime and composite statuses',()=>{
+    const f=dom(),scope=createScope(),container=new f.Element('div');
+    const runtime='Prompt is chosen at run time (PromptSearchList).',composite='Prompt combines several texts (ConditioningCombine).';
+    try{
+        const view=module.mountPromptBlocks(container,{parentScope:scope,sender:{open:()=>{}},prompts:{positive:unresolved(runtime),negative:unresolved(runtime)}});
+        assert.deepEqual(statusLines(f,container),[runtime,runtime]);
+        view.update({positive:unresolved(composite),negative:{status:'resolved',text:'kept',source:'execution'}});
+        assert.deepEqual(statusLines(f,container),[composite]);
+        assert.equal(f.walk(container,node=>node.tagName==='pre'&&node.textContent==='kept').length,1);
+    }finally{scope.dispose();f.restore();}
+});
+test('limit status',()=>{
+    const f=dom(),scope=createScope(),container=new f.Element('div');
+    const line='Prompt exceeds inspection limits.';
+    try{
+        module.mountPromptBlocks(container,{parentScope:scope,sender:{open:()=>{}},prompts:{positive:unresolved(line),negative:unresolved(line)}});
+        assert.deepEqual(statusLines(f,container),[line,line]);
+    }finally{scope.dispose();f.restore();}
+});
+test('roles without a usable line keep the status copy, and a candidate is never shown as a prompt',()=>{
+    const f=dom(),scope=createScope(),container=new f.Element('div');
+    try{
+        module.mountPromptBlocks(container,{parentScope:scope,sender:{open:()=>{}},prompts:{positive:unresolved(''),negative:{status:'ambiguous',text:'candidate text',source:null}}});
+        assert.deepEqual(statusLines(f,container),['Prompt could not be resolved.','Multiple possible prompts. Source could not be determined.']);
+        assert.equal(f.walk(container,node=>node.textContent==='candidate text').length,0);
+    }finally{scope.dispose();f.restore();}
+});
+test('class names in status lines render as text, never markup',()=>{
+    const f=dom(),scope=createScope(),container=new f.Element('div');
+    const line='Prompt uses a node the inspector does not support (<img src=x onerror=alert(1)>).';
+    try{
+        module.mountPromptBlocks(container,{parentScope:scope,sender:{open:()=>{}},prompts:{positive:unresolved(line),negative:unresolved(line)}});
+        assert.deepEqual(statusLines(f,container),[line,line]);
+        assert.equal(f.walk(container,node=>node.tagName==='img').length,0);
+        assert.equal(f.walk(container,node=>Object.hasOwn(node,'innerHTML')).length,0);
+    }finally{scope.dispose();f.restore();}
+});

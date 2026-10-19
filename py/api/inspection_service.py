@@ -9,6 +9,7 @@ try:
         MetadataReadError,
         inspect_prompt_evidence,
         read_inspection_file,
+        unreadable_evidence,
     )
     from ...utils.video_metadata import is_video_path
 except ImportError:
@@ -16,6 +17,7 @@ except ImportError:
         MetadataReadError,
         inspect_prompt_evidence,
         read_inspection_file,
+        unreadable_evidence,
     )
     from utils.video_metadata import is_video_path
 
@@ -73,19 +75,7 @@ def inspect_current_file(
     if any(getattr(before, key) != getattr(after, key) for key in fields):
         raise CurrentFileChanged
     if inspection is None:
-        evidence = {
-            "prompts": {
-                role: {"status": "unresolved", "text": None, "source": None}
-                for role in ("positive", "negative")
-            },
-            "resolution": {
-                "state": "unresolved",
-                "sampler_id": None,
-                "reason": "Media metadata could not be read",
-                "reason_code": None,
-                "node": None,
-            },
-        }
+        evidence = unreadable_evidence()
     else:
         role_saved = (
             None if saved and saved.get("association_status") == "ambiguous" else saved

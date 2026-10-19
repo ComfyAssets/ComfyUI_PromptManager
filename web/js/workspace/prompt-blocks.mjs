@@ -114,7 +114,7 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
                 heading.append(actions);
                 const status = el('p', '', 'prompt-copy-status muted'); status.setAttribute('role', 'status');
                 block.append(status);
-            } else block.append(el('p', typeof record?.message === 'string' ? record.message : statuses[record?.status] || statuses.unresolved, 'muted'));
+            } else block.append(el('p', typeof record?.message === 'string' && record.message ? record.message : statuses[record?.status] || statuses.unresolved, 'muted'));
             container.append(block);
         }
         if (includePairAction && Object.hasOwn(roles, 'positive') && Object.hasOwn(roles, 'negative')) {

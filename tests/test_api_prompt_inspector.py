@@ -244,10 +244,10 @@ class TestPromptInspector(ImageAPITestCase):
 
     async def test_corrupt_malformed_and_no_metadata_do_not_invent_text(self):
         path = self.output_dir / "image.png"
-        for content, expected in (
-            (b"broken", "unresolved"),
-            (None, "absent"),
-            ("bad-json", "unresolved"),
+        for content, expected, message in (
+            (b"broken", "unresolved", "Metadata in this file could not be read."),
+            (None, "absent", None),
+            ("bad-json", "unresolved", "Prompt metadata in this file is malformed."),
         ):
             if isinstance(content, bytes):
                 path.write_bytes(content)
@@ -256,6 +256,7 @@ class TestPromptInspector(ImageAPITestCase):
             _, result = await self.inspect()
             self.assertEqual(result["prompts"]["positive"]["status"], expected)
             self.assertIsNone(result["prompts"]["positive"]["text"])
+            self.assertEqual(result["prompts"]["negative"].get("message"), message)
 
     async def test_compressed_international_and_post_pixel_metadata(self):
         import struct
@@ -790,6 +791,9 @@ class TestPromptInspector(ImageAPITestCase):
             result["resolution"]["reason"],
             "No supported sampler pair found (saw FutureSampler)",
         )
+        self.assertEqual(
+            result["prompts"]["positive"]["message"], "No supported sampler was found."
+        )
 
     async def test_inspect_route_exposes_reason_code_and_blocking_node(self):
         # f06a's encoder is supported since Task 2.4; an unknown encoder is not.
@@ -802,6 +806,14 @@ class TestPromptInspector(ImageAPITestCase):
         self.assertEqual(resolution["reason_code"], "unsupported-node")
         self.assertEqual(
             resolution["node"], {"id": "6", "class_type": "FutureTextEncode"}
+        )
+        self.assertEqual(
+            {role: side.get("message") for role, side in result["prompts"].items()},
+            dict.fromkeys(
+                ("positive", "negative"),
+                "Prompt uses a node the inspector does not support "
+                "(FutureTextEncode).",
+            ),
         )
         png(self.output_dir / "image.png", prompt="{broken")
         _, result = await self.inspect()

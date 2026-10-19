@@ -151,6 +151,9 @@ _ZEROED_SOURCE = "zeroed-conditioning"
 _MAX_BRANCH_CANDIDATES = 32
 # Statically undecidable text (a search, a list output): never pick an item.
 _RUNTIME_REASON = "Text is decided at run time"
+# Uncoded outcomes the inspector explains by their exact reason.
+EMPTY_POSITIVE_REASON = "Positive prompt is empty"
+MULTISTAGE_UNATTRIBUTED_REASON = "Multistage sampler ancestry is ambiguous"
 _INCOMPATIBLE_SLOT = "Output slot has an incompatible type"
 # Trace outcomes that leave an input unverifiable against execution evidence.
 _UNVERIFIABLE_CODES = frozenset({"unsupported-node", "runtime-value"})
@@ -1189,7 +1192,7 @@ class _GraphResolver:
                 inputs.get(conditioning["positive"]), sampler_id, guider_id, depth
             )
             if not positive["text"].strip():
-                raise _Unresolved("Positive prompt is empty")
+                raise _Unresolved(EMPTY_POSITIVE_REASON)
             negative_name = conditioning["negative"]
             if negative_name is None or negative_name not in inputs:
                 return _result(
@@ -1227,7 +1230,7 @@ class _GraphResolver:
         name, inputs = self.node(node_id)
         if name in self.stage_classes:
             # ``multistage-differs`` is reserved for when stage texts are compared.
-            raise _Unresolved("Multistage sampler ancestry is ambiguous")
+            raise _Unresolved(MULTISTAGE_UNATTRIBUTED_REASON)
         if name in ("EmptyLatentImage", "EmptySD3LatentImage") and slot == 0:
             return
         if name == "Reroute" and slot == 0 and "value" in inputs:
@@ -1287,7 +1290,7 @@ class _GraphResolver:
             if name in self.stage_classes:
                 # ``multistage-differs`` is reserved for when stage texts are
                 # compared (PR3); until then no stage's prompt is chosen.
-                raise _Unresolved("Multistage sampler ancestry is ambiguous")
+                raise _Unresolved(MULTISTAGE_UNATTRIBUTED_REASON)
             if self.stage_shaped(name, inputs):
                 raise self.unsupported("Unsupported latent ancestry", node_id)
             self.enqueue(queue, queued, inputs, depth + 1)
@@ -1344,7 +1347,7 @@ def _parameters(value: Any, max_text_length: int) -> dict:
     positive, found, negative = body.partition(delimiter)
     positive = positive.strip()
     if not positive:
-        return _result("unresolved", reason="Positive prompt is empty")
+        return _result("unresolved", reason=EMPTY_POSITIVE_REASON)
     provenance = {
         "format": "a1111",
         "field": "parameters",
@@ -1424,7 +1427,7 @@ def resolve_prompt_pair(
     return _legacy_result(result) if profile.legacy else result
 
 
-_SEMANTICS_UNAVAILABLE = "Inspection node semantics are unavailable"
+SEMANTICS_UNAVAILABLE_REASON = "Inspection node semantics are unavailable"
 
 
 def _inspection_semantics() -> Optional[Any]:
@@ -1495,7 +1498,7 @@ def _resolve(
     if profile.semantics:
         semantics = _inspection_semantics()
         if semantics is None:
-            return _result("unresolved", reason=_SEMANTICS_UNAVAILABLE)
+            return _result("unresolved", reason=SEMANTICS_UNAVAILABLE_REASON)
     normalized = {str(node_id): node for node_id, node in graph.items()}
     if len(normalized) != len(graph):
         return _result(
