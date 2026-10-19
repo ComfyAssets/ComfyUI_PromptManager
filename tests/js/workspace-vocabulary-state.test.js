@@ -403,7 +403,9 @@ test('browseFilters hands Library one exact constraint', async () => {
 });
 
 const helpers = imported.then(module => {
-    for (const name of ['readTagImpact', 'noun', 'categoryPreviewText', 'deleteTagText']) {
+    // Count wording comes from the shared plural.mjs helper (#243); this module no longer exports its own.
+    assert.equal(module.noun, undefined);
+    for (const name of ['readTagImpact', 'categoryPreviewText', 'deleteTagText']) {
         assert.equal(typeof module[name], 'function', `vocabulary-state.mjs exports ${name}`);
     }
     return module;
@@ -424,13 +426,6 @@ test('readTagImpact reads one fresh, validated impact for the exact tag id', asy
         await assert.rejects(readTagImpact({get: async () => malformed}, {id: 4, name: 'mist'}), TypeError, JSON.stringify(malformed));
     }
     assert.throws(() => readTagImpact(api, {id: 0, name: 'mist'}), TypeError);
-});
-
-test('noun uses the singular only for exactly one', async () => {
-    const {noun} = await helpers;
-    assert.equal(noun(0, 'positive prompt'), '0 positive prompts');
-    assert.equal(noun(1, 'positive prompt'), '1 positive prompt');
-    assert.equal(noun(2, 'negative variant'), '2 negative variants');
 });
 
 test('category preview text states the real impact and whether it renames or consolidates', async () => {

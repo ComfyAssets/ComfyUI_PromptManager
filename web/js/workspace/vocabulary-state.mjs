@@ -11,6 +11,8 @@
  * and every command that may have changed storage calls `onInvalidate` so the
  * page resets its streams to the first page.
  */
+import { countOf } from './plural.mjs';
+
 const LIMIT = 100;
 const BASE = '/prompt_manager/vocabulary';
 const KINDS = {
@@ -245,21 +247,16 @@ export function readTagImpact(api, row, {signal} = {}) {
     });
 }
 
-/** "1 positive prompt", "2 positive prompts". */
-export function noun(value, singular) {
-    return `${value} ${singular}${value === 1 ? '' : 's'}`;
-}
-
 /** Owner kinds with a nonzero count, in sentence form ("a, b and c"); empty when nothing is linked. */
 function impactList(impact) {
     const negatives = impact.negative_variants + impact.archived_negative_variants;
     const parts = [];
-    if (impact.positive_prompts) parts.push(noun(impact.positive_prompts, 'positive prompt'));
+    if (impact.positive_prompts) parts.push(countOf(impact.positive_prompts, 'positive prompt'));
     if (negatives) {
         const archived = impact.archived_negative_variants ? ` (${impact.archived_negative_variants} archived)` : '';
-        parts.push(`${noun(negatives, 'negative variant')}${archived}`);
+        parts.push(`${countOf(negatives, 'negative variant')}${archived}`);
     }
-    if (impact.other_prompts) parts.push(noun(impact.other_prompts, 'other saved prompt'));
+    if (impact.other_prompts) parts.push(countOf(impact.other_prompts, 'other saved prompt'));
     return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts.join('');
 }
 

@@ -8,7 +8,8 @@
  * to the existing Library filters.
  */
 import { createButton } from '../shared/toolkit/core.js';
-import { browseFilters, createVocabularyCommand, createVocabularyStream, noun } from './vocabulary-state.mjs';
+import { browseFilters, createVocabularyCommand, createVocabularyStream } from './vocabulary-state.mjs';
+import { countOf } from './plural.mjs';
 import { browseLibrary, invalidateLibraryAfterWrite } from './library.mjs';
 import { createVocabularyDialog } from './vocabulary-dialog.mjs';
 
@@ -57,7 +58,7 @@ function tagRow(tag) {
 }
 
 function categoryRow(category) {
-    const {row, button} = operation(category.value, noun(category.prompt_count, 'positive prompt'), 'Browse');
+    const {row, button} = operation(category.value, countOf(category.prompt_count, 'positive prompt'), 'Browse');
     button.dataset.action = 'browse';
     return row;
 }
