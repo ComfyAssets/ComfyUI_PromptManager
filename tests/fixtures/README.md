@@ -15,7 +15,7 @@ Browser tests use the committed file; FFmpeg is not required to run them.
 
 # Inspection parity fixtures
 
-`inspection_parity/` holds small synthetic PNGs (`f01b.png` ... `f23.png`, each
+`inspection_parity/` holds small synthetic PNGs (`f01b.png` ... `f24.png`, each
 under 32 KiB) and `vectors.json`, used by the #240 inspection parity tests. Every
 graph, prompt text, model name and filename prefix in them is original synthetic
 content written for this repository. Nothing comes from user output. They are

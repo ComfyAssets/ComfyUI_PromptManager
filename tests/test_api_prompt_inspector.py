@@ -792,13 +792,17 @@ class TestPromptInspector(ImageAPITestCase):
         )
 
     async def test_inspect_route_exposes_reason_code_and_blocking_node(self):
-        self.parity_fixture("f06a")
+        # f06a's encoder is supported since Task 2.4; an unknown encoder is not.
+        built = parity.build("f06a")
+        built["prompt"]["6"]["class_type"] = "FutureTextEncode"
+        parity.write_png(self.output_dir / "f06a.png", built)
         _, result = await self.inspect("f06a.png")
         resolution = result["resolution"]
         self.assertEqual(resolution["state"], "unresolved")
         self.assertEqual(resolution["reason_code"], "unsupported-node")
-        self.assertEqual(set(resolution["node"]), {"id", "class_type"})
-        self.assertIsInstance(resolution["node"]["class_type"], str)
+        self.assertEqual(
+            resolution["node"], {"id": "6", "class_type": "FutureTextEncode"}
+        )
         png(self.output_dir / "image.png", prompt="{broken")
         _, result = await self.inspect()
         self.assertEqual(result["resolution"]["reason_code"], "malformed")

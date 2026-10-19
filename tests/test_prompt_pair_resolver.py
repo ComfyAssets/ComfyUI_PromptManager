@@ -1652,6 +1652,446 @@ class TestConditioningSemantics(unittest.TestCase):
                 self.assertIsNone(result["reason_code"])
 
 
+def _primitive(value: str) -> dict:
+    return {"class_type": "PrimitiveString", "inputs": {"value": value}}
+
+
+def _text_encoded(link: list) -> dict:
+    """A CLIPTextEncode (node 6 in ``_with_positive``) reading a linked string."""
+    return {"class_type": "CLIPTextEncode", "inputs": {"text": link, "clip": ["4", 1]}}
+
+
+def _string_positive(node: dict, extra: dict = None) -> dict:
+    """``f02`` whose positive encoder reads string node 10 (``node``)."""
+    return _with_positive(_text_encoded(["10", 0]), {"10": node, **(extra or {})})
+
+
+def _multiline(text, flag) -> dict:
+    return {
+        "class_type": "StringConstantMultiline",
+        "inputs": {"string": text, "strip_newlines": flag},
+    }
+
+
+def _join(count, delimiter, return_list=False, **strings) -> dict:
+    return {
+        "class_type": "JoinStringMulti",
+        "inputs": {
+            "inputcount": count,
+            "delimiter": delimiter,
+            "return_list": return_list,
+            **strings,
+        },
+    }
+
+
+def _sd3(clip_l: str, clip_g: str, t5xxl: str) -> dict:
+    return {
+        "class_type": "CLIPTextEncodeSD3",
+        "inputs": {
+            "clip": ["4", 1],
+            "clip_l": clip_l,
+            "clip_g": clip_g,
+            "t5xxl": t5xxl,
+            "empty_padding": "none",
+        },
+    }
+
+
+def _positive(result: dict) -> tuple:
+    return result["state"], _role_text_of(result, "positive"), result["reason_code"]
+
+
+def _role_text_of(result: dict, role: str):
+    side = result[role]
+    return side["text"] if isinstance(side, dict) else None
+
+
+F01B_POSITIVE = f"{parity.POS}, Scene 0: unique shot description soft winter light,"
+
+
+class TestEncoderAndStringSemantics(unittest.TestCase):
+    """Text encoders, string sources and runtime nodes (inspection, Task 2.4)."""
+
+    def test_sdxl_equal_parts_resolve(self):
+        result = _inspect(parity.build("f06a")["prompt"])
+        self.assertEqual(result["state"], "resolved")
+        self.assertIsNone(result["reason_code"])
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        provenance = result["positive"]["provenance"]
+        self.assertEqual(provenance["path"], [{"node_id": "6", "output_slot": 0}])
+        self.assertEqual(provenance["text_source"], "graph-inferred")
+        self.assertEqual(result["positive"]["storage_text"], parity.POS)
+        # Linked parts are followed; equal texts still resolve, path deduplicated.
+        source = parity.build("f06a")["prompt"]
+        source["6"]["inputs"]["text_g"] = ["10", 0]
+        source["6"]["inputs"]["text_l"] = ["10", 0]
+        source["10"] = _primitive(parity.POS)
+        result = _inspect(source)
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        self.assertEqual(
+            result["positive"]["provenance"]["path"],
+            [{"node_id": "6", "output_slot": 0}, {"node_id": "10", "output_slot": 0}],
+        )
+
+    def test_sdxl_distinct_parts_are_composite(self):
+        source = parity.build("f06a")["prompt"]
+        source["6"]["inputs"]["text_l"] = "a second style"
+        result = _inspect(source)
+        self.assertEqual(result["state"], "unresolved")
+        self.assertEqual(result["reason_code"], "composite")
+        self.assertEqual(result["reason"], "Encoder parts have different texts")
+        self.assertEqual(
+            result["node"], {"id": "6", "class_type": "CLIPTextEncodeSDXL"}
+        )
+        self.assertIsNone(result["positive"])
+        # Whitespace is text: emptiness is exact, never trimmed into agreement.
+        source["6"]["inputs"]["text_l"] = " "
+        self.assertEqual(_inspect(source)["reason_code"], "composite")
+        source["6"]["inputs"]["text_l"] = parity.POS + " "
+        self.assertEqual(_inspect(source)["reason_code"], "composite")
+
+    def test_sdxl_single_nonempty_part_resolves(self):
+        for empty in ("text_l", "text_g"):
+            with self.subTest(empty=empty):
+                source = parity.build("f06a")["prompt"]
+                source["6"]["inputs"][empty] = ""
+                result = _inspect(source)
+                self.assertEqual(result["state"], "resolved")
+                self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+                self.assertEqual(result["positive"]["storage_text"], parity.POS)
+        # A linked empty part counts as empty; both paths are recorded.
+        source = parity.build("f06a")["prompt"]
+        source["6"]["inputs"]["text_l"] = ["10", 0]
+        source["10"] = _primitive("")
+        result = _inspect(source)
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        self.assertEqual(
+            result["positive"]["provenance"]["path"],
+            [{"node_id": "6", "output_slot": 0}, {"node_id": "10", "output_slot": 0}],
+        )
+        # All parts empty: an empty positive, never a resolved prompt.
+        source["6"]["inputs"]["text_g"] = ""
+        self.assertEqual(_inspect(source)["reason"], "Positive prompt is empty")
+        # A missing part is malformed, never read as empty.
+        source = parity.build("f06a")["prompt"]
+        del source["6"]["inputs"]["text_l"]
+        self.assertEqual(_inspect(source)["reason_code"], "malformed")
+
+    def test_flux_and_sd3_encoders(self):
+        result = _inspect(parity.build("f06b")["prompt"])
+        self.assertEqual(result["state"], "resolved")
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        source = parity.build("f06b")["prompt"]
+        source["6"]["inputs"]["t5xxl"] = "a longer natural language description"
+        result = _inspect(source)
+        self.assertEqual(result["reason_code"], "composite")
+        self.assertEqual(result["node"]["class_type"], "CLIPTextEncodeFlux")
+        cases = [
+            ((parity.POS, parity.POS, parity.POS), ("resolved", parity.POS, None)),
+            (("", "", parity.POS), ("resolved", parity.POS, None)),
+            (("", parity.POS, ""), ("resolved", parity.POS, None)),
+            ((parity.POS, "", WOLF), ("unresolved", None, "composite")),
+            ((parity.POS, parity.POS, WOLF), ("unresolved", None, "composite")),
+            # Spec 7.2: only "all equal" or "exactly one non-empty" resolve.
+            ((parity.POS, parity.POS, ""), ("unresolved", None, "composite")),
+        ]
+        for parts, expected in cases:
+            with self.subTest(parts=parts):
+                self.assertEqual(
+                    _positive(_inspect(_with_positive(_sd3(*parts)))), expected
+                )
+
+    def test_qwen_edit_plus_prompt(self):
+        extra = {
+            "13": {"class_type": "LoadImage", "inputs": {"image": "reference.png"}}
+        }
+        for name in ("TextEncodeQwenImageEditPlus", "TextEncodeQwenImageEdit"):
+            with self.subTest(node=name):
+                inputs = {"clip": ["4", 1], "prompt": parity.POS, "vae": ["4", 2]}
+                images = ("image1", "image2") if name.endswith("Plus") else ("image",)
+                inputs.update({image: ["13", 0] for image in images})
+                node = {"class_type": name, "inputs": inputs}
+                result = _inspect(_with_positive(node, extra))
+                self.assertEqual(result["state"], "resolved")
+                self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+                self.assertEqual(
+                    result["positive"]["provenance"]["path"],
+                    [{"node_id": "6", "output_slot": 0}],
+                )
+
+    def test_qwen_image21_two_outputs(self):
+        source = parity.build("f24")["prompt"]
+        result = _inspect(source)
+        self.assertEqual(result["state"], "resolved")
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        self.assertEqual(
+            result["negative"]["provenance"]["path"],
+            [{"node_id": "6", "output_slot": 1}],
+        )
+        self.assertEqual(result["negative"]["storage_text"], parity.NEG)
+        # Slot 2 is the latent output, never a prompt.
+        source["3"]["inputs"]["negative"] = ["6", 2]
+        result = _inspect(source)
+        self.assertEqual(result["reason_code"], "unsupported-node")
+        self.assertEqual(
+            result["node"], {"id": "6", "class_type": "TextEncodeQwenImage21"}
+        )
+
+    def test_kiko_text_encode_plain_text(self):
+        node = {"class_type": "KikoTextEncode", "inputs": {"clip": ["4", 1]}}
+        node["inputs"]["text"] = parity.POS
+        result = _inspect(_with_positive(node))
+        self.assertEqual(result["state"], "resolved")
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        self.assertEqual(result["positive"]["storage_text"], parity.POS)
+        # No composition: a linked text arrives unchanged.
+        node["inputs"]["text"] = ["10", 0]
+        extra = {"10": {"class_type": "PrimitiveStringMultiline"}}
+        extra["10"]["inputs"] = {"value": "  " + parity.POS + "\n"}
+        result = _inspect(_with_positive(node, extra))
+        self.assertEqual(result["positive"]["text"], "  " + parity.POS + "\n")
+
+    def test_string_constant_multiline_strip_newlines_exact(self):
+        result = _inspect(_string_positive(_multiline("a\n b \n", True)))
+        self.assertEqual(_positive(result), ("resolved", "a b", None))
+        self.assertEqual(result["positive"]["storage_text"], "a b")
+        self.assertEqual(
+            result["positive"]["provenance"]["path"],
+            [{"node_id": "6", "output_slot": 0}, {"node_id": "10", "output_slot": 0}],
+        )
+        result = _inspect(_string_positive(_multiline("a\n b \n", False)))
+        self.assertEqual(_positive(result), ("resolved", "a\n b \n", None))
+        # Only "\n" is removed; other whitespace inside the text is kept.
+        result = _inspect(_string_positive(_multiline("\ta\r\n\tb\n\n", True)))
+        self.assertEqual(result["positive"]["text"], "a\r\tb")
+        # A linked text is followed; a linked flag is decided at run time.
+        linked = _string_positive(
+            _multiline(["11", 0], True), {"11": _primitive("x\ny")}
+        )
+        self.assertEqual(_inspect(linked)["positive"]["text"], "xy")
+        flag = _string_positive(
+            _multiline("a\nb", ["12", 0]),
+            {"12": {"class_type": "PrimitiveBoolean", "inputs": {"value": True}}},
+        )
+        result = _inspect(flag)
+        self.assertEqual(result["reason_code"], "unsupported-node")
+        self.assertEqual(
+            result["node"], {"id": "10", "class_type": "StringConstantMultiline"}
+        )
+        for value in ("true", 1, None):
+            with self.subTest(flag=value):
+                result = _inspect(_string_positive(_multiline("a\nb", value)))
+                self.assertEqual(result["reason_code"], "malformed")
+        missing = _multiline("a", True)
+        del missing["inputs"]["strip_newlines"]
+        self.assertEqual(
+            _inspect(_string_positive(missing))["reason_code"], "malformed"
+        )
+        # StringConstant is the literal strategy: its string, unchanged.
+        constant = {"class_type": "StringConstant", "inputs": {"string": " x\n"}}
+        result = _inspect(_string_positive(constant))
+        self.assertEqual(_positive(result), ("resolved", " x\n", None))
+
+    def test_join_string_multi_exact_semantics(self):
+        strings = {
+            "string_1": ["11", 0],
+            "string_2": "b",
+            "string_3": ["13", 0],
+            "string_4": ["14", 0],
+            "string_6": "beyond the count",
+        }
+        extra = {
+            "11": _primitive(""),
+            "13": _primitive(""),
+            "14": _primitive(" d "),
+        }
+        join = _join(5, "\\n|", **strings)
+        result = _inspect(_string_positive(join, extra))
+        # string_1 is kept although empty; empty and missing later parts are
+        # skipped; inputs past ``inputcount`` are ignored; the delimiter is
+        # used exactly as written (no escape processing, no trimming).
+        self.assertEqual(_positive(result), ("resolved", "\\n|b\\n| d ", None))
+        self.assertEqual(result["positive"]["storage_text"], "\\n|b\\n| d ")
+        self.assertEqual(
+            result["positive"]["provenance"]["path"],
+            [
+                {"node_id": "6", "output_slot": 0},
+                {"node_id": "10", "output_slot": 0},
+                {"node_id": "11", "output_slot": 0},
+                {"node_id": "13", "output_slot": 0},
+                {"node_id": "14", "output_slot": 0},
+            ],
+        )
+        two = _join(2, " ", string_1="a red fox", string_2="in snow")
+        self.assertEqual(
+            _inspect(_string_positive(two))["positive"]["text"], "a red fox in snow"
+        )
+        # Settings must be literal values the node would accept.
+        linked = {"12": {"class_type": "PrimitiveInt", "inputs": {"value": 2}}}
+        for field, value, code in (
+            ("inputcount", ["12", 0], "unsupported-node"),
+            ("delimiter", ["12", 0], "unsupported-node"),
+            ("inputcount", 0, "malformed"),
+            ("inputcount", 1001, "malformed"),
+            ("inputcount", True, "malformed"),
+            ("inputcount", "2", "malformed"),
+            ("delimiter", 1, "malformed"),
+            ("return_list", "false", "malformed"),
+            ("return_list", 0, "malformed"),
+        ):
+            with self.subTest(field=field, value=value):
+                node = _join(2, " ", string_1="a", string_2="b")
+                node["inputs"][field] = value
+                result = _inspect(_string_positive(node, linked))
+                self.assertEqual(result["reason_code"], code)
+                if code == "unsupported-node":
+                    self.assertEqual(result["node"]["class_type"], "JoinStringMulti")
+        for field in ("inputcount", "delimiter", "return_list", "string_1"):
+            with self.subTest(missing=field):
+                node = _join(2, " ", string_1="a", string_2="b")
+                del node["inputs"][field]
+                result = _inspect(_string_positive(node))
+                self.assertEqual(result["reason_code"], "malformed")
+
+    def test_join_string_multi_return_list_is_runtime_value(self):
+        source = parity.build("f21")["prompt"]
+        result = _inspect(source)
+        self.assertEqual(result["state"], "unresolved")
+        self.assertEqual(result["reason_code"], "runtime-value")
+        self.assertEqual(result["reason"], "Text is decided at run time")
+        self.assertEqual(result["node"], {"id": "10", "class_type": "JoinStringMulti"})
+        # A linked list flag is a run-time value too.
+        source["10"]["inputs"]["return_list"] = ["20", 0]
+        source["20"] = {"class_type": "PrimitiveBoolean", "inputs": {"value": False}}
+        self.assertEqual(_inspect(source)["reason_code"], "runtime-value")
+        # With the flag literally false the same parts join.
+        source["10"]["inputs"]["return_list"] = False
+        self.assertEqual(_inspect(source)["positive"]["text"], "a red fox, in snow")
+
+    def test_prompt_search_list_is_runtime_value(self):
+        from utils.prompt_inspector import inspect_prompt_evidence
+
+        source = parity.build("f22")["prompt"]
+        result = _inspect(source)
+        self.assertEqual(result["state"], "unresolved")
+        self.assertEqual(result["reason_code"], "runtime-value")
+        self.assertEqual(result["node"], {"id": "10", "class_type": "PromptSearchList"})
+        self.assertIsNone(result["positive"])
+        # Never a list item: every output slot is decided at run time.
+        source["6"]["inputs"]["text"] = ["10", 3]
+        self.assertEqual(_inspect(source)["reason_code"], "runtime-value")
+        evidence = inspect_prompt_evidence({"prompt": parity.build("f22")["prompt"]})
+        self.assertEqual(evidence["prompts"]["positive"]["status"], "unresolved")
+        self.assertIsNone(evidence["prompts"]["positive"]["text"])
+
+    @unittest.expectedFailure  # needs Task 2.5 (EmptyFlux2LatentImage origin)
+    def test_f01b_single_flux2_branch_resolves_with_absent_negative(self):
+        result = _inspect(parity.build("f01b")["prompt"])
+        self.assertEqual(result["state"], "absent")
+        self.assertEqual(result["positive"]["text"], F01B_POSITIVE)
+        self.assertIsNone(result["negative"])
+
+    def test_f01b_branch_text_is_the_exact_join(self):
+        # Until Task 2.5 the flux2 latent origin is unsupported, so this swaps
+        # it for an EmptyLatentImage and anchors at the branch's saver: the
+        # join, multiline strings and encoder alone must give the exact text.
+        source = parity.build("f01b")["prompt"]
+        source["1300:7"] = {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"width": 1024, "height": 1024, "batch_size": 1},
+        }
+        result = _inspect(source, output_node_id="1400")
+        self.assertEqual(result["state"], "absent")
+        self.assertEqual(result["reason"], "Guider has no negative input")
+        self.assertEqual(result["positive"]["text"], F01B_POSITIVE)
+        self.assertEqual(result["positive"]["storage_text"], F01B_POSITIVE)
+        self.assertIsNone(result["negative"])
+
+    def test_encoder_and_string_outputs_keep_their_kinds(self):
+        sdxl = parity.build("f06a")["prompt"]["6"]
+        # A conditioning output read as a string, and a string output read as
+        # conditioning, are malformed links, not unsupported nodes.
+        join = _join(2, " ", string_1=["11", 0], string_2="b")
+        result = _inspect(_string_positive(join, {"11": sdxl}))
+        self.assertEqual(result["reason_code"], "malformed")
+        self.assertEqual(result["reason"], "Output slot has an incompatible type")
+        for node in (_multiline("a", True), _join(2, " ", string_1="a")):
+            with self.subTest(node=node["class_type"]):
+                result = _inspect(_with_positive(node))
+                self.assertEqual(result["reason_code"], "malformed")
+
+    def test_unverified_text_nodes_stay_unsupported_and_named(self):
+        for name in ("LoRAfromText", "RegexReplace", "XYZPrompt", "TextBoxMira"):
+            with self.subTest(node=name):
+                node = {"class_type": name, "inputs": {"text": parity.POS}}
+                result = _inspect(_string_positive(node))
+                self.assertEqual(result["reason_code"], "unsupported-node")
+                self.assertEqual(result["node"], {"id": "10", "class_type": name})
+
+    def test_string_strategies_bound_every_intermediate(self):
+        limited = replace(resolver.INSPECTION_PROFILE, max_text_length=10)
+        join = _join(2, " ", string_1="abcdef", string_2="ghijk")
+        result = resolve_prompt_pair(
+            {"prompt": _string_positive(join)}, profile=limited
+        )
+        self.assertEqual(result["reason_code"], "text-limit")
+        # Exactly at the limit is fine.
+        join["inputs"]["string_2"] = "ghi"
+        result = resolve_prompt_pair(
+            {"prompt": _string_positive(join)}, profile=limited
+        )
+        self.assertEqual(result["positive"]["text"], "abcdef ghi")
+        # The scanned-character budget covers stripping, joining and comparing.
+        long_text = "x\n" * 5_000
+        cases = {
+            "strip": _string_positive(_multiline(long_text, True)),
+            "join": _string_positive(
+                _join(2, " ", string_1=long_text, string_2=long_text)
+            ),
+            "parts": _with_positive(_sd3(long_text, long_text, long_text)),
+        }
+        scanned = replace(resolver.INSPECTION_PROFILE, max_scanned_units=8_000)
+        for label, source in cases.items():
+            with self.subTest(strategy=label):
+                self.assertEqual(_inspect(source)["state"], "resolved")
+                result = resolve_prompt_pair({"prompt": source}, profile=scanned)
+                self.assertEqual(result["reason_code"], "work-limit")
+
+    def test_listed_strategies_without_code_here_are_unsupported(self):
+        # ``pm-compose`` and ``concat`` are schema-valid but implemented by the
+        # existing adapters only; a table row using them is never guessed at.
+        table = inspection_semantics.load_semantics()
+        encoders = dict(table.encoders)
+        encoders[("CLIPTextEncodeSDXL", 0)] = {
+            "strategy": "pm-compose",
+            "inputs": ("text",),
+        }
+        strings = dict(table.strings)
+        strings[("StringConstant", 0)] = {"strategy": "concat", "inputs": ("string",)}
+        patched = replace(table, encoders=encoders, strings=strings)
+        constant = {"class_type": "StringConstant", "inputs": {"string": "x"}}
+        with mock.patch.object(resolver, "_inspection_semantics", return_value=patched):
+            for source, name in (
+                (parity.build("f06a")["prompt"], "CLIPTextEncodeSDXL"),
+                (_string_positive(constant), "StringConstant"),
+            ):
+                with self.subTest(node=name):
+                    result = _inspect(source)
+                    self.assertEqual(result["reason_code"], "unsupported-node")
+                    self.assertEqual(result["node"]["class_type"], name)
+
+    def test_default_profile_keeps_encoder_and_string_nodes_unsupported(self):
+        for name in ("f06a", "f06b", "f21", "f22", "f24"):
+            with self.subTest(fixture=name):
+                result = resolve_prompt_pair({"prompt": parity.build(name)["prompt"]})
+                self.assertEqual(result["state"], "unresolved")
+                self.assertEqual(
+                    result["reason"], "Unsupported node semantics or output slot"
+                )
+                self.assertIsNone(result["reason_code"])
+
+
 def _detailed(same_prompt: bool = False) -> dict:
     """``f19``: KSampler 3 -> VAEDecode 8 -> FaceDetailer 50 -> SaveImage 9."""
     source = parity.build("f19")["prompt"]

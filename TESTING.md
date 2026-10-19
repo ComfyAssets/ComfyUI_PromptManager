@@ -246,7 +246,21 @@ Results that depend on a forced choice are never memoized. A `FaceDetailer`
 ancestry are compared with it. Equal texts resolve with the detailer as the sampler;
 different texts are `ambiguous` with `multistage-differs` and one candidate per
 stage; an unreadable stage makes the chain `unresolved`. Unanchored, a sampler
-whose output only feeds detailers (or previews) is not a candidate of its own. If
+whose output only feeds detailers (or previews) is not a candidate of its own.
+Text encoders: `single` encoders (the Qwen image encoders, `TextEncodeQwenImage21`
+slot 0 `prompt` and slot 1 `negative_prompt`, `KikoTextEncode`) read one string
+input unchanged. `parts-equal` encoders (CLIPTextEncodeSDXL, Flux, SD3) resolve when
+every part is identical or exactly one part is non-empty (exact `""`, whitespace is
+text); otherwise `composite`. String sources reproduce the pinned KJNodes code from
+literal settings only: `StringConstant` is its `string`; `StringConstantMultiline`
+with a literal true `strip_newlines` is `replace("\n", "").strip()`;
+`JoinStringMulti` keeps `string_1` (even empty), appends `string_2`..`string_N`
+(`N` = `inputcount`) after the literal delimiter unless missing or exactly `""`, and
+ignores later inputs. A linked setting is `unsupported-node`; a list output
+(`return_list` true or linked) and `PromptSearchList` are `runtime-value` ("Text is
+decided at run time"), never one list item. Unverified text nodes (LoRAfromText,
+RegexReplace, XYZPrompt, ImpactWildcardProcessor) stay `unsupported-node`. Every
+intermediate text is length-checked and charged to the scanned-character budget. If
 the table cannot be loaded, graph inspection is `unresolved` ("Inspection node
 semantics are unavailable") and ingestion is unaffected, because it never imports the table.
 

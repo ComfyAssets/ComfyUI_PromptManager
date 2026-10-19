@@ -5,7 +5,8 @@
 // Some answers are known to be wrong (f01b shows the preview-only detailer text
 // as both roles; f16 shows the last of two conflicting prompt chunks; f19 shows the
 // upstream sampler's prompt and settings, not the detailer's; f23 shows the positive
-// text as the zeroed negative). They are
+// text as the zeroed negative; f21 joins a list output; f22 shows PromptSearchList's
+// search text as the prompt). They are
 // recorded as-is and intentionally unchanged (spec section 11).
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -60,7 +61,10 @@ const EXPECTED = {
     f17: { positivePrompt: "No prompt found", negativePrompt: "No negative prompt found", checkpoint: "flux1-dev.safetensors", steps: "Unknown", cfgScale: "Unknown", sampler: "euler", seed: "Unknown" },
     f19: { positivePrompt: "a red fox in snow, detailed fur", negativePrompt: "blurry, lowres", checkpoint: "sdxl_base.safetensors", steps: 25, cfgScale: 6.5, sampler: "euler", seed: 42 },
     f20: { positivePrompt: "No prompt found", negativePrompt: "blurry, lowres", checkpoint: "sdxl_base.safetensors", steps: 25, cfgScale: 6.5, sampler: "euler", seed: 42 },
+    f21: { positivePrompt: "a red fox, in snow", negativePrompt: "blurry, lowres", checkpoint: "sdxl_base.safetensors", steps: 25, cfgScale: 6.5, sampler: "euler", seed: 42 },
+    f22: { positivePrompt: "fox", negativePrompt: "blurry, lowres", checkpoint: "sdxl_base.safetensors", steps: 25, cfgScale: 6.5, sampler: "euler", seed: 42 },
     f23: { positivePrompt: "a red fox in snow, detailed fur", negativePrompt: "a red fox in snow, detailed fur", checkpoint: "sdxl_base.safetensors", steps: 25, cfgScale: 6.5, sampler: "euler", seed: 42 },
+    f24: { positivePrompt: "No prompt found", negativePrompt: "No negative prompt found", checkpoint: "sdxl_base.safetensors", steps: 25, cfgScale: 6.5, sampler: "euler", seed: 42 },
 };
 
 test("legacy extractGenerationParams characterization covers every committed fixture", () => {

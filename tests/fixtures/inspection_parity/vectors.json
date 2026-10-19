@@ -258,12 +258,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "Unsupported node semantics or output slot",
-      "reason_code": "unsupported-node",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {
@@ -300,12 +300,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "Unsupported node semantics or output slot",
-      "reason_code": "unsupported-node",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {
@@ -1008,6 +1008,90 @@
     }
   },
   {
+    "name": "f21-inspection",
+    "fixture": "f21",
+    "profile": "inspection",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "unresolved",
+      "reason": "Text is decided at run time",
+      "reason_code": "runtime-value",
+      "selection": null,
+      "positive": null,
+      "negative": null,
+      "candidate_count": 0,
+      "facts": {
+        "seed": {
+          "status": "known",
+          "value": "42"
+        },
+        "steps": {
+          "status": "known",
+          "value": "25"
+        },
+        "cfg": {
+          "status": "known",
+          "value": "6.5"
+        },
+        "sampler": {
+          "status": "known",
+          "value": "euler"
+        },
+        "scheduler": {
+          "status": "known",
+          "value": "normal"
+        },
+        "model": {
+          "status": "known",
+          "value": "sdxl_base.safetensors"
+        }
+      }
+    }
+  },
+  {
+    "name": "f22-inspection",
+    "fixture": "f22",
+    "profile": "inspection",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "unresolved",
+      "reason": "Text is decided at run time",
+      "reason_code": "runtime-value",
+      "selection": null,
+      "positive": null,
+      "negative": null,
+      "candidate_count": 0,
+      "facts": {
+        "seed": {
+          "status": "known",
+          "value": "42"
+        },
+        "steps": {
+          "status": "known",
+          "value": "25"
+        },
+        "cfg": {
+          "status": "known",
+          "value": "6.5"
+        },
+        "sampler": {
+          "status": "known",
+          "value": "euler"
+        },
+        "scheduler": {
+          "status": "known",
+          "value": "normal"
+        },
+        "model": {
+          "status": "known",
+          "value": "sdxl_base.safetensors"
+        }
+      }
+    }
+  },
+  {
     "name": "f23-inspection",
     "fixture": "f23",
     "profile": "inspection",
@@ -1020,6 +1104,48 @@
       "selection": null,
       "positive": "a red fox in snow, detailed fur",
       "negative": "",
+      "candidate_count": 0,
+      "facts": {
+        "seed": {
+          "status": "known",
+          "value": "42"
+        },
+        "steps": {
+          "status": "known",
+          "value": "25"
+        },
+        "cfg": {
+          "status": "known",
+          "value": "6.5"
+        },
+        "sampler": {
+          "status": "known",
+          "value": "euler"
+        },
+        "scheduler": {
+          "status": "known",
+          "value": "normal"
+        },
+        "model": {
+          "status": "known",
+          "value": "sdxl_base.safetensors"
+        }
+      }
+    }
+  },
+  {
+    "name": "f24-inspection",
+    "fixture": "f24",
+    "profile": "inspection",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
+      "selection": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {
@@ -1458,8 +1584,59 @@
     }
   },
   {
+    "name": "f21-default",
+    "fixture": "f21",
+    "profile": "default",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "unresolved",
+      "reason": "Unsupported node semantics or output slot",
+      "reason_code": null,
+      "selection": null,
+      "positive": null,
+      "negative": null,
+      "candidate_count": 0,
+      "facts": null
+    }
+  },
+  {
+    "name": "f22-default",
+    "fixture": "f22",
+    "profile": "default",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "unresolved",
+      "reason": "Unsupported node semantics or output slot",
+      "reason_code": null,
+      "selection": null,
+      "positive": null,
+      "negative": null,
+      "candidate_count": 0,
+      "facts": null
+    }
+  },
+  {
     "name": "f23-default",
     "fixture": "f23",
+    "profile": "default",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "unresolved",
+      "reason": "Unsupported node semantics or output slot",
+      "reason_code": null,
+      "selection": null,
+      "positive": null,
+      "negative": null,
+      "candidate_count": 0,
+      "facts": null
+    }
+  },
+  {
+    "name": "f24-default",
+    "fixture": "f24",
     "profile": "default",
     "anchor": null,
     "expect": {

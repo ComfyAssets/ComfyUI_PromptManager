@@ -148,6 +148,11 @@ _GUIDER_ABSENT_REASON = "Guider has no negative input"
 _ZEROED_SOURCE = "zeroed-conditioning"
 # Runtime selector choices expanded per sampler (the spec's candidate cap).
 _MAX_BRANCH_CANDIDATES = 32
+# Statically undecidable text (a search, a list output): never pick an item.
+_RUNTIME_REASON = "Text is decided at run time"
+_INCOMPATIBLE_SLOT = "Output slot has an incompatible type"
+# JoinStringMulti's own ``inputcount`` range; anything else never executed.
+_MAX_JOIN_INPUTS = 1000
 _SAMPLER_LIKE_INPUTS = ("latent_image", "guider", "positive", "negative")
 _NO_SAMPLER_NAMES = 3
 _CLASS_NAME_LENGTH = 64
@@ -427,9 +432,7 @@ class _GraphResolver:
             elif (name, slot) in self.adapters:
                 adapter = self.adapters[(name, slot)]
                 if not isinstance(adapter, OutputAdapter) or adapter.kind != kind:
-                    raise _Unresolved(
-                        "Output slot has an incompatible type", "malformed"
-                    )
+                    raise _Unresolved(_INCOMPATIBLE_SLOT, "malformed")
                 evidence = (
                     self.execution_record(node_id, inputs)
                     if name == "PromptManagerPair"
@@ -548,6 +551,10 @@ class _GraphResolver:
     def follows(self, name: str, slot: int, kind: str) -> bool:
         """Whether the semantics table traces this output (inspection only)."""
         semantics = self.semantics
+        if name in semantics.runtime:
+            return True
+        if (name, slot) in semantics.encoders or (name, slot) in semantics.strings:
+            return True
         if slot == 0 and name in semantics.selectors:
             return True
         return kind == "conditioning" and (
@@ -558,11 +565,23 @@ class _GraphResolver:
     def semantic(
         self, node_id: str, name: str, slot: int, kind: str, inputs: dict, depth: int
     ) -> Tuple[str, list, str]:
-        """Trace a table-listed pass-through, zeroed, selector or composite output.
+        """Trace a table-listed output: runtime, encoder, string, pass-through,
+        zeroed, selector or composite.
 
         The caller (``text``) prepends this node to the returned path.
         """
         semantics = self.semantics
+        if name in semantics.runtime:
+            raise self.named(_RUNTIME_REASON, "runtime-value", node_id)
+        for table, expected, build in (
+            (semantics.encoders, "conditioning", self.encoded),
+            (semantics.strings, "string", self.stringed),
+        ):
+            listed = table.get((name, slot))
+            if listed is not None:
+                if kind != expected:
+                    raise _Unresolved(_INCOMPATIBLE_SLOT, "malformed")
+                return build(node_id, listed, inputs, depth)
         entry = (
             semantics.conditioning.get((name, slot)) if kind == "conditioning" else None
         )
@@ -621,9 +640,15 @@ class _GraphResolver:
 
     def merged(self, node_id: str, slot: int, parts: list) -> Tuple[str, list, str]:
         """One text reached through several followed paths (deduplicated)."""
-        text = parts[0][0]
-        storages = {part[2] for part in parts}
-        storage_text = parts[0][2] if len(storages) == 1 else text
+        text, merged, storage_text = self.joined_paths(parts, parts)
+        self.inherit_source(node_id, slot, [part[1] for part in parts])
+        return text, merged, storage_text
+
+    def joined_paths(self, chosen: list, parts: list) -> Tuple[str, list, str]:
+        """``chosen``'s one text with every part's followed path, deduplicated."""
+        text = chosen[0][0]
+        storages = {part[2] for part in chosen}
+        storage_text = chosen[0][2] if len(storages) == 1 else text
         paths = [part[1] for part in parts]
         self.scan(sum(len(path) for path in paths))
         merged, seen = [], set()
@@ -633,8 +658,118 @@ class _GraphResolver:
                 if identity not in seen:
                     seen.add(identity)
                     merged.append(step)
-        self.inherit_source(node_id, slot, paths)
         return text, merged, storage_text
+
+    def encoded(
+        self, node_id: str, entry: Mapping, inputs: dict, depth: int
+    ) -> Tuple[str, list, str]:
+        """A text encoder's prompt (``single`` or ``parts-equal``).
+
+        ``single`` reads one string input unchanged; image, VAE and other inputs
+        are not text. ``parts-equal`` reads every listed part: identical parts
+        are that text, exactly one non-empty part (exact ``""`` emptiness) is
+        that text, and anything else is several texts in effect at once
+        (``composite``, D6). Like ``CLIPTextEncode``, an encoder's text source
+        stays ``graph-inferred``.
+        """
+        names = entry["inputs"]
+        if entry["strategy"] == "single":
+            return self.text(inputs.get(names[0]), "string", depth + 1)
+        if entry["strategy"] != "parts-equal":
+            raise self.unsupported("Unsupported encoder strategy", node_id)
+        parts = [self.text(inputs.get(name), "string", depth + 1) for name in names]
+        # Comparing the parts reads every character once.
+        self.scan(sum(len(part[0]) for part in parts))
+        if len({part[0] for part in parts}) == 1:
+            return self.joined_paths(parts, parts)
+        filled = [part for part in parts if part[0] != ""]
+        if len(filled) == 1:
+            return self.joined_paths(filled, parts)
+        raise self.named("Encoder parts have different texts", "composite", node_id)
+
+    def stringed(
+        self, node_id: str, entry: Mapping, inputs: dict, depth: int
+    ) -> Tuple[str, list, str]:
+        """A string source: ``literal``, ``strip-newlines`` or ``join-multi``.
+
+        Each reproduces the pinned node's code exactly, and only from literal
+        settings; a linked setting is never guessed.
+        """
+        strategy = entry["strategy"]
+        source = entry["inputs"][0]
+        if strategy == "literal":
+            return self.text(inputs.get(source), "string", depth + 1)
+        if strategy == "strip-newlines":
+            # KJNodes StringConstantMultiline: replace("\n", "").strip().
+            flag = self.setting(node_id, inputs, entry["params"]["flag"], bool)
+            text, path, storage_text = self.text(
+                inputs.get(source), "string", depth + 1
+            )
+            if not flag:
+                return text, path, storage_text
+            self.scan(len(text))
+            text = self.built(self.bounded(text.replace("\n", "").strip()))
+            return text, path, text
+        if strategy == "join-multi":
+            return self.join_multi(node_id, entry, inputs, depth)
+        raise self.unsupported("Unsupported string strategy", node_id)
+
+    def setting(self, node_id: str, inputs: dict, name: str, kind: type) -> Any:
+        """A literal node setting; linked is ``unsupported-node``, else malformed."""
+        if name not in inputs:
+            raise _Unresolved("Missing string node setting", "malformed")
+        value = inputs[name]
+        if _link(value):
+            raise self.unsupported("Linked string node setting", node_id)
+        if type(value) is not kind:
+            raise _Unresolved("Malformed string node setting", "malformed")
+        return value
+
+    def join_multi(
+        self, node_id: str, entry: Mapping, inputs: dict, depth: int
+    ) -> Tuple[str, list, str]:
+        """KJNodes JoinStringMulti with a literal ``return_list`` of false.
+
+        ``string_1`` is always kept (even empty); ``string_2`` .. ``string_N``
+        (``N`` = ``inputcount``) are appended after the literal delimiter unless
+        missing or exactly ``""``; inputs past ``N`` are ignored. A list output
+        (or a linked flag) is decided at run time.
+        """
+        params = entry["params"]
+        flag = params["list_flag"]
+        if flag not in inputs:
+            raise _Unresolved("Missing string node setting", "malformed")
+        if _link(inputs[flag]) or inputs[flag] is True:
+            raise self.named(_RUNTIME_REASON, "runtime-value", node_id)
+        if inputs[flag] is not False:
+            raise _Unresolved("Malformed string node setting", "malformed")
+        count = self.setting(node_id, inputs, params["count"], int)
+        delimiter = self.setting(node_id, inputs, params["delimiter"], str)
+        if not 1 <= count <= _MAX_JOIN_INPUTS:
+            raise _Unresolved("Malformed string node setting", "malformed")
+        self.scan(count)
+        names = [entry["inputs"][0]] + [
+            f"{params['input_prefix']}{index}" for index in range(2, count + 1)
+        ]
+        parts: list = []
+        path: list = []
+        size = 0
+        for position, input_name in enumerate(names):
+            if position and input_name not in inputs:
+                continue
+            part, followed, _ = self.text(inputs.get(input_name), "string", depth + 1)
+            self.scan(len(part) + len(followed))
+            path.extend(followed)
+            if position and not part:
+                continue
+            size += len(part) + (len(delimiter) if parts else 0)
+            if size > self.max_text_length:
+                raise _Unresolved(
+                    "Resolved text exceeds the length limit", "text-limit"
+                )
+            parts.append(part)
+        text = self.built(delimiter.join(parts))
+        return text, path, text
 
     def source_of(self, path: list) -> str:
         if not path:
