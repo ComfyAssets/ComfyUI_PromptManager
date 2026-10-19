@@ -1865,7 +1865,7 @@ class TestEncoderAndStringSemantics(unittest.TestCase):
         # Only "\n" is removed; other whitespace inside the text is kept.
         result = _inspect(_string_positive(_multiline("\ta\r\n\tb\n\n", True)))
         self.assertEqual(result["positive"]["text"], "a\r\tb")
-        # A linked text is followed; a linked flag is decided at run time.
+        # A linked text is followed; a linked flag is unsupported (not guessed).
         linked = _string_positive(
             _multiline(["11", 0], True), {"11": _primitive("x\ny")}
         )
@@ -1922,6 +1922,15 @@ class TestEncoderAndStringSemantics(unittest.TestCase):
                 {"node_id": "13", "output_slot": 0},
                 {"node_id": "14", "output_slot": 0},
             ],
+        )
+        # One link read by several parts is listed once in the provenance path.
+        twice = _join(3, " ", string_1=["11", 0], string_2=["11", 0], string_3="c")
+        result = _inspect(_string_positive(twice, {"11": _primitive("w")}))
+        self.assertEqual(result["positive"]["text"], "w w c")
+        self.assertEqual(
+            result["positive"]["provenance"]["path"],
+            [{"node_id": "6", "output_slot": 0}, {"node_id": "10", "output_slot": 0}]
+            + [{"node_id": "11", "output_slot": 0}],
         )
         two = _join(2, " ", string_1="a red fox", string_2="in snow")
         self.assertEqual(
@@ -2080,6 +2089,85 @@ class TestEncoderAndStringSemantics(unittest.TestCase):
                     result = _inspect(source)
                     self.assertEqual(result["reason_code"], "unsupported-node")
                     self.assertEqual(result["node"]["class_type"], name)
+
+    def test_unreadable_string_sources_keep_pair_execution_evidence(self):
+        from utils.pair_execution import EXECUTION_KEY
+
+        record = {
+            "text": "recorded words",
+            "negative_text": "neg",
+            "positive_text": "recorded words",
+            "negative_effective_text": "neg",
+            "prepend_text": "",
+            "append_text": "",
+        }
+        evidence = {
+            EXECUTION_KEY: {"version": 1, "nodes": {"8": {"records": [record]}}}
+        }
+
+        def paired(source: dict, extra: dict) -> dict:
+            graph = parity.build("f02")["prompt"]
+            graph["8"] = {
+                "class_type": "PromptManagerPair",
+                "inputs": {
+                    "text": ["10", 0],
+                    "negative_text": "neg",
+                    "prepend_text": "",
+                    "append_text": "",
+                },
+            }
+            graph["3"]["inputs"]["positive"] = ["8", 0]
+            graph["3"]["inputs"]["negative"] = ["8", 1]
+            graph.update({"10": source, **extra})
+            return graph
+
+        flag = {"11": {"class_type": "PrimitiveBoolean", "inputs": {"value": True}}}
+        unknown = {"11": {"class_type": "FutureNode", "inputs": {}}}
+        # Text that cannot be read statically is unverifiable, not a mismatch:
+        # the pair's unique execution record still decides (as it did before
+        # these nodes were listed).
+        cases = {
+            "linked strip flag": (_multiline("recorded words", ["11", 0]), flag),
+            "linked delimiter": (
+                _join(2, ["11", 0], string_1="recorded", string_2="words"),
+                unknown,
+            ),
+            "linked count": (
+                _join(["11", 0], " ", string_1="recorded", string_2="words"),
+                unknown,
+            ),
+            "list output": (
+                _join(2, " ", True, string_1="recorded", string_2="words"),
+                {},
+            ),
+            "search list": ({"class_type": "PromptSearchList", "inputs": {}}, {}),
+        }
+        for label, (source, extra) in cases.items():
+            with self.subTest(source=label):
+                result = resolve_prompt_pair(
+                    {"prompt": paired(source, extra), **evidence},
+                    profile=resolver.INSPECTION_PROFILE,
+                )
+                self.assertEqual(result["state"], "resolved")
+                self.assertEqual(_sides(result), ("recorded words", "neg"))
+                provenance = result["positive"]["provenance"]
+                self.assertEqual(provenance["text_source"], "execution")
+        # A source that does resolve is still verified against the record.
+        readable = _join(2, " ", string_1="other", string_2="words")
+        result = resolve_prompt_pair(
+            {"prompt": paired(readable, {}), **evidence},
+            profile=resolver.INSPECTION_PROFILE,
+        )
+        self.assertEqual(result["reason_code"], "malformed")
+        self.assertEqual(
+            result["reason"], "Execution evidence does not match recorded node inputs"
+        )
+        matching = _join(2, " ", string_1="recorded", string_2="words")
+        result = resolve_prompt_pair(
+            {"prompt": paired(matching, {}), **evidence},
+            profile=resolver.INSPECTION_PROFILE,
+        )
+        self.assertEqual(result["positive"]["provenance"]["text_source"], "execution")
 
     def test_default_profile_keeps_encoder_and_string_nodes_unsupported(self):
         for name in ("f06a", "f06b", "f21", "f22", "f24"):

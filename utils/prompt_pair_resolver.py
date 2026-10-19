@@ -151,6 +151,8 @@ _MAX_BRANCH_CANDIDATES = 32
 # Statically undecidable text (a search, a list output): never pick an item.
 _RUNTIME_REASON = "Text is decided at run time"
 _INCOMPATIBLE_SLOT = "Output slot has an incompatible type"
+# Trace outcomes that leave an input unverifiable against execution evidence.
+_UNVERIFIABLE_CODES = frozenset({"unsupported-node", "runtime-value"})
 # JoinStringMulti's own ``inputcount`` range; anything else never executed.
 _MAX_JOIN_INPUTS = 1000
 _SAMPLER_LIKE_INPUTS = ("latent_image", "guider", "positive", "negative")
@@ -753,13 +755,18 @@ class _GraphResolver:
         ]
         parts: list = []
         path: list = []
+        seen: set = set()
         size = 0
         for position, input_name in enumerate(names):
             if position and input_name not in inputs:
                 continue
             part, followed, _ = self.text(inputs.get(input_name), "string", depth + 1)
             self.scan(len(part) + len(followed))
-            path.extend(followed)
+            for step in followed:  # one link read by several parts is listed once
+                identity = (step["node_id"], step["output_slot"])
+                if identity not in seen:
+                    seen.add(identity)
+                    path.append(step)
             if position and not part:
                 continue
             size += len(part) + (len(delimiter) if parts else 0)
@@ -787,6 +794,17 @@ class _GraphResolver:
         else:
             self.text_sources.pop((node_id, slot), None)
 
+    def unverifiable(self, error: _Unresolved) -> bool:
+        """Whether a failed input trace only means "cannot be read statically".
+
+        Such an input is not checked against a pair's execution record. The
+        default profile keeps its historical message test; inspection decides
+        by code, so every unsupported or run-time source qualifies.
+        """
+        if self.semantics is None:
+            return str(error) == "Unsupported node semantics or output slot"
+        return error.code in _UNVERIFIABLE_CODES
+
     def execution_record(self, node_id: str, inputs: dict) -> Optional[dict]:
         try:
             record = read_pair_execution(self.metadata, node_id)
@@ -798,7 +816,7 @@ class _GraphResolver:
             try:
                 expected = self.text(inputs.get(name, ""), "string")[0]
             except _Unresolved as error:
-                if str(error) == "Unsupported node semantics or output slot":
+                if self.unverifiable(error):
                     value = inputs.get(name)
                     if _link(value):
                         source_name, _ = self.node(str(value[0]))
