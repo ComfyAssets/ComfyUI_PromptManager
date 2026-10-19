@@ -1386,10 +1386,10 @@ class TestLibrary(unittest.TestCase):
         self.assertEqual(
             (doc["schema_version"], doc["kind"]), (1, "prompt-manager-library")
         )
-        by_text = {owner["positive_text"]: owner for owner in doc["owners"]}
+        by_text = {owner["positive_text"]: owner for owner in doc["positives"]}
         self.assertEqual(set(by_text), {"Cat", "Blur", "Solo"})
         self.assertNotIn("Noise", by_text)
-        for owner in doc["owners"]:
+        for owner in doc["positives"]:
             self.assertEqual(
                 set(owner),
                 {
@@ -1458,6 +1458,6 @@ class TestLibrary(unittest.TestCase):
         self.assertNotIn("COMMIT", statements)
         self.assertFalse(connection.in_transaction)
         self.assertEqual(
-            self.db.export_library()["owners"][0]["variants"][0]["negative_text"],
+            self.db.export_library()["positives"][0]["variants"][0]["negative_text"],
             "Blur",
         )

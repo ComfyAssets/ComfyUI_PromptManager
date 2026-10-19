@@ -844,7 +844,7 @@ class TestLibraryAPI(ImageAPITestCase):
             (document["schema_version"], document["kind"]),
             (1, "prompt-manager-library"),
         )
-        solo = next(o for o in document["owners"] if o["positive_text"] == "Solo")
+        solo = next(o for o in document["positives"] if o["positive_text"] == "Solo")
         self.assertEqual(solo["variants"], [])
         for query in ("?limit=1", "?x", "?archive=all"):
             rejected = await self.client.get("/prompt_manager/library/export" + query)

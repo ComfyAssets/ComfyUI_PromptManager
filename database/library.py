@@ -538,5 +538,5 @@ class LibraryOperations:
             return {
                 "schema_version": 1,
                 "kind": "prompt-manager-library",
-                "owners": [owners[key] for key in order],
+                "positives": [owners[key] for key in order],
             }
