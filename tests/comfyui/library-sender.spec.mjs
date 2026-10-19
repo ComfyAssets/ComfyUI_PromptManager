@@ -102,6 +102,36 @@ test('native editor preview sends exact saved roles across renderer transitions'
                 await sender.getByRole('button',{name:'Close',exact:true}).click();await expect(sender).toHaveCount(0);await expect(send).toBeFocused();
             } finally {await page.evaluate(async()=>{const {app}=await import('/scripts/app.js');Object.assign(app,window.editorOriginals);});}
         }
+        // A connected target rejects the whole preview: neither role changes, nothing queues or loads.
+        const link=await page.evaluate(async id=>{
+            const {app}=await import('/scripts/app.js');const {convertToInput}=await import('/extensions/core/widgetInputs.js');
+            const node=app.graph.getNodeById(id);const widget=node.widgets.find(item=>item.name==='negative_text');
+            if(!node.inputs.some(input=>input.name==='negative_text'))convertToInput(node,widget);
+            node.widgets.find(item=>item.name==='text').value='Before positive';widget.value='Before negative';
+            const source=LiteGraph.createNode('PrimitiveString');app.graph.add(source);source.widgets.find(item=>item.name==='value').value='Upstream negative';
+            source.connect(0,node,node.inputs.findIndex(input=>input.name==='negative_text'));
+            window.editorEffects={queue:0,load:0};window.editorOriginals={};
+            for(const [method,key] of [['queuePrompt','queue'],['loadGraphData','load']]){const original=app[method];window.editorOriginals[method]=original;app[method]=function(...args){window.editorEffects[key]++;return original.apply(this,args);};}
+            return [String(source.id),0];
+        },id);
+        try {
+            await send.click();
+            const sender=workspace.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
+            const hosts=sender.getByRole('combobox',{name:'ComfyUI window',exact:true});await expect(hosts.locator('option')).toHaveCount(2);await hosts.selectOption({index:1});
+            await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({index:1});
+            await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
+            await expect(sender.getByRole('alert')).toContainText(/connected/i);
+            await expect(sender.getByRole('button',{name:'Apply to ComfyUI',exact:true})).toBeDisabled();
+            const rejected=await page.evaluate(async id=>{
+                const {app}=await import('/scripts/app.js');const node=app.graph.getNodeById(id);const serialized=node.serialize();
+                return {inputs:(await app.graphToPrompt()).output[String(id)].inputs,widgets:Object.fromEntries(node.widgets.map(widget=>[widget.name,widget.value])),
+                    serialized:Object.fromEntries(node.widgets.map((widget,index)=>[widget.name,serialized.widgets_values[index]])),effects:window.editorEffects};
+            },id);
+            expect(rejected.effects).toEqual({queue:0,load:0});
+            expect(rejected.inputs.negative_text).toEqual(link);
+            for(const field of ['widgets','serialized'])expect(rejected[field]).toMatchObject({text:'Before positive',negative_text:'Before negative',prepend_text:'Keep trigger',append_text:'Keep detail'});
+            await sender.getByRole('button',{name:'Close',exact:true}).click();await expect(sender).toHaveCount(0);
+        } finally {await page.evaluate(async()=>{const {app}=await import('/scripts/app.js');Object.assign(app,window.editorOriginals);});}
         const after=await evidence();
         expect(after.history).toEqual(before.history);expect(after.pairMetadata).toEqual(before.pairMetadata);
         expect(errors).toEqual([]);

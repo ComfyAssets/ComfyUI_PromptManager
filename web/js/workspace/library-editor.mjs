@@ -82,6 +82,13 @@ function setChildren(parent, nodes) {
     if (current.length !== nodes.length || current.some((node, index) => node !== nodes[index])) parent.replaceChildren(...nodes);
 }
 
+/** A button that held focus when saving began gets it back after a failed or conflicting write (disabling drops focus to the body). */
+function restoreFocus(button, state) {
+    if (!button || state.phase === 'saving') return button;
+    if (state.phase !== 'complete' && button.isConnected && !button.disabled && (!document.activeElement || document.activeElement === document.body)) button.focus();
+    return null;
+}
+
 function field(label, control, id) {
     const wrapper = el('div', undefined, 'field');
     const caption = el('label', label);
@@ -223,7 +230,7 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
         archive.addEventListener('click', () => archiveView(), {signal: views.signal});
         if (!negativeOnly) loadVocabulary(tags, views.signal);
 
-        let categoryKey = null;
+        let categoryKey = null, refocus = null;
         function render(state) {
             for (const [name, node] of Object.entries(controls)) {
                 const value = name === 'rating' ? String(state.draft.rating ?? 0) : state.draft[name];
@@ -235,6 +242,7 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
                 categories.replaceChildren(...datalist('', state.categories).children);
             }
             const saving = state.phase === 'saving';
+            if (saving && document.activeElement === save) refocus = save;
             save.disabled = !SUBMITTABLE.has(state.phase);
             cancel.disabled = close.disabled = revise.disabled = saving;
             const pairProblem = readOnly && !state.pair && pairId === null ? NO_PAIR : state.pair?.archived ? ALREADY_ARCHIVED : null;
@@ -245,6 +253,7 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
             else archive.removeAttribute('aria-describedby');
             const retry = recoveryButton(recovery, status?.action, views.signal);
             setChildren(actions, [...(retry ? [retry] : []), ...(readOnly ? [revise, archive] : []), cancel, save]);
+            refocus = restoreFocus(refocus, state);
             if (state.phase === 'complete') finish();
         }
 
@@ -280,6 +289,7 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
         const links = el('p', undefined, 'small');
         const restore = el('p', 'You can restore it from Show archived in Negative variants.', 'small');
         const line = statusLine(), recovery = new Map();
+        let refocus = null;
         const actions = el('div', undefined, 'dialog-actions');
         const reread = createButton('Retry');
         reread.addEventListener('click', () => controller.refreshPair(), {signal: views.signal});
@@ -306,9 +316,11 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
             const retry = recoveryButton(recovery, status?.action, views.signal) ?? (readFailed ? reread : null);
             links.hidden = !counted;
             const saving = state.phase === 'saving';
+            if (saving && document.activeElement === confirm) refocus = confirm;
             confirm.disabled = !counted || !SUBMITTABLE.has(state.phase);
             cancel.disabled = close.disabled = saving;
             setChildren(actions, [...(retry ? [retry] : []), cancel, confirm]);
+            refocus = restoreFocus(refocus, state);
             if (state.phase === 'complete') finish();
         }
 

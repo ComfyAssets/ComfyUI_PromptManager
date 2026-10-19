@@ -15,14 +15,14 @@ test('real-ComfyUI suite registers Classic and Nodes 2.0 startup projects', () =
     assert.match(output, /\[nodes2-start\]/);
 });
 
-test('execution script discovers only the new matrix and preserves all 78 stock cases', () => {
+test('execution script discovers only the new matrix and preserves all 78 original stock cases plus the native editor host case', () => {
     const manifest = JSON.parse(readFileSync(new URL('../../tools/vendor/package.json', import.meta.url), 'utf8'));
     assert.equal(manifest.scripts['test:executions'], 'playwright test --config playwright.execution.config.mjs');
     const list = config => execFileSync(process.execPath, ['tools/vendor/node_modules/@playwright/test/cli.js',
         'test', '--config', config, '--list'], { cwd: root, encoding: 'utf8',
         env: { ...process.env, PM_COMFY_ROOT: '/unused-pinned-checkout' } });
     const stock = list('tools/vendor/comfyui.config.mjs');
-    assert.match(stock, /Total: 78 tests in 7 files/);
+    assert.match(stock, /Total: 80 tests in 7 files/);
     assert.doesNotMatch(stock, /execution-history/);
     assert.doesNotMatch(stock, /execution-outputs/);
     const executions = list('tools/vendor/playwright.execution.config.mjs');

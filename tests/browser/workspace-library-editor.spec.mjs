@@ -676,6 +676,9 @@ test('long and error states retain footer focus and reflow',async({page})=>{
         ?route.fulfill({status:400,contentType:'application/json',body:'{"success":false,"error":"Title is too long.","code":null}'}):route.continue(),{times:1});
     await button(dialog,'Save').click();
     await expect(note(dialog)).toHaveText('Not saved: Title is too long. Your entries are kept.');
+    // Save had focus when the write started and keeps it after the failure; focus never falls out of the modal.
+    await expect(button(dialog,'Save')).toBeFocused();
+    expect(await dialog.evaluate(node=>node.contains(document.activeElement))).toBe(true);
     const state=await dialog.evaluate(node=>({scrolls:node.scrollHeight>node.clientHeight,height:node.getBoundingClientRect().height,innerHeight,overflowY:getComputedStyle(node).overflowY,
         pageOverflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,dialogOverflow:node.scrollWidth-node.clientWidth,
         left:node.getBoundingClientRect().left,right:node.getBoundingClientRect().right,viewport:innerWidth}));
