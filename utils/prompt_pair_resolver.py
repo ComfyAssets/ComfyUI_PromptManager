@@ -759,6 +759,8 @@ class _GraphResolver:
         names = entry["inputs"]
         if entry["strategy"] == "single":
             return self.text(inputs.get(names[0]), "string", depth + 1)
+        if entry["strategy"] == "flag-parts":
+            return self.flagged(node_id, entry, inputs, depth)
         if entry["strategy"] != "parts-equal":
             raise self.unsupported("Unsupported encoder strategy", node_id)
         parts = [self.text(inputs.get(name), "string", depth + 1) for name in names]
@@ -770,6 +772,24 @@ class _GraphResolver:
         if len(filled) == 1:
             return self.joined_paths(filled, parts)
         raise self.named("Encoder parts have different texts", "composite", node_id)
+
+    def flagged(
+        self, node_id: str, entry: Mapping, inputs: dict, depth: int
+    ) -> Tuple[str, list, str]:
+        """smZ CLIPTextEncode: ``text`` unless its SDXL flag may apply.
+
+        With the literal flag false the first input is encoded. With it true,
+        the connected CLIP's model class decides at run time which inputs are
+        read, so the prompt is known only when every input is the same text.
+        """
+        names = entry["inputs"]
+        if not self.setting(node_id, inputs, entry["params"]["flag"], bool):
+            return self.text(inputs.get(names[0]), "string", depth + 1)
+        parts = [self.text(inputs.get(name), "string", depth + 1) for name in names]
+        self.scan(sum(len(part[0]) for part in parts))
+        if len({part[0] for part in parts}) == 1:
+            return self.joined_paths(parts, parts)
+        raise self.named(_RUNTIME_REASON, "runtime-value", node_id)
 
     def stringed(
         self, node_id: str, entry: Mapping, inputs: dict, depth: int

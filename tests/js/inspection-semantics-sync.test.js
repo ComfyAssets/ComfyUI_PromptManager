@@ -38,8 +38,12 @@ test("the facts tables are not part of the legacy page contract", () => {
 // (which classes are samplers, their facts shape and a detailer's image input).
 test("sampler facts table equals semantics.samplers", () => {
     assert.equal(typeof metadata._samplerTable, "object", "comfy-metadata exposes its sampler table for this test");
-    const expected = Object.fromEntries(Object.entries(semantics.samplers).map(([name, entry]) => [name,
-        entry.image_stage === undefined ? { facts: entry.facts } : { facts: entry.facts, image_stage: entry.image_stage }]));
+    // Task 2.7b: plus `fact_overrides`; `prompt_overrides` is read only by the resolver.
+    const expected = Object.fromEntries(Object.entries(semantics.samplers).map(([name, entry]) => [name, {
+        facts: entry.facts,
+        ...(entry.image_stage === undefined ? {} : { image_stage: entry.image_stage }),
+        ...(entry.fact_overrides === undefined ? {} : { fact_overrides: entry.fact_overrides }),
+    }]));
     assert.deepStrictEqual(plain(metadata._samplerTable), expected);
     assert.ok(Object.isFrozen(metadata._samplerTable));
 });

@@ -417,6 +417,10 @@
         DetailerForEach: { facts: "ksampler", image_stage: "image" },
         UltimateSDUpscale: { facts: "ksampler", image_stage: "image" },
         UltimateSDUpscaleNoUpscale: { facts: "ksampler", image_stage: "upscaled_image" },
+        // `fact_overrides`: inputs that, when set, replace the settings read here.
+        ClownsharKSampler_Beta: { facts: "ksampler", fact_overrides: ["options", "sigmas"] },
+        "KSampler (Efficient)": { facts: "ksampler", fact_overrides: ["script"] },
+        "ttN KSampler_v2": { facts: "ksampler", fact_overrides: ["adv_xyPlot"] },
     });
     // Stages merged for one result: the resolver's candidate cap. Together with
     // MAX_VISITS per candidate walk these are deliberately tighter than the server's
@@ -436,7 +440,9 @@
         "JoinStringMulti", "PromptSearchList", "PreviewImage", "PreviewAny", "SaveImageWebsocket",
         "Image Comparer (rgthree)", "DetailerForEach", "UltimateSDUpscale", "UltimateSDUpscaleNoUpscale",
         "ControlNetInpaintingAliMamaApply", "LTXVConditioning", "FluxKontextMultiReferenceLatentMethod", "Text to Conditioning",
-        "TextInput", "DisplayText",
+        "TextInput", "DisplayText", "ClownsharKSampler_Beta", "KSampler (Efficient)", "ttN KSampler_v2",
+        "SeedVarianceEnhancer", "ApplyInstantIDAdvanced", "Switch conditioning [Crystools]", "smZ CLIPTextEncode", "ttN text",
+        "CR Text", "CR Prompt Text", "TextBoxMira",
     ]);
     // The table's `stage_inputs` (the resolver reads the same lists): inputs that make an
     // unlisted node a possible stage, and those that do so beside a linked `model`.
@@ -456,6 +462,7 @@
     const MODEL_PASSTHROUGHS = new Set([
         "LoraLoader", "LoraLoaderModelOnly", "ModelSamplingFlux", "ModelSamplingAuraFlow", "ModelSamplingSD3",
         "Lora Loader (LoraManager)", "Power Lora Loader (rgthree)", "ModelPatchTorchSettings", "CFGNorm", "PerturbedAttentionGuidance",
+        "CR Apply LoRA Stack",
     ]);
     const CONFIGURATION_OUTPUTS = Object.freeze({
         RandomNoise: { kind: "noise", fields: ["noise_seed"] },
@@ -579,7 +586,11 @@
     function samplerFacts(ctx, samplerId, source) {
         const sampler = ctx.graph[samplerId];
         const inputs = sampler.inputs;
-        const shape = SAMPLERS[sampler.class_type].facts;
+        const { facts: shape, fact_overrides: overrides = [] } = SAMPLERS[sampler.class_type];
+        // A set override (a script, an XY plot, custom sigmas) replaces the settings below.
+        if (overrides.some(name => Object.hasOwn(inputs, name) && inputs[name] !== null && inputs[name] !== "")) {
+            return Object.fromEntries(FACT_FIELDS.map(name => [name, fact("unresolved", source, samplerId)]));
+        }
         const advanced = shape === "custom-advanced";
         const custom = advanced || shape === "custom";
         let settings = inputs;

@@ -258,7 +258,7 @@ test("stage walks fail on unlisted sampler-shaped nodes like the resolver", () =
     ];
     for (const inputs of shaped) {
         const graph = detailerFactGraph();
-        graph.efficient = { class_type: "KSampler (Efficient)", inputs: { ...inputs, image: ["decode", 0] } };
+        graph.efficient = { class_type: "MysterySampler", inputs: { ...inputs, image: ["decode", 0] } };
         graph.d.inputs.image = ["efficient", 0];
         for (const sampler_id of ["d", null]) {
             const facts = factsFor(graph, { resolution: { state: "ambiguous", sampler_id } });
@@ -304,7 +304,7 @@ test("stage walks follow only the resolver's links", () => {
     // Review M-2: `["eff", -1]` is not a link to the server, so it is not walked.
     for (const slot of [-1, 0.5, "0"]) {
         const graph = detailerFactGraph();
-        graph.eff = { class_type: "KSampler (Efficient)", inputs: { positive: ["model", 0], model: ["model", 0] } };
+        graph.eff = { class_type: "MysterySampler", inputs: { positive: ["model", 0], model: ["model", 0] } };
         graph.decode.inputs.extra = ["eff", slot];
         assert.equal(factsFor(graph, { resolution: { state: "ambiguous", sampler_id: "d" } }).seed.status, "ambiguous", String(slot));
         const shaped = detailerFactGraph();
@@ -313,7 +313,7 @@ test("stage walks follow only the resolver's links", () => {
         assert.equal(factsFor(shaped, { resolution: { state: "ambiguous", sampler_id: "d" } }).seed.status, "ambiguous", `shaped ${slot}`);
     }
     const linked = detailerFactGraph();
-    linked.eff = { class_type: "KSampler (Efficient)", inputs: { positive: ["model", 0], model: ["model", 0] } };
+    linked.eff = { class_type: "MysterySampler", inputs: { positive: ["model", 0], model: ["model", 0] } };
     linked.decode.inputs.extra = ["eff", 0];
     assert.equal(factsFor(linked, { resolution: { state: "ambiguous", sampler_id: "d" } }).seed.status, "unresolved");
 });

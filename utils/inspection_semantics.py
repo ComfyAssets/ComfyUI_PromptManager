@@ -41,7 +41,7 @@ STRATEGIES: Mapping[str, FrozenSet[str]] = MappingProxyType(
         "conditioning": frozenset({"passthrough", "zeroed"}),
         "selectors": frozenset({"boolean-select"}),
         "composites": frozenset({"combine"}),
-        "encoders": frozenset({"single", "parts-equal", "pm-compose"}),
+        "encoders": frozenset({"single", "parts-equal", "pm-compose", "flag-parts"}),
         "strings": frozenset({"literal", "strip-newlines", "join-multi", "concat"}),
         "savers": frozenset({"comfy-counter", "vhs-counter"}),
     }
@@ -54,7 +54,7 @@ SAVER_PATTERNS = MappingProxyType(
         "vhs-counter": "{name}_{counter:05}.{ext}",
     }
 )
-_SAMPLER_OPTIONS = frozenset({"prompt_overrides"})
+_SAMPLER_OPTIONS = frozenset({"prompt_overrides", "fact_overrides"})
 _CONFIGURATION_KINDS = frozenset({"noise", "sampler", "sigmas", "guider"})
 _SCALAR_KINDS = frozenset({"number", "string"})
 _TYPE_FIELDS = frozenset({"type_fields"})
@@ -183,8 +183,10 @@ def _check_sampler(entry: dict, strategy: str, where: str) -> None:
     _name(entry[stage], where)
     # Inputs that, when set, replace the prompt the sampler's conditioning
     # inputs carry (a detailer's wildcard); the prompt is then not read.
-    if "prompt_overrides" in entry:
-        _names(entry["prompt_overrides"], where + ".prompt_overrides")
+    # ``fact_overrides`` (read by comfy-metadata.js): inputs that, when set,
+    # replace the settings the facts would read (a script or an XY plot).
+    for option in sorted(_SAMPLER_OPTIONS & entry.keys()):
+        _names(entry[option], f"{where}.{option}")
     keys = {"guider"} if strategy == "custom-advanced" else {"positive", "negative"}
     conditioning = entry["conditioning"]
     _fields(conditioning, where + ".conditioning", frozenset(keys), frozenset())
@@ -246,6 +248,16 @@ def _check_conditioning(entry: dict, strategy: str, where: str) -> None:
 
 
 def _check_encoder(entry: dict, strategy: str, where: str) -> None:
+    if strategy == "flag-parts":
+        # A literal boolean ``flag`` false reads the first input; true needs
+        # every input equal (smZ CLIPTextEncode's with_SDXL).
+        _fields(entry, where, frozenset({"strategy", "inputs", "params"}), frozenset())
+        params = entry["params"]
+        if not isinstance(params, dict) or set(params) != {"flag"}:
+            raise SemanticsError(f"{where}: params must be exactly ['flag']")
+        _name(params["flag"], where + ".params")
+        _names(entry["inputs"], where, minimum=2)
+        return
     _fields(entry, where, frozenset({"strategy", "inputs"}), frozenset({"compose"}))
     _names(entry["inputs"], where, minimum=2 if strategy == "parts-equal" else 1)
     if "compose" in entry and not isinstance(entry["compose"], bool):

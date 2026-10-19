@@ -625,5 +625,194 @@ class TestInstalledNodeSemantics(unittest.TestCase):
         )
 
 
+def _sampled(class_type: str, latent: str = "latent_image", **inputs) -> dict:
+    """``f02`` with its KSampler (node 3) replaced by ``class_type``."""
+    prompt = _f02()
+    sampler = dict(prompt["3"]["inputs"], **inputs)
+    sampler[latent] = sampler.pop("latent_image")
+    prompt["3"] = {"class_type": class_type, "inputs": sampler}
+    return prompt
+
+
+SAMPLERS = (
+    ("ClownsharKSampler_Beta", "latent_image", "options"),
+    ("KSampler (Efficient)", "latent_image", "script"),
+    ("ttN KSampler_v2", "latent", "adv_xyPlot"),
+)
+
+
+class TestUpstreamVerifiedNodeSemantics(unittest.TestCase):
+    """R6 entries for nodes not installed here, read from their pinned sources.
+
+    Each source is the commit the maintainer's saved workflows name in the
+    node's ``cnr_id``/``ver`` properties (the report lists repository, commit,
+    file and line).
+    """
+
+    def test_ksampler_shaped_samplers_resolve(self):
+        for class_type, latent, _ in SAMPLERS:
+            with self.subTest(node=class_type):
+                result = _inspect({"prompt": _sampled(class_type, latent)})
+                self.assertEqual(result["state"], "resolved")
+                self.assertEqual(result["sampler_id"], "3")
+                self.assertEqual(_texts(result), (parity.POS, parity.NEG))
+
+    def test_inputs_that_replace_the_prompt_are_not_followed(self):
+        # RES4LYF options may carry a guider; Efficiency scripts and the ttN
+        # XY plot re-run the sampler with other settings.
+        for class_type, latent, override in SAMPLERS:
+            with self.subTest(node=class_type):
+                prompt = _sampled(class_type, latent, **{override: ["30", 0]})
+                prompt["30"] = {"class_type": "SomeScript", "inputs": {}}
+                result = _inspect({"prompt": prompt})
+                self.assertEqual(result["reason_code"], "unsupported-node")
+                self.assertEqual(
+                    result["node"], {"id": "30", "class_type": "SomeScript"}
+                )
+
+    def test_chained_samplers_are_stages(self):
+        prompt = _sampled("ClownsharKSampler_Beta")
+        prompt["31"] = dict(prompt["3"], inputs=dict(prompt["3"]["inputs"]))
+        prompt["31"]["inputs"]["latent_image"] = ["3", 0]
+        prompt["8"]["inputs"]["samples"] = ["31", 0]
+        # Unanchored, two listed samplers are two branches, as for KSampler.
+        self.assertEqual(_inspect({"prompt": prompt})["state"], "ambiguous")
+        result = _inspect({"prompt": prompt}, output_node_id="9")
+        self.assertEqual(result["reason"], resolver.MULTISTAGE_UNATTRIBUTED_REASON)
+
+    def test_seed_variance_enhancer_passes_its_conditioning(self):
+        prompt = _f02(
+            **{
+                "20": {
+                    "class_type": "SeedVarianceEnhancer",
+                    "inputs": {"conditioning": ["6", 0], "seed": 1, "strength": 20.0},
+                }
+            }
+        )
+        prompt["3"]["inputs"]["positive"] = ["20", 0]
+        self.assertEqual(_texts(_inspect({"prompt": prompt})), (parity.POS, parity.NEG))
+
+    def test_overwritten_text_behind_seed_variance_is_still_refused(self):
+        # R1 before R6: the recon's 24 files differ from this only in names.
+        metadata = _overwritten()
+        metadata["prompt"]["20"] = {
+            "class_type": "SeedVarianceEnhancer",
+            "inputs": {"conditioning": ["17", 0], "seed": 1},
+        }
+        metadata["prompt"]["3"]["inputs"]["positive"] = ["20", 0]
+        result = _inspect(metadata)
+        self.assertEqual(result["state"], "unresolved")
+        self.assertEqual(result["reason"], resolver.OVERWRITTEN_PROMPT_REASON)
+
+    def test_instantid_advanced_outputs(self):
+        prompt = _f02(
+            **{
+                "20": {
+                    "class_type": "ApplyInstantIDAdvanced",
+                    "inputs": {
+                        "model": ["4", 0],
+                        "positive": ["6", 0],
+                        "negative": ["7", 0],
+                        "ip_weight": 0.8,
+                    },
+                }
+            }
+        )
+        prompt["3"]["inputs"].update(positive=["20", 1], negative=["20", 2])
+        self.assertEqual(_texts(_inspect({"prompt": prompt})), (parity.POS, parity.NEG))
+        prompt["3"]["inputs"]["positive"] = ["20", 0]  # output 0 is the MODEL
+        self.assertEqual(
+            _inspect({"prompt": prompt})["reason_code"], "unsupported-node"
+        )
+
+    def test_crystools_conditioning_switch(self):
+        def switch(condition) -> dict:
+            prompt = _f02(
+                **{
+                    "11": _pm_encoder("a dog"),
+                    "20": {
+                        "class_type": "Switch conditioning [Crystools]",
+                        "inputs": {
+                            "on_true": ["6", 0],
+                            "on_false": ["11", 0],
+                            "boolean": condition,
+                        },
+                    },
+                    "21": {"class_type": "PrimitiveBoolean", "inputs": {"value": True}},
+                }
+            )
+            prompt["3"]["inputs"]["positive"] = ["20", 0]
+            return _inspect({"prompt": prompt})
+
+        self.assertEqual(_texts(switch(True))[0], parity.POS)
+        self.assertEqual(_texts(switch(False))[0], "a dog")
+        result = switch(["21", 0])
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(
+            sorted(_texts(item)[0] for item in result["candidates"]),
+            sorted([parity.POS, "a dog"]),
+        )
+
+    def test_smz_encoder_reads_text_unless_sdxl_may_apply(self):
+        def smz(**inputs) -> dict:
+            node = {
+                "class_type": "smZ CLIPTextEncode",
+                "inputs": {
+                    "clip": ["4", 1],
+                    "text": "a cat",
+                    "text_g": "a cat",
+                    "text_l": "a cat",
+                    "with_SDXL": False,
+                    "parser": "comfy",
+                    **inputs,
+                },
+            }
+            return _inspect({"prompt": _f02(**{"6": node})})
+
+        self.assertEqual(_texts(smz(text_g="", text_l="x")), ("a cat", parity.NEG))
+        # with_SDXL: the connected CLIP decides at run time which inputs are read.
+        self.assertEqual(_texts(smz(with_SDXL=True)), ("a cat", parity.NEG))
+        for parts in ({"text_g": "x"}, {"text_l": ""}, {"text": "x"}):
+            with self.subTest(parts=parts):
+                result = smz(with_SDXL=True, **parts)
+                self.assertEqual(result["reason_code"], "runtime-value")
+                self.assertEqual(
+                    result["node"], {"id": "6", "class_type": "smZ CLIPTextEncode"}
+                )
+        linked = smz(with_SDXL=["21", 0])
+        self.assertEqual(linked["reason_code"], "unsupported-node")
+        for broken in ({"with_SDXL": "yes"}, {"with_SDXL": None}):
+            with self.subTest(flag=broken):
+                self.assertEqual(smz(**broken)["reason_code"], "malformed")
+
+    def test_string_sources(self):
+        cases = (
+            ("ttN text", "text"),
+            ("CR Text", "text"),
+            ("CR Prompt Text", "prompt"),
+            ("TextBoxMira", "text"),
+        )
+        for class_type, name in cases:
+            with self.subTest(node=class_type):
+                prompt = _f02(
+                    **{"10": {"class_type": class_type, "inputs": {name: parity.POS}}}
+                )
+                prompt["6"]["inputs"]["text"] = ["10", 0]
+                self.assertEqual(
+                    _texts(_inspect({"prompt": prompt})), (parity.POS, parity.NEG)
+                )
+                # Output 1 of the Comfyroll nodes is their help URL.
+                prompt["6"]["inputs"]["text"] = ["10", 1]
+                self.assertEqual(
+                    _inspect({"prompt": prompt})["reason_code"], "unsupported-node"
+                )
+
+    def test_default_profile_keeps_them_unsupported(self):
+        for class_type, latent, _ in SAMPLERS:
+            with self.subTest(node=class_type):
+                result = resolve_prompt_pair({"prompt": _sampled(class_type, latent)})
+                self.assertEqual(result["reason"], "No supported sampler pair found")
+
+
 if __name__ == "__main__":
     unittest.main()

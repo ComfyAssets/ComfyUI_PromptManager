@@ -304,7 +304,6 @@ class SpecEntriesTest(unittest.TestCase):
             "ImpactWildcardProcessor",
             "RegexReplace",
             "LoRAfromText",
-            "TextBoxMira",
             "XYZPrompt",
         ):
             self.assertNotIn(name, table.all_classes)
@@ -431,6 +430,7 @@ class SpecEntriesTest(unittest.TestCase):
                 "ModelPatchTorchSettings",
                 "CFGNorm",
                 "PerturbedAttentionGuidance",
+                "CR Apply LoRA Stack",
             ),
         )
         self.assertEqual(
@@ -494,7 +494,9 @@ class ValidationTest(_TableCase):
                 "conditioning": frozenset({"passthrough", "zeroed"}),
                 "selectors": frozenset({"boolean-select"}),
                 "composites": frozenset({"combine"}),
-                "encoders": frozenset({"single", "parts-equal", "pm-compose"}),
+                "encoders": frozenset(
+                    {"single", "parts-equal", "pm-compose", "flag-parts"}
+                ),
                 "strings": frozenset(
                     {"literal", "strip-newlines", "join-multi", "concat"}
                 ),
@@ -714,6 +716,100 @@ def _depth(value, level=1):
 class SamplerOptionsTest(_TableCase):
     """Task 2.7b: optional sampler lists are input names, or the table fails."""
 
+    def test_upstream_verified_ports_are_listed_with_their_source_inputs(self):
+        # Not installed here: read from the pinned upstream commits the saved
+        # workflows name (the report lists repository, commit, file and line).
+        table = load_semantics()
+        pair = {"positive": "positive", "negative": "negative"}
+        for name, latent, prompt_overrides, fact_overrides in (
+            (
+                "ClownsharKSampler_Beta",
+                "latent_image",
+                ("options",),
+                ("options", "sigmas"),
+            ),
+            ("KSampler (Efficient)", "latent_image", ("script",), ("script",)),
+            ("ttN KSampler_v2", "latent", ("adv_xyPlot",), ("adv_xyPlot",)),
+        ):
+            self.assertEqual(
+                table.samplers[name],
+                {
+                    "strategy": "ksampler",
+                    "conditioning": pair,
+                    "latent": latent,
+                    "facts": "ksampler",
+                    "prompt_overrides": prompt_overrides,
+                    "fact_overrides": fact_overrides,
+                },
+                name,
+            )
+        for (name, slot), source in {
+            ("SeedVarianceEnhancer", 0): "conditioning",
+            ("ApplyInstantIDAdvanced", 1): "positive",
+            ("ApplyInstantIDAdvanced", 2): "negative",
+        }.items():
+            self.assertEqual(
+                table.conditioning[(name, slot)],
+                {"strategy": "passthrough", "input": source},
+            )
+        self.assertNotIn(("ApplyInstantIDAdvanced", 0), table.conditioning)
+        self.assertEqual(
+            table.selectors["Switch conditioning [Crystools]"],
+            table.selectors["easy ifElse"],
+        )
+        self.assertEqual(
+            table.encoders[("smZ CLIPTextEncode", 0)],
+            {
+                "strategy": "flag-parts",
+                "inputs": ("text", "text_g", "text_l"),
+                "params": {"flag": "with_SDXL"},
+            },
+        )
+        for name, source in (
+            ("ttN text", "text"),
+            ("CR Text", "text"),
+            ("CR Prompt Text", "prompt"),
+            ("TextBoxMira", "text"),
+        ):
+            self.assertEqual(
+                table.strings[(name, 0)], {"strategy": "literal", "inputs": (source,)}
+            )
+            self.assertNotIn((name, 1), table.strings)
+
+    def test_flag_parts_needs_a_flag_and_two_inputs(self):
+        doc = _minimal()
+        entry = {
+            "class": "smZ CLIPTextEncode",
+            "slot": 0,
+            "strategy": "flag-parts",
+            "inputs": ["text", "text_g"],
+            "params": {"flag": "with_SDXL"},
+        }
+        doc["encoders"].append(entry)
+        self.assertEqual(
+            self.load_doc(doc).encoders[("smZ CLIPTextEncode", 0)]["params"],
+            {"flag": "with_SDXL"},
+        )
+        for change in (
+            {"params": {}},
+            {"params": {"flag": "x", "other": "y"}},
+            {"params": {"flag": ""}},
+            {"params": None},
+            {"inputs": ["text"]},
+            {"compose": True},
+        ):
+            with self.subTest(change=change):
+                broken = _minimal()
+                broken["encoders"].append({**entry, **change})
+                with self.assertRaises(SemanticsError):
+                    self.load_doc(broken)
+        broken = _minimal()
+        broken["encoders"].append(
+            {key: item for key, item in entry.items() if key != "params"}
+        )
+        with self.assertRaises(SemanticsError):
+            self.load_doc(broken)
+
     def test_prompt_overrides_are_input_names(self):
         doc = _minimal()
         doc["samplers"]["KSampler"]["prompt_overrides"] = ["wildcard"]
@@ -725,6 +821,13 @@ class SamplerOptionsTest(_TableCase):
                 with self.assertRaises(SemanticsError):
                     self.load_doc(doc)
         doc["samplers"]["KSampler"].pop("prompt_overrides")
+        doc["samplers"]["KSampler"]["fact_overrides"] = ["script", "sigmas"]
+        sampler = self.load_doc(doc).samplers["KSampler"]
+        self.assertEqual(sampler["fact_overrides"], ("script", "sigmas"))
+        doc["samplers"]["KSampler"]["fact_overrides"] = ["script", "script"]
+        with self.assertRaises(SemanticsError):
+            self.load_doc(doc)
+        doc["samplers"]["KSampler"].pop("fact_overrides")
         doc["samplers"]["KSampler"]["overrides"] = ["wildcard"]
         self.assertRejected(doc, "unknown field")
 

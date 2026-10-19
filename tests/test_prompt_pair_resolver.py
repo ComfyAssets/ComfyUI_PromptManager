@@ -2031,7 +2031,8 @@ class TestEncoderAndStringSemantics(unittest.TestCase):
                 self.assertEqual(result["reason_code"], "malformed")
 
     def test_unverified_text_nodes_stay_unsupported_and_named(self):
-        for name in ("LoRAfromText", "RegexReplace", "XYZPrompt", "TextBoxMira"):
+        # TextBoxMira was verified in its source in Task 2.7b and is listed.
+        for name in ("LoRAfromText", "RegexReplace", "XYZPrompt"):
             with self.subTest(node=name):
                 node = {"class_type": name, "inputs": {"text": parity.POS}}
                 result = _inspect(_string_positive(node))

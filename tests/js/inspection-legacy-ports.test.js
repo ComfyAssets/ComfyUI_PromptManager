@@ -96,3 +96,24 @@ test("R6: upscale and SEGS detailers supply stage facts like FaceDetailer", () =
         assert.deepEqual([merged.seed[0], merged.steps[0], merged.cfg], ["ambiguous", "ambiguous", ["known", "7"]], class_type);
     }
 });
+
+test("R6: upstream-verified samplers supply facts unless an override input is set", () => {
+    for (const [class_type, overrides] of [["ClownsharKSampler_Beta", ["options", "sigmas"]], ["KSampler (Efficient)", ["script"]], ["ttN KSampler_v2", ["adv_xyPlot"]]]) {
+        const graph = modelGraph("CR Apply LoRA Stack");
+        graph.s.class_type = class_type;
+        assert.deepEqual(graphFacts(graph), {
+            seed: ["known", "5"], steps: ["known", "20"], cfg: ["known", "7"], sampler: ["known", "euler"],
+            scheduler: ["known", "normal"], model: ["known", "base.safetensors"],
+        }, class_type);
+        for (const name of overrides) {
+            const overridden = structuredClone(graph);
+            overridden.s.inputs[name] = ["script", 0];
+            overridden.script = { class_type: "SomeScript", inputs: {} };
+            assert.deepEqual(graphFacts(overridden), ALL_UNRESOLVED, `${class_type} ${name}`);
+            for (const unset of [null, ""]) {
+                overridden.s.inputs[name] = unset;
+                assert.equal(graphFacts(overridden).seed[0], "known", `${class_type} ${name} ${unset}`);
+            }
+        }
+    }
+});

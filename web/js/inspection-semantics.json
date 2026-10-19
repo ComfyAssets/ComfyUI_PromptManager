@@ -50,6 +50,30 @@
       "conditioning": { "positive": "positive", "negative": "negative" },
       "image_stage": "upscaled_image",
       "facts": "ksampler"
+    },
+    "ClownsharKSampler_Beta": {
+      "strategy": "ksampler",
+      "conditioning": { "positive": "positive", "negative": "negative" },
+      "latent": "latent_image",
+      "facts": "ksampler",
+      "prompt_overrides": ["options"],
+      "fact_overrides": ["options", "sigmas"]
+    },
+    "KSampler (Efficient)": {
+      "strategy": "ksampler",
+      "conditioning": { "positive": "positive", "negative": "negative" },
+      "latent": "latent_image",
+      "facts": "ksampler",
+      "prompt_overrides": ["script"],
+      "fact_overrides": ["script"]
+    },
+    "ttN KSampler_v2": {
+      "strategy": "ksampler",
+      "conditioning": { "positive": "positive", "negative": "negative" },
+      "latent": "latent",
+      "facts": "ksampler",
+      "prompt_overrides": ["adv_xyPlot"],
+      "fact_overrides": ["adv_xyPlot"]
     }
   },
   "guiders": {
@@ -82,10 +106,18 @@
     { "class": "LTXVConditioning", "slot": 0, "strategy": "passthrough", "input": "positive" },
     { "class": "LTXVConditioning", "slot": 1, "strategy": "passthrough", "input": "negative" },
     { "class": "FluxKontextMultiReferenceLatentMethod", "slot": 0, "strategy": "passthrough", "input": "conditioning" },
+    { "class": "SeedVarianceEnhancer", "slot": 0, "strategy": "passthrough", "input": "conditioning" },
+    { "class": "ApplyInstantIDAdvanced", "slot": 1, "strategy": "passthrough", "input": "positive" },
+    { "class": "ApplyInstantIDAdvanced", "slot": 2, "strategy": "passthrough", "input": "negative" },
     { "class": "ConditioningZeroOut", "slot": 0, "strategy": "zeroed", "input": "conditioning" }
   ],
   "selectors": {
     "easy ifElse": {
+      "strategy": "boolean-select",
+      "condition": "boolean",
+      "branches": { "true": "on_true", "false": "on_false" }
+    },
+    "Switch conditioning [Crystools]": {
       "strategy": "boolean-select",
       "condition": "boolean",
       "branches": { "true": "on_true", "false": "on_false" }
@@ -106,12 +138,23 @@
     { "class": "TextEncodeQwenImage21", "slot": 0, "strategy": "single", "inputs": ["prompt"] },
     { "class": "TextEncodeQwenImage21", "slot": 1, "strategy": "single", "inputs": ["negative_prompt"] },
     { "class": "KikoTextEncode", "slot": 0, "strategy": "single", "inputs": ["text"] },
-    { "class": "Text to Conditioning", "slot": 0, "strategy": "single", "inputs": ["text"] }
+    { "class": "Text to Conditioning", "slot": 0, "strategy": "single", "inputs": ["text"] },
+    {
+      "class": "smZ CLIPTextEncode",
+      "slot": 0,
+      "strategy": "flag-parts",
+      "inputs": ["text", "text_g", "text_l"],
+      "params": { "flag": "with_SDXL" }
+    }
   ],
   "strings": [
     { "class": "StringConstant", "slot": 0, "strategy": "literal", "inputs": ["string"] },
     { "class": "TextInput", "slot": 0, "strategy": "literal", "inputs": ["text"] },
     { "class": "DisplayText", "slot": 0, "strategy": "literal", "inputs": ["text"] },
+    { "class": "ttN text", "slot": 0, "strategy": "literal", "inputs": ["text"] },
+    { "class": "CR Text", "slot": 0, "strategy": "literal", "inputs": ["text"] },
+    { "class": "CR Prompt Text", "slot": 0, "strategy": "literal", "inputs": ["prompt"] },
+    { "class": "TextBoxMira", "slot": 0, "strategy": "literal", "inputs": ["text"] },
     {
       "class": "StringConstantMultiline",
       "slot": 0,
@@ -214,7 +257,8 @@
       "Power Lora Loader (rgthree)",
       "ModelPatchTorchSettings",
       "CFGNorm",
-      "PerturbedAttentionGuidance"
+      "PerturbedAttentionGuidance",
+      "CR Apply LoRA Stack"
     ],
     "scalar_outputs": {
       "PrimitiveInt": "number",
