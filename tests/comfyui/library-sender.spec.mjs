@@ -28,7 +28,7 @@ test('native library sends the selected saved pair into a real ComfyUI destinati
         await history.getByRole('button',{name:'Select negative variant 1',exact:true}).click();
         await expect(history.getByRole('region',{name:'Saved prompt texts',exact:true}).getByRole('region',{name:'Negative prompt',exact:true})).toContainText(negative);
         // The pair send lives in the history heading, as in the approved concept.
-        await workspace.locator('.workspace-heading').getByRole('button',{name:`Send prompt pair to ComfyUI: ${positive}`,exact:true}).click();
+        await workspace.locator('#workspace-main > .heading').getByRole('button',{name:`Send prompt pair to ComfyUI: ${positive}`,exact:true}).click();
         const sender=workspace.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
         const hosts=sender.getByRole('combobox',{name:'ComfyUI window',exact:true});await expect(hosts.locator('option')).toHaveCount(2);await hosts.selectOption({index:1});
         await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({index:1});
@@ -60,7 +60,7 @@ test('native editor preview sends exact saved roles across renderer transitions'
     try {
         // Created through the native editor entry action, with an explicitly empty negative.
         await workspace.goto('/prompt_manager/workspace#/library');
-        await workspace.locator('.workspace-heading').getByRole('button',{name:'+ New prompt',exact:true}).click();
+        await workspace.locator('#workspace-main > .heading').getByRole('button',{name:'+ New prompt',exact:true}).click();
         const dialog=workspace.locator('dialog.library-editor');await expect(dialog.getByRole('button',{name:'Save',exact:true})).toBeEnabled();
         await dialog.getByLabel('Title',{exact:true}).fill(title);await dialog.getByLabel('Positive prompt',{exact:true}).fill(positive);
         await dialog.getByRole('button',{name:'Save',exact:true}).click();await expect(dialog).toHaveCount(0);
@@ -75,7 +75,7 @@ test('native editor preview sends exact saved roles across renderer transitions'
                 pairMetadata:detail.variants.map(({id,title,category,tags,archived,negative_text})=>({id,title,category,tags,archived,negative_text}))};
         };
         const before=await evidence();expect(before.pairMetadata).toHaveLength(1);
-        const send=workspace.locator('.workspace-heading').getByRole('button',{name:`Send prompt pair to ComfyUI: ${title}`,exact:true});
+        const send=workspace.locator('#workspace-main > .heading').getByRole('button',{name:`Send prompt pair to ComfyUI: ${title}`,exact:true});
         for(const renderer of [testInfo.project.metadata.initialRenderer,!testInfo.project.metadata.initialRenderer,testInfo.project.metadata.initialRenderer]) {
             await page.evaluate(async renderer=>{const {app}=await import('/scripts/app.js');await app.ui.settings.setSettingValue('Comfy.VueNodes.Enabled',renderer);await app.loadGraphData(app.graph.serialize());app.canvas.centerOnNode(app.graph._nodes[0]);},renderer);
             await expect.poll(()=>page.evaluate(()=>LiteGraph.vueNodesMode)).toBe(renderer);

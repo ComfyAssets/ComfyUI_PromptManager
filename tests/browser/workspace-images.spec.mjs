@@ -688,7 +688,7 @@ test('Images uses approved geometry while keeping real controls', async ({page,r
     await page.setViewportSize({width:1600,height:1100});
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(24);
-    await expect(page.locator('.workspace-heading-copy > .intro')).toHaveCount(1);
+    await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('Browse your images, explore the details, keep your creative context.');
     await expect(details(page)).toHaveCSS('width','310px');
     await expect(page.locator('.image-workspace')).toHaveCSS('column-gap','22px');
     for (const label of ['Source','Folder','Media','Sort','Thumbnail size']) await expect(page.getByRole('combobox',{name:label,exact:true})).toBeVisible();

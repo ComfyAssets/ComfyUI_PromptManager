@@ -12,6 +12,7 @@ import { browseFilters, createVocabularyCommand, createVocabularyStream } from '
 import { countOf } from './plural.mjs';
 import { browseLibrary, invalidateLibraryAfterWrite } from './library.mjs';
 import { createVocabularyDialog } from './vocabulary-dialog.mjs';
+import { pageHeading } from './heading.mjs';
 
 const COPY = {
     tags: {empty: 'No tags yet.', error: 'Tags could not be loaded. Nothing was changed.', more: 'Load more tags'},
@@ -155,12 +156,10 @@ function mountList(scope, api, kind, {content, rowsHost, renderRow, after}) {
 export function mountVocabulary(main, api, scope) {
     main.classList.add('vocabulary-main');
     scope.cleanup(() => main.classList.remove('vocabulary-main'));
-    const heading = main.querySelector('.workspace-heading');
-    heading.querySelector('.workspace-heading-copy').append(el('p', 'Organize once. Reuse everywhere.', 'intro'));
-    const actions = el('div', undefined, 'heading-actions');
+    const { description, actions } = pageHeading(main);
+    description.textContent = 'Organize once. Reuse everywhere.';
     const create = createButton('+ Create tag');
     actions.append(create);
-    heading.append(actions);
 
     const grid = el('div', undefined, 'two-col');
     const tagSurface = el('section', undefined, 'surface');

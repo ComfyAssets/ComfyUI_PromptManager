@@ -3,6 +3,9 @@
 
 /* Production-only shell states. */
 main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
+/* The page title takes focus after a save or route change (concept app.js 1168); a keyboard user sees where it went. */
+#page-title:focus { outline: none; }
+#page-title:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 /* D28: the sidebar shows no connection state, so its dot is neutral instead of the concept's demo green. */
 .connection i { background: var(--ca-muted); }
 /* D31: bounded rendering reads the grid's real width, so at extreme zoom the one-column shell must not grow to the
@@ -49,18 +52,6 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
        rows stack Browse over Rename / merge), so a wider fallback font wraps the name instead of hiding an action. */
     .vocabulary-main td:first-child { min-width: 0; }
     .vocabulary-main td .row-actions { width: min-content; margin-inline-start: auto; }
-}
-
-/* Interim shell: production markup the concept classes replace in Task A5 (heading, footer). These selectors match
-   nothing in the concept; each block is deleted by the task named. */
-.workspace-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 22px; } /* A5 */
-.workspace-heading-copy { min-width: 0; } /* A5 */
-.workspace-heading-copy .intro { font-size: 12px; color: var(--ca-muted); margin-top: 6px; } /* A5 */
-.intro { color: var(--ca-muted); } /* A5 */
-.page-footer { display: flex; gap: 20px; justify-content: space-between; margin: 0 32px; padding: 20px 0; border-top: 1px solid var(--line); color: var(--ca-muted); font-size: 11px; } /* A5 */
-@media (max-width: 700px) {
-    .workspace-heading { align-items: flex-start; flex-direction: column; } /* A5 */
-    .page-footer { margin: 0 14px; flex-wrap: wrap; } /* A5 */
 }
 
 /* Interim page guards: concept element rules (`.ca-tools dialog`, `pre`) now reach production dialogs and prompt text

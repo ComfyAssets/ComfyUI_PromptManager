@@ -8,6 +8,7 @@ import { promptRoles } from './prompt-blocks.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 import { createMediaViewer } from './media-viewer.mjs';
 import { noun } from './plural.mjs';
+import { pageHeading } from './heading.mjs';
 
 function el(tag, text, className) {
     const element = document.createElement(tag);
@@ -49,11 +50,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     });
     main.classList.add('images-main');
     scope.cleanup(() => main.classList.remove('images-main'));
-    if (!embedded) {
-        const intro = el('p', 'Browse your images, explore the details, keep your creative context.', 'intro');
-        (main.querySelector('.workspace-heading-copy') || main).append(intro);
-        scope.cleanup(() => intro.remove());
-    }
+    const description = embedded ? null : pageHeading(main)?.description;
+    if (description) description.textContent = 'Browse your images, explore the details, keep your creative context.';
     const filtersBar = el('div', undefined, 'image-filters');
     const search = el('input');
     search.value = filters.q;

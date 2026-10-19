@@ -123,16 +123,11 @@ main.library-main { --library-negative: #ff8c98; }
     .history-run-marker[aria-pressed="true"] { outline-color: Highlight; }
 }
 
-/* Heading and panel actions follow the concept (style.css 283-300, 540-549, 1408-1414). */
-.workspace-heading .heading-actions, .library-main .row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.ca-tools .workspace-heading .heading-actions button, .ca-tools .library-main .row-actions button { min-block-size: 32px; font-size: 12px; max-inline-size: 100%; white-space: normal; }
-.workspace-heading .heading-actions { min-inline-size: 0; max-inline-size: 100%; }
-.ca-tools .workspace-heading button.send { color: var(--ca-focus); border-color: var(--ca-line); display: inline-flex; align-items: center; gap: 6px; }
-.workspace-heading h1:focus { outline: none; }
-.workspace-heading h1:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
+/* Panel actions follow the concept (style.css 294-300, 540-549); the page heading is the concept's own (Task A5). */
+.library-main .row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ca-tools .library-main .row-actions button { min-block-size: 32px; font-size: 12px; max-inline-size: 100%; white-space: normal; }
 .library-main .library-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-block-end: 12px; }
-@media (max-width: 700px) { .workspace-heading .heading-actions { inline-size: 100%; } }
-@media (pointer: coarse) { .ca-tools .workspace-heading .heading-actions button, .ca-tools .library-main .row-actions button { min-block-size: 40px; } }
+@media (pointer: coarse) { .ca-tools .library-main .row-actions button { min-block-size: 40px; } }
 /* Archived pairs: the existing lane at reduced emphasis (the existing .6 disabled-marker opacity); text stays at full contrast. */
 .library-main .library-variant-archived::before, .ca-tools .library-main .library-variant-archived .library-variant-dot { opacity: .6; }
 .ca-tools .library-main .library-variant-restore { position: static; margin-inline-start: 8px; min-block-size: 24px; padding: 2px 8px; font-size: 10px; vertical-align: middle; }

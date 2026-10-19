@@ -7,6 +7,7 @@ import { mountLibrary, mountNewPromptAction, onLibraryWrite } from './library.mj
 import { mountVocabulary } from './vocabulary.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 import { bindCanvasLink, canvasRoot } from './topbar.mjs';
+import { renderHeading } from './heading.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
 
@@ -87,14 +88,8 @@ function mountWorkspace() {
             else link.removeAttribute('aria-current');
         }
         document.title = `${routeTitle(route)} · Prompt Manager`;
-        const heading = element('h1', route.label);
-        // Focus target after a save, as the concept's page title.
-        heading.tabIndex = -1;
-        const headingCopy = element('div', undefined, 'workspace-heading-copy');
-        headingCopy.append(heading);
-        const headingRegion = element('header', undefined, 'workspace-heading');
-        headingRegion.append(headingCopy);
-        main.replaceChildren(headingRegion);
+        // The concept's heading(); each view fills its description and actions.
+        const { description } = renderHeading(main, { title: route.label });
         if (!firstRender) main.focus();
         firstRender = false;
         document.getElementById('workspace-breadcrumb').textContent = routeTitle(route);
@@ -112,7 +107,7 @@ function mountWorkspace() {
             return;
         }
         if (isHandoff(route)) {
-            headingCopy.append(element('p', route.description, 'intro'));
+            description.textContent = route.description;
             const panel = element('section', undefined, 'surface handoff');
             panel.append(element('h2', 'Your current tools are ready'),
                 element('p', 'This workspace is being introduced in stages. Continue in the existing tool with your saved data.'),
@@ -120,7 +115,7 @@ function mountWorkspace() {
             main.append(panel);
             return;
         }
-        headingCopy.append(element('p', 'A home for your prompts, images and creative history.', 'intro'));
+        description.textContent = 'A home for your prompts, images and creative history.';
         const stats = element('section', undefined, 'overview-stats');
         stats.setAttribute('aria-label', 'Library statistics');
         main.append(stats);

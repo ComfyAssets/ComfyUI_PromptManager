@@ -433,7 +433,7 @@ for(const [width,height] of [[1600,1100],[390,844]])for(const theme of ['dark','
 
 // Real entry actions: Library, Images and prompt history headings, and the Negative variants panel.
 const historyRegion=page=>page.getByRole('region',{name:'Prompt history',exact:true});
-const headingActions=page=>page.locator('#workspace-main .workspace-heading .heading-actions');
+const headingActions=page=>page.locator('#workspace-main > .heading > .heading-actions');
 const variantsPanel=page=>page.getByRole('region',{name:'Saved negative variants',exact:true});
 const savedTexts=page=>historyRegion(page).getByRole('region',{name:'Saved prompt texts',exact:true});
 const toast=page=>page.locator('#workspace-toast');

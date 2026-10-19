@@ -560,3 +560,73 @@ test('a superseded count read never lands and a failed refresh removes the stale
     await expect(page.locator('#primary-nav a')).toHaveCount(4);
     await expect(page.locator('#primary-nav .nav-count')).toHaveCount(3);
 });
+
+// Task A5: the concept heading() (app.js 303-305) with its typography (style.css 73-103, 283-300; <=700 1408-1416) on
+// every native route, and the production footer copy in the concept `.app-footer` (D29).
+const headingShape = node => {
+    const style = element => getComputedStyle(element);
+    const shape = element => `${element.localName}${element.id ? `#${element.id}` : ''}${[...element.classList].map(name => `.${name}`).join('')}`;
+    const [copy, actions] = node.children;
+    const [h1, description] = copy.children;
+    const main = node.parentElement.getBoundingClientRect();
+    return {
+        children: [...node.children].map(shape), copy: [...copy.children].map(shape), tabIndex: h1.tabIndex,
+        direction: style(node).flexDirection, marginBottom: style(node).marginBottom,
+        h1: { fontSize: style(h1).fontSize, lineHeight: Math.round(parseFloat(style(h1).lineHeight) / parseFloat(style(h1).fontSize) * 100) / 100, fontWeight: style(h1).fontWeight, letterSpacing: style(h1).letterSpacing, marginTop: style(h1).marginTop },
+        description: { text: description.textContent.length > 0, fontSize: style(description).fontSize, marginTop: style(description).marginTop, muted: style(description).color === style(document.querySelector('.connection small')).color },
+        actions: { gap: style(actions).columnGap, left: Math.round(actions.getBoundingClientRect().left), fullWidth: Math.round(actions.getBoundingClientRect().width) === Math.round(node.getBoundingClientRect().width) },
+        mainLeft: Math.round(main.left + parseFloat(getComputedStyle(node.parentElement).paddingLeft)),
+        pageTitles: document.querySelectorAll('#page-title').length,
+        retired: document.querySelectorAll('.workspace-heading, .workspace-heading-copy, #workspace-main .intro').length,
+    };
+};
+
+test('every route renders the concept heading', async ({ page, request }) => {
+    const library = await (await request.get('/prompt_manager/library?limit=1')).json();
+    const positiveId = library.items[0].id;
+    const pages = [['overview', 'Overview'], ['images', 'Images'], ['library', 'Prompt library'], ['tags', 'Tags & categories'], [`library/${positiveId}`, null]];
+    for (const width of [1600, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        for (const [hash, title] of pages) {
+            await page.goto(`${workspace}#/${hash}`);
+            const heading = page.locator('#workspace-main > .heading');
+            await expect(heading).toHaveCount(1);
+            if (title) await expect(heading.locator('h1')).toHaveText(title);
+            else await expect(heading.getByRole('button', { name: '← Prompt library', exact: true })).toBeVisible();
+            await expect(heading.locator('p.muted')).not.toHaveText('');
+            const shape = await heading.evaluate(headingShape);
+            expect(shape, hash).toMatchObject({
+                children: ['div', 'div.heading-actions'], copy: ['h1#page-title', 'p.muted'], tabIndex: -1, marginBottom: '22px',
+                h1: width === 1600 ? { fontSize: '28px', lineHeight: 1.3, fontWeight: '620', letterSpacing: '-0.7px', marginTop: '0px' }
+                    : { fontSize: '25px', lineHeight: 1.3, fontWeight: '620', letterSpacing: '-0.7px', marginTop: '0px' },
+                description: { text: true, fontSize: '12px', marginTop: '6px', muted: true },
+                actions: { gap: '8px' }, pageTitles: 1, retired: 0,
+            });
+            if (width === 1600) {
+                expect(shape.direction, hash).toBe('row');
+            } else {
+                // The concept stacks the heading and gives the actions the full row, starting at main's 14px gutter.
+                expect(shape.direction, hash).toBe('column');
+                expect(shape.actions, hash).toMatchObject({ left: 14, fullWidth: true });
+                expect(shape.mainLeft, hash).toBe(14);
+            }
+        }
+    }
+});
+
+test('the footer is the concept app footer with production copy', async ({ page }) => {
+    for (const [width, padding, direction] of [[1600, '22px 30px', 'row'], [390, '20px 14px', 'column']]) {
+        await page.setViewportSize({ width, height: 900 });
+        await page.goto(`${workspace}#/overview`);
+        const footer = page.locator('.workspace > footer.app-footer');
+        await expect(footer).toHaveCount(1);
+        await expect(page.locator('.page-footer')).toHaveCount(0);
+        expect(await footer.evaluate(node => ({
+            children: [...node.children].map(child => child.localName), text: node.textContent,
+            padding: getComputedStyle(node).padding, fontSize: getComputedStyle(node).fontSize, direction: getComputedStyle(node).flexDirection,
+            muted: getComputedStyle(node).color === getComputedStyle(document.querySelector('.connection small')).color,
+            afterMain: node.previousElementSibling.id,
+        }))).toEqual({ children: ['span'], text: 'ComfyAssets · Local tools. Your library.', padding, fontSize: '10px', direction, muted: true, afterMain: 'workspace-main' });
+    }
+});
+

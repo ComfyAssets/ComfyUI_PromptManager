@@ -29,7 +29,7 @@ async function attachEvidence(page, testInfo, name, fullPage = true) {
     const screenshotPath = testInfo.outputPath(`${name}.png`);
     await page.screenshot({ path: screenshotPath, fullPage });
     await testInfo.attach(name, { path: screenshotPath, contentType: 'image/png' });
-    const geometry = await page.evaluate(() => Object.fromEntries(['.sidebar', '.topbar', '#workspace-main', '.workspace-heading', 'h1', '.image-workspace', '.image-grid', '.image-card', '.image-details', '.prompt-block-heading', '.library-toolbar', '.library-grid', '.library-card', '.library-card-art', '.library-card-content'].map(selector => {
+    const geometry = await page.evaluate(() => Object.fromEntries(['.sidebar', '.topbar', '#workspace-main', '.heading', 'h1', '.image-workspace', '.image-grid', '.image-card', '.image-details', '.prompt-block-heading', '.library-toolbar', '.library-grid', '.library-card', '.library-card-art', '.library-card-content'].map(selector => {
         const node = document.querySelector(selector);
         if (!node) return [selector, null];
         const box = node.getBoundingClientRect(), style = getComputedStyle(node);
@@ -104,7 +104,7 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         for (const name of ['Copy positive prompt', 'Send positive prompt', 'Copy negative prompt', 'Send negative prompt']) await expect(roles.getByRole('button', { name, exact: true })).toBeVisible();
         // As in the concept, the selected pair's send sits in the history heading, not among the saved texts.
         await expect(roles.getByRole('button', { name: 'Send prompt pair', exact: true })).toHaveCount(0);
-        await expect(page.locator('.workspace-heading button.send')).toBeEnabled();
+        await expect(page.locator('#workspace-main > .heading button.send')).toBeEnabled();
         await expect(page.locator('.library-shared-gallery article[data-image-key]')).toHaveCount(2);
         await page.locator('.library-shared-gallery .image-open').first().click();
         await expect(page.getByRole('region', { name: 'Image details', exact: true })).toContainText('canonical-alt.png');
@@ -197,7 +197,7 @@ test('shell matches approved stable geometry in both themes', async ({ page, req
         for (const route of ['images', 'library']) {
             await page.goto(`${workspace}#/${route}`);
             if (width === 1600) await expect(page.locator('.sidebar')).toHaveCSS('width', '218px');
-            await expect(page.locator('.workspace-heading > .workspace-heading-copy > h1')).toBeVisible();
+            await expect(page.locator('#workspace-main > .heading > div > h1#page-title')).toBeVisible();
             await groupedNavigation(page);
             await expect(page.locator(route === 'images' ? 'article[data-image-key]' : 'article[data-prompt-id]').first()).toBeVisible();
             await expect(page.locator('.brand')).toHaveAttribute('href', '#/images');
@@ -207,9 +207,9 @@ test('shell matches approved stable geometry in both themes', async ({ page, req
                 await expect(page.locator('nav [aria-current="page"]')).toHaveCSS('background-color', active);
                 await expect(page.locator('h1')).toHaveCSS('font-weight', '620');
                 await expect(page.locator('h1')).toHaveCSS('letter-spacing', '-0.7px');
-                await expect(page.locator('.workspace-heading')).toHaveCSS('margin-block-end', '22px');
+                await expect(page.locator('#workspace-main > .heading')).toHaveCSS('margin-block-end', '22px');
                 await expect(page.locator('h1')).toHaveCSS('font-size', width === 1600 ? '28px' : '25px');
-                await expect(page.locator('.workspace-heading-copy > .intro')).toHaveCSS('line-height', '18px');
+                await expect(page.locator('#workspace-main > .heading p.muted')).toHaveCSS('line-height', '18px');
                 await expect(page.locator('#workspace-main')).toHaveCSS('padding-inline-start', width === 1600 ? '30px' : '14px');
                 if (width === 1600) {
                     await expect(page.locator('.sidebar')).toHaveCSS('width', '218px');
@@ -519,10 +519,10 @@ test('Library visual evidence keeps natural cards and returns from real history 
             await noOverflow(page);
             await page.getByRole('link',{name:'Explore history',exact:true}).first().click();
             await expect(page.getByRole('region',{name:'Prompt history',exact:true})).toBeVisible();
-            await expect(page.locator('.library-history > div > .intro')).toHaveCount(1);
+            await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('One positive prompt. Reusable negative variants. One shared gallery.');
             await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
             await expect(page.locator('article[data-prompt-id]')).toHaveCount(6);
-            await expect(page.locator('.workspace-heading-copy > .intro')).toHaveCount(1);
+            await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('One positive. Reusable negatives. Every experiment stays connected.');
             expect(errors).toEqual([]);
         } finally {await saveCoverage(page,browserName);await context.close();}
     }
@@ -618,7 +618,7 @@ test('embedded history gallery keeps the history heading and disposes its layout
         for (const layout of ['List','Masonry','Grid']) {
             await page.getByRole('button',{name:layout,exact:true}).click();await orderedMedia(page);
             await expect(page.locator('h1')).toHaveText(title);
-            await expect(page.locator('.workspace-heading-copy > .intro')).toHaveCount(0);
+            await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('One positive prompt. Reusable negative variants. One shared gallery.');
         }
         await attachEvidence(page,testInfo,`after-images-embedded-history-${width}`,false);
         await page.getByRole('button',{name:'← Prompt library',exact:true}).click();

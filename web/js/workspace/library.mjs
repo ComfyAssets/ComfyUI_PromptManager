@@ -10,6 +10,7 @@ import {layoutLibraryRows,visibleLibraryRows} from './library-layout.mjs';
 import {createWorkspaceIcon} from './icons.mjs';
 import {mountRecordedHistory} from './history.mjs';
 import {countOf} from './plural.mjs';
+import {pageHeading} from './heading.mjs';
 
 let shelfVisit=null;
 // Every confirmed receipt advances this; a shelf mounted before it never restores its cached stream.
@@ -31,8 +32,15 @@ function title(text) {const first=text.split('\n')[0].trim();return first.length
 /** The full stored title; the first-line fallback only when it is blank. */
 function displayTitle(positive) {return typeof positive.title==='string' && positive.title.trim()?positive.title:title(positive.text);}
 function focusHeading(main) {const heading=main.querySelector('h1');if(!heading)return;heading.tabIndex=-1;heading.focus();}
+/** The shell heading's action row (concept `.heading-actions`); a view mounted without one gets its own row. */
 function headingActions(main,fallback) {
-    const actions=el('div',undefined,'heading-actions');(main.querySelector('.workspace-heading') || fallback).append(actions);return actions;
+    const actions=pageHeading(main)?.actions;if(actions) return actions;
+    const row=el('div',undefined,'heading-actions');fallback.append(row);return row;
+}
+/** The shell heading's description (concept `p.muted`); a view mounted without one shows it at the top of `fallback`. */
+function headingDescription(main,fallback,text) {
+    const description=pageHeading(main)?.description;
+    if(description) description.textContent=text;else fallback.prepend(el('p',text,'muted'));
 }
 
 /** A confirmed receipt makes cached shelf items, cursor and measured heights stale; filters and anchor survive. */
@@ -129,7 +137,6 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         const restorable=visit?.state?visit:null;
         const filters={text:'',category:'',tags:[],sort:'newest',...visit?.filters};
         const section=el('section',undefined,'library-shelf');section.setAttribute('aria-label','Prompt library');
-        const introduction=el('p','One positive. Reusable negatives. Every experiment stays connected.','intro');
         const toolbar=el('search',undefined,'library-toolbar');
         const search=el('input');search.type='search';search.placeholder='Search prompts and saved negatives…';search.value=filters.text;search.maxLength=500;
         const category=createSelect([['','All categories']], '');category.value=filters.category;
@@ -169,7 +176,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             } finally {exporting=false;}
         }
         scope.listen(exportButton,'click',exportLibrary);
-        (main.querySelector('.workspace-heading-copy') || section).append(introduction);
+        headingDescription(main,section,'One positive. Reusable negatives. Every experiment stays connected.');
         continuation.append(message,retry,more);section.append(toolbar,optionsStatus,exportStatus,caption,grid,continuation,legacy);main.append(section);
         const cards=new Map(), rowNodes=new Map(), spacers=new Map(), heights=new Map(), pendingMeasurements=new Map();
         let state,frame=0,loadFrame=0,observer,optionsRequest,focusOverride=-1;
@@ -363,6 +370,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         const history=el('section',undefined,'library-history');history.setAttribute('aria-label','Prompt history');main.append(history);
         const body=el('div');history.append(body);
         // Concept heading: ← Prompt library, Edit metadata, then the selected pair's Send to ComfyUI.
+        headingDescription(main,history,'One positive prompt. Reusable negative variants. One shared gallery.');
         const actions=headingActions(main,history);
         const back=createButton('← Prompt library'),edit=createButton('Edit metadata'),send=createButton('','send');
         send.append(createWorkspaceIcon('send'),el('span','Send to ComfyUI'));send.disabled=true;actions.append(back,edit,send);
@@ -405,7 +413,6 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 if(state.error) {const retry=createButton('Retry prompt history');contentScope.listen(retry,'click',()=>loader.load(positiveId));body.append(retry);}return;
             }
             detail=state.detail;const content=contentScope;
-            const subtitle=el('p','One positive prompt. Reusable negative variants. One shared gallery.','intro');
             const summary=el('article',undefined,'library-surface');const categoryChip=el('span','','library-chip');summary.append(categoryChip);
             const promptContainer=el('div');promptContainer.setAttribute('role','region');promptContainer.setAttribute('aria-label','Saved prompt texts');summary.append(promptContainer);
             const parentStatus=el('p','','library-parent-status muted');parentStatus.hidden=true;parentStatus.setAttribute('role','status');
@@ -506,7 +513,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             const gallery=el('section',undefined,'library-shared-gallery');gallery.setAttribute('aria-label','Shared gallery');gallery.append(el('h2','Shared gallery'),context);
             const images=el('div',undefined,'library-linked-images');gallery.append(images);
             const recorded=el('div',undefined,'library-recorded-container');
-            body.append(subtitle,summary,variants,recorded,gallery);
+            body.append(summary,variants,recorded,gallery);
             const recordFor=pairId=>detail.variants.find(variant=>variant.id===pairId) || archivedList().find(variant=>variant.id===pairId) || (separate()?.id===pairId?separate():null);
             const archivedSelection=pairId=>archivedList().some(variant=>variant.id===pairId) || (separate()?.id===pairId && separate().archived===true);
             function rolesFor(pairId) {

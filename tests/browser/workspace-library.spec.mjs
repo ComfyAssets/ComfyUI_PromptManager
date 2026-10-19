@@ -188,7 +188,7 @@ test('history shares real image metadata, vendored Viewer and the acknowledged p
         const recipe=await(await request.get(`/prompt_manager/library/${parentId}`)).json();
         await openHistory(page);await selectVariant(page,recipe.variants.findIndex(variant=>variant.negative_text==='blurry, watermark'));
         const chosenNegative=await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre').textContent();
-        await page.locator('.workspace-heading').getByRole('button',{name:'Send prompt pair to ComfyUI: Cat portrait',exact:true}).click();
+        await page.locator('#workspace-main > .heading').getByRole('button',{name:'Send prompt pair to ComfyUI: Cat portrait',exact:true}).click();
         const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
         const hosts=sender.getByRole('combobox',{name:'ComfyUI window',exact:true});
         await expect(hosts.locator('option')).toHaveCount(2);await hosts.selectOption({label:'Library ComfyUI'});
@@ -279,8 +279,8 @@ test('Library natural rows retain long prompt content without overflow',async({p
     for(const [width,height] of [[1600,1100],[390,844]]) {
         await page.setViewportSize({width,height});await page.goto(route);await expect(cards(page)).toHaveCount(6);
         expect(await cards(page).filter({hasText:'A study in very long creative context'}).evaluate(node=>node.getBoundingClientRect().height)).toBeGreaterThan(560);
-        await expect(page.locator('.workspace-heading-copy > .intro')).toContainText('One positive.');
-        await expect(page.locator('.library-shelf > .intro')).toHaveCount(0);
+        await expect(page.locator('#workspace-main > .heading p.muted')).toContainText('One positive.');
+        await expect(page.locator('#workspace-main p').filter({hasText:'One positive. Reusable negatives.'})).toHaveCount(1);
         for(const theme of ['dark','light']) {
             await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
             await expect(page.locator('.prompt-positive h3').first()).toHaveCSS('color',theme==='dark'?'rgb(115, 221, 169)':'rgb(23, 107, 70)');

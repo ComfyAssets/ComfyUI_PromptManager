@@ -43,8 +43,8 @@ test.afterEach(async({page,browserName})=>{await saveCoverage(page,browserName);
 test('tags route renders the concept composition without a legacy handoff',async({page})=>{
     await page.goto(route);
     await expect(main(page).getByRole('heading',{level:1})).toHaveText('Tags & categories');
-    await expect(main(page).locator('.workspace-heading-copy > p')).toHaveText('Organize once. Reuse everywhere.');
-    const actions=main(page).locator('.workspace-heading .heading-actions button');
+    await expect(main(page).locator(':scope > .heading p.muted')).toHaveText('Organize once. Reuse everywhere.');
+    const actions=main(page).locator(':scope > .heading > .heading-actions button');
     await expect(actions).toHaveText(['+ Create tag']);
     await expect(actions.first()).not.toHaveClass(/ca-primary/);
     await expect(main(page).getByRole('button',{name:'Auto-tag images'})).toHaveCount(0);
@@ -195,10 +195,10 @@ test('390px layout stacks without horizontal page scroll; table scrolls locally'
     expect(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
     const layout=await main(page).evaluate(node=>{
         const grid=node.querySelector('.two-col'),[left,right]=grid.querySelectorAll(':scope > .surface'),wrap=node.querySelector('.table-wrap');
-        const heading=node.querySelector('.workspace-heading'),operation=node.querySelector('.operation');
+        const heading=node.querySelector(':scope > .heading'),operation=node.querySelector('.operation');
         return {tracks:getComputedStyle(grid).gridTemplateColumns.split(' ').length,stacked:right.getBoundingClientRect().top>=left.getBoundingClientRect().bottom,
             overflow:getComputedStyle(wrap).overflowX,heading:getComputedStyle(heading).flexDirection,operation:getComputedStyle(operation).flexDirection,
-            actions:node.querySelector('.workspace-heading .heading-actions').getBoundingClientRect().width===heading.getBoundingClientRect().width};
+            actions:node.querySelector(':scope > .heading > .heading-actions').getBoundingClientRect().width===heading.getBoundingClientRect().width};
     });
     expect(layout).toEqual({tracks:1,stacked:true,overflow:'auto',heading:'column',operation:'column',actions:true});
 });
@@ -672,7 +672,7 @@ async function openProductionTags(page,theme,motion) {
     await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
     await expect(rows(page)).toHaveCount(manifest.tags.length);await expect(categoryRow(page,'Landscapes')).toHaveCount(1);
 }
-const pageOf=(page,production)=>page.locator(production?'#workspace-main':'#main').evaluate(pageInventoryOf,production);
+const pageOf=(page,production)=>page.locator(production?'#workspace-main':'#main').evaluate(pageInventoryOf);
 /** Breadcrumb, document title (D7: "Tags", only the concept suffix differs) and the keyboard focus ring on a row action. */
 async function chromeOf(page,production) {
     const scope=page.locator(production?'#workspace-main':'#main');
