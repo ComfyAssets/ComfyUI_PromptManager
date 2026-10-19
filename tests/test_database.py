@@ -25,7 +25,11 @@ try:
 except ImportError:  # discovered with tests/ as the top-level directory
     from open_handles import assert_closed  # noqa: E402
 
-from database.operations import PromptDatabase, _resolve_db_path
+from database.operations import (
+    ORPHANED_PROMPTS_SQL,
+    PromptDatabase,
+    _resolve_db_path,
+)
 from utils.hashing import generate_prompt_hash
 
 
@@ -1093,6 +1097,50 @@ class TestMaintenanceOperations(DatabaseTestCase):
         self.assertIsNotNone(self.db.get_prompt_by_id(protected))
         self.assertIsNotNone(self.db.get_prompt_by_id(illustrated))
         self.assertEqual(self.db.prune_orphaned_prompts(), 0)
+
+    def test_prune_orphaned_prompts_spares_library_parents(self):
+        titled = self._save("titled parent")
+        untitled = self._save("untitled parent")
+        orphan = self._save("orphan")
+        with self.db.model.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO prompt_library_state(prompt_id,title) "
+                "VALUES(?,?),(?,NULL)",
+                (titled, "My recipe", untitled),
+            )
+            conn.commit()
+
+        self.assertEqual(self.db.prune_orphaned_prompts(), 1)
+        self.assertIsNone(self.db.get_prompt_by_id(orphan))
+        self.assertIsNotNone(self.db.get_prompt_by_id(titled))
+        self.assertIsNotNone(self.db.get_prompt_by_id(untitled))
+        with self.db.model.get_connection() as conn:
+            titles = conn.execute(
+                "SELECT prompt_id,title FROM prompt_library_state ORDER BY prompt_id"
+            ).fetchall()
+        self.assertEqual(
+            [tuple(row) for row in titles], [(titled, "My recipe"), (untitled, None)]
+        )
+        self.assertEqual(self.db.prune_orphaned_prompts(), 0)
+
+    def test_prune_query_has_no_scan_inside_correlated_subquery(self):
+        conn = self.db.model.get_connection()
+        plan = conn.execute("EXPLAIN QUERY PLAN " + ORPHANED_PROMPTS_SQL).fetchall()
+        parents = {row[0]: row[1] for row in plan}
+        details = {row[0]: row[3] for row in plan}
+
+        def correlated(node):
+            while node in parents:
+                node = parents[node]
+                if details.get(node, "").startswith("CORRELATED"):
+                    return True
+            return False
+
+        scans = [
+            row[3] for row in plan if row[3].startswith("SCAN ") and correlated(row[0])
+        ]
+        self.assertEqual(scans, [])
+        self.assertIn("execution_run_contexts", ORPHANED_PROMPTS_SQL)
 
     def test_consistency_check_reports_orphaned_rows(self):
         self.assertEqual(self.db.check_consistency(), [])
