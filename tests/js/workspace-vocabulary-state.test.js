@@ -401,3 +401,53 @@ test('browseFilters hands Library one exact constraint', async () => {
     assert.throws(() => browseFilters('tags', 2), TypeError);
     assert.throws(() => browseFilters('categories', ''), TypeError);
 });
+
+const helpers = imported.then(module => {
+    for (const name of ['readTagImpact', 'noun', 'categoryPreviewText', 'deleteTagText']) {
+        assert.equal(typeof module[name], 'function', `vocabulary-state.mjs exports ${name}`);
+    }
+    return module;
+});
+const zero = {positive_prompts: 0, other_prompts: 0, negative_variants: 0, archived_negative_variants: 0};
+
+test('readTagImpact reads one fresh, validated impact for the exact tag id', async () => {
+    const {readTagImpact} = await helpers;
+    const calls = [];
+    const signal = new AbortController().signal;
+    const api = {get: async (url, options) => {calls.push({url, options}); return {success: true, library_epoch: EPOCH, impact};}};
+    const value = await readTagImpact(api, {id: 4, name: 'mist'}, {signal});
+    assert.deepEqual(calls, [{url: '/prompt_manager/vocabulary/tags/4/impact', options: {signal, cache: 'no-store'}}]);
+    assert.deepEqual(value, {library_epoch: EPOCH, impact});
+    assert.ok(Object.isFrozen(value) && Object.isFrozen(value.impact));
+    for (const malformed of [null, {success: false}, {success: true, library_epoch: 'x', impact},
+        {success: true, library_epoch: EPOCH, impact: {...impact, other_prompts: -1}}, {success: true, library_epoch: EPOCH}]) {
+        await assert.rejects(readTagImpact({get: async () => malformed}, {id: 4, name: 'mist'}), TypeError, JSON.stringify(malformed));
+    }
+    assert.throws(() => readTagImpact(api, {id: 0, name: 'mist'}), TypeError);
+});
+
+test('noun uses the singular only for exactly one', async () => {
+    const {noun} = await helpers;
+    assert.equal(noun(0, 'positive prompt'), '0 positive prompts');
+    assert.equal(noun(1, 'positive prompt'), '1 positive prompt');
+    assert.equal(noun(2, 'negative variant'), '2 negative variants');
+});
+
+test('category preview text states the real impact and whether it renames or consolidates', async () => {
+    const {categoryPreviewText} = await helpers;
+    assert.equal(categoryPreviewText(preview()),
+        '“Landscapes” is used by 3 positive prompts, 3 negative variants (1 archived) and 1 other saved prompt. Apply renames it to “Scenery”.');
+    assert.equal(categoryPreviewText(preview({target: 'Architecture', target_exists: true,
+        impact: {...zero, positive_prompts: 1, negative_variants: 1}})),
+    '“Landscapes” is used by 1 positive prompt and 1 negative variant. Apply consolidates it into the existing “Architecture”.');
+    assert.equal(categoryPreviewText(preview({impact: {...zero, other_prompts: 2}})),
+        '“Landscapes” is used by 2 other saved prompts. Apply renames it to “Scenery”.');
+});
+
+test('delete text names the tag, its real links and what stays unchanged', async () => {
+    const {deleteTagText} = await helpers;
+    assert.equal(deleteTagText('mist', impact),
+        'Deleting “mist” removes the name and its links from 3 positive prompts, 3 negative variants (1 archived) and 1 other saved prompt. The prompts, negative variants, images and history themselves are kept.');
+    assert.equal(deleteTagText('unused', zero),
+        '“unused” is not linked to any saved prompt. Deleting it removes only the name.');
+});

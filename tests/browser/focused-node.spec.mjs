@@ -130,6 +130,19 @@ test(`${variant} completes saved tags with keyboard and pointer and appends comm
     await expect(tags).toHaveValue('A brand new tag');
 });
 
+test(`${variant} focused node tag suggestions include a newly created tag`, async ({page,request}) => {
+    const name=`created_${variant.toLowerCase()}_vocabulary`;
+    const listing=await request.get('/prompt_manager/vocabulary/tags?limit=1');await expect(listing).toBeOK();
+    const created=await request.post('/prompt_manager/vocabulary/tags',{data:{expected_epoch:(await listing.json()).library_epoch,name}});
+    await expect(created).toBeOK();expect((await created.json()).tag).toMatchObject({name,prompt_count:0});
+    await page.getByText('Metadata · category / tags',{exact:true}).click();
+    const tags=page.getByLabel('Tags',{exact:true});
+    await tags.fill(`created_${variant.toLowerCase()}`);
+    await expect(page.getByRole('option',{name,exact:true})).toBeVisible();
+    await tags.press('ArrowDown');await tags.press('Enter');
+    await expect(tags).toHaveValue(`${name}, `);
+});
+
 test(`${variant} metadata autocomplete ignores stale responses, recovers from errors and cleans up`, async ({page}) => {
     let release;
     let mode='delayed';

@@ -235,3 +235,43 @@ export function browseFilters(kind, value) {
         ? {text: '', category: '', tags: [value], sort: 'newest'}
         : {text: '', category: value, tags: [], sort: 'newest'};
 }
+
+/** The exact tag's current owner counts, for the delete confirmation. Throws on any unconfirmed shape. */
+export function readTagImpact(api, row, {signal} = {}) {
+    requireRow(row);
+    return api.get(`${BASE}/tags/${row.id}/impact`, {signal, cache: 'no-store'}).then(value => {
+        requireValue(object(value) && value.success === true && epochOf(value.library_epoch) && validateImpact(value.impact), 'Invalid tag impact');
+        return freeze({library_epoch: value.library_epoch, impact: {...value.impact}});
+    });
+}
+
+/** "1 positive prompt", "2 positive prompts". */
+export function noun(value, singular) {
+    return `${value} ${singular}${value === 1 ? '' : 's'}`;
+}
+
+/** Owner kinds with a nonzero count, in sentence form ("a, b and c"); empty when nothing is linked. */
+function impactList(impact) {
+    const negatives = impact.negative_variants + impact.archived_negative_variants;
+    const parts = [];
+    if (impact.positive_prompts) parts.push(noun(impact.positive_prompts, 'positive prompt'));
+    if (negatives) {
+        const archived = impact.archived_negative_variants ? ` (${impact.archived_negative_variants} archived)` : '';
+        parts.push(`${noun(negatives, 'negative variant')}${archived}`);
+    }
+    if (impact.other_prompts) parts.push(noun(impact.other_prompts, 'other saved prompt'));
+    return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts.join('');
+}
+
+/** The Manage categories preview sentence (decision D9); zero counts are left out. */
+export function categoryPreviewText(shown) {
+    const outcome = shown.target_exists ? `consolidates it into the existing “${shown.target}”` : `renames it to “${shown.target}”`;
+    return `“${shown.source}” is used by ${impactList(shown.impact)}. Apply ${outcome}.`;
+}
+
+/** The Delete tag confirmation sentence (decision D14). */
+export function deleteTagText(name, impact) {
+    const list = impactList(impact);
+    if (!list) return `“${name}” is not linked to any saved prompt. Deleting it removes only the name.`;
+    return `Deleting “${name}” removes the name and its links from ${list}. The prompts, negative variants, images and history themselves are kept.`;
+}

@@ -87,6 +87,20 @@ _TABLES = (
     "prompt_library_state",
     "prompts",
 )
+# Every owner row a vocabulary command could touch, in a stable order, for
+# before/after comparisons; prompt text, pairs and images must never change.
+_SNAPSHOT = {
+    "tags": "SELECT id, name FROM tags ORDER BY id",
+    "prompt_tags": "SELECT prompt_id, tag_id FROM prompt_tags ORDER BY 1, 2",
+    "prompt_pair_tags": "SELECT pair_id, tag_id FROM prompt_pair_tags ORDER BY 1, 2",
+    "prompts": "SELECT id, text, category, tags, updated_at FROM prompts ORDER BY id",
+    "prompt_pairs": "SELECT id, positive_prompt_id, negative_prompt_id, category,"
+    " archived, updated_at FROM prompt_pairs ORDER BY id",
+    "generated_images": "SELECT id, prompt_id, image_path FROM generated_images"
+    " ORDER BY id",
+    "image_prompt_pairs": "SELECT id, image_id, pair_id FROM image_prompt_pairs"
+    " ORDER BY id",
+}
 
 
 def seed_vocabulary(api: PromptManagerAPI, root: Path, extra_tags: int = 0) -> dict:
@@ -148,10 +162,19 @@ def seed_vocabulary(api: PromptManagerAPI, root: Path, extra_tags: int = 0) -> d
     }
 
 
+def vocabulary_snapshot(api: PromptManagerAPI) -> dict:
+    """Plain rows of every vocabulary owner table."""
+    with api.db.model.get_connection() as conn:
+        return {
+            name: [list(row) for row in conn.execute(query)]
+            for name, query in _SNAPSHOT.items()
+        }
+
+
 def register_vocabulary_commands(
     routes: web.RouteTableDef, api: PromptManagerAPI, root: Path
 ) -> None:
-    """Register only the fixed seed command; no paths or SQL input."""
+    """Register only fixed seed, snapshot and backup commands; no paths or SQL input."""
 
     @routes.post("/__test__/vocabulary/reset")
     async def reset(request: web.Request) -> web.Response:
@@ -168,3 +191,23 @@ def register_vocabulary_commands(
             raise web.HTTPBadRequest()
         manifest = await api._run_in_executor(seed_vocabulary, api, root, extra)
         return web.json_response({"success": True, **manifest})
+
+    @routes.get("/__test__/vocabulary/snapshot")
+    async def snapshot(request: web.Request) -> web.Response:
+        if request.query:
+            raise web.HTTPBadRequest()
+        rows = await api._run_in_executor(vocabulary_snapshot, api)
+        return web.json_response(rows)
+
+    @routes.get("/__test__/vocabulary/backup")
+    async def backup(request: web.Request) -> web.Response:
+        """A database copy for the real restore route, which rotates the epoch."""
+        if request.query:
+            raise web.HTTPBadRequest()
+        path = root / "owned-vocabulary-backup.db"
+        created = await api._run_in_executor(api.db.model.backup_database, str(path))
+        if not created:
+            raise web.HTTPInternalServerError()
+        return web.Response(
+            body=path.read_bytes(), content_type="application/octet-stream"
+        )

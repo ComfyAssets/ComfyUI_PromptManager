@@ -8,8 +8,9 @@
  * to the existing Library filters.
  */
 import { createButton } from '../shared/toolkit/core.js';
-import { browseFilters, createVocabularyCommand, createVocabularyStream } from './vocabulary-state.mjs';
+import { browseFilters, createVocabularyCommand, createVocabularyStream, noun } from './vocabulary-state.mjs';
 import { browseLibrary, invalidateLibraryAfterWrite } from './library.mjs';
+import { createVocabularyDialog } from './vocabulary-dialog.mjs';
 
 const COPY = {
     tags: {empty: 'No tags yet.', error: 'Tags could not be loaded. Nothing was changed.', more: 'Load more tags'},
@@ -56,7 +57,7 @@ function tagRow(tag) {
 }
 
 function categoryRow(category) {
-    const {row, button} = operation(category.value, `${category.prompt_count} positive prompts`, 'Browse');
+    const {row, button} = operation(category.value, noun(category.prompt_count, 'positive prompt'), 'Browse');
     button.dataset.action = 'browse';
     return row;
 }
@@ -112,8 +113,10 @@ function mountList(scope, api, kind, {content, rowsHost, renderRow, after}) {
         alert.hidden = !failed;
         retry.hidden = !failed;
         const hideMore = !state.hasMore || failed || !rendered;
-        // Keyboard users who loaded the last page continue at its first row instead of losing focus.
-        if (hideMore && document.activeElement === more) appended[0]?.querySelector('button')?.focus();
+        // Keyboard users keep a focus target: Retry after a failed read, else the first new (or first) row.
+        if (hideMore && document.activeElement === more) {
+            (failed ? retry : appended[0]?.querySelector('button') ?? rowsHost.querySelector('button'))?.focus();
+        }
         more.hidden = hideMore;
         more.setAttribute('aria-disabled', String(state.loading));
         continuation.hidden = !(state.loading || failed || state.hasMore);
@@ -133,7 +136,11 @@ function mountList(scope, api, kind, {content, rowsHost, renderRow, after}) {
         observer?.disconnect();
     });
     render(stream.state);
-    return {stream, itemOf: row => items.get(row)};
+    /** The rendered row whose item matches, if it is loaded. */
+    function rowFor(match) {
+        return [...rowsHost.children].find(row => {const item = items.get(row); return item !== undefined && match(item);}) ?? null;
+    }
+    return {stream, itemOf: row => items.get(row), rowFor};
 }
 
 /** Mount the screen into `main` below the shell's heading; `scope` owns every request, listener and observer. */
@@ -187,10 +194,11 @@ export function mountVocabulary(main, api, scope) {
         if (category) browseLibrary(browseFilters('categories', category.value));
     });
 
+    let settled = Promise.resolve();
     /** Re-read both lists from page one: after any command, rows can move between pages. */
     function reload() {
-        tags.stream.reset();
-        categories.stream.reset();
+        settled = Promise.all([tags.stream.reset(), categories.stream.reset()]).then(() => undefined);
+        return settled;
     }
     /** A guarded command for one dialog; any outcome that may have changed storage re-reads the lists and the Library shelf. */
     function createCommand(onChange) {
@@ -199,6 +207,24 @@ export function mountVocabulary(main, api, scope) {
             reload();
         }});
     }
+    const h1 = main.querySelector('h1');
+    const actionOf = (row, action) => row?.querySelector(`button[data-action="${action}"]`) ?? null;
+    const dialog = createVocabularyDialog({api, scope, createCommand,
+        epoch: () => tags.stream.state.epoch ?? categories.stream.state.epoch,
+        categories: () => categories.stream.state.items.map(item => item.value),
+        reload,
+        // Rows are replaced on every reset, so a result's row exists only once the re-read has landed.
+        settled: () => settled,
+        heading: () => h1,
+        tagAction: id => actionOf(tags.rowFor(item => item.id === id), 'rename'),
+        categoryAction: value => actionOf(categories.rowFor(item => item.value === value), 'browse')});
+    scope.listen(create, 'click', () => dialog.createTag(create));
+    scope.listen(manage.button, 'click', () => dialog.manageCategories(manage.button));
+    scope.listen(body, 'click', event => {
+        const button = event.target.closest('button[data-action="rename"]');
+        const tag = button && tags.itemOf(button.closest('tr'));
+        if (tag) dialog.renameTag(tag, button);
+    });
     reload();
-    return {create, manage: manage.button, tags: tags.stream, categories: categories.stream, reload, createCommand};
+    return {create, manage: manage.button, tags: tags.stream, categories: categories.stream, reload, createCommand, dialog};
 }
