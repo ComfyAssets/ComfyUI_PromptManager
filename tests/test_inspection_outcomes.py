@@ -3,9 +3,9 @@
 import ast
 import json
 import unittest
+import unittest.mock
 from pathlib import Path
 from dataclasses import replace
-from unittest import mock
 
 from utils import prompt_pair_resolver
 from utils.inspection_outcomes import (
@@ -235,7 +235,7 @@ class TestOutcomeMessages(unittest.TestCase):
             "reason_code": None,
             "node": None,
         }
-        with mock.patch(
+        with unittest.mock.patch(
             "utils.prompt_inspector.resolve_prompt_pair", return_value=resolved
         ):
             evidence = inspect_prompt_evidence({"prompt": {}})

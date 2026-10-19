@@ -9,9 +9,9 @@ import copy
 import json
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 from types import MappingProxyType
-from unittest import mock
 
 from utils import inspection_semantics as semantics
 from utils.inspection_semantics import SemanticsError, load_semantics
@@ -700,7 +700,9 @@ class ValidationTest(_TableCase):
                 self.assertIn("nest", str(caught.exception))
         self.assertGreater(semantics.MAX_NESTING, _depth(json.loads(TABLE.read_text())))
         # Whichever interpreter limit the parser hits, it is a SemanticsError.
-        with mock.patch.object(semantics.json, "loads", side_effect=RecursionError):
+        with unittest.mock.patch.object(
+            semantics.json, "loads", side_effect=RecursionError
+        ):
             with self.assertRaises(SemanticsError) as caught:
                 self.load_doc(_minimal())
         self.assertIn("nests deeper", str(caught.exception))

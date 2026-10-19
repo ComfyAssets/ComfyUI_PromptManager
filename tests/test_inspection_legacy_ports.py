@@ -10,6 +10,7 @@ import io
 import json
 import tempfile
 import unittest
+import unittest.mock
 import zlib
 from pathlib import Path
 
@@ -210,12 +211,11 @@ class TestOverwrittenPromptManagerText(unittest.TestCase):
 
     def test_the_workflow_is_parsed_only_for_prompt_manager_graphs(self):
         # Review M-4: no PromptManager-like node, no workflow parse.
-        from unittest import mock
 
         from utils import prompt_inspector
 
         prompt = parity.build("f02")["prompt"]
-        with mock.patch.object(
+        with unittest.mock.patch.object(
             prompt_inspector,
             "_parsed_workflow",
             wraps=prompt_inspector._parsed_workflow,
