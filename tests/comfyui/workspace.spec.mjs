@@ -17,7 +17,7 @@ test('workspace serves real library data beside either ComfyUI renderer', async 
         await expect(workspace.locator('#workspace-main h1')).toHaveText('Overview');
         await expect(workspace.locator('dt').filter({ hasText: /^Prompts$/ }).locator('+ dd'))
             .toHaveText(stats.total_prompts.toLocaleString());
-        await workspace.getByRole('combobox', { name: 'Appearance' }).selectOption('light');
+        await workspace.getByRole('combobox', { name: 'Theme' }).selectOption('light');
         await expect(workspace.locator('body')).toHaveAttribute('data-ca-theme', 'light');
         const imageResponse = workspace.waitForResponse(response => {
             const url = new URL(response.url());

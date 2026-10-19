@@ -615,7 +615,7 @@ test('selected layout stays blue with readable text on hover in either theme', a
     await page.goto(workspace);
     const layout = page.getByRole('group', { name: 'Image layout' }).getByRole('button', { name: 'Masonry', exact: true });
     for (const theme of ['light', 'dark']) {
-        await page.getByRole('combobox', { name: 'Appearance', exact: true }).selectOption(theme);
+        await page.getByRole('combobox', { name: 'Theme', exact: true }).selectOption(theme);
         await layout.click();
         await layout.hover();
         await expect(layout).toHaveCSS('background-color', 'rgb(8, 119, 187)');

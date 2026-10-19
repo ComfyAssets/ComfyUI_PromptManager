@@ -57,11 +57,17 @@ export function summarizeNavCounts(pages = {}) {
     }));
 }
 
-/** Read the three counts; a failed read yields null for its route only. */
-export async function loadNavCounts(api, signal) {
-    const results = await Promise.allSettled(NAV_COUNT_SOURCES.map(([, url]) => api.get(url, { signal })));
-    return summarizeNavCounts(Object.fromEntries(NAV_COUNT_SOURCES.map(([id], index) =>
-        [id, results[index].status === 'fulfilled' ? results[index].value : undefined])));
+/**
+ * Read the three counts; a failed read yields null for its route only. `onCount(id, count)` runs as each read
+ * settles, so a slow listing (the Images output scan) never holds back the cheap Library and Tags counts.
+ */
+export async function loadNavCounts(api, signal, onCount = () => {}) {
+    const pages = {};
+    await Promise.all(NAV_COUNT_SOURCES.map(async ([id, url]) => {
+        try { pages[id] = await api.get(url, { signal }); } catch { pages[id] = undefined; }
+        onCount(id, summarizeNavCounts(pages).get(id));
+    }));
+    return summarizeNavCounts(pages);
 }
 
 export function mountRouter(win, onRoute) {

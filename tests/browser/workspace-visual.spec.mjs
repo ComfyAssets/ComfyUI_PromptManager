@@ -92,7 +92,7 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
 
         const reset = await request.post('/__test__/reset', { data: { chronological_history: true } });await expect(reset).toBeOK();const fixture = await reset.json();
         await page.goto(`${workspace}#/library/${fixture.canonical_id}`);
-        await page.getByRole('combobox', { name: 'Appearance', exact: true }).selectOption(theme);
+        await page.getByRole('combobox', { name: 'Theme', exact: true }).selectOption(theme);
         const details = await (await request.get(`/prompt_manager/library/${fixture.canonical_id}`)).json();
         const index = details.variants.findIndex(variant => variant.id === fixture.canonical_pair);
         const choice = page.getByRole('button', { name: `Select negative variant ${index + 1}`, exact: true });
@@ -203,7 +203,7 @@ test('shell matches approved stable geometry in both themes', async ({ page, req
             await expect(page.locator('.brand')).toHaveAttribute('href', '#/images');
             await expect(page.locator('#workspace-main > .eyebrow')).toHaveCount(0);
             for (const [theme, active] of [['dark', 'rgb(20, 54, 77)'], ['light', 'rgb(228, 241, 251)']]) {
-                await page.getByRole('combobox', { name: 'Appearance', exact: true }).selectOption(theme);
+                await page.getByRole('combobox', { name: 'Theme', exact: true }).selectOption(theme);
                 await expect(page.locator('nav [aria-current="page"]')).toHaveCSS('background-color', active);
                 await expect(page.locator('h1')).toHaveCSS('font-weight', '620');
                 await expect(page.locator('h1')).toHaveCSS('letter-spacing', '-0.7px');
@@ -236,8 +236,8 @@ test('long content and zoom keep grouped navigation reachable', async ({ page, r
         const link = page.locator(`nav [data-route="${route}"]`);
         await link.focus(); await expect(link).toBeFocused();
     }
-    await page.getByRole('combobox', { name: 'Appearance', exact: true }).focus();
-    await expect(page.getByRole('combobox', { name: 'Appearance', exact: true })).toBeFocused();
+    await page.getByRole('combobox', { name: 'Theme', exact: true }).focus();
+    await expect(page.getByRole('combobox', { name: 'Theme', exact: true })).toBeFocused();
     const text = page.locator('.prompt-text').filter({ hasText: 'A study in very long creative context' });
     await text.scrollIntoViewIfNeeded();
     expect((await text.textContent()).length).toBeGreaterThan(1500);
@@ -257,17 +257,17 @@ test('long content and zoom keep grouped navigation reachable', async ({ page, r
     }
 });
 
-test('Appearance label and control fit the narrow shell at 200 percent zoom', async ({ page, request }, testInfo) => {
+test('Theme label and control fit the narrow shell at 200 percent zoom', async ({ page, request }, testInfo) => {
     await request.post('/__test__/reset', { data: { workspace_visual: true } });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`${workspace}#/images`);
     await expect(page.locator('article[data-image-key]')).toHaveCount(24);
     await page.evaluate(() => { document.documentElement.style.zoom = '2'; });
-    const preference = page.getByRole('combobox', { name: 'Appearance', exact: true });
+    const preference = page.getByRole('combobox', { name: 'Theme', exact: true });
     const bounds = await preference.evaluate(select => {
         const field = select.closest('label');
-        return { intendedWrapper: field.classList.contains('workspace-appearance'),
-            boxes: [field, field.querySelector('.ca-field-label'), select].map(node => {
+        return { intendedWrapper: field.classList.contains('theme-label') && field.parentElement.classList.contains('top-actions'),
+            boxes: [field, select].map(node => {
                 const box = node.getBoundingClientRect(); return { left: box.left, right: box.right, width: box.width };
             }), width: document.documentElement.clientWidth };
     });
@@ -277,7 +277,7 @@ test('Appearance label and control fit the narrow shell at 200 percent zoom', as
         expect(box.right).toBeLessThanOrEqual(bounds.width + 1);
     }
     expect(bounds.intendedWrapper).toBe(true);
-    for (const theme of ['follow', 'light', 'dark']) {
+    for (const theme of ['system', 'light', 'dark']) {
         await preference.selectOption(theme); await expect(preference).toHaveValue(theme);
     }
     await preference.focus(); await expect(preference).toBeFocused();
@@ -514,7 +514,7 @@ test('Library visual evidence keeps natural cards and returns from real history 
         const page=await context.newPage();const errors=[];page.on('pageerror',error=>errors.push(error.message));await startCoverage(page,browserName);
         try {
             await page.goto(`${workspace}#/library`);await expect(page.locator('article[data-prompt-id]')).toHaveCount(6);
-            await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+            await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
             await attachEvidence(page,testInfo,`after-library-${width}-${theme}`,false);
             await noOverflow(page);
             await page.getByRole('link',{name:'Explore history',exact:true}).first().click();
@@ -582,7 +582,7 @@ test('Images visual layouts retain real delayed media long filenames and loaded 
     for (const [width,height] of [[1600,1100],[390,844]]) {
         await page.setViewportSize({width,height});
         for (const theme of ['dark','light']) {
-            await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+            await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
             await page.locator('.image-card .image-open').first().click();
             await expect(page.locator('.image-details h2')).toHaveText('study-01.png');
             for (const layout of ['Grid','List','Masonry']) {

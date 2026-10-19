@@ -353,7 +353,7 @@ test('route reentry restores older timeline range and both scroll axes after 61 
 
 for(const [width,height] of [[1600,1100],[390,844]])for(const theme of ['dark','light'])test(`final fix review states ${width} ${theme}`,async({page,request},testInfo)=>{
     test.setTimeout(60000);await page.setViewportSize({width,height});await page.addInitScript(()=>{window.IntersectionObserver=undefined;});
-    const f=page.fixture;await open(page,f.detail_id);await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+    const f=page.fixture;await open(page,f.detail_id);await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
     await marker(page,f.runs.shared,'z').click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
     const missing=dialog(page).locator('[data-output-node-id="2"][data-image-ordinal="1"]');await missing.getByRole('button',{name:'Select reported output',exact:true}).click();
     await expect(missing).toHaveAttribute('aria-current','true');await expect(missing.getByRole('button',{name:'Retry current availability',exact:true})).toBeVisible();

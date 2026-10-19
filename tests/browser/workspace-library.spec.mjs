@@ -282,7 +282,7 @@ test('Library natural rows retain long prompt content without overflow',async({p
         await expect(page.locator('.workspace-heading-copy > .intro')).toContainText('One positive.');
         await expect(page.locator('.library-shelf > .intro')).toHaveCount(0);
         for(const theme of ['dark','light']) {
-            await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+            await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
             await expect(page.locator('.prompt-positive h3').first()).toHaveCSS('color',theme==='dark'?'rgb(115, 221, 169)':'rgb(23, 107, 70)');
         }
         await expect(page.locator('.library-card-art').first()).toHaveCSS('height',width===1600?'170px':'150px');

@@ -669,7 +669,7 @@ async function openConceptTags(page,theme,motion) {
 async function openProductionTags(page,theme,motion) {
     await page.emulateMedia({reducedMotion:motion});
     await page.goto('about:blank');await page.goto(route);
-    await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+    await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
     await expect(rows(page)).toHaveCount(manifest.tags.length);await expect(categoryRow(page,'Landscapes')).toHaveCount(1);
 }
 const pageOf=(page,production)=>page.locator(production?'#workspace-main':'#main').evaluate(pageInventoryOf,production);

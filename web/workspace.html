@@ -30,7 +30,15 @@
             </div>
         </aside>
         <div class="workspace">
-            <header class="topbar"><span>ComfyAssets <span class="muted">/ <span id="workspace-breadcrumb">Images</span></span></span><div id="appearance-control"></div></header>
+            <header class="topbar">
+                <div class="breadcrumbs">ComfyAssets <span>/</span> <span id="workspace-breadcrumb">Images</span></div>
+                <div class="top-actions"><label class="theme-label" for="theme">Theme
+                        <select id="theme" aria-label="Theme">
+                            <option value="dark">Dark</option>
+                            <option value="light">Light</option>
+                            <option value="system" selected>System</option>
+                        </select></label><a class="canvas-link" href="../">ComfyUI <span aria-hidden="true">↗</span></a></div>
+            </header>
             <main id="workspace-main" tabindex="-1"></main>
             <footer class="page-footer">ComfyAssets <span>Local tools. Your library.</span></footer>
         </div>

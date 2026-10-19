@@ -4,6 +4,7 @@ import { layoutImages, visibleImages, workspaceImageMetrics } from './image-layo
 import { mountFileInspector } from './file-inspector.mjs';
 import { createInspectionController } from './inspection-state.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
+import { promptRoles } from './prompt-blocks.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 import { createMediaViewer } from './media-viewer.mjs';
 import { noun } from './plural.mjs';
@@ -423,5 +424,12 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         });
         if (visit.state.loading || visit.state.error) stream.loadMore();
     } else reset();
-    return {dispose};
+    /** D6: the selected file's prompt pair, only once its inspection loaded with both roles resolved. */
+    function selectedPair() {
+        const {record, prompts, loading, error, refreshRequired} = inspection.state;
+        if (scope.signal.aborted || selection === null || loading || error || refreshRequired || record?.identity?.key !== selection) return null;
+        const roles = promptRoles(prompts);
+        return Object.hasOwn(roles, 'positive') && Object.hasOwn(roles, 'negative') ? roles : null;
+    }
+    return {dispose, selectedPair, sender};
 }

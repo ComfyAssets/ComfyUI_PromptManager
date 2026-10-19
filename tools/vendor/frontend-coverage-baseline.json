@@ -293,6 +293,12 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/topbar.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 81,
+    "statements": 98
+  },
   "workspace/viewer-state.mjs": {
     "lines": 98,
     "branches": 95,

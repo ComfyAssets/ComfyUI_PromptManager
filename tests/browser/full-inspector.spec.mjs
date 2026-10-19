@@ -507,7 +507,7 @@ test('full inspector attaches matched theme and mobile evidence with reachable c
     }
     for(const [width,height,theme]of [[1600,1100,'dark'],[1600,1100,'light'],[390,844,'dark'],[390,844,'light']]) {
         const label=`${theme}-${width}`;await page.setViewportSize({width,height});
-        await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+        await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
         await selectFile(page,'complete.png');await expect(inspector(page).locator('.generation-facts dd').first()).toHaveText('9007199254740993');
         if(width===1600)await page.evaluate(()=>scrollTo(0,0));else await inspector(page).locator('.file-cover').evaluate(node=>node.scrollIntoView({block:'start'}));
         await capture(`inline-${label}`);
@@ -577,7 +577,7 @@ test('collection viewer matches approved responsive frame',async({page,request},
     const settleViewport=width=>expect.poll(()=>page.evaluate(()=>({inner:innerWidth,client:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth})),{message:`Images gallery relayout settles the ${width}px viewport`}).toEqual({inner:width,client:width,scroll:width});
     await settleViewport(1600);
     for(const theme of ['dark','light']) {
-        await page.evaluate(theme=>{const preference=document.getElementById('workspace-appearance');preference.value=theme;preference.dispatchEvent(new Event('change'));},theme);
+        await page.evaluate(theme=>{const preference=document.getElementById('theme');preference.value=theme;preference.dispatchEvent(new Event('change'));},theme);
         const geometry=await modal.evaluate(node=>{const style=getComputedStyle(node),box=node.getBoundingClientRect(),rail=node.querySelector('.image-preview-details').getBoundingClientRect();return{width:box.width,height:box.height,padding:style.padding,radius:style.borderRadius,rail:rail.width,gap:getComputedStyle(node.querySelector('.image-preview-body')).columnGap};});
         expect(geometry).toEqual({width:1500,height:940,padding:'18px',radius:'9px',rail:340,gap:'20px'});
         await page.screenshot({path:testInfo.outputPath(`viewer-${theme}-1600.png`)});

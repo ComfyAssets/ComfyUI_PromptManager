@@ -111,7 +111,7 @@ test('sender requires explicit destination, previews full changes and acknowledg
         await chosen.getByRole('button',{name:'Close',exact:true}).click();
         await page.evaluate(()=>scrollTo(0,0));
         await page.screenshot({path:testInfo.outputPath('inspector-dark.png'),fullPage:true});
-        await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption('light');
+        await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption('light');
         await page.screenshot({path:testInfo.outputPath('inspector-light.png'),fullPage:true});
         await details(page).getByRole('button',{name:'Open full preview',exact:true}).click();
         await expect(page.getByRole('dialog',{name:'Image preview',exact:true})).toBeVisible();
@@ -119,6 +119,38 @@ test('sender requires explicit destination, previews full changes and acknowledg
         await page.getByRole('button',{name:'Close preview',exact:true}).click();
         await page.setViewportSize({width:390,height:844});await details(page).scrollIntoViewIfNeeded();
         await page.screenshot({path:testInfo.outputPath('inspector-mobile.png')});
+    } finally {await host.evaluate(()=>window.fixtureHost.dispose());await host.close();}
+});
+
+// D6: ComfyUI ↗ is a link to the canvas; on Images with a selected file whose two roles resolved, a plain click opens
+// the acknowledged pair send instead (concept app.js 1750-1757).
+test('ComfyUI ↗ opens the pair send for a selected resolved image, else follows the link',async({page,context})=>{
+    const host=await fakeHost(context,page);
+    try {
+        await page.goto('/prompt_manager/workspace#/overview');
+        const link=page.locator('header.topbar').getByRole('link',{name:'ComfyUI',exact:true});
+        await expect(link).toHaveAttribute('href','/');
+        // Record whether the link's own handler let the navigation through, then stop it so the page stays.
+        await page.evaluate(()=>{window.followed=[];document.addEventListener('click',event=>{if(!event.target.closest?.('.canvas-link'))return;window.followed.push(!event.defaultPrevented);event.preventDefault();});});
+        await link.click();await expect(dialog(page)).toHaveCount(0);
+        await page.locator('nav [data-route="images"]').click();await expect(page.locator('article[data-image-key]').first()).toBeVisible();
+        await select(page,'0:uncertain.png');await expect(details(page)).toContainText('Not recorded in this file.');
+        await link.click();await expect(dialog(page)).toHaveCount(0);
+        expect(await page.evaluate(()=>window.followed)).toEqual([true,true]);
+        await select(page,'0:shared/same.png');await expect(details(page).getByRole('button',{name:'Send prompt pair',exact:true})).toBeEnabled();
+        await link.click();
+        const sender=await chooseDestination(page);
+        expect(await page.evaluate(()=>window.followed)).toEqual([true,true,false]);
+        await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
+        for(const text of ['Cat portrait','blurry, watermark'])await expect(sender).toContainText(text);
+        expect(await host.evaluate(()=>window.applied)).toEqual([]);
+        await sender.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();await expect(sender).toContainText('Sent to ComfyUI.');
+        expect(await host.evaluate(()=>window.applied)).toEqual([{positive:'Cat portrait',negative:'blurry, watermark'}]);
+        await sender.getByRole('button',{name:'Close',exact:true}).click();await expect(dialog(page)).toHaveCount(0);await expect(link).toBeFocused();
+        // Another page has no image selection, so the link is a plain link again.
+        await page.locator('nav [data-route="library"]').click();await expect(page.locator('#workspace-main h1')).toHaveText('Prompt library');
+        await link.click();await expect(dialog(page)).toHaveCount(0);
+        expect(await page.evaluate(()=>window.followed)).toEqual([true,true,false,true]);
     } finally {await host.evaluate(()=>window.fixtureHost.dispose());await host.close();}
 });
 

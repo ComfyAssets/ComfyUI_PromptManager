@@ -5,10 +5,10 @@
 main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 /* D28: the sidebar shows no connection state, so its dot is neutral instead of the concept's demo green. */
 .connection i { background: var(--ca-muted); }
-/* D3: bounded rendering reads the grid's real width, so at extreme zoom the one-column shell must not grow to the
+/* D31: bounded rendering reads the grid's real width, so at extreme zoom the one-column shell must not grow to the
    sidebar's min-content (the concept's `1fr`); the column is capped at the viewport as production's shell was. */
 @media (max-width: 950px) {
-    .app-shell { grid-template-columns: minmax(0, 1fr); /* D3 */ }
+    .app-shell { grid-template-columns: minmax(0, 1fr); /* D31 */ }
 }
 @media (forced-colors: active) {
     nav a[aria-current="page"] { border: 2px solid Highlight; color: LinkText; }
@@ -51,19 +51,14 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
     .vocabulary-main td .row-actions { width: min-content; margin-inline-start: auto; }
 }
 
-/* Interim shell: production markup the concept classes replace in Task A4 (topbar) and A5 (heading, footer). These
-   selectors match nothing in the concept; each block is deleted by the task named. */
-.topbar > span { font-size: 12px; } /* A4 */
-#appearance-control { min-width: 0; max-width: 100%; } /* A4 */
-.ca-tools .workspace-appearance { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; min-width: 0; max-width: 100%; font-size: 11px; } /* A4 */
-.ca-tools .workspace-appearance select { min-width: 0; max-width: 100%; font-size: 11px; } /* A4 */
+/* Interim shell: production markup the concept classes replace in Task A5 (heading, footer). These selectors match
+   nothing in the concept; each block is deleted by the task named. */
 .workspace-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 22px; } /* A5 */
 .workspace-heading-copy { min-width: 0; } /* A5 */
 .workspace-heading-copy .intro { font-size: 12px; color: var(--ca-muted); margin-top: 6px; } /* A5 */
 .intro { color: var(--ca-muted); } /* A5 */
 .page-footer { display: flex; gap: 20px; justify-content: space-between; margin: 0 32px; padding: 20px 0; border-top: 1px solid var(--line); color: var(--ca-muted); font-size: 11px; } /* A5 */
 @media (max-width: 700px) {
-    .topbar > span { overflow-wrap: anywhere; } /* A4 */
     .workspace-heading { align-items: flex-start; flex-direction: column; } /* A5 */
     .page-footer { margin: 0 14px; flex-wrap: wrap; } /* A5 */
 }

@@ -23,7 +23,7 @@ function fixture({ dark = false, preference, fetchImpl, storageDenied = false, p
 const response = value => ({ ok: true, json: async () => value });
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
-test('follow uses host palette over OS and preserves reverse proxy prefix', async () => {
+test('system uses host palette over OS and preserves reverse proxy prefix', async () => {
     const f = fixture({ pathname: '/proxy/comfy/prompt_manager/workspace' });
     await f.theme.ready;
     assert.equal(f.root.dataset.caTheme, 'dark');
@@ -41,13 +41,14 @@ test('supported light palettes accept string and wrapped values', async () => {
     }
 });
 
-test('explicit overrides persist and follow restores host choice', async () => {
+test('explicit overrides persist and system restores host choice', async () => {
     const f = fixture({ preference: 'light' }); await f.theme.ready;
     assert.equal(f.root.dataset.caTheme, 'light');
     f.theme.setPreference('dark'); assert.equal(f.root.dataset.caTheme, 'dark');
     assert.equal(f.saved.get('pm_workspace_theme'), 'dark');
-    f.theme.setPreference('follow'); assert.equal(f.root.dataset.caTheme, 'dark');
-    assert.equal(f.saved.get('pm_workspace_theme'), 'follow');
+    f.theme.setPreference('system'); assert.equal(f.root.dataset.caTheme, 'dark');
+    assert.equal(f.saved.get('pm_workspace_theme'), 'system');
+    assert.throws(() => f.theme.setPreference('follow'), /preference/i);
     assert.throws(() => f.theme.setPreference('orange'), /preference/i);
     f.scope.dispose();
 });
@@ -132,11 +133,26 @@ test('blocked localStorage getter and missing proxy marker stay usable', async (
     let url;
     const theme = mountWorkspaceTheme({ root: f.root, win: f.win, scope,
         fetchImpl: async value => { url = value; return response(' Obsidian '); } });
-    assert.equal(theme.preference, 'follow');
+    assert.equal(theme.preference, 'system');
     await theme.ready;
     assert.equal(url, '/api/settings/Comfy.ColorPalette');
     assert.equal(f.root.dataset.caTheme, 'dark');
     theme.setPreference('light');
     assert.equal(theme.preference, 'light');
     scope.dispose();
+});
+
+test('stored follow migrates to system and system follows the host palette', async () => {
+    const f = fixture({ preference: 'follow', fetchImpl: async () => response('light') });
+    assert.equal(f.theme.preference, 'system');
+    await f.theme.ready;
+    assert.equal(f.root.dataset.caTheme, 'light');
+    f.media.matches = true; f.media.dispatchEvent(new Event('change'));
+    assert.equal(f.root.dataset.caTheme, 'light', 'a known host palette wins over the OS');
+    f.scope.dispose();
+    const unknown = fixture({ preference: 'follow', dark: true, fetchImpl: async () => response('custom') });
+    await unknown.theme.ready;
+    assert.equal(unknown.theme.preference, 'system');
+    assert.equal(unknown.root.dataset.caTheme, 'dark', 'an unknown host palette falls back to the OS');
+    unknown.scope.dispose();
 });

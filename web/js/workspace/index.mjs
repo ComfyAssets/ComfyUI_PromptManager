@@ -1,11 +1,12 @@
 import '../api-client.js';
-import { createButton, createField, createScope, createSelect } from '../shared/toolkit/core.js';
+import { createButton, createScope } from '../shared/toolkit/core.js';
 import { routes, mountRouter, summarizeStats, routeTitle, isHandoff, loadNavCounts } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
 import { mountImages } from './images.mjs';
 import { mountLibrary, mountNewPromptAction, onLibraryWrite } from './library.mjs';
 import { mountVocabulary } from './vocabulary.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
+import { bindCanvasLink, canvasRoot } from './topbar.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
 
@@ -28,18 +29,22 @@ function mountWorkspace() {
     const main = document.getElementById('workspace-main');
     const primaryNav = document.getElementById('primary-nav');
     const systemNav = document.getElementById('system-nav');
-    const appearance = document.getElementById('appearance-control');
     scope.listen(document.querySelector('.skip'), 'click', event => {
         event.preventDefault();
         main.focus();
     });
+    // D4: the concept's Theme select; "System" keeps following ComfyUI, then the OS.
     const theme = mountWorkspaceTheme({ root: document.body, scope });
-    const preference = createSelect([['follow', 'Follow ComfyUI'], ['light', 'Light'], ['dark', 'Dark']], '');
+    const preference = document.getElementById('theme');
     preference.value = theme.preference;
-    const appearanceField = createField('Appearance', preference, 'workspace-appearance');
-    appearanceField.classList.add('workspace-appearance');
-    appearance.replaceChildren(appearanceField);
     scope.listen(preference, 'change', () => theme.setPreference(preference.value));
+    // D6: ComfyUI ↗ opens the canvas; on Images with a resolved selection it sends that pair (D5: no Activity).
+    let images = null;
+    scope.cleanup(bindCanvasLink(document.querySelector('.topbar .canvas-link'), {
+        href: canvasRoot(resolveUrl),
+        getSelectedPair: () => images?.selectedPair?.() ?? null,
+        sender: {open: (roles, trigger) => images?.sender.open(roles, trigger)},
+    }));
     // The concept's nav(): icon, label text, then a `.nav-count` only for a loaded real count.
     const navLinks = ids => ids.map(([id, icon]) => {
         const route = routes.find(item => item.id === id);
@@ -57,15 +62,12 @@ function mountWorkspace() {
     function refreshCounts() {
         countsRequest?.abort();
         const request = countsRequest = new AbortController();
-        loadNavCounts(api, request.signal).then(counts => {
+        // Each badge lands as its own read settles; a count that failed to refresh is removed, never left stale.
+        loadNavCounts(api, request.signal, (id, count) => {
             if (request.signal.aborted) return;
-            countsRequest = null;
-            // A count that failed to refresh is removed, never left stale.
-            for (const link of primaryNav.querySelectorAll('[data-route]')) {
-                link.querySelector('.nav-count')?.remove();
-                const count = counts.get(link.dataset.route);
-                if (Number.isSafeInteger(count)) link.append(element('span', count.toLocaleString(), 'nav-count'));
-            }
+            const link = primaryNav.querySelector(`[data-route="${id}"]`);
+            link?.querySelector('.nav-count')?.remove();
+            if (link && Number.isSafeInteger(count)) link.append(element('span', count.toLocaleString(), 'nav-count'));
         });
     }
     scope.cleanup(() => countsRequest?.abort());
@@ -77,6 +79,7 @@ function mountWorkspace() {
 
     function render(route) {
         viewScope?.dispose();
+        images = null;
         viewScope = createScope();
         const view = viewScope;
         for (const link of sidebar.querySelectorAll('nav [data-route]')) {
@@ -97,7 +100,7 @@ function mountWorkspace() {
         document.getElementById('workspace-breadcrumb').textContent = routeTitle(route);
         if (route.id === 'images') {
             mountNewPromptAction(main, api, view);
-            mountImages(main, api, view);
+            images = mountImages(main, api, view);
             return;
         }
         if (route.id === 'library') {

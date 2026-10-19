@@ -18,12 +18,12 @@ const routes = [
     ['system', 'System', '/prompt_manager/admin'],
 ];
 
-async function countAppearanceWrites(page) {
+async function countThemeWrites(page) {
     await page.evaluate(() => {
-        window.__appearanceChanges = 0;
+        window.__themeChanges = 0;
         const original = Storage.prototype.setItem;
         Storage.prototype.setItem = function (...args) {
-            if (args[0] === 'pm_workspace_theme') window.__appearanceChanges++;
+            if (args[0] === 'pm_workspace_theme') window.__themeChanges++;
             return original.apply(this, args);
         };
     });
@@ -125,24 +125,105 @@ test('returning to overview refreshes persisted counts without duplicating navig
     await expect(sidebarLinks(page)).toHaveCount(routes.length);
 });
 
-test('appearance follows ComfyUI and persists an explicit light or dark preference', async ({ page }) => {
+test('theme System follows ComfyUI and persists an explicit light or dark preference', async ({ page }) => {
     await page.route('**/api/settings/Comfy.ColorPalette', route => route.fulfill({ json: 'light' }));
     await page.goto(`${workspace}#/overview`);
     const theme = page.locator('[data-ca-theme]').first();
     await expect(theme).toHaveAttribute('data-ca-theme', 'light');
-    const appearance = page.getByRole('combobox', { name: 'Appearance', exact: true });
-    await appearance.selectOption({ label: 'Dark' });
+    const themeSelect = page.getByRole('combobox', { name: 'Theme', exact: true });
+    await expect(themeSelect).toHaveValue('system');
+    await themeSelect.selectOption({ label: 'Dark' });
     await expect(theme).toHaveAttribute('data-ca-theme', 'dark');
     await page.reload();
     await expect(theme).toHaveAttribute('data-ca-theme', 'dark');
-    await expect(appearance).toHaveValue('dark');
-    await appearance.selectOption({ label: 'Light' });
+    await expect(themeSelect).toHaveValue('dark');
+    await themeSelect.selectOption({ label: 'Light' });
     await expect(theme).toHaveAttribute('data-ca-theme', 'light');
-    await appearance.selectOption({ label: 'Follow ComfyUI' });
+    await themeSelect.selectOption({ label: 'System' });
     await expect(theme).toHaveAttribute('data-ca-theme', 'light');
 });
 
-test('unavailable host palette falls back to system appearance and tracks system changes', async ({ page }) => {
+// Task A4 (D4, D5): the concept topbar (index.html 45-63, style.css 225-277) without the prototype badge or Activity.
+test('topbar matches the concept actions', async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await page.goto(`${workspace}#/images`);
+    const topbar = page.locator('.workspace > header.topbar');
+    await expect(topbar).toHaveCount(1);
+    const shape = await topbar.evaluate(node => ({
+        children: [...node.children].map(child => `${child.localName}.${child.className}`),
+        crumbs: [...node.querySelector('.breadcrumbs').childNodes].filter(item => item.nodeType === 1 || item.textContent.trim())
+            .map(item => item.nodeType === 1 ? `${item.localName}${item.id ? `#${item.id}` : ''}:${item.textContent}` : item.textContent.trim()),
+        actions: [...node.querySelector('.top-actions').children].map(child => `${child.localName}.${child.className}`),
+        label: node.querySelector('.theme-label').firstChild.textContent.trim(),
+        labelFor: node.querySelector('.theme-label').htmlFor,
+        options: [...node.querySelectorAll('#theme option')].map(option => [option.value, option.textContent]),
+        arrow: [...node.querySelectorAll('.canvas-link span')].map(span => [span.textContent, span.getAttribute('aria-hidden')]),
+        tokens: {
+            height: getComputedStyle(node).height, padding: getComputedStyle(node).padding,
+            crumbs: getComputedStyle(node.querySelector('.breadcrumbs')).fontSize,
+            current: getComputedStyle(node.querySelector('#workspace-breadcrumb')).color === getComputedStyle(document.body).color,
+            label: getComputedStyle(node.querySelector('.theme-label')).fontSize,
+            select: getComputedStyle(node.querySelector('#theme')).fontSize,
+            link: getComputedStyle(node.querySelector('.canvas-link')).fontSize,
+            gap: getComputedStyle(node.querySelector('.top-actions')).columnGap,
+        },
+    }));
+    expect(shape).toEqual({
+        children: ['div.breadcrumbs', 'div.top-actions'],
+        crumbs: ['ComfyAssets', 'span:/', 'span#workspace-breadcrumb:Images'],
+        actions: ['label.theme-label', 'a.canvas-link'],
+        label: 'Theme', labelFor: 'theme',
+        options: [['dark', 'Dark'], ['light', 'Light'], ['system', 'System']],
+        arrow: [['↗', 'true']],
+        tokens: { height: '68px', padding: '0px 30px', crumbs: '12px', current: true, label: '11px', select: '11px', link: '12px', gap: '12px' },
+    });
+    const theme = page.getByRole('combobox', { name: 'Theme', exact: true });
+    await expect(theme).toHaveValue('system');
+    const link = page.getByRole('link', { name: 'ComfyUI', exact: true });
+    await expect(link).toHaveText('ComfyUI ↗');
+    // D6: the ComfyUI canvas root under the page's mount (resolveUrl), never a hard-coded origin.
+    await expect(link).toHaveAttribute('href', '/');
+    expect(await link.evaluate(node => node.href === `${location.origin}/`)).toBe(true);
+    await expect(page.getByRole('combobox', { name: 'Appearance' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Activity/ })).toHaveCount(0);
+    await expect(page.locator('.concept-badge, #activity-open')).toHaveCount(0);
+    await page.locator('nav [data-route="library"]').click();
+    await expect(page.locator('#workspace-breadcrumb')).toHaveText('Prompt library');
+    await expect(topbar.locator('.top-actions > *')).toHaveCount(2);
+});
+
+// Concept style.css 1375-1391: at <=700px the breadcrumbs hide, the actions spread across the bar and the Theme
+// label text collapses while the select keeps its accessible name.
+test('mobile topbar hides breadcrumbs and spreads actions', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${workspace}#/images`);
+    const theme = page.getByRole('combobox', { name: 'Theme', exact: true });
+    await expect(theme).toBeVisible();
+    await expect(page.locator('.breadcrumbs')).toBeHidden();
+    const layout = await page.locator('.topbar').evaluate(node => {
+        const bar = node.getBoundingClientRect(), actions = node.querySelector('.top-actions');
+        const box = element => element.getBoundingClientRect();
+        return {
+            padding: getComputedStyle(node).paddingInline,
+            actions: { width: box(actions).width, justify: getComputedStyle(actions).justifyContent, gap: getComputedStyle(actions).columnGap },
+            expected: bar.width - 28,
+            label: getComputedStyle(node.querySelector('.theme-label')).fontSize,
+            select: getComputedStyle(node.querySelector('#theme')).fontSize,
+            labelLeft: box(node.querySelector('.theme-label')).left - bar.left,
+            linkRight: bar.right - box(node.querySelector('.canvas-link')).right,
+        };
+    });
+    expect(layout).toMatchObject({ padding: '14px', actions: { justify: 'space-between', gap: '8px' }, label: '0px', select: '11px' });
+    expect(Math.abs(layout.actions.width - layout.expected)).toBeLessThanOrEqual(1);
+    expect(Math.abs(layout.labelLeft - 14)).toBeLessThanOrEqual(1);
+    expect(Math.abs(layout.linkRight - 14)).toBeLessThanOrEqual(1);
+    await expect(page.getByRole('link', { name: 'ComfyUI', exact: true })).toBeVisible();
+    await theme.selectOption('light');
+    await expect(page.locator('body')).toHaveAttribute('data-ca-theme', 'light');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('unavailable host palette falls back to the system theme and tracks system changes', async ({ page }) => {
     await page.route('**/api/settings/Comfy.ColorPalette', route => route.fulfill({ status: 503, json: {} }));
     await page.emulateMedia({ colorScheme: 'light' });
     await page.goto(`${workspace}#/overview`);
@@ -174,14 +255,14 @@ test('overview reports loading, offers retry after failure and renders real empt
     }
 });
 
-test('small screens keep navigation and appearance accessible without horizontal page overflow', async ({ page }) => {
+test('small screens keep navigation and the theme accessible without horizontal page overflow', async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto(`${workspace}#/overview`);
     for (const [, label] of routes) {
         await sidebarLink(page, label).click();
         await expect(page.locator('#workspace-main h1')).toHaveText(label);
     }
-    await expect(page.getByRole('combobox', { name: 'Appearance', exact: true })).toBeVisible();
+    await expect(page.getByRole('combobox', { name: 'Theme', exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
@@ -207,11 +288,11 @@ test('leaving a loading overview prevents its delayed result from replacing the 
     await expect(page.locator('#workspace-main')).not.toContainText('999');
     await expect(page.locator('#primary-nav')).toHaveCount(1);
     await expect(page.locator('#system-nav')).toHaveCount(1);
-    await expect(page.getByRole('combobox', { name: 'Appearance', exact: true })).toHaveCount(1);
+    await expect(page.getByRole('combobox', { name: 'Theme', exact: true })).toHaveCount(1);
     await expect(page.locator('#workspace-main a[href="/prompt_manager/gallery"]')).toBeVisible();
-    await countAppearanceWrites(page);
-    await page.getByRole('combobox', { name: 'Appearance', exact: true }).selectOption('light');
-    expect(await page.evaluate(() => window.__appearanceChanges)).toBe(1);
+    await countThemeWrites(page);
+    await page.getByRole('combobox', { name: 'Theme', exact: true }).selectOption('light');
+    expect(await page.evaluate(() => window.__themeChanges)).toBe(1);
 });
 
 test('cached-page restoration remounts one working shell and refreshes its data', async ({ page }) => {
@@ -232,13 +313,13 @@ test('cached-page restoration remounts one working shell and refreshes its data'
     await expect(sidebarLinks(page)).toHaveCount(routes.length);
     await expect(page.locator('#primary-nav')).toHaveCount(1);
     await expect(page.locator('#system-nav')).toHaveCount(1);
-    await expect(page.getByRole('combobox', { name: 'Appearance', exact: true })).toHaveCount(1);
-    await countAppearanceWrites(page);
+    await expect(page.getByRole('combobox', { name: 'Theme', exact: true })).toHaveCount(1);
+    await countThemeWrites(page);
     await sidebarLink(page, 'Images').click();
     await expect(page.locator('#workspace-main h1')).toHaveText('Images');
-    await page.getByRole('combobox', { name: 'Appearance' }).selectOption('light');
+    await page.getByRole('combobox', { name: 'Theme' }).selectOption('light');
     await expect(page.locator('body')).toHaveAttribute('data-ca-theme', 'light');
-    expect(await page.evaluate(() => window.__appearanceChanges)).toBe(1);
+    expect(await page.evaluate(() => window.__themeChanges)).toBe(1);
 });
 
 // Task A2: the Overview and handoff panels use the concept's `.surface` (style.css 709-722) and `.small` from the
@@ -361,13 +442,32 @@ test('nav counts stay hidden until loaded and when their request fails', async (
     await page.route('**/prompt_manager/vocabulary/tags?limit=1', route => route.fulfill({ json: { success: true, total: -4 } }));
     await page.goto(`${workspace}#/overview`);
     await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
-    // Nothing renders while a read is outstanding: no "0" placeholder.
-    await expect(page.locator('#primary-nav .nav-count')).toHaveCount(0);
+    // Nothing renders for a read that is outstanding: no "0" placeholder. The settled Images count does not wait for it.
+    await expect(navCount(page, 'images')).toHaveText(String(totals.images));
+    await expect(navCount(page, 'library')).toHaveCount(0);
+    await expect(navCount(page, 'tags')).toHaveCount(0);
     release();
     await expect(navCount(page, 'images')).toHaveText(String(totals.images));
     await expect(navCount(page, 'library')).toHaveCount(0);
     await expect(navCount(page, 'tags')).toHaveCount(0);
     await expect(page.locator('#primary-nav .nav-count')).toHaveCount(1);
+});
+
+// A3 review: the Images listing scans output folders, so its slow count must not hold back Library and Tags.
+test('a slow Images count does not delay the Library and Tags badges', async ({ page, request }) => {
+    const totals = await serverTotals(request);
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    await page.route(url => url.pathname.endsWith('/prompt_manager/images/output') && url.searchParams.get('limit') === '1', async route => {
+        await pending;
+        await route.continue().catch(() => {});
+    });
+    await page.goto(`${workspace}#/overview`);
+    await expect(navCount(page, 'library')).toHaveText(String(totals.library));
+    await expect(navCount(page, 'tags')).toHaveText(String(totals.tags));
+    await expect(navCount(page, 'images')).toHaveCount(0);
+    release();
+    await expect(navCount(page, 'images')).toHaveText(String(totals.images));
 });
 
 test('sidebar bottom holds System and Overview with a neutral connection', async ({ page }) => {

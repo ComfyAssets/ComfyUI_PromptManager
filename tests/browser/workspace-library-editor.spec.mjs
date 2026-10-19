@@ -22,7 +22,7 @@ test.afterEach(async({page,browserName})=>{await saveCoverage(page,browserName);
 
 async function mountEditor(page,theme) {
     await page.goto(`${workspace}#/overview`);await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
-    if(theme)await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+    if(theme)await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
     await page.evaluate(async()=>{
         const trigger=document.createElement('button');trigger.type='button';trigger.id='editor-trigger';trigger.textContent='Open editor';document.body.append(trigger);
         window.editorEvents={committed:[],reconciled:[]};

@@ -93,6 +93,25 @@ test('nav counts reject negative, non-integer and missing totals', async () => {
     assert.deepEqual([...summarizeNavCounts()], [['images', null], ['library', null], ['tags', null]]);
 });
 
+test('nav counts settle independently so a slow images read never delays the others', async () => {
+    const { loadNavCounts } = await source;
+    let releaseImages;
+    const images = new Promise(resolve => { releaseImages = resolve; });
+    const api = {get: async url => {
+        if (url.startsWith('/prompt_manager/images')) return images;
+        if (url.startsWith('/prompt_manager/library')) return {success: true, total: 3};
+        throw new Error('Unavailable');
+    }};
+    const settled = [];
+    const done = loadNavCounts(api, new AbortController().signal, (id, count) => settled.push([id, count]));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual(settled.sort(), [['library', 3], ['tags', null]]);
+    releaseImages({success: true, total: 40});
+    const counts = await done;
+    assert.deepEqual(settled.at(-1), ['images', 40]);
+    assert.deepEqual([...counts], [['images', 40], ['library', 3], ['tags', null]]);
+});
+
 test('nav counts issue three bounded requests and drop only the failed count', async () => {
     const { loadNavCounts } = await source;
     const calls = [];
