@@ -148,6 +148,91 @@ class TestOverwrittenPromptManagerText(unittest.TestCase):
         metadata["prompt"]["3"]["inputs"]["positive"] = ["7", 0]
         self.assertEqual(_texts(_inspect(metadata)), (parity.NEG, parity.NEG))
 
+    def test_overwritten_nodes_inside_subgraphs_are_refused(self):
+        # Review M-1: subgraph nodes run as "<instance>:<inner>" API IDs.
+        def nested(depth: int = 1) -> dict:
+            metadata = _overwritten()
+            prompt, workflow = metadata["prompt"], metadata["workflow"]
+            prefix = ":".join(["50", "60", "70"][:depth]) + ":"
+            for node_id in ("17", "113", "119"):
+                prompt[prefix + node_id] = prompt.pop(node_id)
+            prompt["3"]["inputs"]["positive"] = [prefix + "17", 0]
+            inner = [n for n in workflow["nodes"] if n["type"] == "PromptManager"]
+            outer = [n for n in workflow["nodes"] if n["type"] != "PromptManager"]
+            subgraphs = []
+            for level in range(depth, 0, -1):
+                nodes = (
+                    inner
+                    if level == depth
+                    else [{"id": [50, 60, 70][level], "type": f"sub-{level + 1}"}]
+                )
+                subgraphs.append({"id": f"sub-{level}", "nodes": nodes})
+            metadata["workflow"] = {
+                "nodes": outer + [{"id": 50, "type": "sub-1", "widgets_values": []}],
+                "links": [],
+                "definitions": {"subgraphs": subgraphs},
+            }
+            return metadata
+
+        for depth in (1, 2, 3):
+            with self.subTest(depth=depth):
+                for anchor in (None, "9"):
+                    result = _inspect(nested(depth), output_node_id=anchor)
+                    self.assertEqual(
+                        result["reason"], resolver.OVERWRITTEN_PROMPT_REASON, anchor
+                    )
+        # A subgraph definition with no instance runs nothing.
+        metadata = nested()
+        metadata["workflow"]["nodes"] = metadata["workflow"]["nodes"][:-1]
+        self.assertEqual(_inspect(metadata)["state"], "resolved")
+        # Malformed definitions never raise.
+        for definitions in ("x", {"subgraphs": "x"}, {"subgraphs": [1, {"id": 3}]}):
+            metadata = nested()
+            metadata["workflow"]["definitions"] = definitions
+            self.assertEqual(_inspect(metadata)["state"], "resolved", definitions)
+        # A self-referencing subgraph is bounded.
+        metadata = nested()
+        metadata["workflow"]["definitions"]["subgraphs"].append(
+            {"id": "loop", "nodes": [{"id": 1, "type": "loop"}]}
+        )
+        metadata["workflow"]["nodes"].append({"id": 99, "type": "loop"})
+        self.assertEqual(
+            _inspect(metadata)["reason"], resolver.OVERWRITTEN_PROMPT_REASON
+        )
+
+    def test_object_widget_values_name_the_text(self):
+        metadata = _overwritten()
+        for node in metadata["workflow"]["nodes"]:
+            node["widgets_values"] = {"text": node["widgets_values"][0]}
+        self.assertEqual(
+            _inspect(metadata)["reason"], resolver.OVERWRITTEN_PROMPT_REASON
+        )
+
+    def test_the_workflow_is_parsed_only_for_prompt_manager_graphs(self):
+        # Review M-4: no PromptManager-like node, no workflow parse.
+        from unittest import mock
+
+        from utils import prompt_inspector
+
+        prompt = parity.build("f02")["prompt"]
+        with mock.patch.object(
+            prompt_inspector,
+            "_parsed_workflow",
+            wraps=prompt_inspector._parsed_workflow,
+        ) as parsed:
+            inspect_prompt_evidence(
+                {"prompt": json.dumps(prompt), "workflow": json.dumps({"nodes": []})}
+            )
+            self.assertEqual(parsed.call_count, 0)
+            metadata = _overwritten()
+            inspect_prompt_evidence(
+                {
+                    "prompt": json.dumps(metadata["prompt"]),
+                    "workflow": json.dumps(metadata["workflow"]),
+                }
+            )
+            self.assertEqual(parsed.call_count, 1)
+
     def test_default_profile_ignores_the_workflow(self):
         result = resolve_prompt_pair(_overwritten())
         self.assertEqual(result["state"], "resolved")
@@ -194,6 +279,8 @@ class TestHistoricalPromptManagerNodes(unittest.TestCase):
             ({"text": "", "prepend_text": "trig", "append_text": "sky"}, "trig, sky"),
             ({"text": "  ", "prepend_text": "  ", "append_text": "sky"}, "sky"),
             ({"text": "a cat"}, "a cat"),
+            # Review M-5: an explicit null part is skipped, as ``if prepend_text:``.
+            ({"text": "a cat", "prepend_text": None, "append_text": None}, "a cat"),
         )
         for inputs, expected in cases:
             with self.subTest(inputs=inputs):
@@ -427,6 +514,23 @@ class TestBatchIndexDuplicates(unittest.TestCase):
             "no batch index": [_batch(0), _batch(0).replace(", Batch index: 0", "")],
             "two batch indexes": [_batch(0), _batch(1) + ", Batch index: 2"],
             "prose": [_batch(0), _batch(1).replace("a cat", "a cat Batch index: 1")],
+            # Review I-1: the field is matched only in the settings footer.
+            "prompt field": [
+                _batch(0).replace("a cat", "a cat, Batch index: 0"),
+                _batch(0).replace("a cat", "a cat, Batch index: 1"),
+            ],
+            "prompt only": [
+                "a cat, Batch index: 0\nNegative prompt: bad\nSteps: 20, Seed: 5",
+                "a cat, Batch index: 1\nNegative prompt: bad\nSteps: 20, Seed: 5",
+            ],
+            "negative field": [
+                _batch(0).replace("bad", "bad, Batch index: 0"),
+                _batch(1).replace("bad", "bad, Batch index: 1"),
+            ],
+            "no footer": [
+                "a cat\nBatch index: 0, Batch size: 2",
+                "a cat\nBatch index: 1, Batch size: 2",
+            ],
         }
         for label, texts in cases.items():
             with self.subTest(label):

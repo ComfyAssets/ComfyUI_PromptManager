@@ -17,6 +17,7 @@ from PIL import Image
 from .inspection_outcomes import UNREADABLE_METADATA_REASON, outcome_message
 from .pair_execution import EXECUTION_KEY
 from .prompt_pair_resolver import (
+    _FOOTER,
     EMPTY_POSITIVE_REASON,
     INSPECTION_PROFILE,
     ResolverProfile,
@@ -44,7 +45,21 @@ _METADATA_KEYS = _ROLE_METADATA_KEYS | {"workflow"}
 _TEXT_CHUNKS = (b"tEXt", b"zTXt", b"iTXt")
 # An accumulating batch saver writes one A1111 ``parameters`` record per batch
 # item, identical except this field (R3); Pillow keeps the last one.
-_BATCH_INDEX = re.compile(r"(?m)(?:^|(?<=, ))Batch index: \d+(?=, |$)")
+# Matched only inside the record's one ``Steps: N, ...`` settings footer line.
+_BATCH_INDEX = re.compile(r"(?:^|(?<=, ))Batch index: \d+(?=, |$)")
+
+
+def _batch_normalized(text: str) -> str | None:
+    """``text`` with its footer's single batch index blanked, else ``None``."""
+    footers = list(_FOOTER.finditer(text))
+    if len(footers) != 1:
+        return None
+    line, count = _BATCH_INDEX.subn("Batch index: #", footers[0].group())
+    if count != 1:
+        return None
+    return text[: footers[0].start()] + line + text[footers[0].end() :]
+
+
 _SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -200,10 +215,8 @@ class _PngRecords:
         if value is None or self.duplicate_decoded > DUPLICATE_ROLE_BYTES:
             raise MetadataReadError("Metadata exceeds inspection limits")
         kept = self.found["parameters"]
-        normalized = [
-            _BATCH_INDEX.subn("Batch index: #", text) for text in (kept, value)
-        ]
-        if normalized[0] != normalized[1] or normalized[0][1] != 1:
+        normalized = _batch_normalized(kept)
+        if normalized is None or normalized != _batch_normalized(value):
             raise MetadataReadError("Duplicate prompt metadata")
         self.role_decoded += max(0, size - len(kept.encode()))
         if self.role_decoded > ROLE_METADATA_BYTES:
@@ -467,6 +480,27 @@ def unreadable_evidence() -> dict:
     return {"prompts": _explained(prompts, resolution), "resolution": resolution}
 
 
+def _may_hold_prompt_manager(metadata: dict) -> bool:
+    """Whether the API graph can show the R1 signature, so the workflow is needed.
+
+    PromptManager classes, or a ``CLIPTextEncode`` carrying PromptManager's own
+    ``search_text`` input (an older save rewrote the class).
+    """
+    graph = metadata.get("prompt")
+    if not isinstance(graph, dict):
+        return False
+    for node in graph.values():
+        if not isinstance(node, dict):
+            continue
+        name = node.get("class_type")
+        inputs = node.get("inputs")
+        if isinstance(name, str) and "promptmanager" in name.lower():
+            return True
+        if isinstance(inputs, dict) and "search_text" in inputs:
+            return True
+    return False
+
+
 def _parsed_workflow(value: Any) -> dict | None:
     """The UI workflow as an object, or ``None`` (absent, invalid or not JSON)."""
     if isinstance(value, str):
@@ -539,7 +573,9 @@ def inspect_prompt_evidence(
             canonical["prompt"] = json.loads(canonical["prompt"])
         except (ValueError, RecursionError):
             return malformed
-    workflow = _parsed_workflow(workflow)
+    workflow = (
+        _parsed_workflow(workflow) if _may_hold_prompt_manager(canonical) else None
+    )
     if workflow is not None and "prompt" in canonical:
         # Only to recognize overwritten PromptManager text (R1); never a role.
         canonical["workflow"] = workflow
