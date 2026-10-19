@@ -1087,13 +1087,16 @@ class TestPerRecordBudgets(unittest.TestCase):
         read = read_inspection_file(path)
         self.assertEqual(len(read.metadata["parameters"]), ROLE_METADATA_BYTES * 3 // 4)
 
-    def test_duplicate_chunk_reads_share_a_total_budget(self):
+    def test_workflow_duplicates_are_limited_without_touching_role_records(self):
         from utils import prompt_inspector
 
-        self.assertEqual(prompt_inspector.DUPLICATE_METADATA_BYTES, 8 * MIB)
-        chunk = self.prompt_chunk()
-        size = len(chunk) - 12
-        path = _png_with_chunks(self.directory / "dupes.png", [chunk] * 6)
+        self.assertEqual(prompt_inspector.DUPLICATE_WORKFLOW_BYTES, 8 * MIB)
+        self.assertEqual(prompt_inspector.DUPLICATE_ROLE_BYTES, 4 * MIB)
+        workflow = _text_chunk(b"tEXt", "workflow", b"{}" + b" " * 1000)
+        size = len(workflow) - 12
+        path = _png_with_chunks(
+            self.directory / "wf.png", [self.prompt_chunk()] + [workflow] * 6
+        )
         added = []
         original = prompt_inspector._PngRecords.add
 
@@ -1103,17 +1106,63 @@ class TestPerRecordBudgets(unittest.TestCase):
 
         with (
             patch.object(
-                prompt_inspector, "DUPLICATE_METADATA_BYTES", size * 2 + size // 2
+                prompt_inspector, "DUPLICATE_WORKFLOW_BYTES", size * 2 + size // 2
             ),
             patch.object(prompt_inspector._PngRecords, "add", counting),
         ):
             read = read_inspection_file(path)
-        # The original plus two budgeted duplicates were read; the third
-        # would exceed the budget, so the key is limited and the rest skipped.
-        self.assertEqual(added, [size] * 3)
-        self.assertEqual(read.record_formats["prompt"], "limited")
-        self.assertNotIn("prompt", read.metadata)
-        self.assertIn("prompt", read.limited_records)
+        # Original plus two budgeted duplicates were read; the third is limited.
+        self.assertEqual(added.count(size), 3)
+        self.assertEqual(read.record_formats["workflow"], "limited")
+        self.assertNotIn("workflow", read.metadata)
+        self.assertEqual(read.record_formats["prompt"], "original-text")
+        self.assert_prompts_resolved(read)
+
+    def test_role_duplicates_past_their_budget_fail_closed(self):
+        from utils import prompt_inspector
+
+        chunk = self.prompt_chunk()
+        size = len(chunk) - 12
+        path = _png_with_chunks(self.directory / "dupes.png", [chunk] * 6)
+        with patch.object(
+            prompt_inspector, "DUPLICATE_ROLE_BYTES", size * 2 + size // 2
+        ):
+            with self.assertRaisesRegex(
+                MetadataReadError, "Metadata exceeds inspection limits"
+            ):
+                read_inspection_file(path)
+
+    def test_over_budget_role_record_never_falls_back_to_other_evidence(self):
+        from utils import prompt_inspector
+
+        chunk = self.prompt_chunk()
+        size = len(chunk) - 12
+        extras = [
+            _text_chunk(b"tEXt", "parameters", b"fallback parameters"),
+            _text_chunk(b"tEXt", "workflow", b"{}"),
+        ]
+        path = _png_with_chunks(self.directory / "fallback.png", [chunk] * 6 + extras)
+        with patch.object(prompt_inspector, "DUPLICATE_ROLE_BYTES", size * 2):
+            with self.assertRaisesRegex(
+                MetadataReadError, "Metadata exceeds inspection limits"
+            ):
+                read_inspection_file(path)
+
+    def test_role_key_can_never_end_up_limited(self):
+        from utils import prompt_inspector
+
+        path = _png_with_chunks(self.directory / "plain.png", [self.prompt_chunk()])
+        original = prompt_inspector._PngRecords.skip
+
+        def limit_role(records, key, length):
+            records.limited.add("prompt")
+            return original(records, key, length)
+
+        with patch.object(prompt_inspector._PngRecords, "skip", limit_role):
+            with self.assertRaisesRegex(
+                MetadataReadError, "Metadata exceeds inspection limits"
+            ):
+                read_inspection_file(path)
 
     def test_duplicates_within_the_total_budget_are_unchanged(self):
         path = _png_with_chunks(self.directory / "few.png", [self.prompt_chunk()] * 3)
