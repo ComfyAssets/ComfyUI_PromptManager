@@ -602,7 +602,7 @@ test('invalid drafts and server failures keep the draft without a receipt', asyn
     assert.equal(controller.state.phase, 'disposed');
 });
 
-test('disposal suppresses late write results without aborting the write', async () => {
+test('disposal suppresses late write results without aborting the write but still reports the commit', async () => {
     const { createLibraryEditorController } = await source;
     assert.equal(typeof createLibraryEditorController, 'function', 'controller export');
     const answer = deferred();
@@ -620,13 +620,35 @@ test('disposal suppresses late write results without aborting the write', async 
     assert.equal(server.writes().length, 1, 'duplicate submit is disabled');
     controller.dispose();
     assert.equal(server.writes()[0].aborted, false, 'abort cannot undo a write');
-    const count = changes.length;
+    const count = changes.length, calls = server.calls.length;
     answer.resolve(response(200, recipe()));
     await saving;
     await settle();
-    assert.equal(committed.length, 0);
+    // A committed receipt still invalidates cached Library views after the dialog went away.
+    assert.equal(committed.length, 1);
+    assert.equal(committed[0].kind, 'create');
+    assert.equal(committed[0].receipt.positive.id, 9);
+    assert.equal(server.calls.length, calls, 'no reconciliation read after dispose');
     assert.equal(changes.length, count);
     assert.equal(controller.state.phase, 'disposed');
+});
+
+test('disposal during an unconfirmed save reports no commit', async () => {
+    const { createLibraryEditorController } = await source;
+    const answer = deferred();
+    const committed = [];
+    const server = harness(library({ write: () => answer.promise }));
+    const controller = createLibraryEditorController({ api: server.api, mode: 'new', onCommitted: c => committed.push(c) });
+    await controller.initialize();
+    controller.setField('title', 'T');
+    controller.setField('positive_text', 'x');
+    const saving = controller.submit();
+    await settle();
+    controller.dispose();
+    answer.resolve(response(200, { success: true }));
+    await saving;
+    await settle();
+    assert.equal(committed.length, 0, 'an invalid receipt is not a commit');
 });
 
 test('reconcileLibraryReceipt reads detail, options and the verified pair', async () => {

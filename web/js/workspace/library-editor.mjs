@@ -39,9 +39,12 @@ function el(tag, text, className) {
     return node;
 }
 
-/** Inline state copy and its one recovery action; `archive` selects the pair-archive wording. */
-function statusOf(state, archive) {
-    const save = archive ? 'archive' : 'save';
+/**
+ * Inline state copy and its one recovery action; `archive` selects the pair-archive
+ * wording. After a restore only New prompt may re-read: every other mode names an
+ * owner by its old numeric ID, so it offers only the Library refresh exit.
+ */
+function statusOf(state, archive, mode = null) {
     const nothing = archive ? 'Nothing was archived.' : 'Nothing was saved.';
     const message = state.error?.message;
     switch (state.phase) {
@@ -51,9 +54,10 @@ function statusOf(state, archive) {
     case 'write-error': return {text: `${archive ? 'Not archived' : 'Not saved'}: ${message} Your entries are kept.`};
     case 'conflict': return {text: archive ? 'This negative variant changed since it was loaded. Reload it and review it before archiving.'
         : 'This prompt changed since it was loaded. Reload it and review your entries before saving.', action: ['Reload', 'reload']};
-    case 'storage-changed': return {text: `Prompt storage was restored since this dialog opened. ${nothing}`, action: archive ? REFRESH : ['Reload Library state', 'reload']};
+    case 'storage-changed': return {text: `Prompt storage was restored since this dialog opened. ${nothing}`, action: mode === 'new' ? ['Reload Library state', 'reload'] : REFRESH};
     case 'unknown-outcome': return {text: archive ? 'Archive could not be confirmed. Retry sends the same archive once.'
-        : 'Save could not be confirmed. Your entries are kept; Retry sends the same save once.', action: ['Retry', 'retryUnconfirmed']};
+        : mode === 'metadata' ? 'Save could not be confirmed. Your entries are kept; Retry reloads the latest saved values for review and sends nothing.'
+            : 'Save could not be confirmed. Your entries are kept; Retry sends the same save once.', action: ['Retry', 'retryUnconfirmed']};
     case 'saved-refresh-error':
         // A refresh that found restored storage cannot recover by re-reading; only reloading the Library view can.
         if (state.error?.code === 'storage-changed') {
@@ -247,7 +251,7 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
             cancel.disabled = close.disabled = revise.disabled = saving;
             const pairProblem = readOnly && !state.pair && pairId === null ? NO_PAIR : state.pair?.archived ? ALREADY_ARCHIVED : null;
             archive.disabled = !SUBMITTABLE.has(state.phase) || !state.pair || state.pair.archived;
-            const status = statusOf(state, false);
+            const status = statusOf(state, false, mode);
             line.set(status?.text ?? pairProblem);
             if (!status && pairProblem) archive.setAttribute('aria-describedby', line.note.id);
             else archive.removeAttribute('aria-describedby');
@@ -278,6 +282,8 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
     /** Swap the open Edit dialog to the pair archive confirmation, reusing its controller. */
     function archiveView() {
         const {controller, trigger} = session;
+        // An Edit save's failure or validation message is not about the pair; the confirmation starts clean.
+        const inherited = controller.state.error;
         session.views.abort();
         const views = new AbortController();
         const block = el('section', undefined, 'prompt-block prompt-negative');
@@ -310,7 +316,7 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
                 const images = pair.image_count, runs = pair.run_count;
                 links.textContent = `${images} image${images === 1 ? '' : 's'} and ${runs} recorded run${runs === 1 ? '' : 's'} stay linked.`;
             }
-            const status = statusOf(state, true);
+            const status = state.error && state.error === inherited ? null : statusOf(state, true);
             line.set(status?.text ?? (readFailed ? 'Linked images and recorded runs could not be read. Nothing was archived.'
                 : counted ? null : 'Checking linked images and recorded runs…'));
             const retry = recoveryButton(recovery, status?.action, views.signal) ?? (readFailed ? reread : null);

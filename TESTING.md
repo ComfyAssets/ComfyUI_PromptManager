@@ -521,11 +521,14 @@ failed Save keeps focus inside the dialog and keeps every entry.
 
 Recovery is exercised against real failure responses, not mocks of the controller:
 
-- a **conflict** or **storage-changed** response keeps the draft and explains the
-  newer saved state;
-- an **unknown outcome** (no response) first reconciles read-only against the
-  saved state, and only the explicit **Retry** control re-sends, once, with a
-  deduplicated request identity, so repeated clicks cannot create duplicates;
+- a **conflict** response keeps the draft and explains the newer saved state; a
+  **storage-changed** response writes nothing, and only New prompt re-reads in
+  place: every other dialog offers only **Reload Library**, because an old numeric
+  owner is never resolved after a restore;
+- an **unknown outcome** (no response) keeps the draft and offers an explicit
+  **Retry** that resends the identical request once, which the server
+  deduplicates; an Edit metadata retry instead reloads the latest saved values for
+  review and resends nothing;
 - a **confirmed receipt** whose follow-up refresh fails offers a read-only
   refresh retry and never re-sends the write.
 

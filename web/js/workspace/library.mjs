@@ -51,19 +51,19 @@ export function rememberLibraryResult(result) {
     if(result.pair.archived) archivedVisible.set(positive.id,true);
 }
 /**
- * Toast copy from the receipt: the concept's Edit and Add-negative lines (app.js 989, 1028),
- * otherwise the spec's "Observable outcome" table wording.
+ * Toast copy from the receipt: the concept's save toast for New, Revision and Edit and its
+ * Add-negative line (app.js 989, 1028); a reuse discloses what was not saved.
  */
-function outcomeMessage(result,outcome) {
+function outcomeMessage(result) {
     const {kind,receipt}=result.commit;
     if(kind==='metadata') return 'Saved.';
     if(kind==='archive-pair') return ARCHIVED_MESSAGE;
     if(kind!=='create' && kind!=='add-negative') return null;
-    if(receipt.positive_created) return 'New parent and initial saved negative; submitted parent metadata persisted.';
+    if(receipt.positive_created) return 'Saved.';
     if(receipt.pair_created) return kind==='add-negative'?'Negative saved without adding another positive or gallery.'
-        :`Saved a negative under the existing positive; existing parent metadata kept.${outcome?.metadataNotApplied?' The entered parent metadata was not applied.':''}`;
+        :'Saved as a new negative variant of an existing prompt. The title, category, tags, rating and notes you entered were not applied.';
     if(receipt.pair.archived) return 'This combination is an archived negative variant. It stays archived; restore it from Show archived in Negative variants.';
-    return 'Open the reused combination with its original canonical texts and metadata.';
+    return 'This prompt pair already exists. Showing the saved version.';
 }
 function rememberUnappliedMetadata(result,{outcome,draft}={}) {
     if(result.commit.kind!=='create' || !outcome?.metadataNotApplied || !draft) return;
@@ -73,7 +73,7 @@ function rememberUnappliedMetadata(result,{outcome,draft}={}) {
 function createNewPromptEditor(api,scope,main) {
     return createLibraryEditor({api,parentScope:scope,onCommitted:invalidateLibraryAfterWrite,onReconciled:(result,context)=>{
         rememberLibraryResult(result);rememberUnappliedMetadata(result,context);
-        const message=outcomeMessage(result,context?.outcome);if(message) showWorkspaceToast(message);
+        const message=outcomeMessage(result);if(message) showWorkspaceToast(message);
         const hash=`#/library/${result.detail.positive.id}`;
         if(window.location.hash===hash) focusHeading(main);else {focusHeadingOnMount=true;window.location.hash=hash;}
     }});
@@ -352,7 +352,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         scope.listen(send,'click',()=>{const roles=current?.sendRoles();if(roles)sender.open(roles,send);});
         function reconciled(result,context) {
             rememberLibraryResult(result);rememberUnappliedMetadata(result,context);
-            const message=outcomeMessage(result,context?.outcome),id=result.detail.positive.id;
+            const message=outcomeMessage(result),id=result.detail.positive.id;
             if(message) showWorkspaceToast(message);
             if(id!==positiveId) {focusHeadingOnMount=true;window.location.hash=`#/library/${id}`;return;}
             if(current) current.apply(result);else loader.load(positiveId);
@@ -396,6 +396,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             content.listen(restoreAction,'click',()=>restoreHandler?.());
             const more=createButton('Load more negative variants');const retry=createButton('Retry negative variants');retry.hidden=true;
             const archivedLoader=createLibraryDetail({api,onChange:()=>{if(!content.signal.aborted)updateBranches(loader.state);},archive:'archived'});content.cleanup(()=>archivedLoader.dispose());
+            const restoringPairs=new Set();
             let archivedShown=archivedVisible.get(positiveId)===true,archivedStale=false;
             const archivedList=()=>archivedShown?archivedLoader.state.detail?.variants || []:[];
             const separate=()=>{const pair=selectedPairs.get(positiveId);return pair && !detail.variants.some(variant=>variant.id===pair.id) && !archivedList().some(variant=>variant.id===pair.id)?pair:null;};
@@ -445,7 +446,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                     lane.button.setAttribute('aria-label',entry.kind==='separate'?'Select the saved negative variant outside the loaded list':`Select negative variant ${entry.number}`);
                     lane.button.setAttribute('aria-pressed',String(activePairId===entry.variant.id));lane.button.disabled=savedReadState!=='current';
                     lane.text.textContent=`${name} · ${entry.variant.image_count} linked images${entry.kind==='archived'?' · Archived':''}`;
-                    if(lane.restore) {lane.restore.setAttribute('aria-label',`Restore ${name}`);lane.restore.disabled=savedReadState!=='current';}
+                    if(lane.restore) {lane.restore.setAttribute('aria-label',`Restore ${name}`);lane.restore.disabled=savedReadState!=='current' || restoringPairs.has(entry.variant.id);}
                     if(previous.nextSibling!==lane.node) previous.after(lane.node);
                     previous=lane.node;
                 }
@@ -558,7 +559,9 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             }
             /** Restore through the editor controller's fenced pair path; nothing restores silently. */
             async function restorePair(pairId,button) {
-                showRestoreProblem('');button.disabled=true;
+                // A rebuilt lane must not offer a second Restore while this one is in flight.
+                if(restoringPairs.has(pairId)) return;
+                restoringPairs.add(pairId);showRestoreProblem('');button.disabled=true;
                 const controller=createLibraryEditorController({api,mode:'metadata',positiveId,pairId,onCommitted:invalidateLibraryAfterWrite,onReconciled:result=>{
                     rememberLibraryResult(result);apply(result);
                     const dot=[...lanes.values()].find(lane=>lane.entry.kind!=='archived' && lane.entry.variant.id===pairId)?.button;dot?.focus();
@@ -573,8 +576,12 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                     else if(phase==='unknown-outcome') showRestoreProblem('Restore could not be confirmed. Retry sends the same restore once.','Retry',async()=>{await controller.retryUnconfirmed();settle();});
                     else showRestoreProblem(`Not restored: ${error?.message || 'The saved negative variant could not be read.'}`);
                 };
-                await controller.initialize();
-                if(controller.state.phase==='ready') await controller.setArchive(false);
+                try {
+                    await controller.initialize();
+                    if(controller.state.phase==='ready') await controller.setArchive(false);
+                } finally {
+                    restoringPairs.delete(pairId);if(!content.signal.aborted) updateBranches(loader.state);
+                }
                 settle();
             }
             /** Same-parent reconciliation from one authoritative result; the separately verified pair stays outside the page. */

@@ -258,7 +258,6 @@ export function createLibraryEditorController({api, mode, positiveId = null, pai
             emit({phase, error});
             return;
         }
-        if (disposed) return;
         let receipt;
         try {
             receipt = freeze(structuredClone(validateReceipt(next, value, {positiveId, owner: state.owner, pairId: state.pair?.id})));
@@ -268,6 +267,8 @@ export function createLibraryEditorController({api, mode, positiveId = null, pai
         }
         pending = null;
         commit = freeze({kind: next.kind, receipt});
+        // A confirmed write still invalidates cached Library views after the dialog went away; nothing else runs then.
+        if (disposed) {onCommitted(commit); return;}
         emit({receipt, outcome: outcomeOf(next, receipt)});
         onCommitted(commit);
         await reconcile();

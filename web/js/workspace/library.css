@@ -134,7 +134,6 @@ main.library-main { --library-negative: #ff8c98; }
 @media (max-width: 700px) { .workspace-heading .heading-actions { inline-size: 100%; } }
 @media (pointer: coarse) { .ca-tools .workspace-heading .heading-actions button, .ca-tools .library-main .row-actions button { min-block-size: 40px; } }
 /* Archived pairs: the existing lane at reduced emphasis (the existing .6 disabled-marker opacity); text stays at full contrast. */
-.library-main .library-variant-archived { border-block-start-color: color-mix(in srgb, var(--library-negative) 36%, transparent); }
 .library-main .library-variant-archived::before, .ca-tools .library-main .library-variant-archived .library-variant-dot { opacity: .6; }
 .ca-tools .library-main .library-variant-restore { position: static; margin-inline-start: 8px; min-block-size: 24px; padding: 2px 8px; font-size: 10px; vertical-align: middle; }
 @media (pointer: coarse) { .ca-tools .library-main .library-variant-restore { min-block-size: 40px; } }

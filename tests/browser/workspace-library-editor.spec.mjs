@@ -317,6 +317,37 @@ test('edge states keep drafts, explain disabled archive and clean up on dispose'
     expect(page.writes).toHaveLength(1);expect((await pairRead(request,f.empty_pair_id)).archived).toBe(false);
 });
 
+test('the archive confirmation does not inherit a failed or invalid Edit save message',async({page})=>{
+    const f=page.fixture;await mountEditor(page);
+    await page.route(`**/prompt_manager/library/${f.positive_id}`,route=>route.request().method()==='PATCH'
+        ?route.fulfill({status:400,contentType:'application/json',body:'{"success":false,"error":"Notes are too long.","code":null}'}):route.continue());
+    let dialog=await openEditor(page,{mode:'metadata',positiveId:f.positive_id,pairId:f.pair_id});await ready(dialog);
+    await field(dialog,'Notes').fill('Rejected notes');await button(dialog,'Save').click();
+    await expect(note(dialog)).toHaveText('Not saved: Notes are too long. Your entries are kept.');
+    await button(dialog,'Archive…').click();await expect(dialog).toContainText('1 image and 2 recorded runs stay linked.');
+    await expect(note(dialog)).toBeHidden();await expect(button(dialog,'Archive')).toBeEnabled();
+    await button(dialog,'Cancel').click();await expect(dialog).toHaveCount(0);
+    dialog=await openEditor(page,{mode:'metadata',positiveId:f.positive_id,pairId:f.pair_id});await ready(dialog);
+    await field(dialog,'Title').fill('   ');await button(dialog,'Save').click();await expect(note(dialog)).toHaveText('Title is required');
+    await button(dialog,'Archive…').click();await expect(dialog).toContainText('1 image and 2 recorded runs stay linked.');
+    await expect(note(dialog)).toBeHidden();await expect(button(dialog,'Archive')).toBeEnabled();
+    expect(page.writes).toHaveLength(1);
+});
+
+test('an unconfirmed Edit save says Retry reloads for review and resends nothing',async({page})=>{
+    const f=page.fixture;await mountEditor(page);let dropped=false;
+    await page.route(`**/prompt_manager/library/${f.positive_id}`,async route=>{
+        if(route.request().method()==='PATCH'&&!dropped){dropped=true;await route.fetch();await route.abort('failed');return;}
+        await route.continue();
+    });
+    const dialog=await openEditor(page,{mode:'metadata',positiveId:f.positive_id,pairId:f.pair_id});await ready(dialog);
+    await field(dialog,'Notes').fill('Unconfirmed notes');await button(dialog,'Save').click();
+    await expect(note(dialog)).toHaveText('Save could not be confirmed. Your entries are kept; Retry reloads the latest saved values for review and sends nothing.');
+    await button(dialog,'Retry').click();
+    await expect(note(dialog)).toHaveText('Loaded the latest saved values. Review your entries, then save.');
+    await expect(field(dialog,'Notes')).toHaveValue('Unconfirmed notes');expect(page.writes).toHaveLength(1);
+});
+
 function toastStyle(node) {
     const style=getComputedStyle(node);
     return Object.fromEntries(['position','bottom','left','transform','backgroundColor','borderTopWidth','borderTopColor','paddingTop','paddingLeft',
@@ -410,7 +441,7 @@ test('library heading offers Export then + New prompt, and New opens the saved p
     const created=(await(await request.get('/prompt_manager/library?text=quiet%20harbor')).json()).items[0];
     await expect(page).toHaveURL(new RegExp(`#/library/${created.id}$`));
     await expect(page.locator('#workspace-main h1')).toHaveText('Harbor at dawn');await expect(page.locator('#workspace-main h1')).toBeFocused();
-    await expect(toast(page)).toHaveText('New parent and initial saved negative; submitted parent metadata persisted.');
+    await expect(toast(page)).toHaveText('Saved.');
     await expect(pressedVariant(page)).toHaveCount(1);await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true})).toContainText('fog, noise');
     expect(page.writes.map(write=>`${write.method} ${write.url}`)).toEqual(['POST /prompt_manager/library']);
 });
@@ -455,7 +486,7 @@ test('add negative re-renders history with the saved or reused pair selected',as
     await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true})).toContainText('grain, dust');
     await expect(laneLabel(page,'Negative variant 1 ·')).toHaveCount(1);await expect(pressedVariant(page)).toHaveAccessibleName('Select negative variant 1');
     await add.click();dialog=editorDialog(page);await ready(dialog);await field(dialog,'Negative prompt').fill(`  ${f.selected_negative.toUpperCase()} `);await button(dialog,'Save').click();
-    await expect(dialog).toHaveCount(0);await expect(toast(page)).toHaveText('Open the reused combination with its original canonical texts and metadata.');
+    await expect(dialog).toHaveCount(0);await expect(toast(page)).toHaveText('This prompt pair already exists. Showing the saved version.');
     await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre')).toHaveText(f.selected_negative);
     await expect(laneLabel(page,'· 1 linked images')).toHaveCount(1);
     await expect(pressedVariant(page)).toHaveAccessibleName('Select negative variant 3');
@@ -530,6 +561,48 @@ test('restored storage after a confirmed save or before an archive offers an exp
     expect(await actionNames(dialog)).toEqual(['Reload Library','Cancel','Archive']);expect(page.writes).toHaveLength(1);
     await button(dialog,'Reload Library').click();await expect(dialog).toHaveCount(0);await expect(variantsPanel(page)).toBeVisible();
     expect((await pairRead(request,f.pair_id)).archived).toBe(false);
+});
+
+test('restored storage before an Edit or Add negative save offers only the Library reload exit',async({page,request})=>{
+    const f=page.fixture;const snapshot=await(await request.get('/__test__/library-editor/snapshot')).body();
+    const restore=()=>request.post('/prompt_manager/restore',{multipart:{database_file:{name:'editor.db',mimeType:'application/octet-stream',buffer:snapshot}}});
+    await openHistory(page,f.positive_id);
+    await page.getByRole('button',{name:'Edit metadata',exact:true}).click();let dialog=editorDialog(page);await ready(dialog);
+    await expect(await restore()).toBeOK();
+    await field(dialog,'Notes').fill('Typed before the restore');await button(dialog,'Save').click();
+    await expect(note(dialog)).toHaveText('Prompt storage was restored since this dialog opened. Nothing was saved.');
+    expect(await actionNames(dialog)).toEqual(['Reload Library','Create text revision','Archive…','Cancel','Save']);
+    await expect(button(dialog,'Reload Library state')).toHaveCount(0);await expect(button(dialog,'Save')).toBeDisabled();
+    expect(page.writes).toHaveLength(1);// the refused save
+    await button(dialog,'Reload Library').click();await expect(dialog).toHaveCount(0);await expect(variantsPanel(page)).toBeVisible();
+    expect(page.writes).toHaveLength(1);expect((await detail(request,f.positive_id)).positive.notes).toBe(f.metadata.notes);
+
+    await variantsPanel(page).getByRole('button',{name:'+ Add negative',exact:true}).click();dialog=editorDialog(page);await ready(dialog);
+    await expect(await restore()).toBeOK();
+    await field(dialog,'Negative prompt').fill('typed before the restore');await button(dialog,'Save').click();
+    await expect(note(dialog)).toHaveText('Prompt storage was restored since this dialog opened. Nothing was saved.');
+    expect(await actionNames(dialog)).toEqual(['Reload Library','Cancel','Save']);
+    await expect(button(dialog,'Reload Library state')).toHaveCount(0);expect(page.writes).toHaveLength(2);
+    await button(dialog,'Reload Library').click();await expect(dialog).toHaveCount(0);await expect(variantsPanel(page)).toBeVisible();
+    expect(page.writes).toHaveLength(2);
+    expect((await detail(request,f.positive_id)).variants.some(variant=>variant.negative_text==='typed before the restore')).toBe(false);
+});
+
+test('Restore stays disabled until the restore settles and sends one PATCH',async({page,request})=>{
+    const f=page.fixture;await openHistory(page,f.positive_id);
+    let release;const held=new Promise(resolve=>{release=resolve;});
+    await page.route(`**/prompt_manager/pairs/${f.archived_pair_id}`,async route=>{if(route.request().method()==='PATCH')await held;await route.continue();});
+    const toggle=()=>variantsPanel(page).getByRole('button',{name:/^Show archived/});
+    const restoreButton=()=>variantsPanel(page).locator('.library-variant-archived').getByRole('button',{name:/^Restore/});
+    await toggle().click();await expect(restoreButton()).toBeEnabled();
+    await restoreButton().click();await expect.poll(()=>page.writes.length).toBe(1);await expect(restoreButton()).toBeDisabled();
+    // Hiding and showing archived variants rebuilds the lane while the restore is in flight.
+    await toggle().click();await toggle().click();
+    await expect(restoreButton()).toBeDisabled();await restoreButton().evaluate(node=>node.click());
+    release();
+    await expect(variantsPanel(page).locator('.library-variant-archived')).toHaveCount(0);
+    expect(page.writes).toEqual([{method:'PATCH',url:`/prompt_manager/pairs/${f.archived_pair_id}`,body:{archived:false}}]);
+    expect((await pairRead(request,f.archived_pair_id)).archived).toBe(false);
 });
 
 test('archive hides a pair, Show archived finds it and Restore keeps it selected with links and counts unchanged',async({page,request})=>{
@@ -630,7 +703,7 @@ test('reuse that leaves parent metadata unapplied discloses it and keeps the dra
     await field(dialog,'Title').fill('A different title');await field(dialog,'Positive prompt').fill(f.positive_text);await field(dialog,'Negative prompt (optional)').fill('brand new negative');
     await field(dialog,'Notes').fill('Draft notes');await button(dialog,'Save').click();
     await expect(page).toHaveURL(new RegExp(`#/library/${f.positive_id}$`));
-    await expect(toast(page)).toHaveText('Saved a negative under the existing positive; existing parent metadata kept. The entered parent metadata was not applied.');
+    await expect(toast(page)).toHaveText('Saved as a new negative variant of an existing prompt. The title, category, tags, rating and notes you entered were not applied.');
     await expect(page.locator('#workspace-main h1')).toHaveText(f.metadata.title);
     await page.getByRole('button',{name:'Edit metadata',exact:true}).click();dialog=editorDialog(page);await ready(dialog);
     await expect(field(dialog,'Title')).toHaveValue('A different title');await expect(field(dialog,'Notes')).toHaveValue('Draft notes');
