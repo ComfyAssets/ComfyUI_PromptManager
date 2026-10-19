@@ -85,7 +85,7 @@ function formatBytes(value) {
     return value === null || value === undefined ? null : value >= 1048576 ? `${(value / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(value / 1024))} KB`;
 }
 
-export function mountFileInspector(container, {sender, parentScope, inline = false, onPreview, onRetry, onRefresh, onInteraction = () => {}}) {
+export function mountFileInspector(container, {sender, parentScope, inline = false, promptContext = '', onPreview, onRetry, onRefresh, onInteraction = () => {}}) {
     if (parentScope.signal.aborted) return {setState() {}, dispose() {}};
     const scope = childScope(parentScope);
     let contentScope;
@@ -145,7 +145,7 @@ export function mountFileInspector(container, {sender, parentScope, inline = fal
         }
         if (chips.childNodes.length) inner.append(chips);
         const prompts = el('div'); inner.append(prompts);
-        const blocks = mountPromptBlocks(prompts, {sender, parentScope:contentScope, includePairAction:false});
+        const blocks = mountPromptBlocks(prompts, {sender, parentScope:contentScope, includePairAction:false, contextLabel:promptContext});
         blocks.setState({prompts:record.prompts}); contentScope.cleanup(blocks.dispose);
         if (library?.status === 'linked') {
             const vocabulary = el('div', undefined, 'file-vocabulary');

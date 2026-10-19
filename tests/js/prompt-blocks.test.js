@@ -130,3 +130,16 @@ test('class names in status lines render as text, never markup',()=>{
         assert.equal(f.walk(container,node=>Object.hasOwn(node,'innerHTML')).length,0);
     }finally{scope.dispose();f.restore();}
 });
+
+test('a context label names nested prompt regions and actions apart from the frozen blocks while the visible heading stays',()=>{
+    const f=dom(),scope=createScope(),container=new f.Element('div');
+    try{
+        module.mountPromptBlocks(container,{parentScope:scope,sender:{open:()=>{}},contextLabel:'Current file',prompts:{positive:record('p'),negative:record('n')}});
+        const labels=f.walk(container,node=>node.attributes['aria-label']).map(node=>node.attributes['aria-label']);
+        for(const name of ['Current file positive prompt','Current file negative prompt','Copy current file positive prompt','Send current file positive prompt','Copy current file negative prompt','Send current file negative prompt']) assert.ok(labels.includes(name),name);
+        assert.equal(labels.filter(name=>/^(Positive|Negative) prompt$/.test(name)).length,0);
+        assert.deepEqual(f.walk(container,node=>node.tagName==='h3').map(node=>node.textContent),['Positive prompt','Negative prompt']);
+        const plain=new f.Element('div');module.mountPromptBlocks(plain,{parentScope:scope,sender:{open:()=>{}},prompts:{positive:record('p')}});
+        assert.ok(f.walk(plain,node=>node.attributes['aria-label']==='Positive prompt').length);
+    }finally{scope.dispose();f.restore();}
+});
