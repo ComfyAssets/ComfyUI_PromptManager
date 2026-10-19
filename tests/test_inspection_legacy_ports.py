@@ -133,7 +133,10 @@ class TestOverwrittenPromptManagerText(unittest.TestCase):
             node["type"] = node["type"].replace("PromptManager", "PromptManagerPair")
         self.assertEqual(_inspect(metadata)["state"], "resolved")
         # No workflow, or a malformed one, cannot show the signature.
-        for workflow in (None, "nodes", {"nodes": "x"}, {"nodes": [1, None]}):
+        orphans = {
+            "nodes": [{"id": 5, "type": "PromptManager", "widgets_values": ["a"]}]
+        }
+        for workflow in (None, "nodes", {"nodes": "x"}, {"nodes": [1, None]}, orphans):
             with self.subTest(workflow=workflow):
                 metadata = _overwritten()
                 metadata["workflow"] = workflow
@@ -448,6 +451,24 @@ class TestBatchIndexDuplicates(unittest.TestCase):
         path = self.png(chunks)
         with self.assertRaisesRegex(MetadataReadError, "exceeds inspection limits"):
             read_inspection_file(path)
+        # The kept copy still fits the role budget when a later one is longer.
+        from utils.prompt_inspector import ROLE_METADATA_BYTES
+
+        first = _batch(9)
+        first += "," + " " * (ROLE_METADATA_BYTES - len(first) - 1)
+        later = first.replace("index: 9", "index: 10")
+        for copy in (later, later + " " * ROLE_METADATA_BYTES):
+            with self.subTest(size=len(copy)):
+                path = self.png(
+                    [
+                        _chunk("parameters", first, b"zTXt"),
+                        _chunk("parameters", copy, b"zTXt"),
+                    ]
+                )
+                with self.assertRaisesRegex(
+                    MetadataReadError, "exceeds inspection limits"
+                ):
+                    read_inspection_file(path)
 
 
 def _f02(**changes) -> dict:
