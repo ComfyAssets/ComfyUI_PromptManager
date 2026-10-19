@@ -15,10 +15,10 @@ Regenerate the committed files with::
 """
 
 import argparse
-import copy
 import io
 import json
 import struct
+import tempfile
 import zlib
 from pathlib import Path
 
@@ -168,180 +168,180 @@ def _flux2_branches(branches, gates=4):
     with a different prompt feeds only a PreviewImage.
     """
     graph = {
-        "529": {
+        "11": {
             "class_type": "VAELoader",
-            "inputs": {"vae_name": "flux2-vae.safetensors"},
+            "inputs": {"vae_name": "vae.safetensors"},
         },
-        "528": {
+        "12": {
             "class_type": "CLIPLoader",
             "inputs": {"clip_name": "text_encoder.safetensors", "type": "flux2"},
         },
-        "824": {
+        "13": {
             "class_type": "UNETLoader",
             "inputs": {
                 "unet_name": "flux-2-klein-9b-fp8.safetensors",
                 "weight_dtype": "default",
             },
         },
-        "535": {"class_type": "LoadImage", "inputs": {"image": "reference.png"}},
-        "547": {
+        "14": {"class_type": "LoadImage", "inputs": {"image": "reference.png"}},
+        "21": {
             "class_type": "StringConstantMultiline",
             "inputs": {"string": POS + ",", "strip_newlines": False},
         },
-        "549": {
+        "22": {
             "class_type": "StringConstantMultiline",
             "inputs": {"string": "soft winter light,", "strip_newlines": False},
         },
-        "2904": {"class_type": "PrimitiveString", "inputs": {"value": "Project"}},
-        "2905": {"class_type": "PrimitiveString", "inputs": {"value": "fixture"}},
-        "2906": {"class_type": "PrimitiveString", "inputs": {"value": "IMG"}},
-        "2908": {
+        "31": {"class_type": "PrimitiveString", "inputs": {"value": "Project"}},
+        "32": {"class_type": "PrimitiveString", "inputs": {"value": "fixture"}},
+        "33": {"class_type": "PrimitiveString", "inputs": {"value": "IMG"}},
+        "34": {
             "class_type": "JoinStringMulti",
             "inputs": {
                 "inputcount": 2,
                 "delimiter": "_",
                 "return_list": False,
-                "string_1": ["2905", 0],
-                "string_2": ["2906", 0],
+                "string_1": ["32", 0],
+                "string_2": ["33", 0],
             },
         },
-        "2910": {
+        "35": {
             "class_type": "JoinStringMulti",
             "inputs": {
                 "inputcount": 4,
                 "delimiter": "/",
                 "return_list": False,
-                "string_1": ["2904", 0],
-                "string_2": ["2905", 0],
-                "string_3": ["2908", 0],
-                "string_4": ["2908", 0],
+                "string_1": ["31", 0],
+                "string_2": ["32", 0],
+                "string_3": ["34", 0],
+                "string_4": ["34", 0],
             },
         },
-        "3042": {
+        "41": {
             "class_type": "PrimitiveStringMultiline",
             "inputs": {"value": "Detailer pass: refine the face"},
         },
-        "1611": {
+        "42": {
             "class_type": "CLIPTextEncode",
-            "inputs": {"text": ["3042", 0], "clip": ["528", 0]},
+            "inputs": {"text": ["41", 0], "clip": ["12", 0]},
         },
-        "1603": {
+        "43": {
             "class_type": "ConditioningZeroOut",
-            "inputs": {"conditioning": ["1611", 0]},
+            "inputs": {"conditioning": ["42", 0]},
         },
-        "1600": {
+        "44": {
             "class_type": "FaceDetailer",
             "inputs": {
-                "image": ["535", 0],
-                "model": ["824", 0],
-                "clip": ["528", 0],
-                "vae": ["529", 0],
-                "positive": ["1611", 0],
-                "negative": ["1603", 0],
-                "seed": 468212954408038,
+                "image": ["14", 0],
+                "model": ["13", 0],
+                "clip": ["12", 0],
+                "vae": ["11", 0],
+                "positive": ["42", 0],
+                "negative": ["43", 0],
+                "seed": 271828182845,
                 "steps": 20,
                 "cfg": 1,
                 "sampler_name": "euler",
                 "scheduler": "simple",
             },
         },
-        "1601": {"class_type": "PreviewImage", "inputs": {"images": ["1600", 0]}},
+        "45": {"class_type": "PreviewImage", "inputs": {"images": ["44", 0]}},
     }
     for branch in range(branches):
-        scope = f"{2600 + branch}"
+        scope = f"{1300 + branch}"
 
         def sub(local, scope=scope):
             return f"{scope}:{local}"
 
-        graph[f"{3100 + branch}"] = {
+        graph[f"{1100 + branch}"] = {
             "class_type": "StringConstantMultiline",
             "inputs": {
                 "string": f"Scene {branch}: unique shot description",
                 "strip_newlines": False,
             },
         }
-        graph[f"{3200 + branch}"] = {
+        graph[f"{1200 + branch}"] = {
             "class_type": "JoinStringMulti",
             "inputs": {
                 "inputcount": 3,
                 "delimiter": " ",
                 "return_list": False,
-                "string_1": ["547", 0],
-                "string_2": [f"{3100 + branch}", 0],
-                "string_3": ["549", 0],
+                "string_1": ["21", 0],
+                "string_2": [f"{1100 + branch}", 0],
+                "string_3": ["22", 0],
             },
         }
-        graph[sub(751)] = {
+        graph[sub(1)] = {
             "class_type": "CLIPTextEncode",
-            "inputs": {"text": [f"{3200 + branch}", 0], "clip": ["528", 0]},
+            "inputs": {"text": [f"{1200 + branch}", 0], "clip": ["12", 0]},
         }
-        graph[sub(752)] = {
+        graph[sub(2)] = {
             "class_type": "FluxGuidance",
-            "inputs": {"guidance": 4.0, "conditioning": [sub(751), 0]},
+            "inputs": {"guidance": 3.5, "conditioning": [sub(1), 0]},
         }
-        previous = sub(752)
+        previous = sub(2)
         for gate in range(gates):
-            graph[sub(800 + gate)] = {
+            graph[sub(10 + gate)] = {
                 "class_type": "ImageExists",
-                "inputs": {"image": ["535", 0]},
+                "inputs": {"image": ["14", 0]},
             }
-            graph[sub(810 + gate)] = {
+            graph[sub(20 + gate)] = {
                 "class_type": "VAEEncode",
-                "inputs": {"pixels": [sub(800 + gate), 0], "vae": ["529", 0]},
+                "inputs": {"pixels": [sub(10 + gate), 0], "vae": ["11", 0]},
             }
-            graph[sub(820 + gate)] = {
+            graph[sub(30 + gate)] = {
                 "class_type": "ReferenceLatent",
                 "inputs": {
                     "conditioning": [previous, 0],
-                    "latent": [sub(810 + gate), 0],
+                    "latent": [sub(20 + gate), 0],
                 },
             }
-            graph[sub(830 + gate)] = {
+            graph[sub(40 + gate)] = {
                 "class_type": "easy ifElse",
                 "inputs": {
-                    "boolean": [sub(800 + gate), 1],
-                    "on_true": [sub(820 + gate), 0],
+                    "boolean": [sub(10 + gate), 1],
+                    "on_true": [sub(30 + gate), 0],
                     "on_false": [previous, 0],
                 },
             }
-            previous = sub(830 + gate)
-        graph[sub(742)] = {
+            previous = sub(40 + gate)
+        graph[sub(3)] = {
             "class_type": "BasicGuider",
-            "inputs": {"model": ["824", 0], "conditioning": [previous, 0]},
+            "inputs": {"model": ["13", 0], "conditioning": [previous, 0]},
         }
-        graph[sub(719)] = {
+        graph[sub(4)] = {
             "class_type": "RandomNoise",
             "inputs": {"noise_seed": 1000 + branch},
         }
-        graph[sub(717)] = {
+        graph[sub(5)] = {
             "class_type": "KSamplerSelect",
             "inputs": {"sampler_name": "euler"},
         }
-        graph[sub(745)] = {
+        graph[sub(6)] = {
             "class_type": "Flux2Scheduler",
             "inputs": {"steps": 20, "width": 1024, "height": 1024},
         }
-        graph[sub(741)] = {
+        graph[sub(7)] = {
             "class_type": "EmptyFlux2LatentImage",
             "inputs": {"width": 1024, "height": 1024, "batch_size": 1},
         }
-        graph[sub(718)] = {
+        graph[sub(8)] = {
             "class_type": "SamplerCustomAdvanced",
             "inputs": {
-                "noise": [sub(719), 0],
-                "guider": [sub(742), 0],
-                "sampler": [sub(717), 0],
-                "sigmas": [sub(745), 0],
-                "latent_image": [sub(741), 0],
+                "noise": [sub(4), 0],
+                "guider": [sub(3), 0],
+                "sampler": [sub(5), 0],
+                "sigmas": [sub(6), 0],
+                "latent_image": [sub(7), 0],
             },
         }
-        graph[sub(746)] = {
+        graph[sub(9)] = {
             "class_type": "VAEDecode",
-            "inputs": {"samples": [sub(718), 0], "vae": ["529", 0]},
+            "inputs": {"samples": [sub(8), 0], "vae": ["11", 0]},
         }
-        graph[f"{2800 + branch}"] = {
+        graph[f"{1400 + branch}"] = {
             "class_type": "SaveImage",
-            "inputs": {"filename_prefix": ["2910", 0], "images": [sub(746), 0]},
+            "inputs": {"filename_prefix": ["35", 0], "images": [sub(9), 0]},
         }
     return graph
 
@@ -539,7 +539,7 @@ def _f10():
 def _f11():
     latent = {
         "class_type": "EmptyHunyuanLatentVideo",
-        "inputs": {"width": 832, "height": 480, "length": 33, "batch_size": 1},
+        "inputs": {"width": 640, "height": 384, "length": 17, "batch_size": 1},
     }
     return _basic(_ksampler_graph(_enc(POS), _enc(NEG), latent=latent))
 
@@ -723,7 +723,7 @@ def build(name):
         builder = _BUILDERS[name]
     except KeyError:
         raise KeyError(f"Unknown inspection parity fixture: {name}") from None
-    return copy.deepcopy(builder())
+    return builder()
 
 
 def fixture_path(name, directory=FIXTURE_DIR):
@@ -831,13 +831,13 @@ def _observe_inspection(read):
     return resolution["state"], resolution["reason"], *roles, resolution
 
 
-def _observe_default(read):
+def _observe_default(path):
     from utils.prompt_pair_resolver import resolve_prompt_pair
 
+    # Last chunk wins, as Pillow's ``image.text`` (the metadata extractor) does.
+    records = dict(read_text_chunks(path))
     canonical = {
-        key: value
-        for key, value in read.metadata.items()
-        if key in ("prompt", "parameters")
+        key: value for key, value in records.items() if key in ("prompt", "parameters")
     }
     if isinstance(canonical.get("prompt"), str):
         canonical["prompt"] = json.loads(canonical["prompt"])
@@ -852,27 +852,45 @@ def _observe_default(read):
         for role in ("positive", "negative")
     ]
     resolved = {**resolved, "candidate_count": len(resolved.get("candidates") or [])}
-    return state, resolved.get("reason", ""), *roles, resolved
+    return "available", state, resolved.get("reason", ""), *roles, resolved
+
+
+def _observe_path(vector, path):
+    from utils.prompt_inspector import MetadataReadError, read_inspection_file
+
+    if vector["profile"] != "inspection":
+        return _observe_default(path)
+    try:
+        read, status = read_inspection_file(path), "available"
+    except MetadataReadError:
+        read, status = None, "unreadable"
+    return (status, *_observe_inspection(read))
 
 
 def observe(vector, directory=FIXTURE_DIR):
     """Today's outcome for one vector, shaped like ``vector["expect"]`` minus facts.
 
     ``inspection`` is the workspace inspector path (``read_inspection_file`` then
-    ``inspect_prompt_evidence``); ``default`` is ``resolve_prompt_pair`` on the same
-    parsed role records, the ingestion profile.
-    """
-    from utils.prompt_inspector import MetadataReadError, read_inspection_file
+    ``inspect_prompt_evidence``). ``default`` pins the resolver's default profile
+    only: ``resolve_prompt_pair`` on the role records decoded from the PNG text
+    chunks. Ingestion's own readers are covered by their own suites.
 
-    try:
-        read = read_inspection_file(fixture_path(vector["fixture"], directory))
-        status = "available"
-    except MetadataReadError:
-        read, status = None, "unreadable"
-    if vector["profile"] == "inspection":
-        state, reason, positive, negative, resolution = _observe_inspection(read)
+    Committed fixtures are read from ``directory``, which must contain them.
+    Test-time fixtures are built into a temporary directory; the file is
+    written and closed before it is read, and closed again before cleanup.
+    """
+    name = vector["fixture"]
+    if name in TEST_TIME:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = fixture_path(name, temporary)
+            write_png(path, build(name))
+            observed = _observe_path(vector, path)
     else:
-        state, reason, positive, negative, resolution = _observe_default(read)
+        path = fixture_path(name, directory)
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        observed = _observe_path(vector, path)
+    status, state, reason, positive, negative, resolution = observed
     return {
         "metadata_status": status,
         "state": state,

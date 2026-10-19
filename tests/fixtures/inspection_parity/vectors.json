@@ -1,5 +1,47 @@
 [
   {
+    "name": "f01-inspection",
+    "fixture": "f01",
+    "profile": "inspection",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "unresolved",
+      "reason": "Resolution limit reached",
+      "reason_code": null,
+      "selection": null,
+      "positive": null,
+      "negative": null,
+      "candidate_count": 0,
+      "facts": {
+        "seed": {
+          "status": "unresolved",
+          "value": null
+        },
+        "steps": {
+          "status": "unresolved",
+          "value": null
+        },
+        "cfg": {
+          "status": "unresolved",
+          "value": null
+        },
+        "sampler": {
+          "status": "unresolved",
+          "value": null
+        },
+        "scheduler": {
+          "status": "unresolved",
+          "value": null
+        },
+        "model": {
+          "status": "unresolved",
+          "value": null
+        }
+      }
+    }
+  },
+  {
     "name": "f01b-inspection",
     "fixture": "f01b",
     "profile": "inspection",
@@ -121,6 +163,90 @@
         "model": {
           "status": "unresolved",
           "value": null
+        }
+      }
+    }
+  },
+  {
+    "name": "f04-inspection",
+    "fixture": "f04",
+    "profile": "inspection",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "unreadable",
+      "state": "unresolved",
+      "reason": "Media metadata could not be read",
+      "reason_code": null,
+      "selection": null,
+      "positive": null,
+      "negative": null,
+      "candidate_count": 0,
+      "facts": {
+        "seed": {
+          "status": "unresolved",
+          "value": null
+        },
+        "steps": {
+          "status": "unresolved",
+          "value": null
+        },
+        "cfg": {
+          "status": "unresolved",
+          "value": null
+        },
+        "sampler": {
+          "status": "unresolved",
+          "value": null
+        },
+        "scheduler": {
+          "status": "unresolved",
+          "value": null
+        },
+        "model": {
+          "status": "unresolved",
+          "value": null
+        }
+      }
+    }
+  },
+  {
+    "name": "f05-inspection",
+    "fixture": "f05",
+    "profile": "inspection",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
+      "selection": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
+      "candidate_count": 0,
+      "facts": {
+        "seed": {
+          "status": "known",
+          "value": "42"
+        },
+        "steps": {
+          "status": "known",
+          "value": "25"
+        },
+        "cfg": {
+          "status": "known",
+          "value": "6.5"
+        },
+        "sampler": {
+          "status": "known",
+          "value": "euler"
+        },
+        "scheduler": {
+          "status": "known",
+          "value": "normal"
+        },
+        "model": {
+          "status": "known",
+          "value": "sdxl_base.safetensors"
         }
       }
     }
@@ -798,6 +924,23 @@
     }
   },
   {
+    "name": "f01-default",
+    "fixture": "f01",
+    "profile": "default",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "unresolved",
+      "reason": "Resolution limit reached",
+      "reason_code": null,
+      "selection": null,
+      "positive": null,
+      "negative": null,
+      "candidate_count": 0,
+      "facts": null
+    }
+  },
+  {
     "name": "f01b-default",
     "fixture": "f01b",
     "profile": "default",
@@ -844,6 +987,40 @@
       "selection": null,
       "positive": null,
       "negative": null,
+      "candidate_count": 0,
+      "facts": null
+    }
+  },
+  {
+    "name": "f04-default",
+    "fixture": "f04",
+    "profile": "default",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
+      "selection": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
+      "candidate_count": 0,
+      "facts": null
+    }
+  },
+  {
+    "name": "f05-default",
+    "fixture": "f05",
+    "profile": "default",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
+      "selection": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": null
     }
@@ -1064,6 +1241,40 @@
       "reason_code": null,
       "selection": null,
       "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
+      "candidate_count": 0,
+      "facts": null
+    }
+  },
+  {
+    "name": "f15-default",
+    "fixture": "f15",
+    "profile": "default",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
+      "selection": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
+      "candidate_count": 0,
+      "facts": null
+    }
+  },
+  {
+    "name": "f16-default",
+    "fixture": "f16",
+    "profile": "default",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
+      "selection": null,
+      "positive": "a grey wolf in fog",
       "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": null

@@ -25,8 +25,13 @@ class InspectionParityFixtureTests(unittest.TestCase):
                 )
 
     def test_no_uncommitted_files_in_fixture_directory(self):
+        # Only fixture data counts; OS litter (.DS_Store, Thumbs.db) is ignored.
         expected = {f"{name}.png" for name in parity.COMMITTED} | {"vectors.json"}
-        present = {path.name for path in parity.FIXTURE_DIR.iterdir()}
+        present = {
+            path.name
+            for path in parity.FIXTURE_DIR.iterdir()
+            if path.suffix in (".png", ".json")
+        }
         self.assertEqual(present, expected)
 
     def test_writer_round_trips_extra_raw_chunks(self):
@@ -81,7 +86,10 @@ class InspectionParityFixtureTests(unittest.TestCase):
             )
             for name in parity.TEST_TIME
         }
-        self.assertGreater(sizes["f01"], 100_000)
+        self.assertGreater(sizes["f01"], 3 * parity.MAX_FIXTURE_BYTES)
+        prompt = parity.build("f01")["prompt"]
+        self.assertEqual(len(prompt), 688)
+        self.assertEqual(sum(":" in node_id for node_id in prompt), 600)
         self.assertGreater(sizes["f04"], 2_500_000)
         self.assertGreater(sizes["f05"], 900_000)
 
@@ -106,20 +114,34 @@ class InspectionParityFixtureTests(unittest.TestCase):
                     self.assertEqual(set(facts), set(parity.FACT_FIELDS))
                     for fact in facts.values():
                         self.assertEqual(set(fact), {"status", "value"})
-        covered = {
-            vector["fixture"] for vector in vectors if vector["profile"] == "inspection"
-        }
-        self.assertEqual(covered, set(parity.COMMITTED))
+        for profile in ("inspection", "default"):
+            covered = {
+                vector["fixture"] for vector in vectors if vector["profile"] == profile
+            }
+            self.assertEqual(
+                covered, set(parity.COMMITTED) | set(parity.TEST_TIME), profile
+            )
 
     def test_vectors_match_current_resolution(self):
         """Baseline vectors pin today's outcomes; behavior changes edit them."""
         for vector in parity.load_vectors():
-            if vector["fixture"] not in parity.COMMITTED:
-                continue
             with self.subTest(vector=vector["name"]):
                 expected = dict(vector["expect"])
                 expected.pop("facts")
                 self.assertEqual(parity.observe(vector), expected)
+
+    def test_observe_builds_test_time_fixtures_instead_of_reading_missing_files(self):
+        # A missing file would otherwise read as "unreadable" and hide a stale vector.
+        for name in parity.TEST_TIME:
+            with self.subTest(fixture=name):
+                self.assertFalse(parity.fixture_path(name).exists())
+                observed = parity.observe(
+                    {"fixture": name, "profile": "default", "anchor": None}
+                )
+                self.assertEqual(observed["metadata_status"], "available")
+                self.assertNotEqual(observed["state"], "absent")
+        with self.assertRaises(FileNotFoundError):
+            parity.observe({"fixture": "f02", "profile": "inspection"}, "missing-dir")
 
 
 if __name__ == "__main__":

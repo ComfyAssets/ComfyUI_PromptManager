@@ -35,9 +35,12 @@ python3 -m tests.inspection_parity --write tests/fixtures/inspection_parity
 `tests/test_inspection_parity_fixtures.py` compares the decoded text chunks with
 the builders (not bytes, because zlib output differs between platforms).
 
-`vectors.json` holds one `inspection` vector per committed fixture (the
-workspace inspector path, with the facts the workspace shows) and one `default`
-vector per readable fixture (the ingestion resolver profile). The expectations
-start as the observed baseline. A change that alters an outcome edits the vector
-in the same commit. `tests/js/legacy-metadata-characterization.test.js` pins what
+`vectors.json` holds an `inspection` and a `default` vector for every fixture,
+committed or built at test time (test-time fixtures are built into a temporary
+directory). `inspection` is the workspace inspector path, with the facts the
+workspace shows. `default` pins only the resolver's default profile, run on the
+role records decoded from the PNG text chunks. Ingestion's own readers are covered
+by their own suites. The expectations start as the observed baseline. A change
+that alters an outcome edits the vector in the same commit.
+`tests/js/legacy-metadata-characterization.test.js` pins what
 the legacy viewers show on the same files.

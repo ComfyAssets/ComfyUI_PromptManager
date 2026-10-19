@@ -15,7 +15,9 @@ const { extractGenerationParams } = require("../../web/js/comfy-metadata.js");
 const FIXTURES = path.join(__dirname, "..", "fixtures", "inspection_parity");
 const DETAILER = "Detailer pass: refine the face";
 
-// The legacy pages' NaN cleanup and field order (web/metadata.html extractComfyUIData).
+// Copy of the legacy pages' inline glue (NaN cleanup and field order): web/metadata.html
+// extractComfyUIData (line 107) and web/js/gallery.js extractComfyUIData (line 1643).
+// The spec only promises extractGenerationParams is unchanged, so the glue is copied here.
 function legacyComfyData(metadata) {
     const parse = text => JSON.parse(text.replace(/:\s*NaN\b/g, ": null").replace(/\bNaN\b/g, "null"));
     const first = fields => {
@@ -35,7 +37,7 @@ function legacyParams(name) {
 }
 
 const EXPECTED = {
-    f01b: { positivePrompt: "Detailer pass: refine the face", negativePrompt: "Detailer pass: refine the face", checkpoint: "flux-2-klein-9b-fp8.safetensors", steps: 20, cfgScale: 1, sampler: "euler", seed: 468212954408038 },
+    f01b: { positivePrompt: "Detailer pass: refine the face", negativePrompt: "Detailer pass: refine the face", checkpoint: "flux-2-klein-9b-fp8.safetensors", steps: 20, cfgScale: 1, sampler: "euler", seed: 271828182845 },
     f02: { positivePrompt: "a red fox in snow, detailed fur", negativePrompt: "blurry, lowres", checkpoint: "sdxl_base.safetensors", steps: 25, cfgScale: 6.5, sampler: "euler", seed: 42 },
     f03: { positivePrompt: "a red fox in snow, detailed fur", negativePrompt: "blurry, lowres", checkpoint: "sdxl_base.safetensors", steps: 25, cfgScale: 6.5, sampler: "euler", seed: 42 },
     f06a: { positivePrompt: "No prompt found", negativePrompt: "blurry, lowres", checkpoint: "sdxl_base.safetensors", steps: 25, cfgScale: 6.5, sampler: "euler", seed: 42 },
