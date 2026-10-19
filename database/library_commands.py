@@ -26,7 +26,8 @@ _PROMPT_COLUMNS = ("category", "rating", "notes")
 class LibraryCommandError(Exception):
     """A native command lost a race against storage or another writer.
 
-    ``code`` is a wire code (``metadata-conflict`` or ``storage-changed``),
+    ``code`` is a wire code (``metadata-conflict``, ``storage-changed`` or
+    ``vocabulary-conflict`` for a tag or category that changed since it was read),
     ``epoch`` the storage epoch read inside the transaction and ``positive``
     the current owner record when it may be disclosed.
     """

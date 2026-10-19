@@ -255,6 +255,19 @@ class TestListRoutesErrorPaths(RouteCoverageCase):
         self.assertEqual(c_data["categories"], [])
         self.assertEqual(t_data["tags"], [])
 
+    async def test_tags_lists_unused_row_and_suggest_shape_is_stable(self):
+        pid = self._save_prompt("P1", tags=["used", "unused"])
+        self.api.db.set_prompt_tags(pid, ["used"])
+        status, data = await self._json("GET", "/prompt_manager/tags")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["tags"], ["unused", "used"])
+        s_status, s_data = await self._json("GET", "/prompt_manager/tags/suggest?q=")
+        self.assertEqual(s_status, 200)
+        self.assertEqual(
+            s_data["suggestions"],
+            [{"name": "used", "count": 1}, {"name": "unused", "count": 0}],
+        )
+
     async def test_subfolders_success_and_failure(self):
         ok_status, ok_data = await self._json(
             "GET", "/prompt_manager/subfolders?include_ancestors=true"

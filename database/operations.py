@@ -12,6 +12,7 @@ from .models import PromptModel, normalize_image_path, utc_now_iso
 from .pairs import PairDependencyError, PairOperations
 from .library import LibraryOperations
 from .library_commands import LibraryCommandOperations
+from .vocabulary import VocabularyOperations
 from .execution_history import ExecutionHistoryOperations
 from .execution_contexts import ExecutionContextOperations, LIVE_HINT_CTES
 from .execution_outputs import ExecutionOutputOperations
@@ -182,6 +183,7 @@ class PromptDatabase(
     PairOperations,
     LibraryOperations,
     LibraryCommandOperations,
+    VocabularyOperations,
     ExecutionHistoryOperations,
     ExecutionContextOperations,
     ExecutionOutputOperations,
@@ -743,18 +745,13 @@ class PromptDatabase(
 
     def get_all_tags(self) -> List[str]:
         """
-        Get all unique tags linked to a standalone prompt or reusable pair.
+        Get every tag in the shared vocabulary, including unused registry rows.
 
         Returns:
             Sorted list of tag names
         """
         with self.model.get_connection() as conn:
-            cursor = conn.execute(
-                "SELECT t.name AS tag FROM tags t WHERE "
-                "EXISTS(SELECT 1 FROM prompt_tags pt WHERE pt.tag_id=t.id) OR "
-                "EXISTS(SELECT 1 FROM prompt_pair_tags pp WHERE pp.tag_id=t.id) "
-                "ORDER BY t.name"
-            )
+            cursor = conn.execute("SELECT t.name AS tag FROM tags t ORDER BY t.name")
             return [row["tag"] for row in cursor.fetchall()]
 
     def get_tags_with_counts(
@@ -830,6 +827,8 @@ class PromptDatabase(
         counted over the prompts that carry every tag in ``with_tags``; the
         context tags themselves are left out. Counts include separate standalone
         and pair references, with owner types kept distinct. Ordered by count/name.
+        Without context, unused vocabulary rows are included last with count 0;
+        with context they never appear.
         """
         seen = set()
         context = []
@@ -861,8 +860,8 @@ class PromptDatabase(
             "WITH tag_refs(kind,owner_id,tag_id) AS ("
             "SELECT 'prompt',prompt_id,tag_id FROM prompt_tags UNION ALL "
             "SELECT 'pair',pair_id,tag_id FROM prompt_pair_tags) "
-            "SELECT t.name AS name, COUNT(*) AS count"
-            " FROM tag_refs pt JOIN tags t ON t.id = pt.tag_id"
+            "SELECT t.name AS name, COUNT(pt.tag_id) AS count"
+            " FROM tags t LEFT JOIN tag_refs pt ON t.id = pt.tag_id"
             f" WHERE {' AND '.join(where)}"
             " GROUP BY t.id"
             " ORDER BY count DESC, t.name COLLATE NOCASE ASC"
@@ -949,6 +948,23 @@ class PromptDatabase(
                 "has_more": (offset + limit) < total,
             }
 
+    @staticmethod
+    def _move_tag_links(
+        conn: sqlite3.Connection, source_id: int, target_id: int
+    ) -> None:
+        """Repoint component and pair links from source to target.
+
+        Owners that already carry the target keep that one link; the source's
+        leftover duplicates are removed. The source registry row is left for the
+        caller to delete.
+        """
+        for junction in ("prompt_tags", "prompt_pair_tags"):
+            conn.execute(
+                f"UPDATE OR IGNORE {junction} SET tag_id = ? WHERE tag_id = ?",
+                (target_id, source_id),
+            )
+            conn.execute(f"DELETE FROM {junction} WHERE tag_id = ?", (source_id,))
+
     def rename_tag_all_prompts(self, old_name: str, new_name: str) -> Dict[str, Any]:
         """
         Rename a tag across all prompts that use it.
@@ -991,15 +1007,7 @@ class PromptDatabase(
 
             if existing_new:
                 # Target tag exists — merge: move links, handle conflicts, delete old
-                new_tag_id = existing_new["id"]
-                for junction in ("prompt_tags", "prompt_pair_tags"):
-                    conn.execute(
-                        f"UPDATE OR IGNORE {junction} SET tag_id = ? WHERE tag_id = ?",
-                        (new_tag_id, old_tag_id),
-                    )
-                    conn.execute(
-                        f"DELETE FROM {junction} WHERE tag_id = ?", (old_tag_id,)
-                    )
+                self._move_tag_links(conn, old_tag_id, existing_new["id"])
                 conn.execute("DELETE FROM tags WHERE id = ?", (old_tag_id,))
             else:
                 # Simple rename
@@ -1097,15 +1105,7 @@ class PromptDatabase(
                     "SELECT COUNT(*) FROM prompt_pair_tags WHERE tag_id = ?", (src_id,)
                 ).fetchone()[0]
                 if src_count or pair_count:
-                    for junction in ("prompt_tags", "prompt_pair_tags"):
-                        conn.execute(
-                            f"UPDATE OR IGNORE {junction} "
-                            "SET tag_id = ? WHERE tag_id = ?",
-                            (target_id, src_id),
-                        )
-                        conn.execute(
-                            f"DELETE FROM {junction} WHERE tag_id = ?", (src_id,)
-                        )
+                    self._move_tag_links(conn, src_id, target_id)
                     tags_merged += 1
                     affected += src_count
 

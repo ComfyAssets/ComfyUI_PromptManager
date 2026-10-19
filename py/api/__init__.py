@@ -24,6 +24,7 @@ from PIL import Image
 from .prompts import PromptRoutesMixin
 from .pairs import PairRoutesMixin
 from .library import LibraryRoutesMixin
+from .vocabulary import VocabularyRoutesMixin
 from .history import HistoryRoutesMixin
 from .images import ImageRoutesMixin
 from .admin import AdminRoutesMixin
@@ -246,6 +247,7 @@ async def _gzip_middleware(request, handler):
 class PromptManagerAPI(
     PairRoutesMixin,
     LibraryRoutesMixin,
+    VocabularyRoutesMixin,
     HistoryRoutesMixin,
     PromptRoutesMixin,
     ImageRoutesMixin,
@@ -406,6 +408,7 @@ class PromptManagerAPI(
 
         self._register_pair_routes(routes)
         self._register_library_routes(routes)
+        self._register_vocabulary_routes(routes)
         self._register_history_routes(routes)
         self._register_prompt_routes(routes)
         self._register_image_routes(routes)

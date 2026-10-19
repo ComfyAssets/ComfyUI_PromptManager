@@ -6,6 +6,18 @@ import json
 _DOMAIN = "prompt-manager-library-parent:v1\n"
 
 
+def canonical_token(domain: str, preimage: dict) -> str:
+    """SHA-256 of ``domain`` plus the canonical JSON of ``preimage``."""
+    payload = json.dumps(
+        preimage,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return hashlib.sha256((domain + payload).encode("utf-8")).hexdigest()
+
+
 def library_edit_token(epoch: str, positive: dict) -> str:
     """Hash the parent's owner fields under the current storage epoch.
 
@@ -22,11 +34,4 @@ def library_edit_token(epoch: str, positive: dict) -> str:
         "rating": positive["rating"],
         "tags": sorted(set(positive["tags"])),
     }
-    payload = json.dumps(
-        preimage,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    )
-    return hashlib.sha256((_DOMAIN + payload).encode("utf-8")).hexdigest()
+    return canonical_token(_DOMAIN, preimage)
