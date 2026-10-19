@@ -1,6 +1,8 @@
 """Conservative prompt-pair resolution contracts, independent of ComfyUI."""
 
+import random
 import unittest
+from dataclasses import replace
 
 from utils import prompt_pair_resolver as resolver
 from utils.prompt_pair_resolver import OutputAdapter, resolve_prompt_pair
@@ -514,6 +516,84 @@ def _distinct_diamond_samplers(count: int, chain: int = 60) -> dict:
     return source
 
 
+def _depth_straddling_samplers() -> dict:
+    """A at depth 9 below its sampler, B four Reroutes deeper on the same chain."""
+    source = {"p": {"class_type": "PrimitiveString", "inputs": {"value": "cat"}}}
+    previous = "p"
+    for index in range(6):
+        source[f"c{index}"] = {
+            "class_type": "Reroute",
+            "inputs": {"value": [previous, 0]},
+        }
+        previous = f"c{index}"
+    source["encA"] = {"class_type": "CLIPTextEncode", "inputs": {"text": [previous, 0]}}
+    source["A"] = {
+        "class_type": "KSampler",
+        "inputs": {"positive": ["encA", 0], "negative": ["encA", 0]},
+    }
+    for index in range(4):
+        source[f"b{index}"] = {
+            "class_type": "Reroute",
+            "inputs": {"value": [previous, 0]},
+        }
+        previous = f"b{index}"
+    source["encB"] = {"class_type": "CLIPTextEncode", "inputs": {"text": [previous, 0]}}
+    source["B"] = {
+        "class_type": "KSampler",
+        "inputs": {"positive": ["encB", 0], "negative": ["encB", 0]},
+    }
+    return source
+
+
+def _random_graph(rng: random.Random) -> dict:
+    ids = [str(index) for index in range(rng.randrange(5, 60))]
+    classes = (
+        "StringConcatenate",
+        "Text Concatenate",
+        "Reroute",
+        "PrimitiveString",
+        "CLIPTextEncode",
+        "KSampler",
+        "PromptManager",
+        "EmptyLatentImage",
+    )
+
+    def link():
+        return [rng.choice(ids), 0]
+
+    source = {}
+    for node_id in ids:
+        name = rng.choice(classes)
+        if name == "StringConcatenate":
+            inputs = {"string_a": link(), "string_b": rng.choice([link(), "x"])}
+        elif name == "Text Concatenate":
+            inputs = {"text_a": link(), "text_b": link(), "delimiter": ""}
+        elif name == "Reroute":
+            inputs = {"value": link()}
+        elif name == "PrimitiveString":
+            inputs = {"value": rng.choice(["a", " b "])}
+        elif name == "CLIPTextEncode":
+            inputs = {"text": rng.choice([link(), "p"])}
+        elif name == "KSampler":
+            inputs = {"positive": link(), "negative": link()}
+            if rng.random() < 0.3:
+                inputs["latent_image"] = link()
+        elif name == "PromptManager":
+            inputs = {"text": rng.choice(["q", link()]), "prepend_text": ""}
+        else:
+            inputs = {}
+        source[node_id] = {"class_type": name, "inputs": inputs}
+    return source
+
+
+def _outcomes(result: dict) -> dict:
+    items = result["candidates"] or [result]
+    return {
+        item["sampler_id"]: (item["state"], item["reason_code"], item["reason"])
+        for item in items
+    }
+
+
 class _CountingInputs(dict):
     """Node inputs that count how often a resolver iterates (scans) their keys."""
 
@@ -584,6 +664,113 @@ class TestResolverProfiles(unittest.TestCase):
         self.assertEqual(
             resolve_prompt_pair({"prompt": source})["reason"],
             "Resolution limit reached",
+        )
+
+    def test_memo_hit_respects_the_depth_left_at_the_reusing_candidate(self):
+        source = _depth_straddling_samplers()
+        reverse = dict(reversed(list(source.items())))
+        profile = resolver.INSPECTION_PROFILE
+        forward = _outcomes(
+            resolve_prompt_pair({"prompt": source}, profile=profile, max_depth=10)
+        )
+        backward = _outcomes(
+            resolve_prompt_pair({"prompt": reverse}, profile=profile, max_depth=10)
+        )
+        self.assertEqual(forward, backward)
+        self.assertEqual(forward["A"][:2], ("resolved", None))
+        self.assertEqual(forward["B"][:2], ("unresolved", "depth-limit"))
+        anchored = resolve_prompt_pair(
+            {"prompt": source}, profile=profile, max_depth=10, output_node_id="B"
+        )
+        self.assertEqual(
+            (anchored["state"], anchored["reason_code"]), ("unresolved", "depth-limit")
+        )
+
+    def test_candidate_outcomes_match_anchored_and_ignore_node_order(self):
+        profile = resolver.INSPECTION_PROFILE
+        limits = ({}, {"max_depth": 4}, {"max_depth": 8}, {"max_visits": 6})
+        compared = 0
+        for seed in range(240, 246):  # 6,000 deterministic graphs, about 1.5 s
+            rng = random.Random(seed)
+            for _ in range(1_000):
+                source = _random_graph(rng)
+                kwargs = rng.choice(limits)
+                base = _outcomes(
+                    resolve_prompt_pair({"prompt": source}, profile=profile, **kwargs)
+                )
+                items = list(source.items())
+                rng.shuffle(items)
+                shuffled = _outcomes(
+                    resolve_prompt_pair(
+                        {"prompt": dict(items)}, profile=profile, **kwargs
+                    )
+                )
+                self.assertEqual(base, shuffled, (seed, source, kwargs))
+                if len(base) < 2:
+                    continue
+                for sampler_id, outcome in base.items():
+                    anchored = resolve_prompt_pair(
+                        {"prompt": source},
+                        profile=profile,
+                        output_node_id=sampler_id,
+                        **kwargs,
+                    )
+                    self.assertEqual(
+                        _outcomes(anchored)[sampler_id],
+                        outcome,
+                        (seed, sampler_id, source, kwargs),
+                    )
+                    compared += 1
+        self.assertGreater(compared, 1_000)
+
+    def test_provenance_entry_budget_reports_the_path_limit(self):
+        letters = "abcdefghijklmnopqrstuvwxyz"
+        source = {
+            "p": {"class_type": "PrimitiveString", "inputs": {"value": "cat"}},
+            "neg": {"class_type": "CLIPTextEncode", "inputs": {"text": "bad"}},
+        }
+        previous = "p"
+        for index in range(60):
+            source[f"c{index}"] = {
+                "class_type": "Reroute",
+                "inputs": {"value": [previous, 0]},
+            }
+            previous = f"c{index}"
+        for index in range(500):
+            source[f"w{index}"] = {
+                "class_type": "Text Concatenate",
+                "inputs": {f"text_{c}": [previous, 0] for c in letters},
+            }
+            source[f"e{index}"] = {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": [f"w{index}", 0]},
+            }
+            source[f"s{index}"] = {
+                "class_type": "KSampler",
+                "inputs": {"positive": [f"e{index}", 0], "negative": ["neg", 0]},
+            }
+        result = resolve_prompt_pair(
+            {"prompt": source}, profile=resolver.INSPECTION_PROFILE
+        )
+        reasons = [candidate["reason"] for candidate in result["candidates"]]
+        self.assertEqual(result["candidates"][0]["state"], "resolved")
+        first = reasons.index("Provenance path limit reached")
+        self.assertGreater(first, 0)
+        self.assertEqual(
+            set(reasons[first:]),
+            {"Provenance path limit reached", "Resolution visit limit reached"}
+            & set(reasons[first:]),
+        )
+        self.assertEqual(reasons[first], "Provenance path limit reached")
+        self.assertEqual(
+            {c["reason_code"] for c in result["candidates"][first:]}, {"work-limit"}
+        )
+        # A small entry budget pins the same reason on one candidate.
+        small = replace(resolver.INSPECTION_PROFILE, max_path_entries=10)
+        result = resolve_prompt_pair({"prompt": source}, profile=small)
+        self.assertEqual(
+            (result["candidates"][0]["reason"], result["candidates"][0]["reason_code"]),
+            ("Provenance path limit reached", "work-limit"),
         )
 
     def test_shared_node_is_scanned_once_however_many_candidates_use_it(self):
@@ -804,12 +991,9 @@ class TestResolverProfiles(unittest.TestCase):
         result = resolve_prompt_pair(source, profile=resolver.INSPECTION_PROFILE)
         self.assertEqual(result["state"], "unresolved")
         self.assertEqual(result["reason_code"], "work-limit")
-        # A memo hit charges its unfolded cost, so the allowance (2^k unfolded
-        # visits) can trip before the provenance path limit does.
-        self.assertIn(
-            result["reason"],
-            ("Provenance path limit reached", "Resolution visit limit reached"),
-        )
+        # A memo hit charges its unfolded cost: the 2^k unfolded visits exhaust
+        # the 2,000 allowance (per-entry paths never outgrow the allowance).
+        self.assertEqual(result["reason"], "Resolution visit limit reached")
 
 
 if __name__ == "__main__":

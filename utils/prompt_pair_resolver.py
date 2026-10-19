@@ -248,6 +248,11 @@ class _GraphResolver:
         # it to the current candidate, so each candidate's outcome is independent
         # of tracing order while the shared work is done only once.
         self.costs: dict = {}
+        # Height of each memo entry (deepest depth reached below it, relative to
+        # its own depth): a hit raises ``depth-limit`` exactly where a fresh walk
+        # from the reusing depth would, so depth too is independent of order.
+        self.heights: dict = {}
+        self.deepest = 0
         self.max_depth = max_depth
         self.max_text_length = max_text_length
         self.memo: dict = {}
@@ -308,6 +313,8 @@ class _GraphResolver:
         return text
 
     def text(self, value: Any, kind: str, depth: int = 0) -> Tuple[str, list, str]:
+        if not self.legacy:
+            self.deepest = max(self.deepest, depth)
         if depth >= self.max_depth:
             raise _Unresolved("Resolution depth limit reached", "depth-limit")
         if isinstance(value, str) and kind == "string":
@@ -320,14 +327,20 @@ class _GraphResolver:
             raise _Unresolved("Cyclic prompt graph", "malformed")
         if key in self.memo:
             if not self.legacy:
+                height = self.heights[key]
+                if depth + height >= self.max_depth:
+                    raise _Unresolved("Resolution depth limit reached", "depth-limit")
                 self.budget.charge(self.costs[key])
+                self.deepest = max(self.deepest, depth + height)
             return self.memo[key]
         allowance = self.budget.allowance
-        self.budget.spend()
-        name, inputs = self.node(node_id)
-        self.scan(len(inputs))
-        self.active.add(key)
+        outer_deepest = self.deepest
+        self.deepest = depth
         try:
+            self.budget.spend()
+            name, inputs = self.node(node_id)
+            self.scan(len(inputs))
+            self.active.add(key)
             if name == "Reroute" and slot == 0:
                 keys = [key for key in ("value", "input", "in") if key in inputs]
                 if len(keys) != 1:
@@ -444,8 +457,10 @@ class _GraphResolver:
                 raise _Unresolved("Provenance path limit reached", "work-limit")
             self.memo[key] = (text, path, storage_text)
             self.costs[key] = allowance - self.budget.allowance
+            self.heights[key] = self.deepest - depth
             return text, path, storage_text
         finally:
+            self.deepest = max(outer_deepest, self.deepest)
             self.active.discard(key)
 
     def execution_record(self, node_id: str, inputs: dict) -> Optional[dict]:
