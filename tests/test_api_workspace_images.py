@@ -992,13 +992,47 @@ class TestWorkspaceImages(ImageAPITestCase):
             _, data = await self.get(sort="rating")
             self.assertEqual(self._names(data), ["Night.PNG", "other.png"])
 
-    async def test_too_broad_link_filter_is_a_safe_bad_request(self):
-        self._filter_fixtures()
-        with patch("database.operations.MAX_LINK_FILTER_ROWS", 1):
-            response, data = await self.get(category="Night")
-        self.assertEqual(response.status, 400)
-        self.assertIn("narrow", data["error"])
-        self.assertNotIn(str(self.comfy_dir), str(data))
+    def _unlisted_link_rows(self, count):
+        """*count* linked rows for files outside the listing, written in bulk."""
+        prompt = self._save_prompt("Elsewhere", category="Night", rating=5)
+        with self.api.db.model.get_connection() as conn:
+            conn.executemany(
+                "INSERT INTO generated_images(prompt_id,image_path,filename,file_path)"
+                " VALUES(?,?,?,?)",
+                (
+                    (prompt, f"/elsewhere/{i}.png", f"{i}.png", f"/elsewhere/{i}.png")
+                    for i in range(count)
+                ),
+            )
+
+    async def test_rating_sort_reads_only_listed_paths_past_the_old_cap(self):
+        from database.models import normalize_image_path
+
+        files = self._filter_fixtures()
+        # More rows than the former 500,000-row cap, none of them listed.
+        await asyncio.get_running_loop().run_in_executor(
+            None, self._unlisted_link_rows, 500_001
+        )
+        response, data = await self.get(sort="rating", limit=3)
+        self.assertEqual(response.status, 200, data)
+        self.assertEqual(
+            self._names(data), ["night_ab.png", "paired.png", "day_ab.png"]
+        )
+        response, data = await self.get(category="Night", sort="name")
+        self.assertEqual(response.status, 200, data)
+        self.assertEqual(
+            self._names(data), ["night_a.png", "night_ab.png", "paired.png"]
+        )
+        wanted = {normalize_image_path(str(files["night_ab"])), "/elsewhere/7.png"}
+        self.assertEqual(
+            self.api.db.get_image_link_matches(
+                "", "Night", [], every_link=True, wanted=wanted
+            ),
+            {
+                normalize_image_path(str(files["night_ab"])): (True, 5),
+                "/elsewhere/7.png": (True, 5),
+            },
+        )
 
     def _budget_fixture(self, files, links):
         """*files* listed paths and *links* linked rows, written in bulk."""

@@ -33,14 +33,12 @@ from .inspection_service import (
 try:
     from ...database.library import display_title
     from ...database.models import normalize_image_path
-    from ...database.operations import LinkFilterTooBroad
     from ...utils.card_seed import card_seed, header_params, parsed_positive
     from ...utils.parallel import map_parallel
     from ...utils.inspection_response import encode_inspection_response
 except ImportError:
     from database.library import display_title
     from database.models import normalize_image_path
-    from database.operations import LinkFilterTooBroad
     from utils.card_seed import card_seed, header_params, parsed_positive
     from utils.parallel import map_parallel
     from utils.inspection_response import encode_inspection_response
@@ -971,12 +969,9 @@ class ImageRoutesMixin:
             for index, root in enumerate(output_dirs)
             if root_index is None or index == root_index
         ]
-        try:
-            page, total, has_more, next_cursor = await self._run_in_executor(
-                self._select_workspace_page, listings, filters, after, limit, scope
-            )
-        except LinkFilterTooBroad as exc:
-            return bad_request(str(exc))
+        page, total, has_more, next_cursor = await self._run_in_executor(
+            self._select_workspace_page, listings, filters, after, limit, scope
+        )
         images = await self._run_in_executor(self._format_workspace_page, page)
         return web.json_response(
             {
@@ -1023,6 +1018,13 @@ class ImageRoutesMixin:
         self._workspace_order_cache[key] = (parts, orders)
         return orders
 
+    def _workspace_wanted(self, listings: list[tuple]) -> frozenset:
+        """The selected listing's normalized paths (cached with its orders)."""
+        orders = self._workspace_orders(listings)
+        if "wanted" not in orders:
+            orders["wanted"] = frozenset(entry.normalized for entry in orders["newest"])
+        return orders["wanted"]
+
     def _workspace_order(self, listings: list[tuple], order: str) -> list:
         """The listing sorted by a filesystem order (built lazily, cached)."""
         orders = self._workspace_orders(listings)
@@ -1052,7 +1054,11 @@ class ImageRoutesMixin:
         links = None
         if filters["query"] or category is not None or tags or order == "rating":
             links = self.db.get_image_link_matches(
-                filters["text"], category, tags, every_link=order == "rating"
+                filters["text"],
+                category,
+                tags,
+                every_link=order == "rating",
+                wanted=self._workspace_wanted(listings),
             )
         if order == "rating":
 

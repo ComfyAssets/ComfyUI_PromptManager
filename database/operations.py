@@ -196,10 +196,6 @@ LEFT JOIN prompt_pairs pp ON pp.id = (
 LEFT JOIN prompts pt ON pt.id = pp.positive_prompt_id
 LEFT JOIN prompt_library_state pls ON pls.prompt_id = pp.positive_prompt_id
 WHERE gi.image_path IN ({marks}) OR gi.file_path IN ({marks}){fallback}"""
-# The workspace filters read at most this many linked rows in one SELECT: more
-# than the listing's own ceiling for several output roots (MAX_GALLERY_FILES
-# per root), so a real gallery never reaches it.
-MAX_LINK_FILTER_ROWS = 500_000
 # One image row describes a card only when no other row claims the same file
 # (as in get_image_link_summaries, several rows are ambiguous). The pair scope
 # and the linked positive follow _LINK_SUMMARY_SQL; category, rating, tags and
@@ -215,8 +211,7 @@ LEFT JOIN prompt_pairs pp ON pp.id = (
 JOIN prompts p ON p.id = COALESCE(pp.positive_prompt_id, gi.prompt_id)
 WHERE gi.file_path IS NOT NULL AND CASE WHEN {admit} THEN NOT EXISTS (
     SELECT 1 FROM generated_images other
-    WHERE other.file_path = gi.file_path AND other.id <> gi.id) ELSE 0 END
-LIMIT :limit"""
+    WHERE other.file_path = gi.file_path AND other.id <> gi.id) ELSE 0 END"""
 # The positive's text, its Library title or one of its tag names, or the pair
 # title, contains :pattern (LIKE, so ASCII case is ignored as in Library search).
 _LINK_FILTER_HIT = """(p.id IN (
@@ -240,7 +235,7 @@ def link_filter_query(
     Only code constants and enumerate indices are formatted into the SQL; see
     PromptDatabase.get_image_link_matches for the semantics.
     """
-    params: Dict[str, Any] = {"limit": -1}
+    params: Dict[str, Any] = {}
     hit = "1"
     if q:
         hit = _LINK_FILTER_HIT
@@ -256,10 +251,6 @@ def link_filter_query(
         admitted.append(hit)
     sql = _LINK_FILTER_SQL.format(hit=hit, admit=" AND ".join(admitted) or "1")
     return sql, params
-
-
-class LinkFilterTooBroad(ValueError):
-    """The linked rows a workspace filter reads exceed MAX_LINK_FILTER_ROWS."""
 
 
 _ASCII_FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
@@ -2338,6 +2329,7 @@ class PromptDatabase(
         tags: List[str],
         *,
         every_link: bool = False,
+        wanted: Optional[Set[str]] = None,
     ) -> Dict[str, Tuple[bool, Optional[int]]]:
         """Map normalized paths of unambiguously linked images to (hit, rating).
 
@@ -2345,17 +2337,17 @@ class PromptDatabase(
         every tag in *tags* (exact names). ``hit`` says whether *q* occurs in
         the positive's text, Library title or a tag name, or in the pair title.
         Without category or tags only hits are returned, unless *every_link*
-        asks for every linked image (the rating sort). One SELECT, bounded by
-        MAX_LINK_FILTER_ROWS: LinkFilterTooBroad is raised rather than
-        returning a truncated set.
+        asks for every linked image (the rating sort). One SELECT whose rows
+        are streamed; with *wanted* (the listing's normalized paths) only those
+        paths are kept, so memory is bounded by the listing, not the database.
         """
         sql, params = link_filter_query(q, category, tags, every_link=every_link)
-        params["limit"] = MAX_LINK_FILTER_ROWS + 1
+        matches: Dict[str, Tuple[bool, Optional[int]]] = {}
         with self.model.get_connection() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        if len(rows) > MAX_LINK_FILTER_ROWS:
-            raise LinkFilterTooBroad("Too many linked images match; narrow the filter")
-        return {path: (bool(matched), rating) for path, rating, matched in rows}
+            for path, rating, matched in conn.execute(sql, params):
+                if wanted is None or path in wanted:
+                    matches[path] = (bool(matched), rating)
+        return matches
 
     def get_image_paths_matching(
         self, q: str, category: Optional[str], tags: List[str]
