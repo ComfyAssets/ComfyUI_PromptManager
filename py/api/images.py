@@ -81,6 +81,22 @@ def _card_header(path: Path) -> tuple:
     return inspection.width, inspection.height, records
 
 
+class _CardFacts(NamedTuple):
+    """One image file's card facts, derived from its header alone.
+
+    Cached per gallery scan by ``(path, mtime)`` (see ``_card_facts``); links
+    and favorites are read fresh on every page.
+    """
+
+    width: int | None
+    height: int | None
+    seed: str | None
+    positive_title: str | None  # _positive_title of the parsed positive
+
+
+_NO_CARD_FACTS = _CardFacts(None, None, None, None)
+
+
 def _unavailable_link() -> dict:
     """A card link summary when the database could not be read."""
     return {
@@ -93,29 +109,34 @@ def _unavailable_link() -> dict:
     }
 
 
-def _verified_title(summary: dict | None, positive: str | None) -> str | None:
+def _positive_title(positive: str | None) -> str | None:
+    """The display title of a file's parsed positive (None without one)."""
+    return None if positive is None else display_title((), positive)
+
+
+def _verified_title(summary: dict | None, positive_title: str | None) -> str | None:
     """A linked file's Library title, withholding unconfirmed saved prompt text.
 
     The one rule for the card and the inspector. A stored title is user data and
     always shows. A title taken from the saved positive's first line shows only
-    when ``positive``, the file's own positive as the shared parser reads it from
-    the file's records, gives the same title: a saved association never replaces
-    file evidence.
+    when ``positive_title`` (``_positive_title`` of the file's own positive as
+    the shared parser reads it from the file's records) is the same title: a
+    saved association never replaces file evidence.
     """
     if not isinstance(summary, dict) or summary.get("status") != "linked":
         return None
     title = summary.get("title")
     if summary.get("title_source") != "text":
         return title
-    confirmed = positive is not None and display_title((), positive) == title
+    confirmed = positive_title is not None and positive_title == title
     return title if confirmed else None
 
 
-def _card_link(summary: dict, positive: str | None) -> dict:
+def _card_link(summary: dict, positive_title: str | None) -> dict:
     """The card's link summary with an unconfirmed first-line title withheld."""
     if summary.get("title_source") != "text":
         return summary
-    return {**summary, "title": _verified_title(summary, positive)}
+    return {**summary, "title": _verified_title(summary, positive_title)}
 
 
 def _inspected_positive(observed: dict) -> str | None:
@@ -1112,6 +1133,12 @@ class ImageRoutesMixin:
             listed, lookup = cached[1], previous
         else:
             lookup = {(entry.path, entry.mtime): entry for entry in listed}
+            # Card facts follow the per-file values: keep unchanged files only.
+            cards = self._workspace_card_cache.get(key)
+            if cards:
+                self._workspace_card_cache[key] = {
+                    file: facts for file, facts in cards.items() if file in lookup
+                }
         self._workspace_listed_cache[key] = (files, listed, lookup)
         return listed
 
@@ -2214,7 +2241,7 @@ class ImageRoutesMixin:
                 except CurrentFileChanged:
                     return None
                 observed["library"]["title"] = _verified_title(
-                    summary, _inspected_positive(observed)
+                    summary, _positive_title(_inspected_positive(observed))
                 )
                 return encode_inspection_response(
                     image={
@@ -2392,14 +2419,14 @@ class ImageRoutesMixin:
             return {}
 
     def _card_parse(self, path: Path, records: dict | None) -> tuple:
-        """One card's ``(seed, parsed positive)``; ``(None, None)`` on any error.
+        """One card's ``(seed, positive title)``; ``(None, None)`` on any error.
 
         One file's unexpected parse failure must not fail the whole page: its
         card shows no seed and withholds a first-line title.
         """
         try:
             params = header_params(records)
-            return card_seed(params), parsed_positive(params)
+            return card_seed(params), _positive_title(parsed_positive(params))
         except Exception:
             self.logger.warning(
                 "Workspace card facts could not be parsed for %s",
@@ -2408,40 +2435,75 @@ class ImageRoutesMixin:
             )
             return None, None
 
+    def _read_card_facts(self, path: Path, *, parse: bool) -> _CardFacts | None:
+        """Read one image's header; ``parse`` adds the seed and positive title.
+
+        None when the file cannot be read at all (corrupt, locked, vanishing).
+        """
+        try:
+            width, height, records = _card_header(path)
+        except (OSError, ValueError, Image.DecompressionBombError):
+            # A corrupt or disappearing preview must not hide the listing.
+            return None
+        if not parse:
+            return _CardFacts(width, height, None, None)
+        # Parsed after the handle closes, so a concurrent rename or delete
+        # (which Windows refuses on open files) is not held up by it.
+        return _CardFacts(width, height, *self._card_parse(path, records))
+
+    def _card_facts(self, entry: tuple, *, parse: bool) -> _CardFacts:
+        """One listed image's card facts, read once per ``(path, mtime)``.
+
+        Kept beside the scan's per-file values (``_workspace_listed``) and
+        invalidated the same way: a rescan keeps the facts of unchanged files
+        and drops the rest, and a roots change drops them all. Only files of
+        the current scan are stored, so the cache is bounded by the listing.
+        """
+        path, mtime, root, index = entry[:4]
+        root_key, key = (index, str(root)), (path, mtime)
+        cached = self._workspace_card_cache.get(root_key, {}).get(key)
+        if cached is not None:
+            return cached
+        facts = self._read_card_facts(path, parse=parse)
+        if facts is None:
+            # Not stored: a locked or half-written file may read next time.
+            return _NO_CARD_FACTS
+        listed = self._workspace_listed_cache.get(root_key)
+        if parse and listed is not None and key in listed[2]:
+            self._workspace_card_cache.setdefault(root_key, {})[key] = facts
+        return facts
+
     def _format_workspace_page(
         self, page: list[tuple], *, linked: bool = True
     ) -> list[dict]:
         """Workspace descriptors; ``linked`` adds card facts (link, seed, favorite)."""
         images = self._format_output_page(page, scoped=True)
-        paths = {
-            (entry[3], entry[0].relative_to(entry[2]).as_posix()): entry[0]
+        entries = {
+            (entry[3], entry[0].relative_to(entry[2]).as_posix()): entry
             for entry in page
         }
         summaries = (
-            self._workspace_link_summaries([str(path) for path in paths.values()])
+            self._workspace_link_summaries(
+                [str(entry[0]) for entry in entries.values()]
+            )
             if linked
             else {}
         )
         for image in images:
-            path = paths[(image["root_index"], image["path"])]
-            image["width"] = None
-            image["height"] = None
-            records = None
-            if not image["is_video"]:
-                try:
-                    image["width"], image["height"], records = _card_header(path)
-                except (OSError, ValueError, Image.DecompressionBombError):
-                    # A corrupt or disappearing preview must not hide the listing.
-                    pass
+            entry = entries[(image["root_index"], image["path"])]
+            # Videos: the card reads no video metadata. Library previews show
+            # no card facts, so they skip the parse (``parse=linked``).
+            facts = (
+                _NO_CARD_FACTS
+                if image["is_video"]
+                else self._card_facts(entry, parse=linked)
+            )
+            image["width"], image["height"] = facts.width, facts.height
             if not linked:
-                # Library previews show no card facts; skip the parse.
                 continue
-            # Parsed after the handle closes, so a concurrent rename or delete
-            # (which Windows refuses on open files) is not held up by it.
-            seed, positive = self._card_parse(path, records)
-            image["seed"] = seed
-            summary = summaries.get(str(path)) or _unavailable_link()
-            image["linked"] = _card_link(summary, positive)
+            image["seed"] = facts.seed
+            summary = summaries.get(str(entry[0])) or _unavailable_link()
+            image["linked"] = _card_link(summary, facts.positive_title)
         if linked:
             # Image cards carry the star; Library previews show none.
             favorites = self._workspace_favorites(page)

@@ -287,6 +287,10 @@ class PromptManagerAPI(
         # (py/api/images.py _workspace_listed/_workspace_orders).
         self._workspace_listed_cache = {}
         self._workspace_order_cache = {}
+        # Card facts (dimensions, seed, positive title) per root and
+        # (path, mtime), kept and pruned with the per-file values
+        # (py/api/images.py _card_facts).
+        self._workspace_card_cache = {}
         # Favorite keys of each root's cached scan (images._favorite_listing).
         self._favorite_listing_cache = {}
         # Single-flight locks for long jobs, keyed by job family; see
@@ -355,8 +359,9 @@ class PromptManagerAPI(
         """Invalidate the cached gallery file listing.
 
         Called by the image monitor when new files are detected. The workspace
-        keeps its per-file values, so the next request rebuilds only new or
-        changed files (see ImageRoutesMixin._workspace_listed); its sort orders
+        keeps its per-file values and card facts, so the next request rebuilds
+        only new or changed files (see ImageRoutesMixin._workspace_listed and
+        _card_facts); its sort orders
         are dropped, as the rescan replaces them anyway, and so is the
         favorites lookup, which holds the old scan list.
         """
@@ -368,6 +373,7 @@ class PromptManagerAPI(
         """Drop every cached listing and derived workspace value (roots changed)."""
         self.invalidate_gallery_cache()
         self._workspace_listed_cache = {}
+        self._workspace_card_cache = {}
 
     def add_routes(self, routes):
         """Register all API routes with the ComfyUI server.

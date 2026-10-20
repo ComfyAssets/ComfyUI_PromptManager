@@ -466,6 +466,14 @@ and skip the parse.
   the listing in Node and compares `String(seed)` with the inspector's seed,
   including one past 2**53). The card shows no seed for A1111 `parameters` files
   or for a BasicGuider custom sampler, where the inspector does.
+- Header facts are cached. Dimensions, `seed` and the parsed positive's display
+  title are read once per `(path, mtime)` of the current gallery scan and kept
+  beside the scan's per-file values. A monitor invalidation or TTL rescan keeps
+  the facts of unchanged files and drops the rest, and a roots change drops them
+  all. A header that could not be read is not stored. Links and favorites are
+  never cached (`test_warm_page_reuses_card_facts_per_scan`: a warm page reads
+  and parses no header). Measured cold cost is about 3.4 ms per 50 KB record set
+  and 25 ms per 400 KB workflow.
 - `favorite: bool`. One favorites SELECT per root per page. A read failure logs a
   warning and shows false.
 

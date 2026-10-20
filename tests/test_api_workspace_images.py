@@ -719,6 +719,73 @@ class TestWorkspaceImages(ImageAPITestCase):
         else:
             self.assertEqual(shown, {"status": "known", "value": card})
 
+    async def test_warm_page_reuses_card_facts_per_scan(self):
+        from py.api import images
+
+        a = records_png(self.output_dir / "a.png", seeded_records("a fox", 1), 300)
+        b = records_png(self.output_dir / "b.png", seeded_records("a cat", 2), 200)
+        gone = records_png(self.output_dir / "gone.png", seeded_records("x", 3), 100)
+        real_read, real_parse = images.read_inspection_file, images.header_params
+        read, parsed = [], []
+
+        def reading(path):
+            read.append(path.name)
+            return real_read(path)
+
+        def parsing(info):
+            parsed.append(info)
+            return real_parse(info)
+
+        async def page():
+            read.clear()
+            parsed.clear()
+            response, data = await self.get()
+            self.assertEqual(response.status, 200, data)
+            return {item["filename"]: item for item in data["images"]}
+
+        with (
+            patch.object(images, "read_inspection_file", side_effect=reading),
+            patch.object(images, "header_params", side_effect=parsing),
+        ):
+            cold = await page()
+            self.assertEqual(sorted(read), ["a.png", "b.png", "gone.png"])
+            self.assertEqual(len(parsed), 3)
+            # A warm page reads and parses no header.
+            prompt = self._save_prompt("a fox")
+            self.api.db.link_image_to_prompt(prompt, str(a))
+            warm = await page()
+            self.assertEqual((read, parsed), ([], []))
+            self.assertEqual(warm["a.png"]["seed"], "1")
+            self.assertEqual((warm["a.png"]["width"], warm["a.png"]["height"]), (4, 4))
+            # Links are never cached: the new link's confirmed title shows.
+            self.assertIsNone(cold["a.png"]["linked"]["title"])
+            self.assertEqual(warm["a.png"]["linked"]["title"], "a fox")
+            # A monitor invalidation keeps the values of unchanged files.
+            records_png(b, seeded_records("a cat", 22), mtime=250)
+            gone.unlink()
+            self.api.invalidate_gallery_cache()
+            changed = await page()
+            self.assertEqual(read, ["b.png"])
+            self.assertEqual(changed["b.png"]["seed"], "22")
+            cards = self.api._workspace_card_cache[(0, str(self.output_dir))]
+            self.assertEqual(
+                sorted(path.name for path, _mtime in cards), ["a.png", "b.png"]
+            )
+            # A header that cannot be read (locked, half-written) is not stored.
+            records_png(self.output_dir / "c.png", seeded_records("a cow", 4), 400)
+            self.api.invalidate_gallery_cache()
+            with patch.object(images, "_card_header", side_effect=OSError("busy")):
+                locked = await page()
+            self.assertIsNone(locked["c.png"]["seed"])
+            self.assertEqual(locked["a.png"]["seed"], "1")
+            self.assertEqual((await page())["c.png"]["seed"], "4")
+            self.assertEqual(read, ["c.png"])
+            # A roots change drops them, as it drops the per-file values.
+            self.api.reset_gallery_roots_cache()
+            self.assertEqual(self.api._workspace_card_cache, {})
+            await page()
+            self.assertEqual(sorted(read), ["a.png", "b.png", "c.png"])
+
     async def test_unbounded_digit_string_seed_still_lists(self):
         records_png(
             self.output_dir / "huge.png", seeded_records("a fox", "9" * 5000), 200
