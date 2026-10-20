@@ -68,9 +68,6 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 /* #249 D18: the concept zooms a hovered card image (1.03 over 0.2s; its reduced-motion rule makes that instant). A touch
    device has no real hover, so a tap must not leave the zoom stuck. */
 @media (hover: none) { .image-open:hover img { transform: none; /* D18 */ } }
-/* #249 D8 (interim until the checkbox follow-up PR): without the concept's selection checkbox the star is the overlay's
-   only child; this keeps it at the concept's top-right. The follow-up that ships the checkbox deletes this rule. */
-.image-overlays > .star-button:only-child { margin-left: auto; /* D8 */ }
 
 /* Images cards (#249 C3). #249 D3: bounded rendering mounts only the visible cards and places each one itself, in every
    layout (the concept places only masonry cards), so the grid reserves the collection's height and every card is

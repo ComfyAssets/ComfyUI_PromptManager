@@ -26,6 +26,7 @@ from database.operations import PromptDatabase  # noqa: E402
 from py.api import PromptManagerAPI  # noqa: E402
 import py.api.prompts as prompts_module  # noqa: E402
 from py.api.prompts import (  # noqa: E402
+    BULK_CATEGORY_MAX_PROMPTS,
     MAX_PAGE_LIMIT,
     MAX_PAGE_OFFSET,
     safe_error_message,
@@ -908,6 +909,98 @@ class TestBulkRoutes(RouteCoverageCase):
         self.assertEqual((empty, ok, err), (400, 200, 500))
         self.assertEqual(ok_data["updated_count"], 2)
         self.assertEqual(self.api.db.get_prompt_by_id(ids[0])["category"], "c")
+
+    async def _set_category(self, body):
+        return await self._json("POST", "/prompt_manager/bulk/category", json=body)
+
+    async def test_bulk_set_category_rejects_malformed_prompt_ids(self):
+        pid = self._save_prompt("bulk cat strict")
+        cases = (
+            None,
+            "1",
+            {"id": pid},
+            [],
+            [pid, "2"],
+            [pid, 0],
+            [pid, -3],
+            [pid, 1.5],
+            [True],
+            [pid, None],
+            # Beyond SQLite's INTEGER range: binding it would raise OverflowError.
+            [pid, 2**63],
+            [2**64],
+            list(range(1, BULK_CATEGORY_MAX_PROMPTS + 2)),
+        )
+        for prompt_ids in cases:
+            with self.subTest(prompt_ids=str(prompt_ids)[:40]):
+                status, data = await self._set_category(
+                    {"prompt_ids": prompt_ids, "category": "c"}
+                )
+                self.assertEqual(status, 400, data)
+                self.assertFalse(data["success"])
+        self.assertIsNone(self.api.db.get_prompt_by_id(pid)["category"])
+
+    async def test_bulk_set_category_validates_the_category(self):
+        pid = self._save_prompt("bulk cat validate")
+        for category in ("x" * 101, "bad\x00name", 7, ["c"]):
+            with self.subTest(category=str(category)[:20]):
+                status, data = await self._set_category(
+                    {"prompt_ids": [pid], "category": category}
+                )
+                self.assertEqual(status, 400, data)
+                self.assertFalse(data["success"])
+        for body in ([pid], "text"):
+            with self.subTest(body=body):
+                status, data = await self._set_category(body)
+                self.assertEqual(status, 400, data)
+        resp = await self.client.post(
+            "/prompt_manager/bulk/category",
+            data="{not json",
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resp.status, 400)
+        self.assertIsNone(self.api.db.get_prompt_by_id(pid)["category"])
+
+    async def test_bulk_set_category_dedupes_and_accepts_the_cap(self):
+        ids = [self._save_prompt(f"bulk cat dedupe {i}") for i in range(2)]
+        seen = []
+        original = self.api.db.bulk_set_category
+
+        def spy(prompt_ids, category):
+            seen.append((list(prompt_ids), category))
+            return original(prompt_ids, category)
+
+        self.api.db.bulk_set_category = spy
+        status, data = await self._set_category(
+            {"prompt_ids": [ids[1], ids[0], ids[1], ids[0]], "category": " Land "}
+        )
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["updated_count"], 2)
+        self.assertEqual(seen, [([ids[1], ids[0]], "Land")])
+        # The cap itself is accepted; unknown ids simply do not count.
+        capped = ids + list(range(10**6, 10**6 + BULK_CATEGORY_MAX_PROMPTS - 2))
+        status, data = await self._set_category(
+            {"prompt_ids": capped, "category": "Sea"}
+        )
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["updated_count"], 2)
+        self.assertEqual(self.api.db.get_prompt_by_id(ids[0])["category"], "Sea")
+
+    async def test_bulk_set_category_keeps_the_legacy_admin_request(self):
+        # web/js/admin.js posts parseInt ids and a trimmed, non-empty category.
+        ids = [self._save_prompt(f"bulk cat legacy {i}") for i in range(3)]
+        status, data = await self._set_category(
+            {"prompt_ids": ids, "category": "Portraits"}
+        )
+        self.assertEqual(status, 200, data)
+        self.assertEqual(
+            set(data), {"success", "message", "updated_count"}, "response shape"
+        )
+        self.assertTrue(data["success"])
+        self.assertEqual(data["updated_count"], 3)
+        self.assertEqual(data["message"], "Set category for 3 prompts")
+        for pid in ids:
+            self.assertEqual(self.api.db.get_prompt_by_id(pid)["category"], "Portraits")
 
 
 if __name__ == "__main__":

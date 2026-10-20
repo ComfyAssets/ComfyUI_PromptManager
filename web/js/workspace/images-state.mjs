@@ -230,3 +230,16 @@ export function cardSubtitle(image) {
 export function mediaRatio(image) {
     return hasSize(image) ? `${image.width}/${image.height}` : '4/3';
 }
+
+/** The card checkboxes' selection (#249 D8): a new frozen set with `key` added or removed; unchanged, the same set. */
+export function toggleSelection(selected, key, on) {
+    if (selected.has(key) === on) return selected;
+    const next = new Set(selected);
+    if (on) next.add(key); else next.delete(key);
+    return Object.freeze(next);
+}
+
+/** The concept selection bar's count (app.js updateBulk), grouped like the page's other counts. */
+export function selectionLabel(count) {
+    return `${count.toLocaleString('en-US')} selected`;
+}

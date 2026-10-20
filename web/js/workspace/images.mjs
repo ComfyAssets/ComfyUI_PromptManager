@@ -3,6 +3,7 @@ import { createImageStream, withItem, imageKey, countLine, captionDate, scopeLab
 import { layoutImages, visibleImages, gridMetrics, MINIMUM_CARD_WIDTH } from './image-layout.mjs';
 import { mountFileInspector } from './file-inspector.mjs';
 import { createInspectionController } from './inspection-state.mjs';
+import { mountSelectionBar } from './images-selection.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
 import { promptRoles } from './prompt-blocks.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
@@ -108,7 +109,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const filters = { root: 'all', q: '', category: '', tags: [], subfolder: '', media: 'all', sort: 'newest', ...visit?.filters };
     filters.tags = [...filters.tags];
     scope.cleanup(() => {
-        if (!embedded) lastVisit = state ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, selection, scrollY: window.scrollY } : null;
+        // A Set category write still in flight may change what the saved collection shows: the return reloads instead.
+        if (!embedded) lastVisit = state && !bar.writing() ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, selection, checked: bar.checked(), scrollY: window.scrollY } : null;
         cancelAnimationFrame(restoreFrame);
     });
     main.classList.add('images-main');
@@ -209,6 +211,11 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     details.setAttribute('aria-label', 'Image details');
     details.append(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));
     body.append(collection, details);
+    // The checked cards and the concept's selection bar (#249 D8), between the filter row and the gallery layout. The
+    // selection is kept across appended batches and cleared with the collection; the Library-embedded gallery has none.
+    const bar = embedded ? null : mountSelectionBar({scope, api, grid, getItems:() => state.items, focusFallback,
+        checked:visit?.checked, onCategorySet:() => { loadCategories(); reset(); }});
+    if (bar) main.append(bar.element);
     main.append(body);
     const mediaViewer = createMediaViewer({container:main,parentScope:scope,inspectionController:inspection,sender,
         onSelect:image => {if (selection !== imageKey(image)) inspect(image);else inspection.select(image);},
@@ -263,8 +270,16 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const open = createButton('', 'image-open');
         open.setAttribute('aria-label', `Open ${image.filename}`);
         open.append(mediaElement(image, true));
-        // D7: the star, wherever the listing reports favorites (not on Library-embedded media); D8: no checkbox yet.
+        // D8: the selection checkbox, then D7: the star, wherever the listing reports favorites (neither on
+        // Library-embedded media, which has no selection bar).
         const overlays = el('div', undefined, 'image-overlays');
+        if (bar) {
+            const label = el('label'), box = el('input');
+            box.type = 'checkbox'; box.checked = bar.isChecked(key);
+            box.setAttribute('aria-label', `Select ${image.filename}`);
+            label.append(box);
+            overlays.append(label);
+        }
         if (typeof image.favorite === 'boolean') {
             const star = createButton('', 'star-button');
             star.setAttribute('aria-label', `Favorite ${image.filename}`);
@@ -551,6 +566,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         }
         selection = null;
         focusAfterLoad = null;
+        // The ruled selection lifetime: a replaced collection may no longer hold the checked files.
+        bar?.clear();
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
         updateScope();
         stream.reset(filters, {load:!recovering});
