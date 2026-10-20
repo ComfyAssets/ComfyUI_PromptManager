@@ -18,7 +18,8 @@ function partsOf(heading) {
 
 /**
  * Replace `main`'s content with `.heading` > div (`h1#page-title[tabindex=-1]`, `p.muted`) + `.heading-actions`.
- * The h1 is the focus target after a save or a route change, as the concept's page title is.
+ * The h1 is the focus target after a save, and the shell focuses it on every route change after the first, as the
+ * concept focuses its page title on hashchange (app.js 1168). The skip link focuses `main` instead.
  */
 export function renderHeading(main, { title = '', description = '', actions = [] } = {}) {
     const heading = element('div', 'heading');

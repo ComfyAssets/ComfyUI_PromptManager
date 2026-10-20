@@ -112,6 +112,25 @@ test('skip to content focuses the current view without changing its route', asyn
     await expect(page.locator('#workspace-main h1')).toHaveText('Prompt library');
 });
 
+// The concept focuses its page title on every hashchange navigation (docs/concepts/workspace/app.js 1168), so a screen
+// reader announces "<page>, heading level 1"; the first render leaves focus alone.
+test('a sidebar route change focuses the page title, as the concept does', async ({ page }) => {
+    await page.goto(`${workspace}#/library`);
+    const title = page.locator('#page-title');
+    await expect(title).toHaveText('Prompt library');
+    await expect(title).not.toBeFocused();
+    await sidebarLink(page, 'Images').click();
+    await expect(title).toHaveText('Images');
+    await expect(title).toBeFocused();
+    await expect(page.locator('#workspace-main')).not.toBeFocused();
+    await sidebarLink(page, 'Tags & categories').click();
+    await expect(title).toHaveText('Tags & categories');
+    await expect(title).toBeFocused();
+    await page.goBack();
+    await expect(title).toHaveText('Images');
+    await expect(title).toBeFocused();
+});
+
 test('returning to overview refreshes persisted counts without duplicating navigation', async ({ page, request }) => {
     await page.goto(`${workspace}#/overview`);
     const prompts = statistic(page, 'Prompts');

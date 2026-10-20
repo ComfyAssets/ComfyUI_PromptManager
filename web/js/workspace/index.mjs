@@ -89,8 +89,9 @@ function mountWorkspace() {
         }
         document.title = `${routeTitle(route)} · Prompt Manager`;
         // The concept's heading(); each view fills its description and actions.
-        const { description } = renderHeading(main, { title: route.label });
-        if (!firstRender) main.focus();
+        // The concept focuses its page title on a hashchange navigation (app.js 1168); the skip link focuses `main`.
+        const { description, h1 } = renderHeading(main, { title: route.label });
+        if (!firstRender) h1.focus();
         firstRender = false;
         document.getElementById('workspace-breadcrumb').textContent = routeTitle(route);
         if (route.id === 'images') {
