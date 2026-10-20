@@ -1226,3 +1226,21 @@ test('a debounced search that lands after a sort change does not reload the same
     await page.waitForTimeout(1000);
     expect(reads.filter(search => new URLSearchParams(search).get('q') === 'same')).toHaveLength(1);
 });
+
+// #249 D18: the concept's hover zoom (1.03 over 0.2s); reduced motion makes it instant, and a touch device (hover: none)
+// has no sticky zoom after a tap.
+for (const motion of ['no-preference', 'reduce']) {
+    test(`card image zooms on hover per concept (${motion})`, async ({ page }) => {
+        await page.emulateMedia({ reducedMotion: motion });
+        await page.goto(workspace);
+        await expect(cards(page)).toHaveCount(2);
+        const card = cards(page).first();
+        const img = card.locator('.image-open img');
+        const touch = await page.evaluate(() => matchMedia('(hover: none)').matches);
+        expect(await img.evaluate(n => getComputedStyle(n).transform)).toBe('none');
+        await card.locator('.image-open').hover();
+        // Touch: the emulated hover must not leave a zoom behind.
+        await expect.poll(() => img.evaluate(n => getComputedStyle(n).transform)).toBe(touch ? 'none' : 'matrix(1.03, 0, 0, 1.03, 0, 0)');
+        expect(await img.evaluate(n => getComputedStyle(n).transitionDuration)).toBe(motion === 'reduce' ? '0s' : '0.2s');
+    });
+}
