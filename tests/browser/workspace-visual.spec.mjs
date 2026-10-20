@@ -552,7 +552,9 @@ test('approved icons are decorative safe SVGs and reject unknown vocabulary', as
         expect(icon).toMatchObject({ svg: true, className: 'icon', owner: true, viewBox: '0 0 24 24', hidden: 'true', focusable: 'false', fill: 'none', stroke: 'currentColor', width: '1.65', children: 1 });
         expect(icon.path.length).toBeGreaterThan(10);
     }
-    expect(icons.rendered.find(icon => icon.name === 'overview').path).toBe('M3 12h4l3-8 4 16 3-8h4');
+    // D28 ruling: Overview's own outline home glyph, not the concept's `activity` pulse ('M3 12h4l3-8 4 16 3-8h4').
+    expect(icons.rendered.find(icon => icon.name === 'overview').path).toBe('M3 11 12 4l9 7M5 10v10h14V10M10 20v-6h4v6');
+    expect(new Set(icons.rendered.map(icon => icon.path)).size).toBe(icons.rendered.length);
 });
 
 

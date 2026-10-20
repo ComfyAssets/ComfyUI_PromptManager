@@ -52,6 +52,10 @@ function remainingFooter(footer,spans) {
     return `${parseFloat(footer.paddingTop)+parseFloat(footer.paddingBottom)+content}px`;
 }
 
+// D28 ruling (final review A, Minor 1): Overview gets a distinct outline home glyph. The concept has no home icon, and
+// its `activity` pulse stays reserved for the Activity row D5 omits, so the two entries never share one glyph.
+const OVERVIEW_GLYPH='M3 11 12 4l9 7M5 10v10h14V10M10 20v-6h4v6';
+
 /** Recorded shell deviations only (spec §8). Everything else in the concept inventory must equal production. */
 function mapShellConcept(reference) {
     const {chrome}=reference;
@@ -60,13 +64,13 @@ function mapShellConcept(reference) {
         .filter(nav=>nav.id!=='saved-nav'&&nav.id!=='collections-nav')
         .map(nav=>{
             if(nav.id!=='system-nav')return nav;
-            const activity=rowNamed(nav,'Activity'),system=rowNamed(nav,'System');
+            const system=rowNamed(nav,'System');
             return {...nav,rows:[
                 // D5: no Activity row until an activity center exists. D28: no Design review (prototype page).
                 system,
-                // D28: the production Overview hub follows System, as a concept nav row without a count. Its icon is the
-                // concept's own `activity` glyph, which production names `overview`.
-                {...system,text:'Overview',current:null,gapAfter:null,icon:{...system.icon,d:activity.icon.d}},
+                // D28: the production Overview hub follows System, as a concept nav row without a count. Its icon is
+                // the ruling's own outline home glyph (OVERVIEW_GLYPH), never the concept's `activity` pulse.
+                {...system,text:'Overview',current:null,gapAfter:null,icon:{...system.icon,d:OVERVIEW_GLYPH}},
             ]};
         });
     return {...reference,chrome:{...chrome,

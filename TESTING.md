@@ -361,7 +361,8 @@ Recorded shell deviations:
   palette, then the OS.
 - **D5**: no Activity button or Activity row until an activity center exists.
 - **D28**: no SAVED VIEWS or COLLECTIONS, and no Design review. The bottom nav is
-  System plus the production Overview hub (the concept's `activity` glyph, no count).
+  System plus the production Overview hub (its own outline home glyph, not the concept's
+  `activity` pulse, and no count).
   The connection reads "Your library, on your server" with a neutral muted dot.
 - **D29**: no prototype copy. There is no "Interactive concept" badge and no
   "What changes & why" button. The footer reads "ComfyAssets · Local tools. Your
