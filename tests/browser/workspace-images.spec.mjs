@@ -1301,6 +1301,8 @@ test('favorite persists across reload', async ({ page, request }) => {
     await page.keyboard.press('Enter');
     await expectStar(star(video, 'clip.webm'), true);
     await expect(toast(page)).toHaveText('Added to favorites.');
+    // One request per file at a time: a press while the star is still busy is ignored, so wait for it to settle.
+    await expect(star(video, 'clip.webm')).not.toHaveAttribute('aria-disabled', 'true');
     await page.keyboard.press(' ');
     await expectStar(star(video, 'clip.webm'), false);
     await expect(toast(page)).toHaveText('Removed from favorites.');

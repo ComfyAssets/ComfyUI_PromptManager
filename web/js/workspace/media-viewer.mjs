@@ -216,7 +216,9 @@ export function createMediaViewer({container,parentScope,inspectionController,se
             const label = `${state.index + 1} of ${state.total} loaded: ${entry.filename}${status ? ` — ${status}` : ''}`;
             if (position.textContent !== label) position.textContent = label;
             if (currentKey !== state.key) {
-                currentKey = state.key;title.textContent = entry.filename;
+                // A linked card already carries its title, so the header reads "<title> · <filename>" at once.
+                const known = entry.linked?.status === 'linked' && entry.linked.title;
+                currentKey = state.key;title.textContent = known ? `${known} · ${entry.filename}` : entry.filename;
                 try { originalDownload = adapter.originalDownload(entry); } catch { originalDownload = null; }
                 onSelect?.(entry);
                 rebuild(entry);

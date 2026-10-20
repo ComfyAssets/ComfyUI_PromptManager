@@ -226,3 +226,22 @@ test('viewer renders the concept shell and toolbar order', async () => {
         assert.equal(toolbar.children[9].textContent,'2 of 2 loaded: a.png');
     } finally { view.dispose(); parentScope.dispose(); f.restore(); }
 });
+
+test('viewer titles a linked card "<title> · <filename>" before any inspection arrives', async () => {
+    const {reportedLocationAdapter:adapter} = await import('../../web/js/workspace/history-media.mjs');
+    const f = mountedDom(), parentScope = createScope(), controller = borrowedController();
+    const linked = {...occurrenceMedia('1',1,'c'),linked:{status:'linked',title:'Quiet geometry'}};
+    const unlinked = {...occurrenceMedia('2',0,'d'),linked:{status:'unlinked',title:'Ignored'}};
+    const view = module.createMediaViewer({container:f.container,parentScope,inspectionController:controller,adapter,sender:{open(){}}});
+    try {
+        view.open({items:[linked,unlinked],selectedKey:'c'.repeat(64)});
+        const title = f.walk(f.container,n=>n.id==='viewer-title')[0];
+        assert.equal(title.textContent,`Quiet geometry · ${linked.filename}`);
+    } finally { view.dispose(); parentScope.dispose(); f.restore(); }
+    const g = mountedDom(), scope = createScope();
+    const other = module.createMediaViewer({container:g.container,parentScope:scope,inspectionController:borrowedController(),adapter,sender:{open(){}}});
+    try {
+        other.open({items:[linked,unlinked],selectedKey:'d'.repeat(64)});
+        assert.equal(g.walk(g.container,n=>n.id==='viewer-title')[0].textContent,unlinked.filename);
+    } finally { other.dispose(); scope.dispose(); g.restore(); }
+});
