@@ -244,6 +244,14 @@ def _workflow_only():
     }
 
 
+def _nested(depth):
+    """A value nested ``depth`` arrays deep, as a crafted file can hold."""
+    value = ["leaf", 7]
+    for _ in range(depth):
+        value = [value, None]
+    return value
+
+
 def _chain(length):
     graph = {"4": CHECKPOINT, "1": encoder("deep chain text")}
     previous = "1"
@@ -439,6 +447,15 @@ CASES = {
             "6": encoder("x"),
             "3": ksampler(("6", 0), ("6", 0), cfg=1.0, seed=4974052037430000001),
         }
+    ),
+    "deeply-nested-values": case(
+        {
+            "4": CHECKPOINT,
+            "6": encoder("nested neighbours"),
+            "3": ksampler(("6", 0), ("6", 0)),
+            "8": {"class_type": _nested(900), "inputs": {"text": "x"}},
+        },
+        {"nodes": [{"id": _nested(900), "type": _nested(900)}], "links": []},
     ),
     "nothing": case(),
 }
