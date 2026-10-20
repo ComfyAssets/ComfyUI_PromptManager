@@ -488,7 +488,7 @@ class TestRestoreFromFile(BackupTestCase):
         with closing(sqlite3.connect(str(backups[0]))) as conn:
             self.assertEqual(
                 conn.execute(
-                    "SELECT root_label, relative_path FROM image_favorites"
+                    "SELECT root_key, relative_path FROM image_favorites"
                 ).fetchall(),
                 [("output", "live.png")],
             )

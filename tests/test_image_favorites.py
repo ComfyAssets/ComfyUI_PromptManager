@@ -1,10 +1,14 @@
 """Persisted image favorites (spec D7): store, schema and rooted API boundary."""
 
+import json
+import ntpath
 import os
 import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
+from pathlib import Path
+from unittest.mock import patch
 
 try:
     from test_api_images import ImageAPITestCase, make_png
@@ -78,23 +82,95 @@ class TestImageFavoriteApi(ImageAPITestCase):
         items = await self.workspace()
         self.assertIs(items["sub/a.png"]["favorite"], False)
 
-    async def test_favorite_is_keyed_by_root_label_not_index(self):
+    def rows(self):
+        return [
+            tuple(row)
+            for row in self.api.db.model.get_connection().execute(
+                f"SELECT root_key, relative_path FROM {TABLE} ORDER BY 1, 2"
+            )
+        ]
+
+    async def test_favorite_is_keyed_by_root_not_index(self):
         second = self.comfy_dir / "second"
         make_png(second / "a.png")
         make_png(self.output_dir / "a.png")
         self.api._get_all_output_dirs = lambda: [self.output_dir, second]
-        response, _ = await self.send("PUT", {"root_index": 1, "path": "a.png"})
+        response, data = await self.send("PUT", {"root_index": 1, "path": "a.png"})
         self.assertEqual(response.status, 200)
-        row = self.api.db.model.get_connection().execute(
-            f"SELECT root_label, relative_path FROM {TABLE}"
-        )
-        self.assertEqual([tuple(r) for r in row], [("second", "a.png")])
+        self.assertNotIn(str(self.comfy_dir), json.dumps(data))
+        root_key = Path(os.path.normcase(os.path.realpath(second))).as_posix()
+        self.assertEqual(self.rows(), [(root_key, "a.png")])
         # The same root at another index keeps its favorite; the other root
         # with the same relative path does not inherit it.
         self.api._get_all_output_dirs = lambda: [second, self.output_dir]
         self.api.invalidate_gallery_cache()
         self.assertIs((await self.workspace(root=0))["a.png"]["favorite"], True)
         self.assertIs((await self.workspace(root=1))["a.png"]["favorite"], False)
+
+    async def test_roots_sharing_a_folder_name_keep_separate_favorites(self):
+        # Two roots under different parents, both shown as "output".
+        with tempfile.TemporaryDirectory() as other_parent:
+            other = Path(os.path.realpath(other_parent)) / "output"
+            make_png(other / "a.png")
+            make_png(self.output_dir / "a.png")
+            self.api._get_all_output_dirs = lambda: [self.output_dir, other]
+            response = await self.client.get(
+                "/prompt_manager/images/output", params={"mode": "workspace"}
+            )
+            labels = {
+                item["root_index"]: item["root_dir"]
+                for item in (await response.json())["images"]
+            }
+            self.assertEqual(labels, {0: "output", 1: "output"})
+
+            await self.send("PUT", {"root_index": 0, "path": "a.png"})
+            self.assertIs((await self.workspace(root=0))["a.png"]["favorite"], True)
+            self.assertIs((await self.workspace(root=1))["a.png"]["favorite"], False)
+
+            await self.send("PUT", {"root_index": 1, "path": "a.png"})
+            response, data = await self.send(
+                "DELETE", {"root_index": 0, "path": "a.png"}
+            )
+            self.assertEqual(response.status, 200)
+            self.assertNotIn(other_parent, json.dumps(data))
+            self.assertIs((await self.workspace(root=0))["a.png"]["favorite"], False)
+            self.assertIs((await self.workspace(root=1))["a.png"]["favorite"], True)
+            listing = await self.client.get(
+                "/prompt_manager/images/output", params={"mode": "workspace"}
+            )
+            self.assertNotIn(other_parent, await listing.text())
+
+    async def test_windows_case_only_rename_keeps_the_star(self):
+        make_png(self.output_dir / "Sub" / "A.png")
+        with patch("py.api.images._path_flavor", ntpath):
+            response, data = await self.send(
+                "PUT", {"root_index": 0, "path": "Sub/A.png"}
+            )
+            self.assertEqual(response.status, 200)
+            self.assertEqual(data["path"], "Sub/A.png")  # the listing's spelling
+            (self.output_dir / "Sub" / "A.png").rename(
+                self.output_dir / "Sub" / "a.png"
+            )
+            (self.output_dir / "Sub").rename(self.output_dir / "sub")
+            self.api.invalidate_gallery_cache()
+            self.assertIs((await self.workspace())["sub/a.png"]["favorite"], True)
+            response, data = await self.send(
+                "DELETE", {"root_index": 0, "path": "SUB/A.PNG"}
+            )
+            self.assertEqual(response.status, 200)
+            self.assertEqual(data["path"], "sub/a.png")
+            self.assertIs((await self.workspace())["sub/a.png"]["favorite"], False)
+        self.assertEqual(self.rows(), [])
+
+    async def test_posix_case_distinct_files_keep_independent_stars(self):
+        make_png(self.output_dir / "A.png")
+        make_png(self.output_dir / "a.png")
+        if len(list(self.output_dir.iterdir())) != 2:
+            self.skipTest("case-insensitive filesystem")
+        await self.send("PUT", {"root_index": 0, "path": "A.png"})
+        items = await self.workspace()
+        self.assertIs(items["A.png"]["favorite"], True)
+        self.assertIs(items["a.png"]["favorite"], False)
 
     async def test_favorite_rejects_traversal_and_unknown_root(self):
         make_png(self.output_dir / "a.png")
@@ -161,6 +237,22 @@ class TestImageFavoriteApi(ImageAPITestCase):
         self.assertEqual(len(data["images"]), 1)
         self.assertNotIn("favorite", data["images"][0])
 
+    async def test_toggle_lookup_is_built_once_per_scan(self):
+        make_png(self.output_dir / "a.png")
+        files = await self.api._get_gallery_files(self.output_dir)
+        first = self.api._favorite_listing(self.output_dir, files)
+        self.assertEqual(first, {"a.png": "a.png"})
+        self.assertIs(self.api._favorite_listing(self.output_dir, files), first)
+        make_png(self.output_dir / "b.png")
+        self.api.invalidate_gallery_cache()
+        rescanned = await self.api._get_gallery_files(self.output_dir)
+        self.assertEqual(
+            self.api._favorite_listing(self.output_dir, rescanned),
+            {"a.png": "a.png", "b.png": "b.png"},
+        )
+        self.api.reset_gallery_roots_cache()
+        self.assertEqual(self.api._favorite_listing_cache, {})
+
     async def test_favorite_store_failure_keeps_the_listing(self):
         make_png(self.output_dir / "a.png")
 
@@ -216,8 +308,8 @@ class TestImageFavoriteSchema(unittest.TestCase):
             "wrong table": f"CREATE TABLE {TABLE} (x TEXT)",
             "view": f"CREATE VIEW {TABLE} AS SELECT 1",
             "nullable key": (
-                f"CREATE TABLE {TABLE} (root_label TEXT, relative_path TEXT, "
-                "created_at TEXT, PRIMARY KEY(root_label, relative_path))"
+                f"CREATE TABLE {TABLE} (root_key TEXT, relative_path TEXT, "
+                "created_at TEXT, PRIMARY KEY(root_key, relative_path))"
             ),
         }
         for label, ddl in variants.items():

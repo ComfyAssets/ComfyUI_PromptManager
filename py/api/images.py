@@ -469,13 +469,26 @@ def _favorite_target(data: Mapping, roots: list[Path]):
     return (index, relative), None
 
 
-def _listed_relative(files: list, root: Path, relative: str) -> str | None:
-    """The listing's own POSIX spelling of *relative* under *root*, or None."""
-    target = os.path.normcase(str(Path(root) / relative))
-    for path, _mtime in files:
-        if os.path.normcase(str(path)) == target:
-            return path.relative_to(root).as_posix()
-    return None
+# The path module whose case rules key favorites (tests swap in ntpath).
+_path_flavor = os.path
+
+
+def _favorite_relative_key(relative: str) -> str:
+    """Case-normalized POSIX key of a root-relative path.
+
+    Lowercased with "/" separators where the platform folds case (Windows),
+    identity on POSIX, so a case-only rename keeps its favorite on Windows
+    and distinct Linux files stay distinct.
+    """
+    return _path_flavor.normcase(relative).replace(_path_flavor.sep, "/")
+
+
+def _favorite_root_key(root) -> str:
+    """Server-side identity of a gallery root: its real, case-normalized path.
+
+    Never sent in a response; folder names alone are not unique across roots.
+    """
+    return _favorite_relative_key(os.path.realpath(str(root)))
 
 
 def _iter_media_files(output_path, max_files):
@@ -2030,20 +2043,20 @@ class ImageRoutesMixin:
             return error
         index, relative = target
         root = roots[index]
+        relative = Path(relative).as_posix()
         try:
             files = await self._get_gallery_files(root)
-            listed = await self._run_in_executor(
-                _listed_relative, files, root, relative
-            )
+            listing = await self._run_in_executor(self._favorite_listing, root, files)
+            key = _favorite_relative_key(relative)
+            listed = listing.get(key)
             if listed is None and favorite:
                 return web.json_response(
                     {"success": False, "error": "Image file not found"}, status=404
                 )
-            key = (_public_path(root), listed or Path(relative).as_posix())
             update = (
                 self.db.set_image_favorite if favorite else self.db.clear_image_favorite
             )
-            await self._run_in_executor(update, *key)
+            await self._run_in_executor(update, _favorite_root_key(root), key)
         except Exception:
             self.logger.exception("Favorite update failed")
             return web.json_response(
@@ -2054,21 +2067,41 @@ class ImageRoutesMixin:
                 "success": True,
                 "favorite": favorite,
                 "root_index": index,
-                "path": key[1],
+                "path": listed or relative,
             }
         )
 
-    def _workspace_favorites(self, images: list[dict]) -> set[tuple[str, str]]:
-        """``(root label, relative path)`` favorites among *images*."""
-        by_root: dict[str, list[str]] = {}
-        for image in images:
-            by_root.setdefault(image["root_dir"], []).append(image["path"])
+    def _favorite_listing(self, root: Path, files: list) -> dict[str, str]:
+        """``{relative key: listing POSIX spelling}`` for one root's scan.
+
+        Built once per scan (the gallery cache hands out the same list until
+        it rescans), so a toggle is a dictionary lookup.
+        """
+        cache_key = str(root)
+        cached = self._favorite_listing_cache.get(cache_key)
+        if cached is not None and cached[0] is files:
+            return cached[1]
+        listing = {}
+        for path, _mtime in files:
+            posix = path.relative_to(root).as_posix()
+            listing.setdefault(_favorite_relative_key(posix), posix)
+        self._favorite_listing_cache[cache_key] = (files, listing)
+        return listing
+
+    def _workspace_favorites(self, page: list[tuple]) -> set[tuple[int, str]]:
+        """``(root index, listing path)`` of the favorites among *page* entries."""
+        by_root: dict[tuple[int, Path], dict[str, str]] = {}
+        for path, _mtime, root, index in page:
+            posix = path.relative_to(root).as_posix()
+            by_root.setdefault((index, root), {})[_favorite_relative_key(posix)] = posix
         try:
-            return {
-                (label, path)
-                for label, paths in by_root.items()
-                for path in self.db.get_image_favorites(label, paths)
-            }
+            found = set()
+            for (index, root), keys in by_root.items():
+                for key in self.db.get_image_favorites(
+                    _favorite_root_key(root), list(keys)
+                ):
+                    found.add((index, keys[key]))
+            return found
         except Exception:
             # The listing stays usable; stars show as not favorited.
             self.logger.warning("Image favorites could not be read")
@@ -2350,9 +2383,9 @@ class ImageRoutesMixin:
             image["linked"] = _card_link(summary, parsed_positive(params))
         if linked:
             # Image cards carry the star; Library previews show none.
-            favorites = self._workspace_favorites(images)
+            favorites = self._workspace_favorites(page)
             for image in images:
-                image["favorite"] = (image["root_dir"], image["path"]) in favorites
+                image["favorite"] = (image["root_index"], image["path"]) in favorites
         return images
 
     def _format_output_page(self, page, *, scoped=False):

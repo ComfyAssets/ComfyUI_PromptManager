@@ -287,6 +287,8 @@ class PromptManagerAPI(
         # (py/api/images.py _workspace_listed/_workspace_orders).
         self._workspace_listed_cache = {}
         self._workspace_order_cache = {}
+        # Favorite keys of each root's cached scan (images._favorite_listing).
+        self._favorite_listing_cache = {}
         # Single-flight locks for long jobs, keyed by job family; see
         # _acquire_long_job(). Created lazily so no lock binds to an event
         # loop before the server's loop exists.
@@ -364,6 +366,7 @@ class PromptManagerAPI(
         """Drop every cached listing and derived workspace value (roots changed)."""
         self.invalidate_gallery_cache()
         self._workspace_listed_cache = {}
+        self._favorite_listing_cache = {}
 
     def add_routes(self, routes):
         """Register all API routes with the ComfyUI server.
