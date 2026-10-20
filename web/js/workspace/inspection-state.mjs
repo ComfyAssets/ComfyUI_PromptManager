@@ -176,7 +176,9 @@ function withWorkflowParams(record, parser = comfyMetadata()) {
     const graph = record.metadata.prompt_graph.status === 'parsed' ? record.metadata.prompt_graph.value : null;
     const workflow = record.metadata.workflow_graph.status === 'parsed' ? record.metadata.workflow_graph.value : null;
     if (typeof parser?.extractGenerationParams !== 'function' || (!graph && !workflow)) return;
-    const params = parser.extractGenerationParams({ prompt: graph, workflow });
+    let params;
+    // The browser parser throws on some malformed graphs; then only the server result shows.
+    try { params = parser.extractGenerationParams({ prompt: graph, workflow }); } catch { return; }
     const found = key => typeof params[key] === 'string' || typeof params[key] === 'number' ?
         String(params[key]) !== '' && params[key] !== parser.PLACEHOLDERS?.[key] : false;
     const prompts = { ...record.prompts };
