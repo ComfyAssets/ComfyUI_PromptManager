@@ -55,6 +55,17 @@ test('overlay lint requires a decision marker on concept selectors', () => {
     assert.equal(lintOverlay(conceptCss, '/* D1 */ .card { color: blue; }\n.row { gap: 1px; }').violations.length, 1);
 });
 
+test('overlay lint accepts only this spec\'s (#249) decision numbers', () => {
+    const conceptCss = '.card { color: red; }\n';
+    assert.deepEqual(lintOverlay(conceptCss, '/* D12 of #249 */ .card { color: blue; }').violations, []);
+    assert.deepEqual(lintOverlay(conceptCss, '/* #249 D3: reason */ .card { color: blue; }').violations, []);
+    // Another issue's decision numbers are not #249 rulings, so they never mark a concept override.
+    assert.equal(lintOverlay(conceptCss, '/* D5 (#245) */ .card { color: blue; }').violations.length, 1);
+    assert.equal(lintOverlay(conceptCss, '/* D2 of #240 and #249 */ .card { color: blue; }').violations.length, 1);
+    assert.equal(lintOverlay(conceptCss, '/* #245 decision 5 */ .card { color: blue; }').violations.length, 1);
+    assert.equal(lintOverlay(conceptCss, '/* AD5 */ .card { color: blue; }').violations.length, 1);
+});
+
 test('overlay rules on concept selectors carry a decision marker', () => {
     const overlay = join(root, 'web/js/workspace/workspace.css');
     assert.ok(existsSync(overlay), 'web/js/workspace/workspace.css is missing');

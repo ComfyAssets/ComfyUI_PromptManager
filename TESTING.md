@@ -319,11 +319,21 @@ other page or canvas script loads workspace CSS.
 
 **Overlay decision-marker lint.** `lintOverlay` in `tools/vendor/sync-concept-css.mjs`
 fails any `workspace.css` rule whose selector is also a concept selector unless the
-rule carries a `/* D<n> */` comment, before its selector or inside its block. The lint
-test fails if `workspace.css` is missing. The match is by exact selector, so a narrower
-selector over a concept rule (for example `.ca-tools dialog.prompt-sender`) passes the
-lint. Such rules, and the page-stylesheet leftovers such as `library.css`
-`.row-actions`, name the PR that retires them, by convention.
+rule carries a `/* D<n> */` comment, before its selector or inside its block. The
+D-number must be one of this spec's (#249): a comment that cites any other issue, such
+as `D5 (#245)`, is that issue's ruling and is not a marker, so write `#245 decision 5`
+for those. The lint test fails if `workspace.css` is missing. The match is by exact
+selector, so a narrower selector over a concept rule (for example
+`.ca-tools dialog.prompt-sender`) passes the lint. Such rules, and the page-stylesheet
+leftovers such as `library.css` `.row-actions`, name the PR that retires them, by
+convention.
+
+The lint covers `workspace.css` only. The page stylesheets that load before it
+(`images.css`, `library.css`, `inspector.css`) are not linted yet, and `images.css`
+still has unmarked concept-selector overrides (`.image-grid`, `.prompt-text`,
+`.prompt-actions`, `.ca-tools .prompt-actions button`). PRs C and D retire those
+sheets: each one runs `lintOverlay` over every page sheet it keeps, and adds that
+sheet to the real-file lint test.
 
 **Comparison method.** Production must equal the concept except for the recorded
 deviations in the #249 design (spec §8, D-numbers). It is never compared against

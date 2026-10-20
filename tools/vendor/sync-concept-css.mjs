@@ -6,6 +6,13 @@ import { repositoryRoot } from './vendor-viewerjs.mjs';
 const CONCEPT = 'docs/concepts/workspace/style.css';
 const COPY = 'web/js/workspace/concept.css';
 const MARKER = /\/\*[^*]*\bD\d+\b[^*]*\*\//;
+const SPEC_ISSUE = '#249';
+
+// A decision marker names one of this spec's (#249) D-numbers. A comment that cites any other issue is that issue's
+// ruling (for example #245's own D5), so it never marks a concept override here.
+function isDecisionMarker(comment) {
+    return MARKER.test(comment) && (comment.match(/#\d+\b/g) ?? []).every(issue => issue === SPEC_ISSUE);
+}
 
 // Minimal tokenizer: walks top-level rules and the bodies of @media/@supports,
 // returning each rule's normalized selectors and the comments attached to it
@@ -84,8 +91,8 @@ export function lintOverlay(conceptCss, overlayCss) {
     const violations = [];
     for (const rule of parseRules(overlayCss)) {
         const shared = rule.selectors.filter(selector => owned.has(selector));
-        if (shared.length && !rule.comments.some(comment => MARKER.test(comment))) {
-            violations.push(`${shared.join(', ')}: overlay rule on a concept selector needs a /* D<n> */ decision marker`);
+        if (shared.length && !rule.comments.some(isDecisionMarker)) {
+            violations.push(`${shared.join(', ')}: overlay rule on a concept selector needs a /* D<n> */ (#249) decision marker`);
         }
     }
     return { violations };

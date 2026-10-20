@@ -43,7 +43,7 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 /* Long tag names wrap inside the Tag cell so the Actions column keeps its intrinsic width; on two-column screens the
    minimum keeps the concept's longest sample ("architecture", about 5em) on one line. */
 .vocabulary-main td:first-child { overflow-wrap: anywhere; min-width: calc(6em + 20px); }
-/* D5 (#245): bounded lists continue with Load more; never a scroll anchor, so appended rows push the end away. */
+/* Tags & categories (#245 decision 5): bounded lists continue with Load more; never a scroll anchor, so appended rows push the end away. */
 .vocabulary-main .vocabulary-continuation { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-block: 15px 0; overflow-anchor: none; }
 .vocabulary-main .vocabulary-continuation p { margin: 0; flex: 1 1 200px; font-size: 12px; color: var(--ca-muted); }
 .vocabulary-main .vocabulary-continuation .vocabulary-error { color: var(--ca-error-text); }
