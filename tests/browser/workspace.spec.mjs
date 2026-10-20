@@ -11,7 +11,8 @@ const sidebarLink = (page, label) => page.locator('aside.sidebar nav').getByRole
 const sidebarLinks = page => page.locator('aside.sidebar nav a');
 const routes = [
     ['overview', 'Overview', null],
-    ['images', 'Images', '/prompt_manager/gallery'],
+    // D29: Images no longer links the legacy gallery; Overview's tool cards still do.
+    ['images', 'Images', null],
     ['library', 'Prompt library', '/prompt_manager/admin'],
     ['tags', 'Tags & categories', null],
     ['inspect', 'Inspect a file', '/prompt_manager/gallery.html'],
@@ -80,6 +81,13 @@ test('all shell destinations deep-link, reload and expose working existing appli
         await page.reload();
         await expect(main.getByRole('heading', { level: 1, name: label, exact: true })).toBeVisible();
     }
+    // D29: the legacy image gallery is reached from Overview's tool card, not from Images.
+    await page.goto(`${workspace}#/overview`);
+    const gallery = page.locator('#workspace-main').getByRole('link', { name: 'Open existing image gallery', exact: true });
+    await expect(gallery).toHaveAttribute('href', '/prompt_manager/gallery');
+    await expect(await request.get('/prompt_manager/gallery')).toBeOK();
+    await gallery.click();
+    await expect(page).toHaveURL(/\/prompt_manager\/gallery$/);
 });
 
 test('keyboard navigation, browser history and unknown routes remain usable', async ({ page }) => {
@@ -308,7 +316,7 @@ test('leaving a loading overview prevents its delayed result from replacing the 
     await expect(page.locator('#primary-nav')).toHaveCount(1);
     await expect(page.locator('#system-nav')).toHaveCount(1);
     await expect(page.getByRole('combobox', { name: 'Theme', exact: true })).toHaveCount(1);
-    await expect(page.locator('#workspace-main a[href="/prompt_manager/gallery"]')).toBeVisible();
+    await expect(page.locator('#workspace-main .section-caption')).toBeVisible();
     await countThemeWrites(page);
     await page.getByRole('combobox', { name: 'Theme', exact: true }).selectOption('light');
     expect(await page.evaluate(() => window.__themeChanges)).toBe(1);

@@ -1,5 +1,9 @@
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import { seedConcept, openConcept, openProduction, SIZES } from './concept-inventory.mjs';
+// D10/D20: the heading is the linked positive's title (its confirmed first line here), never the pair's
+// "Inspector recipe", which names the negative variant.
+const POSITIVE_TITLE='Inspector portrait 猫 😀';
 
 test.use({locale:'en-US',timezoneId:'UTC',reducedMotion:'reduce'});
 test.beforeEach(async({page,browserName})=>{await startCoverage(page,browserName);page.inspectorErrors=[];page.on('pageerror',error=>page.inspectorErrors.push(error.message));});
@@ -71,7 +75,7 @@ test('inspection wire preserves exact rooted envelope', async ({ request }) => {
     expect(result.metadata.prompt_graph.value['3'].inputs.cfg).toBe('6.5');
     expect(result.metadata.record_formats).toEqual({ prompt: 'original-text', workflow: 'original-text' });
     expect(result.file).toMatchObject({ observation: 'current-file', format: 'PNG', width: 720, height: 480 });
-    expect(result.library).toMatchObject({ status: 'linked', metadata_scope: 'pair', title: 'Inspector recipe', category: 'Inspection', tags: ['fixture', 'geometric'] });
+    expect(result.library).toMatchObject({ status: 'linked', metadata_scope: 'pair', title: POSITIVE_TITLE, category: 'Inspection', tags: ['fixture', 'geometric'] });
     expect((await inspect(collision)).prompts.positive.text).toBe('Input collision');
     const gallery = await (await request.get(`/prompt_manager/library/${result.library.positive_id}/images?pair_id=${result.library.pair_id}`)).json();
     expect(gallery.images[0].root_scope).toBe(complete.root_scope);
@@ -86,7 +90,7 @@ test('inspection wire preserves exact rooted envelope', async ({ request }) => {
 });
 
 const inspector=page=>page.locator('.image-details');
-const selectFile=async(page,name,root=0)=>page.locator(`article[data-image-key="${root}:inspector/${name}"] .image-open`).click();
+const selectFile=async(page,name,root=0)=>page.locator(`article[data-image-key="${root}:inspector/${name}"] .image-card-actions button`).click();
 async function fullFixture(page,request) {
     await expect(await request.post('/__test__/reset',{data:{full_inspector:true}})).toBeOK();
     await page.goto('/prompt_manager/workspace#/images');await selectFile(page,'complete.png');
@@ -98,7 +102,7 @@ async function downloadText(page,action) {
 
 test('full inspector shows six facts and scoped provenance',async({page,request},testInfo)=>{
     await page.setViewportSize({width:1600,height:1100});await fullFixture(page,request);const panel=inspector(page);
-    await expect(panel.getByRole('heading',{name:'Inspector recipe',exact:true})).toBeVisible();await expect(panel.locator('.file-format')).toHaveText('PNG');await expect(panel.locator('.file-name')).toHaveText('complete.png');
+    await expect(panel.getByRole('heading',{name:POSITIVE_TITLE,exact:true})).toBeVisible();await expect(panel.locator('.file-format')).toHaveText('PNG');await expect(panel.locator('.file-name')).toHaveText('complete.png');
     await expect(panel.locator('.file-evidence')).toHaveText('Workflow prompt evidence');
     expect(await panel.evaluate(node=>node.getBoundingClientRect().width)).toBe(310);
     expect(await panel.locator('.file-inspector-inner').evaluate(node=>getComputedStyle(node).padding)).toBe('17px');
@@ -174,7 +178,7 @@ test('full inspector labels a limited workflow record without hiding prompt fact
 test('full inspector rejects stale shared action state',async({page,request})=>{
     let reads=0,stale=false;await page.route('**/images/inspect/**',route=>{reads++;return stale?route.fulfill({status:409,json:{success:false,code:'source-changed',error:'Source changed'}}):route.continue();});
     await fullFixture(page,request);const panel=inspector(page);await expect(panel.getByRole('button',{name:'Send prompt pair',exact:true})).toBeVisible();const before=reads;
-    await panel.getByRole('button',{name:'Open full preview',exact:true}).click();const preview=page.getByRole('dialog',{name:'Image preview',exact:true});await expect(preview.locator('.generation-facts dd').first()).toHaveText('9007199254740993');expect(reads).toBe(before);await preview.getByRole('button',{name:'Close preview',exact:true}).click();
+    await panel.getByRole('button',{name:'Open full preview',exact:true}).click();const preview=page.locator('dialog#viewer-dialog');await expect(preview.locator('.generation-facts dd').first()).toHaveText('9007199254740993');expect(reads).toBe(before);await preview.getByRole('button',{name:'Close image viewer',exact:true}).click();
     stale=true;await selectFile(page,'complete.png',1);await expect(panel).toContainText('The source changed. Refresh the image collection before inspecting this file.');
     await expect(panel.getByRole('button',{name:/Retry/})).toHaveCount(0);await expect(panel.locator('[data-copy-role],[data-send-role],a[download]')).toHaveCount(0);await expect(panel.getByRole('button',{name:/Download/})).toHaveCount(0);
     stale=false;const refreshed=page.waitForResponse(response=>response.url().includes('/images/output?'));await panel.getByRole('button',{name:'Refresh image collection',exact:true}).click();await refreshed;await selectFile(page,'complete.png',1);await expect(panel).toContainText('Input collision');
@@ -194,7 +198,7 @@ test('full inspector keeps long literal content reachable on mobile',async({page
 
 test('embedded gallery uses the same full inspector',async({page,request})=>{
     await expect(await request.post('/__test__/reset',{data:{full_inspector:true}})).toBeOK();const list=await(await request.get('/prompt_manager/library')).json();const id=list.items.find(item=>item.text.startsWith('Inspector portrait')).id;
-    await page.goto(`/prompt_manager/workspace#/library/${id}`);await selectFile(page,'complete.png');const panel=inspector(page);await expect(panel.getByRole('heading',{name:'Inspector recipe',exact:true})).toBeVisible();await expect(panel.locator('.generation-facts dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);await expect(panel).toContainText('Recipe tags');await panel.getByRole('button',{name:'Open full preview',exact:true}).click();await expect(page.locator('.image-preview .file-inspector')).toHaveCount(1);
+    await page.goto(`/prompt_manager/workspace#/library/${id}`);await selectFile(page,'complete.png');const panel=inspector(page);await expect(panel.getByRole('heading',{name:POSITIVE_TITLE,exact:true})).toBeVisible();await expect(panel.locator('.generation-facts dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);await expect(panel).toContainText('Recipe tags');await panel.getByRole('button',{name:'Open full preview',exact:true}).click();await expect(page.locator('#viewer-dialog .file-inspector')).toHaveCount(1);
 });
 
 test('full inspector labels container representations and releases action URLs',async({page,request})=>{
@@ -227,7 +231,7 @@ test('full inspector labels container representations and releases action URLs',
 test('full inspector distinguishes missing, limited and legacy unknown generation facts',async({page,request})=>{
     await fullFixture(page,request);const panel=inspector(page);
     await selectFile(page,'empty.png');await expect(panel.locator('.generation-facts dd')).toHaveText(Array(6).fill('Not recorded'));
-    await page.locator('article[data-image-key="0:architecture/study-01.png"] .image-open').click();await expect(panel.locator('.generation-facts dd')).toHaveText(Array(6).fill('Not recorded'));
+    await page.locator('article[data-image-key="0:architecture/study-01.png"] .image-card-actions button').click();await expect(panel.locator('.generation-facts dd')).toHaveText(Array(6).fill('Not recorded'));
     await selectFile(page,'control-heavy.png');
     const explanation='Configuration exceeds inspection limits; download the original file to inspect it locally.';
     await expect(panel.getByText(explanation,{exact:true})).toHaveCount(1);await expect(panel.getByText(explanation,{exact:true})).toBeVisible();
@@ -262,9 +266,9 @@ test.describe('full inspector coarse pointer',()=>{
             }
             await expect(panel.locator('.prompt-positive pre')).toHaveText(fullText);
         }
-        await panel.getByRole('button',{name:'Open full preview',exact:true}).click();const viewer=page.getByRole('dialog',{name:'Image preview',exact:true});
+        await panel.getByRole('button',{name:'Open full preview',exact:true}).click();const viewer=page.locator('dialog#viewer-dialog');
         await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
-        for(const target of await viewer.locator('.image-preview-controls > :is(button,a),.image-preview-header > button').all()) {
+        for(const target of await viewer.locator('#viewer-toolbar > :is(button,a),.dialog-header > button').all()) {
             const box=await target.evaluate(node=>{const {width,height}=node.getBoundingClientRect();return {width,height,name:node.getAttribute('aria-label')};});
             expect(box.width,box.name).toBeGreaterThanOrEqual(80);expect(box.height,box.name).toBeGreaterThanOrEqual(80);
         }
@@ -272,25 +276,98 @@ test.describe('full inspector coarse pointer',()=>{
     });
 });
 
-const mediaDialog=page=>page.getByRole('dialog',{name:'Image preview',exact:true});
+const mediaDialog=page=>page.locator('dialog#viewer-dialog');
 const mediaStage=page=>mediaDialog(page).getByRole('region',{name:'Media preview',exact:true});
-const position=page=>mediaDialog(page).locator('.image-preview-position');
+const position=page=>mediaDialog(page).locator('.media-position');
 async function openCollection(page) {
     await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();
     await expect(mediaDialog(page).locator('.viewer-canvas img')).toBeVisible();
     await expect(mediaDialog(page).getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
 }
 
+// #249 C6: the concept viewer shell (h84–103, a889–926, s1008–1058, ≤700 s1456–1474), measured by one function in the
+// concept and in production. #viewer-stage and #viewer-details content is not part of the shell (C8 owns the details).
+const VIEWER_SHELL=()=>{
+    const dialog=document.querySelector('dialog#viewer-dialog');
+    const describe=node=>`${node.tagName.toLowerCase()}${node.id?`#${node.id}`:''}${[...node.classList].sort().map(value=>`.${value}`).join('')}`;
+    const paths=[];
+    const walk=(node,prefix)=>{for(const child of node.children){const path=`${prefix} > ${describe(child)}`;paths.push(path);if(!child.matches('#viewer-stage,#viewer-toolbar,#viewer-details'))walk(child,path);}};
+    walk(dialog,describe(dialog));
+    const box=node=>{const bounds=node.getBoundingClientRect();return [bounds.x,bounds.y,bounds.width,bounds.height].map(Math.round);};
+    const toolbar=dialog.querySelector('#viewer-toolbar');
+    const part=selector=>dialog.querySelector(selector);
+    return {open:dialog.open,labelledBy:dialog.getAttribute('aria-labelledby'),paths,
+        title:part('#viewer-title').textContent.trim(),subtitle:part('.dialog-header > div > p').textContent.trim(),
+        close:{text:part('#viewer-close').textContent.trim(),label:part('#viewer-close').getAttribute('aria-label')},
+        details:part('#viewer-details').getAttribute('aria-label'),
+        toolbar:[...toolbar.children].map(node=>({tag:node.tagName.toLowerCase(),text:node.textContent.trim(),size:box(node).slice(2)})),
+        geometry:Object.fromEntries(['dialog','.dialog-header','#viewer-title','#viewer-close','.viewer-layout','.viewer-left','#viewer-details']
+            .map(selector=>[selector,box(selector==='dialog'?dialog:part(selector))])),
+        toolbarBox:box(toolbar),stageBox:box(part('#viewer-stage'))};
+};
+
+test('viewer matches the concept shell and toolbar order',async({page,request})=>{
+    await seedConcept(request);
+    for(const [width,height] of SIZES) {
+        await page.setViewportSize({width,height});
+        await openConcept(page,'images','dark');
+        const card=page.locator('#image-grid > article.media-card').nth(1).locator('.image-open');
+        const filename=(await card.getAttribute('aria-label')).replace(/^Open /,'');
+        await card.click();await expect(page.locator('#viewer-dialog .viewer-canvas img')).toBeVisible();
+        const concept=await page.evaluate(VIEWER_SHELL);
+        expect(concept.toolbar.map(control=>control.text)).toEqual(['← Previous','−','+','Fit','Rotate','Flip','Play','Download','Next →']);
+        await openProduction(page,'images','dark');
+        const opener=page.locator(`article[data-image-key] .image-open[aria-label="Open ${filename}"]`);await opener.click();
+        const viewer=page.locator('dialog#viewer-dialog');
+        await expect(viewer.locator('.viewer-canvas img')).toBeVisible();await expect(viewer.locator('#viewer-title')).toHaveText(concept.title);
+        await expect(viewer.getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
+        // The dialog is named by its title, as the concept's aria-labelledby does.
+        await expect(page.getByRole('dialog',{name:concept.title,exact:true})).toBeVisible();
+        const production=await page.evaluate(VIEWER_SHELL);
+        // C8 rebuilds the details content; until then the shared file inspector marks the aside it renders into.
+        production.paths=production.paths.map(path=>path.replace('aside#viewer-details.file-inspector','aside#viewer-details'));
+        // #249 D34: after Next → production appends its own status lines (position, then the transform and slideshow
+        // reasons), and Download stays the original-file link; every other control keeps the concept's text and order.
+        const appended=production.toolbar.slice(9);
+        expect(appended.map(control=>control.tag)).toEqual(['p','p','p']);
+        await expect(viewer.locator('#viewer-toolbar > p[role="status"]')).toHaveText(new RegExp(`^\\d+ of \\d+ loaded: ${filename.replace(/[\\^$.*+?()[\]{}|]/g,'\\$&')}$`));
+        expect(production.toolbar[7].tag).toBe('a');
+        production.toolbar=production.toolbar.slice(0,9).map((control,index)=>index===7?{...control,tag:'button'}:control);
+        // #249 D34: Viewer.js's own `.viewer-toolbar` rule makes the concept's toolbar absolute across the dialog's
+        // bottom edge, over the details; production keeps it in `.viewer-left` under the stage.
+        const [leftX,leftY,leftWidth,leftHeight]=production.geometry['.viewer-left'],[barX,barY,barWidth,barHeight]=production.toolbarBox;
+        // Inside the left box's 1px border (boxes are rounded to whole pixels).
+        for(const [actual,expected] of [[barX,leftX+1],[barWidth,leftWidth-2],[barY+barHeight,leftY+leftHeight-1],[production.stageBox[1]+production.stageBox[3],barY]])
+            expect(Math.abs(actual-expected),`${width}x${height} toolbar inside .viewer-left`).toBeLessThanOrEqual(1);
+        expect(concept.toolbarBox[2]).toBeGreaterThan(concept.geometry['.viewer-left'][2]);
+        for(const shell of [concept,production]) {
+            delete shell.toolbarBox;delete shell.stageBox;
+            // At 700px and below the details and the stacked layout grow with the details content, which C8 rebuilds.
+            if(width<=700) for(const selector of ['#viewer-details','.viewer-layout']) shell.geometry[selector]=shell.geometry[selector].slice(0,3);
+        }
+        if(await page.evaluate(()=>matchMedia('(pointer: coarse)').matches)) {
+            // #249 D34: coarse pointers keep production's 40px square targets, wider than the concept's ×, "−" and "+" (the title beside × narrows by the difference).
+            for(const shell of [concept,production]) {shell.toolbar=shell.toolbar.map(({tag,text})=>({tag,text}));delete shell.geometry['#viewer-close'];shell.geometry['#viewer-title'].splice(2,1);}
+            expect(production.close).toEqual(concept.close);
+        }
+        expect(production,`${width}x${height}`).toEqual(concept);
+        await page.keyboard.press('Escape');await expect(viewer).toHaveCount(0);await expect(opener).toBeFocused();
+    }
+});
+
 test('collection viewer follows filtered loaded order beyond mounted cards',async({page,request})=>{
     await page.addInitScript(()=>{window.IntersectionObserver=undefined;});
     await expect(await request.post('/__test__/reset',{data:{full_inspector:true,extra_images:200}})).toBeOK();
     await page.goto('/prompt_manager/workspace#/images');
-    await page.getByRole('combobox',{name:'Source',exact:true}).selectOption('0');
-    await page.getByRole('combobox',{name:'Folder',exact:true}).selectOption('inspector');
-    await page.getByRole('combobox',{name:'Sort',exact:true}).selectOption('name');
+    // #249 C2: Source and Folder live in the concept's "Refine this view"; sort is the toolbar's.
+    await page.getByRole('button',{name:'Filters',exact:true}).click();
+    const refine=page.getByRole('dialog',{name:'Refine this view',exact:true});
+    await refine.getByLabel('Source',{exact:true}).selectOption('0');await refine.getByLabel('Folder',{exact:true}).selectOption('inspector');
+    await refine.getByRole('button',{name:'Apply filters',exact:true}).click();
+    await page.getByRole('combobox',{name:'Sort results',exact:true}).selectOption('name');
     const more=page.getByRole('button',{name:'Load more images',exact:true});
-    await expect(page.locator('.image-toolbar')).toContainText('40 of');
-    for(const n of [80,120,160]) {await more.click();await expect(page.locator('.image-toolbar')).toContainText(`${n} of`);}
+    await expect(page.locator('.section-caption')).toContainText('40 of');
+    for(const n of [80,120,160]) {await more.click();await expect(page.locator('.section-caption')).toContainText(`${n} of`);}
     const listed=await(await request.get('/prompt_manager/images/output?mode=workspace&root=0&subfolder=inspector&sort=name&limit=200')).json();
     const loaded=listed.images.slice(0,160);expect(loaded).toHaveLength(160);
     await page.evaluate(()=>scrollTo(0,0));await expect.poll(()=>page.locator('article[data-image-key]').count()).toBeLessThan(120);
@@ -298,30 +375,31 @@ test('collection viewer follows filtered loaded order beyond mounted cards',asyn
     // A grid page, not the sidebar's `limit=1` Images count.
     await page.route(url=>url.pathname.endsWith('/images/output') && url.searchParams.get('limit')!=='1',async route=>{started();await held;await route.continue();},{times:1});
     await more.click();await hit;await page.evaluate(()=>scrollTo(0,0));
-    const opener=page.locator(`article[data-image-key="0:${loaded[0].path}"] .image-card-footer button`);
-    await opener.click();release();await expect(page.locator('.image-toolbar')).toContainText('200 of');
+    const opener=page.locator(`article[data-image-key="0:${loaded[0].path}"] .image-open`);
+    await opener.click();release();await expect(page.locator('.section-caption')).toContainText('200 of');
     const modal=mediaDialog(page);await expect(position(page)).toHaveText(`1 of 160 loaded: ${loaded[0].filename}`);
     let pages=0;page.on('request',req=>{if(req.url().includes('/images/output?'))pages++;});
     await modal.getByRole('button',{name:'Previous media',exact:true}).click();
     await expect(position(page)).toHaveText(`160 of 160 loaded: ${loaded[159].filename}`);
     await expect(modal.locator('.file-name')).toHaveText(loaded[159].filename);
-    await expect(modal.getByRole('group',{name:'Media controls',exact:true}).getByRole('link',{name:'Download original',exact:true})).toHaveAttribute('href',loaded[159].url);
+    await expect(modal.locator('#viewer-toolbar').getByRole('link',{name:'Download original',exact:true})).toHaveAttribute('href',loaded[159].url);
     await expect(page.locator(`article[data-image-key="0:${loaded[159].path}"]`)).toHaveCount(0);
     await modal.getByRole('button',{name:'Next media',exact:true}).click();await expect(position(page)).toHaveText(`1 of 160 loaded: ${loaded[0].filename}`);
     await mediaStage(page).focus();await page.keyboard.press('ArrowRight');await expect(position(page)).toHaveText(`2 of 160 loaded: ${loaded[1].filename}`);
-    expect(pages).toBe(0);await modal.getByRole('button',{name:'Close preview',exact:true}).click();
+    expect(pages).toBe(0);await modal.getByRole('button',{name:'Close image viewer',exact:true}).click();
     await expect(opener).toBeFocused();
-    await page.getByRole('combobox',{name:'Source',exact:true}).selectOption('1');
-    await page.getByRole('combobox',{name:'Folder',exact:true}).selectOption('inspector');
+    await page.getByRole('button',{name:'Filters',exact:true}).click();
+    await refine.getByLabel('Source',{exact:true}).selectOption('1');await refine.getByLabel('Folder',{exact:true}).selectOption('inspector');
+    await refine.getByRole('button',{name:'Apply filters',exact:true}).click();
     await selectFile(page,'complete.png',1);await openCollection(page);await expect(position(page)).toHaveText('1 of 1 loaded: complete.png');
     for(const name of ['Previous media','Next media'])await expect(mediaDialog(page).getByRole('button',{name,exact:true})).toHaveAttribute('aria-disabled','true');
     const onePlay=mediaDialog(page).getByRole('button',{name:'Play slideshow',exact:true});
     await expect(onePlay).toHaveAccessibleDescription('Slideshow requires at least two loaded media entries.');await onePlay.dispatchEvent('click');await expect(onePlay).toHaveText('Play');
-    await mediaDialog(page).getByRole('button',{name:'Close preview',exact:true}).click();
+    await mediaDialog(page).getByRole('button',{name:'Close image viewer',exact:true}).click();
     const library=await(await request.get('/prompt_manager/library')).json();const id=library.items.find(item=>item.text.startsWith('Inspector portrait')).id;
     await page.goto(`/prompt_manager/workspace#/library/${id}`);await page.getByRole('button',{name:'Select negative variant 1',exact:true}).click();await selectFile(page,'complete.png');await openCollection(page);
     await expect(position(page)).toContainText('of 1 loaded: complete.png');
-    await mediaDialog(page).getByRole('button',{name:'Close preview',exact:true}).click();
+    await mediaDialog(page).getByRole('button',{name:'Close image viewer',exact:true}).click();
     await page.getByRole('button',{name:'All images for this positive',exact:true}).click();
     await selectFile(page,'complete.png');await openCollection(page);await expect(position(page)).toContainText('of 2 loaded:');
 });
@@ -334,8 +412,8 @@ test('collection viewer uses real public transforms and resets on navigation',as
         for(const method of ['zoom','reset','rotate','scaleX']) {const original=Native.prototype[method];Native.prototype[method]=function(...args){window.viewerCalls.push([method,...args]);return original.apply(this,args);};}
         window.Viewer=class extends Native {constructor(...args){super(...args);window.viewerInstances.push(this);}};
     });
-    await openCollection(page);const modal=mediaDialog(page),controls=modal.getByRole('group',{name:'Media controls',exact:true});
-    await expect(modal.locator('.viewer-container')).toHaveCount(1);await expect(modal.locator(':is(.viewer-toolbar,.viewer-navbar,.viewer-title,.viewer-button):visible')).toHaveCount(0);
+    await openCollection(page);const modal=mediaDialog(page),controls=modal.locator('#viewer-toolbar');
+    await expect(modal.locator('.viewer-container')).toHaveCount(1);await expect(modal.locator('.viewer-container :is(.viewer-toolbar,.viewer-navbar,.viewer-title,.viewer-button):visible')).toHaveCount(0);
     const fitted=await page.evaluate(()=>({...window.viewerInstances.at(-1).imageData}));
     await controls.getByRole('button',{name:'Zoom in',exact:true}).click();expect(await page.evaluate(()=>window.viewerInstances.at(-1).imageData.width)).toBeGreaterThan(fitted.width);
     await controls.getByRole('button',{name:'Zoom out',exact:true}).click();
@@ -378,7 +456,7 @@ async function slideshowFixture(page,request,preferences={videoAutoplay:false,vi
     await expect(mediaDialog(page).locator('.file-name')).toHaveText('complete.png');
     await page.clock.install();await page.clock.pauseAt(new Date(Date.now()+1000));
 }
-const slideshowButton=page=>mediaDialog(page).getByRole('group',{name:'Media controls',exact:true}).getByRole('button',{name:/^(Play|Pause|Stop) slideshow$/});
+const slideshowButton=page=>mediaDialog(page).locator('#viewer-toolbar').getByRole('button',{name:/^(Play|Pause|Stop) slideshow$/});
 const timerCount=page=>page.evaluate(()=>window.slideshowTimers.size);
 const mediaStep=async(page,direction)=>mediaDialog(page).getByRole('button',{name:`${direction} media`,exact:true}).click();
 async function readyClockImage(page) {
@@ -407,7 +485,7 @@ test('slideshow exposes exact state labels and respects video playback',async({p
     await button.click();await mediaStep(page,'Previous');await expect(button).toHaveText('Stop');
     await mediaStep(page,'Previous');await expect(button).toHaveText('Pause');await expect(position(page)).toContainText('Slideshow waiting for image.');await readyClockImage(page);await expect.poll(()=>timerCount(page)).toBe(1);
     expect(new Set(originals.map(url=>new URL(url).pathname)).size).toBe(3);
-    await button.click();await modal.locator('.image-preview-details').evaluate(node=>{node.scrollTop=node.scrollHeight;});await page.clock.runFor(50);
+    await button.click();await modal.locator('#viewer-details').evaluate(node=>{node.scrollTop=node.scrollHeight;});await page.clock.runFor(50);
     await button.click();await mediaStep(page,'Previous');await readyClockImage(page);await expect(button).toHaveText('Pause');expect(await timerCount(page)).toBe(1);
 });
 
@@ -438,7 +516,7 @@ test('slideshow production query and route disposal cancel the active deadline',
     await openCollection(page);await expect(mediaDialog(page).getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
     await page.clock.pauseAt(new Date(Date.now()+1000));await slideshowButton(page).click();expect(await timerCount(page)).toBe(1);
     await page.clock.runFor(3499);
-    const pendingAtReset=await page.evaluate(()=>{const folder=document.getElementById('image-folder');folder.value='inspector';folder.dispatchEvent(new Event('change'));return window.slideshowTimers.size;});
+    const pendingAtReset=await page.evaluate(()=>{const sort=document.getElementById('sort');sort.value='name';sort.dispatchEvent(new Event('change'));return window.slideshowTimers.size;});
     expect(pendingAtReset).toBe(0);await page.clock.runFor(1);
     await expect(mediaDialog(page)).toHaveCount(0);expect(await timerCount(page)).toBe(0);
     await selectFile(page,'complete.png');await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();await readyClockImage(page);await expect(slideshowButton(page)).toHaveText('Play');
@@ -450,18 +528,18 @@ test('slideshow interaction visibility sender and disposal clear intent',async({
     await slideshowFixture(page,request);const button=slideshowButton(page),modal=mediaDialog(page);
     for(const action of [
         ()=>modal.locator('.prompt-positive pre').click(),
-        ()=>modal.locator('.image-preview-details').dispatchEvent('wheel',{deltaY:100}),
+        ()=>modal.locator('#viewer-details').dispatchEvent('wheel',{deltaY:100}),
         ()=>modal.getByRole('button',{name:'Copy positive prompt',exact:true}).click(),
         async()=>{await modal.getByText('Workflow & raw metadata',{exact:true}).click();await downloadText(page,modal.getByRole('button',{name:'Download metadata JSON',exact:true}));},
         async()=>{await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'));});},
         async()=>{const trigger=modal.getByRole('button',{name:'Send prompt pair',exact:true});await trigger.click();await expect(page.getByRole('dialog',{name:'Send to ComfyUI',exact:true})).toBeVisible();await page.keyboard.press('Escape');await expect(trigger).toBeFocused();},
-        ()=>modal.getByRole('group',{name:'Media controls',exact:true}).getByRole('link',{name:'Download original',exact:true}).click(),
+        ()=>modal.locator('#viewer-toolbar').getByRole('link',{name:'Download original',exact:true}).click(),
         ()=>page.evaluate(()=>window.slideshowFixture.view.stopSlideshow()),
     ]) {
         await button.click();expect(await timerCount(page)).toBe(1);await action();await expect(button).toHaveText('Play');expect(await timerCount(page)).toBe(0);await page.clock.runFor(3500);await expect(position(page)).toContainText('1 of 3 loaded');
     }
     for(let mount=0;mount<3;mount++) {
-        await button.click();await modal.getByRole('button',{name:'Close preview',exact:true}).click();await expect(modal).toHaveCount(0);expect(await timerCount(page)).toBe(0);
+        await button.click();await modal.getByRole('button',{name:'Close image viewer',exact:true}).click();await expect(modal).toHaveCount(0);expect(await timerCount(page)).toBe(0);
         await page.evaluate(()=>window.slideshowFixture.open());await expect(button).toHaveText('Play');
         await readyClockImage(page);
     }
@@ -492,12 +570,12 @@ test('full inspector attaches matched theme and mobile evidence with reachable c
     async function capture(name,viewer=false) {
         await page.evaluate(()=>document.fonts.ready);
         if(viewer) {
-            const modal=mediaDialog(page),rail=modal.locator('.image-preview-details');
+            const modal=mediaDialog(page),rail=modal.locator('#viewer-details');
             expect(await modal.evaluate(node=>node.scrollWidth<=node.clientWidth+1)).toBe(true);
             measurements.push({name,...await modal.evaluate(node=>{
                 const box=element=>{const bounds=element.getBoundingClientRect();return{x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height};};
-                return{frame:box(node),header:box(node.querySelector('.image-preview-header')),stage:box(node.querySelector('.image-preview-stage')),
-                    toolbar:box(node.querySelector('.image-preview-toolbar')),rail:box(node.querySelector('.image-preview-details')),
+                return{frame:box(node),header:box(node.querySelector('.dialog-header')),stage:box(node.querySelector('#viewer-stage')),
+                    toolbar:box(node.querySelector('#viewer-toolbar')),rail:box(node.querySelector('#viewer-details')),
                     footer:node.querySelector('.file-inspector-footer')?box(node.querySelector('.file-inspector-footer')):null};
             })});
             if(page.viewportSize().width===1600)expect(await rail.evaluate(node=>node.getBoundingClientRect().width)).toBe(340);
@@ -511,19 +589,19 @@ test('full inspector attaches matched theme and mobile evidence with reachable c
         await selectFile(page,'complete.png');await expect(inspector(page).locator('.generation-facts dd').first()).toHaveText('9007199254740993');
         if(width===1600)await page.evaluate(()=>scrollTo(0,0));else await inspector(page).locator('.file-cover').evaluate(node=>node.scrollIntoView({block:'start'}));
         await capture(`inline-${label}`);
-        await openCollection(page);const modal=mediaDialog(page),rail=modal.locator('.image-preview-details');
+        await openCollection(page);const modal=mediaDialog(page),rail=modal.locator('#viewer-details');
         await expect(modal.locator('.viewer-canvas img')).toBeVisible();await expect.poll(()=>modal.locator('.viewer-canvas img').evaluate(node=>node.complete&&node.naturalWidth>0)).toBe(true);
         await modal.evaluate(node=>{node.scrollTop=0;});await capture(`viewer-${label}`,true);
         await expect(rail.locator('.prompt-negative')).toContainText('blurred edges, watermark');await rail.locator('.generation-facts').scrollIntoViewIfNeeded();await capture(`facts-${label}`,true);
         await rail.getByText('File & provenance',{exact:true}).click();await rail.locator('.file-facts').scrollIntoViewIfNeeded();await capture(`provenance-${label}`,true);
         await rail.getByText('Workflow & raw metadata',{exact:true}).click();const raw=rail.locator('pre code').first();await raw.scrollIntoViewIfNeeded();await expect(raw).toBeInViewport();await capture(`raw-${label}`,true);
         const send=rail.getByRole('button',{name:'Send prompt pair',exact:true});await send.focus();await expect(send).toBeInViewport();await send.click();await expect(page.getByRole('dialog',{name:'Send to ComfyUI',exact:true})).toBeVisible();await capture(`sender-${label}`);await page.keyboard.press('Escape');await expect(send).toBeFocused();
-        await modal.getByRole('button',{name:'Close preview',exact:true}).click();await selectFile(page,'clip.webm');await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();
-        await expect.poll(()=>modal.locator('video').evaluate(node=>node.readyState)).toBeGreaterThanOrEqual(1);await capture(`video-${label}`,true);await modal.getByRole('button',{name:'Close preview',exact:true}).click();
+        await modal.getByRole('button',{name:'Close image viewer',exact:true}).click();await selectFile(page,'clip.webm');await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();
+        await expect.poll(()=>modal.locator('video').evaluate(node=>node.readyState)).toBeGreaterThanOrEqual(1);await capture(`video-${label}`,true);await modal.getByRole('button',{name:'Close image viewer',exact:true}).click();
         await selectFile(page,'control-heavy.png');await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();
         await expect(modal).toContainText('Unavailable within inspection limits');await modal.getByText('Workflow & raw metadata',{exact:true}).click();
         const limitedDownload=modal.getByRole('button',{name:'Download metadata JSON',exact:true});await limitedDownload.scrollIntoViewIfNeeded();await expect(limitedDownload).toHaveAttribute('aria-disabled','true');await capture(`limited-${label}`,true);
-        await modal.getByRole('button',{name:'Close preview',exact:true}).click();
+        await modal.getByRole('button',{name:'Close image viewer',exact:true}).click();
     }
     const fs=await import('node:fs/promises'),geometryPath=testInfo.outputPath('inspector-geometry.json');
     await fs.writeFile(geometryPath,JSON.stringify(measurements,null,2));await testInfo.attach('inspector-geometry',{path:geometryPath,contentType:'application/json'});
@@ -534,12 +612,12 @@ test('collection viewer preserves original download and rooted retries',async({p
     await page.route('**/images/serve/inspector/complete.png?*',route=>{originals.push(route.request().url());return deny?route.fulfill({status:404,body:'Missing'}):route.continue();});
     await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();const modal=mediaDialog(page);
     await expect(modal).toContainText('Media could not be loaded. Retry this file.');await expect(modal.locator('.generation-facts dd').first()).toHaveText('9007199254740993');
-    await expect(modal.locator('.image-preview-position')).toContainText('Media could not be loaded.');
-    const download=modal.getByRole('group',{name:'Media controls',exact:true}).getByRole('link',{name:'Download original',exact:true});const original=await download.getAttribute('href');
+    await expect(modal.locator('.media-position')).toContainText('Media could not be loaded.');
+    const download=modal.locator('#viewer-toolbar').getByRole('link',{name:'Download original',exact:true});const original=await download.getAttribute('href');
     await expect(modal.getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','true');
     const denied=page.waitForResponse(response=>response.url().includes('/images/serve/inspector/complete.png?')&&response.status()===404);
     await modal.getByRole('button',{name:'Retry media',exact:true}).click();await denied;
-    await expect.poll(()=>mediaStage(page).locator('.image-preview-media > img').evaluate(node=>node.complete&&node.naturalWidth===0)).toBe(true);
+    await expect.poll(()=>mediaStage(page).locator(':scope > img').evaluate(node=>node.complete&&node.naturalWidth===0)).toBe(true);
     await expect(modal.getByRole('button',{name:'Retry media',exact:true})).toBeVisible();
     deny=false;await modal.getByRole('button',{name:'Retry media',exact:true}).click();await expect(modal.locator('.viewer-canvas img')).toBeVisible();
     await expect(download).toHaveAttribute('href',original);
@@ -547,10 +625,10 @@ test('collection viewer preserves original download and rooted retries',async({p
     expect(new Set(stages.map(url=>url.searchParams.get('_pm_viewer'))).size).toBe(3);
     for(const value of originals) {const actual=new URL(value),expected=new URL(original,'http://127.0.0.1');expect(actual.pathname).toBe(expected.pathname);for(const key of ['root','root_scope','v'])expect(actual.searchParams.get(key)).toBe(expected.searchParams.get(key));expect(actual.searchParams.getAll('_pm_viewer').length).toBeLessThanOrEqual(1);expect([...actual.searchParams.keys()].filter(key=>!expected.searchParams.has(key))).toEqual(actual.searchParams.has('_pm_viewer')?['_pm_viewer']:[]);}
     const [saved]=await Promise.all([page.waitForEvent('download'),download.click()]);expect(saved.suggestedFilename()).toBe('complete.png');
-    await modal.getByRole('button',{name:'Close preview',exact:true}).click();await page.evaluate(()=>{window.availableViewer=window.Viewer;window.Viewer=undefined;});
+    await modal.getByRole('button',{name:'Close image viewer',exact:true}).click();await page.evaluate(()=>{window.availableViewer=window.Viewer;window.Viewer=undefined;});
     await page.route('**/images/inspect/inspector/explicit-empty.png?*',route=>route.fulfill({status:503,json:{success:false,error:'Unavailable'}}),{times:1});
     await selectFile(page,'explicit-empty.png');await expect(inspector(page)).toContainText('Could not read prompts from this file.');
-    await page.locator('article[data-image-key="0:inspector/explicit-empty.png"] .image-card-footer button').click();
+    await page.locator('article[data-image-key="0:inspector/explicit-empty.png"] .image-open').click();
     await expect(mediaStage(page).locator('img')).toBeVisible();await expect(mediaStage(page).locator('img')).toHaveJSProperty('naturalWidth',720);
     await expect(mediaDialog(page).getByRole('button',{name:'Zoom in',exact:true})).toHaveAccessibleDescription('Image transforms are unavailable because Viewer.js could not load.');
     await page.evaluate(()=>{window.Viewer=window.availableViewer;});await mediaDialog(page).getByRole('button',{name:'Retry prompt details',exact:true}).click();
@@ -565,20 +643,20 @@ test('collection viewer keeps nested dialog focus and route cleanup',async({page
     const text=modal.locator('.prompt-positive pre');await text.focus();await page.keyboard.press('ArrowRight');await expect(position(page)).toHaveText(before);
     await modal.getByText('Workflow & raw metadata',{exact:true}).focus();await page.keyboard.press('ArrowLeft');await expect(position(page)).toHaveText(before);
     await modal.getByRole('button',{name:'Next media',exact:true}).click();const key=(await position(page).textContent()).split('loaded: ')[1];
-    await page.keyboard.press('Escape');await expect(modal).toHaveCount(0);await expect(page.locator('.image-open[aria-pressed="true"]')).toBeFocused();await expect(inspector(page).locator('.file-name')).toHaveText(key);
+    await page.keyboard.press('Escape');await expect(modal).toHaveCount(0);await expect(page.locator('.media-card.selected .image-open')).toBeFocused();await expect(inspector(page).locator('.file-name')).toHaveText(key);
     await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();await page.evaluate(()=>{location.hash='/overview';});
-    await expect(page.locator('h1')).toHaveText('Overview');await expect(page.locator('.viewer-container,.image-preview')).toHaveCount(0);
+    await expect(page.locator('h1')).toHaveText('Overview');await expect(page.locator('.viewer-container,#viewer-dialog')).toHaveCount(0);
 });
 
 test('collection viewer matches approved responsive frame',async({page,request},testInfo)=>{
     await page.setViewportSize({width:1600,height:1100});await fullFixture(page,request);await openCollection(page);
-    const modal=mediaDialog(page),body=modal.locator('.image-preview-body'),rail=modal.locator('.image-preview-details');
+    const modal=mediaDialog(page),body=modal.locator('.viewer-layout'),rail=modal.locator('#viewer-details');
     // Absolute gallery cards relayout through ResizeObserver and rAF after resize or CSS zoom.
     const settleViewport=width=>expect.poll(()=>page.evaluate(()=>({inner:innerWidth,client:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth})),{message:`Images gallery relayout settles the ${width}px viewport`}).toEqual({inner:width,client:width,scroll:width});
     await settleViewport(1600);
     for(const theme of ['dark','light']) {
         await page.evaluate(theme=>{const preference=document.getElementById('theme');preference.value=theme;preference.dispatchEvent(new Event('change'));},theme);
-        const geometry=await modal.evaluate(node=>{const style=getComputedStyle(node),box=node.getBoundingClientRect(),rail=node.querySelector('.image-preview-details').getBoundingClientRect();return{width:box.width,height:box.height,padding:style.padding,radius:style.borderRadius,rail:rail.width,gap:getComputedStyle(node.querySelector('.image-preview-body')).columnGap};});
+        const geometry=await modal.evaluate(node=>{const style=getComputedStyle(node),box=node.getBoundingClientRect(),rail=node.querySelector('#viewer-details').getBoundingClientRect();return{width:box.width,height:box.height,padding:style.padding,radius:style.borderRadius,rail:rail.width,gap:getComputedStyle(node.querySelector('.viewer-layout')).columnGap};});
         expect(geometry).toEqual({width:1500,height:940,padding:'18px',radius:'9px',rail:340,gap:'20px'});
         await page.screenshot({path:testInfo.outputPath(`viewer-${theme}-1600.png`)});
     }
@@ -594,7 +672,7 @@ test('collection viewer matches approved responsive frame',async({page,request},
         expect(await modal.evaluate(node=>node.getBoundingClientRect().width)).toBeCloseTo(zoom===1?356:322,1);
         expect(await modal.evaluate(node=>{const box=node.getBoundingClientRect();return box.top>=0&&box.bottom<=innerHeight+1;})).toBe(true);
         await expect.poll(()=>modal.evaluate(node=>node.scrollWidth<=node.clientWidth+1)).toBe(true);
-        await expect(rail).toHaveCSS('overflow-y','visible');expect(await body.evaluate(node=>getComputedStyle(node).gridTemplateColumns.split(' ').length)).toBe(1);
+        await expect(rail).toHaveCSS('overflow-y','visible');expect(await body.evaluate(node=>{const style=getComputedStyle(node);return [style.display,style.flexDirection];})).toEqual(['flex','column']);
         await rail.getByText('Workflow & raw metadata',{exact:true}).click();const raw=rail.locator('pre code').first();await expect(raw).toBeVisible();
         await rail.getByRole('button',{name:'Send prompt pair',exact:true}).focus();await expect(rail.getByRole('button',{name:'Send prompt pair',exact:true})).toBeInViewport();
         await page.screenshot({path:testInfo.outputPath(`viewer-mobile-${zoom}x.png`)});await rail.getByText('Workflow & raw metadata',{exact:true}).click();
@@ -608,16 +686,16 @@ test('collection viewer matches approved responsive frame',async({page,request},
     expect(await modal.evaluate(node=>node.getBoundingClientRect().width)).toBeCloseTo(322,1);await expect.poll(()=>modal.evaluate(node=>node.scrollWidth<=node.clientWidth+1)).toBe(true);
     await testInfo.attach('wider-font-footer-geometry',{body:JSON.stringify({footer,modal:await modal.evaluate(node=>({width:node.getBoundingClientRect().width,scrollWidth:node.scrollWidth,clientWidth:node.clientWidth}))}),contentType:'application/json'});
     await page.screenshot({path:testInfo.outputPath('viewer-mobile-wider-font-2x.png')});
-    await modal.getByRole('button',{name:'Close preview',exact:true}).click();await page.evaluate(()=>{document.documentElement.style.zoom='1';});await settleViewport(390);
+    await modal.getByRole('button',{name:'Close image viewer',exact:true}).click();await page.evaluate(()=>{document.documentElement.style.zoom='1';});await settleViewport(390);
     const longFiles=await(await request.get('/prompt_manager/images/output?mode=workspace&q=a-very-long&limit=40')).json();const long=longFiles.images[0];
-    await page.locator(`article[data-image-key="${long.root_index}:${long.path}"] .image-open`).click();await openCollection(page);
+    await page.locator(`article[data-image-key="${long.root_index}:${long.path}"] .image-card-actions button`).click();await openCollection(page);
     await page.evaluate(()=>{document.documentElement.style.zoom='2';});await settleViewport(390);await modal.evaluate(node=>{node.scrollTop=0;});
-    await expect(modal.getByRole('button',{name:'Close preview',exact:true})).toBeInViewport();
+    await expect(modal.getByRole('button',{name:'Close image viewer',exact:true})).toBeInViewport();
 });
 
 async function currentStageFit(page) {
     return page.evaluate(()=>{
-        const instance=window.fitInstances.at(-1),stage=document.querySelector('.image-preview-stage');
+        const instance=window.fitInstances.at(-1),stage=document.querySelector('#viewer-stage');
         const bounds=stage.getBoundingClientRect(),image=instance.image.getBoundingClientRect();
         return {stage:{width:stage.offsetWidth,height:stage.offsetHeight},viewer:{...instance.viewerData},
             image:{width:image.width,height:image.height},
@@ -655,7 +733,7 @@ async function openStageFitFixture(page,request) {
         window.stageFitFixture={scope,controller,view};view.open({items:[tall,next],selectedKey:`${tall.root_index}:${tall.path}`,trigger:document.activeElement});
     });
     await expect(mediaDialog(page).getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
-    await expect(mediaDialog(page).locator('.image-preview-reason')).toBeHidden();
+    await expect(mediaDialog(page).locator('.media-reason')).toBeHidden();
     return release;
 }
 async function attachStageFit(page,testInfo,name) {
@@ -679,7 +757,7 @@ test('collection viewer refits a late wrapped title without replacing current me
         const modal=mediaDialog(page),fit=modal.getByRole('button',{name:'Fit image',exact:true});
         await page.evaluate(()=>{window.fitImage=document.querySelector('.viewer-canvas img');window.fitControl=document.querySelector('[aria-label="Fit image"]');});
         await fit.focus();const initial=await attachStageFit(page,testInfo,'before-late-title');release();
-        await expect(modal.locator('.image-preview-header h2')).toHaveText(`${'W'.repeat(220)} · study-02.png`);
+        await expect(modal.locator('#viewer-title')).toHaveText(`${'W'.repeat(220)} · study-02.png`);
         await expect(fit).toBeFocused();await fit.click();await attachStageFit(page,testInfo,'late-title-fit');
         await expect.poll(async()=>{const data=await currentStageFit(page);return Math.abs(data.viewer.height-data.stage.height);}).toBeLessThanOrEqual(1);
         const current=await currentStageFit(page);expect(current.stage.height).toBeLessThan(initial.stage.height);expect(Math.abs(current.center.y)).toBeLessThanOrEqual(1);expect(current.contained).toBe(true);
@@ -692,7 +770,7 @@ test('collection viewer refits a late wrapped title without replacing current me
         await fit.click();const fitted=await currentStageFit(page);expect(Math.abs(fitted.center.y)).toBeLessThanOrEqual(1);expect(fitted.contained).toBe(true);
         await modal.getByRole('button',{name:'Next media',exact:true}).click();await expect(modal.getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
         await page.evaluate(()=>{for(const probe of window.fitObservers.filter(probe=>probe.disconnected))probe.callback([],probe.observer);});
-        await modal.getByRole('button',{name:'Close preview',exact:true}).click();await expect(modal).toHaveCount(0);
+        await modal.getByRole('button',{name:'Close image viewer',exact:true}).click();await expect(modal).toHaveCount(0);
         await page.evaluate(async()=>{for(const probe of window.fitObservers)probe.callback([],probe.observer);await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
         expect(await page.evaluate(()=>window.fitObservers.every(probe=>probe.disconnected))).toBe(true);
         expect(await page.evaluate(()=>window.fitResizeCalls.filter(call=>call.destroyed||!call.connected))).toEqual([]);

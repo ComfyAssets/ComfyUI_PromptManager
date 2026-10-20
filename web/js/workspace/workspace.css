@@ -54,20 +54,99 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
     .vocabulary-main td .row-actions { width: min-content; margin-inline-start: auto; }
 }
 
+/* Images (#249 C2). Production-only continuation states the concept never shows: a failed page and a load in flight. */
+.infinite-continuation [role="alert"] { color: var(--ca-error-text); }
+.infinite-continuation button[aria-disabled="true"] { opacity: .55; cursor: wait; }
+/* #249 D14: the scope chip names real sources and folders, which can be far longer than "All output folders". */
+.filter-row span.chip { max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
+/* #249 D32: at extreme zoom the 390px shell is narrower than the concept's three layout buttons; they wrap instead of
+   scrolling the page sideways (they never wrap while they fit). */
+.segmented { flex-wrap: wrap; max-width: 100%; }
+/* #249 D32: likewise the continuation's text and Load more wrap instead of pushing the button out of the column. */
+.infinite-continuation { flex-wrap: wrap; }
+
+/* #249 D18: the concept zooms a hovered card image (1.03 over 0.2s; its reduced-motion rule makes that instant). A touch
+   device has no real hover, so a tap must not leave the zoom stuck. */
+@media (hover: none) { .image-open:hover img { transform: none; /* D18 */ } }
+/* #249 D8 (interim until the checkbox follow-up PR): without the concept's selection checkbox the star is the overlay's
+   only child; this keeps it at the concept's top-right. The follow-up that ships the checkbox deletes this rule. */
+.image-overlays > .star-button:only-child { margin-left: auto; /* D8 */ }
+
+/* Images cards (#249 C3). #249 D3: bounded rendering mounts only the visible cards and places each one itself, in every
+   layout (the concept places only masonry cards), so the grid reserves the collection's height and every card is
+   absolute. Columns and gap still come from the concept's `.image-grid` tracks. */
+.image-grid { position: relative; /* D3 */ }
+.image-grid > .media-card { position: absolute; }
+/* #249 D3: a list row's info keeps its own height so it can be measured; centred, it looks as the stretched concept row.
+   #249 D31: it may also shrink below a long nowrap title (the h3 ellipsis then applies, as in the grid). */
+.list-grid .media-info { align-self: center; min-width: 0; /* D3, D31 */ }
+/* #249 D31: at extreme zoom a list row is narrower than the concept's 160px art; the art yields so the info stays inside. */
+.list-grid .media-art { width: min(160px, 45%); /* D31 */ }
+/* #249 D31: at extreme zoom the subtitle wraps inside its column instead of running under the Inspect button. */
+.media-info p { overflow-wrap: anywhere; /* D31 */ }
+/* #249 D31: below the narrowest bounded card (120px, reached only at extreme zoom; images.mjs marks the grid) the info
+   row stacks its text above Inspect, so neither the title nor the subtitle collapses to nothing beside the button. */
+.narrow-cards .media-info { flex-wrap: wrap; }
+.narrow-cards .media-info > div { flex: 1 0 100%; }
+/* A list row beside its art keeps room for Inspect. */
+.narrow-cards.list-grid .media-art { width: 40%; }
+.narrow-cards.list-grid .media-info { padding-inline: 4px; }
+
+/* Legacy video media (the mock does not drop it) takes the concept's image rules in each layout. */
+.image-open video { display: block; width: 100%; height: auto; aspect-ratio: 1.33; object-fit: cover; }
+.masonry-grid .image-open video { aspect-ratio: var(--media-ratio); object-fit: contain; }
+.list-grid .image-open video { height: 95px; aspect-ratio: auto; }
+
+/* Images viewer (#249 C6): the concept's `#viewer-dialog` shell (s1008–1058, ≤700 s1456–1474). #249 D34: real media,
+   titles and states that the concept's one demo image never shows. */
+/* #249 D34: a real title can wrap (long linked titles and filenames). Above 700px the dialog stacks its header and the
+   concept's `calc(100% - 72px)` layout in a column, so a taller header shrinks the layout instead of pushing the toolbar
+   out of view; a one-line title gives the concept's boxes. */
+@media (min-width: 701px) {
+    .ca-tools #viewer-dialog[open] { display: flex; flex-direction: column; /* D34 */ }
+}
+/* #249 D34: under 200% page zoom the concept's 94dvh outgrows the viewport; the dialog keeps within it. */
+.ca-tools #viewer-dialog { max-height: min(94dvh, 94%); /* D34 */ }
+#viewer-dialog .dialog-header > div { min-width: 0; }
+#viewer-title { overflow-wrap: anywhere; /* D34 */ }
+#viewer-dialog, #viewer-dialog::backdrop { overscroll-behavior: contain; }
+#viewer-details { overscroll-behavior: contain; /* D34 */ }
+/* #249 D34: Viewer.js's stylesheet styles every `.viewer-toolbar` (`position: absolute; bottom: 0; left: 0; right: 0`),
+   which lifts the concept's toolbar out of `.viewer-left` to span the whole dialog over the details' last lines. It stays
+   in the column under the stage, where the concept's `.viewer-left` flex column and border place it. */
+#viewer-toolbar { position: static; /* D34 */ }
+/* #249 D34: Viewer.js's own toolbar stays hidden (`toolbar: false`); the concept's `.viewer-toolbar` rule would show it. */
+.viewer-container .viewer-hide { display: none; /* D34 */ }
+/* #249 D34: the stage is focusable for arrow-key navigation; a video plays with native controls, an image without
+   Viewer.js shows itself (the concept hides it under the viewer), and a load failure covers the stage with Retry. */
+#viewer-stage:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: -2px; }
+#viewer-stage > :is(video, img:not([hidden])) { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; visibility: visible; /* D34 */ }
+.media-failure { position: absolute; inset: 0; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; background: var(--ca-field); text-align: center; font-size: 12px; }
+/* #249 D34: Download stays the original file's link, drawn as the concept's toolbar button. */
+#viewer-toolbar > .media-download { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 4px 10px; border: 1px solid var(--ca-border); border-radius: 5px; background: var(--ca-control); color: var(--ca-text); font-size: 12px; white-space: nowrap; /* D34 */ }
+#viewer-toolbar > .media-download:hover:not([aria-disabled="true"]) { background: var(--ca-hover); }
+#viewer-toolbar > [aria-disabled="true"] { opacity: .55; cursor: not-allowed; }
+/* #249 D34: after Next → the position status and the unavailability reasons, each on its own centred line. */
+#viewer-toolbar > p { flex-basis: 100%; margin: 0; text-align: center; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+@media (pointer: coarse) {
+    /* #249 D34: coarse pointers keep 40px square viewer targets (the concept's "−" and "+" are narrower). */
+    #viewer-dialog :is(.dialog-header > button, #viewer-toolbar > button, #viewer-toolbar > a) { min-width: 40px; min-height: 40px; /* D34 */ }
+}
+@media (max-width: 700px) {
+    #viewer-toolbar > .media-download { font-size: 10px; /* D34: as the concept's `.viewer-toolbar button` */ }
+}
+
 /* Interim page guards: concept element rules (`.ca-tools dialog`, `pre`) now reach production dialogs and prompt text
    that keep their own design until their page PR rebuilds them in concept markup. */
 .panel { background: var(--ca-surface); border: 1px solid var(--line); } /* PR D: Images side panel (padding and radius in images.css) becomes `.detail-panel` */
-.ca-tools dialog.image-preview { width: min(1500px, 96%); max-height: 94%; padding: 18px; overflow: hidden; } /* PR C: viewer becomes `#viewer-dialog` */
 .ca-tools dialog.prompt-sender { width: min(760px, calc(100% - 32px)); max-width: none; max-height: calc(100dvh - 32px); padding: 22px; border-color: var(--ca-line); border-radius: 12px; } /* PR D */
 .ca-tools dialog.prompt-sender::backdrop { background: #000b; } /* PR D */
 .ca-tools dialog.recorded-run-dialog { width: min(1100px, calc(100% - 32px)); max-width: calc(100% - 32px); max-height: calc(100dvh - 32px); padding: 22px; border-radius: 7px; } /* PR F */
 pre.prompt-text { background: none; padding: 0; border: 0; border-radius: 0; max-height: none; overflow: visible; } /* PR D: prompt text becomes `p.prompt-text` */
-.viewer-container .viewer-hide { display: none; } /* PR C: the concept's own `.viewer-toolbar` would reveal Viewer.js's hidden toolbar */
 .ca-tools .prompt-actions .ca-icon-button { min-width: 30px; } /* PR D: the concept's 28px prompt action would shrink the toolkit icon button */
 @media (pointer: coarse) {
     .ca-tools .recorded-history .history-toolbar button { min-height: 44px; } /* PR F: concept coarse buttons are 40px */
 }
 @media (max-width: 700px) {
-    .ca-tools dialog.image-preview { overflow: auto; } /* PR C */
     .ca-tools dialog.recorded-run-dialog { padding: 16px; } /* PR F */
 }

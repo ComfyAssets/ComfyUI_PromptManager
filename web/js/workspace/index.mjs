@@ -9,6 +9,7 @@ import { mountVocabulary } from './vocabulary.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 import { bindCanvasLink, canvasHref } from './topbar.mjs';
 import { renderHeading } from './heading.mjs';
+import { closeWorkspaceDialog } from './workspace-dialogs.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
 
@@ -85,6 +86,8 @@ function mountWorkspace() {
     scope.cleanup(() => viewScope?.dispose());
 
     function render(route) {
+        // A shared page dialog never stays open over the next route.
+        closeWorkspaceDialog();
         viewScope?.dispose();
         images = null;
         viewScope = createScope();

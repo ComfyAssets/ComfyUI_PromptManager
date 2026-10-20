@@ -1541,6 +1541,40 @@ class TestImageLinkSummaries(DatabaseTestCase):
         self.assertEqual(sources["plain"], (long_line.strip()[:80] + "\u2026", "text"))
         self.assertEqual(sources["blank"], ("Blank title text", "text"))
 
+    def test_pair_summary_title_is_the_linked_positives_never_the_variant(self):
+        # D10/D20: a pair's own title names its negative variant.
+        stored = self.db.save_prompt_pair("Stored positive", "Noise", title="Variant")
+        plain = self.db.save_prompt_pair("Plain positive\nmore", "Blur", title="Other")
+        positives = {
+            name: self.db.get_prompt_pair(pair_id)["positive_prompt_id"]
+            for name, pair_id in (("stored", stored), ("plain", plain))
+        }
+        with self.db.model.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                (positives["stored"], "Positive title"),
+            )
+        paths = {}
+        for name, pair_id in (("stored", stored), ("plain", plain)):
+            paths[name] = os.path.join("out", f"pair-{name}.png")
+            image = self.db.link_image_to_prompt(positives[name], paths[name])
+            self.db.link_image_to_pair(pair_id, image, {"source": "test"})
+        summaries = self.db.get_image_link_summaries(list(paths.values()))
+        titles = {
+            name: (
+                summaries[path]["positive_id"],
+                summaries[path]["title"],
+                summaries[path]["title_source"],
+            )
+            for name, path in paths.items()
+        }
+        self.assertEqual(
+            titles["stored"], (positives["stored"], "Positive title", "stored")
+        )
+        self.assertEqual(
+            titles["plain"], (positives["plain"], "Plain positive", "text")
+        )
+
     def test_display_title_matches_library_title_cut(self):
         from database.library import display_title
 

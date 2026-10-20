@@ -299,6 +299,18 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/toast.mjs": {
+    "lines": 98,
+    "branches": 64,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/toolbar.mjs": {
+    "lines": 94,
+    "branches": 93,
+    "functions": 98,
+    "statements": 94
+  },
   "workspace/topbar.mjs": {
     "lines": 98,
     "branches": 98,
@@ -328,5 +340,11 @@
     "branches": 91,
     "functions": 93,
     "statements": 98
+  },
+  "workspace/workspace-dialogs.mjs": {
+    "lines": 97,
+    "branches": 95,
+    "functions": 98,
+    "statements": 97
   }
 }

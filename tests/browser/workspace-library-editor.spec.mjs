@@ -478,8 +478,9 @@ test('library heading offers Export then + New prompt, and New opens the saved p
 
 test('new from Images cancel preserves browse',async({page})=>{
     await page.goto(`${workspace}#/images`);await expect(page.locator('#workspace-main h1')).toHaveText('Images');
-    const actions=headingActions(page).locator('button');expect(await visibleNames(actions)).toEqual(['New prompt']);
-    const trigger=actions.first();await expect(trigger).toHaveClass(/\bca-primary\b/);await expect(trigger.locator('svg')).toHaveCount(1);
+    // #249 C2: the concept's Images heading puts Import before New prompt.
+    const actions=headingActions(page).locator('button');expect(await visibleNames(actions)).toEqual(['Import','New prompt']);
+    const trigger=actions.last();await expect(trigger).toHaveClass(/\bca-primary\b/);await expect(trigger.locator('svg')).toHaveCount(1);
     await trigger.click();let dialog=editorDialog(page);await expect(dialog.getByRole('heading',{name:'New prompt',exact:true})).toBeVisible();await ready(dialog);
     await field(dialog,'Title').fill('Discarded');await button(dialog,'Cancel').click();await expect(dialog).toHaveCount(0);
     await expect(trigger).toBeFocused();await expect(page).toHaveURL(/#\/images$/);await expect(page.locator('.library-shelf, .library-history')).toHaveCount(0);

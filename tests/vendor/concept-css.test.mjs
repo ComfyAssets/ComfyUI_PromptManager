@@ -73,6 +73,22 @@ test('overlay rules on concept selectors carry a decision marker', () => {
     assert.deepEqual(violations, []);
 });
 
+// PRs C and D lint each page stylesheet they keep: a page rule on a concept selector is an override like the overlay's.
+test('kept page stylesheets mark their concept-selector overrides', () => {
+    for (const name of ['images.css', 'library.css', 'inspector.css']) {
+        const { violations } = lintOverlay(readFileSync(concept, 'utf8'), readFileSync(join(root, 'web/js/workspace', name), 'utf8'));
+        assert.deepEqual(violations, [], name);
+    }
+});
+
+// #249 C8: the Images page renders the concept DOM, so the replaced production rules stay retired.
+test('images.css keeps no retired Images page rules', () => {
+    const css = readFileSync(join(root, 'web/js/workspace/images.css'), 'utf8');
+    for (const retired of ['.image-facts', '.image-card', '.image-grid', '.image-filters', '.image-toolbar', '.image-preview', '.image-collection', '.image-continuation']) {
+        assert.equal(css.includes(retired), false, `${retired} is retired`);
+    }
+});
+
 test('only workspace.html loads workspace CSS', () => {
     const offenders = walk(join(root, 'web'))
         .filter(path => /\.(html|js|mjs)$/.test(path) && !path.includes('/lib/') && !path.includes('/shared/'))

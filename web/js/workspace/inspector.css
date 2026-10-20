@@ -1,9 +1,8 @@
 .image-details.file-inspector { padding: 0; }
-.image-preview-slideshow-reason { text-align: center; font-size: 11px; line-height: 1.6; margin: 8px 0 0; }
 .file-inspector { min-inline-size: 0; overflow-wrap: anywhere; }
 .file-inspector-inner { padding: 17px; }
-.image-preview-details .file-inspector-inner { padding: 0; }
-.image-preview-details .file-inspector-footer { padding-inline: 0; }
+#viewer-details .file-inspector-inner { padding: 0; }
+#viewer-details .file-inspector-footer { padding-inline: 0; }
 .ca-tools .file-cover { display: block; padding: 0; border: 0; border-radius: 6px 6px 0 0; inline-size: 100%; block-size: 150px; background: var(--ca-field); }
 .file-cover :where(img, video) { display: block; inline-size: 100%; block-size: 100%; object-fit: cover; border-radius: inherit; }
 .file-title { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
@@ -36,7 +35,7 @@
 .file-inspector [aria-disabled="true"] { opacity: .6; cursor: not-allowed; }
 .file-inspector-footer { display: flex; flex-wrap: wrap; gap: 8px; border-block-start: 1px solid var(--ca-line); padding: 13px 17px; }
 .ca-tools .file-inspector-footer :where(button, a) { font-size: 11px; min-block-size: 30px; }
-.ca-tools .image-preview-details .file-inspector-footer button { white-space: normal; }
+.ca-tools #viewer-details .file-inspector-footer button { white-space: normal; }
 .file-inspector-footer .workspace-link { display: inline-flex; gap: 7px; border: 1px solid var(--ca-line); border-radius: 4px; padding: 5px 8px; }
 .file-inspector-footer .icon { inline-size: 14px; block-size: 14px; }
 .file-status { padding: 17px; }

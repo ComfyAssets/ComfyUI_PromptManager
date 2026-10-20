@@ -15,8 +15,7 @@ export const canonicalDifferences = {
     'Current-file candidates disclose unknown identity and context membership',
     ],
     remainingApplicationPolish: [
-        'Gallery thumbnail selects details before Open full preview; direct Viewer/Info/tag/favorite/select parity remains outside #209',
-        'Shared Viewer stage background and toolbar alignment remain outside #209',
+        'Gallery card select checkbox (#249 D8 follow-up) and tag button (#249 D9, image-annotations slice) remain outside #209',
         'Shared role-block spacing, padding and glyph styling remain outside #209; exact role order/actions and evidence disclosure are covered',
         'Production keeps mobile toolbar inside media panel and readable scrolling details; the concept toolbar collision is not reproduced',
     ],
@@ -106,7 +105,7 @@ export async function exerciseCurrentPairSend(page, roles) {
                 apply: roles => { window.canonicalApplied.push(roles);return { targetId: target.id, values: roles }; },
             } });
         });
-        const viewer = page.getByRole('dialog', { name: 'Image preview', exact: true });
+        const viewer = page.locator('dialog#viewer-dialog');
         const send = viewer.getByRole('button', { name: 'Send prompt pair', exact: true });await send.click();
         const sender = page.getByRole('dialog', { name: 'Send to ComfyUI', exact: true });await expect(sender).toBeVisible();
         await sender.getByRole('combobox', { name: 'ComfyUI window', exact: true }).selectOption({ label: 'Canonical ComfyUI' });

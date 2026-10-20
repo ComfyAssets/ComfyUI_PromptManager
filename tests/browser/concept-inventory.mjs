@@ -11,6 +11,10 @@ export const SIZES=Object.freeze([[1600,1100],[390,844]]);
 export const THEMES=Object.freeze(['dark','light']);
 export const MOTIONS=Object.freeze(['no-preference','reduce']);
 
+/** D35: production uses the singular for exactly one; the concept's plurals are hard-coded (app.js 447, 489, 517-521). */
+export const countCopy=text=>text.replace(/(^|\D)1 positive prompts\b/g,'$11 positive prompt')
+    .replace(/(^|\D)1 more images\b/g,'$11 more image').replace(/(^|\D)1 images\b/g,'$11 image');
+
 /** Seed the concept-shaped real fixture (tests/browser/workspace_concept_fixture.py) and return its manifest. */
 export async function seedConcept(request,data={}) {
     const response=await request.post('/__test__/concept/reset',{data});
@@ -88,12 +92,19 @@ export async function mutate(page,{css=null,remove=[]}={}) {
 }
 
 /**
- * Inventory sections: {chrome, heading, toolbar, filterRow, caption, grid, cards, panel, library, history,
- * noPageScroll}. A section is null when its element is absent. Sections whose page PR has not landed yet
- * (toolbar … history, PRs C–F) are null until that PR adds its measurer here.
+ * Inventory sections: {chrome, heading, toolbar, filterRow, caption, grid, cards, continuation, panel, library, history,
+ * noPageScroll}. A section is null when its element is absent. The Images sections (toolbar … panel, #249 C7) measure
+ * the concept's Images markup; `cards` holds the first six. Library and history stay null until PRs E and F.
  */
 export function inventoryOf(page,scope='main') {
     return page.evaluate(measureInventory,scope);
+}
+
+/** The inventory without its `exact` (unrounded) helper values, which only a re-layout reads; compare after this. */
+export function stripExact(value) {
+    if(Array.isArray(value))return value.map(stripExact);
+    if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).filter(([key])=>key!=='exact').map(([key,item])=>[key,stripExact(item)]));
+    return value;
 }
 
 /** Runs in the page; self-contained. `scope` selects the page's main element. */
@@ -234,6 +245,97 @@ export function measureInventory(scope) {
                 buttons:[...actions.querySelectorAll('button')].map(node=>({text:node.textContent.trim(),primary:node.classList.contains('ca-primary'),
                     ...font(node),...edges(node),minHeight:getComputedStyle(node).minHeight,height:px(rect(node).height)}))}))};
     }
-    return {chrome:chromeOf(),heading:headingOf(),toolbar:null,filterRow:null,caption:null,grid:null,cards:null,panel:null,
+    // ---- Images (#249 C7). Every box is relative to its section, every section to `main` (vertical rhythm). ----
+    const classes=node=>[...node.classList].sort().join(' ');
+    const sized=node=>({width:px(rect(node).width),height:px(rect(node).height)});
+    /** One control or label in a toolbar-like row: what it is, says and offers, and its box in `origin`. */
+    function controlOf(node,origin) {
+        const base={tag:node.tagName.toLowerCase(),className:classes(node),id:node.id||null,shown:shown(node)};
+        if(!base.shown)return base;
+        const style=getComputedStyle(node),input=node.querySelector('input');
+        // A group (the layout `.segmented`) is recorded button by button: its joined text says nothing about either.
+        const buttons=[...node.querySelectorAll(':scope > button')];
+        return {...base,text:buttons.length?null:textOf(node,'select, option'),label:node.getAttribute('aria-label'),pressed:node.getAttribute('aria-pressed'),
+            role:buttons.length?node.getAttribute('role'):null,buttons:buttons.length?buttons.map(button=>controlOf(button,node)):null,
+            primary:node.classList.contains('ca-primary'),htmlFor:node.htmlFor||null,...relative(node,origin),
+            ...font(node),...edges(node),...layout(node),minHeight:style.minHeight,minWidth:style.minWidth,flexGrow:style.flexGrow,flexBasis:style.flexBasis,
+            icon:iconOf(node),
+            options:node.tagName==='SELECT'?[...node.options].map(option=>option.textContent):null,
+            input:when(input,()=>({type:input.type,id:input.id,placeholder:input.placeholder,label:input.getAttribute('aria-label'),
+                ...font(input),...edges(input),minHeight:getComputedStyle(input).minHeight,...relative(input,node),exact:{width:rect(input).width}})),
+            // Unrounded place, for a comparison that lays a row out again; `stripExact` removes it before any diff.
+            exact:{left:rect(node).left-rect(origin).left,width:rect(node).width}};
+    }
+    function rowOf(row) {
+        return {...layout(row),...edges(row),...relative(row,main),exact:{width:rect(row).width},items:[...row.children].map(node=>controlOf(node,row))};
+    }
+    const gallery=main?.querySelector(':scope > .gallery-layout');
+    const body=gallery?.querySelector(':scope > .gallery-body');
+    const grid=body?.querySelector(':scope > .image-grid');
+    function captionOf(caption) {
+        return {...layout(caption),...edges(caption),...font(caption),...relative(caption,body),
+            // A span's width follows its text, so only its line box is recorded (the D17 date's text differs).
+            spans:[...caption.children].filter(shown).map(span=>({tag:span.tagName.toLowerCase(),id:span.id||null,text:textOf(span),...font(span),
+                top:relative(span,caption).top,height:relative(span,caption).height}))};
+    }
+    function gridOf() {
+        const style=getComputedStyle(grid);
+        return {id:grid.id||null,className:classes(grid),columns:style.gridTemplateColumns.split(/\s+/).length,
+            ...css(grid,'columnGap','rowGap'),...relative(grid,body),cardCount:grid.querySelectorAll(':scope > .media-card').length};
+    }
+    function cardOf(card) {
+        const art=card.querySelector(':scope > .media-art'),open=art?.querySelector('.image-open'),img=open?.querySelector('img');
+        const overlays=art?.querySelector('.image-overlays'),info=card.querySelector(':scope > .media-info');
+        const copy=info?.querySelector(':scope > div:not(.image-card-actions)'),actions=info?.querySelector('.image-card-actions');
+        const h3=copy?.querySelector('h3'),p=copy?.querySelector('p');
+        return {className:classes(card),ratio:card.style.getPropertyValue('--media-ratio').replace(/\s/g,''),...relative(card,grid),
+            exact:{left:rect(card).left-rect(grid).left,top:rect(card).top-rect(grid).top,height:rect(card).height},
+            ...edges(card),...css(card,'boxShadow','overflow','display'),
+            art:when(art,()=>({...relative(art,card),...css(art,'position')})),
+            open:when(open,()=>({label:open.getAttribute('aria-label'),...relative(open,card),...edges(open),...css(open,'display','overflow')})),
+            img:when(img,()=>({alt:img.alt,width:img.getAttribute('width'),height:img.getAttribute('height'),...sized(img),
+                ...css(img,'objectFit','aspectRatio','transform','transitionProperty','transitionDuration')})),
+            // An overlay item's horizontal margin may be `auto`, whose used value is the free space beside it: it is kept
+            // to the pixel, and the item's place is also recorded as its inset from the overlay's right edge.
+            overlays:when(overlays,()=>!shown(overlays)?{display:getComputedStyle(overlays).display,shown:false}:({shown:true,...layout(overlays),
+                ...css(overlays,'display','pointerEvents'),...relative(overlays,card),
+                items:[...overlays.children].map(node=>{const item=controlOf(node,card);
+                    return item.shown?{...item,marginLeft:`${px(parseFloat(item.marginLeft))}px`,marginRight:`${px(parseFloat(item.marginRight))}px`,
+                        rightInset:px(rect(overlays).right-rect(node).right)}:item;})})),
+            info:when(info,()=>({...layout(info),...edges(info),...relative(info,card),
+                // The text and the actions are placed in the card (what is seen), so a centred list row compares by place.
+                // The text's heights are the unrounded flow (the same CSS lays them out alike in both documents), so lines
+                // of 16.5px and 13.5px add up exactly.
+                copy:when(copy,()=>({left:relative(copy,card).left,top:relative(copy,card).top,height:rect(copy).height,...css(copy,'minWidth')})),
+                h3:when(h3,()=>({text:h3.textContent,title:h3.getAttribute('title'),...font(h3),...edges(h3),
+                    ...css(h3,'overflowX','textOverflow','whiteSpace'),height:rect(h3).height})),
+                // `maxContent` is the subtitle's one-line width (an unwrapped hidden copy beside it), so a wider text column can
+                // be shown to fit it on one line.
+                p:when(p,()=>({text:p.textContent,...font(p),...edges(p),height:rect(p).height,maxContent:(()=>{
+                    const probe=p.cloneNode(true);probe.style.cssText='position:absolute;visibility:hidden;white-space:nowrap;width:max-content';
+                    p.after(probe);const width=rect(probe).width;probe.remove();return px(width);})()})),
+                actions:when(actions,()=>({...layout(actions),...relative(actions,card),...css(actions,'flexShrink','minWidth'),
+                    buttons:[...actions.children].map(node=>controlOf(node,actions))}))}))};
+    }
+    function continuationOf(continuation) {
+        return {id:continuation.id||null,...layout(continuation),...edges(continuation),...relative(continuation,body),
+            items:[...continuation.children].filter(shown).map(node=>controlOf(node,continuation))};
+    }
+    function panelOf() {
+        const panel=gallery.children[1];
+        // The panel's content (and so the layout's height) is the inspector's, PR D; its box is compared here.
+        const {height,...place}=relative(gallery,main);
+        return {...css(gallery,'display','gridTemplateColumns','columnGap','rowGap','alignItems'),...place,
+            box:when(panel,()=>{const box=relative(panel,gallery);return {left:box.left,top:box.top,width:box.width,...css(panel,'position','top')};})};
+    }
+    const continuation=body?.querySelector(':scope > .infinite-continuation');
+    return {chrome:chromeOf(),heading:headingOf(),
+        toolbar:when(main?.querySelector(':scope > search.toolbar'),rowOf),
+        filterRow:when(main?.querySelector(':scope > .filter-row'),rowOf),
+        caption:when(body?.querySelector(':scope > .section-caption'),captionOf),
+        grid:when(grid,gridOf),
+        cards:grid?[...grid.querySelectorAll(':scope > .media-card')].slice(0,6).map(cardOf):null,
+        continuation:when(continuation,continuationOf),
+        panel:when(gallery,panelOf),
         library:null,history:null,noPageScroll:document.documentElement.scrollWidth<=innerWidth+1};
 }

@@ -184,10 +184,12 @@ AND p.id NOT IN (SELECT prompt_id FROM live_hint_prompts)
 # parameters per path stays under SQLite's historical 999-variable limit.
 LINK_SUMMARY_BATCH = 200
 # A pair link counts only when an image has exactly one distinct pair, as in
-# get_image_prompt_info; its positive, title and metadata then describe the card.
+# get_image_prompt_info; its positive (text, Library title, category, rating)
+# then describes the card. The pair's own title names its negative variant, so
+# it is not read (D10).
 _LINK_SUMMARY_SQL = """SELECT gi.image_path, gi.file_path, gi.prompt_id,
        p.text, p.category, p.rating, ls.title,
-       pp.positive_prompt_id, pp.title, pt.text, pt.category, pt.rating, pls.title
+       pp.positive_prompt_id, pt.text, pt.category, pt.rating, pls.title
 FROM generated_images gi
 JOIN prompts p ON gi.prompt_id = p.id
 LEFT JOIN prompt_library_state ls ON ls.prompt_id = p.id
@@ -213,15 +215,15 @@ JOIN prompts p ON p.id = COALESCE(pp.positive_prompt_id, gi.prompt_id)
 WHERE gi.file_path IS NOT NULL AND CASE WHEN {admit} THEN NOT EXISTS (
     SELECT 1 FROM generated_images other
     WHERE other.file_path = gi.file_path AND other.id <> gi.id) ELSE 0 END"""
-# The positive's text, its Library title or one of its tag names, or the pair
-# title, contains :pattern (LIKE, so ASCII case is ignored as in Library search).
-_LINK_FILTER_HIT = """(p.id IN (
+# The positive's text, its Library title or one of its tag names contains
+# :pattern (LIKE, so ASCII case is ignored as in Library search). A pair's own
+# title names its negative variant and is never searched (#249 D12).
+_LINK_FILTER_HIT = """p.id IN (
     SELECT hp.id FROM prompts hp
     LEFT JOIN prompt_library_state hls ON hls.prompt_id = hp.id
     WHERE hp.text LIKE :pattern ESCAPE '\\' OR hls.title LIKE :pattern ESCAPE '\\'
     OR hp.id IN (SELECT ht.prompt_id FROM prompt_tags ht JOIN tags hn
-                 ON hn.id = ht.tag_id WHERE hn.name LIKE :pattern ESCAPE '\\'))
-  OR pp.title LIKE :pattern ESCAPE '\\')"""
+                 ON hn.id = ht.tag_id WHERE hn.name LIKE :pattern ESCAPE '\\'))"""
 _LINK_FILTER_TAG = (
     "p.id IN (SELECT ft.prompt_id FROM prompt_tags ft JOIN tags fn "
     "ON fn.id = ft.tag_id WHERE fn.name = :tag{index})"
@@ -277,8 +279,9 @@ def _empty_link_summary(status: str) -> Dict[str, Any]:
 
 def _link_summary(row: tuple) -> Dict[str, Any]:
     if row[7] is not None:
-        positive, text, category, rating = row[7], row[9], row[10], row[11]
-        titles = (row[8], row[12])
+        positive, text, category, rating = row[7], row[8], row[9], row[10]
+        # The linked positive's Library title (D10/D20).
+        titles = (row[11],)
     else:
         positive, text, category, rating = row[2], row[3], row[4], row[5]
         titles = (row[6],)
@@ -2338,7 +2341,8 @@ class PromptDatabase(
 
         Rows are limited to images whose linked positive has *category* and
         every tag in *tags* (exact names). ``hit`` says whether *q* occurs in
-        the positive's text, Library title or a tag name, or in the pair title.
+        the positive's text, Library title or a tag name; a pair's own title
+        names its negative variant and is not searched.
         Without category or tags only hits are returned, unless *every_link*
         asks for every linked image (the rating sort and the positive count).
         The positive id is the card's linked positive. One SELECT whose rows

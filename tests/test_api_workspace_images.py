@@ -247,6 +247,33 @@ class TestWorkspaceImages(ImageAPITestCase):
         )
         self.assertEqual(response.status, 400)
 
+    async def test_workspace_roots_list_their_own_folders(self):
+        # "Refine this view" offers only the chosen Source's folders (#249 m1).
+        second = self.comfy_dir / "second"
+        second.mkdir()
+        self.media("first/deep/a.png")
+        self.media("nested/b.png", root=second)
+        self.api._get_all_output_dirs = lambda: [self.output_dir, second]
+        deep = os.path.join("first", "deep")
+        response = await self.client.get(
+            "/prompt_manager/gallery/subfolders?mode=workspace&include_ancestors=true"
+        )
+        folders = await response.json()
+        self.assertEqual(folders["subfolders"], sorted(["first", deep, "nested"]))
+        self.assertEqual(
+            [(r["index"], r["subfolders"]) for r in folders["roots"]],
+            [(0, sorted(["first", deep])), (1, ["nested"])],
+        )
+        # A chosen root narrows the union; every root still lists its own.
+        response = await self.client.get(
+            "/prompt_manager/gallery/subfolders?mode=workspace&root=1"
+        )
+        folders = await response.json()
+        self.assertEqual(folders["subfolders"], ["nested"])
+        self.assertEqual(
+            [r["subfolders"] for r in folders["roots"]], [[deep], ["nested"]]
+        )
+
     async def test_workspace_dimensions_are_header_only_and_video_is_unknown(self):
         self.media("a.png")
         self.media("b.mp4")
@@ -420,7 +447,8 @@ class TestWorkspaceImages(ImageAPITestCase):
             )
 
     def _link_fixtures(self):
-        """Linked (titled, first-line, pair, untitled pair), ambiguous and none."""
+        """Linked (titled, first-line, pair, variant-titled pair, untitled pair),
+        ambiguous and none."""
         db = self.api.db
         long_line = "lantern " * 15
         titled = self._save_prompt("Titled positive", category="Night", rating=5)
@@ -430,12 +458,20 @@ class TestWorkspaceImages(ImageAPITestCase):
                 (titled, "Stored library title"),
             )
         plain = self._save_prompt(long_line)
+        # A pair's own title names its negative variant; the card shows the
+        # linked positive's title (D10/D20), never the variant name.
         pair = db.save_prompt_pair("Pair positive", "Noise", title="Pair title")
+        with db.model.get_connection() as connection:
+            connection.execute(
+                "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                (db.get_prompt_pair(pair)["positive_prompt_id"], "Pair positive title"),
+            )
+        variant = db.save_prompt_pair("Variant positive", "Grain", title="Variant name")
         bare = db.save_prompt_pair("Bare pair positive\nmore", "Blur")
         first, second = self._save_prompt("Owner one"), self._save_prompt("Owner two")
         files = {
             name: self.media(f"{name}.png")
-            for name in ("titled", "pair", "ambiguous", "none")
+            for name in ("titled", "pair", "variant", "ambiguous", "none")
         }
         # First-line titles come from files whose own prompt evidence agrees.
         files["plain"] = embedded_png(self.output_dir / "plain.png", long_line)
@@ -444,7 +480,7 @@ class TestWorkspaceImages(ImageAPITestCase):
         )
         db.link_image_to_prompt(titled, str(files["titled"]))
         db.link_image_to_prompt(plain, str(files["plain"]))
-        for name, pair_id in (("pair", pair), ("bare", bare)):
+        for name, pair_id in (("pair", pair), ("variant", variant), ("bare", bare)):
             positive = db.get_prompt_pair(pair_id)["positive_prompt_id"]
             image = db.link_image_to_prompt(positive, str(files[name]))
             db.link_image_to_pair(pair_id, image, {"source": "fixture"})
@@ -456,7 +492,13 @@ class TestWorkspaceImages(ImageAPITestCase):
             "pair": (
                 "linked",
                 db.get_prompt_pair(pair)["positive_prompt_id"],
-                "Pair title",
+                "Pair positive title",
+            ),
+            # No stored title and no file evidence: the card shows the filename.
+            "variant": (
+                "linked",
+                db.get_prompt_pair(variant)["positive_prompt_id"],
+                None,
             ),
             "bare": (
                 "linked",
@@ -567,6 +609,13 @@ class TestWorkspaceImages(ImageAPITestCase):
         )
         self.assertEqual(response.status, 200)
         return (await response.json())["library"]
+
+    def test_link_summary_reads_no_pair_title(self):
+        # The pair's own title names its negative variant and never titles a
+        # card (D10), so the summary query does not read it (#249 m4).
+        from database.operations import _LINK_SUMMARY_SQL
+
+        self.assertNotIn("pp.title", _LINK_SUMMARY_SQL)
 
     async def test_link_summary_uses_one_query_per_page(self):
         prompt = self._save_prompt("Paged prompt")
@@ -1053,8 +1102,9 @@ class TestWorkspaceImages(ImageAPITestCase):
         cases = (
             # Six unambiguous positives; the ambiguous file and unlinked count none.
             ({}, 10, 6),
-            # Text, title, tag, pair title (its positive) and the filename match.
-            ({"q": "ZEBRA"}, 6, 4),
+            # Text, stored title, tag and the filename match (never a pair's
+            # own variant title, D12).
+            ({"q": "ZEBRA"}, 5, 3),
             ({"category": "Night"}, 4, 3),
             ({"tags": "a,b"}, 3, 2),
             ({"q": "plain_unlinked"}, 1, 0),
@@ -1185,18 +1235,24 @@ class TestWorkspaceImages(ImageAPITestCase):
 
         files = self._filter_fixtures()
         _, data = await self.get(q="ZEBRA", sort="name")
-        # Text, stored title, tag, pair title and filename; never an ambiguous link.
+        # Text, stored title, tag and filename; never an ambiguous link.
         self.assertEqual(
             self._names(data),
             [
                 "day_ab.png",
                 "night_ab.png",
-                "paired.png",
                 "titled.png",
                 "zebra_unlinked.png",
             ],
         )
-        self.assertEqual(data["total"], 5)
+        self.assertEqual(data["total"], 4)
+        # D12: a pair's own title names its negative variant, so the variant
+        # name alone matches nothing; the linked positive's text still does.
+        _, data = await self.get(q="Zebra pair")
+        self.assertEqual(self._names(data), [])
+        self.assertEqual(data["total"], 0)
+        _, data = await self.get(q="pair positive")
+        self.assertEqual(self._names(data), ["paired.png"])
         _, data = await self.get(q="0% w")
         self.assertEqual(self._names(data), ["percent.png"])
         _, data = await self.get(q="%")
@@ -1207,7 +1263,7 @@ class TestWorkspaceImages(ImageAPITestCase):
             self.api.db.get_image_paths_matching("zebra", None, []),
             {
                 normalize_image_path(str(files[name]))
-                for name in ("night_ab", "day_ab", "titled", "paired")
+                for name in ("night_ab", "day_ab", "titled")
             },
         )
 

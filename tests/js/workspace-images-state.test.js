@@ -183,3 +183,133 @@ test('custom collection pages reuse image-stream cancellation, cursors and ident
     assert.equal(await stream.loadMore(),1);assert.equal(calls[1].parameters.get('cursor'),'next');assert.equal(stream.state.loaded,2);stream.dispose();
     assert.throws(()=>createImageStream({api:{get:async()=>{}},fetchPage:'invalid'}),/page/i);
 });
+
+test('stream sends category, tags and the rating sort and validates them', async () => {
+    const {createImageStream}=await source;const calls=[];
+    const stream=createImageStream({api:{get:async url=>{calls.push(new URL(url,'http://local').searchParams);return page([]);}}});
+    await stream.reset({q:'cat',category:'Animals',tags:['cats','studio'],sort:'rating'});
+    assert.equal(calls[0].get('category'),'Animals');assert.equal(calls[0].get('tags'),'cats,studio');assert.equal(calls[0].get('sort'),'rating');
+    await stream.reset({category:'',tags:[]});
+    assert.equal(calls[1].has('category'),false);assert.equal(calls[1].has('tags'),false);
+    for(const filters of [{category:3},{tags:'cats'},{tags:[1]},{tags:['a,b']},{tags:['']}]) await assert.rejects(stream.reset(filters),/filter/i);
+});
+
+test('positive count comes from the first page, survives plain cursor pages and hides when unknown', async () => {
+    const {createImageStream}=await source;
+    const replies=[{...page([image('a')],3,'one'),positive_count:2},page([image('b')],3,'two'),{...page([image('c')],3),positive_count:null}];
+    const stream=createImageStream({api:{get:async()=>replies.shift()}});
+    assert.equal(stream.state.positiveCount,null);
+    await stream.reset();assert.equal(stream.state.positiveCount,2);
+    await stream.loadMore();assert.equal(stream.state.positiveCount,2);
+    await stream.loadMore();assert.equal(stream.state.positiveCount,2);
+    const failed=createImageStream({api:{get:async()=>({...page([image('a')]),positive_count:null})}});
+    await failed.reset();assert.equal(failed.state.positiveCount,null);
+    const absent=createImageStream({api:{get:async()=>page([image('a')])}});
+    await absent.reset();assert.equal(absent.state.positiveCount,null);
+    for(const positive_count of [-1,'2',1.5]) {
+        const invalid=createImageStream({api:{get:async()=>({...page([image('a')]),positive_count})}});
+        await invalid.reset();assert.match(invalid.state.error.message,/page/i);
+    }
+    const restored=createImageStream({api:{get(){assert.fail('unexpected request');}},restore:{filters:{},state:{...stream.state}}});
+    assert.equal(restored.state.positiveCount,2);
+    assert.throws(()=>createImageStream({api:{get(){}},restore:{filters:{},state:{...stream.state,positiveCount:-3}}}),TypeError);
+});
+
+test('the count line reads N of M images and K positive prompts only when known', async () => {
+    const {countLine}=await source;
+    assert.equal(countLine({loaded:40,total:102,positiveCount:2}),'40 of 102 images · 2 positive prompts');
+    assert.equal(countLine({loaded:1,total:1,positiveCount:1}),'1 of 1 image · 1 positive prompt');
+    assert.equal(countLine({loaded:2,total:2,positiveCount:null}),'2 of 2 images');
+    assert.equal(countLine({loaded:1200,total:3400,positiveCount:0}),'1,200 of 3,400 images · 0 positive prompts');
+});
+
+test('the caption date names the newest result day under Newest first only', async () => {
+    const {captionDate}=await source;
+    const now=new Date(2026,9,17,15,0);
+    const at=(...parts)=>({modified_time:new Date(...parts).getTime()/1000});
+    assert.equal(captionDate([at(2026,9,17,9),at(2026,9,10)],'newest',now),'Today · October 17');
+    assert.equal(captionDate([at(2026,9,16,23),at(2026,9,10)],'newest',now),'Yesterday · October 16');
+    // D17 ruling: only under Newest first; Oldest first hides the date too.
+    assert.equal(captionDate([at(2026,9,10),at(2026,9,16,23)],'oldest',now),'');
+    assert.equal(captionDate([at(2026,9,13)],'newest',now),'Tuesday · October 13');
+    assert.equal(captionDate([at(2025,2,3)],'newest',now),'Monday · March 3, 2025');
+    for(const sort of ['name','name-desc','rating']) assert.equal(captionDate([at(2026,9,17)],sort,now),'');
+    assert.equal(captionDate([],'newest',now),'');
+    assert.equal(captionDate([{modified_time:'bad'}],'newest',now),'');
+});
+
+test('the scope chip summarizes source and folder', async () => {
+    const {scopeLabel}=await source;
+    const roots=[{index:0,label:'output'},{index:1,label:'input'}];
+    assert.equal(scopeLabel({root:'all',subfolder:''},roots),'All output folders');
+    assert.equal(scopeLabel({root:'1',subfolder:'shared'},roots),'input · shared');
+    assert.equal(scopeLabel({root:'0',subfolder:''},roots),'output · All output folders');
+    assert.equal(scopeLabel({root:'all',subfolder:'bulk'},roots),'All sources · bulk');
+    assert.equal(scopeLabel({root:'7',subfolder:''},roots),'Source 7 · All output folders');
+});
+
+test('the card title is the confirmed linked title, else the filename (D10)', async () => {
+    const {cardTitle}=await source;
+    const linked=(status,title)=>({filename:'alpine_00001.png',linked:{status,positive_id:1,title,title_source:'title',category:null,rating:null}});
+    assert.equal(cardTitle(linked('linked','Alpine observatory')),'Alpine observatory');
+    for (const status of ['ambiguous','unlinked','unavailable','none']) assert.equal(cardTitle(linked(status,'Alpine observatory')),'alpine_00001.png');
+    assert.equal(cardTitle(linked('linked',null)),'alpine_00001.png');
+    assert.equal(cardTitle(linked('linked','')),'alpine_00001.png');
+    assert.equal(cardTitle({filename:'plain.png'}),'plain.png');
+    assert.equal(cardTitle({filename:'plain.png',linked:null}),'plain.png');
+});
+
+test('the card subtitle is W × H · EXT · Seed N with unknown parts omitted (D11)', async () => {
+    const {cardSubtitle, mediaRatio}=await source;
+    assert.equal(cardSubtitle({filename:'a.png',width:1536,height:1152,seed:'42001'}),'1536 × 1152 · PNG · Seed 42001');
+    // The seed is the listing's decimal string: never a Number, so 2^53 + 1 survives.
+    assert.equal(cardSubtitle({filename:'a.png',width:8,height:8,seed:'9007199254740993'}),'8 × 8 · PNG · Seed 9007199254740993');
+    assert.equal(cardSubtitle({filename:'clip.webm',width:null,height:null,seed:null}),'WEBM');
+    assert.equal(cardSubtitle({filename:'clip.mp4',media_type:'video',width:640,height:360}),'640 × 360 · MP4');
+    assert.equal(cardSubtitle({filename:'noext',width:0,height:10,seed:''}),'');
+    assert.equal(cardSubtitle({filename:'.hidden',width:10,height:Infinity,seed:42}),'');
+    assert.equal(cardSubtitle({filename:'trailing.',seed:'7'}),'Seed 7');
+    assert.equal(mediaRatio({width:1536,height:1152}),'1536/1152');
+    for (const image of [{}, {width:0,height:5}, {width:5,height:NaN}, {width:Infinity,height:5}]) assert.equal(mediaRatio(image),'4/3');
+});
+
+test('updating one item replaces it immutably and later pages append after it', async () => {
+    const { createImageStream, imageKey } = await source;
+    const pages = [page([{...image('a'), favorite:false}, {...image('b'), favorite:true}], 3, 'next'), page([image('c')], 3)];
+    const states = [];
+    const hints = [];
+    const stream = createImageStream({api:{get:async () => pages.shift()}, onChange:(s, hint) => { states.push(s); hints.push(hint); }, batchSize:2});
+    await stream.reset({});
+    const before = stream.state, notified = states.length;
+    // Page loads carry no hint; a patch says so, so the page can repaint one card instead of laying out the collection.
+    assert.ok(hints.every(hint => hint === undefined));
+    assert.equal(stream.updateItem('0:a', {favorite:true}), true);
+    const after = stream.state;
+    assert.equal(states.length, notified + 1); assert.equal(states.at(-1), after);
+    assert.deepEqual(hints.at(-1), {patch:'0:a'});
+    assert.notEqual(after.items, before.items); assert.ok(Object.isFrozen(after.items)); assert.ok(Object.isFrozen(after.items[0]));
+    assert.equal(after.items[0].favorite, true); assert.equal(before.items[0].favorite, false);
+    assert.equal(after.items[1], before.items[1]);
+    assert.equal(after.loaded, before.loaded); assert.equal(after.cursor, before.cursor); assert.equal(after.total, before.total);
+    // Identity fields cannot be patched, and an unknown key changes nothing.
+    assert.throws(() => stream.updateItem('0:a', {path:'z'}), TypeError);
+    assert.throws(() => stream.updateItem('0:a', {root_index:1}), TypeError);
+    assert.equal(stream.updateItem('0:missing', {favorite:true}), false);
+    assert.equal(stream.state, after); assert.equal(states.length, notified + 1);
+    await stream.loadMore();
+    assert.deepEqual(stream.state.items.map(imageKey), ['0:a', '0:b', '0:c']);
+    assert.equal(stream.state.items[0].favorite, true);
+    stream.dispose();
+    assert.equal(stream.updateItem('0:b', {favorite:false}), false);
+    assert.equal(stream.state.items[1].favorite, true);
+});
+
+test('withItem patches a saved browsing state without touching the other items', async () => {
+    const { withItem } = await source;
+    const items = Object.freeze([Object.freeze({...image('a'), favorite:false}), Object.freeze({...image('b'), favorite:false})]);
+    const state = Object.freeze({items, total:2, cursor:null, hasMore:false, loading:false, error:null, loaded:2, positiveCount:null});
+    const next = withItem(state, '0:b', {favorite:true});
+    assert.ok(Object.isFrozen(next)); assert.equal(next.items[1].favorite, true); assert.equal(next.items[0], items[0]);
+    assert.equal(state.items[1].favorite, false);
+    assert.equal(withItem(state, '1:b', {favorite:true}), state);
+});

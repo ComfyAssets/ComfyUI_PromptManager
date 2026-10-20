@@ -224,7 +224,7 @@ test('every ordered receipt remains selected through distinct current locations,
     await expect(receipts.nth(3)).toContainText('missing');await expect(receipts.nth(4)).toContainText('Transient');
     await expect(dialog(page)).toContainText('Context membership unknown');
     const loadedReads=outputReads;const view=receipts.nth(1).getByRole('button',{name:'View current file',exact:true});await view.click();
-    const viewer=page.getByRole('dialog',{name:'Image preview',exact:true});await expect(viewer).toBeVisible();
+    const viewer=page.locator('dialog#viewer-dialog');await expect(viewer).toBeVisible();
     await expect(viewer).toContainText('1 of 2 loaded');await expect(viewer.getByRole('region',{name:'Negative prompt',exact:true})).not.toContainText('same visible negative');
     await viewer.getByRole('button',{name:'Next media',exact:true}).click();await expect(viewer).toContainText('2 of 2 loaded');
     await page.keyboard.press('Escape');await expect(viewer).toHaveCount(0);await expect(dialog(page)).toBeVisible();
@@ -245,7 +245,7 @@ test('inspection first discovers a real restore and immediately retires every su
     const inspectionRead=page.waitForResponse(response=>new URL(response.url()).pathname.endsWith('/output/current/inspection'));
     try {
         await dialog(page).locator('[data-receipt]').first().getByRole('button',{name:'View current file',exact:true}).click();
-        await expect(page.getByRole('dialog',{name:'Image preview',exact:true})).toBeVisible();
+        await expect(page.locator('dialog#viewer-dialog')).toBeVisible();
         await expect.poll(async()=> (await(await request.get('/__test__/history/checkpoint')).json()).entered).toBe(true);
         await page.evaluate(()=>{
             window.recordedRecoveryStates=[];
@@ -259,7 +259,7 @@ test('inspection first discovers a real restore and immediately retires every su
     } finally {await command(request,{action:'release'});}
     const response=await inspectionRead;expect(response.status()).toBe(409);expect((await response.json()).code).toBe('history-changed');
     await expect(dialog(page).locator('.recorded-run-status')).toContainText('Recorded evidence changed');
-    const viewer=page.getByRole('dialog',{name:'Image preview',exact:true});
+    const viewer=page.locator('dialog#viewer-dialog');
     if(await viewer.count())await page.keyboard.press('Escape');
     await expect(dialog(page)).toBeVisible();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(0);
     await expect(dialog(page).locator('[data-send-role]:enabled:visible,[data-copy-role]:enabled:visible,[data-view-receipt]:enabled:visible')).toHaveCount(0);
@@ -297,7 +297,7 @@ test('unavailable exact receipt selection and targeted retry observe a newly ava
     await expect(dialog(page).getByRole('button',{name:'Effective',exact:true})).toHaveAttribute('aria-pressed','true');
     await expect(dialog(page).getByRole('group',{name:'Recorded anchors',exact:true}).locator('[aria-pressed="true"]')).toContainText('z');
     await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
-    await missing.getByRole('button',{name:'View current file',exact:true}).click();await expect(page.getByRole('dialog',{name:'Image preview',exact:true})).toBeVisible();await page.keyboard.press('Escape');
+    await missing.getByRole('button',{name:'View current file',exact:true}).click();await expect(page.locator('dialog#viewer-dialog')).toBeVisible();await page.keyboard.press('Escape');
     await expect(missing).toHaveAttribute('aria-current','true');await page.keyboard.press('Escape');
     await expect(page.getByRole('button',{name:'Select negative variant 1',exact:true})).toHaveAttribute('aria-pressed','true');
     expect(await gallery(page).locator('article[data-image-key]').evaluateAll(nodes=>nodes.map(node=>node.dataset.imageKey))).toEqual(keys);expect(writes).toBe(0);
@@ -468,7 +468,7 @@ test('the inline current file names its prompts apart from the frozen run fields
     const frozen=dialog(page).getByRole('region',{name:'Frozen run prompt texts',exact:true});
     const before=await exact(frozen.getByRole('region',{name:'Positive prompt',exact:true}).locator('pre'));
     await dialog(page).locator('[data-receipt]').first().getByRole('button',{name:'View current file',exact:true}).click();
-    await expect(page.getByRole('dialog',{name:'Image preview',exact:true})).toBeVisible();await page.keyboard.press('Escape');await expect(dialog(page)).toBeVisible();
+    await expect(page.locator('dialog#viewer-dialog')).toBeVisible();await page.keyboard.press('Escape');await expect(dialog(page)).toBeVisible();
     const current=dialog(page).getByRole('region',{name:'Current reported file',exact:true});await expect(current).toBeVisible();
     await expect(current.getByRole('region',{name:'Current file positive prompt',exact:true}).locator('pre')).toHaveText('current file positive');
     await expect(current.getByRole('region',{name:'Current file negative prompt',exact:true}).locator('pre')).toHaveText('current file negative');
@@ -485,7 +485,7 @@ test('the recorded run dialog with a resolved current file has no duplicate butt
     await open(page,page.fixture.detail_id);await marker(page,page.fixture.runs.shared).click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
     await dialog(page).getByRole('button',{name:'Raw',exact:true}).click();
     await dialog(page).locator('[data-receipt]').first().getByRole('button',{name:'View current file',exact:true}).click();
-    await expect(page.getByRole('dialog',{name:'Image preview',exact:true})).toBeVisible();await page.keyboard.press('Escape');
+    await expect(page.locator('dialog#viewer-dialog')).toBeVisible();await page.keyboard.press('Escape');
     await expect(dialog(page).getByRole('region',{name:'Current reported file',exact:true})).toBeVisible();
     await expect(dialog(page).getByRole('region',{name:'Current file positive prompt',exact:true})).toBeVisible();
     // Receipt rows repeat per-row actions by design; every other control and region in the dialog must be uniquely named.
@@ -500,7 +500,7 @@ test('the recorded run dialog with a resolved current file has no duplicate butt
 
 test('pagehide tears down dialogs and persisted reentry revalidates before enabling recorded actions',async({page})=>{
     await open(page,page.fixture.detail_id);await marker(page,page.fixture.runs.shared).click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
-    await dialog(page).locator('[data-receipt]').first().getByRole('button',{name:'View current file',exact:true}).click();await expect(page.getByRole('dialog',{name:'Image preview',exact:true})).toBeVisible();
+    await dialog(page).locator('[data-receipt]').first().getByRole('button',{name:'View current file',exact:true}).click();await expect(page.locator('dialog#viewer-dialog')).toBeVisible();
     await page.evaluate(()=>dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));await expect(page.locator('dialog[open],.viewer-container')).toHaveCount(0);
     let release;const held=new Promise(resolve=>{release=resolve;});let checks=0;
     await page.route(/\/history\/runs\/[^/]+\?/,async route=>{checks++;await held;await route.continue().catch(()=>{});});

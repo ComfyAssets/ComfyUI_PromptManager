@@ -1422,45 +1422,56 @@ class ImageRoutesMixin:
                 {"success": False, "error": "Failed to rescan the gallery"}, status=500
             )
 
+    async def _root_subfolders(self, output_path, include_ancestors):
+        """The distinct folders holding listed files under one output root."""
+        subfolders = set()
+        for f, _mtime in await self._get_gallery_files(output_path):
+            rel_dir = str(f.relative_to(output_path).parent)
+            if rel_dir and rel_dir != ".":
+                subfolders.add(rel_dir)
+        if include_ancestors:
+            ancestors = set()
+            for folder in subfolders:
+                parts = folder.replace("\\", "/").split("/")
+                for i in range(1, len(parts)):
+                    ancestors.add("/".join(parts[:i]))
+            subfolders.update(ancestors)
+        return subfolders
+
     async def get_gallery_subfolders(self, request):
-        """Get distinct subfolders from gallery output directories."""
+        """Get distinct subfolders from gallery output directories.
+
+        In workspace mode every root also lists its own folders, so the
+        Refine dialog can offer only the chosen Source's folders.
+        """
         try:
             output_dirs = list(self._get_all_output_dirs())
             workspace = request.query.get("mode") == "workspace"
-            roots = None
+            include_ancestors = (
+                request.query.get("include_ancestors", "").lower() == "true"
+            )
+            selected = None
             if workspace:
                 try:
                     selected = _workspace_root(request.query, output_dirs)
                 except ValueError as exc:
                     return bad_request(str(exc))
-                roots = [
-                    {"index": index, "label": _public_path(root)}
-                    for index, root in enumerate(output_dirs)
-                ]
-                if selected is not None:
-                    output_dirs = [output_dirs[selected]]
-            subfolders = set()
-            for output_path in output_dirs:
-                files = await self._get_gallery_files(output_path)
-                for f, _mtime in files:
-                    rel_dir = str(f.relative_to(output_path).parent)
-                    if rel_dir and rel_dir != ".":
-                        subfolders.add(rel_dir)
-
-            include_ancestors = (
-                request.query.get("include_ancestors", "").lower() == "true"
-            )
-            if include_ancestors:
-                ancestors = set()
-                for folder in subfolders:
-                    parts = folder.replace("\\", "/").split("/")
-                    for i in range(1, len(parts)):
-                        ancestors.add("/".join(parts[:i]))
-                subfolders.update(ancestors)
-
+            walked = [
+                await self._root_subfolders(output_path, include_ancestors)
+                for output_path in output_dirs
+            ]
+            chosen = walked if selected is None else [walked[selected]]
+            subfolders = set().union(*chosen)
             payload = {"success": True, "subfolders": sorted(subfolders)}
             if workspace:
-                payload["roots"] = roots
+                payload["roots"] = [
+                    {
+                        "index": index,
+                        "label": _public_path(root),
+                        "subfolders": sorted(walked[index]),
+                    }
+                    for index, root in enumerate(output_dirs)
+                ]
             return web.json_response(payload)
         except Exception as e:
             self.logger.error(f"Subfolders error: {e}")

@@ -237,7 +237,7 @@ test.describe('public chronological history with the actual acknowledged host br
                 const run = workspace.getByRole('dialog', { name: 'Recorded run', exact: true });await expect(run).toBeVisible();
                 await expect(run.locator('[data-receipt]')).toHaveCount(4);
                 await run.getByRole('button', { name: 'View current file', exact: true }).first().click();
-                const viewer = workspace.getByRole('dialog', { name: 'Image preview', exact: true });await expect(viewer).toBeVisible();
+                const viewer = workspace.locator('dialog#viewer-dialog');await expect(viewer).toBeVisible();
                 await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
                 await workspace.keyboard.press('Escape');await expect(run).toBeVisible();
                 const frozen = attempts[0].context;

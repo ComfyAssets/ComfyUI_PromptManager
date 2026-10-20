@@ -1,6 +1,6 @@
-import { createScope, createButton, createField, createSelect } from '../shared/toolkit/core.js';
-import { createImageStream, imageKey } from './images-state.mjs';
-import { layoutImages, visibleImages, workspaceImageMetrics } from './image-layout.mjs';
+import { createScope, createButton } from '../shared/toolkit/core.js';
+import { createImageStream, withItem, imageKey, countLine, captionDate, scopeLabel, cardTitle, cardSubtitle, mediaRatio } from './images-state.mjs';
+import { layoutImages, visibleImages, gridMetrics, MINIMUM_CARD_WIDTH } from './image-layout.mjs';
 import { mountFileInspector } from './file-inspector.mjs';
 import { createInspectionController } from './inspection-state.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
@@ -9,6 +9,9 @@ import { createWorkspaceIcon } from './icons.mjs';
 import { createMediaViewer } from './media-viewer.mjs';
 import { noun } from './plural.mjs';
 import { pageHeading } from './heading.mjs';
+import { mountToolbar } from './toolbar.mjs';
+import { openImportDialog, openRefineDialog } from './workspace-dialogs.mjs';
+import { showWorkspaceToast } from './toast.mjs';
 
 function el(tag, text, className) {
     const element = document.createElement(tag);
@@ -17,11 +20,68 @@ function el(tag, text, className) {
     return element;
 }
 
-function formatBytes(value) {
-    return value >= 1048576 ? `${(value / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(value / 1024))} KB`;
+/**
+ * Live regions re-announce replaced text even when it is the same, and a patched publish (a favorite) repeats the
+ * same status: write text and attributes only when they change.
+ */
+function setText(element, text) {
+    if (element.textContent !== text) element.textContent = text;
+}
+function setAttr(element, name, value) {
+    if (element.getAttribute(name) !== value) element.setAttribute(name, value);
 }
 
+function selectOf(id, options, value) {
+    const select = el('select');
+    select.id = id;
+    select.replaceChildren(...options.map(([optionValue, label]) => {
+        const node = el('option', label);
+        node.value = optionValue;
+        return node;
+    }));
+    select.value = value;
+    return select;
+}
+
+// The concept's three sorts first, then the production ones it lacks (D14); values are the listing's sorts (B3).
+const IMAGE_SORT_OPTIONS = Object.freeze([['newest', 'Recently added'], ['name', 'Name A–Z'], ['rating', 'Highest rated'],
+    ['oldest', 'Oldest first'], ['name-desc', 'Name Z–A']]);
+const MEDIA_OPTIONS = Object.freeze([['all', 'All media'], ['image', 'Images'], ['video', 'Videos']]);
+const RETRY_RESCAN = 'Rescan from Import to retry.';
+const RETRY_REFRESH = 'Refresh image collection to retry.';
+/** One alert for whichever of the source discovery and the categories failed, so two failures announce once. */
+function loadFailure(sourcesRetry, categoriesFailed) {
+    if (sourcesRetry && categoriesFailed) return `Sources, folders and categories could not be loaded. ${sourcesRetry}`;
+    if (sourcesRetry) return `Sources and folders could not be loaded. ${sourcesRetry}`;
+    return categoriesFailed ? `Categories could not be loaded. ${RETRY_RESCAN}` : '';
+}
+// Import → Rescan (D15): the concept has no rescan copy, so its toasts follow the workspace pattern. The answer
+// counts every listed file across the output roots it walked.
+const RESCAN_STARTED = 'Rescanning output folders…';
+const RESCAN_FAILED = 'Rescan could not finish. Try again.';
+function rescanFinished(result) {
+    const {total, roots} = result ?? {};
+    if (![total, roots].every(value => Number.isSafeInteger(value) && value >= 0)) return 'Rescan finished.';
+    return `Rescan finished. ${total.toLocaleString('en-US')} ${noun(total, 'file')} in ${roots.toLocaleString('en-US')} output ${noun(roots, 'folder')}.`;
+}
+// D7 = A: the concept's star (app.js actions.favorite) against the favorites store; its toasts without the demo's
+// "in this tab". The concept has no failure copy, so a failure follows the workspace "could not be …" pattern.
+const FAVORITE_URL = '/prompt_manager/images/favorite';
+const FAVORITE_DONE = Object.freeze({true:'Added to favorites.', false:'Removed from favorites.'});
+const FAVORITE_FAILED = Object.freeze({true:'Favorite could not be added. Try again.', false:'Favorite could not be removed. Try again.'});
+// The concept card's first `.media-info` reservation and list row (image-layout.mjs); real rows are measured.
+const INITIAL_METRICS = Object.freeze({columns:1, gap:13, footerHeight:54, listHeight:97});
+
 let lastVisit = null;
+// One favorite request per file at a time (TESTING.md): the requests outlive the Images page that sent them, so the keys
+// in flight and the page that receives each answer live here, beside the saved visit.
+const favoritePending = new Set();
+let favoriteTarget = null;
+/** Give a favorite state to the mounted Images page, or to the saved visit while none is mounted. */
+function deliverFavorite(key, favorite) {
+    if (favoriteTarget) favoriteTarget(key, favorite);
+    else if (lastVisit?.state) lastVisit = {...lastVisit, state: withItem(lastVisit.state, key, {favorite})};
+}
 
 export function mountImages(main, api, parentScope, {embedded = false, fetchPage} = {}) {
     const scope = createScope();
@@ -38,40 +98,56 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     scope.cleanup(() => detailInspector?.dispose());
     const visit = embedded ? null : lastVisit;
     let density = visit?.density || 'comfortable';
-    let metrics = workspaceImageMetrics(window.innerWidth, density);
+    let metrics = {...INITIAL_METRICS};
     let layout = visit?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer;
-    let state, geometry = { positions: [], height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest, recovering = false;
+    let state, geometry = { positions: [], columns: 1, height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest, categoryRequest, recovering = false, rescanning = false;
+    // Discovered sources (each with its own folders) and every folder, for "Refine this view" and the scope chip.
+    let roots = [], folders = [];
     const rendered = new Map();
     const itemIndexes = new Map();
-    const filters = { root: 'all', q: '', subfolder: '', media: 'all', sort: 'newest', ...visit?.filters };
+    const filters = { root: 'all', q: '', category: '', tags: [], subfolder: '', media: 'all', sort: 'newest', ...visit?.filters };
+    filters.tags = [...filters.tags];
     scope.cleanup(() => {
-        if (!embedded) lastVisit = state ? { filters: {...filters}, state, layout, density, selection, scrollY: window.scrollY } : null;
+        if (!embedded) lastVisit = state ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, selection, scrollY: window.scrollY } : null;
         cancelAnimationFrame(restoreFrame);
     });
     main.classList.add('images-main');
     scope.cleanup(() => main.classList.remove('images-main'));
-    const description = embedded ? null : pageHeading(main)?.description;
-    if (description) description.textContent = 'Browse your images, explore the details, keep your creative context.';
-    const filtersBar = el('div', undefined, 'image-filters');
-    const search = el('input');
-    search.value = filters.q;
-    search.type = 'search'; search.placeholder = 'Find an image by filename or folder…'; search.maxLength = 256;
-    const source = createSelect([['all', 'All sources']], '');
-    const folder = createSelect([['', 'All folders']], '');
-    const media = createSelect([['all', 'All media'], ['image', 'Images'], ['video', 'Videos']], '');
-    const sort = createSelect([['newest', 'Newest first'], ['oldest', 'Oldest first'], ['name', 'Filename A–Z'], ['name-desc', 'Filename Z–A']], '');
-    media.value = filters.media; sort.value = filters.sort;
-    filtersBar.append(createField('Search filenames', search, 'image-search'), createField('Source', source, 'image-source'),
-        createField('Folder', folder, 'image-folder'), createField('Media', media, 'image-media'), createField('Sort', sort, 'image-sort'));
+    // The concept's Images heading (app.js renderImages): description, then Import before the shell's New prompt.
+    const heading = embedded ? null : pageHeading(main);
+    let importButton = null, importDialog = null;
+    if (heading) {
+        heading.description.textContent = 'Your generations, their prompts, and the next idea.';
+        importButton = createButton('');
+        importButton.append(createWorkspaceIcon('upload'), el('span', 'Import'));
+        heading.actions.prepend(importButton);
+        scope.cleanup(() => importButton.remove());
+        scope.listen(importButton, 'click', () => {
+            importDialog = openImportDialog({scope, trigger:importButton, rescanBusy:rescanning,
+                onInspect:() => { window.location.hash = '#/inspect'; }, onRescan:rescan});
+        });
+    }
+    // The shared concept toolbar: search (filename, linked prompt text, title and tags), category and sort (D12–D14).
+    const toolbar = embedded ? null : mountToolbar(main, {scope, categories:filters.category ? [filters.category] : [],
+        sorts:IMAGE_SORT_OPTIONS, value:{q:filters.q, category:filters.category, sort:filters.sort},
+        onChange:value => {
+            if (recovering) return;
+            const next = {q:value.q.trim(), category:value.category, sort:value.sort};
+            // A debounced search report can land after a select change already applied the same values; reloading
+            // then would refetch the first page and drop the reader's scroll position.
+            if (Object.entries(next).every(([key, item]) => filters[key] === item)) return;
+            Object.assign(filters, next);
+            reset();
+        }, onFilters:openFilters});
+    const toolbarControls = toolbar ? [...toolbar.element.querySelectorAll('input, select, button')] : [];
     const optionsStatus = el('p', '', 'options-status muted');
     optionsStatus.hidden = true; optionsStatus.setAttribute('role', 'alert');
-    if (!embedded) main.append(filtersBar, optionsStatus);
-    const controls = el('div', undefined, 'image-view-controls');
-    const toolbar = el('div', undefined, 'image-toolbar');
-    const collectionHeading = el('h2', embedded ? 'Linked images' : 'All images');collectionHeading.tabIndex = -1;
-    toolbar.append(collectionHeading);
-    const count = el('p', 'Loading images…', 'muted');
-    const layouts = el('div', undefined, 'image-layouts');
+    // The failed loads' retry hint (null once sources load) and whether the categories failed.
+    let sourcesRetry = null, categoriesFailed = false;
+    if (!embedded) main.append(optionsStatus);
+    // The concept's filter row: layouts, thumbnail size, the scope chip and Group by positive prompt (D14, D15).
+    const filterRow = el('div', undefined, 'filter-row');
+    const layouts = el('div', undefined, 'segmented');
     layouts.setAttribute('role', 'group'); layouts.setAttribute('aria-label', 'Image layout');
     for (const mode of ['grid', 'list', 'masonry']) {
         const button = createButton(mode[0].toUpperCase() + mode.slice(1));
@@ -84,50 +160,51 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         });
         layouts.append(button);
     }
-    const refresh = createButton('Refresh');
-    scope.listen(refresh, 'click', async () => {
-        if (refresh.disabled) return;
-        refresh.disabled = true;
-        optionsRequest?.abort(); optionsRequest = null;
-        optionsStatus.hidden = true;
-        try {
-            await api.post('/prompt_manager/gallery/rescan', {}, {signal:scope.signal});
-            if (scope.signal.aborted) return;
-            if (await loadOptions() && !scope.signal.aborted) reset();
-        } catch {
-            if (scope.signal.aborted) return;
-            optionsStatus.textContent = 'Images could not be refreshed. Try Refresh again.';
-            optionsStatus.hidden = false;
-        } finally {
-            refresh.disabled = recovering;
-        }
-    });
-    const currentGallery = el('a', 'Current gallery', 'workspace-link');
-    currentGallery.href = resolveUrl('/prompt_manager/gallery');
-    const thumbnails = createSelect([['comfortable', 'Comfortable'], ['large', 'Large'], ['compact', 'Compact']], '');
-    thumbnails.value = density;
+    const sizeLabel = el('label', 'Thumbnail size', 'small');
+    sizeLabel.htmlFor = 'image-size';
+    const thumbnails = selectOf('image-size', [['comfortable', 'Comfortable'], ['large', 'Large'], ['compact', 'Compact']], density);
     scope.listen(thumbnails, 'change', () => { density = thumbnails.value; updateLayout(); });
-    controls.append(layouts, createField('Thumbnail size', thumbnails, 'image-density'));
+    filterRow.append(layouts, sizeLabel, thumbnails);
+    const scopeText = document.createTextNode('');
     if (!embedded) {
-        const group = el('a', 'Group by positive prompt', 'workspace-link');
-        group.href = '#/library'; group.prepend(createWorkspaceIcon('branch'));
-        controls.append(group, refresh);
+        const chip = el('span', undefined, 'chip');
+        chip.append(createWorkspaceIcon('folder'), scopeText);
+        const group = createButton('Group by positive prompt →', 'chip');
+        scope.listen(group, 'click', () => { window.location.hash = '#/library'; });
+        filterRow.append(chip, group);
     }
-    main.append(controls);
-    toolbar.append(count);
-    const body = el('div', undefined, 'image-workspace');
-    const collection = el('section', undefined, 'image-collection');
+    main.append(filterRow);
+    const body = el('div', undefined, 'gallery-layout image-workspace');
+    const collection = el('section', undefined, 'gallery-body');
     collection.setAttribute('aria-label', 'Images');
+    // The concept's caption replaces the old "All images" heading; the embedded gallery keeps its own heading.
+    const caption = el('div', undefined, 'section-caption');
+    const collectionHeading = embedded ? el('h2', 'Linked images') : null;
+    if (collectionHeading) { collectionHeading.tabIndex = -1; caption.append(collectionHeading); }
+    const count = el('span', 'Loading images…');
+    if (!embedded) count.id = 'result-count';
+    const captionDay = el('span');
+    captionDay.hidden = true;
+    caption.append(count);
+    if (!embedded) caption.append(captionDay);
+    const focusFallback = collectionHeading || heading?.h1 || main;
     const grid = el('div', undefined, 'image-grid');
     grid.setAttribute('role', 'list'); grid.setAttribute('aria-label', 'Image collection');
-    const continuation = el('div', undefined, 'image-continuation');
-    const message = el('p');
+    const continuation = el('div', undefined, 'infinite-continuation');
+    // The concept's ids (app.js renderImages); the Library-embedded gallery has its own page around it.
+    if (!embedded) { grid.id = 'image-grid'; continuation.id = 'gallery-continuation'; }
+    const message = el('p', '', 'small');
     const more = createButton('Load more images');
     const retry = createButton('Retry');
-    const end = el('p', '', 'muted');
-    continuation.append(message, more, retry, end);
-    collection.append(toolbar, grid, continuation);
-    if (!embedded) collection.append(currentGallery);
+    continuation.append(message, more, retry);
+    // The concept's empty collection (app.js updateImages), beside the grid because the grid only holds positioned cards.
+    const empty = el('div', 'No matching images. Try another search or category.', 'empty');
+    empty.hidden = true;
+    collection.append(caption, grid);
+    if (!embedded) collection.append(empty);
+    collection.append(continuation);
+    // After a Load more or Retry press, the index of the first image that batch appends (concept: focus it).
+    let focusAfterLoad = null;
     const details = el('section', undefined, 'image-details panel');
     details.setAttribute('aria-label', 'Image details');
     details.append(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));
@@ -137,7 +214,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         onSelect:image => {if (selection !== imageKey(image)) inspect(image);else inspection.select(image);},
         onRefresh:refreshInspectionCollection,onClose:scheduleLoad,onRestoreFocus:image => {
             const index = state?.items.findIndex(entry => imageKey(entry) === imageKey(image));
-            if (index >= 0) focusImage(index);else collectionHeading.focus({preventScroll:true});
+            if (index >= 0) focusImage(index);else focusFallback.focus({preventScroll:true});
         }});
     scope.cleanup(() => mediaViewer.dispose());
 
@@ -146,7 +223,13 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const node = el(video ? 'video' : 'img');
         node.src = resolveUrl(image.thumbnail_url || image.url);
         if (video) { node.muted = true; node.playsInline = true; node.preload = 'metadata'; }
-        else { node.alt = image.filename; node.decoding = 'async'; if (lazy) node.loading = 'lazy'; }
+        else {
+            // The concept card image: alt is the card title, with the listing's intrinsic size when known.
+            node.alt = cardTitle(image); node.decoding = 'async'; if (lazy) node.loading = 'lazy';
+            if ([image.width, image.height].every(value => Number.isFinite(value) && value > 0)) {
+                node.width = image.width; node.height = image.height;
+            }
+        }
         return node;
     }
     function releaseVideo(video) {
@@ -160,41 +243,94 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             onPreview:() => previewImage(image), onRetry:() => inspection.retry(), onRefresh:refreshInspectionCollection});
         detailInspector.setState(inspection.state);
         inspection.select(image);
-        for (const [key, card] of rendered) {
-            card.classList.toggle('selected', key === selection);
-            card.querySelector('.image-open').setAttribute('aria-pressed', String(key === selection));
-        }
+        for (const [key, card] of rendered) markSelected(card, key === selection);
+    }
+    /** The concept's `.media-card.selected` (D19); as in the concept, Info carries no pressed state. */
+    function markSelected(card, selected) {
+        card.classList.toggle('selected', selected);
     }
     function previewImage(image) {
         if (!image) return;
         mediaViewer.open({items:state.items,selectedKey:imageKey(image),trigger:document.activeElement});
     }
+    /** The concept media card (app.js mediaCard): the image opens the viewer, Info inspects (D7–D11, D19). */
     function cardFor(image) {
         const key = imageKey(image);
-        const card = el('article', undefined, 'image-card');
+        const card = el('article', undefined, 'media-card');
         card.dataset.imageKey = key; card.setAttribute('role', 'listitem');
-        const open = createButton('');
-        open.className = 'image-open'; open.setAttribute('aria-label', `Open ${image.filename}`);
-        open.title = 'Show image details'; open.setAttribute('aria-pressed', String(key === selection));
-        const img = mediaElement(image, true);
-        open.append(img);
-        const footer = el('div', undefined, 'image-card-footer');
-        const title = el('strong', image.filename); title.title = image.path;
-        const dimensions = image.width && image.height ? `${image.width} × ${image.height} · ` : '';
-        const type = image.media_type === 'video' ? 'Video' : image.filename.split('.').pop().toUpperCase();
-        const sub = el('small', `${dimensions}${type} · ${formatBytes(image.size)}`);
-        const preview = createButton('', 'ca-icon-button');
-        preview.append(createWorkspaceIcon('images'));
-        preview.setAttribute('aria-label', `Preview ${image.filename}`);
-        footer.append(title, sub, preview); card.append(open, footer);
+        card.style.setProperty('--media-ratio', mediaRatio(image));
+        const art = el('div', undefined, 'media-art');
+        const open = createButton('', 'image-open');
+        open.setAttribute('aria-label', `Open ${image.filename}`);
+        open.append(mediaElement(image, true));
+        // D7: the star, wherever the listing reports favorites (not on Library-embedded media); D8: no checkbox yet.
+        const overlays = el('div', undefined, 'image-overlays');
+        if (typeof image.favorite === 'boolean') {
+            const star = createButton('', 'star-button');
+            star.setAttribute('aria-label', `Favorite ${image.filename}`);
+            paintStar(star, image.favorite, favoritePending.has(key));
+            overlays.append(star);
+        }
+        art.append(open, overlays);
+        const info = el('div', undefined, 'media-info');
+        const text = el('div');
+        const title = el('h3', cardTitle(image)); title.title = image.path;
+        text.append(title, el('p', cardSubtitle(image)));
+        const actions = el('div', undefined, 'image-card-actions');
+        // D9: the tag button waits for the image-annotations slice.
+        const inspectButton = createButton('', 'icon-btn');
+        inspectButton.append(createWorkspaceIcon('info'));
+        inspectButton.setAttribute('aria-label', `Inspect ${image.filename}`);
+        actions.append(inspectButton);
+        info.append(text, actions);
+        card.append(art, info);
+        markSelected(card, key === selection);
         return card;
+    }
+    /** A star whose request is still in flight is marked busy: pressing it again does nothing until the answer. */
+    function paintStar(button, favorite, pending) {
+        button.textContent = favorite ? '★' : '☆';
+        button.setAttribute('aria-pressed', String(favorite));
+        if (pending) button.setAttribute('aria-disabled', 'true'); else button.removeAttribute('aria-disabled');
+    }
+    function setFavorite(key, favorite) {
+        if (scope.signal.aborted) return;
+        stream.updateItem(key, {favorite});
+        const button = rendered.get(key)?.querySelector('.star-button');
+        if (button) paintStar(button, favorite, favoritePending.has(key));
+    }
+    // Only the Images page receives favorite answers; Library-embedded media has no star (#249 D7).
+    if (!embedded) {
+        favoriteTarget = setFavorite;
+        scope.cleanup(() => { if (favoriteTarget === setFavorite) favoriteTarget = null; });
+    }
+    /** Optimistic toggle: the star changes at once and returns to its previous state if the store refuses. */
+    async function toggleFavorite(image) {
+        const key = imageKey(image);
+        if (favoritePending.has(key)) return;
+        const favorite = !image.favorite;
+        favoritePending.add(key);
+        deliverFavorite(key, favorite);
+        const body = {root_index: image.root_index, path: image.path};
+        let saved = false;
+        try {
+            await (favorite ? api.put(FAVORITE_URL, body) : api.del(FAVORITE_URL, {body}));
+            saved = true;
+        } catch {
+            // Announced below; the star returns to its previous state.
+        }
+        favoritePending.delete(key);
+        deliverFavorite(key, saved ? favorite : !favorite);
+        showWorkspaceToast(saved ? FAVORITE_DONE[favorite] : FAVORITE_FAILED[favorite]);
     }
     scope.listen(grid, 'click', event => {
         const card = event.target.closest('article[data-image-key]');
         if (!card) return;
         const image = state.items.find(item => imageKey(item) === card.dataset.imageKey);
-        if (event.target.closest('.image-card-footer button')) previewImage(image);
-        else if (event.target.closest('button')) inspect(image);
+        if (!image) return;
+        if (event.target.closest('.star-button')) toggleFavorite(image);
+        else if (event.target.closest('.image-open')) previewImage(image);
+        else if (event.target.closest('.image-card-actions button')) inspect(image);
     });
 
     function renderVisible() {
@@ -225,9 +361,11 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             if (previous ? previous.nextElementSibling !== card : grid.firstElementChild !== card) grid.insertBefore(card, previous ? previous.nextElementSibling : grid.firstChild);
             previous = card;
         }
-        // Natural footer measurements and absolute reservations share unzoomed CSS units.
-        const footerHeight = Math.max(metrics.footerHeight, ...[...rendered.values()].map(card => card.querySelector('.image-card-footer').offsetHeight));
-        if (footerHeight > metrics.footerHeight) {
+        // Natural footer measurements and absolute reservations share unzoomed CSS units. The fractional height, as the
+        // concept's own flow lays it out: `offsetHeight` rounds a wrapped 67.5px row up and adds half a pixel per row.
+        const footerHeight = Math.max(metrics.footerHeight, ...[...rendered.values()].map(card => card.querySelector('.media-info').getBoundingClientRect().height / scale));
+        // A small epsilon: under zoom `rect / scale` carries float noise that must not relayout and scroll for nothing.
+        if (footerHeight > metrics.footerHeight + 0.01) {
             const anchor = indexes.find(index => geometry.positions[index].y + geometry.positions[index].height >= top && geometry.positions[index].y <= top + viewportHeight);
             const anchorTop = anchor === undefined ? 0 : geometry.positions[anchor].y;
             metrics = {...metrics, footerHeight, listHeight: Math.max(metrics.listHeight, footerHeight + 2)};
@@ -242,12 +380,11 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     function positionCard(card, index) {
         const image = state.items[index], position = geometry.positions[index];
         card.dataset.index = index;
-        card.classList.toggle('selected', imageKey(image) === selection);
-        card.querySelector('.image-open').setAttribute('aria-pressed', String(imageKey(image) === selection));
+        markSelected(card, imageKey(image) === selection);
         card.setAttribute('aria-posinset', String(index + 1)); card.setAttribute('aria-setsize', String(state.total));
         Object.assign(card.style, { left: `${position.x}px`, top: `${position.y}px`, width: `${position.width}px`, height: `${position.height}px` });
     }
-    function focusImage(index, preview = false) {
+    function focusImage(index, actions = false, {scroll = true} = {}) {
         if (index < 0 || index >= state.items.length) return;
         const image = state.items[index], key = imageKey(image);
         let card = rendered.get(key);
@@ -255,8 +392,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             card = cardFor(image); rendered.set(key, card); positionCard(card, index);
             grid.insertBefore(card, [...grid.children].find(child => Number(child.dataset.index) > index) || null);
         }
-        card.querySelector(preview ? '.image-card-footer button' : '.image-open').focus({ preventScroll: true });
-        card.scrollIntoView({ block: 'nearest' });
+        card.querySelector(actions ? '.image-card-actions button' : '.image-open').focus({ preventScroll: true });
+        if (scroll) card.scrollIntoView({ block: 'nearest' });
         cancelAnimationFrame(frame); frame = 0;
         renderVisible();
     }
@@ -264,13 +401,13 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const card = event.target.closest('article[data-image-key]');
         if (!card) return;
         const index = Number(card.dataset.index);
-        const columns = layout === 'list' ? 1 : metrics.columns;
+        const columns = geometry.columns;
         const target = { Home: 0, End: state.items.length - 1, ArrowRight: index + 1,
             ArrowLeft: index - 1, ArrowDown: index + columns, ArrowUp: index - columns }[event.key];
         if (target !== undefined) { event.preventDefault(); focusImage(Math.max(0, Math.min(state.items.length - 1, target))); }
         else if (event.key === 'Tab') {
             const backward = event.shiftKey && event.target.matches('.image-open');
-            const forward = !event.shiftKey && event.target.closest('.image-card-footer');
+            const forward = !event.shiftKey && event.target.closest('.image-card-actions');
             const adjacent = backward ? index - 1 : index + 1;
             if ((backward || forward) && state.items[adjacent] && !rendered.has(imageKey(state.items[adjacent]))) {
                 event.preventDefault(); focusImage(adjacent, backward);
@@ -279,17 +416,22 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     });
     function scheduleVisible() { if (!frame) frame = requestAnimationFrame(() => { frame = 0; renderVisible(); }); }
     function updateGeometry() {
-        geometry = layoutImages(state.items, galleryWidth, layout, 240, metrics);
+        geometry = layoutImages(state.items, galleryWidth, layout, metrics);
+        // Below the narrowest bounded card (extreme zoom) the info row stacks (the production overlay, #249 D31).
+        grid.classList.toggle('narrow-cards', galleryWidth < MINIMUM_CARD_WIDTH);
         grid.style.height = `${geometry.height}px`;
         grid.style.setProperty('--image-footer-height', `${metrics.footerHeight}px`);
     }
     function updateLayout() {
         if (!state || scope.signal.aborted) return;
         cancelAnimationFrame(frame); frame = 0;
+        // The concept's grid classes (app.js updateImages); the concept stylesheet then owns the columns and gap (D3).
+        grid.className = ['image-grid', density === 'comfortable' ? '' : density,
+            layout === 'list' ? 'list-grid' : layout === 'masonry' ? 'masonry-grid' : ''].filter(Boolean).join(' ');
         const width = Number.parseFloat(getComputedStyle(grid).width);
         const retained = state.items.length && width === galleryWidth && grid.dataset.layout === layout && grid.dataset.density === density ? metrics : null;
         galleryWidth = width;
-        metrics = workspaceImageMetrics(window.innerWidth, density, galleryWidth);
+        metrics = {...INITIAL_METRICS, ...gridMetrics(grid)};
         if (retained) {
             metrics.footerHeight = retained.footerHeight;
             metrics.listHeight = retained.listHeight;
@@ -315,21 +457,42 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (!resizeFrame) resizeFrame = requestAnimationFrame(() => { resizeFrame = 0; updateLayout(); });
     });
     scope.cleanup(() => { resize.disconnect(); observer?.disconnect(); cancelAnimationFrame(resizeFrame); cancelAnimationFrame(frame); cancelAnimationFrame(loadFrame); });
-    function renderState(next) {
-        const changed = state?.items !== next.items;
+    function continuationText(next) {
+        if (recovering) return 'Images paused until sources and folders are available.';
+        if (next.error) return 'Images could not be loaded. Retry or rescan the collection.';
+        if (next.loading && !next.loaded) return 'Loading images…';
+        if (next.hasMore) return `${next.loaded.toLocaleString('en-US')} of ${next.total.toLocaleString('en-US')} ${noun(next.total, 'image')} · more load as you scroll`;
+        if (embedded) return next.loaded ? 'You’re all caught up.' : 'No linked media available for this selection.';
+        // The concept's end of the collection (app.js updateImageContinuation).
+        return `${next.loaded ? 'You’re all caught up' : 'No matching images'} · ${next.total.toLocaleString('en-US')} ${noun(next.total, 'image')}`;
+    }
+    function renderState(next, {patch} = {}) {
+        const previous = state;
+        // A patched item (a favorite) keeps every card's size and place; setFavorite repaints its card.
+        const changed = !patch && state?.items !== next.items;
         if (changed) {
             if (!next.items.length) itemIndexes.clear();
             for (let index = state?.items.length || 0; index < next.items.length; index++) itemIndexes.set(imageKey(next.items[index]), index);
         }
         state = next;
-        count.textContent = embedded ? `${next.loaded.toLocaleString()} loaded · ${next.total.toLocaleString()} ${noun(next.total, 'linked image')}` : `${next.loaded.toLocaleString()} of ${next.total.toLocaleString()} ${noun(next.total, 'image')}`;
+        setText(count, embedded ? `${next.loaded.toLocaleString('en-US')} loaded · ${next.total.toLocaleString('en-US')} ${noun(next.total, 'linked image')}` : countLine(next));
+        if (!embedded) {
+            setText(captionDay, captionDate(next.items, filters.sort));
+            if (captionDay.hidden !== !captionDay.textContent) captionDay.hidden = !captionDay.textContent;
+        }
         if (changed) updateLayout();
-        message.textContent = recovering ? 'Images paused until sources and folders are available.' : next.error ? 'Images could not be loaded. Retry or refresh the collection.' : next.loading ? 'Loading images…' : '';
-        if (next.error) message.setAttribute('role', 'alert'); else message.setAttribute('role', 'status');
+        // The concept's Load more toast (app.js loadMoreImages) for every batch appended to a loaded collection.
+        if (!embedded && changed && previous?.loaded && next.loaded > previous.loaded) {
+            const added = next.loaded - previous.loaded;
+            showWorkspaceToast(`${added.toLocaleString('en-US')} more ${noun(added, 'image')} loaded. ${next.loaded.toLocaleString('en-US')} of ${next.total.toLocaleString('en-US')}.`);
+        }
+        setText(message, continuationText(next));
+        setAttr(message, 'role', next.error ? 'alert' : 'status');
         retry.hidden = !next.error;
         more.hidden = !next.hasMore || !!next.error;
         more.setAttribute('aria-disabled', String(next.loading || recovering));
-        end.textContent = !recovering && !next.loading && !next.error && !next.hasMore ? (next.loaded ? 'You’re all caught up.' : embedded ? 'No linked media available for this selection.' : 'No matching images or media. Try changing the filters.') : '';
+        if (!embedded) empty.hidden = recovering || next.loading || !!next.error || next.hasMore || next.loaded > 0;
+        if (focusAfterLoad !== null && !next.loading) settleLoadFocus(next);
         if (!selection && next.items.length) inspect(next.items[0]);
         scheduleLoad();
     }
@@ -338,10 +501,31 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         stream.dispose();
         for (const video of body.querySelectorAll('video')) releaseVideo(video);
     });
-    scope.listen(more, 'click', () => { if (!recovering) stream.loadMore(); });
-    scope.listen(retry, 'click', () => { if (!recovering) stream.loadMore(); });
+    function pressLoad() {
+        if (recovering || state?.loading) return;
+        focusAfterLoad = state?.loaded ?? 0;
+        stream.loadMore();
+    }
+    /** The concept focuses the first appended image; focus never stays on a control that just hid. */
+    function settleLoadFocus(next) {
+        const first = focusAfterLoad;
+        focusAfterLoad = null;
+        const active = document.activeElement;
+        // Only while focus is still on the pressed control: a viewer or another control the user moved to keeps it.
+        const stranded = !active || active === document.body || active === more || active === retry;
+        if (!stranded) return;
+        if (next.error) { retry.focus(); return; }
+        // Without scrolling: the visible cards keep their place (bounded-DOM anchor); the next arrow key reveals it.
+        if (next.loaded > first) focusImage(first, false, {scroll:false});
+        else if (more.hidden) {
+            if (next.loaded) focusImage(next.loaded - 1, false, {scroll:false});
+            else focusFallback.focus({preventScroll:true});
+        }
+    }
+    scope.listen(more, 'click', pressLoad);
+    scope.listen(retry, 'click', pressLoad);
     function maybeLoad() {
-        if (!observer || recovering || scope.signal.aborted || !state?.hasMore || state.loading || state.error || main.querySelector('.image-preview[open]')) return;
+        if (!observer || recovering || scope.signal.aborted || !state?.hasMore || state.loading || state.error || main.querySelector('#viewer-dialog[open]')) return;
         const bounds = continuation.getBoundingClientRect();
         if (bounds.top <= window.innerHeight + 250 && bounds.bottom >= 0) stream.loadMore();
     }
@@ -354,65 +538,154 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         }, { rootMargin: '250px' });
         observer.observe(continuation);
     }
+    function updateScope() {
+        scopeText.textContent = ` ${scopeLabel(filters, roots)}`;
+    }
     function reset() {
         mediaViewer.stopSlideshow();
-        main.querySelector('.image-preview[open]')?.close();
+        main.querySelector('#viewer-dialog[open]')?.close();
         if (!recovering) {
             inspection.clear();
             detailInspector?.dispose(); detailInspector = null;
             details.replaceChildren(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));
         }
         selection = null;
+        focusAfterLoad = null;
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
+        updateScope();
         stream.reset(filters, {load:!recovering});
+    }
+    /** "Refine this view": Source, Folder, Media and Tags, the filters the old field row held (D14). */
+    function openFilters(trigger) {
+        if (recovering) return;
+        openRefineDialog({scope, trigger, fields:[
+            {key:'source', options:[['all', 'All sources'], ...roots.map(root => [String(root.index), root.label])]},
+            {key:'folder', options:folderOptions('all'), optionsFor:folderOptions},
+            {key:'media', options:MEDIA_OPTIONS},
+            {key:'tags'},
+        ], values:{source:filters.root, folder:filters.subfolder, media:filters.media, tags:filters.tags.join(', ')},
+        onApply:applyRefinement, onClear:cleared => {
+            toolbar.setValue({category:cleared.category});
+            applyRefinement(cleared);
+        }});
+    }
+    /** The chosen Source's folders, as the old field row reloaded them; every folder under All sources. */
+    function folderOptions(source) {
+        const root = source === 'all' ? null : roots.find(item => String(item.index) === source);
+        return [['', 'All output folders'], ...(root?.subfolders ?? folders).map(path => [path, path])];
+    }
+    /** Apply the dialog's values (Clear adds `category`); unchanged filters keep the loaded page, as the toolbar does. */
+    function applyRefinement({source, folder, media, tags, category = filters.category}) {
+        if (recovering) return;
+        const next = {root:source, subfolder:folder, media, category,
+            tags:[...new Set(tags.split(',').map(tag => tag.trim()).filter(Boolean))]};
+        const same = Object.entries(next).every(([key, value]) => key === 'tags'
+            ? value.length === filters.tags.length && value.every((tag, index) => tag === filters.tags[index])
+            : filters[key] === value);
+        if (same) return;
+        Object.assign(filters, next);
+        reset();
+    }
+    function setControlsDisabled(disabled) {
+        for (const control of [...toolbarControls, more, retry]) control.disabled = disabled;
+        if (importButton) importButton.disabled = disabled;
+    }
+    /**
+     * Import → "Scan an output folder" (D15): rescan the output roots, then reload the options and the listing. A toast
+     * says it started and how it ended; meanwhile a reopened Import dialog shows Rescan as running.
+     */
+    async function rescan() {
+        if (rescanning || recovering || scope.signal.aborted) return;
+        rescanning = true;
+        optionsRequest?.abort(); optionsRequest = null;
+        showWorkspaceToast(RESCAN_STARTED);
+        try {
+            const result = await api.post('/prompt_manager/gallery/rescan', {}, {signal:scope.signal});
+            if (scope.signal.aborted) return;
+            const [found] = await Promise.all([loadOptions(), loadCategories()]);
+            if (scope.signal.aborted) return;
+            renderLoadStatus();
+            if (found) reset();
+            if (!scope.signal.aborted) showWorkspaceToast(rescanFinished(result));
+        } catch {
+            // A failed rescan leaves the collection and any discovery alert as they were.
+            if (!scope.signal.aborted) showWorkspaceToast(RESCAN_FAILED);
+        } finally {
+            rescanning = false;
+            importDialog?.setRescanBusy(false);
+        }
     }
     async function refreshInspectionCollection() {
         if (scope.signal.aborted) return;
         // Numeric roots may now name another source; retire the old stream first.
         recovering = true;
-        filters.root = 'all';filters.subfolder = '';filters.q = search.value.trim();
-        source.replaceChildren(new Option('All sources', 'all'));folder.replaceChildren(new Option('All folders', ''));
-        for (const control of [search,source,folder,media,sort,refresh,more,retry]) control.disabled = true;
-        optionsStatus.hidden = true;
+        filters.root = 'all';filters.subfolder = '';
+        if (toolbar) filters.q = toolbar.value().q.trim();
+        roots = [];folders = [];
+        setControlsDisabled(true);
+        sourcesRetry = null;
+        renderLoadStatus();
         reset();
         const discovery = loadOptions(), request = optionsRequest;
-        if (!await discovery || scope.signal.aborted || request !== optionsRequest) return;
+        const found = await discovery;
+        if (scope.signal.aborted || request !== optionsRequest) return;
+        renderLoadStatus();
+        if (!found) return;
         recovering = false;
-        for (const control of [search,source,folder,media,sort,refresh,more,retry]) control.disabled = false;
+        setControlsDisabled(false);
         reset();
     }
+    function renderLoadStatus() {
+        const text = loadFailure(sourcesRetry, categoriesFailed);
+        setText(optionsStatus, text);
+        optionsStatus.hidden = !text;
+    }
+    /** Discover the sources and folders; the caller renders the outcome with renderLoadStatus. */
     async function loadOptions() {
         optionsRequest?.abort();
         const request = new AbortController(); optionsRequest = request;
         try {
+            // Every source's folders (with ancestors), listed per source too, so the dialog can follow its Source.
             const params = new URLSearchParams({mode:'workspace', include_ancestors:'true'});
-            if (filters.root !== 'all') params.set('root', filters.root);
             const data = await api.get(`/prompt_manager/gallery/subfolders?${params}`, {signal:request.signal});
             if (scope.signal.aborted || request !== optionsRequest) return false;
-            source.replaceChildren(new Option('All sources', 'all'), ...data.roots.map(root => new Option(root.label, String(root.index))));
-            source.value = filters.root;
-            folder.replaceChildren(new Option('All folders', ''), ...data.subfolders.map(path => new Option(path, path)));
-            folder.value = filters.subfolder;
-            optionsStatus.hidden = true;
+            if (!Array.isArray(data?.roots) || !Array.isArray(data.subfolders)) throw new TypeError('Invalid image sources');
+            const paths = list => Array.isArray(list) ? list.filter(path => typeof path === 'string' && path) : null;
+            roots = data.roots.filter(root => Number.isSafeInteger(root?.index) && typeof root.label === 'string')
+                .map(root => ({index:root.index, label:root.label, subfolders:paths(root.subfolders)}));
+            folders = paths(data.subfolders);
+            updateScope();
+            sourcesRetry = null;
             return true;
         } catch {
             if (scope.signal.aborted || request !== optionsRequest) return false;
-            optionsStatus.textContent = recovering ? 'Sources and folders could not be loaded. Refresh image collection to retry.' : 'Sources and folders could not be loaded. Refresh to retry.';
-            optionsStatus.hidden = false;
+            sourcesRetry = recovering ? RETRY_REFRESH : RETRY_RESCAN;
             return false;
         }
     }
-    scope.cleanup(() => optionsRequest?.abort());
-    scope.listen(search, 'input', scope.debounce(() => { if (!recovering) { filters.q = search.value.trim(); reset(); } }, 200));
-    for (const [input, key] of [[source, 'root'], [folder, 'subfolder'], [media, 'media'], [sort, 'sort']]) {
-        scope.listen(input, 'change', () => {
-            if (recovering) return;
-            filters[key] = input.value;
-            if (key === 'root') { filters.subfolder = ''; folder.value = ''; loadOptions(); }
-            reset();
-        });
+    /** The toolbar's categories are the Library's (the linked positive's category, D13). */
+    async function loadCategories() {
+        if (!toolbar) return;
+        categoryRequest?.abort();
+        const request = new AbortController(); categoryRequest = request;
+        try {
+            const data = await api.get('/prompt_manager/library/options', {signal:request.signal});
+            if (scope.signal.aborted || request !== categoryRequest) return;
+            if (!Array.isArray(data?.categories)) throw new TypeError('Invalid categories');
+            // D36: alphabetical (case-insensitive) whatever order the server sends, a restored category among them.
+            const names = new Set([...data.categories.filter(value => typeof value === 'string' && value), filters.category]);
+            names.delete('');
+            toolbar.setCategories([...names].sort((a, b) => a.localeCompare(b, 'en-US', {sensitivity:'base'}) || (a < b ? -1 : a > b ? 1 : 0)));
+            categoriesFailed = false;
+        } catch {
+            if (scope.signal.aborted || request !== categoryRequest) return;
+            categoriesFailed = true;
+        }
     }
-    if (!embedded) loadOptions();
+    scope.cleanup(() => { optionsRequest?.abort(); categoryRequest?.abort(); });
+    updateScope();
+    // The page's one discovery alert is written once both first loads settled (#249 final review m6).
+    if (!embedded) Promise.all([loadOptions(), loadCategories()]).then(() => { if (!scope.signal.aborted) renderLoadStatus(); });
     if (visit) {
         renderState(stream.state);
         const selected = stream.state.items.find(image => imageKey(image) === selection);

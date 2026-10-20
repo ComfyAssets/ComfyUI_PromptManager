@@ -40,23 +40,24 @@ export function createMediaViewer({container,parentScope,inspectionController,se
             update(state,selected);
         }});
         const local = createScope();
-        const dialog = element('dialog','image-preview');
-        dialog.setAttribute('aria-label','Image preview');
-        const header = element('header','image-preview-header');
-        const heading = element('div'), title = element('h2');
-        const position = element('p','image-preview-position muted');
-        position.setAttribute('role','status');
-        heading.append(title,position);
-        const close = createButton('×');close.setAttribute('aria-label','Close preview');close.autofocus = true;
+        // The concept's viewer shell (index.html h84–103, app.js a889–926): `dialog#viewer-dialog` named by its title,
+        // `.dialog-header`, then `.viewer-layout` > `.viewer-left` (`#viewer-stage`, `#viewer-toolbar`) and
+        // `aside#viewer-details`. #249 D34: production keeps a focusable stage, its controls' accessible names, the
+        // Download link and, after Next →, the position status and the two unavailability reasons.
+        const dialog = element('dialog');dialog.id = 'viewer-dialog';dialog.setAttribute('aria-labelledby','viewer-title');
+        const header = element('div','dialog-header');
+        const heading = element('div'), title = element('h2');title.id = 'viewer-title';
+        heading.append(title,element('p','muted small','One viewer · image, prompts, generation data, workflow'));
+        const close = createButton('×');close.id = 'viewer-close';close.setAttribute('aria-label','Close image viewer');close.autofocus = true;
         header.append(heading,close);
-        const body = element('div','image-preview-body'), left = element('div','image-preview-left');
-        const stage = element('section','image-preview-stage');stage.tabIndex = 0;stage.setAttribute('aria-label','Media preview');
-        const media = element('div','image-preview-media'), failure = element('div','image-preview-failure');
+        const body = element('div','viewer-layout'), left = element('div','viewer-left');
+        const stage = element('div');stage.id = 'viewer-stage';stage.tabIndex = 0;
+        stage.setAttribute('role','region');stage.setAttribute('aria-label','Media preview');
+        const failure = element('div','media-failure');
         const error = element('p',undefined,'Media could not be loaded. Retry this file.');
-        const retry = createButton('Retry media');failure.append(error,retry);failure.hidden = true;stage.append(media,failure);
-        const toolbar = element('div','image-preview-toolbar'), controls = element('div','image-preview-controls');
+        const retry = createButton('Retry media');failure.append(error,retry);failure.hidden = true;stage.append(failure);
+        const controls = element('div','viewer-toolbar');controls.id = 'viewer-toolbar';
         controls.setAttribute('role','group');controls.setAttribute('aria-label','Media controls');
-        const reason = element('p','image-preview-reason muted');reason.id = `media-viewer-reason-${++viewerId}`;
         function button(label,text,action) {
             const node = createButton(text);node.setAttribute('aria-label',label);
             local.listen(node,'click',() => { if (node.getAttribute('aria-disabled') !== 'true') action(); });
@@ -67,13 +68,16 @@ export function createMediaViewer({container,parentScope,inspectionController,se
             button('Fit image','Fit',() => viewer.reset()),button('Rotate image 90 degrees','Rotate',() => viewer.rotate(90)),
             button('Flip image horizontally','Flip',() => viewer.scaleX(viewer.imageData.scaleX === 1 ? -1 : 1))];
         const slideshow = button('Play slideshow','Play',() => session.state.requested ? session.stop() : session.play());
-        const slideshowReason = element('p','image-preview-slideshow-reason muted');slideshowReason.id = `media-viewer-slideshow-${viewerId}`;
-        const download = element('a','image-preview-download','Download');download.setAttribute('aria-label','Download original');download.setAttribute('download','');
+        const download = element('a','media-download','Download');download.setAttribute('aria-label','Download original');download.setAttribute('download','');
         local.listen(download,'click',event => {session.stop();if (download.getAttribute('aria-disabled') === 'true') event.preventDefault();});
         controls.append(download);
         const next = button('Next media','Next →',() => session.navigate(1));
-        toolbar.append(controls,reason,slideshowReason);left.append(stage,toolbar);
-        const details = element('aside','image-preview-details');details.setAttribute('aria-label','Preview prompt details');
+        const position = element('p','media-position muted');position.id = `media-viewer-position-${++viewerId}`;
+        position.setAttribute('role','status');
+        const reason = element('p','media-reason muted');reason.id = `media-viewer-reason-${viewerId}`;
+        const slideshowReason = element('p','media-slideshow-reason muted');slideshowReason.id = `media-viewer-slideshow-${viewerId}`;
+        controls.append(position,reason,slideshowReason);left.append(stage,controls);
+        const details = element('aside');details.id = 'viewer-details';details.setAttribute('aria-label','Image metadata');
         body.append(left,details);dialog.append(header,body);container.append(dialog);
         const localSender = {open(roles,trigger) {session.stop();sender.open(roles,trigger);}};
         const inspector = mountFileInspector(details,{sender:localSender,parentScope:local,onInteraction:() => session.stop(),onRetry:() => inspectionController.retry(),
@@ -106,7 +110,8 @@ export function createMediaViewer({container,parentScope,inspectionController,se
             event.preventDefault();session.navigate(event.key === 'ArrowLeft' ? -1 : 1);
         });
         function rebuild(selected) {
-            mediaScope?.dispose();mediaScope = createScope();viewer = null;media.replaceChildren();
+            mediaScope?.dispose();mediaScope = createScope();viewer = null;
+            for (const child of [...stage.children]) if (child !== failure) child.remove();
             failure.hidden = true;
             const mediaLocal = mediaScope, key = session.state.key;
             const current = () => !local.signal.aborted && !mediaLocal.signal.aborted && session.state.key === key;
@@ -135,7 +140,7 @@ export function createMediaViewer({container,parentScope,inspectionController,se
                     mediaLocal.cleanup(() => node.removeAttribute('src'));
                 }
             }
-            node.src = url.href;media.append(node);
+            node.src = url.href;stage.append(node);
             if (!selected.is_video && window.Viewer) {
                 let fitFrame = 0, fitWidth, fitHeight, viewSettled = false, released = false, fallback = 0;
                 const release = () => {
@@ -147,12 +152,12 @@ export function createMediaViewer({container,parentScope,inspectionController,se
                     fitFrame = requestAnimationFrame(() => {
                         fitFrame = 0;
                         if (!current() || !instance.viewed) return;
-                        const width = media.offsetWidth, height = media.offsetHeight;
+                        const width = stage.offsetWidth, height = stage.offsetHeight;
                         if (width === fitWidth && height === fitHeight) return;
                         fitWidth = width;fitHeight = height;instance.resize();
                     });
                 };
-                const instance = new window.Viewer(node,{inline:true,container:media,toolbar:false,navbar:false,title:false,button:false,
+                const instance = new window.Viewer(node,{inline:true,toolbar:false,navbar:false,title:false,button:false,
                     keyboard:false,fullscreen:false,transition:false,viewed() {
                         viewSettled = true;
                         if (mediaLocal.signal.aborted) { release(); return; }
@@ -183,7 +188,7 @@ export function createMediaViewer({container,parentScope,inspectionController,se
             }
             for (const node of [previous,next]) {
                 node.setAttribute('aria-disabled',String(state.total === 1));
-                if (state.total === 1) {node.setAttribute('aria-describedby',position.id);}
+                if (state.total === 1) node.setAttribute('aria-describedby',position.id);else node.removeAttribute('aria-describedby');
             }
             const action = state.phase === 'paused-video' ? 'Stop' : state.requested ? 'Pause' : 'Play';
             slideshow.textContent = action;slideshow.setAttribute('aria-label',`${action} slideshow`);
@@ -211,14 +216,15 @@ export function createMediaViewer({container,parentScope,inspectionController,se
             const label = `${state.index + 1} of ${state.total} loaded: ${entry.filename}${status ? ` — ${status}` : ''}`;
             if (position.textContent !== label) position.textContent = label;
             if (currentKey !== state.key) {
-                currentKey = state.key;title.textContent = entry.filename;
+                // A linked card already carries its title, so the header reads "<title> · <filename>" at once.
+                const known = entry.linked?.status === 'linked' && entry.linked.title;
+                currentKey = state.key;title.textContent = known ? `${known} · ${entry.filename}` : entry.filename;
                 try { originalDownload = adapter.originalDownload(entry); } catch { originalDownload = null; }
                 onSelect?.(entry);
                 rebuild(entry);
             }
             updateControls(session.state);
         }
-        position.id = `media-viewer-position-${viewerId}`;
         dialog.showModal();mounted = true;update(...initial);
         local.cleanup(inspectionController.subscribe(state => {
             inspectionState = state;updateControls(session.state);

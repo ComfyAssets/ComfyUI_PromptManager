@@ -41,13 +41,15 @@ test('native image inspector previews and sends a pair into real visible widgets
     const workspace=await context.newPage();const errors=[];workspace.on('pageerror',error=>errors.push(error.message));
     try {
         await workspace.goto('/prompt_manager/workspace#/images');
-        await workspace.getByRole('button',{name:'Refresh',exact:true}).click();
+        // D15: Refresh is Import → Rescan.
+        await workspace.getByRole('button',{name:'Import',exact:true}).click();
+        await workspace.getByRole('dialog',{name:'Import & inspect',exact:true}).getByRole('button',{name:'Rescan',exact:true}).click();
         const card=workspace.locator('article[data-image-key]').filter({has:workspace.getByRole('button',{name:`Open ${filename}`,exact:true})});
-        await card.getByRole('button',{name:`Open ${filename}`,exact:true}).click();
+        await card.getByRole('button',{name:`Inspect ${filename}`,exact:true}).click();
         const inspector=workspace.getByRole('region',{name:'Image details',exact:true});
         await expect(inspector.getByRole('region',{name:'Positive prompt',exact:true})).toContainText(positive);
         await inspector.getByRole('button',{name:'Open full preview',exact:true}).click();
-        const viewer=workspace.getByRole('dialog',{name:'Image preview',exact:true});
+        const viewer=workspace.locator('dialog#viewer-dialog');
         await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
         await expect(viewer.locator('.generation-facts dd')).toHaveText(['9007199254740993','28','6.5','dpmpp_2m','karras','host-fixture.safetensors']);
         await viewer.getByText('Workflow & raw metadata',{exact:true}).click();

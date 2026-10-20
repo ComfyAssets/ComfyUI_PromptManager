@@ -227,7 +227,12 @@ The shared inline and collection inspector reads the current rooted file's suppo
 embedded records, exact generation facts and recorded or inferred prompt evidence.
 `tests/browser/full-inspector.spec.mjs` covers original/metadata/workflow downloads,
 response limits, source changes, nested sending, matched dark/light and mobile
-geometry, and the loaded-collection viewer. The viewer never fetches another page
+geometry, and the loaded-collection viewer. `viewer matches the concept shell and
+toolbar order` measures the concept's `#viewer-dialog` shell, header copy, toolbar
+order and frame geometry in the concept and in production at 1600 and 390 pixels;
+its #249 D34 mapping keeps production's Download link, the appended position and
+reason lines, coarse 40px targets and the toolbar inside `.viewer-left` (Viewer.js's
+own `.viewer-toolbar` rule lifts the concept's across the dialog). The viewer never fetches another page
 or preloads all originals. Its explicit slideshow waits 3.5 seconds after image
 readiness, pauses at native video without advancing on `ended`, and resumes on a
 manually selected image only while prior intent remains. Pause/Stop, inspector
@@ -359,12 +364,14 @@ selector, so a narrower selector over a concept rule (for example
 leftovers such as `library.css` `.row-actions`, name the PR that retires them, by
 convention.
 
-The lint covers `workspace.css` only. The page stylesheets that load before it
-(`images.css`, `library.css`, `inspector.css`) are not linted yet, and `images.css`
-still has unmarked concept-selector overrides (`.image-grid`, `.prompt-text`,
-`.prompt-actions`, `.ca-tools .prompt-actions button`). PRs C and D retire those
-sheets: each one runs `lintOverlay` over every page sheet it keeps, and adds that
-sheet to the real-file lint test.
+The lint also runs over every page stylesheet that loads before the overlay and is
+still kept (`images.css`, `library.css`, `inspector.css`; test `kept page stylesheets
+mark their concept-selector overrides`). After PR C, `images.css` holds only the side
+panel, the prompt blocks and the prompt sender, which PR D moves to the concept panel
+and deletes with the file. Its three remaining concept-selector overrides
+(`.prompt-text`, `.prompt-actions`, `.ca-tools .prompt-actions button`) are marked
+`#249 D22 interim` until then, and `images.css keeps no retired Images page rules`
+keeps the replaced card, grid, filter, toolbar, preview and facts rules out.
 
 **Comparison method.** Production must equal the concept except for the recorded
 deviations in the #249 design (spec §8, D-numbers). It is never compared against
@@ -423,6 +430,125 @@ npm run --prefix tools/vendor test:workflows -- shell-concept.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 ```
 
+`tests/browser/images-concept.spec.mjs` compares the Images page (#249 C7): heading,
+toolbar, filter row, caption, grid, the first six cards, the continuation and the panel
+box, in Grid, List, Masonry and the Large and Compact sizes, at 1600x1100 and 390x844
+in both themes and motion settings; grid, cards and panel also at 1200x900 (2 columns,
+275px panel) and 1800x1100 (4 columns, 310px panel). The concept is compared once its
+own Load more has loaded all 24 fixture images (D37: it loads 12 per batch, production
+40); the Load more row is compared before the press in both documents. Behaviors: hover
+zoom, the 2nd card opens the viewer titled "<title> · <filename>", Escape returns focus
+to it (production only: the concept re-renders its grid and drops focus), Info on the
+3rd card moves `.selected`, searches for "alpine" and for one image, and Load more with
+its toast. `mapImagesConcept` applies D3, D8 and D16 (follow-up PRs: no checkbox, no
+Save view), D9, D10, D14, D15, D17, D29, D32, D35 (singular counts) and D36 (categories
+sorted alphabetically). Removed toolbar and filter-row items flow again from the
+concept's own boxes (`reflow`), checked against the concept page with those items
+removed at runtime. Masonry tops and heights are compared unrounded, within one layout
+unit per card above in the column (D3). `one footer height for the collection (D3)`
+seeds two seedless files (`seedless_images` on `/__test__/concept/reset`) and asserts
+that every row reserves the tallest footer.
+
+### Images page controls and recorded deviations (#249 PR C)
+
+The Images page renders the concept's DOM with real data. Its controls, top to bottom:
+
+- **Heading**: "Images" / "Your generations, their prompts, and the next idea.",
+  `Import` (opens "Import & inspect") and the shell's `New prompt`.
+- **Toolbar** (`toolbar.mjs`, shared with the Library in PR E): `#search` "Search
+  prompts, tags, filenames…" (debounced 250 ms; filename, linked positive text and
+  Library title, and tag names), `#category-filter` "All categories" plus the
+  Library's categories, `#sort` (Recently added, Name A–Z, Highest rated, then Oldest
+  first and Name Z–A), and `Filters` (opens "Refine this view").
+- **Filter row**: Grid / List / Masonry (`.segmented`, group "Image layout"),
+  "Thumbnail size" Comfortable / Large / Compact, the scope chip ("All output folders"
+  or "<source> · <folder>"), and "Group by positive prompt →" (goes to the Library).
+- **Caption**: "N of M images · K positive prompts" (`#result-count`) and, under
+  Recently added only, the newest result's day.
+- **Grid** (`#image-grid`): concept media cards. The image opens the viewer
+  (click, Enter, Space); Info selects the card into the side panel; the star toggles
+  the favorite; arrows, Home and End move between cards. Bounded rendering keeps the
+  DOM small, and returning to Images restores filters, layout, size, selection and
+  scroll.
+- **Continuation** (`#gallery-continuation`): scrolling near it loads the next page;
+  `Load more images` and `Retry` do the same by hand, with a toast per batch.
+- **Viewer** (`dialog#viewer-dialog`): "<title> · <filename>", the concept toolbar
+  (a "Media controls" group), the shared file inspector beside the stage, and Escape
+  returns focus to the opening image.
+
+How the earlier workspace Images filters moved (old → new). The legacy `/gallery`,
+`/admin` and `/metadata` pages are unchanged.
+
+| Before PR C | Now |
+| --- | --- |
+| "Search filenames" (filename or folder) | toolbar search, which also matches linked prompt text, title and tags (D12) |
+| Source | "Refine this view" → Source (D14); shown in the scope chip |
+| Folder | "Refine this view" → Folder (D14); shown in the scope chip |
+| Media (All media / Images / Videos) | "Refine this view" → Media (D14) |
+| Sort: Newest first / Oldest first / Filename A–Z / Filename Z–A | toolbar sort: Recently added / Oldest first / Name A–Z / Name Z–A, plus Highest rated (D13, D14) |
+| (none) | toolbar category and "Refine this view" → Tags, through the linked positive (D13, D14) |
+| Refresh | Import → "Scan an output folder" → Rescan (D15) |
+| Grid / List / Masonry, Comfortable / Large / Compact | the same choices in the concept filter row |
+| Card image → side panel; preview icon → viewer | image → viewer; Info → side panel (D19) |
+| "All images" heading and count | the concept caption and count line (D17, D35) |
+
+Recorded deviations on this page (spec §8):
+- **D3**: bounded rendering stays. Every grid row reserves the tallest measured card
+  footer, masonry tops may differ by sub-pixel snapping (at most one layout unit per
+  card above in the column), and a List row's info takes its natural height, centred
+  beside the 160×95 art.
+- **D5**, **D29**: no Activity button and no prototype copy (shell).
+- **D7**: the star is a real persisted favorite with "Added to favorites." /
+  "Removed from favorites." and a rollback toast on failure.
+- **D8 (follow-up)**: no select checkbox or bulk bar in PR C; a follow-up PR adds them
+  with real actions and removes the interim `.image-overlays > .star-button:only-child`
+  rule that keeps the star top-right.
+- **D9**: no Tag button until the image-annotations slice.
+- **D10**: the card title is the linked positive's display title, else the filename;
+  the `h3` keeps the relative path in `title`.
+- **D11**: the subtitle is "W × H · EXT · Seed N" with unknown parts omitted.
+- **D14**: Source, Folder, Media and Tags live in "Refine this view" (no "Prompt
+  evidence" field, no scope note); the primary action reads "Apply filters"; extra
+  sorts come after the concept's three; long folder names wrap inside the scope chip.
+  Folder lists only the chosen Source's folders (each workspace root lists its own),
+  and an unchanged Apply or Clear reloads nothing.
+- **D15**: Import offers "Inspect a local image" (`#/inspect`) and "Scan an output
+  folder" (Rescan, `/gallery/rescan`); no "Import portable recipes". The concept has
+  no rescan copy: toasts say "Rescanning output folders…", then "Rescan finished. N
+  files in M output folders." (the scan's `total` and `roots`) or "Rescan could not
+  finish. Try again."; while it runs, a reopened Import shows an aria-disabled
+  "Rescanning…".
+- **D16 (follow-up)**: no Save view in PR C; a follow-up PR adds real saved views.
+- **D17**: the caption date is the newest result's day under Recently added (", YYYY"
+  outside the current year), hidden under every other sort.
+- **D18**: the concept hover zoom, with no sticky zoom on hover-less (touch) devices.
+- **D32**: the layout control may wrap, so the filter and continuation rows never
+  overflow at 390px and 200% zoom.
+- **D33**: after Load more or Retry, focus moves to the first new image without
+  scrolling, and only while focus is still on the pressed control or `body`.
+- **D34**: the viewer keeps its toolbar under the stage in `.viewer-left`, a flex
+  column above 700px, `max-height: min(94dvh, 94%)`, the "Download original" link,
+  the appended position and reason lines, full-stage video and failure overlay,
+  40×40 coarse targets, production's control names and "Media controls" group, and
+  `overscroll-behavior: contain`.
+- **D35**: counts pluralize ("1 positive prompt", "1 image", "1 more image loaded").
+- **D36**: the category list is the Library's, sorted alphabetically (case-insensitive)
+  by the page, whatever order the server sends.
+- **D37**: production loads 40 images per page (the concept 12), so the continuation
+  and toast use 40; after Escape production returns focus to the opening image.
+
+Manual check (quick), after a browser refresh on Images: hover an image (it zooms);
+click it (the viewer reads "<title> · <filename>"; Escape closes it); press a card's
+Info (the side panel changes); search a word from a prompt (matching images remain);
+open Filters (Source, Folder and Media are there); Import → Rescan picks up a newly
+saved file.
+
+```sh
+npm run --prefix tools/vendor test:workflows -- images-concept.spec.mjs \
+  workspace-images.spec.mjs full-inspector.spec.mjs \
+  --project chromium --project touch --project firefox --project webkit
+```
+
 ## Workspace data fields for the concept pages (#249)
 
 These fields are additive. The legacy `/prompt_manager/images/output` listing (no
@@ -440,9 +566,9 @@ and skip the parse.
   `unavailable` when the database read failed (logged, no error text). Treat
   anything but `linked` as the filename fallback. In pair scope (the image has
   exactly one distinct pair), `positive_id` is the pair's positive, and the title
-  comes from the pair title, then the positive's Library title, then the text's
-  first line. In positive scope it comes from the Library title, then the first
-  line. A first line longer than 80 code points is cut to 80 plus `…`, like
+  comes from that positive's Library title, then its text's first line, never
+  from the pair's own title, which names the negative variant (#249 D10/D20). In
+  positive scope it comes from the Library title, then the first line. A first line longer than 80 code points is cut to 80 plus `…`, like
   `library.mjs` `title()`. `title_source` is `stored`, `text` or null. `category`
   and `rating` come from the linked positive (D13), not from the pair. The title
   gate is shared with the inspector (`_verified_title`): a `stored` title always
@@ -484,9 +610,11 @@ and skip the parse.
 Filters (`mode=workspace`; anything invalid is 400 "Invalid gallery filters"):
 
 - `q` (at most 500 characters). An entry passes when the case-folded relative path
-  contains it, or when its linked positive's text, Library title, a tag name, or
-  its pair title contains it (SQLite `LIKE` with escaping, ASCII case folding
-  only). Search does not apply the card title gate, and does not search pair tags.
+  contains it, or when its linked positive's text, Library title or a tag name
+  contains it (SQLite `LIKE` with escaping, ASCII case folding only). A pair's own
+  title names its negative variant, so it is not searched (#249 D12): a variant
+  name alone matches nothing. Search does not apply the card title gate, and does
+  not search pair tags.
 - `category` (exact and case-sensitive, at most 200 characters, stripped; blank
   means none) and `tags` (a comma list, blanks dropped, order-free, AND, at most 30
   tags of at most 200 characters) admit linked images only, through the linked
@@ -527,7 +655,11 @@ Favorites store (D7 = A): `PUT` and `DELETE /prompt_manager/images/favorite` wit
 root or a malformed body, and 403 for traversal, an absolute or drive path, NUL, a
 non-media name, or a key over the stored bound. PUT needs a listed file (404
 otherwise). DELETE also clears a path that is no longer listed. Send the DELETE
-body as `application/json`.
+body as `application/json` (`api.del(url, {body})` in the shared API client).
+The Images card star (#249 C5) toggles optimistically, allows one request per file
+at a time, and on any failure restores the previous state and announces it in the
+shared toast. The browser fixtures clear `image_favorites` on reset, and the
+concept fixture stars the concept's favorites (each other prompt's first image).
 
 - The table is `image_favorites(root_key, relative_path, created_at)`. `root_key`
   is the root's real path (`os.path.realpath`), case-normalized with `/`
@@ -835,9 +967,9 @@ page lifecycle recovery retain their separate behavioral tests.
 Initial production acceptance requires maintainer inspection of paired PNGs and
 geometry; never update snapshots automatically or mask content to bless a gap.
 Data-dependent text/images/counts and the clearly labeled saved/frozen/current
-distinctions are documented in the comparison helper. Broader Images card
-activation/Info/tag/favorite/select parity and shared Viewer stage/toolbar polish
-and shared role-block spacing/padding/glyph polish remain outside #209. The
+distinctions are documented in the comparison helper. The Images card select
+checkbox (#249 D8 follow-up) and tag button (#249 D9) and shared role-block
+spacing/padding/glyph polish remain outside #209. The
 responsive production Viewer keeps its toolbar in the media panel and prompt details readable rather than reproducing the concept's
 mobile toolbar collision. These are explicit remaining visual differences, not
 a whole-application or full-gallery/Viewer pixel-parity claim.

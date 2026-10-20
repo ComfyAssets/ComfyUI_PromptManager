@@ -29,7 +29,7 @@ async function attachEvidence(page, testInfo, name, fullPage = true) {
     const screenshotPath = testInfo.outputPath(`${name}.png`);
     await page.screenshot({ path: screenshotPath, fullPage });
     await testInfo.attach(name, { path: screenshotPath, contentType: 'image/png' });
-    const geometry = await page.evaluate(() => Object.fromEntries(['.sidebar', '.topbar', '#workspace-main', '.heading', 'h1', '.image-workspace', '.image-grid', '.image-card', '.image-details', '.prompt-block-heading', '.library-toolbar', '.library-grid', '.library-card', '.library-card-art', '.library-card-content'].map(selector => {
+    const geometry = await page.evaluate(() => Object.fromEntries(['.sidebar', '.topbar', '#workspace-main', '.heading', 'h1', '.image-workspace', '.image-grid', '.media-card', '.image-details', '.prompt-block-heading', '.library-toolbar', '.library-grid', '.library-card', '.library-card-art', '.library-card-content'].map(selector => {
         const node = document.querySelector(selector);
         if (!node) return [selector, null];
         const box = node.getBoundingClientRect(), style = getComputedStyle(node);
@@ -106,10 +106,10 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         await expect(roles.getByRole('button', { name: 'Send prompt pair', exact: true })).toHaveCount(0);
         await expect(page.locator('#workspace-main > .heading button.send')).toBeEnabled();
         await expect(page.locator('.library-shared-gallery article[data-image-key]')).toHaveCount(2);
-        await page.locator('.library-shared-gallery .image-open').first().click();
+        await page.locator('.library-shared-gallery .image-card-actions button').first().click();
         await expect(page.getByRole('region', { name: 'Image details', exact: true })).toContainText('canonical-alt.png');
         await page.getByRole('button', { name: 'Open full preview', exact: true }).click();
-        await expect(page.getByRole('dialog', { name: 'Image preview', exact: true })).toBeVisible();await page.keyboard.press('Escape');
+        await expect(page.locator('dialog#viewer-dialog')).toBeVisible();await page.keyboard.press('Escape');
         for (const [name, selector] of [['saved', '.library-surface'], ['branches', '.library-variants'], ['gallery', '.library-shared-gallery'], ['chronology', '.recorded-history']]) {
             await captureCanonicalState(page, testInfo, `production-${name}-${width}-${theme}`, selector);
         }
@@ -122,7 +122,7 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         for (const name of ['Raw', 'Effective', 'Close recorded run', 'Send prompt pair']) await expect(runDialog.getByRole('button', { name, exact: true })).toBeVisible();
         await captureCanonicalState(page, testInfo, `production-run-${width}-${theme}`, '.recorded-run-dialog');
         const view = runDialog.getByRole('button', { name: 'View current file', exact: true }).first();await view.click();
-        const viewer = page.getByRole('dialog', { name: 'Image preview', exact: true });await expect(viewer).toBeVisible();
+        const viewer = page.locator('dialog#viewer-dialog');await expect(viewer).toBeVisible();
         await expect(viewer.getByRole('region', { name: 'Positive prompt', exact: true })).toContainText(fixture.canonical_positive);
         await expect(viewer.getByRole('region', { name: 'Negative prompt', exact: true })).toContainText(fixture.canonical_negative);
         for (const name of ['Copy positive prompt', 'Send positive prompt', 'Copy negative prompt', 'Send negative prompt', 'Send prompt pair']) await expect(viewer.getByRole('button', { name, exact: true })).toBeVisible();
@@ -131,7 +131,7 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         await currentPositive.getByRole('button', { name: 'Copy positive prompt', exact: true }).click();
         await expect(currentPositive.getByRole('status')).toContainText(/Copied\.|Copy unavailable/);
         await exerciseCurrentPairSend(page, { positive: fixture.canonical_positive, negative: fixture.canonical_negative });
-        await captureCanonicalState(page, testInfo, `production-viewer-${width}-${theme}`, 'dialog.image-preview');
+        await captureCanonicalState(page, testInfo, `production-viewer-${width}-${theme}`, 'dialog#viewer-dialog');
         await page.keyboard.press('Escape');await expect(view).toBeFocused();await page.keyboard.press('Escape');await expect(run).toBeFocused();
         await compareCanonicalHistory(reference, actual, testInfo);
 
@@ -290,18 +290,18 @@ async function containedImageContent(page) {
         const failures = [];
         for (const card of nodes) {
             const outer = card.getBoundingClientRect();
-            for (const selector of ['.image-card-footer', 'strong', 'small', '.image-card-footer button']) {
+            for (const selector of ['.media-info', '.media-info h3', '.media-info p', '.image-card-actions button']) {
                 const node = card.querySelector(selector), box = node.getBoundingClientRect();
                 if (box.width <= 0 || box.height <= 0 || box.left < outer.left - 1 || box.right > outer.right + 1 ||
                     box.top < outer.top - 1 || box.bottom > outer.bottom + 1 ||
-                    (selector === 'small' && node.scrollHeight > node.clientHeight + 1)) {
+                    (selector === '.media-info p' && node.scrollHeight > node.clientHeight + 1)) {
                     failures.push({ key: card.dataset.imageKey, selector,
                         card: { left: outer.left, right: outer.right, top: outer.top, bottom: outer.bottom },
                         content: { left: box.left, right: box.right, top: box.top, bottom: box.bottom } });
                 }
             }
-            const action = card.querySelector('.image-card-footer button').getBoundingClientRect();
-            const range = document.createRange(); range.selectNodeContents(card.querySelector('small'));
+            const action = card.querySelector('.image-card-actions button').getBoundingClientRect();
+            const range = document.createRange(); range.selectNodeContents(card.querySelector('.media-info p'));
             for (const text of range.getClientRects()) {
                 if (Math.min(text.right, action.right) - Math.max(text.left, action.left) > .5 &&
                     Math.min(text.bottom, action.bottom) - Math.max(text.top, action.top) > .5) {
@@ -341,18 +341,25 @@ for (const [width, height] of [[390, 844], [1600, 1100]]) for (const layout of [
                 await page.keyboard.press('ArrowUp'); await expect(cards.first().locator('.image-open')).toBeFocused();
                 expect(await cards.first().getAttribute('data-image-key')).toBe(firstKey);
             }
-            const longCard = cards.filter({ hasText: 'a-very-long-geometric-composition-' });
-            const filename = await longCard.locator('strong').textContent();
+            const longCard = cards.filter({ has: page.locator('[aria-label^="Open a-very-long-geometric-composition-"]') });
+            const filename = (await longCard.locator('.image-open').getAttribute('aria-label')).replace(/^Open /, '');
             expect(filename).toMatch(/layered-context-.*\.png/);
-            await longCard.locator('.image-open').focus(); await page.keyboard.press('Enter');
+            // D19: Info selects into the panel; the image itself opens the viewer.
+            await longCard.locator('.image-card-actions button').focus(); await page.keyboard.press('Enter');
             await expect(page.locator('.image-details h2')).toHaveText(filename);
             const fullPreview = page.getByRole('button', { name: 'Open full preview', exact: true });
             await fullPreview.focus(); await expect(fullPreview).toBeFocused(); await page.keyboard.press('Enter');
-            await expect(page.getByRole('dialog', { name: 'Image preview', exact: true })).toBeVisible();
-            await expect(page.locator('.image-preview > header h2')).toHaveText(filename);
+            await expect(page.locator('dialog#viewer-dialog')).toBeVisible();
+            await expect(page.locator('#viewer-title')).toHaveText(filename);
             await page.keyboard.press('Escape');
+            // The concept's card order: image, the D7 star (hidden in List, as the concept hides its overlays), then Inspect.
+            const star = longCard.getByRole('button', { name: `Favorite ${filename}`, exact: true });
             await longCard.locator('.image-open').focus(); await page.keyboard.press('Tab');
-            await expect(longCard.getByRole('button', { name: `Preview ${filename}`, exact: true })).toBeFocused();
+            if (layout !== 'List') { await expect(star).toBeFocused(); await page.keyboard.press('Tab'); }
+            await expect(longCard.getByRole('button', { name: `Inspect ${filename}`, exact: true })).toBeFocused();
+            await page.keyboard.press('Shift+Tab');
+            if (layout !== 'List') { await expect(star).toBeFocused(); await page.keyboard.press('Shift+Tab'); }
+            await expect(longCard.locator('.image-open')).toBeFocused();
             await page.keyboard.press('Enter'); await expect(page.locator('dialog[open]')).toHaveCount(1);
             await page.keyboard.press('Escape');
             await expect.poll(() => containedImageContent(page)).toEqual([]);
@@ -374,7 +381,7 @@ test('zoomed virtual Images keeps the visible real media mounted during native s
     const stride = await cards.first().evaluate(node => node.getBoundingClientRect().height + 26);
     const more = page.getByRole('button', { name: 'Load more images', exact: true });
     for (const loaded of [80, 120, 160, 200, 202]) {
-        await more.click(); await expect(page.locator('.image-toolbar')).toContainText(`${loaded} of 202 images`);
+        await more.click(); await expect(page.locator('.section-caption')).toContainText(`${loaded} of 202 images`);
     }
     await expect.poll(() => cards.count()).toBeLessThan(120);
     await page.evaluate(stride => {
@@ -401,33 +408,32 @@ test('supplemental extreme zoom grows real footers preserves the visible anchor 
     await page.evaluate(() => { document.documentElement.style.zoom = '2'; });
     await expect.poll(() => cards.nth(1).evaluate(node => node.offsetLeft)).toBe(0);
     const selected = cards.nth(16), key = await selected.getAttribute('data-image-key');
-    await selected.locator('.image-open').click(); await selected.locator('.image-open').focus();
-    const filename = await selected.locator('strong').textContent();
+    await selected.locator('.image-card-actions button').click(); await selected.locator('.image-open').focus();
+    const filename = (await selected.locator('.image-open').getAttribute('aria-label')).replace(/^Open /, '');
     await selected.evaluate(node => scrollBy(0, node.getBoundingClientRect().top - 120));
     await page.evaluate(() => {
-        const grid = document.querySelector('.image-grid'), footers = [...grid.querySelectorAll('.image-card-footer')];
-        const nativeHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight').get;
-        const descriptors = footers.map(node => [node, Object.getOwnPropertyDescriptor(node, 'offsetHeight')]);
-        const restore = () => { for (const [node, descriptor] of descriptors) {
-            if (descriptor) Object.defineProperty(node, 'offsetHeight', descriptor); else delete node.offsetHeight;
-        } };
+        const grid = document.querySelector('.image-grid'), footers = [...grid.querySelectorAll('.media-info')];
+        // Production measures each footer's fractional height (`getBoundingClientRect().height / scale`, #249 C7), so the
+        // probe records the visible anchor at the first measurement after the zoom, before the grid relays out.
+        const nativeRect = Element.prototype.getBoundingClientRect;
+        const restore = () => { for (const node of footers) delete node.getBoundingClientRect; };
         window.footerMeasurementProbe = { before: null, restore };
-        for (const footer of footers) Object.defineProperty(footer, 'offsetHeight', { configurable: true, get() {
-            const height = nativeHeight.call(this);
+        for (const footer of footers) Object.defineProperty(footer, 'getBoundingClientRect', { configurable: true, writable: true, value() {
+            const rect = nativeRect.call(this);
             if (document.documentElement.style.zoom === '4' && grid.style.getPropertyValue('--image-footer-height') === '54px' &&
-                Math.abs(Number.parseFloat(this.closest('.image-card').style.width) - Number.parseFloat(getComputedStyle(grid).width)) < .01) {
+                Math.abs(Number.parseFloat(this.closest('.media-card').style.width) - Number.parseFloat(getComputedStyle(grid).width)) < .01) {
                 const top = visualViewport?.offsetTop || 0, bottom = top + (visualViewport?.height || innerHeight);
                 const first = [...grid.children].find(node => { const box = node.getBoundingClientRect(); return box.bottom > top && box.top < bottom; });
                 window.footerMeasurementProbe.before = first ? { index: Number(first.dataset.index), key: first.dataset.imageKey,
                     top: first.getBoundingClientRect().top - top } : null;
                 restore();
             }
-            return height;
+            return rect;
         } });
         document.documentElement.style.zoom = '4';
         const box = grid.getBoundingClientRect();
-        // The approved initial reservation is 54px with 4:3 media and a 13px row gap.
-        const stride = (box.width / 4 - 2) * .75 + 54 + 2 + 13;
+        // The approved initial reservation is 54px under the concept's 1.33 media and a 13px row gap.
+        const stride = (box.width / 4 - 2) / 1.33 + 54 + 2 + 13;
         // Place row eight inside the 52px scaled gap so the preceding row is not visible.
         const index = 8;
         scrollTo(0, box.top + scrollY + index * stride * 4 - 16);
@@ -454,10 +460,10 @@ test('supplemental extreme zoom grows real footers preserves the visible anchor 
         await page.getByRole('button', { name: 'List', exact: true }).click();
         await expect.poll(() => containedImageContent(page)).toEqual([]);
         expect(await cards.first().evaluate(node => node.offsetHeight)).toBeGreaterThan(97);
-        await page.getByRole('searchbox', { name: 'Search filenames', exact: true }).fill('no-real-media-match');
+        await page.getByRole('searchbox', { name: 'Search workspace', exact: true }).fill('no-real-media-match');
         await expect(cards).toHaveCount(0);
         expect(await grid.evaluate(node => Number.parseFloat(node.style.getPropertyValue('--image-footer-height')))).toBe(54);
-        await page.getByRole('searchbox', { name: 'Search filenames', exact: true }).fill('');
+        await page.getByRole('searchbox', { name: 'Search workspace', exact: true }).fill('');
         await expect(cards).toHaveCount(24);
         await expect.poll(() => grid.evaluate(node => Number.parseFloat(node.style.getPropertyValue('--image-footer-height')))).toBeGreaterThan(54);
         const extremeFooter = await grid.evaluate(node => Number.parseFloat(node.style.getPropertyValue('--image-footer-height')));
@@ -479,7 +485,7 @@ test('supplemental wrapped real footer reservation survives append without movin
     await page.setViewportSize({ width: 390, height: 844 }); await page.goto(`${workspace}#/images`);
     const cards = page.locator('article[data-image-key]'), grid = page.locator('.image-grid');
     await expect(cards).toHaveCount(40);
-    await cards.first().locator('.image-open').click();
+    await cards.first().locator('.image-card-actions button').click();
     const selectedKey = await cards.first().getAttribute('data-image-key');
     await page.evaluate(() => { document.documentElement.style.zoom = '4'; });
     await expect.poll(() => grid.evaluate(node => Number.parseFloat(node.style.getPropertyValue('--image-footer-height')))).toBeGreaterThan(54);
@@ -491,18 +497,23 @@ test('supplemental wrapped real footer reservation survives append without movin
     });
     try {
         const more = page.getByRole('button', { name: 'Load more images', exact: true });
-        await more.click(); await expect.poll(() => pending).toBe(true);
+        // At 4x zoom the concept continuation (copy + Load more) fills the viewport, so keep the last cards in view and
+        // press Load more from the keyboard without scrolling to it.
+        await cards.last().scrollIntoViewIfNeeded();
+        await more.evaluate(node => node.focus({ preventScroll: true })); await page.keyboard.press('Enter');
+        await expect.poll(() => pending).toBe(true);
         const anchor = await cards.evaluateAll(nodes => {
             const top = visualViewport?.offsetTop || 0, bottom = top + (visualViewport?.height || innerHeight);
             const node = nodes.find(node => { const box = node.getBoundingClientRect(); return box.bottom > top && box.top < bottom; });
             return node ? { key: node.dataset.imageKey, top: node.getBoundingClientRect().top - top } : null;
         });
         expect(anchor).not.toBeNull();
-        release(); await expect(page.locator('.image-toolbar')).toContainText('80 of 202 images');
+        release(); await expect(page.locator('.section-caption')).toContainText('80 of 202 images');
         await expect(cards).toHaveCount(80);
         await expect.poll(async () => Math.abs(await page.locator(`article[data-image-key="${anchor.key}"]`).evaluate(node => node.getBoundingClientRect().top - (visualViewport?.offsetTop || 0)) - anchor.top)).toBeLessThanOrEqual(1);
         await expect(page.locator(`article[data-image-key="${selectedKey}"]`)).toHaveClass(/selected/);
-        await expect(more).toBeFocused();
+        // The concept focuses the first appended image after a Load more button press.
+        await expect(page.locator('article[aria-posinset="41"] .image-open')).toBeFocused();
         await expect.poll(() => containedImageContent(page)).toEqual([]);
     } finally { release(); }
 });
@@ -577,33 +588,34 @@ test('Images visual layouts retain real delayed media long filenames and loaded 
         await page.setViewportSize({width:1600,height:1100});await page.goto(`${workspace}#/images`,{waitUntil:'domcontentloaded'});
         await expect(page.locator('article[data-image-key]')).toHaveCount(24);
         await expect.poll(()=>mediaRequests).toBeGreaterThan(0);
-        expect(await page.locator('.image-card img').first().evaluate(image=>image.complete)).toBe(false);
-        await expect(page.locator('.image-card').first()).toHaveCSS('border-radius','7px');
+        expect(await page.locator('.media-card img').first().evaluate(image=>image.complete)).toBe(false);
+        await expect(page.locator('.media-card').first()).toHaveCSS('border-radius','7px');
         await orderedMedia(page);
     } finally {release();}
     for (const [width,height] of [[1600,1100],[390,844]]) {
         await page.setViewportSize({width,height});
         for (const theme of ['dark','light']) {
             await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
-            await page.locator('.image-card .image-open').first().click();
+            await page.locator('.media-card .image-card-actions button').first().click();
             await expect(page.locator('.image-details h2')).toHaveText('study-01.png');
             for (const layout of ['Grid','List','Masonry']) {
                 await page.getByRole('button',{name:layout,exact:true}).click();await page.evaluate(()=>scrollTo(0,0));
-                if(layout==='List') await expect(page.locator('.image-card').first()).toHaveCSS('height','97px');
+                if(layout==='List') await expect(page.locator('.media-card').first()).toHaveCSS('height','97px');
                 await orderedMedia(page);
                 await attachEvidence(page,testInfo,`after-images-${layout.toLowerCase()}-${width}-${theme}`,false);
             }
             await page.locator('article[data-image-key]').last().scrollIntoViewIfNeeded();
-            const longCard=page.locator('article[data-image-key]').filter({hasText:'a-very-long-geometric-composition-'});
-            await expect(longCard.locator('strong')).toHaveText(/layered-context-.*\.png/);
-            await longCard.locator('.image-open').click();
-            await expect(page.locator('.image-details h2')).toHaveText(await longCard.locator('strong').textContent());
+            const longCard=page.locator('article[data-image-key]').filter({has:page.locator('[aria-label^="Open a-very-long-geometric-composition-"]')});
+            const longName=(await longCard.locator('.image-open').getAttribute('aria-label')).replace(/^Open /,'');
+            expect(longName).toMatch(/layered-context-.*\.png/);
+            await longCard.locator('.image-card-actions button').click();
+            await expect(page.locator('.image-details h2')).toHaveText(longName);
             await orderedMedia(page);
             await attachEvidence(page,testInfo,`after-images-loaded-scroll-${width}-${theme}`,false);
         }
     }
     await page.evaluate(()=>{location.hash='#/overview';});
-    await expect(page.locator('.image-card,.image-details,.viewer-container,dialog[open]')).toHaveCount(0);
+    await expect(page.locator('.media-card,.image-details,.viewer-container,dialog[open]')).toHaveCount(0);
 });
 
 test('embedded history gallery keeps the history heading and disposes its layouts',async({page,request},testInfo)=>{
@@ -624,6 +636,6 @@ test('embedded history gallery keeps the history heading and disposes its layout
         }
         await attachEvidence(page,testInfo,`after-images-embedded-history-${width}`,false);
         await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
-        await expect(page.locator('.image-card,.image-details,dialog[open]')).toHaveCount(0);
+        await expect(page.locator('.media-card,.image-details,dialog[open]')).toHaveCount(0);
     }
 });

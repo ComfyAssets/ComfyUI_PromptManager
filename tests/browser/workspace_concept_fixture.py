@@ -155,6 +155,9 @@ CONCEPT_RUN_COUNT = 4
 # The concept's Model fact (app.js:408).
 CONCEPT_MODEL = "illustrative-model.safetensors"
 MAX_EXTRA_IMAGES = 120
+# Unlinked, seedless images (D11 "W × H · PNG") newer than the concept's, for D3 checks.
+MAX_SEEDLESS_IMAGES = 2
+SEEDLESS_SIZE = (1536, 1152)
 SESSION = "5c1f9a7e-3f0b-4a55-9d0e-2b8c4f6a7d10"
 _TABLES = (
     "execution_run_outputs",
@@ -165,6 +168,7 @@ _TABLES = (
     "execution_contexts",
     "execution_prompt_snapshots",
     "execution_context_texts",
+    "image_favorites",
     "image_prompt_pairs",
     "prompt_pair_tags",
     "prompt_pairs",
@@ -174,6 +178,11 @@ _TABLES = (
     "prompt_library_state",
     "prompts",
 )
+
+
+def concept_starred(prompt_index: int, round_index: int) -> bool:
+    """The concept's favorites (app.js ``starred``): each other prompt's first image."""
+    return round_index == 0 and prompt_index % 2 == 0
 
 
 def concept_seed(prompt_index: int, round_index: int) -> int:
@@ -313,18 +322,34 @@ def _record_run(
     return start.run_id
 
 
+def _write_seedless_png(path: Path) -> None:
+    """A plain PNG with no metadata: no prompt, no seed, no link."""
+    with Image.new("RGB", SEEDLESS_SIZE, "#2b3442") as image:
+        image.save(path)
+
+
+def _bounded(name: str, value: int, maximum: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if not 0 <= value <= maximum:
+        raise ValueError(f"{name} is out of range")
+
+
 def seed_workspace_concept(
-    api: PromptManagerAPI, root: Path, *, extra_images: int = 0
+    api: PromptManagerAPI,
+    root: Path,
+    *,
+    extra_images: int = 0,
+    seedless_images: int = 0,
 ) -> dict:
     """Replace this server's disposable rows and files with the concept's data.
 
     ``extra_images`` continues the concept's rounds (same prompts, dimensions and
     seed rule) after its 24 images, for bounded-rendering and Load more checks.
+    ``seedless_images`` adds unlinked PNGs without metadata, newest of all.
     """
-    if isinstance(extra_images, bool) or not isinstance(extra_images, int):
-        raise TypeError("extra_images must be an integer")
-    if not 0 <= extra_images <= MAX_EXTRA_IMAGES:
-        raise ValueError("extra_images is out of range")
+    _bounded("extra_images", extra_images, MAX_EXTRA_IMAGES)
+    _bounded("seedless_images", seedless_images, MAX_SEEDLESS_IMAGES)
     _clear(api, root)
     db = api.db
     epoch = db.get_execution_epoch()
@@ -356,6 +381,10 @@ def seed_workspace_concept(
     folder = root / "output" / "concepts"
     folder.mkdir()
     roots = snapshot_output_roots("posix", str(root / "output"), str(root / "temp"))
+    # The API package needs the host stubs the server installs before importing it.
+    from py.api.images import _favorite_relative_key, _favorite_root_key
+
+    favorite_root = _favorite_root_key(list(api._get_all_output_dirs())[0])
     total = len(CONCEPT_PROMPTS) * CONCEPT_IMAGE_ROUNDS + extra_images
     rounds = math.ceil(total / len(CONCEPT_PROMPTS))
     now = time.time()
@@ -376,6 +405,10 @@ def seed_workspace_concept(
             image_id = db.link_image_to_prompt(owner["positive_id"], str(path))
             pair_id = owner["pair_ids"][variant]
             db.link_image_to_pair(pair_id, image_id, {"source": "concept fixture"})
+            if concept_starred(prompt_index, round_index):
+                db.set_image_favorite(
+                    favorite_root, _favorite_relative_key(f"concepts/{name}")
+                )
             context = RecipeContext(
                 "3", _snapshot(prompt.positive), _snapshot(negative), "inferred"
             )
@@ -400,10 +433,19 @@ def seed_workspace_concept(
                     "prompt": prompt.id,
                     "variant": variant,
                     "seed": seed,
+                    "path": f"concepts/{name}",
                     "width": facts["width"],
                     "height": facts["height"],
                 }
             )
+    seedless = []
+    for number in range(seedless_images):
+        name = f"seedless_{number + 1:05}.png"
+        path = folder / name
+        _write_seedless_png(path)
+        stamp = now - 10 - number * 10
+        os.utime(path, (stamp, stamp))
+        seedless.append({"filename": name, "path": f"concepts/{name}"})
     with db.model.get_connection() as conn:
         counts = conn.execute(
             "SELECT COUNT(*), MIN(run_count), MAX(run_count) FROM prompts "
@@ -416,6 +458,9 @@ def seed_workspace_concept(
     api.invalidate_gallery_cache()
     return {
         "epoch": epoch,
+        # The newest file's mtime (epoch seconds), for the D17 caption date.
+        "newest_modified": now - 10 if seedless_images else now - 60,
+        "seedless": seedless,
         "prompts": prompts,
         "images": images,
         "runs": runs,
