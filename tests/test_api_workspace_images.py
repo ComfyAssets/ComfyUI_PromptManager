@@ -854,14 +854,28 @@ class TestWorkspaceImages(ImageAPITestCase):
                 self.assertEqual(response.status, 200, data)
                 self.assertEqual(data["total"], total)
                 self.assertEqual(data["positive_count"], positives)
-        # The count covers the whole matching set, on every cursor page.
-        response, first = await self.get(limit=2, q="ZEBRA")
-        self.assertEqual(first["positive_count"], 4)
-        response, second = await self.get(
-            limit=2, q="ZEBRA", cursor=first["next_cursor"]
-        )
-        self.assertEqual(response.status, 200, second)
-        self.assertEqual(second["positive_count"], 4)
+        # The count covers the whole matching set. A filter or the rating
+        # sort reads the links on every page, so its cursor pages carry it too.
+        for params in ({"q": "ZEBRA"}, {"sort": "rating"}):
+            with self.subTest(cursor=params):
+                response, first = await self.get(limit=2, **params)
+                response, second = await self.get(
+                    limit=2, cursor=first["next_cursor"], **params
+                )
+                self.assertEqual(response.status, 200, second)
+                self.assertEqual(second["positive_count"], first["positive_count"])
+        # A plain cursor page skips the read and omits the key (absent, not
+        # null): the frontend keeps the first page's value.
+        for params in ({}, {"sort": "oldest"}, {"sort": "name"}):
+            with self.subTest(plain_cursor=params):
+                response, first = await self.get(limit=2, **params)
+                self.assertEqual(first["positive_count"], 6)
+                response, second = await self.get(
+                    limit=2, cursor=first["next_cursor"], **params
+                )
+                self.assertEqual(response.status, 200, second)
+                self.assertNotIn("positive_count", second)
+                self.assertEqual(second["total"], 10)
         # One SELECT counts the positives; the page's link summary is the other.
         statements = []
         original = db.model.get_connection
@@ -880,6 +894,18 @@ class TestWorkspaceImages(ImageAPITestCase):
             if query.lstrip().upper().startswith(("SELECT", "WITH"))
         ]
         self.assertEqual(len(selects), 2, selects)
+        _, first = await self.get(limit=2)
+        statements.clear()
+        with patch.object(db.model, "get_connection", side_effect=trace_connection):
+            response, data = await self.get(limit=2, cursor=first["next_cursor"])
+        self.assertEqual(response.status, 200)
+        selects = [
+            query
+            for query in statements
+            if query.lstrip().upper().startswith(("SELECT", "WITH"))
+        ]
+        self.assertEqual(len(selects), 1, selects)  # the page's link summary only
+        self.assertNotIn("gi.file_path, p.rating", selects[0])
         # Without filters the listing outlives a database failure; the count
         # is then unknown rather than wrong.
         with patch.object(
@@ -1167,6 +1193,9 @@ class TestWorkspaceImages(ImageAPITestCase):
         return listed
 
     _BUDGET_REQUESTS = (
+        # First, so the timed loop also measures a cursor page of each.
+        {},
+        {"sort": "oldest"},
         {"q": "lantern"},
         {"q": "img_0123"},
         {"q": "Title 1"},
@@ -1260,12 +1289,17 @@ class TestWorkspaceImages(ImageAPITestCase):
                     await self.get(sort=order, limit=10)  # builds a lazy order
                     _, first = await self.get(sort=order, limit=10)
                     keyed.clear()
+                    selects()
                     response, page = await self.get(
                         sort=order, limit=10, cursor=first["next_cursor"]
                     )
                     self.assertEqual(response.status, 200)
                     self.assertEqual(len(page["images"]), 10)
                     self.assertLessEqual(len(keyed), bound)
+                    # A plain cursor page reads no links; rating needs them.
+                    plain = order != "rating"
+                    self.assertEqual(len(selects()), 0 if plain else 1)
+                    self.assertEqual("positive_count" in page, not plain)
             key = ((0, str(self.output_dir)),)
             # A TTL rescan that found the same files rebuilds nothing.
             built.clear()
@@ -1319,7 +1353,7 @@ class TestWorkspaceImages(ImageAPITestCase):
         listed = await asyncio.get_running_loop().run_in_executor(
             None, self._budget_fixture, 50_000, 20_000
         )
-        rounds = []
+        rounds, plain = [], {"first": [], "cursor": []}
         with (
             patch.object(
                 self.api, "_get_gallery_files", AsyncMock(return_value=listed)
@@ -1335,7 +1369,8 @@ class TestWorkspaceImages(ImageAPITestCase):
                 timings = []
                 for index in range(20):
                     requests = self._BUDGET_REQUESTS
-                    params = dict(requests[index % len(requests)], limit=100)
+                    shape = requests[index % len(requests)]
+                    params = dict(shape, limit=100)
                     if index >= len(requests):
                         _, first = await self.get(**params)
                         if first["next_cursor"]:
@@ -1343,15 +1378,28 @@ class TestWorkspaceImages(ImageAPITestCase):
                     started = time.perf_counter()
                     response, data = await self.get(**params)
                     timings.append(time.perf_counter() - started)
+                    if shape.get("sort", "newest") in ("newest", "oldest") and not (
+                        set(shape) - {"sort"}
+                    ):
+                        # Plain first pages read the links for the count;
+                        # plain cursor pages read none.
+                        plain["cursor" if "cursor" in params else "first"].append(
+                            timings[-1]
+                        )
                     self.assertEqual(response.status, 200, (params, data))
                 timings.sort()
                 rounds.append(timings)
         p95s = [timings[math.ceil(0.95 * len(timings)) - 1] for timings in rounds]
         best = min(p95s)
+        plain_ms = {
+            kind: sorted(round(t * 1000, 1) for t in found)
+            for kind, found in plain.items()
+        }
         print(
             "\nworkspace filter budget: best p95="
             f"{best * 1000:.1f} ms, rounds="
-            f"{[round(p * 1000, 1) for p in p95s]} ms, cold={cold * 1000:.1f} ms",
+            f"{[round(p * 1000, 1) for p in p95s]} ms, cold={cold * 1000:.1f} ms, "
+            f"plain listing ms={plain_ms}",
             file=sys.stderr,
         )
         self.assertLess(

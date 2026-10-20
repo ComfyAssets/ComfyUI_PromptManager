@@ -559,6 +559,11 @@ def _workspace_filters(query: Mapping) -> dict:
     }
 
 
+# A plain listing's cursor page leaves positive_count out (see
+# _select_workspace_page); None instead means the count could not be read.
+_COUNT_OMITTED = object()
+
+
 def _filtered_page(
     entries: list, start: int, size: int, filters: dict, links: dict | None
 ) -> tuple[int, list, int | None]:
@@ -978,17 +983,18 @@ class ImageRoutesMixin:
             )
         )
         images = await self._run_in_executor(self._format_workspace_page, page)
-        return web.json_response(
-            {
-                "success": True,
-                "images": images,
-                "total": total,
-                "positive_count": positive_count,
-                "limit": limit,
-                "has_more": has_more,
-                "next_cursor": next_cursor,
-            }
-        )
+        result = {
+            "success": True,
+            "images": images,
+            "total": total,
+            "positive_count": positive_count,
+            "limit": limit,
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+        }
+        if positive_count is _COUNT_OMITTED:
+            del result["positive_count"]
+        return web.json_response(result)
 
     def _workspace_listed(self, index: int, root: Path, files: list) -> list:
         """The _Listed values of one root's scan, rebuilt only where it changed.
@@ -1069,24 +1075,36 @@ class ImageRoutesMixin:
 
         One SELECT (get_image_link_matches) reads every linked positive of the
         listing: the filters, the rating sort and the positive count share it.
-        Without a filter that needs it, a failed read leaves the listing
-        usable and the positive count unknown (None).
+        A plain listing (no ``q``, category, tags or rating sort) reads it only
+        for its first page; its cursor pages read no links and the returned
+        count is _COUNT_OMITTED, so the response leaves ``positive_count`` out
+        and the frontend keeps the first page's value. On that plain first
+        page a failed read leaves the listing usable and the count unknown
+        (None).
         """
         order, category, tags = filters["order"], filters["category"], filters["tags"]
-        needed = bool(filters["query"]) or category is not None or bool(tags)
-        try:
-            links = self.db.get_image_link_matches(
-                filters["text"],
-                category,
-                tags,
-                every_link=True,
-                wanted=self._workspace_wanted(listings),
-            )
-        except Exception:
-            if needed or order == "rating":
-                raise
-            self.logger.warning("Workspace positive count could not be read")
-            links = None
+        needed = (
+            bool(filters["query"])
+            or category is not None
+            or bool(tags)
+            or order == "rating"
+        )
+        links = None
+        if needed or after is None:
+            try:
+                links = self.db.get_image_link_matches(
+                    filters["text"],
+                    category,
+                    tags,
+                    every_link=True,
+                    wanted=self._workspace_wanted(listings),
+                )
+            except Exception:
+                if needed:
+                    raise
+                self.logger.warning(
+                    "Workspace positive count could not be read", exc_info=True
+                )
         if order == "rating":
 
             def rank(entry):
@@ -1118,6 +1136,8 @@ class ImageRoutesMixin:
         total, page, positive_count = _filtered_page(
             entries, start, limit + 1, filters, links
         )
+        if not needed and after is not None:
+            positive_count = _COUNT_OMITTED
         has_more = len(page) > limit
         page = page[:limit]
         next_cursor = _workspace_cursor(key(page[-1]), scope) if has_more else None
