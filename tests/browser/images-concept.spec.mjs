@@ -86,22 +86,32 @@ function withoutItems(row,isRemoved) {
     return reflow(row,row.items.filter(item=>!isRemoved(item)));
 }
 
+/** D8: the selection bar's real actions only; Add tags, Add to collection and Remove links… are left out. */
+const OMITTED_BULK=Object.freeze(['Add tags','Add to collection','Remove links…']);
+const OMITTED_BULK_SELECTORS=Object.freeze(['bulk-tags','bulk-collection','bulk-remove'].map(action=>`#bulkbar [data-action="${action}"]`));
+
 /**
- * D8 (follow-up PR): the overlay row without its checkbox label. The concept stretches the star to the label's line box
- * (`align-items: normal`); alone, the row and the star are the star's own height: its min-height, or its line plus
- * padding and border when taller. Its place stays the concept's top-right (`rightInset`).
+ * `withoutItems` for a row with padding and a border (the `.bulkbar`): its items flow again inside the content box,
+ * measured from the border box as the inventory records them. The concept's border is one width on every side
+ * (`border: 1px solid`), so the right border stands for the left one.
  */
-function withoutCheckbox(overlays) {
-    // A list row hides its overlays (concept `display: none`).
-    if(!overlays.shown)return overlays;
-    const items=overlays.items.filter(item=>item.tag!=='label');
-    const own=item=>Math.max(parseFloat(item.minHeight)||0,parseFloat(item.lineHeight)+['paddingTop','paddingBottom','borderTopWidth','borderBottomWidth']
-        .reduce((sum,key)=>sum+parseFloat(item[key]),0));
-    const height=Math.max(...items.filter(item=>item.shown).map(own));
-    // D8 (interim): alone, the star is pushed to the right by `margin-left: auto`, whose used value is the overlay's
-    // free width; the checkbox PR removes that rule and this line.
-    const pushed=item=>items.length===1?{marginLeft:`${overlays.width-item.width}px`}:{};
-    return {...overlays,height,items:items.map(item=>item.shown?{...item,height,...pushed(item)}:item)};
+function withoutPaddedItems(row,isRemoved) {
+    const [left,right,top,bottom]=[['paddingLeft','borderRightWidth'],['paddingRight','borderRightWidth'],
+        ['paddingTop','borderTopWidth'],['paddingBottom','borderBottomWidth']].map(keys=>keys.reduce((sum,key)=>sum+parseFloat(row[key]),0));
+    const shift=(item,x,y)=>item.left===undefined?item:{...item,left:item.left+x,top:item.top+y,
+        exact:item.exact&&{...item.exact,left:item.exact.left+x}};
+    const inner={...row,width:row.width-left-right,exact:{width:row.exact.width-left-right},items:row.items.map(item=>shift(item,-left,-top))};
+    const flowed=withoutItems(inner,isRemoved);
+    return {...flowed,width:row.width,exact:row.exact,height:flowed.height+top+bottom,items:flowed.items.map(item=>shift(item,left,top))};
+}
+
+/** D8: the bar without the omitted actions, laid out again from the concept's boxes; what follows moves up by as much. */
+function mapBulkbar(bulkbar,rise) {
+    if(!bulkbar)return {bulkbar,shrink:0};
+    if(!bulkbar.bar)return {bulkbar:{...bulkbar,top:bulkbar.top-rise},shrink:0};
+    const bar=withoutPaddedItems(bulkbar.bar,item=>OMITTED_BULK.includes(item.text));
+    const shrink=bulkbar.bar.height-bar.height;
+    return {bulkbar:{...bulkbar,top:bulkbar.top-rise,height:bulkbar.height-shrink,bar:{...bar,top:bar.top-rise}},shrink};
 }
 
 /**
@@ -165,8 +175,6 @@ export function mapImagesConcept(reference,{manifest,now=new Date()}) {
         return {...card,
             // D29: the concept's alt adds its demo-only " · sample illustration N" to the card title.
             img:{...card.img,alt:card.img.alt.replace(/ · sample illustration \d+$/,'')},
-            // D8 (follow-up PR): no selection checkbox yet; the star keeps the concept's top-right place.
-            overlays:withoutCheckbox(card.overlays),
             info:{...card.info,...listRow.info,copy:{...card.info.copy,...listRow.copy},p:{...card.info.p,...listRow.p},
                 // D10: the title keeps the file's relative path (the fixture manifest's) in `title`.
                 h3:{...card.info.h3,title:paths.get(filename)??null},
@@ -178,7 +186,8 @@ export function mapImagesConcept(reference,{manifest,now=new Date()}) {
     const caption={...reference.caption,spans:reference.caption.spans.map((span,index)=>index===1
         ?{...span,text:captionDay(manifest.newest_modified,now)}:{...span,text:countCopy(span.text)})};
     const continuation=mapContinuation(reference.continuation);
-    return {...reference,toolbar,filterRow,cards,caption,continuation,panel:{...reference.panel,top:reference.panel.top-rise}};
+    const {bulkbar,shrink}=mapBulkbar(reference.bulkbar,rise);
+    return {...reference,toolbar,filterRow,bulkbar,cards,caption,continuation,panel:{...reference.panel,top:reference.panel.top-rise-shrink}};
 }
 
 /** D32: the continuation's text and Load more may wrap at extreme zoom; D35: its count uses the singular for one. */
@@ -204,7 +213,7 @@ function mapImportConcept(reference) {
             ?{...row,description:'Find files added or removed in the output folders.',buttons:['Rescan']}:row)};
 }
 
-const SECTIONS=['heading','toolbar','filterRow','caption','grid','cards','continuation','panel','noPageScroll'];
+const SECTIONS=['heading','toolbar','filterRow','bulkbar','caption','grid','cards','continuation','panel','noPageScroll'];
 const pick=inventory=>stripExact(inventory);
 
 // The concept's own sample categories, in its first-appearance order (app.js 348): what D36 reorders.
@@ -469,6 +478,43 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`images page ge
         expect.soft(production.single,`${motion} search for one image`).toEqual(mappedSearch(concept.single));
         expect.soft(production.single.count,`${motion} singular count line`).toBe('1 of 1 image · 1 positive prompt');
     }
+});
+
+// D8 follow-up (image selection, Task 1): with the first card checked, the concept's bar (app.js 430-434) and the
+// checked card, against production's bar of real actions. The concept page itself, without the omitted actions, is the
+// oracle for the re-laid-out bar.
+for(const [width,height] of SIZES)for(const theme of THEMES)test(`images selection bar matches the concept ${width}x${height} ${theme}`,async({page},testInfo)=>{
+    await page.setViewportSize({width,height});
+    const manifest=testInfo.manifest;
+    const check=async()=>{
+        await page.locator(CARDS).first().locator('.image-overlays > label > input[type="checkbox"]').check();
+        await expect(page.locator('#bulkbar > .bulkbar > strong')).toHaveText('1 selected');
+        await page.evaluate(()=>document.activeElement?.blur());await page.mouse.move(0,0);await settle(page);
+    };
+    await openConceptLoaded(page,theme,'no-preference');
+    const empty=await inventoryOf(page,'#main');
+    await check();
+    const reference=await inventoryOf(page,'#main');
+    const restore=await mutate(page,{remove:[...OMITTED_BULK_SELECTORS]});
+    const removed=(await inventoryOf(page,'#main')).bulkbar;
+    await restore();
+    await captureCanonicalState(page,testInfo,`concept-images-selected-${width}-${theme}`);
+    await openProductionLoaded(page,theme,'no-preference');
+    const emptyActual=await inventoryOf(page,'#workspace-main');
+    await check();
+    const actual=await inventoryOf(page,'#workspace-main');
+    await captureCanonicalState(page,testInfo,`production-images-selected-${width}-${theme}`);
+    // The concept itself: an empty bar, then "1 selected" and its six actions.
+    expect.soft(empty.bulkbar,'concept empty bar').toMatchObject({id:'bulkbar',height:0,children:0,bar:null});
+    expect.soft(reference.bulkbar.bar.items.map(item=>item.text),'concept bar').toEqual(['1 selected','Add tags','Set category',
+        'Add to collection','Export metadata','Remove links…','Clear']);
+    expect.soft(diffInventory(stripExact(mapBulkbar(reference.bulkbar,0).bulkbar.bar),stripExact(removed.bar)),'bar without the omitted actions').toEqual([]);
+    expect.soft(actual.bulkbar.bar.items.map(item=>item.text),'production bar').toEqual(['1 selected','Set category','Export metadata','Clear']);
+    expect.soft(compare(empty,emptyActual,manifest,['bulkbar','cards','panel']),'nothing checked').toEqual([]);
+    expect.soft(compare(reference,actual,manifest,['bulkbar','cards','panel']),'one card checked').toEqual([]);
+    // The bar comparison notices a change to the production bar.
+    await mutate(page,{css:'.bulkbar { padding: 4px }'});
+    expect(compare(reference,await inventoryOf(page,'#workspace-main'),manifest,['bulkbar']).map(item=>item.path)).toContain('bulkbar.bar.paddingTop');
 });
 
 // The comparison is only worth something if it notices a change (spec §7 mutation check): one CSS mutation (the

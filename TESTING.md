@@ -440,8 +440,8 @@ own Load more has loaded all 24 fixture images (D37: it loads 12 per batch, prod
 zoom, the 2nd card opens the viewer titled "<title> · <filename>", Escape returns focus
 to it (production only: the concept re-renders its grid and drops focus), Info on the
 3rd card moves `.selected`, searches for "alpine" and for one image, and Load more with
-its toast. `mapImagesConcept` applies D3, D8 and D16 (follow-up PRs: no checkbox, no
-Save view), D9, D10, D14, D15, D17, D29, D32, D35 (singular counts) and D36 (categories
+its toast. `mapImagesConcept` applies D3, D8 (the selection bar's real actions only),
+D16 (follow-up PR: no Save view), D9, D10, D14, D15, D17, D29, D32, D35 (singular counts) and D36 (categories
 sorted alphabetically). Removed toolbar and filter-row items flow again from the
 concept's own boxes (`reflow`), checked against the concept page with those items
 removed at runtime. Masonry tops and heights are compared unrounded, within one layout
@@ -500,9 +500,15 @@ Recorded deviations on this page (spec §8):
 - **D5**, **D29**: no Activity button and no prototype copy (shell).
 - **D7**: the star is a real persisted favorite with "Added to favorites." /
   "Removed from favorites." and a rollback toast on failure.
-- **D8 (follow-up)**: no select checkbox or bulk bar in PR C; a follow-up PR adds them
-  with real actions and removes the interim `.image-overlays > .star-button:only-child`
-  rule that keeps the star top-right.
+- **D8**: every Images card has the concept's select checkbox before the star; the
+  `#bulkbar` shows "N selected" and only the real actions in the concept's order (Set
+  category, Export metadata, Clear). Add tags and Add to collection wait for image tags
+  and collections; "Remove links…" is dropped. The selection survives Load more and
+  bounded re-mounting and is cleared whenever the collection is replaced (search,
+  category, sort, Filters, source change, rescan, reload). `images selection bar matches
+  the concept` compares the bar and the checked card with one card checked; the omitted
+  actions flow again from the concept's own boxes, checked against the concept page with
+  them removed at runtime.
 - **D9**: no Tag button until the image-annotations slice.
 - **D10**: the card title is the linked positive's display title, else the filename;
   the `h3` keeps the relative path in `title`.
@@ -967,8 +973,8 @@ page lifecycle recovery retain their separate behavioral tests.
 Initial production acceptance requires maintainer inspection of paired PNGs and
 geometry; never update snapshots automatically or mask content to bless a gap.
 Data-dependent text/images/counts and the clearly labeled saved/frozen/current
-distinctions are documented in the comparison helper. The Images card select
-checkbox (#249 D8 follow-up) and tag button (#249 D9) and shared role-block
+distinctions are documented in the comparison helper. The Images card tag
+button (#249 D9) and shared role-block
 spacing/padding/glyph polish remain outside #209. The
 responsive production Viewer keeps its toolbar in the media panel and prompt details readable rather than reproducing the concept's
 mobile toolbar collision. These are explicit remaining visual differences, not

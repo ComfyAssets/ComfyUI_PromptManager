@@ -313,3 +313,22 @@ test('withItem patches a saved browsing state without touching the other items',
     assert.equal(state.items[1].favorite, false);
     assert.equal(withItem(state, '1:b', {favorite:true}), state);
 });
+
+test('toggleSelection returns a new frozen set and leaves the given one untouched', async () => {
+    const { toggleSelection } = await source;
+    const empty = Object.freeze(new Set());
+    const one = toggleSelection(empty, '0:a', true);
+    assert.ok(Object.isFrozen(one)); assert.deepEqual([...one], ['0:a']); assert.equal(empty.size, 0);
+    const two = toggleSelection(one, '1:a', true);
+    assert.deepEqual([...two], ['0:a', '1:a']); assert.deepEqual([...one], ['0:a']);
+    assert.equal(toggleSelection(two, '0:a', true), two, 'an already selected key keeps the same set');
+    assert.equal(toggleSelection(one, '9:z', false), one, 'an unselected key keeps the same set');
+    assert.deepEqual([...toggleSelection(two, '0:a', false)], ['1:a']);
+});
+
+test('selectionLabel counts the selected images as the concept bar does', async () => {
+    const { selectionLabel } = await source;
+    assert.equal(selectionLabel(1), '1 selected');
+    assert.equal(selectionLabel(2), '2 selected');
+    assert.equal(selectionLabel(1234), '1,234 selected');
+});

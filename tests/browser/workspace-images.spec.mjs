@@ -1014,10 +1014,11 @@ async function cardInventory(page, concept) {
         const walk = new Function(`return (${walkSource})()`)();
         return nodes.map(card => {
             const copy = card.cloneNode(true);
-            // D8: no selection checkbox; D9: no tag button until image annotations. The D7 star is compared.
-            if (concept) for (const node of copy.querySelectorAll('.image-overlays > label, [aria-label^="Tag or auto-tag "]')) node.remove();
+            // D9: no tag button until image annotations. The D8 checkbox and the D7 star are compared.
+            if (concept) for (const node of copy.querySelectorAll('[aria-label^="Tag or auto-tag "]')) node.remove();
             const open = card.querySelector('.image-open'), img = open.querySelector('img');
             const star = card.querySelector('.image-overlays > button.star-button');
+            const box = card.querySelector('.image-overlays > label > input');
             return { filename: open.getAttribute('aria-label').replace(/^Open /, ''),
                 // The concept's alt is the card title plus its demo-only " · sample illustration N" (m5).
                 alt: img.alt.replace(/ · sample illustration \d+$/, ''),
@@ -1026,6 +1027,7 @@ async function cardInventory(page, concept) {
                 ratio: card.style.getPropertyValue('--media-ratio').replace(/\s/g, ''),
                 inspect: card.querySelector('.image-card-actions > button').getAttribute('aria-label'),
                 star: star && { text: star.textContent, pressed: star.getAttribute('aria-pressed'), label: star.getAttribute('aria-label') },
+                select: box && { type: box.type, checked: box.checked, label: box.getAttribute('aria-label') },
                 paths: walk(copy, `article.${[...card.classList].filter(value => value !== 'selected').sort().join('.')}`, []) };
         });
     }, { walkSource: CARD_PATHS.toString(), concept });
@@ -1187,7 +1189,9 @@ async function zoomedGallery(page, request, { cssZoom }) {
     });
     await page.keyboard.press('ArrowDown');
     await expect(page.locator(`article[aria-posinset="${columns + 1}"] .image-open`)).toBeFocused();
-    // The concept's card order: image, the D7 star, then Inspect.
+    // The concept's card order: image, the D8 checkbox, the D7 star, then Inspect.
+    await page.keyboard.press('Tab');
+    await expect(page.locator(`article[aria-posinset="${columns + 1}"] .image-overlays input[type="checkbox"]`)).toBeFocused();
     await page.keyboard.press('Tab');
     await expect(page.locator(`article[aria-posinset="${columns + 1}"] .image-overlays .star-button`)).toBeFocused();
     await page.keyboard.press('Tab');
@@ -1563,4 +1567,127 @@ test('toolbar categories are alphabetical regardless of server order', async ({ 
     await page.goto(workspace);
     const category = page.getByRole('combobox', { name: 'Filter by category', exact: true });
     await expect(category.locator('option')).toHaveText(['All categories', 'Alpha', 'beta', 'zeta']);
+});
+
+// #249 D8 follow-up (image selection, Task 1): the concept's card checkbox and selection bar (app.js 398, 426-434).
+const bulkbar = page => page.locator('#workspace-main > #bulkbar');
+const checkbox = (card, filename) => card.getByRole('checkbox', { name: `Select ${filename}`, exact: true });
+const barButtons = page => bulkbar(page).locator('.bulkbar > button');
+
+test('card checkboxes select images into the concept bar and Clear empties it', async ({ page }) => {
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    // The concept's place: an empty bar between the filter row and the gallery layout.
+    await expect(bulkbar(page)).toBeEmpty();
+    expect(await bulkbar(page).evaluate(bar => [bar.previousElementSibling.className, bar.nextElementSibling.classList.contains('gallery-layout')]))
+        .toEqual(['filter-row', true]);
+    // Each overlay starts with the checkbox label, then the star.
+    expect(await page.locator('.image-overlays').evaluateAll(rows => rows.map(row => [...row.children].map(child =>
+        `${child.tagName.toLowerCase()}${child.querySelector(':scope > input') ? `>${child.firstElementChild.type}` : ''}`))))
+        .toEqual([['label>checkbox', 'button'], ['label>checkbox', 'button']]);
+    const [first, second] = [cards(page).first(), cards(page).last()];
+    const selectedBefore = await cards(page).evaluateAll(nodes => nodes.map(node => node.classList.contains('selected')));
+    await checkbox(first, 'same.png').check();
+    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('1 selected');
+    await expect(barButtons(page)).toHaveText(['Set category', 'Export metadata', 'Clear']);
+    // Toggling neither opens the viewer, nor inspects, nor moves focus.
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
+    await expect(checkbox(first, 'same.png')).toBeFocused();
+    expect(await cards(page).evaluateAll(nodes => nodes.map(node => node.classList.contains('selected')))).toEqual(selectedBefore);
+    // The count updates in place: the same bar and count nodes.
+    await bulkbar(page).locator('.bulkbar > strong').evaluate(node => { node.dataset.kept = 'yes'; });
+    await checkbox(second, 'same.png').check();
+    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
+    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveAttribute('data-kept', 'yes');
+    // Set category and Export metadata are wired by later tasks; until then they do nothing.
+    for (const name of ['Set category', 'Export metadata']) {
+        await bulkbar(page).getByRole('button', { name, exact: true }).click();
+        await expect(page.locator('dialog[open]')).toHaveCount(0);
+        await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
+    }
+    await checkbox(second, 'same.png').uncheck();
+    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('1 selected');
+    await checkbox(second, 'same.png').check();
+    await bulkbar(page).getByRole('button', { name: 'Clear', exact: true }).click();
+    await expect(bulkbar(page)).toBeEmpty();
+    // The pressed control hid with its bar: focus moves to the page heading, not to the page.
+    await expect(page.locator('#workspace-main h1')).toBeFocused();
+    await expect(checkbox(first, 'same.png')).not.toBeChecked();
+    await expect(checkbox(second, 'same.png')).not.toBeChecked();
+});
+
+test('the card checkbox keeps its own Space and Tab', async ({ page }) => {
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    const first = cards(page).first();
+    await first.getByRole('button', { name: 'Open same.png', exact: true }).focus();
+    await page.keyboard.press('Tab');
+    await expect(checkbox(first, 'same.png')).toBeFocused();
+    await page.keyboard.press('Space');
+    await expect(checkbox(first, 'same.png')).toBeChecked();
+    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('1 selected');
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
+    await page.keyboard.press('Tab');
+    await expect(star(first, 'same.png')).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(checkbox(first, 'same.png')).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(first.getByRole('button', { name: 'Open same.png', exact: true })).toBeFocused();
+    // An arrow key on the checkbox still moves between cards, as from the card's other controls.
+    await checkbox(first, 'same.png').focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(cards(page).last().getByRole('button', { name: 'Open same.png', exact: true })).toBeFocused();
+    await expect(checkbox(first, 'same.png')).toBeChecked();
+});
+
+test('the selection survives scrolling, re-mounting and appended batches, and a search clears it', async ({ page, request }) => {
+    await page.addInitScript(() => { window.IntersectionObserver = undefined; });
+    await expect(await request.post('/__test__/reset', { data: { extra_images: 200 } })).toBeOK();
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(40);
+    const firstKey = await cards(page).first().getAttribute('data-image-key');
+    await cards(page).first().getByRole('checkbox', { name: /^Select / }).check();
+    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('1 selected');
+    const more = page.getByRole('button', { name: 'Load more images', exact: true });
+    for (const loaded of [80, 120, 160, 200, 202]) {
+        await more.click();
+        await expect(caption(page)).toContainText(`${loaded} of 202 images`);
+        await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('1 selected');
+    }
+    // A card from a later batch joins the kept selection.
+    const late = page.locator('article[data-image-key][data-index="200"]');
+    await late.getByRole('checkbox', { name: /^Select / }).check();
+    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
+    // Bounded rendering unmounted the first card; scrolled back, it is mounted again with its box checked.
+    await expect(page.locator(`article[data-image-key="${firstKey}"]`)).toHaveCount(0);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const again = page.locator(`article[data-image-key="${firstKey}"]`);
+    await expect(again).toBeVisible();
+    await expect(again.getByRole('checkbox', { name: /^Select / })).toBeChecked();
+    await expect(cards(page).nth(1).getByRole('checkbox', { name: /^Select / })).not.toBeChecked();
+    // Returning to Images keeps the restored collection and its selection.
+    await page.evaluate(() => { window.location.hash = '/overview'; });
+    await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    await page.evaluate(() => { window.location.hash = '/images'; });
+    await expect(page.locator('#workspace-main h1')).toHaveText('Images');
+    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
+    // A search replaces the collection, and with it the selection.
+    await search(page).fill('0001');
+    await expect(caption(page)).not.toContainText('202 images');
+    await expect(bulkbar(page)).toBeEmpty();
+    await search(page).fill('');
+    await expect(caption(page)).toContainText('of 202 images');
+    await expect(bulkbar(page)).toBeEmpty();
+    await expect(page.locator(`article[data-image-key="${firstKey}"]`).getByRole('checkbox', { name: /^Select / })).not.toBeChecked();
+});
+
+test('the card checkbox does not open the viewer', async ({ page }) => {
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    const first = cards(page).first();
+    // A press on the label around the box, as well as on the box itself.
+    await first.locator('.image-overlays > label').click({ position: { x: 1, y: 1 } });
+    await checkbox(first, 'same.png').click();
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
+    await expect(page.locator('#viewer-dialog[open]')).toHaveCount(0);
 });

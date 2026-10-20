@@ -92,9 +92,10 @@ export async function mutate(page,{css=null,remove=[]}={}) {
 }
 
 /**
- * Inventory sections: {chrome, heading, toolbar, filterRow, caption, grid, cards, continuation, panel, library, history,
- * noPageScroll}. A section is null when its element is absent. The Images sections (toolbar … panel, #249 C7) measure
- * the concept's Images markup; `cards` holds the first six. Library and history stay null until PRs E and F.
+ * Inventory sections: {chrome, heading, toolbar, filterRow, bulkbar, caption, grid, cards, continuation, panel, library,
+ * history, noPageScroll}. A section is null when its element is absent. The Images sections (toolbar … panel, #249 C7)
+ * measure the concept's Images markup; `cards` holds the first six; `bulkbar` is the selection bar's place and, while
+ * anything is checked, its `.bulkbar` row. Library and history stay null until PRs E and F.
  */
 export function inventoryOf(page,scope='main') {
     return page.evaluate(measureInventory,scope);
@@ -329,9 +330,13 @@ export function measureInventory(scope) {
             box:when(panel,()=>{const box=relative(panel,gallery);return {left:box.left,top:box.top,width:box.width,...css(panel,'position','top')};})};
     }
     const continuation=body?.querySelector(':scope > .infinite-continuation');
+    function bulkbarOf(bar) {
+        return {id:bar.id||null,...relative(bar,main),children:bar.children.length,bar:when(bar.querySelector(':scope > .bulkbar'),rowOf)};
+    }
     return {chrome:chromeOf(),heading:headingOf(),
         toolbar:when(main?.querySelector(':scope > search.toolbar'),rowOf),
         filterRow:when(main?.querySelector(':scope > .filter-row'),rowOf),
+        bulkbar:when(main?.querySelector(':scope > #bulkbar'),bulkbarOf),
         caption:when(body?.querySelector(':scope > .section-caption'),captionOf),
         grid:when(grid,gridOf),
         cards:grid?[...grid.querySelectorAll(':scope > .media-card')].slice(0,6).map(cardOf):null,
