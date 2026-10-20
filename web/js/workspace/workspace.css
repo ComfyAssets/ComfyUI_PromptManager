@@ -65,6 +65,31 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 /* #249 D32: likewise the continuation's text and Load more wrap instead of pushing the button out of the column. */
 .infinite-continuation { flex-wrap: wrap; }
 
+/* Images cards (#249 C3). #249 D3: bounded rendering mounts only the visible cards and places each one itself, in every
+   layout (the concept places only masonry cards), so the grid reserves the collection's height and every card is
+   absolute. Columns and gap still come from the concept's `.image-grid` tracks. */
+.image-grid { position: relative; /* D3 */ }
+.image-grid > .media-card { position: absolute; }
+/* #249 D3: a list row's info keeps its own height so it can be measured; centred, it looks as the stretched concept row.
+   #249 D31: it may also shrink below a long nowrap title (the h3 ellipsis then applies, as in the grid). */
+.list-grid .media-info { align-self: center; min-width: 0; /* D3, D31 */ }
+/* #249 D31: at extreme zoom a list row is narrower than the concept's 160px art; the art yields so the info stays inside. */
+.list-grid .media-art { width: min(160px, 45%); /* D31 */ }
+/* #249 D31: at extreme zoom the subtitle wraps inside its column instead of running under the Inspect button. */
+.media-info p { overflow-wrap: anywhere; /* D31 */ }
+/* #249 D31: below the narrowest bounded card (120px, reached only at extreme zoom; images.mjs marks the grid) the info
+   row stacks its text above Inspect, so neither the title nor the subtitle collapses to nothing beside the button. */
+.narrow-cards .media-info { flex-wrap: wrap; }
+.narrow-cards .media-info > div { flex: 1 0 100%; }
+/* A list row beside its art keeps room for Inspect. */
+.narrow-cards.list-grid .media-art { width: 40%; }
+.narrow-cards.list-grid .media-info { padding-inline: 4px; }
+
+/* Legacy video media (the mock does not drop it) takes the concept's image rules in each layout. */
+.image-open video { display: block; width: 100%; height: auto; aspect-ratio: 1.33; object-fit: cover; }
+.masonry-grid .image-open video { aspect-ratio: var(--media-ratio); object-fit: contain; }
+.list-grid .image-open video { height: 95px; aspect-ratio: auto; }
+
 /* Interim page guards: concept element rules (`.ca-tools dialog`, `pre`) now reach production dialogs and prompt text
    that keep their own design until their page PR rebuilds them in concept markup. */
 .panel { background: var(--ca-surface); border: 1px solid var(--line); } /* PR D: Images side panel (padding and radius in images.css) becomes `.detail-panel` */

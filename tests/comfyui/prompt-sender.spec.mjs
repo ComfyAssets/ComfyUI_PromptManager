@@ -45,7 +45,7 @@ test('native image inspector previews and sends a pair into real visible widgets
         await workspace.getByRole('button',{name:'Import',exact:true}).click();
         await workspace.getByRole('dialog',{name:'Import & inspect',exact:true}).getByRole('button',{name:'Rescan',exact:true}).click();
         const card=workspace.locator('article[data-image-key]').filter({has:workspace.getByRole('button',{name:`Open ${filename}`,exact:true})});
-        await card.getByRole('button',{name:`Open ${filename}`,exact:true}).click();
+        await card.getByRole('button',{name:`Inspect ${filename}`,exact:true}).click();
         const inspector=workspace.getByRole('region',{name:'Image details',exact:true});
         await expect(inspector.getByRole('region',{name:'Positive prompt',exact:true})).toContainText(positive);
         await inspector.getByRole('button',{name:'Open full preview',exact:true}).click();

@@ -35,6 +35,7 @@ test('workspace serves real library data beside either ComfyUI renderer', async 
             await expect(workspace.locator('article[data-image-key]').first()).toBeVisible();
         } else {
             await expect(workspace.getByText('No matching images · 0 images', { exact: true })).toBeVisible();
+            await expect(workspace.locator('.gallery-body > .empty')).toHaveText('No matching images. Try another search or category.');
         }
         // D29: Images no longer links the legacy gallery; Overview's "Open existing image gallery" card does.
         await expect(workspace.locator('#workspace-main a[href="/prompt_manager/gallery"]')).toHaveCount(0);

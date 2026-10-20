@@ -361,8 +361,9 @@ convention.
 
 The lint covers `workspace.css` only. The page stylesheets that load before it
 (`images.css`, `library.css`, `inspector.css`) are not linted yet, and `images.css`
-still has unmarked concept-selector overrides (`.image-grid`, `.prompt-text`,
-`.prompt-actions`, `.ca-tools .prompt-actions button`). PRs C and D retire those
+still has unmarked concept-selector overrides (`.prompt-text`, `.prompt-actions`,
+`.ca-tools .prompt-actions button`; its `.image-grid` rule moved to the overlay
+as `#249 D3` in C3). PRs C and D retire those
 sheets: each one runs `lintOverlay` over every page sheet it keeps, and adds that
 sheet to the real-file lint test.
 

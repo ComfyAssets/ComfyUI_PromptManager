@@ -86,7 +86,7 @@ test('inspection wire preserves exact rooted envelope', async ({ request }) => {
 });
 
 const inspector=page=>page.locator('.image-details');
-const selectFile=async(page,name,root=0)=>page.locator(`article[data-image-key="${root}:inspector/${name}"] .image-open`).click();
+const selectFile=async(page,name,root=0)=>page.locator(`article[data-image-key="${root}:inspector/${name}"] .image-card-actions button`).click();
 async function fullFixture(page,request) {
     await expect(await request.post('/__test__/reset',{data:{full_inspector:true}})).toBeOK();
     await page.goto('/prompt_manager/workspace#/images');await selectFile(page,'complete.png');
@@ -227,7 +227,7 @@ test('full inspector labels container representations and releases action URLs',
 test('full inspector distinguishes missing, limited and legacy unknown generation facts',async({page,request})=>{
     await fullFixture(page,request);const panel=inspector(page);
     await selectFile(page,'empty.png');await expect(panel.locator('.generation-facts dd')).toHaveText(Array(6).fill('Not recorded'));
-    await page.locator('article[data-image-key="0:architecture/study-01.png"] .image-open').click();await expect(panel.locator('.generation-facts dd')).toHaveText(Array(6).fill('Not recorded'));
+    await page.locator('article[data-image-key="0:architecture/study-01.png"] .image-card-actions button').click();await expect(panel.locator('.generation-facts dd')).toHaveText(Array(6).fill('Not recorded'));
     await selectFile(page,'control-heavy.png');
     const explanation='Configuration exceeds inspection limits; download the original file to inspect it locally.';
     await expect(panel.getByText(explanation,{exact:true})).toHaveCount(1);await expect(panel.getByText(explanation,{exact:true})).toBeVisible();
@@ -301,7 +301,7 @@ test('collection viewer follows filtered loaded order beyond mounted cards',asyn
     // A grid page, not the sidebar's `limit=1` Images count.
     await page.route(url=>url.pathname.endsWith('/images/output') && url.searchParams.get('limit')!=='1',async route=>{started();await held;await route.continue();},{times:1});
     await more.click();await hit;await page.evaluate(()=>scrollTo(0,0));
-    const opener=page.locator(`article[data-image-key="0:${loaded[0].path}"] .image-card-footer button`);
+    const opener=page.locator(`article[data-image-key="0:${loaded[0].path}"] .image-open`);
     await opener.click();release();await expect(page.locator('.section-caption')).toContainText('200 of');
     const modal=mediaDialog(page);await expect(position(page)).toHaveText(`1 of 160 loaded: ${loaded[0].filename}`);
     let pages=0;page.on('request',req=>{if(req.url().includes('/images/output?'))pages++;});
@@ -554,7 +554,7 @@ test('collection viewer preserves original download and rooted retries',async({p
     await modal.getByRole('button',{name:'Close preview',exact:true}).click();await page.evaluate(()=>{window.availableViewer=window.Viewer;window.Viewer=undefined;});
     await page.route('**/images/inspect/inspector/explicit-empty.png?*',route=>route.fulfill({status:503,json:{success:false,error:'Unavailable'}}),{times:1});
     await selectFile(page,'explicit-empty.png');await expect(inspector(page)).toContainText('Could not read prompts from this file.');
-    await page.locator('article[data-image-key="0:inspector/explicit-empty.png"] .image-card-footer button').click();
+    await page.locator('article[data-image-key="0:inspector/explicit-empty.png"] .image-open').click();
     await expect(mediaStage(page).locator('img')).toBeVisible();await expect(mediaStage(page).locator('img')).toHaveJSProperty('naturalWidth',720);
     await expect(mediaDialog(page).getByRole('button',{name:'Zoom in',exact:true})).toHaveAccessibleDescription('Image transforms are unavailable because Viewer.js could not load.');
     await page.evaluate(()=>{window.Viewer=window.availableViewer;});await mediaDialog(page).getByRole('button',{name:'Retry prompt details',exact:true}).click();
@@ -569,7 +569,7 @@ test('collection viewer keeps nested dialog focus and route cleanup',async({page
     const text=modal.locator('.prompt-positive pre');await text.focus();await page.keyboard.press('ArrowRight');await expect(position(page)).toHaveText(before);
     await modal.getByText('Workflow & raw metadata',{exact:true}).focus();await page.keyboard.press('ArrowLeft');await expect(position(page)).toHaveText(before);
     await modal.getByRole('button',{name:'Next media',exact:true}).click();const key=(await position(page).textContent()).split('loaded: ')[1];
-    await page.keyboard.press('Escape');await expect(modal).toHaveCount(0);await expect(page.locator('.image-open[aria-pressed="true"]')).toBeFocused();await expect(inspector(page).locator('.file-name')).toHaveText(key);
+    await page.keyboard.press('Escape');await expect(modal).toHaveCount(0);await expect(page.locator('.media-card.selected .image-open')).toBeFocused();await expect(inspector(page).locator('.file-name')).toHaveText(key);
     await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();await page.evaluate(()=>{location.hash='/overview';});
     await expect(page.locator('h1')).toHaveText('Overview');await expect(page.locator('.viewer-container,.image-preview')).toHaveCount(0);
 });
@@ -614,7 +614,7 @@ test('collection viewer matches approved responsive frame',async({page,request},
     await page.screenshot({path:testInfo.outputPath('viewer-mobile-wider-font-2x.png')});
     await modal.getByRole('button',{name:'Close preview',exact:true}).click();await page.evaluate(()=>{document.documentElement.style.zoom='1';});await settleViewport(390);
     const longFiles=await(await request.get('/prompt_manager/images/output?mode=workspace&q=a-very-long&limit=40')).json();const long=longFiles.images[0];
-    await page.locator(`article[data-image-key="${long.root_index}:${long.path}"] .image-open`).click();await openCollection(page);
+    await page.locator(`article[data-image-key="${long.root_index}:${long.path}"] .image-card-actions button`).click();await openCollection(page);
     await page.evaluate(()=>{document.documentElement.style.zoom='2';});await settleViewport(390);await modal.evaluate(node=>{node.scrollTop=0;});
     await expect(modal.getByRole('button',{name:'Close preview',exact:true})).toBeInViewport();
 });

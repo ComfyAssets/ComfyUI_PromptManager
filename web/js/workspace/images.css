@@ -1,18 +1,4 @@
 .images-main { container: images-page / inline-size; }
-.image-grid { position: relative; inline-size: 100%; }
-.image-card { position: absolute; min-inline-size: 0; border: 1px solid var(--ca-line); border-radius: 7px; background: var(--ca-surface); display: grid; grid-template-rows: minmax(0, 1fr) var(--image-footer-height, 54px); }
-.image-card.selected { border-color: var(--ca-focus); outline: 1px solid var(--ca-focus); outline-offset: 0; }
-.image-card .image-open { display: block; padding: 0; inline-size: 100%; block-size: 100%; min-block-size: 0; border: 0; border-radius: 6px 6px 0 0; background: var(--ca-field); }
-.image-open :where(img, video) { display: block; inline-size: 100%; block-size: 100%; object-fit: cover; border-radius: inherit; }
-.image-grid[data-layout="grid"] .image-open { aspect-ratio: 4 / 3; }
-.image-card-footer { position: relative; align-self: start; min-inline-size: 0; min-block-size: 54px; padding: 10px 11px; }
-.image-card-footer strong { display: block; padding-inline-end: 24px; font-size: 11px; line-height: 1.4; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.image-card-footer small { display: block; color: var(--ca-muted); font-size: 9px; line-height: 1.4; margin-block-start: 6px; overflow-wrap: anywhere; }
-.ca-tools .image-card-footer button { position: absolute; inset-inline-end: 6px; inset-block-start: 5px; inline-size: 26px; block-size: 26px; min-block-size: 26px; padding: 5px; }
-.image-card-footer .icon { inline-size: 14px; block-size: 14px; }
-.image-grid[data-layout="list"] .image-card { grid-template-columns: min(160px, 45%) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
-.image-grid[data-layout="list"] .image-open { border-radius: 6px 0 0 6px; }
-.image-grid[data-layout="list"] .image-card-footer { align-self: center; min-block-size: 0; }
 .image-details { position: sticky; inset-block-start: 20px; padding: 17px; border-radius: 7px; min-inline-size: 0; max-block-size: calc(100dvh - 40px); overflow: auto; }
 .image-details h2 { font-size: 14px; overflow-wrap: anywhere; margin-block: 0 12px; }
 .image-details > :where(img, video) { display: block; inline-size: calc(100% + 34px); block-size: 150px; margin: -17px -17px 17px; object-fit: cover; background: var(--ca-field); border-radius: 6px 6px 0 0; }

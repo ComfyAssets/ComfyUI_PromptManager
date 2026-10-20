@@ -4,7 +4,7 @@ import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/inde
 const workspace='/prompt_manager/workspace#/images';
 const details=page=>page.getByRole('region',{name:'Image details',exact:true});
 const role=(scope,name)=>scope.getByRole('region',{name:`${name} prompt`,exact:true});
-const select=async(page,key)=>page.locator(`article[data-image-key="${key}"]`).getByRole('button',{name:/^Open /}).click();
+const select=async(page,key)=>page.locator(`article[data-image-key="${key}"]`).getByRole('button',{name:/^Inspect /}).click();
 const dialog=page=>page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
 
 test.beforeEach(async({page,request,browserName})=>{
@@ -45,7 +45,7 @@ test('collection viewer rejects stale source and sends only refreshed API eviden
         await expect(await request.post('/prompt_manager/settings',{data:{gallery_root_paths:['input','output']}})).toBeOK();
         const response=page.waitForResponse(result=>result.url().includes('/images/inspect/shared/same.png?root=0'));
         await select(page,'0:shared/same.png');const changed=await response;expect(changed.status()).toBe(409);expect((await changed.json()).code).toBe('source-changed');
-        await page.locator('article[data-image-key="0:shared/same.png"] .image-card-footer button').click();const preview=page.getByRole('dialog',{name:'Image preview',exact:true});
+        await page.locator('article[data-image-key="0:shared/same.png"] .image-open').click();const preview=page.getByRole('dialog',{name:'Image preview',exact:true});
         const message='The source changed. Refresh the image collection before inspecting this file.';
         await expect(preview).toContainText(message);await expect(preview.locator('[data-copy-role],[data-send-role],.file-inspector a[download]')).toHaveCount(0);
         const original=preview.getByRole('group',{name:'Media controls',exact:true}).getByLabel('Download original',{exact:true});
@@ -229,6 +229,7 @@ test('filtering away a selected image aborts its pending metadata request',async
         const baseline=await page.evaluate(()=>window.inspectionAborts);
         await page.getByRole('searchbox',{name:'Search workspace',exact:true}).fill('no-such-file');
         await expect(page.getByText('No matching images · 0 images',{exact:true})).toBeVisible();
+        await expect(page.locator('.gallery-body > .empty')).toHaveText('No matching images. Try another search or category.');
         await expect.poll(()=>page.evaluate(()=>window.inspectionAborts),{timeout:1500}).toBeGreaterThan(baseline);
     } finally {release();}
 });
@@ -247,10 +248,10 @@ test('responsive gallery defers observed size writes and still fits the new view
         };
     });
     await page.setViewportSize({width:1280,height:900});await page.goto(workspace);
-    await expect(page.locator('.image-card')).toHaveCount(4);
+    await expect(page.locator('.media-card')).toHaveCount(4);
     await page.setViewportSize({width:390,height:844});
-    await expect.poll(()=>page.locator('.image-card').first().evaluate(node=>node.getBoundingClientRect().width)).toBeLessThan(390);
-    await expect.poll(()=>page.locator('.image-grid').evaluate(node=>Number.parseFloat(node.style.height))).toBeCloseTo(383.75,0);
+    await expect.poll(()=>page.locator('.media-card').first().evaluate(node=>node.getBoundingClientRect().width)).toBeLessThan(390);
+    await expect.poll(()=>page.locator('.image-grid').evaluate(node=>Number.parseFloat(node.style.height))).toBeCloseTo(384.4,0); // the concept's 1.33 media plus the measured info row
     expect(await page.evaluate(()=>window.inlineResizeWrites)).toBe(0);
 });
 

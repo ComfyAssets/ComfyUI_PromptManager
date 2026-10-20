@@ -1,6 +1,6 @@
 import { createScope, createButton } from '../shared/toolkit/core.js';
-import { createImageStream, imageKey, countLine, captionDate, scopeLabel } from './images-state.mjs';
-import { layoutImages, visibleImages, workspaceImageMetrics } from './image-layout.mjs';
+import { createImageStream, imageKey, countLine, captionDate, scopeLabel, cardTitle, cardSubtitle, mediaRatio } from './images-state.mjs';
+import { layoutImages, visibleImages, gridMetrics } from './image-layout.mjs';
 import { mountFileInspector } from './file-inspector.mjs';
 import { createInspectionController } from './inspection-state.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
@@ -18,10 +18,6 @@ function el(tag, text, className) {
     if (text !== undefined) element.textContent = text;
     if (className) element.className = className;
     return element;
-}
-
-function formatBytes(value) {
-    return value >= 1048576 ? `${(value / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(value / 1024))} KB`;
 }
 
 function selectOf(id, options, value) {
@@ -43,6 +39,9 @@ const MEDIA_OPTIONS = Object.freeze([['all', 'All media'], ['image', 'Images'], 
 const SOURCES_FAILED = 'Sources and folders could not be loaded. Rescan from Import to retry.';
 const CATEGORIES_FAILED = 'Categories could not be loaded. Rescan from Import to retry.';
 const RESCAN_FAILED = 'Output folders could not be rescanned. Try Rescan again.';
+// The concept card's first `.media-info` reservation and list row (image-layout.mjs); real rows are measured.
+const NARROW_CARD_WIDTH = 120;
+const INITIAL_METRICS = Object.freeze({columns:1, gap:13, footerHeight:54, listHeight:97});
 
 let lastVisit = null;
 
@@ -61,9 +60,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     scope.cleanup(() => detailInspector?.dispose());
     const visit = embedded ? null : lastVisit;
     let density = visit?.density || 'comfortable';
-    let metrics = workspaceImageMetrics(window.innerWidth, density);
+    let metrics = {...INITIAL_METRICS};
     let layout = visit?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer;
-    let state, geometry = { positions: [], height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest, categoryRequest, recovering = false, rescanning = false;
+    let state, geometry = { positions: [], columns: 1, height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest, categoryRequest, recovering = false, rescanning = false;
     // Discovered sources and folders for "Refine this view" and the scope chip.
     let roots = [], folders = [];
     const rendered = new Map();
@@ -192,41 +191,50 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             onPreview:() => previewImage(image), onRetry:() => inspection.retry(), onRefresh:refreshInspectionCollection});
         detailInspector.setState(inspection.state);
         inspection.select(image);
-        for (const [key, card] of rendered) {
-            card.classList.toggle('selected', key === selection);
-            card.querySelector('.image-open').setAttribute('aria-pressed', String(key === selection));
-        }
+        for (const [key, card] of rendered) markSelected(card, key === selection);
+    }
+    /** The concept's `.media-card.selected`; Info selects into the panel, so it carries the pressed state (D19). */
+    function markSelected(card, selected) {
+        card.classList.toggle('selected', selected);
+        card.querySelector('.image-card-actions button').setAttribute('aria-pressed', String(selected));
     }
     function previewImage(image) {
         if (!image) return;
         mediaViewer.open({items:state.items,selectedKey:imageKey(image),trigger:document.activeElement});
     }
+    /** The concept media card (app.js mediaCard): the image opens the viewer, Info inspects (D7–D11, D19). */
     function cardFor(image) {
         const key = imageKey(image);
-        const card = el('article', undefined, 'image-card');
+        const card = el('article', undefined, 'media-card');
         card.dataset.imageKey = key; card.setAttribute('role', 'listitem');
-        const open = createButton('');
-        open.className = 'image-open'; open.setAttribute('aria-label', `Open ${image.filename}`);
-        open.title = 'Show image details'; open.setAttribute('aria-pressed', String(key === selection));
-        const img = mediaElement(image, true);
-        open.append(img);
-        const footer = el('div', undefined, 'image-card-footer');
-        const title = el('strong', image.filename); title.title = image.path;
-        const dimensions = image.width && image.height ? `${image.width} × ${image.height} · ` : '';
-        const type = image.media_type === 'video' ? 'Video' : image.filename.split('.').pop().toUpperCase();
-        const sub = el('small', `${dimensions}${type} · ${formatBytes(image.size)}`);
-        const preview = createButton('', 'ca-icon-button');
-        preview.append(createWorkspaceIcon('images'));
-        preview.setAttribute('aria-label', `Preview ${image.filename}`);
-        footer.append(title, sub, preview); card.append(open, footer);
+        card.style.setProperty('--media-ratio', mediaRatio(image));
+        const art = el('div', undefined, 'media-art');
+        const open = createButton('', 'image-open');
+        open.setAttribute('aria-label', `Open ${image.filename}`);
+        open.append(mediaElement(image, true));
+        // D7's star arrives with C5; D8 renders no selection checkbox.
+        art.append(open, el('div', undefined, 'image-overlays'));
+        const info = el('div', undefined, 'media-info');
+        const text = el('div');
+        const title = el('h3', cardTitle(image)); title.title = image.path;
+        text.append(title, el('p', cardSubtitle(image)));
+        const actions = el('div', undefined, 'image-card-actions');
+        // D9: the tag button waits for the image-annotations slice.
+        const inspectButton = createButton('', 'icon-btn');
+        inspectButton.append(createWorkspaceIcon('info'));
+        inspectButton.setAttribute('aria-label', `Inspect ${image.filename}`);
+        actions.append(inspectButton);
+        info.append(text, actions);
+        card.append(art, info);
+        markSelected(card, key === selection);
         return card;
     }
     scope.listen(grid, 'click', event => {
         const card = event.target.closest('article[data-image-key]');
         if (!card) return;
         const image = state.items.find(item => imageKey(item) === card.dataset.imageKey);
-        if (event.target.closest('.image-card-footer button')) previewImage(image);
-        else if (event.target.closest('button')) inspect(image);
+        if (event.target.closest('.image-open')) previewImage(image);
+        else if (event.target.closest('.image-card-actions button')) inspect(image);
     });
 
     function renderVisible() {
@@ -258,7 +266,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             previous = card;
         }
         // Natural footer measurements and absolute reservations share unzoomed CSS units.
-        const footerHeight = Math.max(metrics.footerHeight, ...[...rendered.values()].map(card => card.querySelector('.image-card-footer').offsetHeight));
+        const footerHeight = Math.max(metrics.footerHeight, ...[...rendered.values()].map(card => card.querySelector('.media-info').offsetHeight));
         if (footerHeight > metrics.footerHeight) {
             const anchor = indexes.find(index => geometry.positions[index].y + geometry.positions[index].height >= top && geometry.positions[index].y <= top + viewportHeight);
             const anchorTop = anchor === undefined ? 0 : geometry.positions[anchor].y;
@@ -274,12 +282,11 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     function positionCard(card, index) {
         const image = state.items[index], position = geometry.positions[index];
         card.dataset.index = index;
-        card.classList.toggle('selected', imageKey(image) === selection);
-        card.querySelector('.image-open').setAttribute('aria-pressed', String(imageKey(image) === selection));
+        markSelected(card, imageKey(image) === selection);
         card.setAttribute('aria-posinset', String(index + 1)); card.setAttribute('aria-setsize', String(state.total));
         Object.assign(card.style, { left: `${position.x}px`, top: `${position.y}px`, width: `${position.width}px`, height: `${position.height}px` });
     }
-    function focusImage(index, preview = false, {scroll = true} = {}) {
+    function focusImage(index, actions = false, {scroll = true} = {}) {
         if (index < 0 || index >= state.items.length) return;
         const image = state.items[index], key = imageKey(image);
         let card = rendered.get(key);
@@ -287,7 +294,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             card = cardFor(image); rendered.set(key, card); positionCard(card, index);
             grid.insertBefore(card, [...grid.children].find(child => Number(child.dataset.index) > index) || null);
         }
-        card.querySelector(preview ? '.image-card-footer button' : '.image-open').focus({ preventScroll: true });
+        card.querySelector(actions ? '.image-card-actions button' : '.image-open').focus({ preventScroll: true });
         if (scroll) card.scrollIntoView({ block: 'nearest' });
         cancelAnimationFrame(frame); frame = 0;
         renderVisible();
@@ -296,13 +303,13 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const card = event.target.closest('article[data-image-key]');
         if (!card) return;
         const index = Number(card.dataset.index);
-        const columns = layout === 'list' ? 1 : metrics.columns;
+        const columns = geometry.columns;
         const target = { Home: 0, End: state.items.length - 1, ArrowRight: index + 1,
             ArrowLeft: index - 1, ArrowDown: index + columns, ArrowUp: index - columns }[event.key];
         if (target !== undefined) { event.preventDefault(); focusImage(Math.max(0, Math.min(state.items.length - 1, target))); }
         else if (event.key === 'Tab') {
             const backward = event.shiftKey && event.target.matches('.image-open');
-            const forward = !event.shiftKey && event.target.closest('.image-card-footer');
+            const forward = !event.shiftKey && event.target.closest('.image-card-actions');
             const adjacent = backward ? index - 1 : index + 1;
             if ((backward || forward) && state.items[adjacent] && !rendered.has(imageKey(state.items[adjacent]))) {
                 event.preventDefault(); focusImage(adjacent, backward);
@@ -311,17 +318,22 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     });
     function scheduleVisible() { if (!frame) frame = requestAnimationFrame(() => { frame = 0; renderVisible(); }); }
     function updateGeometry() {
-        geometry = layoutImages(state.items, galleryWidth, layout, 240, metrics);
+        geometry = layoutImages(state.items, galleryWidth, layout, metrics);
+        // Below the narrowest bounded card (extreme zoom) the info row stacks (the production overlay, #249 D31).
+        grid.classList.toggle('narrow-cards', galleryWidth < NARROW_CARD_WIDTH);
         grid.style.height = `${geometry.height}px`;
         grid.style.setProperty('--image-footer-height', `${metrics.footerHeight}px`);
     }
     function updateLayout() {
         if (!state || scope.signal.aborted) return;
         cancelAnimationFrame(frame); frame = 0;
+        // The concept's grid classes (app.js updateImages); the concept stylesheet then owns the columns and gap (D3).
+        grid.className = ['image-grid', density === 'comfortable' ? '' : density,
+            layout === 'list' ? 'list-grid' : layout === 'masonry' ? 'masonry-grid' : ''].filter(Boolean).join(' ');
         const width = Number.parseFloat(getComputedStyle(grid).width);
         const retained = state.items.length && width === galleryWidth && grid.dataset.layout === layout && grid.dataset.density === density ? metrics : null;
         galleryWidth = width;
-        metrics = workspaceImageMetrics(window.innerWidth, density, galleryWidth);
+        metrics = {...INITIAL_METRICS, ...gridMetrics(grid)};
         if (retained) {
             metrics.footerHeight = retained.footerHeight;
             metrics.listHeight = retained.listHeight;

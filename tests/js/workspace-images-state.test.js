@@ -243,7 +243,32 @@ test('the scope chip summarizes source and folder', async () => {
     const roots=[{index:0,label:'output'},{index:1,label:'input'}];
     assert.equal(scopeLabel({root:'all',subfolder:''},roots),'All output folders');
     assert.equal(scopeLabel({root:'1',subfolder:'shared'},roots),'input · shared');
-    assert.equal(scopeLabel({root:'0',subfolder:''},roots),'output · All folders');
+    assert.equal(scopeLabel({root:'0',subfolder:''},roots),'output · All output folders');
     assert.equal(scopeLabel({root:'all',subfolder:'bulk'},roots),'All sources · bulk');
-    assert.equal(scopeLabel({root:'7',subfolder:''},roots),'Source 7 · All folders');
+    assert.equal(scopeLabel({root:'7',subfolder:''},roots),'Source 7 · All output folders');
+});
+
+test('the card title is the confirmed linked title, else the filename (D10)', async () => {
+    const {cardTitle}=await source;
+    const linked=(status,title)=>({filename:'alpine_00001.png',linked:{status,positive_id:1,title,title_source:'title',category:null,rating:null}});
+    assert.equal(cardTitle(linked('linked','Alpine observatory')),'Alpine observatory');
+    for (const status of ['ambiguous','unlinked','unavailable','none']) assert.equal(cardTitle(linked(status,'Alpine observatory')),'alpine_00001.png');
+    assert.equal(cardTitle(linked('linked',null)),'alpine_00001.png');
+    assert.equal(cardTitle(linked('linked','')),'alpine_00001.png');
+    assert.equal(cardTitle({filename:'plain.png'}),'plain.png');
+    assert.equal(cardTitle({filename:'plain.png',linked:null}),'plain.png');
+});
+
+test('the card subtitle is W × H · EXT · Seed N with unknown parts omitted (D11)', async () => {
+    const {cardSubtitle, mediaRatio}=await source;
+    assert.equal(cardSubtitle({filename:'a.png',width:1536,height:1152,seed:'42001'}),'1536 × 1152 · PNG · Seed 42001');
+    // The seed is the listing's decimal string: never a Number, so 2^53 + 1 survives.
+    assert.equal(cardSubtitle({filename:'a.png',width:8,height:8,seed:'9007199254740993'}),'8 × 8 · PNG · Seed 9007199254740993');
+    assert.equal(cardSubtitle({filename:'clip.webm',width:null,height:null,seed:null}),'WEBM');
+    assert.equal(cardSubtitle({filename:'clip.mp4',media_type:'video',width:640,height:360}),'640 × 360 · MP4');
+    assert.equal(cardSubtitle({filename:'noext',width:0,height:10,seed:''}),'');
+    assert.equal(cardSubtitle({filename:'.hidden',width:10,height:Infinity,seed:42}),'');
+    assert.equal(cardSubtitle({filename:'trailing.',seed:'7'}),'Seed 7');
+    assert.equal(mediaRatio({width:1536,height:1152}),'1536/1152');
+    for (const image of [{}, {width:0,height:5}, {width:5,height:NaN}, {width:Infinity,height:5}]) assert.equal(mediaRatio(image),'4/3');
 });

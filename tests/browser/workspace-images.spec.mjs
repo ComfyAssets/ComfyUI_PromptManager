@@ -1,5 +1,6 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import { seedConcept, openConcept, openProduction } from './concept-inventory.mjs';
 
 const workspace = '/prompt_manager/workspace#/images';
 const cards = page => page.locator('article[data-image-key]');
@@ -54,17 +55,17 @@ test('native Images keeps colliding filenames distinct and inspects the selected
         .toEqual(['0:shared/same.png', '1:shared/same.png']);
     const originals = await cards(page).locator('img').evaluateAll(elements => elements.map(element => element.src));
     expect(new Set(originals).size).toBe(2);
-    await cards(page).nth(1).getByRole('button', { name: 'Open same.png', exact: true }).click();
+    await cards(page).nth(1).getByRole('button', { name: 'Inspect same.png', exact: true }).click();
     await expect(details(page)).toContainText('same.png');
     await expect(details(page)).toContainText('shared/same.png');
     await expect(details(page)).toContainText(/input/i);
     await capture('after-images-source-collision-input-1600');
-    await cards(page).first().getByRole('button', { name: 'Open same.png', exact: true }).click();
+    await cards(page).first().getByRole('button', { name: 'Inspect same.png', exact: true }).click();
     await expect(details(page)).toContainText(/output/i);
     await capture('after-images-source-collision-output-1600');
     await page.setViewportSize({width:390,height:844});
     for (const [index,source] of [[1,'input'],[0,'output']]) {
-        await cards(page).nth(index).getByRole('button',{name:'Open same.png',exact:true}).click();
+        await cards(page).nth(index).getByRole('button',{name:'Inspect same.png',exact:true}).click();
         await expect(details(page)).toContainText(new RegExp(source,'i'));
         await details(page).scrollIntoViewIfNeeded();
         await capture(`after-images-source-collision-${source}-390`);
@@ -83,17 +84,18 @@ test('workspace defaults to the native Images collection without a hash route', 
 test('image selection is announced on the selected image button', async ({ page }) => {
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(2);
-    const selected = cards(page).last().getByRole('button', { name: 'Open same.png', exact: true });
+    // D19: Info selects into the panel, so it carries the selection state.
+    const selected = cards(page).last().getByRole('button', { name: 'Inspect same.png', exact: true });
     await selected.click();
     await expect(selected).toHaveAttribute('aria-pressed', 'true');
-    await expect(cards(page).first().getByRole('button', { name: 'Open same.png', exact: true }))
+    await expect(cards(page).first().getByRole('button', { name: 'Inspect same.png', exact: true }))
         .toHaveAttribute('aria-pressed', 'false');
 });
 
 test('closing details preview restores its trigger focus', async ({ page }) => {
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(2);
-    const selected = cards(page).last().getByRole('button', { name: 'Open same.png', exact: true });
+    const selected = cards(page).last().getByRole('button', { name: 'Inspect same.png', exact: true });
     await selected.click();
     const preview = details(page).getByRole('button', { name: 'Open full preview', exact: true });
     await preview.click();
@@ -153,7 +155,7 @@ for (const embedded of [false, true]) {
             await page.locator('.infinite-continuation').scrollIntoViewIfNeeded();
             await expect.poll(() => page.evaluate(() => window.continuationFixture.reads)).toEqual([null, 'next-0']);
             const key = await cards(page).last().getAttribute('data-image-key');
-            const preview = page.locator(`article[data-image-key="${key}"]`).getByRole('button', { name: /^Preview / });
+            const preview = page.locator(`article[data-image-key="${key}"]`).getByRole('button', { name: /^Open / });
             await preview.click();
             const viewer = page.getByRole('dialog', { name: 'Image preview', exact: true });
             await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
@@ -219,7 +221,7 @@ test('filename search finds records beyond the initial batch and sort orders the
 test('layout changes retain selection and use one collection in Grid, List and Masonry', async ({ page }) => {
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(2);
-    await cards(page).nth(1).getByRole('button', { name: 'Open same.png', exact: true }).click();
+    await cards(page).nth(1).getByRole('button', { name: 'Inspect same.png', exact: true }).click();
     for (const layout of ['List', 'Masonry', 'Grid']) {
         await page.getByRole('button', { name: layout, exact: true }).click();
         await expect(page.getByRole('button', { name: layout, exact: true })).toHaveAttribute('aria-pressed', 'true');
@@ -245,7 +247,7 @@ test('returning to Images restores the filtered stream, layout, selection and sc
     await page.getByRole('button', { name: 'List', exact: true }).click();
     await page.getByRole('button', { name: 'Load more images', exact: true }).click();
     await expect(caption(page)).toContainText('80 of 100 images');
-    await cards(page).first().getByRole('button', { name: /^Open / }).click();
+    await cards(page).first().getByRole('button', { name: /^Inspect / }).click();
     const selectedTitle = await details(page).getByRole('heading', { level: 2 }).textContent();
     await cards(page).nth(30).scrollIntoViewIfNeeded();
     const previousScroll = await page.evaluate(() => window.scrollY);
@@ -257,7 +259,7 @@ test('returning to Images restores the filtered stream, layout, selection and sc
     await page.evaluate(() => { window.location.hash = '/images'; });
     await expect(page.locator('#workspace-main h1')).toHaveText('Images');
     await expect(box).toHaveValue('00');
-    await expect(page.locator('.filter-row span.chip')).toHaveText(/ · All folders$/);
+    await expect(page.locator('.filter-row span.chip')).toHaveText(/ · All output folders$/);
     await expect(page.getByRole('button', { name: 'List', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await expect(caption(page)).toContainText('80 of 100 images');
     await expect(cards(page)).toHaveCount(80);
@@ -277,7 +279,7 @@ test('continuous loading appends without replacing cards or losing selected deta
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(40);
     await cards(page).first().evaluate(element => { element.dataset.preserved = 'yes'; });
-    await cards(page).first().getByRole('button', { name: /^Open / }).click();
+    await cards(page).first().getByRole('button', { name: /^Inspect / }).click();
     const selected = await cards(page).first().getAttribute('data-image-key');
     const more = page.getByRole('button', { name: 'Load more images', exact: true });
     await more.focus();
@@ -315,7 +317,7 @@ test('large continuous collections bound the mounted cards and restore earlier i
     await expect(cards(page)).toHaveCount(40);
     const first = cards(page).first();
     const firstKey = await first.getAttribute('data-image-key');
-    await first.getByRole('button', { name: /^Open / }).click();
+    await first.getByRole('button', { name: /^Inspect / }).click();
     const selectedTitle = await details(page).getByRole('heading', { level: 2 }).textContent();
     const more = page.getByRole('button', { name: 'Load more images', exact: true });
     for (const loaded of [80, 120, 160, 200, 202]) {
@@ -332,7 +334,7 @@ test('large continuous collections bound the mounted cards and restore earlier i
     await expect.poll(() => cards(page).count()).toBeLessThan(120);
     await expect(details(page).getByRole('heading', { level: 2 })).toHaveText(selectedTitle);
     await page.locator(`article[data-image-key="${firstKey}"]`)
-        .getByRole('button', { name: /^Preview / }).click();
+        .getByRole('button', { name: /^Open / }).click();
     await expect(page.locator('dialog[open] .viewer-canvas img')).toBeVisible();
     await page.getByRole('button', { name: 'Close preview', exact: true }).click();
 });
@@ -344,7 +346,7 @@ test('virtual gallery keyboard navigation reaches loaded endpoints and announces
     await expect(cards(page)).toHaveCount(40);
     const firstKey = await cards(page).first().getAttribute('data-image-key');
     const firstName = await cards(page).first().getByRole('button', { name: /^Open / }).getAttribute('aria-label');
-    await cards(page).first().getByRole('button', { name: /^Open / }).click();
+    await cards(page).first().getByRole('button', { name: /^Inspect / }).click();
     const selectedTitle = await details(page).getByRole('heading', { level: 2 }).textContent();
     const more = page.getByRole('button', { name: 'Load more images', exact: true });
     for (const loaded of [80, 120, 160, 200, 202]) {
@@ -374,12 +376,12 @@ test('virtual gallery keyboard navigation reaches loaded endpoints and announces
 test('preview uses actual Viewer.js and cleans up when closing or leaving Images', async ({ page }) => {
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(2);
-    await cards(page).last().getByRole('button', { name: 'Preview same.png', exact: true }).click();
+    await cards(page).last().getByRole('button', { name: 'Open same.png', exact: true }).click();
     await expect(page.locator('dialog[open] .viewer-canvas img')).toBeVisible();
     await expect(page.locator('dialog[open] .viewer-canvas img')).toHaveAttribute('src', /root=1/);
     await page.getByRole('button', { name: 'Close preview', exact: true }).click();
     await expect(page.locator('dialog[open]')).toHaveCount(0);
-    await cards(page).first().getByRole('button', { name: 'Preview same.png', exact: true }).click();
+    await cards(page).first().getByRole('button', { name: 'Open same.png', exact: true }).click();
     await expect(page.locator('dialog[open] .viewer-canvas img')).toBeVisible();
     await page.evaluate(() => { window.location.hash = '/overview'; });
     await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
@@ -398,7 +400,11 @@ test('real video media has a usable card and native playback cleans up on close 
     await expect(card).toHaveAttribute('data-image-key', '0:clip.webm');
     await expect(card.locator('img')).toHaveCount(0);
     await expect(card.getByRole('button', { name: 'Open clip.webm', exact: true })).toBeVisible();
-    await card.getByRole('button', { name: 'Preview clip.webm', exact: true }).click();
+    // Legacy video art inside the concept card; D11 names the video's own extension.
+    await expect(card.locator('.media-art > .image-open > video')).toHaveCount(1);
+    await expect(card.locator('.media-info p')).toHaveText(/(?:^|· )WEBM$/);
+    expect(await card.locator('video').evaluate(node => node.getBoundingClientRect().height)).toBeGreaterThan(20);
+    await card.getByRole('button', { name: 'Open clip.webm', exact: true }).click();
     const video = page.locator('dialog[open] video');
     await expect(video).toBeVisible();
     await expect(video).toHaveJSProperty('controls', true);
@@ -413,7 +419,7 @@ test('real video media has a usable card and native playback cleans up on close 
     await page.getByRole('button', { name: 'Close preview', exact: true }).click();
     await expect(page.locator('dialog video')).toHaveCount(0);
     expect(await page.evaluate(() => window.__previewVideo.paused && !window.__previewVideo.isConnected)).toBe(true);
-    await card.getByRole('button', { name: 'Preview clip.webm', exact: true }).click();
+    await card.getByRole('button', { name: 'Open clip.webm', exact: true }).click();
     await expect(video).toBeVisible();
     await video.evaluate(async element => {
         window.__previewVideo = element;
@@ -435,7 +441,7 @@ test('collection viewer ignores delayed media callbacks and keeps inspection ret
         if(url.searchParams.get('root')==='0'&&url.searchParams.has('_pm_viewer')) {held();await pending;}
         await route.continue().catch(()=>{});
     });
-    await cards(page).first().getByRole('button',{name:'Preview same.png',exact:true}).click();await waiting;
+    await cards(page).first().getByRole('button',{name:'Open same.png',exact:true}).click();await waiting;
     const preview=page.getByRole('dialog',{name:'Image preview',exact:true});
     await expect(preview.getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','true');
     await page.route('**/images/inspect/shared/same.png?*',route=>route.fulfill({status:503,json:{success:false,error:'Unavailable'}}),{times:1});
@@ -453,7 +459,7 @@ test('collection viewer ignores delayed media callbacks and keeps inspection ret
 
 test('collection viewer describes video transforms and releases native playback on navigation',async({page,request})=>{
     await expect(await request.post('/__test__/reset',{data:{include_video:true}})).toBeOK();await page.goto(workspace);
-    await page.locator('article[data-image-key="0:clip.webm"] .image-card-footer button').click();
+    await page.locator('article[data-image-key="0:clip.webm"] .image-open').click();
     const preview=page.getByRole('dialog',{name:'Image preview',exact:true}),video=preview.locator('video');
     await expect(video).toHaveJSProperty('controls',true);await expect(video).toHaveJSProperty('playsInline',true);
     const zoom=preview.getByRole('button',{name:'Zoom in',exact:true});await expect(zoom).toHaveAttribute('aria-disabled','true');await expect(zoom).toHaveAccessibleDescription('Image transforms are unavailable for video.');
@@ -533,9 +539,9 @@ async function staleSourceRecovery(page, request, roots) {
     await expect(await request.post('/prompt_manager/settings', { data: { gallery_root_paths: roots } })).toBeOK();
     const selected = initial.images.at(-1), key = `${selected.root_index}:${selected.path}`;
     const stale = page.waitForResponse(response => response.url().includes('/images/inspect/') && response.status() === 409);
-    await page.locator(`article[data-image-key="${key}"] .image-open`).click();expect((await stale).status()).toBe(409);
+    await page.locator(`article[data-image-key="${key}"] .image-card-actions button`).click();expect((await stale).status()).toBe(409);
     await expect(details(page)).toContainText('The source changed. Refresh the image collection before inspecting this file.');
-    await page.locator(`article[data-image-key="${key}"] .image-card-footer button`).click();
+    await page.locator(`article[data-image-key="${key}"] .image-open`).click();
     const viewer = page.getByRole('dialog', { name: 'Image preview', exact: true });await expect(viewer).toContainText('The source changed.');
     const pages = [], inspections = [], options = [], mutations = [];
     page.on('request', request => {
@@ -604,7 +610,7 @@ test('mobile Images keeps filters, layouts and selected details within the viewp
     await expect(cards(page)).toHaveCount(2);
     for (const layout of ['List', 'Masonry', 'Grid']) {
         await page.getByRole('button', { name: layout, exact: true }).click();
-        await cards(page).last().getByRole('button', { name: 'Open same.png', exact: true }).click();
+        await cards(page).last().getByRole('button', { name: 'Inspect same.png', exact: true }).click();
         await expect(details(page)).toContainText(/input/i);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     }
@@ -659,7 +665,7 @@ test('refresh releases the previous inspector video source', async ({ page, requ
     await expect(await request.post('/__test__/reset', { data: { include_video: true } })).toBeOK();
     await page.goto(workspace);
     const card = cards(page).filter({ hasText: 'clip.webm' });
-    await card.getByRole('button', { name: 'Open clip.webm', exact: true }).click();
+    await card.getByRole('button', { name: 'Inspect clip.webm', exact: true }).click();
     await expect(details(page).locator('video')).toBeVisible();
     await details(page).locator('video').evaluate(element => { window.__oldInspectorVideo = element; });
     await rescan(page);
@@ -736,9 +742,10 @@ test('Images uses approved geometry while keeping real controls', async ({page,r
     expect(geometry[1].x-geometry[0].right).toBeCloseTo(13,0);
     expect(geometry[3].y-geometry[0].bottom).toBeCloseTo(13,0);
     expect(geometry[3].x).toBeCloseTo(geometry[0].x,0);
-    expect(geometry[0].mediaWidth/geometry[0].mediaHeight).toBeCloseTo(4/3,2);
+    // The concept's `.image-open img { aspect-ratio: 1.33 }`.
+    expect(geometry[0].mediaWidth/geometry[0].mediaHeight).toBeCloseTo(1.33,2);
     expect((await caption(page).boundingBox()).y).toBeLessThan(geometry[0].y);
-    await expect(cards(page).first()).toHaveCSS('outline-style','solid');
+    await expect(cards(page).first()).toHaveCSS('box-shadow',/ 0px 0px 0px 1px$/);
     const cover=details(page).getByRole('button',{name:'Open full preview',exact:true});
     await expect(cover).toHaveCSS('height','150px');
     await expect(cover.locator('img')).toBeVisible();await expect(cover.locator('img')).toHaveCSS('height','150px');
@@ -754,7 +761,7 @@ test('density changes and resize preserve identity focus and selection', async (
     await page.setViewportSize({width:1600,height:1100});await page.goto(workspace);
     await expect(cards(page)).toHaveCount(24);
     const first=cards(page).first();await first.evaluate(node=>{window.originalImageCard=node;});
-    await first.getByRole('button',{name:/^Open /}).click();
+    await first.getByRole('button',{name:/^Inspect /}).click();
     const key=await first.getAttribute('data-image-key');
     let imageReads=0;page.on('request',request=>{if(request.url().includes('/images/output?')) imageReads++;});
     for (const layout of ['Grid','List','Masonry']) for (const [density,columns] of [['comfortable',3],['large',2],['compact',4]]) {
@@ -984,4 +991,203 @@ test('a Load more that finishes after focus moved on leaves focus where the user
     release();
     await expect(cards(page)).toHaveCount(80);
     await expect(search(page)).toBeFocused();
+});
+
+// #249 C3: the concept media card (a396–399), its activation (D19) and the concept grid breakpoints (D3).
+const CARD_PATHS = () => {
+    // Tag and class paths below the card; icon internals are one `svg.icon`.
+    const walk = (node, prefix, out) => {
+        for (const child of node.children) {
+            const name = child.tagName.toLowerCase();
+            const classes = [...child.classList].filter(value => value !== 'selected').sort();
+            const path = `${prefix} > ${name}${classes.map(value => `.${value}`).join('')}`;
+            out.push(path);
+            if (name !== 'svg') walk(child, path, out);
+        }
+        return out;
+    };
+    return walk;
+};
+async function cardInventory(page, concept) {
+    return page.locator(concept ? '#image-grid > article.media-card' : 'article[data-image-key]').evaluateAll((nodes, {walkSource, concept}) => {
+        const walk = new Function(`return (${walkSource})()`)();
+        return nodes.map(card => {
+            const copy = card.cloneNode(true);
+            // D7: the star arrives with C5; D8: no selection checkbox; D9: no tag button until image annotations.
+            if (concept) for (const node of copy.querySelectorAll('.image-overlays > *, [aria-label^="Tag or auto-tag "]')) node.remove();
+            const open = card.querySelector('.image-open');
+            return { filename: open.getAttribute('aria-label').replace(/^Open /, ''),
+                title: card.querySelector('.media-info h3').textContent, subtitle: card.querySelector('.media-info p').textContent,
+                ratio: card.style.getPropertyValue('--media-ratio').replace(/\s/g, ''),
+                inspect: card.querySelector('.image-card-actions > button').getAttribute('aria-label'),
+                paths: walk(copy, `article.${[...card.classList].filter(value => value !== 'selected').sort().join('.')}`, []) };
+        });
+    }, { walkSource: CARD_PATHS.toString(), concept });
+}
+
+test('card matches the concept structure', async ({ page, request }) => {
+    await seedConcept(request);
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await openConcept(page, 'images', 'dark');
+    const concept = new Map((await cardInventory(page, true)).map(card => [card.filename, card]));
+    expect(concept.size).toBeGreaterThan(5);
+    await openProduction(page, 'images', 'dark');
+    await expect(cards(page)).toHaveCount(24);
+    const production = await cardInventory(page, false);
+    const listed = (await (await request.get('/prompt_manager/images/output?limit=40&mode=workspace')).json()).images;
+    const linkedTitles = new Map(listed.map(image => [image.filename, image.linked]));
+    let compared = 0;
+    for (const card of production) {
+        const reference = concept.get(card.filename);
+        if (!reference) continue;
+        compared++;
+        // D11 "W × H · PNG · Seed N", the concept's --media-ratio, Inspect label and markup.
+        expect({ ...card, title: null }).toEqual({ ...reference, title: null });
+        // D10: the h3 is the listing's confirmed linked title (PR B). OPEN GAP, reported in C3: for a pair-linked file
+        // PR B's title is the pair's own title (here the concept's negative name, "Quality baseline"), where the concept
+        // card shows the positive prompt's title ("Alpine observatory").
+        const linked = linkedTitles.get(card.filename);
+        expect(card.title).toBe(linked?.status === 'linked' && linked.title ? linked.title : card.filename);
+    }
+    expect(compared).toBeGreaterThan(5);
+    const first = cards(page).first();
+    // The h3 keeps the full path; no byte size and no "Preview <file>" button remain on the card.
+    for (const image of listed.slice(0, 6)) {
+        const card = page.locator(`article[data-image-key="${image.root_index}:${image.path}"]`);
+        await expect(card.locator('.media-info h3')).toHaveAttribute('title', image.path);
+    }
+    await expect(page.locator('article[data-image-key]').getByRole('button', { name: /^Preview / })).toHaveCount(0);
+    expect(await cards(page).evaluateAll(nodes => nodes.filter(node => /\d\s?(?:B|KB|MB|GB)\b/.test(node.textContent)).length)).toBe(0);
+    await expect(first.locator('.image-card-footer, small, strong')).toHaveCount(0);
+
+    // D10: anything but a confirmed link shows the filename; D11: the seed is the string as sent, unknown parts omitted.
+    await page.route(imagePages, async route => {
+        const response = await route.fetch(), json = await response.json();
+        const [a, b, c, ...rest] = json.images;
+        await route.fulfill({ response, json: { ...json, images: [
+            { ...a, linked: { ...a.linked, status: 'ambiguous' }, seed: '9007199254740993' },
+            { ...b, width: null, height: null, seed: null },
+            { ...c, linked: { status: 'unavailable', positive_id: null, title: null, title_source: null, category: null, rating: null } },
+            ...rest] } });
+    });
+    await page.goto('about:blank'); await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(24);
+    const [a, b, c] = listed;
+    await expect(cards(page).nth(0).locator('.media-info h3')).toHaveText(a.filename);
+    await expect(cards(page).nth(0).locator('.media-info p')).toHaveText(`${a.width} × ${a.height} · PNG · Seed 9007199254740993`);
+    await expect(cards(page).nth(1).locator('.media-info h3')).toHaveText(b.linked.title);
+    await expect(cards(page).nth(1).locator('.media-info p')).toHaveText('PNG');
+    await expect(cards(page).nth(2).locator('.media-info h3')).toHaveText(c.filename);
+});
+
+test('image click opens the viewer and Info selects the panel', async ({ page }) => {
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    // D19: the first load still selects the first image into the panel.
+    await expect(cards(page).first()).toHaveClass(/selected/);
+    await expect(details(page)).toContainText(/output/i);
+    const viewer = page.getByRole('dialog', { name: 'Image preview', exact: true });
+    const image = cards(page).nth(1).getByRole('button', { name: 'Open same.png', exact: true });
+    await image.click();
+    await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
+    await expect(viewer.locator('.viewer-canvas img')).toHaveAttribute('src', /root=1/);
+    await page.keyboard.press('Escape');
+    await expect(viewer).toHaveCount(0);
+    await expect(image).toBeFocused();
+    for (const key of ['Enter', ' ']) {
+        await image.focus(); await page.keyboard.press(key);
+        await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
+        await page.keyboard.press('Escape');
+        await expect(viewer).toHaveCount(0);
+        await expect(image).toBeFocused();
+    }
+    const info = cards(page).nth(1).getByRole('button', { name: 'Inspect same.png', exact: true });
+    await expect(info.locator('svg.icon')).toHaveCount(1);
+    await info.click();
+    await expect(viewer).toHaveCount(0);
+    await expect(cards(page).nth(1)).toHaveClass(/selected/);
+    await expect(cards(page).first()).not.toHaveClass(/selected/);
+    await expect(info).toHaveAttribute('aria-pressed', 'true');
+    await expect(details(page)).toContainText(/input/i);
+    await image.focus(); await page.keyboard.press('ArrowLeft');
+    await expect(cards(page).first().getByRole('button', { name: 'Open same.png', exact: true })).toBeFocused();
+    await expect(details(page)).toContainText(/input/i);
+});
+
+test('grid columns follow concept breakpoints', async ({ page, request }) => {
+    await seedConcept(request);
+    const expected = { comfortable: { 1600: 3, 1800: 4, 1200: 2, 390: 2 }, large: { 1600: 2, 1800: 2, 1200: 2, 390: 2 },
+        compact: { 1600: 4, 1800: 5, 1200: 3, 390: 2 } };
+    const rowLength = selector => page.locator(selector).evaluateAll(nodes => {
+        const top = nodes[0].getBoundingClientRect().top;
+        return nodes.filter(node => Math.abs(node.getBoundingClientRect().top - top) < 1).length;
+    });
+    for (const [url, selector] of [[null, '#image-grid > article.media-card'], [workspace, 'article[data-image-key]']]) {
+        for (const width of [1600, 1800, 1200, 390]) {
+            await page.setViewportSize({ width, height: 1100 });
+            if (url) { await page.goto('about:blank'); await page.goto(url); } else await openConcept(page, 'images', 'dark');
+            await expect.poll(() => page.locator(selector).count()).toBeGreaterThan(5);
+            for (const density of ['comfortable', 'large', 'compact']) {
+                await page.locator('#image-size').selectOption(density);
+                await expect.poll(() => rowLength(selector), `${url ? 'production' : 'concept'} ${density} ${width}`).toBe(expected[density][width]);
+                if (url) {
+                    // The columns come from concept.css: the grid's own tracks, not a production breakpoint table.
+                    expect(await page.locator('.image-grid').evaluate(node => getComputedStyle(node).gridTemplateColumns.split(/\s+/).length))
+                        .toBe(expected[density][width]);
+                    await cards(page).first().locator('.image-open').focus(); await page.keyboard.press('ArrowDown');
+                    await expect(cards(page).nth(expected[density][width]).locator('.image-open')).toBeFocused();
+                }
+            }
+        }
+    }
+});
+
+test('bounded DOM, keyboard and scroll restoration survive at 200% zoom', async ({ page, request }) => {
+    await page.addInitScript(() => { window.IntersectionObserver = undefined; });
+    await expect(await request.post('/__test__/reset', { data: { extra_images: 200 } })).toBeOK();
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(40);
+    await page.evaluate(() => { document.documentElement.style.zoom = '2'; });
+    const more = page.getByRole('button', { name: 'Load more images', exact: true });
+    for (const loaded of [80, 120, 160, 200, 202]) {
+        await more.click();
+        await expect(caption(page)).toContainText(`${loaded} of 202 images`);
+    }
+    await expect.poll(() => cards(page).count()).toBeLessThan(120);
+    // Every mounted card keeps the concept structure inside its reserved box.
+    expect(await cards(page).evaluateAll(nodes => nodes.filter(node => {
+        const box = node.getBoundingClientRect(), info = node.querySelector('.media-info').getBoundingClientRect();
+        return info.bottom > box.bottom + 1 || info.right > box.right + 1 || !node.querySelector('.media-art > .image-open');
+    }).length)).toBe(0);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const first = cards(page).first();
+    await first.locator('.image-open').focus();
+    await page.keyboard.press('End');
+    await expect(page.locator('article[aria-posinset="202"] .image-open')).toBeFocused();
+    await page.keyboard.press('Home');
+    await expect(page.locator('article[aria-posinset="1"] .image-open')).toBeFocused();
+    const columns = await cards(page).evaluateAll(nodes => {
+        const top = nodes[0].getBoundingClientRect().top;
+        return nodes.filter(node => Math.abs(node.getBoundingClientRect().top - top) < 1).length;
+    });
+    await page.keyboard.press('ArrowDown');
+    await expect(page.locator(`article[aria-posinset="${columns + 1}"] .image-open`)).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(page.locator(`article[aria-posinset="${columns + 1}"] .image-card-actions button`)).toBeFocused();
+    await page.evaluate(() => {
+        const card = document.querySelector('article[aria-posinset="1"]');
+        const grid = document.querySelector('.image-grid');
+        window.scrollTo(0, (grid.getBoundingClientRect().top + window.scrollY) + card.offsetHeight * 30);
+    });
+    await expect.poll(() => cards(page).count()).toBeLessThan(120);
+    const previousScroll = await page.evaluate(() => window.scrollY);
+    expect(previousScroll).toBeGreaterThan(1000);
+    await page.evaluate(() => { window.location.hash = '/overview'; });
+    await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    await page.evaluate(() => { window.location.hash = '/images'; });
+    await expect(caption(page)).toContainText('202 of 202 images');
+    await expect.poll(async () => Math.abs((await page.evaluate(() => window.scrollY)) - previousScroll)).toBeLessThan(240);
+    await expect.poll(() => cards(page).count()).toBeLessThan(120);
+    await page.evaluate(() => { document.documentElement.style.zoom = ''; });
 });

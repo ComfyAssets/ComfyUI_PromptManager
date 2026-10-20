@@ -19,7 +19,7 @@ test('layouts preserve data order, remain within width and never overlap', async
 
 test('empty, unknown dimensions and narrow containers keep valid geometry',async()=>{
     const {layoutImages}=await source;
-    assert.deepEqual(layoutImages([],0,'grid'),{positions:[],height:0,maxHeight:0});
+    assert.deepEqual(layoutImages([],0,'grid'),{positions:[],columns:1,height:0,maxHeight:0});
     for(const mode of ['grid','list','masonry']) {
         const result=layoutImages([{}, {width:0,height:null}],1,mode);
         assert.ok(Number.isFinite(result.height));
@@ -74,64 +74,68 @@ test('binary-searched windows handle boundaries, empty collections and focus wit
 
 test('reported maximum height keeps unusually tall custom layouts inside the virtual window',async()=>{
     const {layoutImages,visibleImages}=await source;
-    const geometry=layoutImages([{}, {}, {}],10000,'grid',20000);
-    assert.equal(geometry.maxHeight,7554.5);
+    const geometry=layoutImages([{}, {}, {}],10000,'grid',{columns:1});
+    assert.equal(geometry.maxHeight,9998/1.33+56);
     assert.deepEqual(visibleImages(geometry.positions,6000,200,-1,geometry.maxHeight),[0]);
 });
 
+// The concept's mountMasonry reads the same two values (app.js 530-534); its breakpoints live in concept.css only.
+function computedGrid(columns, gap) {
+    globalThis.getComputedStyle = node => {
+        assert.equal(node, grid);
+        return {gridTemplateColumns:columns, columnGap:gap};
+    };
+    const grid = {};
+    return grid;
+}
 
-test('approved workspace densities share viewport metrics and reject unknown values', async () => {
-    const {workspaceImageMetrics, layoutImages} = await source;
-    assert.equal(typeof workspaceImageMetrics, 'function', 'workspace density metrics must be exported');
-    for (const [width, expected] of [[1600,[3,2,4]], [1250,[2,2,3]], [950,[2,2,3]], [700,[2,2,2]], [390,[2,2,2]], [1700,[4,2,5]]]) {
-        assert.deepEqual(['comfortable','large','compact'].map(density => workspaceImageMetrics(width,density).columns), expected);
-        for (const density of ['comfortable','large','compact']) {
-            const metrics = workspaceImageMetrics(width,density);
-            assert.deepEqual(metrics, {columns: expected[['comfortable','large','compact'].indexOf(density)], gap:13, footerHeight:54, listHeight:97});
-            assert.equal(layoutImages([{},{}],990,'list',240,metrics).positions[1].x,0);
-        }
-    }
-    assert.throws(() => workspaceImageMetrics(1600,'unknown'), TypeError);
-    assert.deepEqual(workspaceImageMetrics(1600),workspaceImageMetrics(1600,'comfortable'));
-});
-
-test('approved grid uses inner media at four to three and explicit columns with thirteen pixel gaps', async () => {
-    const {workspaceImageMetrics,layoutImages} = await source;
-    assert.equal(typeof workspaceImageMetrics,'function');
-    const metrics = workspaceImageMetrics(1600);
-    const {positions} = layoutImages(Array(4).fill({}),990,'grid',240,metrics);
-    assert.equal(positions[1].x-positions[0].width,13);
-    assert.equal(positions[3].x,0);
-    assert.equal(positions[3].y-positions[0].height,13);
-    assert.equal(positions[0].height-54-2,(positions[0].width-2)*.75);
-    assert.equal(layoutImages([{}],990,'list',240,metrics).height,97);
-    const custom=layoutImages([{}],990,'grid',240,{columns:2,gap:20,footerHeight:60,listHeight:100});
-    assert.equal(custom.positions[0].width,485);
-    assert.equal(custom.height,(485-2)*.75+62);
-    assert.equal(layoutImages([{}],990,'list',240,{listHeight:100}).height,100);
+test('layout uses columns and gap from computed style', async () => {
+    const {gridMetrics, layoutImages} = await source;
+    const original = globalThis.getComputedStyle;
+    try {
+        for (const [columns, gap, expected] of [
+            ['329.333px 329.333px 329.333px', '13px', {columns:3, gap:13}],
+            ['200px 200px 200px 200px 200px', '20px', {columns:5, gap:20}],
+            ['990px', '13px', {columns:1, gap:13}],
+            ['none', 'normal', {columns:1, gap:0}],
+            ['', '', {columns:1, gap:0}],
+        ]) assert.deepEqual(gridMetrics(computedGrid(columns, gap)), expected, `${columns} / ${gap}`);
+    } finally { globalThis.getComputedStyle = original; }
+    const {positions, columns} = layoutImages(Array(6).fill({}), 990, 'grid', {columns:3, gap:13});
+    assert.equal(columns, 3);
+    assert.equal(positions[1].x, positions[0].width + 13);
+    assert.equal(positions[3].x, 0);
+    assert.equal(positions[3].y, positions[0].height + 13);
+    // The concept media is `aspect-ratio: 1.33` inside a 1px card border, under the measured `.media-info`.
+    assert.equal(positions[0].height, (positions[0].width - 2) / 1.33 + 54 + 2);
+    const wide = layoutImages(Array(6).fill({}), 990, 'grid', {columns:5, gap:20, footerHeight:60});
+    assert.equal(wide.positions[0].width, (990 - 80) / 5);
+    assert.equal(wide.positions[0].height, (wide.positions[0].width - 2) / 1.33 + 62);
+    assert.equal(layoutImages([{}, {}], 990, 'list', {columns:1, gap:13}).positions[1].x, 0);
+    assert.equal(layoutImages([{}], 990, 'list', {columns:1, gap:13}).height, 97);
+    assert.equal(layoutImages([{}], 990, 'list', {columns:1, listHeight:100}).height, 100);
 });
 
 test('masonry uses real finite proportions and falls back for invalid dimensions', async () => {
     const {layoutImages}=await source;
     const images=[{width:100,height:1000},{width:1000,height:100},{width:Infinity,height:10},{width:10,height:NaN}];
-    const {positions}=layoutImages(images,990,'masonry',240,{columns:3});
+    const {positions}=layoutImages(images,990,'masonry',{columns:3});
     assert.equal(positions[0].height,(positions[0].width-2)*10+56);
     assert.equal(positions[1].height,(positions[1].width-2)/10+56);
+    assert.equal(positions[2].height,(positions[2].width-2)*.75+56);
     for (const position of positions) assert.ok(Number.isFinite(position.height));
 });
 
-test('gallery width limits density columns without changing ordinary workspace geometry', async () => {
-    const {workspaceImageMetrics, layoutImages} = await source;
-    for (const [viewport, width, density, columns] of [
-        [1600,990,'comfortable',3], [1600,990,'compact',4],
-        [951,428,'compact',3], [390,362,'comfortable',2],
-        [1600,190,'comfortable',1], [1600,190,'compact',1],
-        [390,167,'large',1], [390,167,'compact',1], [390,69.5,'comfortable',1], [390,0,'comfortable',1],
+test('a narrow gallery caps the concept columns at the smallest readable card', async () => {
+    const {layoutImages} = await source;
+    // At 200 percent zoom the concept's 390px breakpoint still asks for two columns of a half-width grid (D3, D31).
+    for (const [width, asked, columns] of [
+        [990,3,3], [990,4,4], [428,3,3], [362,2,2], [190,3,1], [190,4,1], [167,2,1], [69.5,2,1], [0,2,1],
     ]) {
-        const metrics = workspaceImageMetrics(viewport,density,width);
-        assert.equal(metrics.columns,columns,`${viewport}/${width}/${density}`);
-        const {positions} = layoutImages(Array(8).fill({}),width,'grid',240,metrics);
-        assert.equal(positions[columns].x,0);
-        assert.ok(positions[columns].y > 0);
+        const geometry = layoutImages(Array(8).fill({}), width, 'grid', {columns:asked, gap:13});
+        assert.equal(geometry.columns, columns, `${width}/${asked}`);
+        assert.equal(geometry.positions[columns].x, 0);
+        assert.ok(geometry.positions[columns].y > 0);
     }
+    assert.equal(layoutImages([{}], 990, 'list', {columns:3}).columns, 1);
 });

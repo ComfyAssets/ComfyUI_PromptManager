@@ -186,5 +186,26 @@ export function scopeLabel({ root = 'all', subfolder = '' }, roots = []) {
     if ((root === 'all' || root === '') && !subfolder) return 'All output folders';
     const source = root === 'all' || root === '' ? 'All sources' :
         roots.find(item => String(item.index) === String(root))?.label ?? `Source ${root}`;
-    return `${source} · ${subfolder || 'All folders'}`;
+    return `${source} · ${subfolder || 'All output folders'}`;
+}
+
+/** D10: a card shows its confirmed linked positive's display title; any other link status shows the filename. */
+export function cardTitle(image) {
+    const title = image.linked?.status === 'linked' ? image.linked.title : null;
+    return typeof title === 'string' && title ? title : image.filename;
+}
+
+const hasSize = image => [image.width, image.height].every(value => Number.isFinite(value) && value > 0);
+
+/** D11: "W × H · EXT · Seed N", omitting unknown parts. The seed is the listing's decimal string, shown as sent. */
+export function cardSubtitle(image) {
+    const dot = image.filename.lastIndexOf('.');
+    const extension = dot > 0 ? image.filename.slice(dot + 1) : '';
+    return [hasSize(image) ? `${image.width} × ${image.height}` : '', extension.toUpperCase(),
+        typeof image.seed === 'string' && image.seed ? `Seed ${image.seed}` : ''].filter(Boolean).join(' · ');
+}
+
+/** The concept card's `--media-ratio` (masonry art); unknown dimensions use the layout's 4:3 fallback. */
+export function mediaRatio(image) {
+    return hasSize(image) ? `${image.width}/${image.height}` : '4/3';
 }
