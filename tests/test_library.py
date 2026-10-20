@@ -1693,3 +1693,16 @@ class TestLibrary(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "does not belong to this positive"):
             self.db.list_library_images(positive, pair_id=foreign, archive="all")
+
+
+class DisplayTitleUnits(unittest.TestCase):
+    """The first-line title is cut like the Library's JavaScript title()."""
+
+    def test_title_counts_utf16_units_and_never_splits_a_surrogate_pair(self):
+        from database.library import display_title
+
+        self.assertEqual(display_title((), "  short line  \nsecond"), "short line")
+        self.assertEqual(display_title((), "a" * 80), "a" * 80)
+        self.assertEqual(display_title((), "a" * 81), "a" * 80 + "…")
+        self.assertEqual(display_title((), "\U0001f600" * 80), "\U0001f600" * 40 + "…")
+        self.assertEqual(display_title((), "a" * 79 + "\U0001f600b"), "a" * 79 + "…")

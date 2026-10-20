@@ -22,14 +22,29 @@ _JS_TRIM = "".join(map(chr, _TRIM_CODES))
 DISPLAY_TITLE_LIMIT = 80
 
 
+def _utf16_units(text: str) -> int:
+    """JavaScript ``length``: characters beyond the BMP count as two units."""
+    return len(text) + sum(1 for ch in text if ord(ch) > 0xFFFF)
+
+
+def _utf16_prefix(text: str, units: int) -> str:
+    """The longest prefix within ``units`` UTF-16 units, never splitting a pair."""
+    used = 0
+    for index, ch in enumerate(text):
+        used += 2 if ord(ch) > 0xFFFF else 1
+        if used > units:
+            return text[:index]
+    return text
+
+
 def titled(stored_titles: tuple, text: object) -> tuple[str | None, str | None]:
     """Return ``(title, source)``: a stored title, else the text's first line.
 
     ``source`` is ``"stored"`` for the first non-blank stored title (blank as
     in JavaScript's trim, like the Library view), ``"text"`` for the first line,
     and None when both are empty. The first line is trimmed and, past
-    DISPLAY_TITLE_LIMIT characters, cut with an ellipsis like the Library's
-    ``title()``.
+    DISPLAY_TITLE_LIMIT UTF-16 units, cut with an ellipsis like the Library's
+    ``libraryTitle()`` (never inside a surrogate pair).
     """
     for title in stored_titles:
         if isinstance(title, str) and title.strip(_JS_TRIM):
@@ -37,8 +52,8 @@ def titled(stored_titles: tuple, text: object) -> tuple[str | None, str | None]:
     if not isinstance(text, str):
         return None, None
     first = text.split("\n")[0].strip(_JS_TRIM)
-    if len(first) > DISPLAY_TITLE_LIMIT:
-        first = first[:DISPLAY_TITLE_LIMIT] + "\u2026"
+    if _utf16_units(first) > DISPLAY_TITLE_LIMIT:
+        first = _utf16_prefix(first, DISPLAY_TITLE_LIMIT) + "\u2026"
     return (first, "text") if first else (None, None)
 
 
