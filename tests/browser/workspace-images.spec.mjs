@@ -1530,3 +1530,17 @@ test('Apply or Clear without a change keeps the loaded page', async ({ page, req
     await refine(page, { Media: 'image' });
     await expect.poll(fetches).toBe(1);
 });
+
+// #249 final review m6: discovery and categories failing together on mount give one alert, not two.
+test('unreachable sources and categories announce one error', async ({ page }) => {
+    await page.route('**/prompt_manager/gallery/subfolders?*', route => route.abort('failed'));
+    await page.route('**/prompt_manager/library/options*', route => route.abort('failed'));
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    await expect(page.getByRole('alert')).toHaveText('Sources, folders and categories could not be loaded. Rescan from Import to retry.');
+    await expect(page.locator('.options-status')).toHaveCount(1);
+    await page.unroute('**/prompt_manager/gallery/subfolders?*');
+    await page.unroute('**/prompt_manager/library/options*');
+    await rescan(page);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+});

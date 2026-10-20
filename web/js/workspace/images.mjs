@@ -47,8 +47,14 @@ function selectOf(id, options, value) {
 const IMAGE_SORT_OPTIONS = Object.freeze([['newest', 'Recently added'], ['name', 'Name A–Z'], ['rating', 'Highest rated'],
     ['oldest', 'Oldest first'], ['name-desc', 'Name Z–A']]);
 const MEDIA_OPTIONS = Object.freeze([['all', 'All media'], ['image', 'Images'], ['video', 'Videos']]);
-const SOURCES_FAILED = 'Sources and folders could not be loaded. Rescan from Import to retry.';
-const CATEGORIES_FAILED = 'Categories could not be loaded. Rescan from Import to retry.';
+const RETRY_RESCAN = 'Rescan from Import to retry.';
+const RETRY_REFRESH = 'Refresh image collection to retry.';
+/** One alert for whichever of the source discovery and the categories failed, so two failures announce once. */
+function loadFailure(sourcesRetry, categoriesFailed) {
+    if (sourcesRetry && categoriesFailed) return `Sources, folders and categories could not be loaded. ${sourcesRetry}`;
+    if (sourcesRetry) return `Sources and folders could not be loaded. ${sourcesRetry}`;
+    return categoriesFailed ? `Categories could not be loaded. ${RETRY_RESCAN}` : '';
+}
 // Import → Rescan (D15): the concept has no rescan copy, so its toasts follow the workspace pattern. The answer
 // counts every listed file across the output roots it walked.
 const RESCAN_STARTED = 'Rescanning output folders…';
@@ -136,9 +142,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const toolbarControls = toolbar ? [...toolbar.element.querySelectorAll('input, select, button')] : [];
     const optionsStatus = el('p', '', 'options-status muted');
     optionsStatus.hidden = true; optionsStatus.setAttribute('role', 'alert');
-    const categoryStatus = el('p', '', 'options-status muted');
-    categoryStatus.hidden = true; categoryStatus.setAttribute('role', 'alert');
-    if (!embedded) main.append(optionsStatus, categoryStatus);
+    // The failed loads' retry hint (null once sources load) and whether the categories failed.
+    let sourcesRetry = null, categoriesFailed = false;
+    if (!embedded) main.append(optionsStatus);
     // The concept's filter row: layouts, thumbnail size, the scope chip and Group by positive prompt (D14, D15).
     const filterRow = el('div', undefined, 'filter-row');
     const layouts = el('div', undefined, 'segmented');
@@ -596,8 +602,10 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         try {
             const result = await api.post('/prompt_manager/gallery/rescan', {}, {signal:scope.signal});
             if (scope.signal.aborted) return;
-            loadCategories();
-            if (await loadOptions() && !scope.signal.aborted) reset();
+            const [found] = await Promise.all([loadOptions(), loadCategories()]);
+            if (scope.signal.aborted) return;
+            renderLoadStatus();
+            if (found) reset();
             if (!scope.signal.aborted) showWorkspaceToast(rescanFinished(result));
         } catch {
             // A failed rescan leaves the collection and any discovery alert as they were.
@@ -615,14 +623,24 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (toolbar) filters.q = toolbar.value().q.trim();
         roots = [];folders = [];
         setControlsDisabled(true);
-        optionsStatus.hidden = true;
+        sourcesRetry = null;
+        renderLoadStatus();
         reset();
         const discovery = loadOptions(), request = optionsRequest;
-        if (!await discovery || scope.signal.aborted || request !== optionsRequest) return;
+        const found = await discovery;
+        if (scope.signal.aborted || request !== optionsRequest) return;
+        renderLoadStatus();
+        if (!found) return;
         recovering = false;
         setControlsDisabled(false);
         reset();
     }
+    function renderLoadStatus() {
+        const text = loadFailure(sourcesRetry, categoriesFailed);
+        setText(optionsStatus, text);
+        optionsStatus.hidden = !text;
+    }
+    /** Discover the sources and folders; the caller renders the outcome with renderLoadStatus. */
     async function loadOptions() {
         optionsRequest?.abort();
         const request = new AbortController(); optionsRequest = request;
@@ -637,12 +655,11 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
                 .map(root => ({index:root.index, label:root.label, subfolders:paths(root.subfolders)}));
             folders = paths(data.subfolders);
             updateScope();
-            optionsStatus.hidden = true;
+            sourcesRetry = null;
             return true;
         } catch {
             if (scope.signal.aborted || request !== optionsRequest) return false;
-            optionsStatus.textContent = recovering ? 'Sources and folders could not be loaded. Refresh image collection to retry.' : SOURCES_FAILED;
-            optionsStatus.hidden = false;
+            sourcesRetry = recovering ? RETRY_REFRESH : RETRY_RESCAN;
             return false;
         }
     }
@@ -656,16 +673,16 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             if (scope.signal.aborted || request !== categoryRequest) return;
             if (!Array.isArray(data?.categories)) throw new TypeError('Invalid categories');
             toolbar.setCategories([...data.categories.filter(value => typeof value === 'string'), filters.category]);
-            categoryStatus.hidden = true;
+            categoriesFailed = false;
         } catch {
             if (scope.signal.aborted || request !== categoryRequest) return;
-            categoryStatus.textContent = CATEGORIES_FAILED;
-            categoryStatus.hidden = false;
+            categoriesFailed = true;
         }
     }
     scope.cleanup(() => { optionsRequest?.abort(); categoryRequest?.abort(); });
     updateScope();
-    if (!embedded) { loadOptions(); loadCategories(); }
+    // The page's one discovery alert is written once both first loads settled (#249 final review m6).
+    if (!embedded) Promise.all([loadOptions(), loadCategories()]).then(() => { if (!scope.signal.aborted) renderLoadStatus(); });
     if (visit) {
         renderState(stream.state);
         const selected = stream.state.items.find(image => imageKey(image) === selection);
