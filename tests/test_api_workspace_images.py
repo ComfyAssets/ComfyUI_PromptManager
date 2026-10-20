@@ -79,6 +79,13 @@ def seeded_records(positive, seed):
     return {"prompt": json.dumps(graph)}
 
 
+def header_params_of_images():
+    """The card parser the images module calls (unpatched)."""
+    from py.api import images
+
+    return images.header_params
+
+
 class TestWorkspaceImages(ImageAPITestCase):
     async def tearDownAsync(self):
         self.api.db.close_all()
@@ -594,6 +601,61 @@ class TestWorkspaceImages(ImageAPITestCase):
             _, data = await self.get()
         self.assertEqual(len(data["images"]), 4)
         self.assertEqual(opened.call_count, 3)
+
+    async def test_deeply_nested_record_still_lists_and_inspects(self):
+        nested = "[" * 900 + "1" + "]" * 900
+        workflow = (
+            '{"nodes":[{"id":%s,"type":"KSampler","widgets_values":[1]}],'
+            '"links":[[%s,1,0,2,0]]}' % (nested, nested)
+        )
+        records_png(self.output_dir / "ok.png", seeded_records("a fox", 5), mtime=200)
+        records_png(self.output_dir / "evil.png", {"workflow": workflow})
+        prompt = self._save_prompt("Evil first line")
+        self.api.db.link_image_to_prompt(prompt, str(self.output_dir / "evil.png"))
+        response, data = await self.get()
+        self.assertEqual(response.status, 200, data)
+        items = {item["filename"]: item for item in data["images"]}
+        self.assertEqual(items["ok.png"]["seed"], 5)
+        self.assertIsNone(items["evil.png"]["seed"])
+        self.assertIsNone(items["evil.png"]["linked"]["title"])
+        response = await self.client.get(
+            "/prompt_manager/images/inspect/evil.png",
+            params={"root": 0, "root_scope": items["evil.png"]["root_scope"]},
+        )
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertIsNone((await response.json())["library"]["title"])
+
+    async def test_library_previews_skip_card_facts(self):
+        records_png(self.output_dir / "a.png", seeded_records("a fox", 5))
+        page = await self.api._collect_output_images(
+            self.api._get_all_output_dirs(), ""
+        )
+        with patch("py.api.images.header_params") as parsed:
+            items = self.api._format_workspace_page(page, linked=False)
+        parsed.assert_not_called()
+        self.assertNotIn("seed", items[0])
+        self.assertEqual((items[0]["width"], items[0]["height"]), (4, 4))
+
+    async def test_card_facts_parse_after_the_file_is_closed(self):
+        records_png(self.output_dir / "a.png", seeded_records("a fox", 5))
+        streams, closed = [], []
+        real_open, real_parse = Image.open, header_params_of_images()
+
+        def opening(stream, *args, **kwargs):
+            streams.append(stream)
+            return real_open(stream, *args, **kwargs)
+
+        def parsing(info):
+            closed.append(all(stream.closed for stream in streams))
+            return real_parse(info)
+
+        with (
+            patch("PIL.Image.open", side_effect=opening),
+            patch("py.api.images.header_params", side_effect=parsing),
+        ):
+            _, data = await self.get()
+        self.assertEqual(data["images"][0]["seed"], 5)
+        self.assertEqual(closed, [True])
 
     def _seed_files(self):
         """Concept-style one-sampler files plus every shared parser case."""

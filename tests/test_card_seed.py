@@ -17,6 +17,8 @@ from utils.card_seed import (  # noqa: E402
 from utils.generation_params import (  # noqa: E402
     GenerationParamsError,
     extract_from_records,
+    number_string,
+    parse_js_json,
 )
 
 try:
@@ -35,6 +37,15 @@ def graph(*samplers, extra=None):
 
 def seeded(seed, **settings):
     return ksampler(("6", 0), ("7", 0), seed=seed, **settings)
+
+
+def nested_workflow(depth=900):
+    """A small workflow whose node and link ids nest ``depth`` arrays deep."""
+    nested = "[" * depth + "1" + "]" * depth
+    return (
+        '{"nodes":[{"id":%s,"type":"KSampler","widgets_values":[1]}],'
+        '"links":[[%s,1,0,2,0]]}' % (nested, nested)
+    )
 
 
 def info_seed(info):
@@ -84,6 +95,40 @@ class CardSeed(unittest.TestCase):
         self.assertLessEqual(len(wide), MAX_RECORD_BYTES)
         self.assertIsNone(header_params({"prompt": json.dumps({"a": wide})}))
         self.assertEqual(info_seed(graph(seeded(1))), 1)
+
+    def test_card_seed_deeply_nested_record_is_none(self):
+        # The Python parser recurses where JavaScript String() does not; a
+        # crafted record must give no card facts, never an exception.
+        self.assertIsNone(header_params({"workflow": nested_workflow()}))
+        self.assertIsNone(
+            header_params({**graph(seeded(1)), "workflow": nested_workflow()})
+        )
+
+    def test_exact_seed_reparse_that_recurses_keeps_the_parsed_seed(self):
+        with patch(
+            "utils.card_seed.extract_generation_params",
+            side_effect=RecursionError("deep"),
+        ):
+            params = header_params(graph(seeded(2**60 + 1)))
+        self.assertEqual(card_seed(params), 1152921504606847000)
+
+    def test_one_json_reader_keeps_integers_exact_on_request(self):
+        text = '{"seed": 9007199254740993}'
+        self.assertEqual(parse_js_json(text), {"seed": 9007199254740992.0})
+        self.assertEqual(
+            parse_js_json(text, exact_integers=True), {"seed": 9007199254740993}
+        )
+        for bad in ('{"a": NaN}', "not json", "[" * 100000):
+            with self.subTest(text=bad[:12]):
+                self.assertIsNone(parse_js_json(bad, exact_integers=True))
+        self.assertEqual(number_string(float(2**60)), "1152921504606847000")
+
+    def test_record_size_is_utf8_bytes_at_both_bounds(self):
+        ascii_at = "x" * MAX_RECORD_BYTES
+        self.assertIsNotNone(header_params({"prompt": json.dumps(ascii_at)[1:-1]}))
+        four_byte = "\U0001f600" * (MAX_RECORD_BYTES // 4)
+        self.assertIsNotNone(header_params({"prompt": four_byte}))
+        self.assertIsNone(header_params({"prompt": four_byte + "x"}))
 
     def test_placeholder_and_non_number_seeds_are_none(self):
         for value in ("123", "randomize", True, 1.5, None):

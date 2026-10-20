@@ -7,7 +7,6 @@ no graph resolution and no extra file reads. One parse feeds both the seed and
 the positive that confirms a first-line card title.
 """
 
-import json
 import math
 import re
 from collections.abc import Mapping
@@ -15,9 +14,10 @@ from collections.abc import Mapping
 from .generation_params import (
     PLACEHOLDERS,
     GenerationParamsError,
-    _number_string,
     extract_from_records,
     extract_generation_params,
+    number_string,
+    parse_js_json,
 )
 
 __all__ = ["MAX_RECORD_BYTES", "card_seed", "header_params", "parsed_positive"]
@@ -27,6 +27,19 @@ MAX_RECORD_BYTES = 2 * 1024 * 1024
 _RECORD_KEYS = ("prompt", "workflow")
 _INTEGER = re.compile(r"-?[0-9]+\Z")
 _MAX_SAFE_INTEGER = 2**53 - 1
+
+
+def _utf8_size_over(text: str, limit: int) -> bool:
+    """True when ``text`` is over ``limit`` UTF-8 bytes, encoding only if unclear.
+
+    A code point takes one to four bytes, so most records are decided from
+    their length alone without copying them.
+    """
+    if len(text) > limit:
+        return True
+    if len(text) * 4 <= limit:
+        return False
+    return len(text.encode("utf-8", "surrogatepass")) > limit
 
 
 def header_params(info) -> dict | None:
@@ -46,27 +59,15 @@ def header_params(info) -> dict | None:
             continue
         if not isinstance(text, str):
             return None
-        if len(text.encode("utf-8", "surrogatepass")) > MAX_RECORD_BYTES:
+        if _utf8_size_over(text, MAX_RECORD_BYTES):
             return None
     try:
         params = extract_from_records(records["prompt"], records["workflow"])
-    except GenerationParamsError:
+    except (GenerationParamsError, RecursionError):
+        # RecursionError: the Python parser recurses on deeply nested arrays
+        # where JavaScript does not throw; a crafted file gives no card facts.
         return None
     return _with_exact_seed(params, records)
-
-
-def _reject_constant(name):
-    raise ValueError(f"{name} is not JSON")
-
-
-def _exact_json(text):
-    """``text`` parsed with integers kept exact, or None where JSON.parse throws."""
-    if not isinstance(text, str):
-        return None
-    try:
-        return json.loads(text, parse_constant=_reject_constant)
-    except (ValueError, RecursionError):
-        return None
 
 
 def _with_exact_seed(params: dict, records: dict) -> dict:
@@ -87,12 +88,12 @@ def _with_exact_seed(params: dict, records: dict) -> dict:
     try:
         exact = extract_generation_params(
             {
-                key: _exact_json(text)
+                key: parse_js_json(text, exact_integers=True)
                 for key, text in records.items()
                 if text is not None
             }
         )["seed"]
-    except GenerationParamsError:
+    except (GenerationParamsError, RecursionError):
         return params
     if isinstance(exact, bool) or not isinstance(exact, int) or float(exact) != seed:
         return params
@@ -113,7 +114,7 @@ def card_seed(params: dict | None) -> int | None:
         return None
     if isinstance(value, float) and not math.isfinite(value):
         return None
-    text = _number_string(value)
+    text = number_string(value)
     return int(text) if _INTEGER.match(text) else None
 
 

@@ -41,6 +41,8 @@ except ImportError:
 
 
 IMAGE_EXTENSIONS = _IMAGE_EXTENSIONS
+# The header records the card parses (see utils.card_seed.header_params).
+_CARD_RECORDS = ("prompt", "workflow")
 
 
 def _unavailable_link() -> dict:
@@ -1971,7 +1973,7 @@ class ImageRoutesMixin:
     def _format_workspace_page(
         self, page: list[tuple], *, linked: bool = True
     ) -> list[dict]:
-        """Workspace descriptors; ``linked`` adds each file's link summary."""
+        """Workspace descriptors; ``linked`` adds card facts (link summary, seed)."""
         images = self._format_output_page(page, scoped=True)
         paths = {
             (entry[3], entry[0].relative_to(entry[2]).as_posix()): entry[0]
@@ -1986,20 +1988,25 @@ class ImageRoutesMixin:
             path = paths[(image["root_index"], image["path"])]
             image["width"] = None
             image["height"] = None
-            params = None
+            records = None
             if not image["is_video"]:
                 try:
                     with path.open("rb") as stream:
                         with Image.open(stream) as source:
                             image["width"], image["height"] = source.size
-                            params = header_params(source.info)
+                            records = {k: source.info.get(k) for k in _CARD_RECORDS}
                 except (OSError, ValueError, Image.DecompressionBombError):
                     # A corrupt or disappearing preview must not hide the listing.
                     pass
+            if not linked:
+                # Library previews show no card facts; skip the parse.
+                continue
+            # Parsed after the handle closes, so a concurrent rename or delete
+            # (which Windows refuses on open files) is not held up by it.
+            params = header_params(records)
             image["seed"] = card_seed(params)
-            if linked:
-                summary = summaries.get(str(path)) or _unavailable_link()
-                image["linked"] = _card_link(summary, parsed_positive(params))
+            summary = summaries.get(str(path)) or _unavailable_link()
+            image["linked"] = _card_link(summary, parsed_positive(params))
         return images
 
     def _format_output_page(self, page, *, scoped=False):
