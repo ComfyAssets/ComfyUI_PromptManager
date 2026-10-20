@@ -225,6 +225,48 @@ test('record accepts closed reason codes and rejects contradictory ones', () => 
     }
 });
 
+test('resolution validator accepts closed reason codes and a bounded node record, rejects others', () => {
+    const toRecord = contract('toInspectionRecord');
+    for (const reason_code of ['unsupported-node', 'runtime-value', 'composite']) {
+        for (const node of [{ id: '7', class_type: 'N'.repeat(200) }, { id: '7'.repeat(200), class_type: null }, null]) {
+            const data = envelope(); Object.assign(data.resolution, { state: 'unresolved', reason_code, node });
+            assert.doesNotThrow(() => toRecord(data, image(), extractGenerationFacts), JSON.stringify({ reason_code, node }));
+        }
+    }
+    for (const change of [
+        { reason_code: 'unsupported-node', node: { id: '7', class_type: 'N'.repeat(201) } },
+        { reason_code: 'unsupported-node', node: { id: '7'.repeat(201), class_type: 'X' } },
+        { reason_code: 'unsupported-node', node: { id: '', class_type: 'X' } },
+        { reason_code: 'unsupported-node', node: { id: '7', class_type: 'X', extra: true } },
+        { reason_code: 'unsupported-node', node: [] },
+        { reason_code: 'malformed', node: { id: '7', class_type: 'X' } },
+        { reason_code: 'work-limit', node: { id: '7', class_type: 'X' } },
+        { reason_code: 'no-sampler', node: { id: '7', class_type: 'X' } },
+        { reason_code: 'Unsupported-Node', node: null },
+        { reason_code: '', node: null },
+    ]) {
+        const data = envelope(); Object.assign(data.resolution, { state: 'unresolved', ...change });
+        assert.throws(() => toRecord(data, image(), extractGenerationFacts), TypeError, JSON.stringify(change));
+    }
+});
+
+test('role outcome lines are bounded text on non-resolved roles only', () => {
+    const toRecord = contract('toInspectionRecord');
+    const line = 'Prompt uses a node the inspector does not support (<img src=x onerror=alert(1)>).';
+    const data = envelope(); data.prompts.negative = { status: 'unresolved', text: null, source: null, message: line };
+    assert.equal(toRecord(data, image(), extractGenerationFacts).prompts.negative.message, line);
+    for (const [role, record] of [
+        ['positive', { status: 'resolved', text: 'exact', source: 'execution', message: 'Hidden reason.' }],
+        ['negative', { status: 'unresolved', text: null, source: null, message: '' }],
+        ['negative', { status: 'unresolved', text: null, source: null, message: 7 }],
+        ['negative', { status: 'unresolved', text: null, source: null, message: null }],
+        ['negative', { status: 'unresolved', text: null, source: null, message: 'x'.repeat(513) }],
+    ]) {
+        const bad = envelope(); bad.prompts[role] = record;
+        assert.throws(() => toRecord(bad, image(), extractGenerationFacts), TypeError, JSON.stringify(record));
+    }
+});
+
 test('record rejects root path media and invalid versioned fields with retryable TypeError', () => {
     const toRecord = contract('toInspectionRecord');
     for (const mutate of [

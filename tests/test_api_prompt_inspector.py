@@ -244,10 +244,10 @@ class TestPromptInspector(ImageAPITestCase):
 
     async def test_corrupt_malformed_and_no_metadata_do_not_invent_text(self):
         path = self.output_dir / "image.png"
-        for content, expected in (
-            (b"broken", "unresolved"),
-            (None, "absent"),
-            ("bad-json", "unresolved"),
+        for content, expected, message in (
+            (b"broken", "unresolved", "Metadata in this file could not be read."),
+            (None, "absent", None),
+            ("bad-json", "unresolved", "Prompt metadata in this file is malformed."),
         ):
             if isinstance(content, bytes):
                 path.write_bytes(content)
@@ -256,6 +256,7 @@ class TestPromptInspector(ImageAPITestCase):
             _, result = await self.inspect()
             self.assertEqual(result["prompts"]["positive"]["status"], expected)
             self.assertIsNone(result["prompts"]["positive"]["text"])
+            self.assertEqual(result["prompts"]["negative"].get("message"), message)
 
     async def test_compressed_international_and_post_pixel_metadata(self):
         import struct
@@ -773,8 +774,11 @@ class TestPromptInspector(ImageAPITestCase):
         self.assertEqual(result["metadata"]["prompt_graph"]["status"], "parsed")
 
     async def test_inspect_route_reports_no_sampler_instead_of_absent(self):
-        # f17: a BasicGuider-only prompt graph is a record, never "not recorded".
-        self.parity_fixture("f17")
+        # f17 with a sampler class the inspector does not know: a prompt graph
+        # is a record, never "not recorded".
+        built = parity.build("f17")
+        built["prompt"]["13"]["class_type"] = "FutureSampler"
+        parity.write_png(self.output_dir / "f17.png", built)
         response, result = await self.inspect("f17.png")
         self.assertEqual(response.status, 200)
         self.assertEqual(
@@ -785,17 +789,32 @@ class TestPromptInspector(ImageAPITestCase):
         self.assertEqual(result["resolution"]["reason_code"], "no-sampler")
         self.assertEqual(
             result["resolution"]["reason"],
-            "No supported sampler pair found (saw SamplerCustomAdvanced)",
+            "No supported sampler pair found (saw FutureSampler)",
+        )
+        self.assertEqual(
+            result["prompts"]["positive"]["message"], "No supported sampler was found."
         )
 
     async def test_inspect_route_exposes_reason_code_and_blocking_node(self):
-        self.parity_fixture("f06a")
+        # f06a's encoder is supported since Task 2.4; an unknown encoder is not.
+        built = parity.build("f06a")
+        built["prompt"]["6"]["class_type"] = "FutureTextEncode"
+        parity.write_png(self.output_dir / "f06a.png", built)
         _, result = await self.inspect("f06a.png")
         resolution = result["resolution"]
         self.assertEqual(resolution["state"], "unresolved")
         self.assertEqual(resolution["reason_code"], "unsupported-node")
-        self.assertEqual(set(resolution["node"]), {"id", "class_type"})
-        self.assertIsInstance(resolution["node"]["class_type"], str)
+        self.assertEqual(
+            resolution["node"], {"id": "6", "class_type": "FutureTextEncode"}
+        )
+        self.assertEqual(
+            {role: side.get("message") for role, side in result["prompts"].items()},
+            dict.fromkeys(
+                ("positive", "negative"),
+                "Prompt uses a node the inspector does not support "
+                "(FutureTextEncode).",
+            ),
+        )
         png(self.output_dir / "image.png", prompt="{broken")
         _, result = await self.inspect()
         self.assertEqual(result["resolution"]["reason_code"], "malformed")

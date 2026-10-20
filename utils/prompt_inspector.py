@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import re
 import struct
 import subprocess  # nosec B404
 import threading
@@ -13,8 +14,11 @@ from typing import Any
 
 from PIL import Image
 
+from .inspection_outcomes import UNREADABLE_METADATA_REASON, outcome_message
 from .pair_execution import EXECUTION_KEY
 from .prompt_pair_resolver import (
+    _FOOTER,
+    EMPTY_POSITIVE_REASON,
     INSPECTION_PROFILE,
     ResolverProfile,
     resolve_prompt_pair,
@@ -39,6 +43,23 @@ MAX_PNG_CHUNKS = 10_000
 _ROLE_METADATA_KEYS = frozenset({"prompt", "parameters", EXECUTION_KEY})
 _METADATA_KEYS = _ROLE_METADATA_KEYS | {"workflow"}
 _TEXT_CHUNKS = (b"tEXt", b"zTXt", b"iTXt")
+# An accumulating batch saver writes one A1111 ``parameters`` record per batch
+# item, identical except this field (R3); Pillow keeps the last one.
+# Matched only inside the record's one ``Steps: N, ...`` settings footer line.
+_BATCH_INDEX = re.compile(r"(?:^|(?<=, ))Batch index: \d+(?=, |$)")
+
+
+def _batch_normalized(text: str) -> str | None:
+    """``text`` with its footer's single batch index blanked, else ``None``."""
+    footers = list(_FOOTER.finditer(text))
+    if len(footers) != 1:
+        return None
+    line, count = _BATCH_INDEX.subn("Batch index: #", footers[0].group())
+    if count != 1:
+        return None
+    return text[: footers[0].start()] + line + text[footers[0].end() :]
+
+
 _SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -121,13 +142,14 @@ class _PngRecords:
         self.digests: dict[str, tuple[int, bytes]] = {}
         self.role_encoded = self.role_decoded = 0
         self.duplicate_workflow = self.duplicate_role = 0
+        self.duplicate_decoded = 0
 
     def skip(self, key: str, length: int) -> bool:
         """Decide from the keyword and length alone whether to seek past a chunk."""
         if key not in _METADATA_KEYS or key in self.limited:
             return True  # never retained, or a duplicate of a limited workflow
         if key in self.digests:
-            if self.digests[key][0] != length:
+            if self.digests[key][0] != length and key != "parameters":
                 raise MetadataReadError("Duplicate prompt metadata")
             if key == "workflow":
                 if self.duplicate_workflow + length > DUPLICATE_WORKFLOW_BYTES:
@@ -155,7 +177,11 @@ class _PngRecords:
         digest = hashlib.sha256(kind + data).digest()
         if key in self.digests:
             if self.digests[key][1] != digest:
-                raise MetadataReadError("Duplicate prompt metadata")
+                if key != "parameters":
+                    raise MetadataReadError("Duplicate prompt metadata")
+                self.batch_copy(kind, data)
+                # The kept copy is the last one; later repeats compare with it.
+                self.digests[key] = (len(data), digest)
             return
         self.digests[key] = (len(data), digest)
         workflow = key == "workflow"
@@ -175,6 +201,27 @@ class _PngRecords:
             if self.role_decoded > ROLE_METADATA_BYTES:
                 raise MetadataReadError("Metadata exceeds inspection limits")
         self.found[key] = value
+
+    def batch_copy(self, kind: bytes, data: bytes) -> None:
+        """Keep a later ``parameters`` copy that differs only in its batch index.
+
+        Each copy must carry exactly one ``Batch index: N`` settings field; any
+        other difference is still a conflict. Decoding every copy draws from the
+        duplicate role budget, so small compressed copies stay bounded.
+        """
+        _, value = _png_text(kind, data, ROLE_METADATA_BYTES)
+        size = ROLE_METADATA_BYTES + 1 if value is None else len(value.encode())
+        self.duplicate_decoded += size
+        if value is None or self.duplicate_decoded > DUPLICATE_ROLE_BYTES:
+            raise MetadataReadError("Metadata exceeds inspection limits")
+        kept = self.found["parameters"]
+        normalized = _batch_normalized(kept)
+        if normalized is None or normalized != _batch_normalized(value):
+            raise MetadataReadError("Duplicate prompt metadata")
+        self.role_decoded += max(0, size - len(kept.encode()))
+        if self.role_decoded > ROLE_METADATA_BYTES:
+            raise MetadataReadError("Metadata exceeds inspection limits")
+        self.found["parameters"] = value
 
 
 def _png_metadata(stream: Any, size: int) -> tuple[dict, frozenset, int, int]:
@@ -400,6 +447,70 @@ def _side(status: str, text: str | None = None, source: str | None = None) -> di
     return {"status": status, "text": text, "source": source}
 
 
+_EMPTY_POSITIVE = outcome_message(
+    {"state": "unresolved", "reason": EMPTY_POSITIVE_REASON}
+)
+
+
+def _explained(prompts: dict, resolution: dict) -> dict:
+    """Each unresolved role carries the outcome's line; other roles are kept."""
+    message = outcome_message(resolution)
+    if message is None:
+        return prompts
+    return {
+        role: (
+            {**side, "message": message}
+            if side["status"] == "unresolved" and "message" not in side
+            else side
+        )
+        for role, side in prompts.items()
+    }
+
+
+def unreadable_evidence() -> dict:
+    """Both roles when the file's metadata could not be read at all."""
+    resolution = {
+        "state": "unresolved",
+        "sampler_id": None,
+        "reason": UNREADABLE_METADATA_REASON,
+        "reason_code": None,
+        "node": None,
+    }
+    prompts = {role: _side("unresolved") for role in ("positive", "negative")}
+    return {"prompts": _explained(prompts, resolution), "resolution": resolution}
+
+
+def _may_hold_prompt_manager(metadata: dict) -> bool:
+    """Whether the API graph can show the R1 signature, so the workflow is needed.
+
+    PromptManager classes, or a ``CLIPTextEncode`` carrying PromptManager's own
+    ``search_text`` input (an older save rewrote the class).
+    """
+    graph = metadata.get("prompt")
+    if not isinstance(graph, dict):
+        return False
+    for node in graph.values():
+        if not isinstance(node, dict):
+            continue
+        name = node.get("class_type")
+        inputs = node.get("inputs")
+        if isinstance(name, str) and "promptmanager" in name.lower():
+            return True
+        if isinstance(inputs, dict) and "search_text" in inputs:
+            return True
+    return False
+
+
+def _parsed_workflow(value: Any) -> dict | None:
+    """The UI workflow as an object, or ``None`` (absent, invalid or not JSON)."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, RecursionError):
+            return None
+    return value if isinstance(value, dict) else None
+
+
 def inspect_prompt_evidence(
     metadata: dict,
     saved: dict | None = None,
@@ -413,6 +524,7 @@ def inspect_prompt_evidence(
     directly with its default profile. ``resolution`` carries the closed
     ``reason_code`` and, for a blocking node, ``node: {id, class_type}``.
     """
+    workflow = metadata.get("workflow")
     metadata = {
         key: value for key, value in metadata.items() if key in _ROLE_METADATA_KEYS
     }
@@ -447,21 +559,26 @@ def inspect_prompt_evidence(
             },
         }
     canonical = dict(metadata)
+    malformed = {
+        "prompts": _explained(
+            {role: _side("unresolved") for role in ("positive", "negative")},
+            resolution,
+        ),
+        "resolution": resolution,
+    }
     if "prompt" not in canonical and "parameters" not in canonical:
-        return {
-            "prompts": {role: _side("unresolved") for role in ("positive", "negative")},
-            "resolution": resolution,
-        }
+        return malformed
     if isinstance(canonical.get("prompt"), str):
         try:
             canonical["prompt"] = json.loads(canonical["prompt"])
         except (ValueError, RecursionError):
-            return {
-                "prompts": {
-                    role: _side("unresolved") for role in ("positive", "negative")
-                },
-                "resolution": resolution,
-            }
+            return malformed
+    workflow = (
+        _parsed_workflow(workflow) if _may_hold_prompt_manager(canonical) else None
+    )
+    if workflow is not None and "prompt" in canonical:
+        # Only to recognize overwritten PromptManager text (R1); never a role.
+        canonical["workflow"] = workflow
     resolved = resolve_prompt_pair(canonical, profile=profile)
     state = resolved["state"]
     result = {}
@@ -475,18 +592,19 @@ def inspect_prompt_evidence(
             result[role] = _side(
                 "resolved", side["text"], side["provenance"]["text_source"]
             )
+        elif state == "resolved" and isinstance(side, dict):
+            # A resolved pair withholds only an empty positive.
+            result[role] = {**_side("unresolved"), "message": _EMPTY_POSITIVE}
         else:
             result[role] = _side(state if state != "resolved" else "unresolved")
-    return {
-        "prompts": result,
-        "resolution": {
-            "state": state,
-            "sampler_id": resolved.get("sampler_id"),
-            "reason": resolved.get("reason", ""),
-            "reason_code": resolved.get("reason_code"),
-            "node": resolved.get("node"),
-        },
+    resolution = {
+        "state": state,
+        "sampler_id": resolved.get("sampler_id"),
+        "reason": resolved.get("reason", ""),
+        "reason_code": resolved.get("reason_code"),
+        "node": resolved.get("node"),
     }
+    return {"prompts": _explained(result, resolution), "resolution": resolution}
 
 
 def inspect_prompt_roles(metadata: dict, saved: dict | None = None) -> dict:

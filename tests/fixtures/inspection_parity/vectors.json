@@ -6,9 +6,9 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "No supported sampler pair found (saw FaceDetailer, SamplerCustomAdvanced)",
-      "reason_code": "no-sampler",
+      "state": "ambiguous",
+      "reason": "Multiple sampler branches",
+      "reason_code": null,
       "selection": null,
       "positive": null,
       "negative": null,
@@ -19,24 +19,24 @@
           "value": null
         },
         "steps": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "20"
         },
         "cfg": {
-          "status": "ambiguous",
+          "status": "unresolved",
           "value": null
         },
         "sampler": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "euler"
         },
         "scheduler": {
           "status": "ambiguous",
           "value": null
         },
         "model": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "flux-2-klein-9b-fp8.safetensors"
         }
       }
     }
@@ -48,12 +48,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "No supported sampler pair found (saw FaceDetailer, SamplerCustomAdvanced)",
-      "reason_code": "no-sampler",
+      "state": "absent",
+      "reason": "Guider has no negative input",
+      "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur, Scene 0: unique shot description soft winter light,",
+      "negative": "<absent>",
       "candidate_count": 0,
       "facts": {
         "seed": {
@@ -61,8 +61,8 @@
           "value": "1000"
         },
         "steps": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "20"
         },
         "cfg": {
           "status": "not-recorded",
@@ -73,8 +73,8 @@
           "value": "euler"
         },
         "scheduler": {
-          "status": "unresolved",
-          "value": null
+          "status": "known",
+          "value": "Flux2Scheduler"
         },
         "model": {
           "status": "known",
@@ -258,12 +258,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "Unsupported node semantics or output slot",
-      "reason_code": "unsupported-node",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {
@@ -300,12 +300,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "Unsupported node semantics or output slot",
-      "reason_code": "unsupported-node",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {
@@ -342,12 +342,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "Unsupported node semantics or output slot",
-      "reason_code": "unsupported-node",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {
@@ -385,8 +385,8 @@
     "expect": {
       "metadata_status": "available",
       "state": "unresolved",
-      "reason": "Unsupported node semantics or output slot",
-      "reason_code": "unsupported-node",
+      "reason": "Combined conditioning has different texts",
+      "reason_code": "composite",
       "selection": null,
       "positive": null,
       "negative": null,
@@ -426,12 +426,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "Unsupported node semantics or output slot",
-      "reason_code": "unsupported-node",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {
@@ -510,12 +510,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "No supported sampler pair found (saw SamplerCustomAdvanced, CFGGuider)",
-      "reason_code": "no-sampler",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {
@@ -603,28 +603,28 @@
       "candidate_count": 0,
       "facts": {
         "seed": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "42"
         },
         "steps": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "25"
         },
         "cfg": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "6.5"
         },
         "sampler": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "euler"
         },
         "scheduler": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "normal"
         },
         "model": {
-          "status": "ambiguous",
-          "value": null
+          "status": "known",
+          "value": "sdxl_base.safetensors"
         }
       }
     }
@@ -636,12 +636,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "Unsupported latent ancestry",
-      "reason_code": "unsupported-node",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {
@@ -678,12 +678,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "Unsupported latent ancestry",
-      "reason_code": "unsupported-node",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {
@@ -888,12 +888,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "unresolved",
-      "reason": "No supported sampler pair found (saw SamplerCustomAdvanced)",
-      "reason_code": "no-sampler",
+      "state": "absent",
+      "reason": "Guider has no negative input",
+      "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "<absent>",
       "candidate_count": 0,
       "facts": {
         "seed": {
@@ -919,6 +919,258 @@
         "model": {
           "status": "known",
           "value": "flux1-dev.safetensors"
+        }
+      }
+    }
+  },
+  {
+    "name": "f19-inspection",
+    "fixture": "f19",
+    "profile": "inspection",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "ambiguous",
+      "reason": "Sampler stages have different prompts",
+      "reason_code": "multistage-differs",
+      "selection": null,
+      "positive": null,
+      "negative": null,
+      "candidate_count": 0,
+      "facts": {
+        "seed": {
+          "status": "ambiguous",
+          "value": null
+        },
+        "steps": {
+          "status": "ambiguous",
+          "value": null
+        },
+        "cfg": {
+          "status": "ambiguous",
+          "value": null
+        },
+        "sampler": {
+          "status": "known",
+          "value": "euler"
+        },
+        "scheduler": {
+          "status": "known",
+          "value": "normal"
+        },
+        "model": {
+          "status": "known",
+          "value": "sdxl_base.safetensors"
+        }
+      }
+    }
+  },
+  {
+    "name": "f20-inspection",
+    "fixture": "f20",
+    "profile": "inspection",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
+      "selection": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
+      "candidate_count": 0,
+      "facts": {
+        "seed": {
+          "status": "known",
+          "value": "42"
+        },
+        "steps": {
+          "status": "known",
+          "value": "25"
+        },
+        "cfg": {
+          "status": "known",
+          "value": "6.5"
+        },
+        "sampler": {
+          "status": "known",
+          "value": "euler"
+        },
+        "scheduler": {
+          "status": "known",
+          "value": "normal"
+        },
+        "model": {
+          "status": "known",
+          "value": "sdxl_base.safetensors"
+        }
+      }
+    }
+  },
+  {
+    "name": "f21-inspection",
+    "fixture": "f21",
+    "profile": "inspection",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "unresolved",
+      "reason": "Text is decided at run time",
+      "reason_code": "runtime-value",
+      "selection": null,
+      "positive": null,
+      "negative": null,
+      "candidate_count": 0,
+      "facts": {
+        "seed": {
+          "status": "known",
+          "value": "42"
+        },
+        "steps": {
+          "status": "known",
+          "value": "25"
+        },
+        "cfg": {
+          "status": "known",
+          "value": "6.5"
+        },
+        "sampler": {
+          "status": "known",
+          "value": "euler"
+        },
+        "scheduler": {
+          "status": "known",
+          "value": "normal"
+        },
+        "model": {
+          "status": "known",
+          "value": "sdxl_base.safetensors"
+        }
+      }
+    }
+  },
+  {
+    "name": "f22-inspection",
+    "fixture": "f22",
+    "profile": "inspection",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "unresolved",
+      "reason": "Text is decided at run time",
+      "reason_code": "runtime-value",
+      "selection": null,
+      "positive": null,
+      "negative": null,
+      "candidate_count": 0,
+      "facts": {
+        "seed": {
+          "status": "known",
+          "value": "42"
+        },
+        "steps": {
+          "status": "known",
+          "value": "25"
+        },
+        "cfg": {
+          "status": "known",
+          "value": "6.5"
+        },
+        "sampler": {
+          "status": "known",
+          "value": "euler"
+        },
+        "scheduler": {
+          "status": "known",
+          "value": "normal"
+        },
+        "model": {
+          "status": "known",
+          "value": "sdxl_base.safetensors"
+        }
+      }
+    }
+  },
+  {
+    "name": "f23-inspection",
+    "fixture": "f23",
+    "profile": "inspection",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
+      "selection": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "",
+      "candidate_count": 0,
+      "facts": {
+        "seed": {
+          "status": "known",
+          "value": "42"
+        },
+        "steps": {
+          "status": "known",
+          "value": "25"
+        },
+        "cfg": {
+          "status": "known",
+          "value": "6.5"
+        },
+        "sampler": {
+          "status": "known",
+          "value": "euler"
+        },
+        "scheduler": {
+          "status": "known",
+          "value": "normal"
+        },
+        "model": {
+          "status": "known",
+          "value": "sdxl_base.safetensors"
+        }
+      }
+    }
+  },
+  {
+    "name": "f24-inspection",
+    "fixture": "f24",
+    "profile": "inspection",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
+      "selection": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
+      "candidate_count": 0,
+      "facts": {
+        "seed": {
+          "status": "known",
+          "value": "42"
+        },
+        "steps": {
+          "status": "known",
+          "value": "25"
+        },
+        "cfg": {
+          "status": "known",
+          "value": "6.5"
+        },
+        "sampler": {
+          "status": "known",
+          "value": "euler"
+        },
+        "scheduler": {
+          "status": "known",
+          "value": "normal"
+        },
+        "model": {
+          "status": "known",
+          "value": "sdxl_base.safetensors"
         }
       }
     }
@@ -1293,6 +1545,108 @@
       "selection": null,
       "positive": "<absent>",
       "negative": "<absent>",
+      "candidate_count": 0,
+      "facts": null
+    }
+  },
+  {
+    "name": "f19-default",
+    "fixture": "f19",
+    "profile": "default",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "resolved",
+      "reason": "",
+      "reason_code": null,
+      "selection": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
+      "candidate_count": 0,
+      "facts": null
+    }
+  },
+  {
+    "name": "f20-default",
+    "fixture": "f20",
+    "profile": "default",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "unresolved",
+      "reason": "Unsupported node semantics or output slot",
+      "reason_code": null,
+      "selection": null,
+      "positive": null,
+      "negative": null,
+      "candidate_count": 0,
+      "facts": null
+    }
+  },
+  {
+    "name": "f21-default",
+    "fixture": "f21",
+    "profile": "default",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "unresolved",
+      "reason": "Unsupported node semantics or output slot",
+      "reason_code": null,
+      "selection": null,
+      "positive": null,
+      "negative": null,
+      "candidate_count": 0,
+      "facts": null
+    }
+  },
+  {
+    "name": "f22-default",
+    "fixture": "f22",
+    "profile": "default",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "unresolved",
+      "reason": "Unsupported node semantics or output slot",
+      "reason_code": null,
+      "selection": null,
+      "positive": null,
+      "negative": null,
+      "candidate_count": 0,
+      "facts": null
+    }
+  },
+  {
+    "name": "f23-default",
+    "fixture": "f23",
+    "profile": "default",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "unresolved",
+      "reason": "Unsupported node semantics or output slot",
+      "reason_code": null,
+      "selection": null,
+      "positive": null,
+      "negative": null,
+      "candidate_count": 0,
+      "facts": null
+    }
+  },
+  {
+    "name": "f24-default",
+    "fixture": "f24",
+    "profile": "default",
+    "anchor": null,
+    "expect": {
+      "metadata_status": "available",
+      "state": "unresolved",
+      "reason": "Unsupported node semantics or output slot",
+      "reason_code": null,
+      "selection": null,
+      "positive": null,
+      "negative": null,
       "candidate_count": 0,
       "facts": null
     }

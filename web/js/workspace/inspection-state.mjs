@@ -9,6 +9,10 @@ const FACT_FIELDS = ['seed', 'steps', 'cfg', 'sampler', 'scheduler', 'model'];
 const RECORD_FORMATS = ['original-text', 'reserialized-json', 'invalid', 'limited'];
 const TEXTLESS_FORMATS = ['invalid', 'limited'];
 const REASON_CODES = ['work-limit', 'depth-limit', 'text-limit', 'graph-ceiling', 'unsupported-node', 'runtime-value', 'composite', 'no-sampler', 'malformed', 'multistage-differs'];
+// Only these codes name the blocking node; node IDs and class names are bounded.
+const NAMED_CODES = ['unsupported-node', 'runtime-value', 'composite'];
+const NAME_LENGTH = 200, MESSAGE_LENGTH = 512;
+const boundedText = (value, limit) => typeof value === 'string' && value.length > 0 && value.length <= limit;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const validScope = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) && value.length === 64;
 
@@ -77,7 +81,8 @@ function promptsFor(value) {
         if (record === undefined) continue;
         if (!object(record) || typeof record.status !== 'string' ||
             (record.text !== undefined && record.text !== null && typeof record.text !== 'string') ||
-            (record.status === 'resolved' && !Object.hasOwn(confirmed, role))) throw new TypeError('Invalid inspection role');
+            (record.status === 'resolved' && !Object.hasOwn(confirmed, role)) ||
+            (record.message !== undefined && (record.status === 'resolved' || !boundedText(record.message, MESSAGE_LENGTH)))) throw new TypeError('Invalid inspection role');
     }
     return value;
 }
@@ -141,7 +146,8 @@ function resolutionFor(value) {
     const code = value.reason_code ?? null, node = value.node ?? null;
     // Codes explain a non-resolved outcome; a blocking node is named only with its code.
     if ((code !== null && (!REASON_CODES.includes(code) || ['resolved', 'absent'].includes(value.state))) ||
-        (node !== null && (code === null || !object(node) || typeof node.id !== 'string' || (node.class_type !== null && typeof node.class_type !== 'string')))) throw new TypeError('Invalid inspection resolution reason');
+        (node !== null && (!NAMED_CODES.includes(code) || !object(node) || Object.keys(node).sort().join() !== 'class_type,id' ||
+            !boundedText(node.id, NAME_LENGTH) || (node.class_type !== null && !boundedText(node.class_type, NAME_LENGTH))))) throw new TypeError('Invalid inspection resolution reason');
     return value;
 }
 

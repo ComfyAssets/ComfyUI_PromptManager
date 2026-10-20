@@ -403,8 +403,53 @@
     }
 
     const FACT_FIELDS = ["seed", "steps", "cfg", "sampler", "scheduler", "model"];
-    const GENERATION_SAMPLERS = new Set(["KSampler", "KSamplerAdvanced", "SamplerCustom", "SamplerCustomAdvanced"]);
     const WORKFLOW_PASSTHROUGH = Symbol("inspection workflow passthrough");
+    // These tables must equal inspection-semantics.json: SAMPLERS its `samplers` section
+    // (facts shape, and a detailer stage's image input), the other four its `facts`
+    // section (tests/js/inspection-semantics-sync.test.js). They stay inline literals
+    // because the legacy pages load this file as a classic script.
+    const SAMPLERS = Object.freeze({
+        KSampler: { facts: "ksampler" },
+        KSamplerAdvanced: { facts: "ksampler" },
+        SamplerCustom: { facts: "custom" },
+        SamplerCustomAdvanced: { facts: "custom-advanced" },
+        FaceDetailer: { facts: "ksampler", image_stage: "image" },
+        DetailerForEach: { facts: "ksampler", image_stage: "image" },
+        UltimateSDUpscale: { facts: "ksampler", image_stage: "image" },
+        UltimateSDUpscaleNoUpscale: { facts: "ksampler", image_stage: "upscaled_image" },
+        // `fact_overrides`: inputs that, when set, replace the settings read here.
+        ClownsharKSampler_Beta: { facts: "ksampler", fact_overrides: ["options", "sigmas"] },
+        "KSampler (Efficient)": { facts: "ksampler", fact_overrides: ["script"] },
+        "ttN KSampler_v2": { facts: "ksampler", fact_overrides: ["adv_xyPlot"] },
+    });
+    // Stages merged for one result: the resolver's candidate cap. Together with
+    // MAX_VISITS per candidate walk these are deliberately tighter than the server's
+    // budgets (2,000 visits, depth 64), so the JS walk always fails closed first.
+    const MAX_STAGES = 32;
+    // Every class the semantics table lists (the resolver's `all_classes`): a stage walk
+    // passes these, and treats any other node shaped like a sampler as an unknown stage.
+    const TABLE_CLASSES = new Set([
+        "KSampler", "KSamplerAdvanced", "SamplerCustom", "SamplerCustomAdvanced", "FaceDetailer",
+        "CFGGuider", "BasicGuider", "easy ifElse", "ConditioningCombine", "ConditioningConcat",
+        "ConditioningAverage", "SaveImage", "SaveAnimatedWEBP", "SaveAnimatedPNG", "SaveVideo",
+        "SaveWEBM", "VHS_VideoCombine", "FluxGuidance", "ReferenceLatent", "ConditioningSetArea",
+        "ConditioningSetAreaPercentage", "ConditioningSetAreaStrength", "ConditioningSetMask", "ConditioningSetTimestepRange", "ControlNetApply",
+        "ControlNetApplyAdvanced", "ControlNetApplySD3", "InpaintModelConditioning", "WanImageToVideo", "ConditioningZeroOut",
+        "CLIPTextEncode", "CLIPTextEncodeSDXL", "CLIPTextEncodeFlux", "CLIPTextEncodeSD3", "TextEncodeQwenImageEdit",
+        "TextEncodeQwenImageEditPlus", "TextEncodeQwenImage21", "KikoTextEncode", "StringConstant", "StringConstantMultiline",
+        "JoinStringMulti", "PromptSearchList", "PreviewImage", "PreviewAny", "SaveImageWebsocket",
+        "Image Comparer (rgthree)", "DetailerForEach", "UltimateSDUpscale", "UltimateSDUpscaleNoUpscale",
+        "ControlNetInpaintingAliMamaApply", "LTXVConditioning", "FluxKontextMultiReferenceLatentMethod", "Text to Conditioning",
+        "TextInput", "DisplayText", "ClownsharKSampler_Beta", "KSampler (Efficient)", "ttN KSampler_v2",
+        "SeedVarianceEnhancer", "ApplyInstantIDAdvanced", "Switch conditioning [Crystools]", "smZ CLIPTextEncode", "ttN text",
+        "CR Text", "CR Prompt Text", "TextBoxMira",
+    ]);
+    // The table's `stage_inputs` (the resolver reads the same lists): inputs that make an
+    // unlisted node a possible stage, and those that do so beside a linked `model`.
+    const STAGE_INPUTS = Object.freeze({
+        shaped: ["latent_image", "guider", "positive", "negative", "pipe", "basic_pipe", "detailer_pipe", "sampler", "sigmas", "noise", "text_embeds", "hyvid_embeds"],
+        with_model: ["conditioning", "neg_conditioning", "samples", "latent"],
+    });
     // Fixed output0 contracts from the pinned core node schemas, not input-name inference.
     const SCALAR_OUTPUTS = Object.freeze({
         PrimitiveInt: "number", PrimitiveFloat: "number",
@@ -414,11 +459,17 @@
         CheckpointLoader: "ckpt_name", CheckpointLoaderSimple: "ckpt_name",
         unCLIPCheckpointLoader: "ckpt_name", UNETLoader: "unet_name",
     });
-    const MODEL_PASSTHROUGHS = new Set(["LoraLoader", "LoraLoaderModelOnly"]);
+    const MODEL_PASSTHROUGHS = new Set([
+        "LoraLoader", "LoraLoaderModelOnly", "ModelSamplingFlux", "ModelSamplingAuraFlow", "ModelSamplingSD3",
+        "Lora Loader (LoraManager)", "Power Lora Loader (rgthree)", "ModelPatchTorchSettings", "CFGNorm", "PerturbedAttentionGuidance",
+        "CR Apply LoRA Stack",
+    ]);
     const CONFIGURATION_OUTPUTS = Object.freeze({
         RandomNoise: { kind: "noise", fields: ["noise_seed"] },
         KSamplerSelect: { kind: "sampler", fields: ["sampler_name"] },
         BasicScheduler: { kind: "sigmas", fields: ["steps", "scheduler"] },
+        // D8: no scheduler input; the node type is the scheduler configuration.
+        Flux2Scheduler: { kind: "sigmas", fields: ["steps"], type_fields: ["scheduler"] },
         CFGGuider: { kind: "guider", fields: ["cfg", "model"] },
         BasicGuider: { kind: "guider", fields: ["model"] },
     });
@@ -463,24 +514,85 @@
         const seen = new Set();
         const [, node, adapter] = configurationOutput(ctx, link, kind, seen);
         if (!node) return fact("unresolved", source, samplerId);
+        if (keys.some(name => adapter.type_fields?.includes(name))) {
+            const value = exactFactValue(node.class_type, field);
+            return fact(value === null ? "unresolved" : "known", source, samplerId, value);
+        }
         const key = keys.find(name => adapter.fields.includes(name) && Object.hasOwn(node.inputs, name));
         return key === undefined ? fact("not-recorded", source, samplerId) : scalarFact(ctx, node.inputs, key, field, source, samplerId, seen);
     }
 
-    function graphFacts(graph, source, resolution) {
-        if (!object(graph)) return factSet("unresolved", source);
-        // Graph size is not a bound: each lookup is bounded by its MAX_VISITS seen-set,
-        // and the server's node ceiling arrives as a `limited` projection.
-        const entries = Object.entries(graph);
-        if (entries.some(([, node]) => !object(node) || !object(node.inputs) || typeof node.class_type !== "string")) return factSet("unresolved", source);
-        const candidates = entries.filter(([, node]) => GENERATION_SAMPLERS.has(node.class_type));
-        const selected = candidates.find(([id]) => typeof resolution?.sampler_id === "string" && id === resolution.sampler_id);
-        if (!selected && candidates.length !== 1) return factSet(candidates.length > 1 ? "ambiguous" : "unresolved", source);
-        const [samplerId, sampler] = selected || candidates[0];
-        const ctx = createContext(graph, null, true);
+    const samplerEntry = (graph, id) => (Object.hasOwn(graph, id) && Object.hasOwn(SAMPLERS, graph[id].class_type) ? SAMPLERS[graph[id].class_type] : undefined);
+
+    // The resolver's `_link`: an integer or string id and a non-negative integer slot.
+    // Stage walks use it so they cross exactly the server's edges; the legacy `isLink` stays.
+    const stageLink = value => Array.isArray(value) && value.length === 2 &&
+        (typeof value[0] === "string" || Number.isInteger(value[0])) && Number.isInteger(value[1]) && value[1] >= 0;
+    const linked = (inputs, key) => Object.hasOwn(inputs, key) && stageLink(inputs[key]);
+    /** An unlisted node that may itself be a sampler stage: the walk cannot judge it. */
+    const stageShaped = ({ class_type, inputs }) => !TABLE_CLASSES.has(class_type) &&
+        (STAGE_INPUTS.shaped.some(key => linked(inputs, key)) || (linked(inputs, "model") && STAGE_INPUTS.with_model.some(key => linked(inputs, key))));
+
+    /** Samplers reached from a detailer's image input, breadth-first, stopping at listed samplers. */
+    function upstreamStages(graph, origin, value, budget) {
+        if (!stageLink(value)) return null;
+        const found = [], queue = [String(value[0])], queued = new Set(queue);
+        for (let head = 0; head < queue.length; head++) {
+            const id = queue[head];
+            if (id === origin || ++budget.visits > MAX_VISITS || !Object.hasOwn(graph, id)) return null;
+            if (samplerEntry(graph, id)) { found.push(id); continue; }
+            if (stageShaped(graph[id])) return null;
+            for (const input of Object.values(graph[id].inputs)) {
+                const next = stageLink(input) ? String(input[0]) : null;
+                if (next !== null && !queued.has(next)) { queued.add(next); queue.push(next); }
+            }
+        }
+        return found;
+    }
+
+    /**
+     * Collect a final stage and every stage in its image ancestry into `stages`, as the
+     * resolver judges a detailer chain. `later` holds the detailers already being judged
+     * below this one, so a cyclic chain fails instead of recursing. False when the chain
+     * cannot be walked within the bounds.
+     */
+    // `stages` is shared on purpose across one result's candidates: re-adding a stage is
+    // harmless, and MAX_STAGES caps the union, not each candidate.
+    function collectStages(graph, id, later, stages, budget) {
+        stages.add(id);
+        if (stages.size > MAX_STAGES || later.size >= MAX_STAGES) return false;
+        const entry = samplerEntry(graph, id);
+        if (entry.image_stage === undefined) return true;
+        const inputs = graph[id].inputs;
+        const upstream = upstreamStages(graph, id, Object.hasOwn(inputs, entry.image_stage) ? inputs[entry.image_stage] : undefined, budget);
+        if (upstream === null || upstream.some(stage => later.has(stage))) return false;
+        const below = new Set(later).add(id);
+        return upstream.every(stage => collectStages(graph, stage, below, stages, budget));
+    }
+
+    /** Spec section 10 merge: equal known values stay known, differing ones are ambiguous. */
+    function mergeFacts(sets, source) {
+        if (sets.length === 1) return sets[0];
+        return Object.fromEntries(FACT_FIELDS.map(field => {
+            const facts = sets.map(set => set[field]);
+            if (new Set(facts.filter(item => item.status === "known").map(item => item.value)).size > 1) return [field, fact("ambiguous", source)];
+            const [first] = facts;
+            const agreed = facts.every(item => item.status === first.status && item.value === first.value);
+            // A merged fact names no single sampler: it is every stage's value.
+            return [field, agreed ? fact(first.status, source, null, first.value, first.reason) : fact("unresolved", source)];
+        }));
+    }
+
+    function samplerFacts(ctx, samplerId, source) {
+        const sampler = ctx.graph[samplerId];
         const inputs = sampler.inputs;
-        const advanced = sampler.class_type === "SamplerCustomAdvanced";
-        const custom = advanced || sampler.class_type === "SamplerCustom";
+        const { facts: shape, fact_overrides: overrides = [] } = SAMPLERS[sampler.class_type];
+        // A set override (a script, an XY plot, custom sigmas) replaces the settings below.
+        if (overrides.some(name => Object.hasOwn(inputs, name) && inputs[name] !== null && inputs[name] !== "")) {
+            return Object.fromEntries(FACT_FIELDS.map(name => [name, fact("unresolved", source, samplerId)]));
+        }
+        const advanced = shape === "custom-advanced";
+        const custom = advanced || shape === "custom";
         let settings = inputs;
         let settingsAdapter;
         const settingsPath = new Set();
@@ -510,6 +622,45 @@
         return facts;
     }
 
+    /**
+     * Facts follow the server's resolution. Its `sampler_id` drives them alone when
+     * resolved. Any other result naming a sampler (an ambiguous multistage chain, or an
+     * absent or unresolved prompt of the branch the server chose, e.g. after dropping a
+     * preview-only stage) merges per field across that sampler's stages, independent of
+     * any selection (D5). Ambiguous without a named sampler (no candidates on the wire
+     * until PR3), and unresolved or absent over several listed samplers, merge the same
+     * way across every listed sampler and its stages. Otherwise (no resolution, or one
+     * listed sampler) exactly one listed sampler supplies them; several leave every field ambiguous.
+     */
+    function graphFacts(graph, source, resolution) {
+        if (!object(graph)) return factSet("unresolved", source);
+        // Graph size is not a bound: each lookup is bounded by its MAX_VISITS seen-set,
+        // and the server's node ceiling arrives as a `limited` projection.
+        const entries = Object.entries(graph);
+        if (entries.some(([, node]) => !object(node) || !object(node.inputs) || typeof node.class_type !== "string")) return factSet("unresolved", source);
+        const ctx = createContext(graph, null, true);
+        const state = object(resolution) ? resolution.state : undefined;
+        const named = typeof resolution?.sampler_id === "string" ? resolution.sampler_id : null;
+        if (["resolved", "ambiguous", "absent", "unresolved"].includes(state) && named !== null) {
+            if (!samplerEntry(graph, named)) return factSet("unresolved", source);
+            if (state === "resolved") return samplerFacts(ctx, named, source);
+            const stages = new Set();
+            if (!collectStages(graph, named, new Set(), stages, { visits: 0 })) return factSet("unresolved", source);
+            return mergeFacts([...stages].map(id => samplerFacts(ctx, id, source)), source);
+        }
+        const candidates = entries.filter(([id]) => samplerEntry(graph, id));
+        // Review I-1: an unresolved or absent prompt does not make the run's settings
+        // unknown, so several listed samplers merge the same way.
+        if (state === "ambiguous" || ((state === "unresolved" || state === "absent") && candidates.length > 1)) {
+            // The server's branches: every listed sampler, a detailer judged with its stages.
+            const stages = new Set();
+            if (!candidates.length || !candidates.every(([id]) => collectStages(graph, id, new Set(), stages, { visits: 0 }))) return factSet("unresolved", source);
+            return mergeFacts([...stages].map(id => samplerFacts(ctx, id, source)), source);
+        }
+        if (candidates.length !== 1) return factSet(candidates.length > 1 ? "ambiguous" : "unresolved", source);
+        return samplerFacts(ctx, candidates[0][0], source);
+    }
+
     function validFactWorkflow(workflow) {
         if (!object(workflow) || !Array.isArray(workflow.nodes) || (workflow.links !== undefined && !Array.isArray(workflow.links))) return false;
         const ids = new Set(), links = new Set(), setters = new Set();
@@ -531,18 +682,51 @@
         return true;
     }
 
+    // The inspection resolver's `_footer` (Python): R5 also reads a bare `Steps: N`
+    // footer, and sd-dynamic-prompts' one-line template records after it.
+    const FOOTER_TRAILERS = ["Template:", "Negative Template:"];
+    function trailerLines(text) {
+        const lines = text.trim().split(/\r?\n|\r/).filter((line, index, all) => all.length > 1 || line);
+        const order = lines.map(line => FOOTER_TRAILERS.findIndex(name => line.startsWith(name)));
+        return !order.includes(-1) && order.every((value, index) => index === 0 || value > order[index - 1]);
+    }
+    function settingsFooter(parameters) {
+        let matches = [...parameters.matchAll(/^Steps:\s*\d+\s*,[^\n]*$/gm)];
+        if (!matches.length) matches = [...parameters.matchAll(/^Steps:\s*\d+\s*$/gm)];
+        if (matches.length !== 1) return null;
+        return trailerLines(parameters.slice(matches[0].index + matches[0][0].length)) ? matches[0] : null;
+    }
+    /** R10: split settings on commas outside A1111's quoted values; unbalanced quotes split as before. */
+    function settingsParts(line) {
+        const parts = [];
+        let start = 0, quoted = false;
+        for (let index = 0; index < line.length; index++) {
+            if (quoted && line[index] === "\\") index++;
+            else if (line[index] === '"') quoted = !quoted;
+            else if (line[index] === "," && !quoted) { parts.push(line.slice(start, index)); start = index + 1; }
+        }
+        if (quoted) return line.split(",");
+        parts.push(line.slice(start));
+        return parts;
+    }
+    function settingValue(value) {
+        if (!/^"(?:\\.|[^\\"])*"$/.test(value)) return value;
+        try { return JSON.parse(value); } catch { return value; }
+    }
+
     function parameterFacts(parameters) {
         const source = "embedded-parameters";
-        const matches = [...parameters.matchAll(/^Steps:\s*\d+\s*,[^\n]*$/gm)];
-        if (matches.length !== 1 || parameters.slice(matches[0].index + matches[0][0].length).trim()) return factSet("unresolved", source);
-        const body = parameters.slice(0, matches[0].index).replace(/[\r\n]+$/, "");
+        const footer = settingsFooter(parameters);
+        if (!footer) return factSet("unresolved", source);
+        // R4: like the resolver, text starting with the delimiter has an empty positive.
+        const body = "\n" + parameters.slice(0, footer.index).replace(/[\r\n]+$/, "");
         if (!body.split("\nNegative prompt:")[0].trim() || body.split("\nNegative prompt:").length > 2) return factSet("unresolved", source);
         const settings = new Map();
-        for (const part of matches[0][0].split(",")) {
+        for (const part of settingsParts(footer[0])) {
             const match = part.match(/^\s*([^:]+):\s*(.*?)\s*$/);
             if (!match) return factSet("unresolved", source);
             const [, key, value] = match;
-            settings.set(key, settings.has(key) ? null : value);
+            settings.set(key, settings.has(key) ? null : settingValue(value));
         }
         const keys = { seed: "Seed", steps: "Steps", cfg: "CFG scale", sampler: "Sampler", scheduler: "Schedule type", model: "Model" };
         return Object.fromEntries(FACT_FIELDS.map(field => {
@@ -575,6 +759,18 @@
     }
 
     const api = { extractGenerationParams, extractGenerationFacts, PLACEHOLDERS };
+    // For the semantics sync test only; not part of the legacy page contract.
+    Object.defineProperty(api, "_factsTables", {
+        value: Object.freeze({
+            configuration_outputs: CONFIGURATION_OUTPUTS,
+            model_outputs: MODEL_OUTPUTS,
+            model_passthroughs: MODEL_PASSTHROUGHS,
+            scalar_outputs: SCALAR_OUTPUTS,
+        }),
+    });
+    Object.defineProperty(api, "_samplerTable", { value: SAMPLERS });
+    Object.defineProperty(api, "_tableClasses", { value: TABLE_CLASSES });
+    Object.defineProperty(api, "_stageInputs", { value: STAGE_INPUTS });
     if (typeof module !== "undefined" && module.exports) module.exports = api;
     else root.ComfyMetadata = api;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -9,6 +9,11 @@ try:
         MetadataReadError,
         inspect_prompt_evidence,
         read_inspection_file,
+        unreadable_evidence,
+    )
+    from ...utils.prompt_pair_resolver import (
+        INSPECTION_PROFILE,
+        PREVIEW_INSPECTION_PROFILE,
     )
     from ...utils.video_metadata import is_video_path
 except ImportError:
@@ -16,6 +21,11 @@ except ImportError:
         MetadataReadError,
         inspect_prompt_evidence,
         read_inspection_file,
+        unreadable_evidence,
+    )
+    from utils.prompt_pair_resolver import (
+        INSPECTION_PROFILE,
+        PREVIEW_INSPECTION_PROFILE,
     )
     from utils.video_metadata import is_video_path
 
@@ -60,6 +70,28 @@ def _current_file_facts(path: Path) -> os.stat_result:
     return observed
 
 
+def _in_host_temp(path: Path) -> bool:
+    """Whether a file lies in ComfyUI's temp folder, where previews are written.
+
+    An unknown temp folder reads as no: the file is then inspected as saved
+    output.
+    """
+    try:
+        import folder_paths
+
+        temp = folder_paths.get_temp_directory()
+    except (ImportError, AttributeError, OSError):
+        return False
+    if type(temp) is not str or not temp:
+        return False
+    try:
+        folder = os.path.normcase(os.path.realpath(temp))
+        target = os.path.normcase(os.path.realpath(path))
+        return os.path.commonpath([folder, target]) == folder
+    except (OSError, ValueError):
+        return False
+
+
 def inspect_current_file(
     path: Path, *, source_label: str, saved: dict | None, library: dict
 ) -> dict:
@@ -73,24 +105,18 @@ def inspect_current_file(
     if any(getattr(before, key) != getattr(after, key) for key in fields):
         raise CurrentFileChanged
     if inspection is None:
-        evidence = {
-            "prompts": {
-                role: {"status": "unresolved", "text": None, "source": None}
-                for role in ("positive", "negative")
-            },
-            "resolution": {
-                "state": "unresolved",
-                "sampler_id": None,
-                "reason": "Media metadata could not be read",
-                "reason_code": None,
-                "node": None,
-            },
-        }
+        evidence = unreadable_evidence()
     else:
         role_saved = (
             None if saved and saved.get("association_status") == "ambiguous" else saved
         )
-        evidence = inspect_prompt_evidence(inspection.metadata, role_saved)
+        # A preview may be the output of a stage that reaches only previews.
+        profile = (
+            PREVIEW_INSPECTION_PROFILE if _in_host_temp(path) else INSPECTION_PROFILE
+        )
+        evidence = inspect_prompt_evidence(
+            inspection.metadata, role_saved, profile=profile
+        )
     return {
         "file": {
             "observation": "current-file",

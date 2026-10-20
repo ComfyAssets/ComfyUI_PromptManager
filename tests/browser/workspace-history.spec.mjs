@@ -458,6 +458,46 @@ test('frozen Effective pair uses the shared acknowledged sender and Escape close
     } finally {await host.evaluate(()=>window.historyHost.dispose());await host.close();}
 });
 
+test('the inline current file names its prompts apart from the frozen run fields',async({page})=>{
+    // The current file resolves its own prompts, as a real host's saved PNG does, so the dialog holds two prompt texts per role.
+    await page.route(url=>url.pathname.endsWith('/inspection'),async route=>{const response=await route.fetch();const body=await response.json();
+        body.prompts={positive:{status:'resolved',text:'current file positive',source:'graph-inferred'},negative:{status:'resolved',text:'current file negative',source:'graph-inferred'}};
+        await route.fulfill({response,json:body});});
+    await open(page,page.fixture.detail_id);await marker(page,page.fixture.runs.shared).click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
+    await dialog(page).getByRole('button',{name:'Raw',exact:true}).click();
+    const frozen=dialog(page).getByRole('region',{name:'Frozen run prompt texts',exact:true});
+    const before=await exact(frozen.getByRole('region',{name:'Positive prompt',exact:true}).locator('pre'));
+    await dialog(page).locator('[data-receipt]').first().getByRole('button',{name:'View current file',exact:true}).click();
+    await expect(page.getByRole('dialog',{name:'Image preview',exact:true})).toBeVisible();await page.keyboard.press('Escape');await expect(dialog(page)).toBeVisible();
+    const current=dialog(page).getByRole('region',{name:'Current reported file',exact:true});await expect(current).toBeVisible();
+    await expect(current.getByRole('region',{name:'Current file positive prompt',exact:true}).locator('pre')).toHaveText('current file positive');
+    await expect(current.getByRole('region',{name:'Current file negative prompt',exact:true}).locator('pre')).toHaveText('current file negative');
+    await expect(current.getByRole('button',{name:'Copy current file positive prompt',exact:true})).toBeVisible();
+    for(const role of ['Positive','Negative'])await expect(dialog(page).getByRole('region',{name:`${role} prompt`,exact:true})).toHaveCount(1);
+    await expect(current.getByRole('region',{name:/^(Positive|Negative) prompt$/})).toHaveCount(0);
+    expect(await exact(dialog(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('pre'))).toBe(before);
+});
+
+test('the recorded run dialog with a resolved current file has no duplicate button or region names',async({page})=>{
+    await page.route(url=>url.pathname.endsWith('/inspection'),async route=>{const response=await route.fetch();const body=await response.json();
+        body.prompts={positive:{status:'resolved',text:'current file positive',source:'graph-inferred'},negative:{status:'resolved',text:'current file negative',source:'graph-inferred'}};
+        await route.fulfill({response,json:body});});
+    await open(page,page.fixture.detail_id);await marker(page,page.fixture.runs.shared).click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
+    await dialog(page).getByRole('button',{name:'Raw',exact:true}).click();
+    await dialog(page).locator('[data-receipt]').first().getByRole('button',{name:'View current file',exact:true}).click();
+    await expect(page.getByRole('dialog',{name:'Image preview',exact:true})).toBeVisible();await page.keyboard.press('Escape');
+    await expect(dialog(page).getByRole('region',{name:'Current reported file',exact:true})).toBeVisible();
+    await expect(dialog(page).getByRole('region',{name:'Current file positive prompt',exact:true})).toBeVisible();
+    // Receipt rows repeat per-row actions by design; every other control and region in the dialog must be uniquely named.
+    const snapshot=await dialog(page).ariaSnapshot();const counts=new Map();
+    for(const line of snapshot.split('\n')){const match=/^\s*- (button|region|link) "((?:[^"\\]|\\.)*)"/.exec(line);if(!match)continue;
+        const key=`${match[1]} ${match[2]}`;counts.set(key,(counts.get(key)||0)+1);}
+    expect(counts.size).toBeGreaterThan(10);
+    const receiptNames=await dialog(page).locator('[data-receipt]').first().evaluate(row=>[...row.querySelectorAll('button,a,[role="region"]')].map(node=>node.getAttribute('aria-label')||node.textContent.trim()));
+    const repeated=[...counts].filter(([key,n])=>n>1&&!receiptNames.some(name=>key.endsWith(` ${name}`)));
+    expect(repeated).toEqual([]);
+});
+
 test('pagehide tears down dialogs and persisted reentry revalidates before enabling recorded actions',async({page})=>{
     await open(page,page.fixture.detail_id);await marker(page,page.fixture.runs.shared).click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
     await dialog(page).locator('[data-receipt]').first().getByRole('button',{name:'View current file',exact:true}).click();await expect(page.getByRole('dialog',{name:'Image preview',exact:true})).toBeVisible();

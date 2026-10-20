@@ -227,7 +227,55 @@ workflow graph and its facts become limited). The serialized
 response stays under 8 MiB by omitting, in order, the workflow graph, then the prompt
 graph, then all raw records atomically. Retry does not raise these limits. Ingestion
 (scan, live monitor, admin import) and queue-time run counting keep the default
-profile, including its 500-node gate.
+profile, including its 500-node gate. Only `INSPECTION_PROFILE` reads the node
+semantics table `web/js/inspection-semantics.json` (at most 1 MiB and eight nesting
+levels, loaded on first use). With it, `SamplerCustomAdvanced` follows its `guider`
+link (through Reroutes) to `CFGGuider` (positive and negative) or `BasicGuider`
+(positive only; the negative is `absent`, "Guider has no negative input"). Any
+other guider, such as `DualCFGGuider`, is `unsupported-node`. Conditioning is
+traced through the table's pass-throughs (FluxGuidance, ReferenceLatent, the
+ConditioningSet* nodes, ControlNet apply nodes, InpaintModelConditioning and
+WanImageToVideo by output slot). `ConditioningZeroOut` is an explicit empty text
+with source `zeroed-conditioning`. `easy ifElse` with a literal boolean follows that
+branch only; with a linked boolean both branches are traced, equal texts resolve and
+different texts make the sampler `ambiguous` with one candidate per choice (at most
+32, else `work-limit`). ConditioningCombine/Concat/Average resolve only when every
+part has the same text, otherwise `unresolved` with `composite` naming the node.
+Results that depend on a forced choice are never memoized. A `FaceDetailer`
+(`detailer-stage`) is a sampler stage: the samplers reached through its `image`
+ancestry are compared with it. Equal texts resolve with the detailer as the sampler;
+different texts are `ambiguous` with `multistage-differs` and one candidate per
+stage; an unreadable stage makes the chain `unresolved`. Unanchored, a sampler
+whose output only feeds detailers (or previews) is not a candidate of its own.
+A sampler's latent ancestry is walked through every link input of non-sampler
+nodes within the same visit and depth budgets: with no earlier sampler it is a
+single stage whatever the origin (VAEEncode, EmptyLatentBatch, EmptyFlux2LatentImage,
+EmptyHunyuanLatentVideo, SetLatentNoiseMask, InpaintModelConditioning or
+WanImageToVideo slot 2). An earlier sampler (img2img from a decode, hires fix) stays
+`unresolved` "Multistage sampler ancestry is ambiguous" until stage texts are
+compared; an unlisted node with sampler-shaped inputs (positive, negative, guider,
+latent_image, a pipe, video embeds, custom-sampler parts, or a `model` link together
+with conditioning, neg_conditioning, samples or latent) is `unsupported-node`
+naming it, here and in a detailer's image ancestry; a latent that is not a link or
+reaches its own sampler is `malformed`; running out of budget is `work-limit` or
+`depth-limit`, never single stage. Each sampler's walk runs once per resolution;
+selector branch runs share it and other candidates are charged its visit cost.
+Text encoders: `single` encoders (the Qwen image encoders, `TextEncodeQwenImage21`
+slot 0 `prompt` and slot 1 `negative_prompt`, `KikoTextEncode`) read one string
+input unchanged. `parts-equal` encoders (CLIPTextEncodeSDXL, Flux, SD3) resolve when
+every part is identical or exactly one part is non-empty (exact `""`, whitespace is
+text); otherwise `composite`. String sources reproduce the pinned KJNodes code from
+literal settings only: `StringConstant` is its `string`; `StringConstantMultiline`
+with a literal true `strip_newlines` is `replace("\n", "").strip()`;
+`JoinStringMulti` keeps `string_1` (even empty), appends `string_2`..`string_N`
+(`N` = `inputcount`) after the literal delimiter unless missing or exactly `""`, and
+ignores later inputs. A linked setting is `unsupported-node`; a list output
+(`return_list` true or linked) and `PromptSearchList` are `runtime-value` ("Text is
+decided at run time"), never one list item. Unverified text nodes (LoRAfromText,
+RegexReplace, XYZPrompt, ImpactWildcardProcessor) stay `unsupported-node`. Every
+intermediate text is length-checked and charged to the scanned-character budget. If
+the table cannot be loaded, graph inspection is `unresolved` ("Inspection node
+semantics are unavailable") and ingestion is unaffected, because it never imports the table.
 
 `tools/inspection_corpus.py --root DIR --out JSONL [--workers N] [--baseline JSONL]
 [--summary TXT] [--code TREE]` measures a media folder read-only against the #240

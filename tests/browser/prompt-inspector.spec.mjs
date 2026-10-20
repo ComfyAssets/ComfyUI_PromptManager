@@ -232,6 +232,17 @@ test('unverified saved associations explain uncertainty and cannot be sent',asyn
     await expect(details(page).getByRole('button',{name:/^Send /})).toHaveCount(0);
 });
 
+test('unresolved roles name the blocking node as text and offer no prompt actions',async({page})=>{
+    const line='Prompt uses a node the inspector does not support (<img src=x onerror="window.injected=1">).';
+    await page.route('**/images/inspect/uncertain.png?root=0*',route=>route.fulfill({json:{success:true,root_scope:new URL(route.request().url()).searchParams.get('root_scope'),image:{root_index:0,path:'uncertain.png',filename:'uncertain.png'},prompts:{
+        positive:{status:'unresolved',text:null,source:null,message:line},negative:{status:'unresolved',text:null,source:null,message:line},
+    }}}));
+    await page.goto(workspace);await select(page,'0:uncertain.png');
+    for (const name of ['Positive','Negative']) await expect(role(details(page),name)).toContainText(line);
+    await expect(details(page).locator('img[onerror]')).toHaveCount(0);
+    expect(await page.evaluate(()=>window.injected)).toBeUndefined();
+    await expect(details(page).getByRole('button',{name:/^(Send|Copy) /})).toHaveCount(0);
+});
 
 test('prompt role headings contain compact real actions and honest source evidence',async({page})=>{
     await page.goto(workspace);await select(page,'0:shared/same.png');

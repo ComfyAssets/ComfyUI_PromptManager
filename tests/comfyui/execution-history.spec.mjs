@@ -243,10 +243,10 @@ test.describe('public chronological history with the actual acknowledged host br
                 const frozen = attempts[0].context;
                 for (const mode of ['Raw', 'Effective']) {
                     await run.getByRole('button', { name: mode, exact: true }).click();
-                    for (const [role, value] of [['Positive', frozen.positive[mode.toLowerCase()]], ['Negative', frozen.negative[mode.toLowerCase()]]]) expect(await run.getByRole('region', { name: `${role} prompt`, exact: true }).locator('pre').evaluate(node => node.textContent)).toBe(value);
+                    for (const [role, value] of [['Positive', frozen.positive[mode.toLowerCase()]], ['Negative', frozen.negative[mode.toLowerCase()]]]) expect(await run.getByRole('region', { name: 'Frozen run prompt texts', exact: true }).getByRole('region', { name: `${role} prompt`, exact: true }).locator('pre').evaluate(node => node.textContent)).toBe(value);
                     await page.evaluate(async id => {const { app } = await import('/scripts/app.js');const node = app.graph.getNodeById(id);node.widgets.find(w => w.name === 'text').value = 'Before send';window.chronologyEffects = { queue: 0, load: 0 };window.chronologyOriginals = {};for (const [method, key] of [['queuePrompt', 'queue'], ['loadGraphData', 'load']]) {const original = app[method];window.chronologyOriginals[method] = original;app[method] = function(...args) {window.chronologyEffects[key]++;return original.apply(this, args);};}}, destination);
                     try {
-                        await run.getByRole('button', { name: 'Send prompt pair', exact: true }).click();const sender = workspace.getByRole('dialog', { name: 'Send to ComfyUI', exact: true });
+                        await run.getByRole('region', { name: 'Frozen run prompt texts', exact: true }).getByRole('button', { name: 'Send prompt pair', exact: true }).click();const sender = workspace.getByRole('dialog', { name: 'Send to ComfyUI', exact: true });
                         const hosts = sender.getByRole('combobox', { name: 'ComfyUI window', exact: true });await expect(hosts.locator('option')).toHaveCount(2);await hosts.selectOption({ index: 1 });
                         await sender.getByRole('combobox', { name: 'Destination node', exact: true }).selectOption({ index: 1 });await sender.getByRole('button', { name: 'Preview changes', exact: true }).click();
                         await sender.getByRole('button', { name: 'Apply to ComfyUI', exact: true }).click();await expect(sender).toContainText('Sent to ComfyUI.');

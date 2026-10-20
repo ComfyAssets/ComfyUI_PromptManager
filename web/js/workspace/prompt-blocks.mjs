@@ -11,6 +11,7 @@ const sources = {
     execution: 'Recorded at execution',
     'graph-inferred': 'Inferred from the saved workflow',
     'embedded-parameters': 'Embedded generation parameters',
+    'zeroed-conditioning': 'Zeroed conditioning (no negative text)',
     'saved-association': 'Saved library association',
 };
 const statuses = {
@@ -40,7 +41,11 @@ function childScope(parentScope) {
     return scope;
 }
 
-export function mountPromptBlocks(container, {prompts, sender, parentScope, roles:visibleRoles = ['positive', 'negative'], onRetry, includePairAction = true}) {
+export function mountPromptBlocks(container, {prompts, sender, parentScope, roles:visibleRoles = ['positive', 'negative'], onRetry, includePairAction = true, contextLabel = ''}) {
+    // A nested set of blocks (the current file inside a recorded run) names its regions and actions with a
+    // context so assistive technology never meets two identically named prompt regions in one dialog.
+    const named = role => contextLabel ? `${contextLabel} ${role} prompt` : `${role} prompt`;
+    const action = role => contextLabel ? `${contextLabel[0].toLowerCase()}${contextLabel.slice(1)} ${role} prompt` : `${role} prompt`;
     if (parentScope.signal.aborted) return {update() {}, setState() {}, dispose() {}};
     const scope = childScope(parentScope);
     container.classList.add('prompt-inspector');
@@ -86,7 +91,7 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
             const title = `${role[0].toUpperCase() + role.slice(1)} prompt`;
             const record = state.prompts?.[role];
             const block = el('section', undefined, `prompt-block prompt-${role}`);
-            block.setAttribute('aria-label', title);
+            block.setAttribute('aria-label', contextLabel ? named(role) : title);
             const heading = el('div', undefined, 'prompt-block-heading');
             heading.append(el('h3', title));
             block.append(heading);
@@ -100,12 +105,12 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
                     block.append(text);
                 }
                 const actions = el('div', undefined, 'prompt-actions');
-                const send = createSendButton(`Send ${role} prompt`);
+                const send = createSendButton(`Send ${action(role)}`);
                 send.dataset.sendRole = role;
                 send.disabled = !actionsEnabled;
                 const copy = createButton('', 'ca-icon-button');
-                copy.setAttribute('aria-label', `Copy ${role} prompt`);
-                copy.title = `Copy ${role} prompt`;
+                copy.setAttribute('aria-label', `Copy ${action(role)}`);
+                copy.title = `Copy ${action(role)}`;
                 copy.append(createWorkspaceIcon('copy'));
                 copy.dataset.copyRole = role;
                 copy.disabled = !actionsEnabled;
@@ -113,7 +118,7 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
                 heading.append(actions);
                 const status = el('p', '', 'prompt-copy-status muted'); status.setAttribute('role', 'status');
                 block.append(status);
-            } else block.append(el('p', typeof record?.message === 'string' ? record.message : statuses[record?.status] || statuses.unresolved, 'muted'));
+            } else block.append(el('p', typeof record?.message === 'string' && record.message ? record.message : statuses[record?.status] || statuses.unresolved, 'muted'));
             container.append(block);
         }
         if (includePairAction && Object.hasOwn(roles, 'positive') && Object.hasOwn(roles, 'negative')) {

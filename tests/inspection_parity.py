@@ -2,7 +2,7 @@
 
 Every graph here is original synthetic content (CC0): neutral texts, generic model
 file names and invented filename prefixes. Nothing is copied from user outputs.
-The shapes reproduce the parity audit's fixture numbering (``f01``..``f17``).
+The shapes reproduce the parity audit's fixture numbering (``f01``..``f24``).
 
 ``build(name)`` returns ``{"prompt", "workflow", "extra_chunks"}``. ``write_png``
 writes the two records the way core ``SaveImage`` does (Pillow ``PngInfo.add_text``,
@@ -66,6 +66,12 @@ COMMITTED = (
     "f15",
     "f16",
     "f17",
+    "f19",
+    "f20",
+    "f21",
+    "f22",
+    "f23",
+    "f24",
 )
 # Built in a temporary directory at test time (too large to commit).
 TEST_TIME = ("f01", "f04", "f05")
@@ -98,6 +104,10 @@ def _ui(prompt, extra_nodes=0, subgraphs=0, big_widget=None):
 
 def _enc(text):
     return {"class_type": "CLIPTextEncode", "inputs": {"text": text, "clip": ["4", 1]}}
+
+
+def _linked_enc(link):
+    return {"class_type": "CLIPTextEncode", "inputs": {"text": link, "clip": ["4", 1]}}
 
 
 def _ksampler_graph(positive, negative, sampler="KSampler", latent=None, extra=None):
@@ -691,6 +701,105 @@ def _f17():
     return _basic(graph, _ui(graph))
 
 
+DETAILER_POS = "a red fox in snow, sharp detailed face"
+
+
+def _f19():
+    """KSampler -> VAEDecode -> FaceDetailer -> SaveImage; the detailer re-prompts."""
+    graph = _ksampler_graph(_enc(POS), _enc(NEG))
+    graph["10"] = _enc(DETAILER_POS)
+    graph["50"] = {
+        "class_type": "FaceDetailer",
+        "inputs": {
+            "image": ["8", 0],
+            "model": ["4", 0],
+            "clip": ["4", 1],
+            "vae": ["4", 2],
+            "positive": ["10", 0],
+            "negative": ["7", 0],
+            "seed": 7,
+            "steps": 12,
+            "cfg": 4.5,
+            "sampler_name": "euler",
+            "scheduler": "normal",
+            "denoise": 0.4,
+        },
+    }
+    graph["9"]["inputs"]["images"] = ["50", 0]
+    return _basic(graph)
+
+
+def _f20():
+    """``easy ifElse`` with a literal boolean picks the positive branch."""
+    select = {
+        "class_type": "easy ifElse",
+        "inputs": {"boolean": True, "on_true": ["10", 0], "on_false": ["11", 0]},
+    }
+    extra = {"10": _enc(POS), "11": _enc("a grey wolf in fog")}
+    return _basic(_ksampler_graph(select, _enc(NEG), extra=extra))
+
+
+def _f21():
+    """``JoinStringMulti`` with ``return_list: true`` feeds the positive encoder."""
+    join = {
+        "class_type": "JoinStringMulti",
+        "inputs": {
+            "inputcount": 2,
+            "delimiter": ", ",
+            "return_list": True,
+            "string_1": ["11", 0],
+            "string_2": ["12", 0],
+        },
+    }
+    extra = {
+        "10": join,
+        "11": {"class_type": "PrimitiveString", "inputs": {"value": "a red fox"}},
+        "12": {"class_type": "PrimitiveString", "inputs": {"value": "in snow"}},
+    }
+    positive = _linked_enc(["10", 0])
+    return _basic(_ksampler_graph(positive, _enc(NEG), extra=extra))
+
+
+def _f22():
+    """``PromptSearchList`` (database search at run time) feeds the positive."""
+    search = {
+        "class_type": "PromptSearchList",
+        "inputs": {
+            "text": "fox",
+            "category": "",
+            "tags": "",
+            "min_rating": 0,
+            "limit": 50,
+        },
+    }
+    positive = _linked_enc(["10", 0])
+    return _basic(_ksampler_graph(positive, _enc(NEG), extra={"10": search}))
+
+
+def _f24():
+    """``TextEncodeQwenImage21``: slot 0 is the positive, slot 1 the negative."""
+    qwen = {
+        "class_type": "TextEncodeQwenImage21",
+        "inputs": {
+            "clip": ["4", 1],
+            "prompt": POS,
+            "negative_prompt": NEG,
+            "vae": ["4", 2],
+            "resolution": 1024,
+        },
+    }
+    graph = _ksampler_graph(qwen, None)
+    del graph["7"]
+    graph["3"]["inputs"]["negative"] = ["6", 1]
+    return _basic(graph)
+
+
+def _f23():
+    """The negative is ``ConditioningZeroOut`` of the positive encoder."""
+    zero = {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["6", 0]}}
+    return _basic(_ksampler_graph(_enc(POS), zero))
+
+
 _BUILDERS = {
     "f01": _f01,
     "f01b": _f01b,
@@ -714,6 +823,12 @@ _BUILDERS = {
     "f15": _f15,
     "f16": _f16,
     "f17": _f17,
+    "f19": _f19,
+    "f20": _f20,
+    "f21": _f21,
+    "f22": _f22,
+    "f23": _f23,
+    "f24": _f24,
 }
 
 
