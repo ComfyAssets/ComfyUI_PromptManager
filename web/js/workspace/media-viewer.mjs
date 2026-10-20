@@ -4,6 +4,8 @@ import {rootedFileAdapter} from './inspection-state.mjs';
 import {mountFileInspector} from './file-inspector.mjs';
 
 let viewerId = 0;
+// Upper bound on waiting for a closed Viewer's in-flight image view before destroying it.
+const PENDING_VIEW_DESTROY_MS = 10000;
 export function readViewerPreferences(getStorage = () => window.localStorage, normalize = globalThis.GallerySettings.normalizeGallerySettings) {
     let stored;
     try { stored = JSON.parse(getStorage().getItem('gallerySettings')); } catch { stored = null; }
@@ -132,7 +134,8 @@ export function createMediaViewer({container,parentScope,inspectionController,se
             }
             node.src = url.href;media.append(node);
             if (!selected.is_video && window.Viewer) {
-                let fitFrame = 0, fitWidth, fitHeight;
+                let fitFrame = 0, fitWidth, fitHeight, viewSettled = false, released = false, fallback = 0;
+                const release = () => { if (released) return; released = true; clearTimeout(fallback); instance.destroy(); };
                 const scheduleFit = () => {
                     if (!current() || fitFrame) return;
                     fitFrame = requestAnimationFrame(() => {
@@ -145,11 +148,20 @@ export function createMediaViewer({container,parentScope,inspectionController,se
                 };
                 const instance = new window.Viewer(node,{inline:true,container:media,toolbar:false,navbar:false,title:false,button:false,
                     keyboard:false,fullscreen:false,transition:false,viewed() {
+                        viewSettled = true;
+                        if (mediaLocal.signal.aborted) { release(); return; }
                         if (!current()) return;
                         session.ready(key);scheduleFit();
                     }});
                 const observer = new ResizeObserver(scheduleFit);observer.observe(stage);
-                viewer = instance;mediaLocal.cleanup(() => {observer.disconnect();cancelAnimationFrame(fitFrame);instance.destroy();});
+                viewer = instance;mediaLocal.cleanup(() => {
+                    observer.disconnect();cancelAnimationFrame(fitFrame);
+                    // Inline Viewer.js keeps viewing a still-loading image after destroy(), and that view
+                    // then reads the destroyed list; destroy once the view settles, fails or times out.
+                    if (viewSettled) { release(); return; }
+                    node.addEventListener('error',release,{once:true});
+                    fallback = setTimeout(release,PENDING_VIEW_DESTROY_MS);
+                });
             }
             updateControls(session.state);
         }
